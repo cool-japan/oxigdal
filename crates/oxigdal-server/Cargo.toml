@@ -1,0 +1,91 @@
+[package]
+name = "oxigdal-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-server"
+readme = "README.md"
+description = "WMS/WMTS tile server for serving OxiGDAL rasters over HTTP"
+keywords = ["gis", "science", "wms", "wmts", "tile-server"]
+categories = ["web-programming::http-server", "science"]
+
+[dependencies]
+# Internal dependencies
+oxigdal-core.workspace = true
+oxigdal-algorithms.workspace = true
+oxigdal-proj.workspace = true
+oxigdal-geotiff.workspace = true
+
+# Web framework
+axum = "0.8"
+tower = { version = "0.5", features = ["util", "timeout", "load-shed", "limit"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "cors", "compression-full"] }
+hyper = { version = "1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+
+# Error handling
+thiserror.workspace = true
+anyhow = "1"
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+png = "0.17"
+jpeg-encoder.workspace = true
+
+# Caching
+lru.workspace = true
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env", "cargo"] }
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Utilities
+bytes.workspace = true
+num-traits.workspace = true
+chrono.workspace = true
+url.workspace = true
+
+# XML generation
+quick-xml = { version = "0.37", features = ["serialize"] }
+
+# Compression
+flate2.workspace = true
+
+[dev-dependencies]
+# Testing
+tempfile.workspace = true
+proptest.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "oxigdal-server"
+path = "src/main.rs"
+
+[lib]
+name = "oxigdal_server"
+path = "src/lib.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

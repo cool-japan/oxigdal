@@ -1,0 +1,75 @@
+[package]
+name = "oxigdal-streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-streaming"
+readme = "README.md"
+description = "Real-time data processing and streaming pipelines for OxiGDAL"
+keywords = ["science", "streaming", "real-time", "pipelines", "gis"]
+categories = ["science", "asynchronous", "data-structures"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+oxicode = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Arrow ecosystem
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+crossbeam-channel = { workspace = true }
+dashmap = { workspace = true }
+
+# Additional utilities
+bytes = { workspace = true }
+num-traits = { workspace = true }
+byteorder = { workspace = true }
+
+# State backend (RocksDB)
+rocksdb = { version = "0.22", default-features = false, features = ["snappy"] }
+
+# Hashing
+ahash = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+
+[features]
+default = ["rocksdb-backend"]
+rocksdb-backend = []
+
+[lib]
+doctest = false
+
+[[bench]]
+name = "streaming_bench"
+harness = false

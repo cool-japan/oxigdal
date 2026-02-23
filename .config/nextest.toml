@@ -1,0 +1,20 @@
+[profile.default]
+# Warn about tests taking >60s
+slow-timeout = { period = "60s", terminate-after = 2 }
+final-status-level = "slow"
+test-threads = 4  # Reduce parallelism for accurate timings
+retries = 2  # Feature unification flakiness under --all-features --workspace
+
+[profile.ci]
+# Stricter settings for CI - fail on slow tests
+slow-timeout = { period = "60s", terminate-after = 1 }
+fail-fast = false
+retries = 2  # Feature unification flakiness under --all-features --workspace
+final-status-level = "slow"
+
+[profile.detect-slow]
+# Special profile for slow test detection
+test-threads = 1  # Serial execution for accurate timings
+slow-timeout = { period = "60s" }
+final-status-level = "slow"
+retries = 0  # No retries for detection

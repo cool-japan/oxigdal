@@ -1,0 +1,22 @@
+[package]
+name = "my-oxigdal-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oxigdal-core = "0.1"
+oxigdal-algorithms = "0.1"
+oxigdal-geotiff = "0.1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+console = "0.15"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+[[bin]]
+name = "my-cli"
+path = "src/main.rs"

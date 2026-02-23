@@ -1,0 +1,6 @@
+# Clippy configuration for OxiGDAL workspace
+#
+# allow-expect-in-tests: suppress `clippy::expect_used` warnings in test/bench
+# code. Per COOLJAPAN policy, expect() with descriptive messages is acceptable
+# in tests and benchmarks since panics there are desired failure signals.
+allow-expect-in-tests = true

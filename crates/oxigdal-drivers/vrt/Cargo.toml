@@ -1,0 +1,42 @@
+[package]
+name = "oxigdal-vrt"
+description = "VRT (Virtual Raster) driver for OxiGDAL - Pure Rust GDAL reimplementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-vrt"
+readme = "README.md"
+keywords = ["vrt", "virtual", "raster", "mosaic", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["oxigdal-core/std", "thiserror/std"]
+async = ["oxigdal-core/async", "dep:tokio"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+oxigdal-geotiff = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+quick-xml = { workspace = true }
+lru = { workspace = true }
+bytemuck = { workspace = true }
+
+# Async
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,104 @@
+{
+  "type": "FeatureCollection",
+  "name": "Golden Triangle",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Golden Triangle Center",
+        "description": "Thailand/Myanmar/Laos border region",
+        "marker-color": "#FFD700",
+        "marker-symbol": "star"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.08466749884738,
+          20.35223590060906
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Golden Triangle Area",
+        "description": "Symbolic triangle",
+        "fill": "#FFD700",
+        "fill-opacity": 0.3,
+        "stroke": "#B8860B",
+        "stroke-width": 2
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              100.08466749884738,
+              20.40223590060906
+            ],
+            [
+              100.04136749884738,
+              20.32723590060906
+            ],
+            [
+              100.12796749884738,
+              20.32723590060906
+            ],
+            [
+              100.08466749884738,
+              20.40223590060906
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Thailand Border",
+        "flag": "🇹🇭",
+        "marker-color": "#4169E1",
+        "marker-size": "small"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.05,
+          20.38
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Myanmar Border",
+        "flag": "🇲🇲",
+        "marker-color": "#4169E1",
+        "marker-size": "small"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.12,
+          20.35
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Laos Border",
+        "flag": "🇱🇦",
+        "marker-color": "#4169E1",
+        "marker-size": "small"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.08,
+          20.32
+        ]
+      }
+    }
+  ]
+}

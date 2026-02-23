@@ -1,0 +1,316 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast checks that fail quickly
+  check-fast:
+    name: Quick checks (fmt, clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-cache"
+          cache-on-failure: true
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy (all features)
+        run: |
+          cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+      - name: Check documentation
+        run: |
+          cargo doc --workspace --all-features --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  # Build matrix across OS and Rust versions
+  build-and-test:
+    name: Build & Test (${{ matrix.os }}, ${{ matrix.rust }})
+    needs: check-fast
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, beta]
+        include:
+          # Test nightly only on Linux to save CI time
+          - os: ubuntu-latest
+            rust: nightly
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-${{ matrix.os }}-${{ matrix.rust }}"
+          cache-on-failure: true
+
+      # Install nextest for faster test execution
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Build workspace (debug)
+        run: |
+          cargo build --workspace --all-features
+
+      - name: Build workspace (release)
+        run: |
+          cargo build --workspace --all-features --release
+
+      - name: Run tests (nextest)
+        run: |
+          cargo nextest run --workspace --all-features --no-fail-fast
+        timeout-minutes: 30
+
+      - name: Run doc tests
+        run: |
+          cargo test --workspace --all-features --doc
+        timeout-minutes: 15
+
+      - name: Upload test results (Linux only)
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: target/nextest/default/*.xml
+          if-no-files-found: ignore
+
+  # Test individual features to ensure proper feature gating
+  test-features:
+    name: Test feature combinations
+    needs: check-fast
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "features-cache"
+          cache-on-failure: true
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Test no default features
+        run: |
+          cargo nextest run --workspace --no-default-features
+
+      - name: Test default features
+        run: |
+          cargo nextest run --workspace
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      - name: Test feature powerset (core crate only)
+        run: |
+          cargo hack test --package oxigdal-core --feature-powerset --depth 2 --exclude-no-default-features
+        timeout-minutes: 30
+
+  # Check WASM compilation
+  check-wasm:
+    name: Check WASM compilation
+    needs: check-fast
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "wasm-cache"
+          cache-on-failure: true
+
+      - name: Check WASM build
+        run: |
+          cargo check --package oxigdal-wasm --target wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM package
+        working-directory: crates/oxigdal-wasm
+        run: |
+          wasm-pack build --target web --dev
+
+  # Minimal versions check (ensure MSRV compatibility)
+  check-msrv:
+    name: Check Minimum Supported Rust Version
+    needs: check-fast
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (MSRV)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.85"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "msrv-cache"
+          cache-on-failure: true
+
+      - name: Install cargo-msrv
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-msrv
+
+      - name: Verify MSRV
+        run: |
+          cargo msrv verify
+
+      - name: Check workspace with MSRV
+        run: |
+          cargo check --workspace --all-features
+
+  # Ensure no warnings in the codebase
+  check-warnings:
+    name: Check for warnings
+    needs: check-fast
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "warnings-cache"
+          cache-on-failure: true
+
+      - name: Build with warnings as errors
+        run: |
+          cargo build --workspace --all-features --all-targets
+        env:
+          RUSTFLAGS: "-D warnings"
+
+  # Check workspace dependencies are properly configured
+  check-workspace:
+    name: Check workspace configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify workspace.dependencies usage
+        run: |
+          echo "Checking for version specifications in member Cargo.toml files..."
+          # Allow keywords and categories to differ, but check for version violations
+          if grep -r "^version = \"" --include="Cargo.toml" crates/ | grep -v "workspace = true" | grep -v "^crates/.*/Cargo.toml:version = " ; then
+            echo "ERROR: Found dependency versions not using workspace.dependencies"
+            exit 1
+          fi
+          echo "All dependencies properly use workspace configuration"
+
+      - name: Check for unwrap() usage
+        run: |
+          echo "Checking for unwrap() in source code..."
+          if grep -r "\.unwrap()" --include="*.rs" crates/ --exclude-dir=target; then
+            echo "ERROR: Found unwrap() usage (violates no-unwrap policy)"
+            exit 1
+          fi
+          echo "No unwrap() usage found - policy compliant"
+
+  # Summary job that depends on all checks
+  ci-success:
+    name: CI Success
+    needs:
+      - check-fast
+      - build-and-test
+      - test-features
+      - check-wasm
+      - check-msrv
+      - check-warnings
+      - check-workspace
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          if [ "${{ needs.check-fast.result }}" != "success" ] || \
+             [ "${{ needs.build-and-test.result }}" != "success" ] || \
+             [ "${{ needs.test-features.result }}" != "success" ] || \
+             [ "${{ needs.check-wasm.result }}" != "success" ] || \
+             [ "${{ needs.check-msrv.result }}" != "success" ] || \
+             [ "${{ needs.check-warnings.result }}" != "success" ] || \
+             [ "${{ needs.check-workspace.result }}" != "success" ]; then
+            echo "One or more CI jobs failed"
+            exit 1
+          fi
+          echo "All CI checks passed successfully!"
+
+      - name: Post status
+        if: success()
+        run: |
+          echo "✅ All CI checks passed"
+          echo "- Code formatting: OK"
+          echo "- Clippy lints: OK"
+          echo "- Documentation: OK"
+          echo "- Tests: OK"
+          echo "- Feature combinations: OK"
+          echo "- WASM build: OK"
+          echo "- MSRV check: OK"
+          echo "- No warnings: OK"
+          echo "- Workspace policy: OK"

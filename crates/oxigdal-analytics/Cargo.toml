@@ -1,0 +1,67 @@
+[package]
+name = "oxigdal-analytics"
+description = "Advanced geospatial analytics for OxiGDAL - Time series, clustering, hotspot analysis, and interpolation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-analytics"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "analytics", "statistics"]
+categories = ["science", "algorithms", "mathematics"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+parallel = ["dep:rayon"]
+interpolation = []
+clustering = []
+timeseries = []
+hotspot = []
+change_detection = []
+zonal = []
+all_analytics = ["interpolation", "clustering", "timeseries", "hotspot", "change_detection", "zonal"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+num-traits = { workspace = true }
+tracing = { workspace = true }
+
+# Scientific computing - Use SciRS2 ecosystem
+# Note: scirs2-core includes ndarray 0.17.1 as required dependency
+scirs2-core = { version = "0.2.0", features = ["array", "array_stats", "linalg", "random"] }
+
+# Parallelization
+rayon = { workspace = true, optional = true }
+
+# Statistical operations
+approx = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "clustering"
+harness = false
+required-features = ["clustering"]
+
+[[bench]]
+name = "interpolation"
+harness = false
+required-features = ["interpolation"]
+
+[[bench]]
+name = "timeseries"
+harness = false
+required-features = ["timeseries"]
+
+[lints]
+workspace = true

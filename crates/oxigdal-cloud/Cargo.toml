@@ -1,0 +1,93 @@
+[package]
+name = "oxigdal-cloud"
+description = "Advanced cloud storage backends for OxiGDAL - Pure Rust cloud integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-cloud"
+readme = "README.md"
+keywords = ["network-programming", "storage", "s3", "azure", "gcs"]
+categories = ["science", "network-programming", "asynchronous", "caching"]
+
+[features]
+default = ["std", "s3", "http", "retry", "cache"]
+std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
+alloc = []
+
+# Cloud providers
+s3 = ["async", "dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types"]
+azure-blob = ["async", "dep:azure_storage", "dep:azure_storage_blobs", "dep:azure_core", "dep:azure_identity"]
+gcs = ["async", "dep:google-cloud-storage", "dep:google-cloud-auth"]
+
+# Storage backends
+http = ["async", "dep:reqwest"]
+
+# Features
+async = ["oxigdal-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
+retry = ["async"]
+cache = ["dep:lru", "dep:dashmap", "dep:flate2", "dep:sha2"]
+prefetch = ["async", "cache"]
+
+# Authentication
+oauth2 = ["dep:oauth2"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, optional = true, features = ["io-util", "fs", "time", "sync"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# AWS S3
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { version = "1", optional = true }
+
+# Azure Blob Storage - Pure Rust SDK
+azure_storage = { version = "0.21", optional = true }
+azure_storage_blobs = { version = "0.21", optional = true }
+azure_core = { version = "0.21", optional = true }
+azure_identity = { version = "0.21", optional = true }
+
+# Google Cloud Storage - Pure Rust SDK
+google-cloud-storage = { version = "0.22", optional = true }
+google-cloud-auth = { version = "0.18", optional = true }
+
+# HTTP
+reqwest = { workspace = true, optional = true, features = ["stream", "json"] }
+
+# Caching
+lru = { workspace = true, optional = true }
+dashmap = { version = "6", optional = true }
+
+# Crypto for auth
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+# Compression
+flate2 = { workspace = true, optional = true }
+
+# OAuth2
+oauth2 = { version = "5", optional = true, default-features = false }
+
+# Time handling
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

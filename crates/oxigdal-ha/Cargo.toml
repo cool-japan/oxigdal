@@ -1,0 +1,46 @@
+[package]
+name = "oxigdal-ha"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-ha"
+readme = "README.md"
+rust-version.workspace = true
+keywords = ["gis", "gdal", "high-availability", "disaster-recovery", "failover"]
+categories = ["science", "database", "concurrency"]
+description = "High availability, disaster recovery, and automatic failover for OxiGDAL"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = "6"
+bytes = "1"
+oxicode = { version = "0.1.1", features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
+crc32fast = "1"
+flate2 = "1"
+lz4 = "1"
+zstd = "0.13"
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { workspace = true }
+tempfile = "3"
+rand = "0.8"
+
+[[bench]]
+name = "ha_bench"
+harness = false
+
+[lib]
+path = "src/lib.rs"

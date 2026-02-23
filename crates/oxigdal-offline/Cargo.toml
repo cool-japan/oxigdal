@@ -1,0 +1,69 @@
+[package]
+name = "oxigdal-offline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-offline"
+readme = "README.md"
+description = "Offline-first data management with sync queue, conflict resolution, and optimistic updates for OxiGDAL"
+keywords = ["offline", "sync", "conflict-resolution", "indexeddb", "sqlite"]
+categories = ["database", "wasm", "caching", "asynchronous"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["native"]
+native = ["rusqlite", "dep:tokio", "dep:futures"]
+wasm = ["wasm-bindgen", "js-sys", "web-sys", "wasm-bindgen-futures"]
+serde = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime (native only)
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+# SQLite storage (native)
+rusqlite = { workspace = true, features = ["bundled"], optional = true }
+
+# WASM support
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+flate2 = { workspace = true }
+
+# Internal dependencies
+oxigdal-core = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+proptest = { workspace = true }
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true

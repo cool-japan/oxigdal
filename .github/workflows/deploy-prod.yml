@@ -1,0 +1,232 @@
+# OxiGDAL Production Deployment Workflow
+# Deploys to production environment
+# Author: COOLJAPAN OU (Team Kitasan)
+
+name: Deploy Production
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: oxigdal-production
+  ECS_SERVICE: oxigdal-server
+  CONTAINER_NAME: oxigdal-server
+
+jobs:
+  deploy-aws:
+    name: Deploy to AWS ECS
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file deploy/aws/cloudformation.yaml \
+            --stack-name oxigdal-production \
+            --parameter-overrides \
+              Environment=production \
+              ContainerImage=ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ github.ref_name }} \
+              DesiredCount=3 \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Force ECS service update
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --force-new-deployment
+
+      - name: Wait for deployment to complete
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }}
+
+      - name: Get service URL
+        id: service-url
+        run: |
+          ALB_DNS=$(aws cloudformation describe-stacks \
+            --stack-name oxigdal-production \
+            --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerURL'].OutputValue" \
+            --output text)
+          echo "url=$ALB_DNS" >> $GITHUB_OUTPUT
+
+      - name: Verify deployment
+        run: |
+          sleep 30
+          curl -f ${{ steps.service-url.outputs.url }}/health || exit 1
+
+  deploy-kubernetes:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    environment: production
+    if: false  # Enable if using K8s
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=./kubeconfig
+
+      - name: Update image in deployment
+        run: |
+          kubectl set image deployment/oxigdal-server \
+            oxigdal-server=ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ github.ref_name }} \
+            -n oxigdal
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/oxigdal-server -n oxigdal
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n oxigdal
+          kubectl get svc -n oxigdal
+
+  deploy-cloud-run:
+    name: Deploy to Google Cloud Run
+    runs-on: ubuntu-latest
+    environment: production
+    if: false  # Enable if using Cloud Run
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy oxigdal-server \
+            --image ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ github.ref_name }} \
+            --platform managed \
+            --region us-central1 \
+            --allow-unauthenticated \
+            --min-instances 2 \
+            --max-instances 20 \
+            --cpu 2 \
+            --memory 4Gi \
+            --set-env-vars RUST_LOG=info
+
+  deploy-fly:
+    name: Deploy to Fly.io
+    runs-on: ubuntu-latest
+    environment: production
+    if: false  # Enable if using Fly.io
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  smoke-tests:
+    name: Run Smoke Tests
+    needs: [deploy-aws]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run smoke tests
+        run: |
+          # Get deployment URL
+          URL="${{ needs.deploy-aws.outputs.service-url }}"
+
+          # Test health endpoint
+          echo "Testing health endpoint..."
+          curl -f $URL/health || exit 1
+
+          # Test WMS GetCapabilities
+          echo "Testing WMS GetCapabilities..."
+          curl -f "$URL/wms?service=WMS&request=GetCapabilities&version=1.3.0" || exit 1
+
+          # Test WMTS GetCapabilities
+          echo "Testing WMTS GetCapabilities..."
+          curl -f "$URL/wmts?service=WMTS&request=GetCapabilities&version=1.0.0" || exit 1
+
+          echo "All smoke tests passed!"
+
+  notify:
+    name: Send Notifications
+    needs: [deploy-aws, smoke-tests]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "OxiGDAL Production Deployment",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Status:* ${{ job.status }}\n*Version:* ${{ github.ref_name }}\n*Actor:* ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Create deployment record
+        if: success()
+        run: |
+          echo "Deployment successful at $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> deployments.log

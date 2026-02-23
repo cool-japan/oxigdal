@@ -1,0 +1,384 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # Create GitHub release
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          # OxiGDAL ${{ steps.get_version.outputs.version }}
+
+          ## What's New
+
+          [Auto-generated release notes will be added here]
+
+          ## Installation
+
+          ### Rust (cargo)
+          ```bash
+          cargo add oxigdal-core
+          ```
+
+          ### Pre-built Binaries
+          Download platform-specific binaries from the assets below.
+
+          ### WASM
+          ```bash
+          npm install @oxigdal/wasm
+          ```
+
+          ## Checksums
+          See `checksums.txt` in the release assets.
+
+          ## Full Changelog
+          See [CHANGELOG.md](https://github.com/cool-japan/oxigdal/blob/main/CHANGELOG.md)
+          EOF
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          release_name: OxiGDAL ${{ steps.get_version.outputs.version }}
+          body_path: release-notes.md
+          draft: true
+          prerelease: false
+
+  # Build release binaries for multiple platforms
+  build-binaries:
+    name: Build Release Binaries (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: oxigdal-cli
+            asset_name: oxigdal-linux-x86_64
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: oxigdal-cli
+            asset_name: oxigdal-linux-aarch64
+          # macOS x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: oxigdal-cli
+            asset_name: oxigdal-macos-x86_64
+          # macOS ARM64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: oxigdal-cli
+            asset_name: oxigdal-macos-aarch64
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: oxigdal-cli.exe
+            asset_name: oxigdal-windows-x86_64.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
+          cache-on-failure: true
+
+      - name: Build release binary
+        run: |
+          cargo build \
+            --package oxigdal-cli \
+            --release \
+            --target ${{ matrix.target }} \
+            --all-features
+
+      - name: Strip binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+      - name: Create archive (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
+
+      - name: Create archive (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
+          certutil -hashfile ${{ matrix.asset_name }}.zip SHA256 > ${{ matrix.asset_name }}.zip.sha256
+
+      - name: Upload binary to release (Unix)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}.tar.gz
+          asset_name: ${{ matrix.asset_name }}.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload binary to release (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}.zip
+          asset_name: ${{ matrix.asset_name }}.zip
+          asset_content_type: application/zip
+
+  # Build WASM package
+  build-wasm:
+    name: Build WASM Package
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "wasm-release-cache"
+          cache-on-failure: true
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM package
+        working-directory: crates/oxigdal-wasm
+        run: |
+          wasm-pack build --target web --release --out-dir ../../wasm-pkg
+
+      - name: Create WASM archive
+        run: |
+          cd wasm-pkg
+          tar czf oxigdal-wasm.tar.gz *
+          shasum -a 256 oxigdal-wasm.tar.gz > oxigdal-wasm.tar.gz.sha256
+
+      - name: Upload WASM to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: wasm-pkg/oxigdal-wasm.tar.gz
+          asset_name: oxigdal-wasm.tar.gz
+          asset_content_type: application/gzip
+
+  # Build Python wheels with maturin
+  build-python:
+    name: Build Python Wheels (${{ matrix.platform }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheels
+        working-directory: crates/oxigdal-python
+        run: |
+          maturin build --release --out ../../dist
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels-${{ matrix.platform }}
+          path: dist/*.whl
+          retention-days: 7
+
+  # Publish to crates.io (manual approval required)
+  publish-crates:
+    name: Publish to crates.io
+    needs: [create-release, build-binaries]
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "publish-cache"
+          cache-on-failure: true
+
+      - name: Verify crate versions
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          VERSION_NO_V="${VERSION#v}"
+          echo "Checking version: $VERSION_NO_V"
+
+          # Verify all workspace crates have matching version
+          for crate_toml in crates/*/Cargo.toml; do
+            if grep -q "version = \"$VERSION_NO_V\"" "$crate_toml"; then
+              echo "✅ $crate_toml has correct version"
+            else
+              echo "❌ $crate_toml version mismatch"
+              exit 1
+            fi
+          done
+
+      - name: Dry-run publish
+        run: |
+          # Publish crates in dependency order (dry-run)
+          cargo publish --dry-run --package oxigdal-core
+          cargo publish --dry-run --package oxigdal-proj
+          cargo publish --dry-run --package oxigdal-algorithms
+          cargo publish --dry-run --package oxigdal-stac
+          cargo publish --dry-run --package oxigdal-geotiff
+
+      - name: Publish to crates.io
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          echo "⚠️ Automated publishing is disabled per COOLJAPAN policy"
+          echo "Please manually run 'cargo publish' for each crate when ready"
+          echo ""
+          echo "Publish order:"
+          echo "1. cargo publish --package oxigdal-core"
+          echo "2. cargo publish --package oxigdal-proj"
+          echo "3. cargo publish --package oxigdal-algorithms"
+          echo "4. cargo publish --package oxigdal-stac"
+          echo "5. cargo publish --package oxigdal-geotiff"
+          # Actual publishing commented out per policy
+          # cargo publish --package oxigdal-core --token $CARGO_REGISTRY_TOKEN
+          # sleep 30
+          # cargo publish --package oxigdal-proj --token $CARGO_REGISTRY_TOKEN
+          # ... etc
+
+  # Release summary
+  release-summary:
+    name: Release Summary
+    needs: [create-release, build-binaries, build-wasm, build-python]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Release Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Version: ${{ needs.create-release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "- GitHub Release: ${{ needs.create-release.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Binaries: ${{ needs.build-binaries.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- WASM: ${{ needs.build-wasm.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Python Wheels: ${{ needs.build-python.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.create-release.result }}" == "success" ] && \
+             [ "${{ needs.build-binaries.result }}" == "success" ]; then
+            echo "✅ **Release artifacts built successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Next steps:" >> $GITHUB_STEP_SUMMARY
+            echo "1. Review the draft release" >> $GITHUB_STEP_SUMMARY
+            echo "2. Update release notes" >> $GITHUB_STEP_SUMMARY
+            echo "3. Publish the release" >> $GITHUB_STEP_SUMMARY
+            echo "4. Manually publish to crates.io (per COOLJAPAN policy)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some release jobs failed. Please investigate.**" >> $GITHUB_STEP_SUMMARY
+          fi

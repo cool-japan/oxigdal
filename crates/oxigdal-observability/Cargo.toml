@@ -1,0 +1,80 @@
+[package]
+name = "oxigdal-observability"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-observability"
+readme = "README.md"
+description = "OpenTelemetry-based observability, monitoring, and alerting for OxiGDAL"
+keywords = ["observability", "opentelemetry", "monitoring", "metrics", "tracing"]
+categories = ["development-tools::profiling", "network-programming", "science"]
+
+[dependencies]
+# OpenTelemetry core
+opentelemetry = "0.22"
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
+opentelemetry-stdout = { version = "0.3", features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.15", optional = true, features = ["metrics", "trace", "tonic"] }
+opentelemetry-jaeger = { version = "0.21", optional = true }
+
+# Tracing integration
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = "0.23"
+
+# Metrics
+prometheus = "0.14"
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# HTTP client for exporters
+reqwest = { workspace = true, features = ["json"] }
+
+# Statistics for anomaly detection
+statrs = "0.18"
+
+# Parking lot for better synchronization
+parking_lot = { workspace = true }
+
+# URL parsing
+url = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Fast random number generation
+fastrand = { workspace = true }
+
+# Hostname
+hostname = { workspace = true }
+
+[features]
+default = ["otlp"]
+jaeger = ["opentelemetry-jaeger"]
+otlp = ["opentelemetry-otlp"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "observability_bench"
+harness = false
+
+[lints]
+workspace = true

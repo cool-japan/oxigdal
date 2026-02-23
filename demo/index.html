@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OxiGDAL COG Viewer - WebAssembly Demo</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>OxiGDAL COG Viewer</h1>
+            <p class="subtitle">Cloud Optimized GeoTIFF viewer powered by WebAssembly</p>
+            <div id="version-info" class="version-info"></div>
+        </header>
+
+        <main>
+            <section class="controls">
+                <div class="control-group">
+                    <label for="url-input">COG URL:</label>
+                    <input
+                        type="text"
+                        id="url-input"
+                        placeholder="Enter COG URL or select example..."
+                        class="url-input"
+                    >
+                    <button id="load-btn" class="btn btn-primary">Load COG</button>
+                </div>
+
+                <div class="control-group">
+                    <label>Example COGs:</label>
+                    <div class="example-buttons">
+                        <button class="btn btn-secondary example-btn"
+                                data-url="https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/2020/S2A_36QWD_20200701_0_L2A/TCI.tif">
+                            Sentinel-2 RGB
+                        </button>
+                        <button class="btn btn-secondary example-btn"
+                                data-url="https://oin-hotosm.s3.amazonaws.com/5afeda152b6a08001185f11a/0/5afeda152b6a08001185f11b.tif">
+                            OpenAerialMap Haiti
+                        </button>
+                        <button class="btn btn-secondary example-btn"
+                                data-url="https://storage.googleapis.com/pdd-stac/disasters/hurricane-harvey/0831/20170831_172754_101c_3B_AnalyticMS.tif">
+                            Hurricane Harvey
+                        </button>
+                    </div>
+                </div>
+
+                <div class="control-group zoom-controls">
+                    <label>Zoom & Pan:</label>
+                    <div class="button-group">
+                        <button id="zoom-in-btn" class="btn btn-icon" title="Zoom In">+</button>
+                        <button id="zoom-out-btn" class="btn btn-icon" title="Zoom Out">-</button>
+                        <button id="reset-view-btn" class="btn btn-secondary">Reset View</button>
+                    </div>
+                    <span id="zoom-level" class="zoom-level">Zoom: 1.0x</span>
+                </div>
+            </section>
+
+            <div class="viewer-container">
+                <div class="viewer-wrapper">
+                    <canvas id="viewer-canvas" class="viewer-canvas"></canvas>
+                    <div id="loading-overlay" class="loading-overlay hidden">
+                        <div class="spinner"></div>
+                        <p id="loading-text">Loading COG...</p>
+                    </div>
+                </div>
+
+                <aside class="metadata-panel">
+                    <h3>Metadata</h3>
+                    <div id="metadata-content" class="metadata-content">
+                        <p class="empty-state">Load a COG to view metadata</p>
+                    </div>
+                </aside>
+            </div>
+
+            <section class="info-panel">
+                <h3>Instructions</h3>
+                <ul>
+                    <li>Enter a COG URL or select an example dataset</li>
+                    <li>Click "Load COG" to load the image</li>
+                    <li>Use the mouse to pan the image (click and drag)</li>
+                    <li>Use zoom buttons or mouse wheel to zoom in/out</li>
+                    <li>View metadata including dimensions, bands, CRS, and more</li>
+                </ul>
+
+                <h3>About OxiGDAL</h3>
+                <p>
+                    OxiGDAL is a Pure Rust implementation of geospatial data processing libraries,
+                    providing efficient COG (Cloud Optimized GeoTIFF) reading capabilities in the browser
+                    via WebAssembly. This demo showcases range request support, tile-based rendering,
+                    and metadata extraction without requiring any backend services.
+                </p>
+            </section>
+        </main>
+
+        <footer>
+            <p>
+                Built with <a href="https://github.com/cool-japan/oxigdal" target="_blank">OxiGDAL</a>
+                | Part of the COOLJAPAN Pure Rust Ecosystem
+            </p>
+        </footer>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

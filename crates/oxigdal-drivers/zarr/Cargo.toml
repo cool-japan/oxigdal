@@ -1,0 +1,94 @@
+[package]
+name = "oxigdal-zarr"
+description = "Zarr v2/v3 driver for OxiGDAL - Pure Rust multidimensional array storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-zarr"
+readme = "README.md"
+keywords = ["zarr", "array", "multidimensional", "network-programming", "chunked"]
+categories = ["science", "parser-implementations", "encoding", "data-structures"]
+
+[features]
+default = ["std", "v2", "v3", "gzip", "zstd", "filesystem", "memory"]
+std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
+alloc = []
+
+# Zarr versions
+v2 = []
+v3 = []
+
+# Storage backends
+filesystem = ["std"]
+s3 = ["async", "dep:aws-sdk-s3", "dep:aws-config"]
+http = ["async", "dep:reqwest"]
+memory = []
+
+# Compression codecs
+gzip = ["dep:flate2"]
+zstd = ["dep:zstd"]
+lz4 = ["dep:lz4"]
+blosc = []  # Disabled for now - incompatible versions
+
+# Filters
+shuffle = []
+delta = []
+scale-offset = []
+
+# Async support
+async = ["oxigdal-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
+
+# Parallel operations
+parallel = ["dep:rayon"]
+
+# Caching
+cache = ["dep:lru"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+once_cell = "1"
+
+# Compression
+flate2 = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+lz4 = { version = "1", optional = true }
+
+# Blosc (disabled for now - incompatible versions)
+# blosc-src = { version = "0.3", optional = true }
+# blosc-sys = { version = "0.3", optional = true }
+
+# Async
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# S3
+aws-sdk-s3 = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
+
+# HTTP
+reqwest = { version = "0.13", optional = true, features = ["stream"] }
+
+# Parallel
+rayon = { version = "1", optional = true }
+
+# Caching
+lru = { version = "0.16", optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = "3"
+
+[lints]
+workspace = true

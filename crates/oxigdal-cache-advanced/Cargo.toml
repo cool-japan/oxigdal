@@ -1,0 +1,82 @@
+[package]
+name = "oxigdal-cache-advanced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-cache-advanced"
+readme = "README.md"
+description = "Advanced multi-tier caching with predictive prefetching and ML-based optimization for OxiGDAL"
+keywords = ["cache", "science", "prefetch", "ml", "distributed"]
+categories = ["caching", "algorithms", "science"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Compression
+lz4 = { workspace = true }
+zstd = { workspace = true }
+snap = "1"
+
+# Caching
+lru = { workspace = true }
+dashmap = { workspace = true }
+
+# Utilities
+num-traits = { workspace = true }
+tracing = { workspace = true }
+rayon = { workspace = true }
+tempfile = { workspace = true }
+fastrand = { workspace = true }
+
+# ML & analytics
+scirs2-core = { workspace = true }
+ndarray = { workspace = true }
+
+# Networking for distributed cache
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# Internal dependencies
+oxigdal-core = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+criterion = { workspace = true }
+approx = { workspace = true }
+proptest = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "cache_bench"
+harness = false
+
+[[bench]]
+name = "prediction_models_bench"
+harness = false
+
+[[bench]]
+name = "coherency_bench"
+harness = false
+
+[[bench]]
+name = "tiering_bench"
+harness = false
+
+[lints]
+workspace = true

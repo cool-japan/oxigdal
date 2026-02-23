@@ -1,0 +1,77 @@
+[package]
+name = "oxigdal-drivers-advanced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-drivers-advanced"
+readme = "README.md"
+description = "Advanced geospatial format drivers for OxiGDAL (JPEG2000, GeoPackage, KML/KMZ, GML)"
+keywords = ["geospatial", "gdal", "gis", "geopackage", "drivers"]
+categories = ["science", "encoding", "parser-implementations"]
+
+[dependencies]
+# Core
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+# Compression
+flate2 = { workspace = true }
+zstd = { workspace = true }
+
+# XML parsing (for KML/GML)
+quick-xml = { workspace = true }
+
+# ZIP support (for KMZ)
+oxiarc-archive = "0.2.1"
+oxiarc-core = "0.2.1"
+
+# SQLite (for GeoPackage)
+rusqlite = { workspace = true, features = ["bundled", "blob", "serde_json"] }
+
+# Geometry
+geo-types = { workspace = true }
+geo = { workspace = true }
+
+# Base64 encoding
+base64 = { workspace = true }
+
+# Spatial indexing
+rstar = { workspace = true }
+
+# Async support (optional)
+tokio = { workspace = true, optional = true }
+
+# Numeric traits
+num-traits = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+approx = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[features]
+default = ["jpeg2000", "geopackage", "kml", "gml"]
+jpeg2000 = []
+geopackage = []
+kml = []
+gml = []
+async = ["tokio"]
+
+[[bench]]
+name = "format_bench"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,137 @@
+# OxiGDAL Kubernetes Ingress
+# Ingress configuration for external access
+# Author: COOLJAPAN OU (Team Kitasan)
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oxigdal-ingress
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Nginx ingress annotations
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, HEAD, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+
+    # Caching
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_cache tiles;
+      proxy_cache_valid 200 302 1h;
+      proxy_cache_valid 404 1m;
+      proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+      proxy_cache_background_update on;
+      proxy_cache_lock on;
+      add_header X-Cache-Status $upstream_cache_status;
+
+    # Certificate manager (if using cert-manager)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/acme-challenge-type: "http01"
+
+spec:
+  ingressClassName: nginx
+
+  tls:
+  - hosts:
+    - oxigdal.example.com
+    - api.oxigdal.example.com
+    - tiles.oxigdal.example.com
+    secretName: oxigdal-tls-cert
+
+  rules:
+  # Main API endpoint
+  - host: oxigdal.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: oxigdal-server
+            port:
+              name: http
+
+  # API subdomain
+  - host: api.oxigdal.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: oxigdal-server
+            port:
+              name: http
+
+  # Tiles subdomain for WMS/WMTS
+  - host: tiles.oxigdal.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: oxigdal-server
+            port:
+              name: http
+
+---
+# Optional: Traefik Ingress Configuration
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oxigdal-ingress-traefik
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: ingress
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: oxigdal-ratelimit@kubernetescrd
+spec:
+  ingressClassName: traefik
+
+  tls:
+  - hosts:
+    - oxigdal.example.com
+    secretName: oxigdal-tls-cert
+
+  rules:
+  - host: oxigdal.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: oxigdal-server
+            port:
+              name: http
+
+---
+# Traefik Middleware for rate limiting
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: oxigdal-ratelimit
+  namespace: oxigdal
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1m

@@ -1,0 +1,138 @@
+# OxiGDAL Kubernetes RBAC
+# Role-Based Access Control configuration
+# Author: COOLJAPAN OU (Team Kitasan)
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oxigdal
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: rbac
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oxigdal-role
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: rbac
+rules:
+# Allow reading ConfigMaps
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+
+# Allow reading Secrets
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+
+# Allow reading Services (for service discovery)
+- apiGroups: [""]
+  resources: ["services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+
+# Allow reading Pods (for distributed operations)
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oxigdal-rolebinding
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: oxigdal-role
+subjects:
+- kind: ServiceAccount
+  name: oxigdal
+  namespace: oxigdal
+
+---
+# Network Policy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oxigdal-netpol
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: security
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: oxigdal
+  policyTypes:
+  - Ingress
+  - Egress
+
+  ingress:
+  # Allow ingress from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+
+  # Allow ingress from prometheus for metrics
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 8081
+
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    - podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+
+  # Allow PostgreSQL access
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+
+  # Allow Redis access
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+
+  # Allow HTTPS outbound (for external APIs, S3, etc.)
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OxiGDAL Advanced COG Viewer - WebAssembly Demo</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1 class="app-title">OxiGDAL COG Viewer</h1>
+                    <p class="app-subtitle">Advanced Cloud Optimized GeoTIFF viewer powered by WebAssembly</p>
+                </div>
+                <div class="header-right">
+                    <div id="version-badge" class="version-badge">Loading...</div>
+                    <div class="status-indicator">
+                        <div id="status-dot" class="status-dot status-idle"></div>
+                        <span id="status-text" class="status-text">Ready</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="app-body">
+            <!-- Left Sidebar - Controls -->
+            <aside class="sidebar sidebar-left">
+                <div class="sidebar-section">
+                    <h3 class="section-title">Load COG</h3>
+                    <div class="input-group">
+                        <input
+                            type="text"
+                            id="cog-url-input"
+                            class="input-field"
+                            placeholder="Enter COG URL..."
+                            aria-label="COG URL input"
+                        >
+                        <button id="load-btn" class="btn btn-primary">
+                            <span class="btn-icon">📂</span>
+                            Load
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Raster Datasets (COG)</h3>
+                    <div class="example-grid">
+                        <button class="example-card" data-url="real-circle.tif"
+                                data-name="Circle GeoTIFF (Idaho)"
+                                data-description="GeoTIFF with coordinates">
+                            <div class="card-icon">⭕</div>
+                            <div class="card-title">Real Circle</div>
+                            <div class="card-description">Idaho, USA (EPSG:4326)</div>
+                        </button>
+
+                        <button class="example-card" data-url="395.tif"
+                                data-name="Multi-Tile Test (San Francisco)"
+                                data-description="2x2 tiled GeoTIFF">
+                            <div class="card-icon">🔲</div>
+                            <div class="card-title">Multi-Tile (SF)</div>
+                            <div class="card-description">512x512 px (2x2 tiles)</div>
+                        </button>
+
+                        <button class="example-card" data-url="golden-triangle-test.tif"
+                                data-name="Golden Triangle Test"
+                                data-description="Thailand/Myanmar/Laos border">
+                            <div class="card-icon">🌏</div>
+                            <div class="card-title">Golden Triangle</div>
+                            <div class="card-description">512x512 px (EPSG:4326)</div>
+                        </button>
+
+                        <button class="example-card" data-url="iron-belt-test.tif"
+                                data-name="Zambia Iron Belt"
+                                data-description="Mining region (Zambia/Congo)">
+                            <div class="card-icon">⛏️</div>
+                            <div class="card-title">Iron Belt</div>
+                            <div class="card-description">512x512 px (EPSG:4326)</div>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Vector Datasets</h3>
+                    <div class="example-grid">
+                        <button class="example-card" data-url="golden-triangle.geojson"
+                                data-name="Golden Triangle Vector"
+                                data-description="Points, polygons, and POIs">
+                            <div class="card-icon">📍</div>
+                            <div class="card-title">Golden Triangle</div>
+                            <div class="card-description">GeoJSON (RFC 7946)</div>
+                        </button>
+
+                        <button class="example-card" data-url="iron-belt.geojson"
+                                data-name="Iron Belt Vector"
+                                data-description="Mining zones and infrastructure">
+                            <div class="card-icon">🗺️</div>
+                            <div class="card-title">Iron Belt</div>
+                            <div class="card-description">GeoJSON (RFC 7946)</div>
+                        </button>
+
+                        <button class="example-card" data-url="golden-triangle.fgb"
+                                data-name="Golden Triangle FlatGeobuf"
+                                data-description="R-tree spatial index, HTTP Range Request ready">
+                            <div class="card-icon">🌲</div>
+                            <div class="card-title">Golden Triangle</div>
+                            <div class="card-description">FlatGeobuf (Binary)</div>
+                        </button>
+
+                        <button class="example-card" data-url="iron-belt.fgb"
+                                data-name="Iron Belt FlatGeobuf"
+                                data-description="Cloud-native binary vector format">
+                            <div class="card-icon">📦</div>
+                            <div class="card-title">Iron Belt</div>
+                            <div class="card-description">FlatGeobuf (Binary)</div>
+                        </button>
+
+                        <button class="example-card" data-url="golden-triangle.shp"
+                                data-name="Golden Triangle Shapefile"
+                                data-description="Classic ESRI format (.shp, .shx, .dbf)">
+                            <div class="card-icon">📄</div>
+                            <div class="card-title">Golden Triangle</div>
+                            <div class="card-description">Shapefile (ESRI)</div>
+                        </button>
+
+                        <button class="example-card" data-url="iron-belt.shp"
+                                data-name="Iron Belt Shapefile"
+                                data-description="Mining zones in shapefile format">
+                            <div class="card-icon">⛏️</div>
+                            <div class="card-title">Iron Belt</div>
+                            <div class="card-description">Shapefile (ESRI)</div>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Visualization</h3>
+
+                    <div class="control-group">
+                        <label class="control-label" for="band-mode">Band Mode</label>
+                        <select id="band-mode" class="select-field">
+                            <option value="rgb">RGB (Bands 1-3)</option>
+                            <option value="grayscale">Grayscale (Band 1)</option>
+                            <option value="nir">NIR False Color</option>
+                            <option value="custom">Custom Bands</option>
+                        </select>
+                    </div>
+
+                    <div id="custom-bands" class="control-group custom-bands" style="display: none;">
+                        <label class="control-label">Custom Band Selection</label>
+                        <div class="band-inputs">
+                            <input type="number" id="red-band" class="band-input" placeholder="R" min="1">
+                            <input type="number" id="green-band" class="band-input" placeholder="G" min="1">
+                            <input type="number" id="blue-band" class="band-input" placeholder="B" min="1">
+                        </div>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="opacity-slider">Opacity</label>
+                        <div class="slider-container">
+                            <input type="range" id="opacity-slider" class="slider" min="0" max="100" value="100">
+                            <span id="opacity-value" class="slider-value">100%</span>
+                        </div>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="brightness-slider">Brightness</label>
+                        <div class="slider-container">
+                            <input type="range" id="brightness-slider" class="slider" min="-50" max="50" value="0">
+                            <span id="brightness-value" class="slider-value">0</span>
+                        </div>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="contrast-slider">Contrast</label>
+                        <div class="slider-container">
+                            <input type="range" id="contrast-slider" class="slider" min="0" max="200" value="100">
+                            <span id="contrast-value" class="slider-value">100%</span>
+                        </div>
+                    </div>
+
+                    <button id="reset-visualization" class="btn btn-secondary btn-full">
+                        Reset Visualization
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Map Controls</h3>
+                    <button id="fit-bounds-btn" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">🎯</span>
+                        Fit to Bounds
+                    </button>
+                    <button id="toggle-grid-btn" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">📊</span>
+                        Toggle Grid
+                    </button>
+                </div>
+
+                <div class="sidebar-section" id="layer-controls-section" style="display: none;">
+                    <h3 class="section-title">Active Layers</h3>
+                    <div id="layer-controls" class="vector-layer-controls">
+                        <!-- Layer toggles will be added dynamically -->
+                    </div>
+                    <button id="clear-layers-btn" class="btn btn-secondary btn-full" style="margin-top: var(--spacing-md);">
+                        <span class="btn-icon">🗑️</span>
+                        Clear All Layers
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Measurement Tools</h3>
+                    <button id="measure-distance" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">📏</span>
+                        Measure Distance
+                    </button>
+                    <button id="measure-area" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">📐</span>
+                        Measure Area
+                    </button>
+                    <button id="clear-measurements" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">🗑️</span>
+                        Clear Measurements
+                    </button>
+                    <div class="measurement-info">
+                        <p class="info-text">
+                            <strong>Distance:</strong> Click multiple points to measure cumulative distance.
+                        </p>
+                        <p class="info-text">
+                            <strong>Area:</strong> Click to create a polygon (minimum 3 points).
+                        </p>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content - Map Viewer -->
+            <main class="main-content">
+                <div id="map-container" class="map-container">
+                    <div id="loading-overlay" class="loading-overlay">
+                        <div class="spinner"></div>
+                        <div id="loading-message" class="loading-message">Initializing...</div>
+                        <div id="loading-progress" class="loading-progress">
+                            <div id="progress-bar" class="progress-bar"></div>
+                        </div>
+                    </div>
+
+                    <div id="error-overlay" class="error-overlay" style="display: none;">
+                        <div class="error-content">
+                            <div class="error-icon">⚠️</div>
+                            <h3 class="error-title">Error</h3>
+                            <p id="error-message" class="error-message"></p>
+                            <button id="dismiss-error" class="btn btn-primary">Dismiss</button>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Sidebar - Metadata & Info -->
+            <aside class="sidebar sidebar-right">
+                <div class="sidebar-section">
+                    <h3 class="section-title">Metadata</h3>
+                    <div id="metadata-panel" class="metadata-panel">
+                        <div class="empty-state">
+                            <div class="empty-icon">📊</div>
+                            <p>Load a COG to view metadata</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Tile Information</h3>
+                    <div id="tile-info" class="info-panel">
+                        <div class="info-item">
+                            <span class="info-label">Tiles Loaded:</span>
+                            <span id="tiles-loaded" class="info-value">0</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Tiles Cached:</span>
+                            <span id="tiles-cached" class="info-value">0</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Current Zoom:</span>
+                            <span id="current-zoom" class="info-value">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">View Center:</span>
+                            <span id="view-center" class="info-value">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Performance</h3>
+                    <div id="performance-panel" class="info-panel">
+                        <div class="info-item">
+                            <span class="info-label">Load Time:</span>
+                            <span id="load-time" class="info-value">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Render Time:</span>
+                            <span id="render-time" class="info-value">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Data Transfer:</span>
+                            <span id="data-transfer" class="info-value">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">About</h3>
+                    <div class="about-panel">
+                        <p class="about-text">
+                            This viewer demonstrates OxiGDAL's browser capabilities using WebAssembly.
+                            All COG processing happens client-side with zero backend dependencies.
+                        </p>
+                        <div class="about-features">
+                            <div class="feature-badge">✓ Pure Rust</div>
+                            <div class="feature-badge">✓ Zero Dependencies</div>
+                            <div class="feature-badge">✓ HTTP Range Requests</div>
+                            <div class="feature-badge">✓ Tile Caching</div>
+                        </div>
+                        <a href="https://github.com/cool-japan/oxigdal" target="_blank" class="btn btn-link btn-full">
+                            View on GitHub
+                        </a>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div class="footer-content">
+                <p class="footer-text">
+                    Built with <a href="https://github.com/cool-japan/oxigdal" target="_blank">OxiGDAL</a>
+                    | Part of the <a href="https://github.com/cool-japan" target="_blank">COOLJAPAN</a> Pure Rust Ecosystem
+                </p>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
+    <!-- Optional: FlatGeobuf and Shapefile support -->
+    <script src="https://unpkg.com/flatgeobuf@4.4.0/dist/flatgeobuf-geojson.min.js"></script>
+    <script src="https://unpkg.com/shapefile@0.6.6/dist/shapefile.min.js"></script>
+
+    <!-- Application JS -->
+    <script type="module" src="main.js"></script>
+</body>
+</html>

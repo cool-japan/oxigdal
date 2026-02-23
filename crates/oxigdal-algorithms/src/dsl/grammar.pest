@@ -1,0 +1,143 @@
+// Raster Algebra DSL Grammar for Pest Parser
+//
+// This grammar defines a complete DSL for raster algebra operations with:
+// - Variables and assignments
+// - Function definitions
+// - Conditional expressions
+// - Loops
+// - Band references
+// - Mathematical operations
+// - Built-in functions
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* ~ "\n" | "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// Identifiers and literals
+ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+band_ref = @{ ^"B" ~ ASCII_DIGIT+ }
+
+// Keywords
+let_kw = _{ ^"let" }
+fn_kw = _{ ^"fn" }
+if_kw = _{ ^"if" }
+then_kw = _{ ^"then" }
+else_kw = _{ ^"else" }
+for_kw = _{ ^"for" }
+in_kw = _{ ^"in" }
+return_kw = _{ ^"return" }
+
+// Operators
+add_op = { "+" }
+sub_op = { "-" }
+mul_op = { "*" }
+div_op = { "/" }
+mod_op = { "%" }
+pow_op = { "^" }
+
+eq_op = { "==" }
+ne_op = { "!=" }
+le_op = { "<=" }
+ge_op = { ">=" }
+lt_op = { "<" }
+gt_op = { ">" }
+
+and_op = { "&&" | ^"and" }
+or_op = { "||" | ^"or" }
+not_op = { "!" | ^"not" }
+
+// Program structure
+program = { SOI ~ statement* ~ EOI }
+
+statement = {
+    variable_decl
+  | function_decl
+  | return_stmt
+  | expr_stmt
+}
+
+variable_decl = { let_kw ~ ident ~ "=" ~ expression ~ ";" }
+
+function_decl = {
+    fn_kw ~ ident ~ "(" ~ param_list? ~ ")" ~ "=" ~ expression ~ ";"
+}
+
+param_list = { ident ~ ("," ~ ident)* }
+
+return_stmt = { return_kw ~ expression ~ ";" }
+
+expr_stmt = { expression ~ ";" }
+
+// Expressions
+expression = { logical_or }
+
+logical_or = {
+    logical_and ~ (or_op ~ logical_and)*
+}
+
+logical_and = {
+    logical_not ~ (and_op ~ logical_not)*
+}
+
+logical_not = {
+    not_op* ~ comparison
+}
+
+comparison = {
+    additive ~ ((eq_op | ne_op | le_op | ge_op | lt_op | gt_op) ~ additive)?
+}
+
+additive = {
+    multiplicative ~ ((add_op | sub_op) ~ multiplicative)*
+}
+
+multiplicative = {
+    power ~ ((mul_op | div_op | mod_op) ~ power)*
+}
+
+power = {
+    unary ~ (pow_op ~ unary)*
+}
+
+unary = {
+    (sub_op | add_op) ~ unary
+  | primary
+}
+
+primary = {
+    number
+  | band_ref
+  | function_call
+  | conditional
+  | for_loop
+  | variable_ref
+  | block
+  | "(" ~ expression ~ ")"
+}
+
+function_call = {
+    ident ~ "(" ~ arg_list? ~ ")"
+}
+
+arg_list = {
+    expression ~ ("," ~ expression)*
+}
+
+variable_ref = { ident }
+
+conditional = {
+    if_kw ~ expression ~ then_kw ~ expression ~ else_kw ~ expression
+}
+
+block = {
+    "{" ~ statement* ~ expression? ~ "}"
+}
+
+// Range for loops
+range = {
+    expression ~ ".." ~ expression
+}
+
+for_loop = {
+    for_kw ~ ident ~ in_kw ~ range ~ block
+}

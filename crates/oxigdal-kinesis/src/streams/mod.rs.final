@@ -1,0 +1,230 @@
+//! Kinesis Data Streams module
+
+pub mod checkpoint;
+pub mod consumer;
+pub mod producer;
+pub mod shard;
+
+pub use checkpoint::{CheckpointStore, Checkpointer};
+#[cfg(feature = "checkpointing")]
+pub use checkpoint::DynamoDbCheckpointStore;
+pub use consumer::{Consumer, ConsumerConfig};
+#[cfg(feature = "enhanced-fanout")]
+pub use consumer::EnhancedFanOutConsumer;
+pub use producer::{Producer, ProducerConfig, Record};
+pub use shard::{ShardInfo, ShardIteratorType, ShardManager};
+
+use crate::error::{KinesisError, Result};
+use aws_sdk_kinesis::Client as KinesisClient;
+use std::sync::Arc;
+
+/// Kinesis Data Streams client wrapper
+#[derive(Clone)]
+pub struct KinesisStreams {
+    client: Arc<KinesisClient>,
+    stream_name: String,
+}
+
+impl KinesisStreams {
+    /// Creates a new Kinesis Data Streams client
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - AWS Kinesis client
+    /// * `stream_name` - Name of the Kinesis stream
+    pub fn new(client: KinesisClient, stream_name: impl Into<String>) -> Self {
+        Self {
+            client: Arc::new(client),
+            stream_name: stream_name.into(),
+        }
+    }
+
+    /// Creates a new Kinesis Data Streams client from AWS config
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - Name of the Kinesis stream
+    pub async fn from_env(stream_name: impl Into<String>) -> Self {
+        let config = aws_config::load_from_env().await;
+        let client = KinesisClient::new(&config);
+        Self::new(client, stream_name)
+    }
+
+    /// Gets the stream name
+    pub fn stream_name(&self) -> &str {
+        &self.stream_name
+    }
+
+    /// Gets a reference to the Kinesis client
+    pub fn client(&self) -> &KinesisClient {
+        &self.client
+    }
+
+    /// Describes the stream
+    pub async fn describe_stream(&self) -> Result<StreamDescription> {
+        let response = self
+            .client
+            .describe_stream()
+            .stream_name(&self.stream_name)
+            .send()
+            .await
+            .map_err(|e| KinesisError::Service {
+                message: e.to_string(),
+            })?;
+
+        let description = response
+            .stream_description()
+            .ok_or_else(|| KinesisError::Service {
+                message: "Stream description not found".to_string(),
+            })?;
+
+        Ok(StreamDescription {
+            stream_name: description.stream_name().unwrap_or_default().to_string(),
+            stream_arn: description.stream_arn().unwrap_or_default().to_string(),
+            stream_status: description.stream_status().map(|s| s.as_str().to_string()),
+            retention_period_hours: description.retention_period_hours().unwrap_or_default(),
+            encryption_type: description
+                .encryption_type()
+                .map(|e| e.as_str().to_string()),
+        })
+    }
+
+    /// Creates a new stream
+    pub async fn create_stream(&self, shard_count: i32) -> Result<()> {
+        self.client
+            .create_stream()
+            .stream_name(&self.stream_name)
+            .shard_count(shard_count)
+            .send()
+            .await
+            .map_err(|e| KinesisError::Service {
+                message: e.to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    /// Deletes the stream
+    pub async fn delete_stream(&self) -> Result<()> {
+        self.client
+            .delete_stream()
+            .stream_name(&self.stream_name)
+            .send()
+            .await
+            .map_err(|e| KinesisError::Service {
+                message: e.to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    /// Increases the stream retention period
+    pub async fn increase_retention_period(&self, retention_period_hours: i32) -> Result<()> {
+        self.client
+            .increase_stream_retention_period()
+            .stream_name(&self.stream_name)
+            .retention_period_hours(retention_period_hours)
+            .send()
+            .await
+            .map_err(|e| KinesisError::Service {
+                message: e.to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    /// Decreases the stream retention period
+    pub async fn decrease_retention_period(&self, retention_period_hours: i32) -> Result<()> {
+        self.client
+            .decrease_stream_retention_period()
+            .stream_name(&self.stream_name)
+            .retention_period_hours(retention_period_hours)
+            .send()
+            .await
+            .map_err(|e| KinesisError::Service {
+                message: e.to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    /// Lists all streams
+    pub async fn list_streams() -> Result<Vec<String>> {
+        let config = aws_config::load_from_env().await;
+        let client = KinesisClient::new(&config);
+
+        let response = client
+            .list_streams()
+            .send()
+            .await
+            .map_err(|e| KinesisError::Service {
+                message: e.to_string(),
+            })?;
+
+        Ok(response
+            .stream_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect())
+    }
+
+    /// Waits until the stream is active
+    pub async fn wait_until_active(&self) -> Result<()> {
+        use tokio::time::{Duration, sleep};
+
+        loop {
+            let description = self.describe_stream().await?;
+
+            match description.stream_status.as_deref() {
+                Some("ACTIVE") => return Ok(()),
+                Some("CREATING") | Some("UPDATING") => {
+                    sleep(Duration::from_secs(5)).await;
+                }
+                Some(status) => {
+                    return Err(KinesisError::InvalidState {
+                        message: format!("Stream in unexpected state: {}", status),
+                    });
+                }
+                None => {
+                    return Err(KinesisError::InvalidState {
+                        message: "Stream status not available".to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Stream description
+#[derive(Debug, Clone)]
+pub struct StreamDescription {
+    /// Stream name
+    pub stream_name: String,
+    /// Stream ARN
+    pub stream_arn: String,
+    /// Stream status
+    pub stream_status: Option<String>,
+    /// Retention period in hours
+    pub retention_period_hours: i32,
+    /// Encryption type
+    pub encryption_type: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stream_description_creation() {
+        let desc = StreamDescription {
+            stream_name: "test-stream".to_string(),
+            stream_arn: "arn:aws:kinesis:us-east-1:123456789012:stream/test-stream".to_string(),
+            stream_status: Some("ACTIVE".to_string()),
+            retention_period_hours: 24,
+            encryption_type: None,
+        };
+
+        assert_eq!(desc.stream_name, "test-stream");
+        assert_eq!(desc.retention_period_hours, 24);
+    }
+}

@@ -1,0 +1,95 @@
+[package]
+name = "oxigdal-cloud-enhanced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-cloud-enhanced"
+readme = "README.md"
+description = "Deep cloud platform integrations for AWS, Azure, and GCP"
+keywords = ["science", "network-programming", "aws", "azure", "gcp"]
+categories = ["science", "network-programming", "api-bindings"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Oxigdal crates
+oxigdal-core = { workspace = true }
+oxigdal-cloud = { workspace = true }
+
+# Arrow ecosystem
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+
+# AWS SDK
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-credential-types = { workspace = true }
+aws-sdk-athena = "1"
+aws-sdk-glue = "1"
+aws-sdk-lambda = "1"
+aws-sdk-sagemaker = "1"
+aws-sdk-sagemakerruntime = "1"
+aws-sdk-cloudwatch = "1"
+aws-sdk-costexplorer = "1"
+aws-smithy-types = "1"
+
+# Azure SDK
+azure_core = { workspace = true }
+azure_identity = { workspace = true }
+azure_storage = { workspace = true }
+azure_storage_blobs = { workspace = true }
+azure_storage_datalake = "0.21"
+
+# GCP SDK
+google-cloud-storage = { workspace = true }
+google-cloud-auth = { workspace = true }
+# TEMPORARY: Commented out due to arrow version incompatibility
+# google-cloud-bigquery 0.15 requires arrow ^53, which conflicts with chrono 0.4.43
+# Will re-enable when google-cloud-bigquery updates to arrow 57+
+# google-cloud-bigquery = { version = "0.15", optional = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+url = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+lru = { workspace = true }
+regex = { workspace = true }
+
+[features]
+default = []
+# TEMPORARY: Disabled due to arrow version incompatibility (see dependency comment above)
+# bigquery = ["google-cloud-bigquery"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "cloud_enhanced_bench"
+harness = false
+
+[lints]
+workspace = true

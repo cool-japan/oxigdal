@@ -1,0 +1,185 @@
+name: Deploy OxiGDAL COG Viewer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'demo/cog-viewer/**'
+      - 'crates/oxigdal-wasm/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: '1.85'
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+          target: wasm32-unknown-unknown
+
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          cache-on-failure: true
+
+      - name: Install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install wasm-opt (optional optimization)
+        run: |
+          wget https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz
+          tar -xzf binaryen-version_116-x86_64-linux.tar.gz
+          sudo cp binaryen-version_116/bin/wasm-opt /usr/local/bin/
+          rm -rf binaryen-version_116*
+
+      - name: Build WASM Package
+        working-directory: crates/oxigdal-wasm
+        run: |
+          wasm-pack build --target web --release --out-dir ../../demo/pkg
+
+      - name: Optimize WASM (optional)
+        working-directory: demo/pkg
+        run: |
+          if [ -f oxigdal_wasm_bg.wasm ]; then
+            wasm-opt -Oz -o oxigdal_wasm_bg_opt.wasm oxigdal_wasm_bg.wasm || true
+            if [ -f oxigdal_wasm_bg_opt.wasm ]; then
+              mv oxigdal_wasm_bg_opt.wasm oxigdal_wasm_bg.wasm
+            fi
+          fi
+
+      - name: Prepare Deployment Files
+        run: |
+          mkdir -p dist
+          cp -r demo/cog-viewer/* dist/
+          cp -r demo/pkg dist/
+
+      - name: Create 404.html (GitHub Pages)
+        run: |
+          cp dist/index.html dist/404.html
+
+      - name: Generate Build Info
+        run: |
+          echo "Build Date: $(date)" > dist/build-info.txt
+          echo "Commit: ${{ github.sha }}" >> dist/build-info.txt
+          echo "Rust Version: ${{ env.RUST_VERSION }}" >> dist/build-info.txt
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Optional: Deploy to Netlify
+  deploy-netlify:
+    name: Deploy to Netlify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-deploy
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM Package
+        working-directory: crates/oxigdal-wasm
+        run: |
+          wasm-pack build --target web --release --out-dir ../../demo/pkg
+
+      - name: Prepare Deployment
+        run: |
+          mkdir -p deploy
+          cp -r demo/cog-viewer/* deploy/
+          cp -r demo/pkg deploy/
+
+      - name: Deploy to Netlify
+        uses: nwtgck/actions-netlify@v3.0
+        with:
+          publish-dir: './deploy'
+          production-branch: main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          deploy-message: "Deploy from GitHub Actions - ${{ github.event.head_commit.message }}"
+          enable-pull-request-comment: true
+          enable-commit-comment: true
+          overwrites-pull-request-comment: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        timeout-minutes: 10
+
+  # Optional: Deploy to Vercel
+  deploy-vercel:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-deploy
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM Package
+        working-directory: crates/oxigdal-wasm
+        run: |
+          wasm-pack build --target web --release --out-dir ../../demo/pkg
+
+      - name: Prepare Deployment
+        run: |
+          mkdir -p deploy
+          cp -r demo/cog-viewer/* deploy/
+          cp -r demo/pkg deploy/
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./deploy
+          vercel-args: '--prod'

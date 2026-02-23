@@ -1,0 +1,96 @@
+[package]
+name = "oxigdal-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-gateway"
+readme = "README.md"
+description = "Enterprise API gateway with rate limiting, authentication, GraphQL, and WebSocket support for OxiGDAL"
+keywords = ["api-gateway", "graphql", "rate-limiting", "authentication", "science"]
+categories = ["api-bindings", "network-programming", "web-programming::http-server", "authentication"]
+
+[dependencies]
+# Core dependencies
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# Web framework
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+
+# GraphQL
+async-graphql.workspace = true
+async-graphql-axum.workspace = true
+
+# WebSocket
+tokio-tungstenite.workspace = true
+
+# Authentication
+jsonwebtoken.workspace = true
+oauth2.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+
+# Rate limiting
+governor.workspace = true
+redis = { workspace = true, optional = true }
+
+# TLS
+rustls.workspace = true
+rustls-pemfile.workspace = true
+
+# Utilities
+url.workspace = true
+uuid.workspace = true
+base64.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+lru.workspace = true
+ahash.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+flate2.workspace = true
+async-stream.workspace = true
+brotli.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Internal crates
+oxigdal-core.workspace = true
+
+[dev-dependencies]
+# Testing
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile.workspace = true
+proptest.workspace = true
+tracing-subscriber.workspace = true
+criterion.workspace = true
+
+[features]
+default = ["memory"]
+redis = ["dep:redis"]
+memory = []
+
+[[bench]]
+name = "gateway_bench"
+harness = false
+
+[lints]
+workspace = true

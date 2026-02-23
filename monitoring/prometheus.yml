@@ -1,0 +1,123 @@
+# OxiGDAL Prometheus Configuration
+# Metrics collection and monitoring configuration
+# Author: COOLJAPAN OU (Team Kitasan)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'oxigdal-production'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - 'alerts.yml'
+
+# Scrape configurations
+scrape_configs:
+  # OxiGDAL Server metrics
+  - job_name: 'oxigdal-server'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets:
+          - 'oxigdal-server:8081'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(?::\d+)?'
+        replacement: '$1'
+
+  # Kubernetes service discovery (if using K8s)
+  - job_name: 'kubernetes-pods'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - oxigdal
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+  # PostgreSQL metrics (using postgres_exporter)
+  - job_name: 'postgres'
+    static_configs:
+      - targets:
+          - 'postgres-exporter:9187'
+    relabel_configs:
+      - target_label: database
+        replacement: oxigdal
+
+  # Redis metrics (using redis_exporter)
+  - job_name: 'redis'
+    static_configs:
+      - targets:
+          - 'redis-exporter:9121'
+
+  # Node exporter for system metrics
+  - job_name: 'node'
+    static_configs:
+      - targets:
+          - 'node-exporter:9100'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+          - 'localhost:9090'
+
+  # Grafana
+  - job_name: 'grafana'
+    static_configs:
+      - targets:
+          - 'grafana:3000'
+
+  # Nginx (if using)
+  - job_name: 'nginx'
+    static_configs:
+      - targets:
+          - 'nginx-exporter:9113'
+
+# Remote write configuration (optional - for long-term storage)
+remote_write:
+  # Example: Prometheus remote write to Cortex or Thanos
+  # - url: http://cortex:9009/api/prom/push
+  #   queue_config:
+  #     capacity: 10000
+  #     max_shards: 10
+  #     min_shards: 1
+  #     max_samples_per_send: 5000
+  #     batch_send_deadline: 5s
+  #     min_backoff: 30ms
+  #     max_backoff: 100ms
+
+# Storage configuration
+storage:
+  tsdb:
+    path: /prometheus
+    retention:
+      time: 30d
+      size: 50GB

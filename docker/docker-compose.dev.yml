@@ -1,0 +1,187 @@
+# OxiGDAL Docker Compose - Development Configuration
+# Development environment with hot-reload and debugging tools
+# Author: COOLJAPAN OU (Team Kitasan)
+
+version: '3.9'
+
+services:
+  # Development environment with source code mounted
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: oxigdal/dev:latest
+    container_name: oxigdal-dev
+    stdin_open: true
+    tty: true
+    volumes:
+      - ..:/workspace:cached  # Mount entire workspace
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/workspace/target
+      - data-dev:/data
+      - cache-dev:/cache
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=full
+      - CARGO_TARGET_DIR=/workspace/target
+    working_dir: /workspace
+    networks:
+      - oxigdal-dev-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+
+  # Development server with hot-reload
+  server-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: oxigdal/dev:latest
+    container_name: oxigdal-server-dev
+    command: cargo watch -x 'run --bin oxigdal-server -- --host 0.0.0.0 --port 8080'
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - ..:/workspace:cached
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/workspace/target
+      - data-dev:/data
+      - cache-dev:/cache
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=full
+      - OXIGDAL_DATA_DIR=/data
+      - OXIGDAL_CACHE_DIR=/cache
+    working_dir: /workspace
+    networks:
+      - oxigdal-dev-network
+    depends_on:
+      - postgres-dev
+      - redis-dev
+
+  # Jupyter notebook for development
+  jupyter-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.jupyter
+    image: oxigdal/jupyter:latest
+    container_name: oxigdal-jupyter-dev
+    ports:
+      - "8888:8888"
+    volumes:
+      - ../examples/notebooks:/notebooks:cached
+      - data-dev:/data
+    environment:
+      - RUST_LOG=debug
+      - JUPYTER_TOKEN=dev
+    networks:
+      - oxigdal-dev-network
+
+  # PostgreSQL for development
+  postgres-dev:
+    image: postgis/postgis:16-3.4
+    container_name: oxigdal-postgres-dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+      - ../examples/data/sql:/docker-entrypoint-initdb.d:ro
+    environment:
+      - POSTGRES_DB=oxigdal_dev
+      - POSTGRES_USER=dev
+      - POSTGRES_PASSWORD=dev
+    networks:
+      - oxigdal-dev-network
+
+  # Redis for development
+  redis-dev:
+    image: redis:7-alpine
+    container_name: oxigdal-redis-dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb
+    networks:
+      - oxigdal-dev-network
+
+  # MinIO for S3-compatible object storage testing
+  minio:
+    image: minio/minio:latest
+    container_name: oxigdal-minio-dev
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    networks:
+      - oxigdal-dev-network
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: oxigdal-jaeger-dev
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "9411:9411"
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    networks:
+      - oxigdal-dev-network
+
+  # Mailhog for email testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: oxigdal-mailhog-dev
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - oxigdal-dev-network
+
+  # Documentation server
+  docs:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: oxigdal/dev:latest
+    container_name: oxigdal-docs-dev
+    command: cargo doc --no-deps --workspace --open
+    ports:
+      - "8000:8000"
+    volumes:
+      - ..:/workspace:cached
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/workspace/target
+    working_dir: /workspace
+    networks:
+      - oxigdal-dev-network
+
+networks:
+  oxigdal-dev-network:
+    driver: bridge
+
+volumes:
+  cargo-cache:
+    driver: local
+  target-cache:
+    driver: local
+  data-dev:
+    driver: local
+  cache-dev:
+    driver: local
+  postgres-dev-data:
+    driver: local
+  minio-data:
+    driver: local

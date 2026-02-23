@@ -1,0 +1,94 @@
+[package]
+name = "oxigdal-db-connectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-db-connectors"
+readme = "README.md"
+keywords = ["gis", "science", "database", "spatial", "connector"]
+categories = ["database", "science"]
+description = "Database connectors for OxiGDAL (MySQL, SQLite, MongoDB, ClickHouse, TimescaleDB, Cassandra)"
+
+[features]
+default = ["postgres", "mysql", "mongodb", "clickhouse", "cassandra"]
+# SQLite is NOT in default features due to C dependency (COOLJAPAN Pure Rust Policy)
+sqlite = ["dep:rusqlite", "dep:libsqlite3-sys"]
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
+mysql = ["dep:mysql_async"]
+mongodb = ["dep:mongodb", "dep:bson"]
+clickhouse = ["dep:clickhouse"]
+cassandra = ["dep:scylla"]
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+url.workspace = true
+geojson.workspace = true
+geo-types.workspace = true
+geo.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+# Internal dependencies
+oxigdal-core.workspace = true
+oxigdal-postgis.workspace = true
+
+# MySQL/MariaDB
+# SECURITY NOTE: mysql_async 0.36.1 uses lru 0.14.0 (RUSTSEC-2026-0002: unsound IterMut)
+# FIXED: Patched via [patch.crates-io] in workspace Cargo.toml using git master (includes PR #382: lru -> 0.16)
+# Remove patch once mysql_async releases a version with lru 0.16+ on crates.io
+mysql_async = { version = "0.36.1", optional = true }
+
+# SQLite/SpatiaLite (C dependency - feature-gated for Pure Rust Policy)
+rusqlite = { workspace = true, features = ["bundled", "vtab"], optional = true }
+libsqlite3-sys = { workspace = true, features = ["bundled"], optional = true }
+
+# MongoDB (async by default with tokio)
+mongodb = { version = "3", optional = true }
+bson = { version = "2", optional = true }
+
+# ClickHouse
+clickhouse = { version = "0.12", optional = true }
+
+# Cassandra/ScyllaDB
+scylla = { version = "0.14", features = ["ssl"], optional = true }
+
+# PostgreSQL/TimescaleDB
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"], optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
+
+# Connection pooling
+deadpool = { version = "0.12", features = [] }
+bb8 = "0.8"
+
+# WKB/WKT support
+wkt = "0.11"
+
+# Additional utilities
+base64 = "0.22"
+uuid = "1.21"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "db_bench"
+harness = false
+
+[lints]
+workspace = true

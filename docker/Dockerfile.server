@@ -1,0 +1,81 @@
+# OxiGDAL Server Docker Image
+# WMS/WMTS/WFS tile server for serving geospatial data
+# Author: COOLJAPAN OU (Team Kitasan)
+
+# Build stage
+FROM rust:1.85-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY benchmarks ./benchmarks
+
+# Build server in release mode with optimizations
+RUN cargo build --release --bin oxigdal-server \
+    && strip target/release/oxigdal-server
+
+# Runtime stage - minimal image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash oxigdal
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/oxigdal-server /usr/local/bin/oxigdal-server
+
+# Create necessary directories
+RUN mkdir -p /data /config /cache && \
+    chown -R oxigdal:oxigdal /data /config /cache
+
+# Copy default configuration if exists
+COPY --chown=oxigdal:oxigdal docker/config/server.toml /config/server.toml 2>/dev/null || true
+
+# Switch to non-root user
+USER oxigdal
+WORKDIR /data
+
+# Expose server ports
+# 8080 - HTTP server
+# 8081 - Metrics endpoint
+EXPOSE 8080 8081
+
+# Set environment variables
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=1 \
+    OXIGDAL_DATA_DIR=/data \
+    OXIGDAL_CACHE_DIR=/cache \
+    OXIGDAL_CONFIG=/config/server.toml \
+    OXIGDAL_HOST=0.0.0.0 \
+    OXIGDAL_PORT=8080
+
+# Health check - verify server responds
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Default command starts server
+ENTRYPOINT ["oxigdal-server"]
+CMD ["--host", "0.0.0.0", "--port", "8080"]
+
+LABEL org.opencontainers.image.title="OxiGDAL Server" \
+      org.opencontainers.image.description="WMS/WMTS tile server for OxiGDAL" \
+      org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.url="https://github.com/cool-japan/oxigdal"

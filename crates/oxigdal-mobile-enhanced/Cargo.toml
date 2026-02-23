@@ -1,0 +1,78 @@
+[package]
+name = "oxigdal-mobile-enhanced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-mobile-enhanced"
+readme = "README.md"
+description = "Mobile platform performance optimizations for iOS and Android - battery efficiency, network optimization, and mobile-specific features"
+keywords = ["science", "mobile", "optimization", "ios", "android"]
+categories = ["science", "embedded", "api-bindings"]
+
+[features]
+default = ["std"]
+std = []
+alloc = []
+ios = ["std"]
+android = ["std"]
+battery-aware = ["std", "sysinfo"]
+network-optimization = ["std"]
+gesture-support = ["std"]
+background-tasks = ["std", "tokio"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime (optional for background tasks)
+tokio = { workspace = true, optional = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Oxigdal crates
+oxigdal-core = { workspace = true }
+oxigdal-mobile = { workspace = true }
+
+# System information for battery/performance monitoring
+sysinfo = { workspace = true, optional = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+lru = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+num_cpus = { workspace = true }
+
+# Compression for network efficiency
+flate2 = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+# Benchmarks will be added later
+# [[bench]]
+# name = "battery_bench"
+# harness = false
+#
+# [[bench]]
+# name = "network_bench"
+# harness = false
+
+[lints]
+workspace = true

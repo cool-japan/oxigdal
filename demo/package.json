@@ -1,0 +1,27 @@
+{
+  "name": "oxigdal-demo",
+  "version": "0.1.0",
+  "description": "OxiGDAL COG Viewer Demo - WebAssembly Browser Application",
+  "private": true,
+  "scripts": {
+    "build:wasm": "cd ../crates/oxigdal-wasm && wasm-pack build --target web --out-dir ../../demo/pkg",
+    "build:wasm:release": "cd ../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg",
+    "serve": "python3 -m http.server 8080",
+    "dev": "npm run build:wasm && npm run serve",
+    "start": "npm run serve"
+  },
+  "keywords": [
+    "geospatial",
+    "cog",
+    "geotiff",
+    "wasm",
+    "webassembly",
+    "oxigdal"
+  ],
+  "author": "COOLJAPAN OU (Team Kitasan)",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cool-japan/oxigdal"
+  }
+}

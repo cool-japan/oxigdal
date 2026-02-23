@@ -1,0 +1,40 @@
+[package]
+name = "oxigdal-jpeg2000"
+description = "Pure Rust JPEG2000 (JP2/J2K) driver for OxiGDAL - JP2 box parsing and JPEG2000 codestream decoding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-jpeg2000"
+readme = "README.md"
+keywords = ["jpeg2000", "jp2", "j2k", "jpx", "codec"]
+categories = ["science", "parser-implementations", "multimedia::images"]
+
+[features]
+default = ["std"]
+std = ["oxigdal-core/std", "thiserror/std"]
+async = ["oxigdal-core/async", "dep:tokio"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+num-traits = { workspace = true }
+
+# Async support
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion.workspace = true
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

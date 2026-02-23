@@ -1,0 +1,97 @@
+# OxiGDAL Fly.io Configuration
+# Simple deployment configuration for Fly.io platform
+# Author: COOLJAPAN OU (Team Kitasan)
+
+app = "oxigdal-server"
+primary_region = "sjc"  # San Jose, California
+
+[build]
+  image = "ghcr.io/cool-japan/oxigdal-server:latest"
+
+[env]
+  RUST_LOG = "info"
+  RUST_BACKTRACE = "1"
+  OXIGDAL_HOST = "0.0.0.0"
+  OXIGDAL_PORT = "8080"
+  OXIGDAL_DATA_DIR = "/data"
+  OXIGDAL_CACHE_DIR = "/cache"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 2
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 4096
+
+[[mounts]]
+  source = "oxigdal_data"
+  destination = "/data"
+
+[[mounts]]
+  source = "oxigdal_cache"
+  destination = "/cache"
+
+[metrics]
+  port = 8081
+  path = "/metrics"
+
+[deploy]
+  strategy = "rolling"
+  max_unavailable = 0.25
+
+[[statics]]
+  guest_path = "/data/public"
+  url_prefix = "/static/"
+
+# PostgreSQL Database (Fly Postgres)
+# Run: fly postgres create --name oxigdal-postgres
+# Then: fly postgres attach --app oxigdal-server oxigdal-postgres
+
+# Redis Cache (Upstash Redis)
+# Run: fly redis create --name oxigdal-redis
+# Then: fly redis attach --app oxigdal-server oxigdal-redis

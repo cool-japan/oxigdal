@@ -1,0 +1,52 @@
+[package]
+name = "oxigdal-ws"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-ws"
+readme = "README.md"
+description = "WebSocket streaming support for OxiGDAL - real-time geospatial data delivery"
+keywords = ["websocket", "science", "streaming", "gdal", "real-time"]
+categories = ["web-programming::websocket", "science", "network-programming"]
+
+[dependencies]
+# Workspace dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "net", "time"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+
+# WebSocket dependencies
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "compression-full", "trace"] }
+tokio-tungstenite = { version = "0.28" }
+
+# Serialization
+rmp-serde = "1.3"  # MessagePack
+
+# Compression
+zstd = { workspace = true }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true

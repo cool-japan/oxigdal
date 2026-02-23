@@ -1,0 +1,71 @@
+[package]
+name = "oxigdal-hdf5"
+description = "HDF5 driver for OxiGDAL - Pure Rust minimal HDF5 with optional full C-binding support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-hdf5"
+readme = "README.md"
+keywords = ["hdf5", "scientific", "science", "array", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
+alloc = []
+
+# Pure Rust minimal HDF5 support (default)
+# Limited to basic reading/writing without compression/chunking
+# Inspired by hdf5file and oxifive projects
+pure_rust = []
+
+# Full HDF5 support via C bindings (feature-gated for Pure Rust policy)
+# Warning: Requires system libhdf5 library (NOT Pure Rust)
+# DISABLED by default for Pure Rust compliance - enable explicitly if needed
+# hdf5_sys = ["dep:hdf5"]
+
+# Compression support (requires hdf5_sys feature)
+# compression = ["hdf5_sys"]
+
+# SZIP compression (Pure Rust AEC/Rice coding implementation)
+# Feature-gated per Pure Rust policy - no C/Fortran dependencies
+szip = []
+
+# Async I/O
+async = ["oxigdal-core/async", "dep:tokio"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+num-traits = { workspace = true }
+
+# Pure Rust HDF5 implementation (basic features)
+# Note: We implement minimal HDF5 reading/writing ourselves for Pure Rust compliance
+# Following the pattern from hdf5file (https://github.com/sile/hdf5file)
+
+# Full HDF5 support via C bindings (feature-gated, DISABLED for Pure Rust policy)
+# hdf5 = { version = "0.8", optional = true }
+
+# Compression support (Pure Rust)
+flate2 = { workspace = true }  # GZIP compression
+
+# Async
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+approx = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+
+[lints]
+workspace = true

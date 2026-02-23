@@ -1,0 +1,83 @@
+# OxiGDAL Render Configuration
+# Configuration for Render platform deployment
+# Author: COOLJAPAN OU (Team Kitasan)
+
+services:
+  # OxiGDAL Server
+  - type: web
+    name: oxigdal-server
+    env: docker
+    dockerfilePath: ./docker/Dockerfile.server
+    region: oregon
+    plan: standard
+    numInstances: 2
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: RUST_LOG
+        value: info
+      - key: RUST_BACKTRACE
+        value: "1"
+      - key: OXIGDAL_HOST
+        value: "0.0.0.0"
+      - key: OXIGDAL_PORT
+        value: "8080"
+      - key: OXIGDAL_DATA_DIR
+        value: /data
+      - key: OXIGDAL_CACHE_DIR
+        value: /cache
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: oxigdal-postgres
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: oxigdal-postgres
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: oxigdal-postgres
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: oxigdal-postgres
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: oxigdal-postgres
+          property: password
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: oxigdal-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: oxigdal-redis
+          property: port
+
+    autoDeploy: true
+
+    disk:
+      name: oxigdal-data
+      mountPath: /data
+      sizeGB: 10
+
+  # PostgreSQL Database
+databases:
+  - name: oxigdal-postgres
+    databaseName: oxigdal
+    user: oxigdal
+    plan: standard
+    region: oregon
+    postgresMajorVersion: 16
+
+# Redis Cache
+- type: redis
+  name: oxigdal-redis
+  plan: standard
+  region: oregon
+  maxmemoryPolicy: allkeys-lru
+  ipAllowList: []

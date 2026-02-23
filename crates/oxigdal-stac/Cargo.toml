@@ -1,0 +1,48 @@
+[package]
+name = "oxigdal-stac"
+description = "STAC (SpatioTemporal Asset Catalog) support for OxiGDAL - Pure Rust cloud-native geospatial catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-stac"
+readme = "README.md"
+keywords = ["stac", "science", "catalog", "cloud-native", "gis"]
+categories = ["science", "data-structures", "web-programming"]
+
+[features]
+default = ["std", "reqwest"]
+std = ["thiserror/std", "serde/std"]
+async = ["dep:async-trait", "dep:tokio", "dep:futures"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+oxigdal-core = { workspace = true }
+
+# Async HTTP client for STAC API
+reqwest = { workspace = true, optional = true, features = ["json"] }
+async-trait = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# Date/time handling
+chrono = { workspace = true }
+
+# URL parsing
+url = { workspace = true }
+
+# GeoJSON for geometries
+geojson = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

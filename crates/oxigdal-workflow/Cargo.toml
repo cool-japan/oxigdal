@@ -1,0 +1,77 @@
+[package]
+name = "oxigdal-workflow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-workflow"
+readme = "README.md"
+description = "DAG-based workflow engine for complex geospatial processing pipelines"
+keywords = ["science", "workflow", "dag", "pipeline", "orchestration"]
+categories = ["science", "asynchronous", "data-structures"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+
+# DAG and scheduling
+petgraph = { version = "0.6", default-features = false, features = ["serde-1"] }
+cron = { workspace = true }
+
+# Serialization
+toml = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+crossbeam = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Internal dependencies
+oxigdal-core = { workspace = true }
+
+# Optional dependencies for integrations
+reqwest = { workspace = true, optional = true }
+rdkafka = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+
+# Utilities
+regex = { workspace = true }
+ahash = { workspace = true }
+bytes = { workspace = true }
+num_cpus = "1"
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[features]
+default = ["full"]
+full = ["integrations", "server"]
+integrations = ["reqwest", "rdkafka"]
+server = ["axum", "tower", "tower-http"]
+
+[[bench]]
+name = "workflow_bench"
+harness = false
+
+[lints]
+workspace = true

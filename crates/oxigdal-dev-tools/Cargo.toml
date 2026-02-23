@@ -1,0 +1,67 @@
+[package]
+name = "oxigdal-dev-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-dev-tools"
+readme = "README.md"
+description = "Development tools for OxiGDAL: profiling, debugging, validation, and testing utilities"
+keywords = ["gis", "science", "development", "profiling", "testing"]
+categories = ["science", "development-tools", "development-tools::profiling"]
+
+[dependencies]
+# Internal dependencies
+oxigdal-core.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Time and duration
+chrono.workspace = true
+
+# System information
+sysinfo.workspace = true
+
+# Formatting and display
+colored.workspace = true
+comfy-table.workspace = true
+
+# File watching
+notify.workspace = true
+walkdir.workspace = true
+
+# Benchmarking
+criterion.workspace = true
+
+# Profiling
+pprof.workspace = true
+
+# Testing utilities
+proptest.workspace = true
+tempfile.workspace = true
+
+# Diff
+diff.workspace = true
+
+# Utilities
+num-traits.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,0 +1,124 @@
+# Netlify configuration for OxiGDAL COG Viewer Demo
+# https://docs.netlify.com/configure-builds/file-based-configuration/
+
+[build]
+  # Build command - builds WASM and prepares demo
+  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && wasm-opt -Oz -o ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm && mv ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm"
+
+  # Publish directory
+  publish = "."
+
+  # Functions directory (if needed in future)
+  # functions = "functions"
+
+[build.environment]
+  # Rust version
+  RUST_VERSION = "1.85"
+
+  # Node version
+  NODE_VERSION = "18"
+
+# HTTP headers for all responses
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # CORS headers
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, HEAD, OPTIONS"
+    Access-Control-Allow-Headers = "Range, Content-Type"
+    Access-Control-Expose-Headers = "Content-Length, Content-Range, Accept-Ranges"
+
+    # Security headers
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+    # Cache control for HTML
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# WASM files - proper MIME type and caching
+[[headers]]
+  for = "/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# JavaScript files - caching
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# CSS files - caching
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Content-Type = "text/css; charset=utf-8"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Images - caching
+[[headers]]
+  for = "/*.{png,jpg,jpeg,gif,webp,svg,ico}"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# JSON files - caching
+[[headers]]
+  for = "/*.json"
+  [headers.values]
+    Content-Type = "application/json; charset=utf-8"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Package files
+[[headers]]
+  for = "/pkg/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Redirects and rewrites
+[[redirects]]
+  from = "/cog-viewer"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/cog-viewer/*"
+  to = "/index.html"
+  status = 200
+
+# Custom 404 page
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 404
+
+# Plugins
+[[plugins]]
+  package = "@netlify/plugin-lighthouse"
+
+  # Lighthouse CI configuration
+  [plugins.inputs.thresholds]
+    performance = 0.8
+    accessibility = 0.9
+    best-practices = 0.8
+    seo = 0.9
+
+# Context-specific settings
+[context.production]
+  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && wasm-opt -Oz -o ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm && mv ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm"
+
+[context.deploy-preview]
+  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --dev --out-dir ../../demo/pkg"
+
+[context.branch-deploy]
+  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --dev --out-dir ../../demo/pkg"
+
+# Dev server configuration
+[dev]
+  command = "python3 -m http.server 8080"
+  port = 8080
+  targetPort = 8080
+  publish = "."
+  autoLaunch = true

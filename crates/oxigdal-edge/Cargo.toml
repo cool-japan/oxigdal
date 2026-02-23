@@ -1,0 +1,86 @@
+[package]
+name = "oxigdal-edge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-edge"
+readme = "README.md"
+description = "Edge computing platform for OxiGDAL with offline-first architecture and minimal footprint"
+keywords = ["edge", "iot", "embedded", "offline", "science"]
+categories = ["embedded", "science", "network-programming"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+
+# Async runtime (minimal features)
+tokio = { workspace = true, features = ["rt", "sync", "time", "io-util"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Compression (optimized for edge)
+flate2 = { workspace = true }
+lz4 = { workspace = true }
+snap = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# Logging (minimal)
+tracing = { workspace = true }
+
+# Additional utilities
+num-traits = { workspace = true }
+ahash = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+blake3 = { workspace = true }
+lru = { workspace = true }
+
+# Arrow ecosystem (minimal features)
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+
+# CRDT support for conflict resolution
+# SECURITY NOTE: sled 0.34.7 uses unmaintained dependencies:
+#   - RUSTSEC-2025-0057 (fxhash 0.2.1)
+#   - RUSTSEC-2024-0384 (instant 0.1.13 via parking_lot 0.11)
+# Risk: Low (stable code, no known vulnerabilities)
+# Future: Consider migrating to redb for major version bump
+sled = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+proptest = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+fastrand = "2"
+
+[features]
+default = ["std"]
+std = []
+offline = ["std"]
+sync = ["std"]
+compression = ["std"]
+all = ["offline", "sync", "compression"]
+
+[[bench]]
+name = "edge_bench"
+harness = false
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

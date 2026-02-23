@@ -1,0 +1,53 @@
+[package]
+name = "oxigdal-geoparquet"
+description = "GeoParquet driver for OxiGDAL - Pure Rust GDAL reimplementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-geoparquet"
+readme = "README.md"
+keywords = ["geoparquet", "parquet", "arrow", "vector", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std", "snappy", "zstd"]
+std = ["oxigdal-core/std", "thiserror/std"]
+async = ["oxigdal-core/async", "dep:tokio", "dep:async-trait"]
+# Compression features
+snappy = ["parquet/snap"]
+gzip = ["parquet/flate2", "parquet/flate2-rust_backened"]
+brotli = ["parquet/brotli"]
+lz4 = ["parquet/lz4"]
+zstd = ["parquet/zstd"]
+
+[dependencies]
+oxigdal-core = { workspace = true, features = ["arrow"] }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# Arrow ecosystem - core dependencies
+arrow = { workspace = true, features = ["ipc"] }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true, default-features = false, features = ["arrow"] }
+
+# Async support
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

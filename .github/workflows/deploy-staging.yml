@@ -1,0 +1,172 @@
+# OxiGDAL Staging Deployment Workflow
+# Deploys to staging environment for testing
+# Author: COOLJAPAN OU (Team Kitasan)
+
+name: Deploy Staging
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - main
+    types: [labeled]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: oxigdal-staging
+  ECS_SERVICE: oxigdal-server
+
+jobs:
+  should-deploy:
+    name: Check if deployment should run
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - name: Check deployment conditions
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "pull_request" && "${{ contains(github.event.pull_request.labels.*.name, 'deploy-staging') }}" == "true" ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: should-deploy
+    if: needs.should-deploy.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file deploy/aws/cloudformation.yaml \
+            --stack-name oxigdal-staging \
+            --parameter-overrides \
+              Environment=staging \
+              ContainerImage=ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ steps.sha.outputs.short }} \
+              DesiredCount=1 \
+              TaskCpu=512 \
+              TaskMemory=1024 \
+              DBInstanceClass=db.t3.micro \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Force ECS service update
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --force-new-deployment
+
+      - name: Wait for deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --max-attempts 30 \
+            --delay 10
+
+      - name: Get service URL
+        id: service-url
+        run: |
+          ALB_DNS=$(aws cloudformation describe-stacks \
+            --stack-name oxigdal-staging \
+            --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerURL'].OutputValue" \
+            --output text)
+          echo "url=$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "Staging URL: $ALB_DNS"
+
+      - name: Run integration tests
+        run: |
+          sleep 30
+
+          # Health check
+          curl -f ${{ steps.service-url.outputs.url }}/health || exit 1
+
+          # Basic API tests
+          curl -f "${{ steps.service-url.outputs.url }}/wms?service=WMS&request=GetCapabilities&version=1.3.0" || exit 1
+
+          echo "Integration tests passed!"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Staging Deployment Complete\n\n✅ Successfully deployed to staging environment!\n\n**Staging URL:** ${{ steps.service-url.outputs.url }}\n**Commit:** ${{ steps.sha.outputs.short }}\n\nTest the deployment before merging.`
+            })
+
+  load-test:
+    name: Run Load Tests
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          curl https://github.com/grafana/k6/releases/download/v0.48.0/k6-v0.48.0-linux-amd64.tar.gz -L | tar xvz
+          sudo mv k6-v0.48.0-linux-amd64/k6 /usr/local/bin/
+
+      - name: Run load tests
+        run: |
+          k6 run --vus 10 --duration 30s tests/load/basic.js || true
+
+  cleanup:
+    name: Cleanup old staging deployments
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Cleanup old task definitions
+        run: |
+          # Keep only the latest 5 task definitions
+          FAMILY="oxigdal-staging-task"
+          REVISIONS=$(aws ecs list-task-definitions --family-prefix $FAMILY --status ACTIVE --query 'taskDefinitionArns[5:]' --output text)
+
+          for revision in $REVISIONS; do
+            echo "Deregistering $revision"
+            aws ecs deregister-task-definition --task-definition $revision
+          done

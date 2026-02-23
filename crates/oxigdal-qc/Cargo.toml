@@ -1,0 +1,53 @@
+[package]
+name = "oxigdal-qc"
+description = "Quality control and validation suite for OxiGDAL - Comprehensive data integrity checks for geospatial data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-qc"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "quality", "validation"]
+categories = ["science", "data-structures"]
+
+[features]
+default = ["std", "html"]
+std = ["thiserror/std", "serde/std"]
+html = ["dep:quick-xml"]
+pdf = []  # Optional PDF report generation (future)
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+# Internal dependencies
+oxigdal-core = { workspace = true }
+oxigdal-algorithms = { workspace = true }
+
+# TOML parsing for rules
+toml = { workspace = true }
+
+# HTML generation
+quick-xml = { workspace = true, optional = true }
+
+# Statistics and numerical operations
+num-traits = { workspace = true }
+approx = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+oxigdal-geojson = { workspace = true }
+
+[lib]
+name = "oxigdal_qc"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

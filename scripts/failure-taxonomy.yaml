@@ -1,0 +1,512 @@
+# Failure Taxonomy for Test Auto-Fix System
+# Classifies test failures into categories with fix strategies
+# Based on real failure patterns from oxigdal codebase
+
+version: "1.0"
+description: "Comprehensive taxonomy of test failure patterns with auto-fix strategies"
+
+# ============================================================================
+# Category 1: HARDWARE_UNAVAILABLE
+# Tests that fail because required hardware is not present
+# ============================================================================
+HARDWARE_UNAVAILABLE:
+  description: "Hardware-dependent tests that fail when specific hardware is unavailable"
+
+  gpu_device_not_found:
+    description: "GPU device not available (CUDA, OpenCL, Metal, Vulkan, WebGPU)"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "No adapter found"
+      - "No GPU found"
+      - "GPU.*not available"
+      - "wgpu.*RequestDeviceError"
+      - "Failed to get GPU adapter"
+      - "No suitable adapter found"
+      - "Adapter.*not found"
+      - "Device lost"
+      - "GPU context creation failed"
+
+  cuda_unavailable:
+    description: "CUDA runtime or device not available"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "CUDA.*not available"
+      - "CUDA.*not found"
+      - "cudaError"
+      - "CUDA driver version"
+      - "No CUDA-capable device"
+      - "CUDA runtime error"
+
+  opencl_unavailable:
+    description: "OpenCL runtime or device not available"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "OpenCL.*not available"
+      - "OpenCL.*not found"
+      - "clGetDeviceIDs.*failed"
+      - "CL_DEVICE_NOT_FOUND"
+
+  metal_unavailable:
+    description: "Metal framework not available (iOS/macOS)"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Metal.*not available"
+      - "MTL.*failed"
+      - "Metal device not found"
+
+# ============================================================================
+# Category 2: EXTERNAL_DEPENDENCY
+# Tests that fail because external services are unavailable
+# ============================================================================
+EXTERNAL_DEPENDENCY:
+  description: "Tests requiring external services or infrastructure"
+
+  kafka_unavailable:
+    description: "Kafka broker not running or unreachable"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Connection refused.*9092"
+      - "Failed to connect to Kafka"
+      - "rdkafka.*Local: Broker transport failure"
+      - "Broker.*not available"
+      - "kafka.*connection refused"
+      - "No brokers available"
+      - "Failed to create Kafka.*client"
+
+  redis_unavailable:
+    description: "Redis server not running or unreachable"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Connection refused.*6379"
+      - "Redis.*connection refused"
+      - "Failed to connect to Redis"
+      - "ERR.*invalid password"
+      - "NOAUTH Authentication required"
+
+  database_unavailable:
+    description: "Database server (PostgreSQL, MySQL, MongoDB, etc.) not available"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Connection refused.*5432"  # PostgreSQL
+      - "Connection refused.*3306"  # MySQL
+      - "Connection refused.*27017" # MongoDB
+      - "database.*not available"
+      - "Failed to connect to database"
+      - "FATAL:.*database.*does not exist"
+      - "Access denied for user"
+      - "Could not connect to server"
+
+  s3_unavailable:
+    description: "AWS S3 or MinIO not accessible"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "S3.*NoSuchBucket"
+      - "S3.*AccessDenied"
+      - "AWS.*credentials.*not found"
+      - "InvalidAccessKeyId"
+      - "SignatureDoesNotMatch"
+      - "s3://.*not found"
+      - "MinIO.*connection refused"
+
+  azure_unavailable:
+    description: "Azure Blob Storage not accessible"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Azure.*authentication failed"
+      - "AZURE_STORAGE_ACCOUNT.*not set"
+      - "Azure.*AccountNotFound"
+      - "az://.*not found"
+
+  gcp_unavailable:
+    description: "Google Cloud Storage not accessible"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "GCP.*authentication failed"
+      - "gs://.*not found"
+      - "GOOGLE_APPLICATION_CREDENTIALS.*not set"
+      - "Invalid.*credentials.*Google"
+
+  http_service_unavailable:
+    description: "HTTP/REST service not reachable"
+    confidence: MEDIUM
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Connection refused.*http"
+      - "HTTP.*404.*Not Found"
+      - "HTTP.*502.*Bad Gateway"
+      - "HTTP.*503.*Service Unavailable"
+      - "Failed to connect to.*http"
+      - "Requires HTTP server setup"
+
+# ============================================================================
+# Category 3: ASYNC_RUNTIME
+# Async/await issues, timeouts, deadlocks
+# ============================================================================
+ASYNC_RUNTIME:
+  description: "Asynchronous runtime issues including timeouts and race conditions"
+
+  tokio_timeout:
+    description: "Test exceeded time limit (slow test)"
+    confidence: HIGH
+    auto_fix: add_timeout_or_ignore
+    patterns:
+      - "test timed out"
+      - "\\(test timed out\\)"
+      - "TIMEOUT.*\\[.*\\]"
+      - "has been running for over.*seconds"
+      - "TERMINATING.*>.*s\\]"
+      - "operation timed out after"
+      - "tokio.*time.*elapsed"
+
+  deadlock_detected:
+    description: "Potential deadlock in async code"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "deadlock"
+      - "thread.*blocked"
+      - "lock.*poisoned"
+      - "await.*never completed"
+
+  async_panic:
+    description: "Panic in async task"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "task.*panicked"
+      - "async.*panic"
+      - "future.*panic"
+
+  race_condition:
+    description: "Flaky test indicating race condition"
+    confidence: LOW
+    auto_fix: none
+    patterns:
+      - "race condition"
+      - "sometimes passes"
+      - "flaky test"
+
+# ============================================================================
+# Category 4: ASSERTION_FAILURE
+# Logic errors, incorrect expectations, validation failures
+# ============================================================================
+ASSERTION_FAILURE:
+  description: "Test assertions failed due to logic errors or incorrect expectations"
+
+  expected_panic:
+    description: "Test should panic but didn't (or vice versa)"
+    confidence: HIGH
+    auto_fix: add_should_panic
+    patterns:
+      - "test did not panic"
+      - "test panicked unexpectedly"
+      - "should have panicked"
+      - "unexpected panic"
+
+  assertion_equality:
+    description: "Equality assertion failed (assert_eq, assert_ne)"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "assertion.*failed.*left == right"
+      - "assertion.*failed.*left != right"
+      - "assert_eq!.*failed"
+      - "assert_ne!.*failed"
+
+  assertion_condition:
+    description: "Boolean assertion failed (assert)"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "assertion.*failed"
+      - "assert!.*failed"
+      - "condition.*false"
+
+  float_comparison:
+    description: "Floating point comparison issue (NaN, infinity, precision)"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "NaN"
+      - "infinity"
+      - "float.*comparison"
+      - "partial_cmp.*None"
+      - "is_nan"
+
+  validation_error:
+    description: "Input validation or constraint violation"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "validation.*failed"
+      - "invalid.*value"
+      - "constraint.*violated"
+      - "out of bounds"
+      - "Invalid.*parameter"
+
+# ============================================================================
+# Category 5: RESOURCE_NOT_FOUND
+# Missing files, data, configurations
+# ============================================================================
+RESOURCE_NOT_FOUND:
+  description: "Required resources (files, data, configs) not found"
+
+  file_not_found:
+    description: "Test data file or resource file missing"
+    confidence: HIGH
+    auto_fix: add_skip_if_unavailable
+    patterns:
+      - "No such file or directory"
+      - "FileNotFound"
+      - "file.*not found"
+      - "cannot find.*file"
+      - "failed to open.*file"
+
+  env_var_not_set:
+    description: "Required environment variable not set"
+    confidence: HIGH
+    auto_fix: add_env_check
+    patterns:
+      - "environment variable.*not set"
+      - "env::var.*NotPresent"
+      - "missing.*environment variable"
+      - "AWS_ACCESS_KEY_ID.*not set"
+      - "KAFKA_BROKERS.*not set"
+
+  config_missing:
+    description: "Configuration file or settings missing"
+    confidence: HIGH
+    auto_fix: add_skip_if_unavailable
+    patterns:
+      - "config.*not found"
+      - "configuration.*missing"
+      - "settings.*not found"
+
+  data_missing:
+    description: "Test data or fixtures missing"
+    confidence: MEDIUM
+    auto_fix: add_skip_if_unavailable
+    patterns:
+      - "test data.*not found"
+      - "fixture.*missing"
+      - "sample.*not found"
+
+# ============================================================================
+# Category 6: COMPILATION_ERROR
+# Build-time issues, feature flags, type errors
+# ============================================================================
+COMPILATION_ERROR:
+  description: "Compilation or type system errors"
+
+  feature_not_enabled:
+    description: "Required cargo feature not enabled"
+    confidence: HIGH
+    auto_fix: none
+    patterns:
+      - "feature.*not enabled"
+      - "requires.*feature"
+      - "enable.*feature"
+      - "cfg.*feature"
+
+  type_mismatch:
+    description: "Type error or trait bound not satisfied"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "type mismatch"
+      - "expected.*found"
+      - "trait bound.*not satisfied"
+      - "mismatched types"
+
+  missing_dependency:
+    description: "Cargo dependency not available"
+    confidence: HIGH
+    auto_fix: none
+    patterns:
+      - "can't find crate"
+      - "unresolved import"
+      - "use of undeclared"
+
+  wgpu_validation_error:
+    description: "WebGPU/wgpu validation error (buffer usage, binding, etc.)"
+    confidence: HIGH
+    auto_fix: none
+    patterns:
+      - "wgpu error: Validation Error"
+      - "In Device::create_buffer"
+      - "MAP.*usage can only be combined"
+      - "BufferUsages.*invalid"
+      - "binding.*invalid"
+      - "pipeline.*validation failed"
+
+  shader_compilation:
+    description: "GPU shader compilation error"
+    confidence: MEDIUM
+    auto_fix: none
+    patterns:
+      - "shader.*compilation.*failed"
+      - "WGSL.*error"
+      - "SPIR-V.*error"
+
+# ============================================================================
+# Special Patterns (cross-cutting concerns)
+# ============================================================================
+SPECIAL_PATTERNS:
+  description: "Cross-cutting patterns that need special handling"
+
+  requires_credentials:
+    description: "Test requires authentication credentials"
+    confidence: HIGH
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "Requires.*credentials"
+      - "Requires AWS credentials"
+      - "Requires Azure credentials"
+      - "Requires GCP credentials"
+
+  performance_test:
+    description: "Performance or benchmark test (should be manually run)"
+    confidence: HIGH
+    auto_fix: add_ignore
+    patterns:
+      - "Run manually for performance testing"
+      - "Run manually for memory testing"
+      - "benchmark"
+      - "performance test"
+
+  integration_test:
+    description: "Integration test requiring complex setup"
+    confidence: MEDIUM
+    auto_fix: add_ignore_with_env_check
+    patterns:
+      - "integration test"
+      - "requires.*setup"
+      - "end-to-end test"
+
+# ============================================================================
+# Fix Strategy Definitions
+# Maps strategy names to implementation details
+# ============================================================================
+FIX_STRATEGIES:
+  add_ignore:
+    description: "Add #[ignore] attribute to test function"
+    safety: HIGH
+    applicability: "Tests that should be manually run or require special environment"
+
+  add_ignore_with_env_check:
+    description: "Add #[cfg_attr(not(env), ignore)] for environment-dependent tests"
+    safety: HIGH
+    applicability: "Tests requiring specific hardware, services, or credentials"
+    env_vars:
+      - KAFKA_BROKERS
+      - AWS_ACCESS_KEY_ID
+      - AZURE_STORAGE_ACCOUNT
+      - GOOGLE_APPLICATION_CREDENTIALS
+      - REDIS_URL
+      - DATABASE_URL
+
+  add_should_panic:
+    description: "Add #[should_panic] attribute for tests expecting panic"
+    safety: MEDIUM
+    applicability: "Tests that verify error handling via panic"
+
+  add_timeout:
+    description: "Increase test timeout or mark as slow"
+    safety: MEDIUM
+    applicability: "Long-running tests that need more time"
+
+  add_timeout_or_ignore:
+    description: "Either increase timeout or add #[ignore] for very slow tests"
+    safety: MEDIUM
+    applicability: "Performance-intensive tests"
+
+  add_env_check:
+    description: "Add runtime check for required environment variables"
+    safety: HIGH
+    applicability: "Tests needing specific configuration"
+
+  add_skip_if_unavailable:
+    description: "Add runtime check to skip test if resource unavailable"
+    safety: HIGH
+    applicability: "Tests depending on optional resources"
+
+  none:
+    description: "Manual intervention required - cannot auto-fix"
+    safety: NONE
+    applicability: "Logic errors, bugs, or complex issues requiring human review"
+
+# ============================================================================
+# Confidence Level Definitions
+# ============================================================================
+CONFIDENCE_LEVELS:
+  HIGH:
+    threshold: 0.90
+    description: "90%+ confidence - safe to auto-fix with minimal review"
+
+  MEDIUM:
+    threshold: 0.60
+    description: "60-90% confidence - auto-fix with careful review recommended"
+
+  LOW:
+    threshold: 0.30
+    description: "30-60% confidence - suggest fix but require manual verification"
+
+  NONE:
+    threshold: 0.00
+    description: "<30% confidence - manual intervention required"
+
+# ============================================================================
+# Priority Levels for Fix Strategies
+# Used by orchestrator to determine fix order
+# ============================================================================
+PRIORITY_LEVELS:
+  P1_CRITICAL:
+    strategies:
+      - add_ignore_with_env_check
+      - add_env_check
+    description: "Environment-dependent tests blocking CI"
+
+  P2_HIGH:
+    strategies:
+      - add_timeout_or_ignore
+      - add_skip_if_unavailable
+    description: "Resource-dependent or slow tests"
+
+  P3_MEDIUM:
+    strategies:
+      - add_should_panic
+      - add_ignore
+    description: "Tests needing attribute adjustments"
+
+  P4_LOW:
+    strategies:
+      - add_timeout
+    description: "Minor timeout adjustments"
+
+  P5_MANUAL:
+    strategies:
+      - none
+    description: "Requires manual code fixes"
+
+# ============================================================================
+# Metadata
+# ============================================================================
+metadata:
+  created: "2026-02-13"
+  version: "1.0"
+  author: "oxigdal fail-test detection system"
+  last_updated: "2026-02-13"
+  total_categories: 6
+  total_subcategories: 30
+  total_fix_strategies: 8
+  patterns_source: "Real failures from oxigdal-gpu, oxigdal-kafka, and integration tests"

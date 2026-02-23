@@ -1,0 +1,106 @@
+# OxiGDAL Development Docker Image
+# Full development environment with all tools
+# Author: COOLJAPAN OU (Team Kitasan)
+
+FROM rust:1.85-bookworm
+
+# Install development dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    git \
+    vim \
+    neovim \
+    tmux \
+    ripgrep \
+    fd-find \
+    bat \
+    exa \
+    htop \
+    gdb \
+    valgrind \
+    strace \
+    ltrace \
+    python3 \
+    python3-pip \
+    python3-dev \
+    cmake \
+    clang \
+    lldb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust development tools
+RUN rustup component add rustfmt clippy rust-analyzer rust-src && \
+    cargo install \
+    cargo-watch \
+    cargo-edit \
+    cargo-outdated \
+    cargo-audit \
+    cargo-nextest \
+    cargo-tarpaulin \
+    cargo-deny \
+    cargo-llvm-cov \
+    cargo-flamegraph \
+    cargo-expand \
+    cargo-udeps \
+    tokei \
+    hyperfine \
+    maturin
+
+# Install additional development tools
+RUN pip3 install --no-cache-dir \
+    ipython \
+    pytest \
+    black \
+    mypy \
+    ruff
+
+# Install splitrs for refactoring
+RUN cargo install splitrs
+
+# Create development workspace
+WORKDIR /workspace
+
+# Configure git
+RUN git config --global --add safe.directory /workspace
+
+# Set up shell aliases and environment
+RUN echo 'alias ls="exa"' >> /root/.bashrc && \
+    echo 'alias cat="bat"' >> /root/.bashrc && \
+    echo 'alias find="fd"' >> /root/.bashrc && \
+    echo 'alias grep="rg"' >> /root/.bashrc && \
+    echo 'export RUST_BACKTRACE=full' >> /root/.bashrc && \
+    echo 'export RUST_LOG=debug' >> /root/.bashrc
+
+# Create directories for data and cache
+RUN mkdir -p /data /cache /build
+
+# Expose common development ports
+# 8080 - Server
+# 8081 - Metrics
+# 8888 - Jupyter
+# 9000 - Debug/profiling
+EXPOSE 8080 8081 8888 9000
+
+# Set environment variables
+ENV RUST_LOG=debug \
+    RUST_BACKTRACE=full \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# Create volume mount points
+VOLUME ["/workspace", "/data", "/cache"]
+
+# Default command opens a bash shell
+CMD ["/bin/bash"]
+
+LABEL org.opencontainers.image.title="OxiGDAL Development Environment" \
+      org.opencontainers.image.description="Full development environment for OxiGDAL with all tools" \
+      org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="0.1.0"

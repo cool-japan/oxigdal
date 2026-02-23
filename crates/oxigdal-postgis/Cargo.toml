@@ -1,0 +1,51 @@
+[package]
+name = "oxigdal-postgis"
+description = "PostgreSQL/PostGIS integration for OxiGDAL - Spatial database workflows with connection pooling and async operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-postgis"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "postgis", "postgresql"]
+categories = ["science", "database"]
+
+[features]
+default = []
+rustls = ["dep:tokio-postgres-rustls"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+
+# PostgreSQL and connection pooling
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+postgres-types = { version = "0.2", features = ["with-serde_json-1"] }
+deadpool-postgres = "0.14"
+
+# SSL/TLS support
+tokio-postgres-rustls = { version = "0.13", optional = true }
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing-subscriber.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

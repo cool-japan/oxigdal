@@ -1,0 +1,138 @@
+[package]
+name = "oxigdal-ml"
+description = "Machine learning capabilities for OxiGDAL - ONNX Runtime integration for geospatial ML workflows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-ml"
+readme = "README.md"
+keywords = ["gdal", "science", "algorithms", "onnx", "ml"]
+categories = ["science", "graphics"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std", "oxigdal-core/std"]
+
+# Inference backends
+gpu = ["ort/cuda", "ort/tensorrt"]  # GPU acceleration via CUDA/TensorRT
+cuda = ["dep:libloading"]  # CUDA backend with dynamic detection
+rocm = ["dep:libloading"]  # AMD ROCm backend with dynamic detection
+directml = ["ort/directml"]  # DirectML support for Windows
+vulkan = ["dep:ash"]  # Vulkan compute backend
+metal = ["dep:metal", "dep:objc"]  # Apple Metal backend
+opencl = ["dep:opencl3"]  # OpenCL backend
+webgpu = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]  # WebGPU backend
+# TEMPORARY: Commented out due to objc2 API compatibility issues
+# CoreML code needs updates for objc2 0.6 breaking changes (alloc, NSArray::from_slice, etc.)
+# coreml = ["dep:objc2", "dep:objc2-core-ml", "dep:objc2-foundation"]  # CoreML support for macOS/iOS (feature-gated)
+# TEMPORARY: Commented out due to build dependency issues
+# tflitec requires Bazel 6.5.0 but modern systems have Bazel 8.x+
+# Also violates Pure Rust Policy (C binding)
+# tflite = ["dep:tflitec"]  # TensorFlow Lite support (feature-gated)
+
+# Optimization features
+quantization = []  # Model quantization support
+pruning = []  # Model pruning support
+distillation = []  # Knowledge distillation support
+
+# Advanced ML features (Pure Rust - COOLJAPAN compliant)
+cloud-removal = ["dep:scirs2-vision"]  # Cloud and shadow removal
+# TEMPORARILY DISABLED: Optional dependency resolution issues with workspace features
+# temporal = ["dep:scirs2-series", "dep:oxigdal-ml-foundation", "oxigdal-ml-foundation?/ml", "dep:oxigdal-temporal", "oxigdal-temporal?/timeseries"]  # Temporal modeling (LSTM, forecasting)
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# OxiGDAL ecosystem
+oxigdal-core = { workspace = true }
+
+# ONNX Runtime - Pure Rust interface
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["half", "ndarray", "load-dynamic"] }
+
+# Geometry and GeoJSON
+geojson = { workspace = true }
+geo-types = "0.7"
+
+# Numerical operations
+ndarray = { workspace = true }
+
+# Random number generation
+rand = "0.9"
+
+# Image processing primitives
+num-traits = { workspace = true }
+byteorder = { workspace = true }
+
+# Parallel processing
+rayon = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Progress tracking and system info
+indicatif = { workspace = true }
+sysinfo = { workspace = true }
+
+# HTTP client for model downloads
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+
+# GPU backend detection (Pure Rust - COOLJAPAN compliant)
+libloading = { version = "0.8", optional = true }  # Dynamic library loading for CUDA/ROCm detection
+ash = { version = "0.38", optional = true }        # Vulkan bindings
+opencl3 = { version = "0.9", optional = true }     # OpenCL bindings
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.30", optional = true }      # Metal framework bindings for macOS
+objc = { version = "0.2", optional = true }        # Objective-C runtime for Metal
+
+# TensorFlow Lite support (Safe C bindings - TEMPORARILY DISABLED)
+# ISSUE: tflitec requires Bazel 6.5.0 but modern systems have Bazel 8.x+, causing build failures
+# Also violates Pure Rust Policy - consider migrating to TenfloweRS (pure Rust alternative)
+# tflitec = { version = "0.7.0", optional = true }   # TensorFlow Lite C API safe wrapper
+
+# CoreML support (Pure Rust - TEMPORARILY DISABLED)
+# ISSUE: objc2 0.6 has breaking API changes (alloc method, NSArray::from_slice signature, etc.)
+# CoreML implementation needs updates to work with new objc2 API
+# objc2 = { version = "0.6", optional = true }                   # Modern Objective-C 2.0 bindings
+# objc2-core-ml = { version = "0.3", optional = true }           # CoreML framework bindings
+# objc2-foundation = { version = "0.3", optional = true }        # Foundation framework bindings
+
+# WebGPU support (Pure Rust - COOLJAPAN compliant)
+wasm-bindgen = { version = "0.2", optional = true }            # WebAssembly JavaScript bindings
+web-sys = { version = "0.3", optional = true, features = ["Window", "Navigator"] }  # Browser APIs
+js-sys = { version = "0.3", optional = true }                  # JavaScript types and operations
+
+# SciRS2 subcrates for advanced features (Pure Rust - COOLJAPAN compliant)
+# scirs2-core dependency moved to direct ndarray/rand imports due to workspace dependency resolution issues
+# scirs2-core = { workspace = true, features = ["random", "array"] }
+scirs2-vision = { workspace = true, optional = true }
+# TEMPORARILY DISABLED: Part of temporal feature
+# scirs2-series = { workspace = true, optional = true }
+
+# OxiGDAL ecosystem dependencies for temporal features
+# TEMPORARILY DISABLED: Workspace feature dependencies not resolving correctly
+# oxigdal-ml-foundation = { workspace = true, optional = true, features = ["ml"] }
+# oxigdal-temporal = { workspace = true, optional = true, features = ["timeseries"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "ml_benchmark"
+harness = false
+
+[lints]
+workspace = true

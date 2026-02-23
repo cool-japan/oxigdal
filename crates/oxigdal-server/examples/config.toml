@@ -1,0 +1,113 @@
+# OxiGDAL Tile Server Configuration Example
+
+[server]
+# Host address to bind to
+host = "0.0.0.0"
+
+# Port to bind to
+port = 8080
+
+# Number of worker threads (0 = number of CPUs)
+workers = 0
+
+# Maximum request size in bytes
+max_request_size = 10485760  # 10 MB
+
+# Request timeout in seconds
+timeout_seconds = 30
+
+# Enable CORS
+enable_cors = true
+
+# Allowed CORS origins (empty = all origins allowed)
+# Example: cors_origins = ["https://example.com", "https://maps.example.org"]
+cors_origins = []
+
+[cache]
+# In-memory cache size in megabytes
+memory_size_mb = 256
+
+# Optional disk cache directory
+# Uncomment to enable disk caching
+# disk_cache = "/var/cache/oxigdal-server"
+
+# Time-to-live for cached tiles in seconds (1 hour)
+ttl_seconds = 3600
+
+# Enable cache statistics
+enable_stats = true
+
+# Cache compression (gzip tiles in memory)
+compression = false
+
+[metadata]
+# Service title
+title = "OxiGDAL Tile Server"
+
+# Service description
+abstract_ = "WMS/WMTS tile server powered by OxiGDAL - Pure Rust geospatial data processing"
+
+# Keywords for service discovery
+keywords = ["tiles", "wms", "wmts", "geospatial", "rust"]
+
+# Optional online resource URL
+# online_resource = "https://example.com/tiles"
+
+# Example layer configurations
+# Remove or modify these according to your data
+
+[[layers]]
+name = "dem"
+title = "Digital Elevation Model"
+abstract_ = "SRTM digital elevation model at 30m resolution"
+path = "/data/dem/srtm_30m.tif"
+formats = ["png", "jpeg"]
+tile_size = 256
+min_zoom = 0
+max_zoom = 14
+tile_matrix_sets = ["WebMercatorQuad", "WorldCRS84Quad"]
+enabled = true
+
+# Optional style for DEM
+[layers.style]
+name = "terrain"
+colormap = "terrain"
+value_range = [0.0, 3000.0]
+alpha = 1.0
+gamma = 1.0
+brightness = 0.0
+contrast = 1.0
+
+[[layers]]
+name = "landsat"
+title = "Landsat 8 Imagery"
+abstract_ = "Landsat 8 satellite imagery (RGB composite)"
+path = "/data/landsat/LC08_RGB.tif"
+formats = ["png", "jpeg", "webp"]
+tile_size = 256
+min_zoom = 0
+max_zoom = 18
+tile_matrix_sets = ["WebMercatorQuad"]
+enabled = true
+
+[[layers]]
+name = "ndvi"
+title = "NDVI"
+abstract_ = "Normalized Difference Vegetation Index"
+path = "/data/ndvi/ndvi.tif"
+formats = ["png"]
+tile_size = 256
+min_zoom = 0
+max_zoom = 16
+tile_matrix_sets = ["WebMercatorQuad"]
+enabled = true
+
+# NDVI style with custom colormap
+[layers.style]
+name = "ndvi_colormap"
+colormap = "RdYlGn"
+value_range = [-1.0, 1.0]
+alpha = 0.8
+gamma = 1.2
+brightness = 0.0
+contrast = 1.0

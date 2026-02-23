@@ -1,0 +1,73 @@
+{
+  "categories": [
+    {
+      "name": "Elevation Data",
+      "description": "Digital elevation models and terrain data",
+      "datasets": [
+        {
+          "name": "SRTM Elevation (Tokyo)",
+          "description": "Shuttle Radar Topography Mission elevation data around Tokyo",
+          "url": "https://elevation-tiles-prod.s3.amazonaws.com/geotiff/10/163/395.tif",
+          "icon": "🏔️",
+          "bands": 1,
+          "resolution": "30m",
+          "source": "NASA SRTM"
+        },
+        {
+          "name": "SRTM Elevation (Mt. Fuji)",
+          "description": "Elevation data around Mount Fuji",
+          "url": "https://elevation-tiles-prod.s3.amazonaws.com/geotiff/10/906/401.tif",
+          "icon": "🗻",
+          "bands": 1,
+          "resolution": "30m",
+          "source": "NASA SRTM"
+        },
+        {
+          "name": "SRTM Elevation (San Francisco)",
+          "description": "Elevation data for San Francisco Bay Area",
+          "url": "https://elevation-tiles-prod.s3.amazonaws.com/geotiff/10/164/395.tif",
+          "icon": "🌉",
+          "bands": 1,
+          "resolution": "30m",
+          "source": "NASA SRTM"
+        }
+      ]
+    },
+    {
+      "name": "Test Datasets",
+      "description": "Small test datasets for quick verification",
+      "datasets": [
+        {
+          "name": "Small Test COG",
+          "description": "Minimal COG for testing (5x5 pixels)",
+          "url": "https://raw.githubusercontent.com/cogeotiff/cog-spec/master/docs/examples/byte.tif",
+          "icon": "🧪",
+          "bands": 1,
+          "resolution": "test",
+          "source": "COG Examples"
+        }
+      ]
+    },
+    {
+      "name": "Satellite Imagery (Experimental)",
+      "description": "Public satellite data - URLs may change",
+      "datasets": [
+        {
+          "name": "Landsat 8 (Band 4)",
+          "description": "Landsat 8 Red band - may be unavailable",
+          "url": "https://landsat-pds.s3.amazonaws.com/c1/L8/139/045/LC08_L1TP_139045_20170304_20170316_01_T1/LC08_L1TP_139045_20170304_20170316_01_T1_B4.TIF",
+          "icon": "🛰️",
+          "bands": 1,
+          "resolution": "30m",
+          "source": "USGS Landsat 8"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "1.1",
+    "lastUpdated": "2026-02-01",
+    "totalDatasets": 5,
+    "note": "All URLs must support CORS and HTTP range requests. Some public datasets may become unavailable over time."
+  }
+}

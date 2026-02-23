@@ -1,0 +1,77 @@
+[package]
+name = "oxigdal"
+description = "Pure Rust geospatial data abstraction library — the Rust alternative to GDAL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal"
+readme = "README.md"
+keywords = ["gdal", "geospatial", "gis", "raster", "vector"]
+categories = ["science::geo", "parser-implementations", "encoding"]
+
+[features]
+default = ["geotiff", "geojson", "shapefile"]
+full = [
+    "geotiff", "geojson", "shapefile", "geoparquet", "netcdf",
+    "hdf5", "zarr", "grib", "stac", "vrt", "flatgeobuf", "jpeg2000",
+    "terrain",
+]
+
+# Individual driver features — user picks what they need
+geotiff = ["dep:oxigdal-geotiff"]
+geojson = ["dep:oxigdal-geojson"]
+shapefile = ["dep:oxigdal-shapefile"]
+geoparquet = ["dep:oxigdal-geoparquet"]
+netcdf = ["dep:oxigdal-netcdf"]
+hdf5 = ["dep:oxigdal-hdf5"]
+zarr = ["dep:oxigdal-zarr"]
+grib = ["dep:oxigdal-grib"]
+stac = ["dep:oxigdal-stac"]
+terrain = ["dep:oxigdal-terrain"]
+vrt = ["dep:oxigdal-vrt"]
+flatgeobuf = ["dep:oxigdal-flatgeobuf"]
+jpeg2000 = ["dep:oxigdal-jpeg2000"]
+
+# Advanced capabilities
+cloud = ["dep:oxigdal-cloud"]
+proj = ["dep:oxigdal-proj"]
+algorithms = ["dep:oxigdal-algorithms"]
+analytics = ["dep:oxigdal-analytics"]
+streaming = ["dep:oxigdal-streaming"]
+ml = ["dep:oxigdal-ml"]
+gpu = ["dep:oxigdal-gpu"]
+server = ["dep:oxigdal-server"]
+temporal = ["dep:oxigdal-temporal"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+
+# Drivers (all optional)
+oxigdal-geotiff = { workspace = true, optional = true }
+oxigdal-geojson = { workspace = true, optional = true }
+oxigdal-shapefile = { workspace = true, optional = true }
+oxigdal-geoparquet = { workspace = true, optional = true }
+oxigdal-netcdf = { workspace = true, optional = true }
+oxigdal-hdf5 = { workspace = true, optional = true }
+oxigdal-zarr = { workspace = true, optional = true }
+oxigdal-grib = { workspace = true, optional = true }
+oxigdal-stac = { workspace = true, optional = true }
+oxigdal-terrain = { workspace = true, optional = true }
+oxigdal-vrt = { workspace = true, optional = true }
+oxigdal-flatgeobuf = { workspace = true, optional = true }
+oxigdal-jpeg2000 = { workspace = true, optional = true }
+
+# Advanced (all optional)
+oxigdal-cloud = { workspace = true, optional = true }
+oxigdal-proj = { workspace = true, optional = true }
+oxigdal-algorithms = { workspace = true, optional = true }
+oxigdal-analytics = { workspace = true, optional = true }
+oxigdal-streaming = { workspace = true, optional = true }
+oxigdal-ml = { workspace = true, optional = true }
+oxigdal-gpu = { workspace = true, optional = true }
+oxigdal-server = { workspace = true, optional = true }
+oxigdal-temporal = { workspace = true, optional = true }

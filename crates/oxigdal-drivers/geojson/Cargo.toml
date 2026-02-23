@@ -1,0 +1,37 @@
+[package]
+name = "oxigdal-geojson"
+description = "GeoJSON (RFC 7946) driver for OxiGDAL - Pure Rust vector data processing with streaming support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-geojson"
+readme = "README.md"
+keywords = ["geojson", "gis", "vector", "json", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
+async = ["oxigdal-core/async", "dep:tokio"]
+arrow = ["oxigdal-core/arrow"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# Async
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

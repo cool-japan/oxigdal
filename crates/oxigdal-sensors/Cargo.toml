@@ -1,0 +1,76 @@
+[package]
+name = "oxigdal-sensors"
+description = "Remote sensing and satellite sensor data processing for OxiGDAL - Radiometric corrections, spectral indices, and sensor support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-sensors"
+readme = "README.md"
+keywords = ["gdal", "science", "remote-sensing", "satellite", "sensors"]
+categories = ["science", "algorithms"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+parallel = ["dep:rayon"]
+# Sensor-specific features
+landsat = []
+sentinel = []
+modis = []
+aster = []
+all_sensors = ["landsat", "sentinel", "modis", "aster"]
+# Processing features
+radiometry = []
+indices = []
+pan_sharpening = []
+classification = []
+all_processing = ["radiometry", "indices", "pan_sharpening", "classification"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+num-traits = { workspace = true }
+tracing = { workspace = true }
+
+# Scientific computing - Use SciRS2 ecosystem (COOLJAPAN Policy)
+scirs2-core = { version = "0.2.0", features = ["array", "array_stats", "linalg", "random"] }
+
+# Parallelization (optional)
+rayon = { workspace = true, optional = true }
+
+# Statistical operations
+approx = { workspace = true }
+
+# Chrono for temporal metadata
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "indices"
+harness = false
+required-features = ["indices"]
+
+[[bench]]
+name = "radiometry"
+harness = false
+required-features = ["radiometry"]
+
+[[bench]]
+name = "pan_sharpening"
+harness = false
+required-features = ["pan_sharpening"]
+
+[lints]
+workspace = true

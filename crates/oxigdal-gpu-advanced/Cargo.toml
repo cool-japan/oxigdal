@@ -1,0 +1,103 @@
+[package]
+name = "oxigdal-gpu-advanced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-gpu-advanced"
+readme = "README.md"
+description = "Advanced GPU computing with multi-GPU support, memory pooling, and shader optimization for OxiGDAL"
+keywords = ["gis", "gdal", "gpu", "multi-gpu", "wgpu"]
+categories = ["science", "graphics", "rendering", "concurrency"]
+
+[features]
+default = ["auto-backend"]
+# Auto-select platform backend
+auto-backend = []
+# GPU backends
+vulkan = ["wgpu/vulkan"]
+metal = ["wgpu/metal"]
+dx12 = ["wgpu/dx12"]
+webgpu = ["wgpu/webgpu"]
+# All backends (except WebGPU for native)
+all-native-backends = ["vulkan", "metal", "dx12"]
+# Advanced features
+shader-optimization = []
+memory-defrag = []
+ml-inference = []
+
+# Platform-specific defaults
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["wgsl", "metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["wgsl", "dx12"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
+
+[dependencies]
+# Workspace dependencies
+oxigdal-core = { workspace = true }
+oxigdal-gpu = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+num-traits = { workspace = true }
+rayon = { workspace = true }
+dashmap = { workspace = true }
+lru = { workspace = true }
+
+# GPU dependencies (latest versions)
+wgpu = { version = "28", default-features = false, features = ["wgsl"] }
+pollster = "0.4"
+encase = { version = "0.10", features = ["glam"] }
+naga = { version = "28", features = ["wgsl-in", "wgsl-out"] }
+
+# Concurrency and synchronization
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+
+# Math
+glam = { version = "0.30", features = ["bytemuck"] }
+
+# Memory tracking
+mimalloc = { version = "0.1", default-features = false }
+
+# Hash and crypto for shader caching
+blake3 = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+criterion = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "gpu_advanced_bench"
+harness = false
+
+[[bench]]
+name = "multi_gpu_bench"
+harness = false
+
+[[bench]]
+name = "memory_pool_bench"
+harness = false
+
+[[bench]]
+name = "advanced_kernels_bench"
+harness = false
+
+[lints]
+workspace = true

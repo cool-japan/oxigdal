@@ -1,0 +1,228 @@
+# OxiGDAL Prometheus Alert Rules
+# Alerting rules for monitoring OxiGDAL services
+# Author: COOLJAPAN OU (Team Kitasan)
+
+groups:
+  - name: oxigdal_server_alerts
+    interval: 30s
+    rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total{job="oxigdal-server"}[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: server
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% for 5 minutes (current value: {{ $value | humanizePercentage }})"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes{job="oxigdal-server"} / node_memory_MemTotal_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: server
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% (current value: {{ $value | humanizePercentage }})"
+
+      # Service down
+      - alert: OxiGDALServerDown
+        expr: up{job="oxigdal-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: server
+        annotations:
+          summary: "OxiGDAL server is down"
+          description: "OxiGDAL server {{ $labels.instance }} has been down for more than 1 minute"
+
+      # High request latency
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="oxigdal-server"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: server
+        annotations:
+          summary: "High request latency on {{ $labels.instance }}"
+          description: "95th percentile latency is above 1s (current value: {{ $value }}s)"
+
+      # High error rate
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{job="oxigdal-server",status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: server
+        annotations:
+          summary: "High error rate on {{ $labels.instance }}"
+          description: "Error rate is above 5% (current value: {{ $value | humanizePercentage }})"
+
+      # Too many requests
+      - alert: HighRequestRate
+        expr: rate(http_requests_total{job="oxigdal-server"}[5m]) > 1000
+        for: 5m
+        labels:
+          severity: info
+          component: server
+        annotations:
+          summary: "High request rate on {{ $labels.instance }}"
+          description: "Request rate is above 1000 req/s (current value: {{ $value }})"
+
+      # Cache hit rate too low
+      - alert: LowCacheHitRate
+        expr: rate(cache_hits_total{job="oxigdal-server"}[5m]) / rate(cache_requests_total{job="oxigdal-server"}[5m]) < 0.7
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Low cache hit rate on {{ $labels.instance }}"
+          description: "Cache hit rate is below 70% (current value: {{ $value | humanizePercentage }})"
+
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # PostgreSQL down
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is unreachable"
+
+      # High connection usage
+      - alert: HighDatabaseConnections
+        expr: (pg_stat_database_numbackends / pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High database connection usage"
+          description: "Database connections usage is above 80% (current: {{ $value | humanizePercentage }})"
+
+      # Slow queries
+      - alert: SlowQueries
+        expr: rate(pg_stat_activity_max_tx_duration{datname="oxigdal"}[5m]) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Average query duration is above 30s"
+
+      # Database storage filling up
+      - alert: DatabaseStorageFull
+        expr: (pg_database_size_bytes / node_filesystem_size_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database storage is filling up"
+          description: "Database storage usage is above 85% (current: {{ $value | humanizePercentage }})"
+
+  - name: redis_alerts
+    interval: 30s
+    rules:
+      # Redis down
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache is unreachable"
+
+      # High memory usage
+      - alert: RedisHighMemory
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis memory usage is above 90% (current: {{ $value | humanizePercentage }})"
+
+      # Too many connected clients
+      - alert: RedisTooManyConnections
+        expr: redis_connected_clients > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Too many Redis connections"
+          description: "Redis has {{ $value }} connected clients"
+
+  - name: system_alerts
+    interval: 30s
+    rules:
+      # Disk space
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Available disk space is below 10% (current: {{ $value | humanizePercentage }})"
+
+      # High load average
+      - alert: HighLoadAverage
+        expr: node_load5 / count(node_cpu_seconds_total{mode="idle"}) without (cpu, mode) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High load average on {{ $labels.instance }}"
+          description: "5-minute load average is {{ $value }}"
+
+      # System out of file descriptors
+      - alert: FileDescriptorsHigh
+        expr: (process_open_fds / process_max_fds) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High file descriptor usage on {{ $labels.instance }}"
+          description: "File descriptor usage is above 80% (current: {{ $value | humanizePercentage }})"
+
+  - name: business_alerts
+    interval: 1m
+    rules:
+      # Tile generation failures
+      - alert: HighTileGenerationFailures
+        expr: rate(tile_generation_failures_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High tile generation failure rate"
+          description: "Tile generation failure rate is {{ $value }} failures/s"
+
+      # WMS/WMTS request failures
+      - alert: HighWMSFailures
+        expr: rate(wms_requests_total{status="error"}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High WMS/WMTS request failure rate"
+          description: "WMS/WMTS failure rate is {{ $value }} errors/s"

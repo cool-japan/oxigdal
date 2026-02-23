@@ -1,0 +1,114 @@
+# OxiGDAL Docker Ignore
+# Exclude unnecessary files from Docker context
+
+# Build artifacts
+target/
+**/target/
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Generated files
+**/*.rs.bk
+*.pdb
+*.o
+*.rlib
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+azure-pipelines.yml
+
+# Documentation build
+docs/_build/
+site/
+book/
+
+# Test artifacts
+*.profraw
+*.profdata
+flamegraph.svg
+perf.data*
+
+# Logs
+*.log
+logs/
+
+# Cache and temp
+.cache/
+tmp/
+temp/
+*.tmp
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Package files
+*.tar.gz
+*.zip
+
+# Coverage reports
+coverage/
+*.lcov
+cobertura.xml
+
+# Benchmark results
+benchmarks/results/
+criterion/
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+Dockerfile*
+
+# README and docs (already in image)
+README.md
+CHANGELOG.md
+LICENSE
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+
+# Examples (unless specifically needed)
+examples/data/large/
+examples/*/target/
+
+# Node modules (if any)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+pip-wheel-metadata/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini

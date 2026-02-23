@@ -1,0 +1,79 @@
+[package]
+name = "oxigdal-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-gpu"
+readme = "README.md"
+description = "GPU-accelerated geospatial operations for OxiGDAL using WGPU"
+keywords = ["gis", "gdal", "gpu", "wgpu", "science"]
+categories = ["science", "graphics", "rendering"]
+
+[features]
+default = ["auto-backend"]
+# Auto-select platform backend
+auto-backend = []
+# GPU backends
+vulkan = ["wgpu/vulkan"]
+metal = ["wgpu/metal"]
+dx12 = ["wgpu/dx12"]
+webgpu = ["wgpu/webgpu"]
+directml = []
+cuda = []
+# All backends (except WebGPU for native)
+all-native-backends = ["vulkan", "metal", "dx12"]
+# Backend-specific optimizations
+backend-optimizations = ["cuda", "vulkan", "metal", "directml"]
+# Multi-GPU support
+multi-gpu = []
+
+# Platform-specific defaults
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["wgsl", "metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["wgsl", "dx12"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
+
+[dependencies]
+# Workspace dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+num-traits = { workspace = true }
+rayon = { workspace = true }
+
+# GPU dependencies (latest versions)
+wgpu = { version = "28", default-features = false, features = ["wgsl"] }
+pollster = "0.4"
+encase = { version = "0.10", features = ["glam"] }
+naga = { version = "28", features = ["wgsl-in", "wgsl-out"] }
+
+# Math
+glam = { version = "0.30", features = ["bytemuck"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+criterion = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "gpu_bench"
+harness = false
+
+[lints]
+workspace = true

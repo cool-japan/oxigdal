@@ -1,0 +1,76 @@
+# OxiGDAL Slow Test Detection Workflow
+# Detects and analyzes slow-running tests across GPU and ML packages
+# Generates reports on tests taking longer than 60 seconds
+# Author: COOLJAPAN OU (Team Kitasan)
+
+name: Slow Test Detection
+
+on:
+  schedule:
+    # Run weekly on Sunday at midnight UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  detect-slow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/*
+
+      - name: Install nextest
+        run: |
+          cargo install cargo-nextest --locked
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install jq
+
+      - name: Run slow test detection
+        run: |
+          bash ./scripts/detect-slow-tests.sh gpu-ml
+
+      - name: Analyze slow tests
+        run: |
+          python ./scripts/analyze-slow-tests.py target/slow-test-detection target/slow-test-detection
+        continue-on-error: true
+
+      - name: Upload detection results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slow-test-detection-results
+          path: target/slow-test-detection/
+          retention-days: 30
+
+      - name: Comment on slow tests found
+        if: always()
+        run: |
+          if [ -f "target/slow-test-detection/report.md" ]; then
+            echo "## Slow Test Detection Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat target/slow-test-detection/report.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Slow Test Detection" >> $GITHUB_STEP_SUMMARY
+            echo "No slow tests detected or detection incomplete." >> $GITHUB_STEP_SUMMARY
+          fi

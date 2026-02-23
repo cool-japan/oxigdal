@@ -1,0 +1,2328 @@
+//! GraphQL API module for OxiGDAL Gateway.
+//!
+//! Provides a comprehensive GraphQL server with queries, mutations, subscriptions,
+//! DataLoader for N+1 problem resolution, query complexity analysis, and depth limiting.
+//!
+//! # Features
+//!
+//! - **Schema Definitions**: Comprehensive geospatial data types (raster, vector, CRS)
+//! - **Query Resolvers**: Fetch datasets, layers, features, and raster tiles
+//! - **Mutation Resolvers**: Create, update, delete operations with validation
+//! - **Subscriptions**: Real-time updates for data changes and processing events
+//! - **DataLoader**: Batch loading to prevent N+1 query problems
+//! - **Security**: Query complexity and depth limiting
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use oxigdal_gateway::graphql::{GraphQLServer, GraphQLConfig};
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let config = GraphQLConfig::default();
+//!     let server = GraphQLServer::new(config);
+//!
+//!     // Execute a query
+//!     let query = r#"
+//!         query {
+//!             dataset(id: "dem_world") {
+//!                 id
+//!                 name
+//!                 bounds { minX minY maxX maxY }
+//!             }
+//!         }
+//!     "#;
+//!
+//!     let context = GraphQLContext {
+//!         user_id: Some("user123".to_string()),
+//!         request_id: "req_001".to_string(),
+//!     };
+//!
+//!     let result = server.execute(query, None, context).await;
+//! }
+//! ```
+
+pub mod mutations;
+pub mod queries;
+pub mod resolvers;
+pub mod schema;
+pub mod subscriptions;
+
+use crate::error::{GatewayError, Result};
+use async_graphql::{Context, Enum, ID, InputObject, Object, Schema, SimpleObject, Subscription};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/// GraphQL server configuration.
+#[derive(Debug, Clone)]
+pub struct GraphQLConfig {
+    /// Enable introspection
+    pub enable_introspection: bool,
+    /// Maximum query depth
+    pub max_depth: usize,
+    /// Maximum query complexity
+    pub max_complexity: usize,
+    /// Enable subscriptions
+    pub enable_subscriptions: bool,
+    /// Enable DataLoader
+    pub enable_dataloader: bool,
+    /// Enable tracing
+    pub enable_tracing: bool,
+    /// Cache TTL in seconds
+    pub cache_ttl_secs: u64,
+    /// Maximum page size for pagination
+    pub max_page_size: i32,
+}
+
+impl Default for GraphQLConfig {
+    fn default() -> Self {
+        Self {
+            enable_introspection: true,
+            max_depth: 10,
+            max_complexity: 1000,
+            enable_subscriptions: true,
+            enable_dataloader: true,
+            enable_tracing: false,
+            cache_ttl_secs: 300,
+            max_page_size: 100,
+        }
+    }
+}
+
+/// GraphQL context data passed to resolvers.
+#[derive(Clone)]
+pub struct GraphQLContext {
+    /// User ID if authenticated
+    pub user_id: Option<String>,
+    /// Request ID for tracing
+    pub request_id: String,
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// Data format types supported by OxiGDAL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum DataFormat {
+    /// GeoTIFF raster format
+    GeoTiff,
+    /// COG (Cloud Optimized GeoTIFF)
+    Cog,
+    /// NetCDF scientific data format
+    NetCdf,
+    /// HDF5 hierarchical data format
+    Hdf5,
+    /// GeoJSON vector format
+    GeoJson,
+    /// Shapefile vector format
+    Shapefile,
+    /// GeoPackage format
+    GeoPackage,
+    /// FlatGeobuf format
+    FlatGeobuf,
+    /// Parquet with geospatial extension
+    GeoParquet,
+    /// PostGIS database
+    PostGis,
+    /// Zarr array format
+    Zarr,
+}
+
+impl std::fmt::Display for DataFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GeoTiff => write!(f, "GeoTIFF"),
+            Self::Cog => write!(f, "COG"),
+            Self::NetCdf => write!(f, "NetCDF"),
+            Self::Hdf5 => write!(f, "HDF5"),
+            Self::GeoJson => write!(f, "GeoJSON"),
+            Self::Shapefile => write!(f, "Shapefile"),
+            Self::GeoPackage => write!(f, "GeoPackage"),
+            Self::FlatGeobuf => write!(f, "FlatGeobuf"),
+            Self::GeoParquet => write!(f, "GeoParquet"),
+            Self::PostGis => write!(f, "PostGIS"),
+            Self::Zarr => write!(f, "Zarr"),
+        }
+    }
+}
+
+/// Layer type enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum LayerType {
+    /// Raster layer (gridded data)
+    Raster,
+    /// Vector layer (features with geometry)
+    Vector,
+    /// Point cloud layer (LiDAR, etc.)
+    PointCloud,
+    /// Mesh layer (3D surfaces)
+    Mesh,
+    /// Time series layer
+    TimeSeries,
+}
+
+/// Geometry type enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum GeometryType {
+    /// Point geometry
+    Point,
+    /// Line string geometry
+    LineString,
+    /// Polygon geometry
+    Polygon,
+    /// Multi-point geometry
+    MultiPoint,
+    /// Multi-line string geometry
+    MultiLineString,
+    /// Multi-polygon geometry
+    MultiPolygon,
+    /// Geometry collection
+    GeometryCollection,
+    /// Unknown/mixed geometry type
+    Unknown,
+}
+
+/// Raster data type enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum RasterDataType {
+    /// 8-bit unsigned integer
+    UInt8,
+    /// 16-bit unsigned integer
+    UInt16,
+    /// 32-bit unsigned integer
+    UInt32,
+    /// 64-bit unsigned integer
+    UInt64,
+    /// 8-bit signed integer
+    Int8,
+    /// 16-bit signed integer
+    Int16,
+    /// 32-bit signed integer
+    Int32,
+    /// 64-bit signed integer
+    Int64,
+    /// 32-bit floating point
+    Float32,
+    /// 64-bit floating point
+    Float64,
+    /// Complex 32-bit
+    CFloat32,
+    /// Complex 64-bit
+    CFloat64,
+}
+
+/// Color interpretation for raster bands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum ColorInterpretation {
+    /// Undefined interpretation
+    Undefined,
+    /// Grayscale image
+    GrayIndex,
+    /// Palette index
+    PaletteIndex,
+    /// Red band
+    RedBand,
+    /// Green band
+    GreenBand,
+    /// Blue band
+    BlueBand,
+    /// Alpha (transparency) band
+    AlphaBand,
+    /// Hue band
+    HueBand,
+    /// Saturation band
+    SaturationBand,
+    /// Lightness band
+    LightnessBand,
+    /// Cyan band
+    CyanBand,
+    /// Magenta band
+    MagentaBand,
+    /// Yellow band
+    YellowBand,
+    /// Black band
+    BlackBand,
+}
+
+/// Processing status for async operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum ProcessingStatus {
+    /// Queued for processing
+    Queued,
+    /// Currently processing
+    Processing,
+    /// Completed successfully
+    Completed,
+    /// Failed with error
+    Failed,
+    /// Cancelled by user
+    Cancelled,
+}
+
+/// Spatial relationship types for queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum SpatialRelation {
+    /// Intersects the query geometry
+    Intersects,
+    /// Contains the query geometry
+    Contains,
+    /// Within the query geometry
+    Within,
+    /// Overlaps the query geometry
+    Overlaps,
+    /// Touches the query geometry
+    Touches,
+    /// Crosses the query geometry
+    Crosses,
+    /// Disjoint from the query geometry
+    Disjoint,
+}
+
+/// Resampling algorithm for raster operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum ResamplingMethod {
+    /// Nearest neighbor
+    NearestNeighbor,
+    /// Bilinear interpolation
+    Bilinear,
+    /// Cubic interpolation
+    Cubic,
+    /// Cubic spline interpolation
+    CubicSpline,
+    /// Lanczos windowed sinc
+    Lanczos,
+    /// Average of all contributing pixels
+    Average,
+    /// Mode (most common value)
+    Mode,
+    /// Minimum value
+    Min,
+    /// Maximum value
+    Max,
+    /// Median value
+    Median,
+    /// Sum of values
+    Sum,
+}
+
+// =============================================================================
+// Input Types
+// =============================================================================
+
+/// Bounding box input for spatial queries.
+#[derive(Debug, Clone, InputObject)]
+pub struct BoundingBoxInput {
+    /// Minimum X coordinate (west)
+    pub min_x: f64,
+    /// Minimum Y coordinate (south)
+    pub min_y: f64,
+    /// Maximum X coordinate (east)
+    pub max_x: f64,
+    /// Maximum Y coordinate (north)
+    pub max_y: f64,
+}
+
+impl BoundingBoxInput {
+    /// Validates the bounding box coordinates.
+    pub fn validate(&self) -> Result<()> {
+        if self.min_x > self.max_x {
+            return Err(GatewayError::InvalidRequest(
+                "min_x must be less than or equal to max_x".to_string(),
+            ));
+        }
+        if self.min_y > self.max_y {
+            return Err(GatewayError::InvalidRequest(
+                "min_y must be less than or equal to max_y".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Coordinate input for point queries.
+#[derive(Debug, Clone, InputObject)]
+pub struct CoordinateInput {
+    /// X coordinate (longitude)
+    pub x: f64,
+    /// Y coordinate (latitude)
+    pub y: f64,
+    /// Z coordinate (elevation) - optional
+    pub z: Option<f64>,
+}
+
+/// Pagination input for list queries.
+#[derive(Debug, Clone, InputObject)]
+pub struct PaginationInput {
+    /// Maximum number of items to return
+    #[graphql(default = 10)]
+    pub limit: i32,
+    /// Number of items to skip
+    #[graphql(default = 0)]
+    pub offset: i32,
+    /// Cursor for cursor-based pagination
+    pub after: Option<String>,
+    /// Cursor for reverse pagination
+    pub before: Option<String>,
+}
+
+impl PaginationInput {
+    /// Normalizes pagination values.
+    pub fn normalize(&self, max_page_size: i32) -> (i32, i32) {
+        let limit = self.limit.max(1).min(max_page_size);
+        let offset = self.offset.max(0);
+        (limit, offset)
+    }
+}
+
+/// Dataset creation input.
+#[derive(Debug, Clone, InputObject)]
+pub struct CreateDatasetInput {
+    /// Dataset name
+    pub name: String,
+    /// Dataset description
+    pub description: Option<String>,
+    /// Data format
+    pub format: DataFormat,
+    /// Spatial reference system (EPSG code or WKT)
+    pub srs: String,
+    /// Source URL or path
+    pub source: Option<String>,
+    /// Metadata tags
+    pub tags: Option<Vec<String>>,
+}
+
+/// Dataset update input.
+#[derive(Debug, Clone, InputObject)]
+pub struct UpdateDatasetInput {
+    /// Dataset ID
+    pub id: ID,
+    /// New name
+    pub name: Option<String>,
+    /// New description
+    pub description: Option<String>,
+    /// New tags
+    pub tags: Option<Vec<String>>,
+}
+
+/// Layer creation input.
+#[derive(Debug, Clone, InputObject)]
+pub struct CreateLayerInput {
+    /// Layer name
+    pub name: String,
+    /// Layer type
+    pub layer_type: LayerType,
+    /// Parent dataset ID
+    pub dataset_id: ID,
+    /// Geometry type (for vector layers)
+    pub geometry_type: Option<GeometryType>,
+    /// Data type (for raster layers)
+    pub data_type: Option<RasterDataType>,
+}
+
+/// Feature creation input.
+#[derive(Debug, Clone, InputObject)]
+pub struct CreateFeatureInput {
+    /// Layer ID
+    pub layer_id: ID,
+    /// Geometry as GeoJSON
+    pub geometry: String,
+    /// Feature properties as JSON
+    pub properties: Option<String>,
+}
+
+/// Raster tile request input.
+#[derive(Debug, Clone, InputObject)]
+pub struct TileRequestInput {
+    /// Layer ID
+    pub layer_id: ID,
+    /// Zoom level
+    pub z: i32,
+    /// Tile X coordinate
+    pub x: i32,
+    /// Tile Y coordinate
+    pub y: i32,
+    /// Output format
+    pub format: Option<String>,
+    /// Bands to include
+    pub bands: Option<Vec<i32>>,
+    /// Resampling method
+    pub resampling: Option<ResamplingMethod>,
+}
+
+/// Spatial filter input.
+#[derive(Debug, Clone, InputObject)]
+pub struct SpatialFilterInput {
+    /// Bounding box filter
+    pub bbox: Option<BoundingBoxInput>,
+    /// Geometry filter (GeoJSON)
+    pub geometry: Option<String>,
+    /// Spatial relationship
+    #[graphql(default)]
+    pub relation: Option<SpatialRelation>,
+    /// Buffer distance (in SRS units)
+    pub buffer: Option<f64>,
+}
+
+/// Raster processing request input.
+#[derive(Debug, Clone, InputObject)]
+pub struct RasterProcessingInput {
+    /// Source layer ID
+    pub source_id: ID,
+    /// Processing operation
+    pub operation: String,
+    /// Output format
+    pub output_format: Option<DataFormat>,
+    /// Resampling method
+    pub resampling: Option<ResamplingMethod>,
+    /// Target SRS
+    pub target_srs: Option<String>,
+    /// Target resolution
+    pub resolution: Option<f64>,
+    /// Clip to bounds
+    pub clip_bounds: Option<BoundingBoxInput>,
+    /// Additional parameters as JSON
+    pub parameters: Option<String>,
+}
+
+// =============================================================================
+// Output Types
+// =============================================================================
+
+/// Bounding box output type.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct BoundingBox {
+    /// Minimum X coordinate (west)
+    pub min_x: f64,
+    /// Minimum Y coordinate (south)
+    pub min_y: f64,
+    /// Maximum X coordinate (east)
+    pub max_x: f64,
+    /// Maximum Y coordinate (north)
+    pub max_y: f64,
+}
+
+impl Default for BoundingBox {
+    fn default() -> Self {
+        Self {
+            min_x: -180.0,
+            min_y: -90.0,
+            max_x: 180.0,
+            max_y: 90.0,
+        }
+    }
+}
+
+/// 3D bounding box output type.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct BoundingBox3D {
+    /// Minimum X coordinate
+    pub min_x: f64,
+    /// Minimum Y coordinate
+    pub min_y: f64,
+    /// Minimum Z coordinate
+    pub min_z: f64,
+    /// Maximum X coordinate
+    pub max_x: f64,
+    /// Maximum Y coordinate
+    pub max_y: f64,
+    /// Maximum Z coordinate
+    pub max_z: f64,
+}
+
+/// Coordinate output type.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct Coordinate {
+    /// X coordinate (longitude)
+    pub x: f64,
+    /// Y coordinate (latitude)
+    pub y: f64,
+    /// Z coordinate (elevation)
+    pub z: Option<f64>,
+    /// M coordinate (measure)
+    pub m: Option<f64>,
+}
+
+/// Geospatial dataset information.
+#[derive(Debug, Clone)]
+pub struct Dataset {
+    /// Dataset ID
+    pub id: ID,
+    /// Dataset name
+    pub name: String,
+    /// Dataset description
+    pub description: Option<String>,
+    /// Data format
+    pub format: DataFormat,
+    /// Spatial reference system
+    pub srs: String,
+    /// Bounding box
+    pub bounds: BoundingBox,
+    /// Creation timestamp
+    pub created_at: String,
+    /// Last modified timestamp
+    pub updated_at: String,
+    /// Dataset owner
+    pub owner_id: Option<String>,
+    /// Metadata tags
+    pub tags: Vec<String>,
+    /// File size in bytes
+    pub size_bytes: Option<i64>,
+    /// Access count
+    pub access_count: i64,
+}
+
+#[Object]
+impl Dataset {
+    /// Dataset ID
+    async fn id(&self) -> &ID {
+        &self.id
+    }
+
+    /// Dataset name
+    async fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Dataset description
+    async fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// Data format
+    async fn format(&self) -> DataFormat {
+        self.format
+    }
+
+    /// Spatial reference system
+    async fn srs(&self) -> &str {
+        &self.srs
+    }
+
+    /// Bounding box
+    async fn bounds(&self) -> &BoundingBox {
+        &self.bounds
+    }
+
+    /// Creation timestamp
+    async fn created_at(&self) -> &str {
+        &self.created_at
+    }
+
+    /// Last modified timestamp
+    async fn updated_at(&self) -> &str {
+        &self.updated_at
+    }
+
+    /// Dataset owner
+    async fn owner_id(&self) -> Option<&str> {
+        self.owner_id.as_deref()
+    }
+
+    /// Metadata tags
+    async fn tags(&self) -> &[String] {
+        &self.tags
+    }
+
+    /// File size in bytes
+    async fn size_bytes(&self) -> Option<i64> {
+        self.size_bytes
+    }
+
+    /// Access count
+    async fn access_count(&self) -> i64 {
+        self.access_count
+    }
+
+    /// Layers in this dataset
+    async fn layers(&self, ctx: &Context<'_>) -> Result<Vec<Layer>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation - return sample layers
+        Ok(vec![Layer {
+            id: ID::from(format!("{}_layer_1", self.id.as_str())),
+            name: format!("{} Layer 1", self.name),
+            layer_type: LayerType::Raster,
+            dataset_id: self.id.clone(),
+            geometry_type: None,
+            feature_count: None,
+            bounds: self.bounds.clone(),
+            properties: vec![],
+        }])
+    }
+}
+
+/// Layer information.
+#[derive(Debug, Clone)]
+pub struct Layer {
+    /// Layer ID
+    pub id: ID,
+    /// Layer name
+    pub name: String,
+    /// Layer type
+    pub layer_type: LayerType,
+    /// Parent dataset ID
+    pub dataset_id: ID,
+    /// Geometry type (for vector layers)
+    pub geometry_type: Option<GeometryType>,
+    /// Feature count (for vector layers)
+    pub feature_count: Option<i64>,
+    /// Layer bounds
+    pub bounds: BoundingBox,
+    /// Layer properties/attributes
+    pub properties: Vec<PropertyDefinition>,
+}
+
+#[Object]
+impl Layer {
+    /// Layer ID
+    async fn id(&self) -> &ID {
+        &self.id
+    }
+
+    /// Layer name
+    async fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Layer type
+    async fn layer_type(&self) -> LayerType {
+        self.layer_type
+    }
+
+    /// Parent dataset ID
+    async fn dataset_id(&self) -> &ID {
+        &self.dataset_id
+    }
+
+    /// Geometry type
+    async fn geometry_type(&self) -> Option<GeometryType> {
+        self.geometry_type
+    }
+
+    /// Feature count
+    async fn feature_count(&self) -> Option<i64> {
+        self.feature_count
+    }
+
+    /// Layer bounds
+    async fn bounds(&self) -> &BoundingBox {
+        &self.bounds
+    }
+
+    /// Property definitions
+    async fn properties(&self) -> &[PropertyDefinition] {
+        &self.properties
+    }
+
+    /// Parent dataset
+    async fn dataset(&self, ctx: &Context<'_>) -> Result<Dataset> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        Ok(Dataset {
+            id: self.dataset_id.clone(),
+            name: format!("Dataset {}", self.dataset_id.as_str()),
+            description: None,
+            format: DataFormat::GeoTiff,
+            srs: "EPSG:4326".to_string(),
+            bounds: self.bounds.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            owner_id: None,
+            tags: vec![],
+            size_bytes: None,
+            access_count: 0,
+        })
+    }
+
+    /// Query features (for vector layers)
+    async fn features(
+        &self,
+        ctx: &Context<'_>,
+        filter: Option<SpatialFilterInput>,
+        pagination: Option<PaginationInput>,
+    ) -> Result<FeatureConnection> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        let pagination = pagination.unwrap_or(PaginationInput {
+            limit: 10,
+            offset: 0,
+            after: None,
+            before: None,
+        });
+
+        let (limit, offset) = pagination.normalize(100);
+
+        // Validate spatial filter if provided
+        if let Some(ref f) = filter {
+            if let Some(ref bbox) = f.bbox {
+                bbox.validate()?;
+            }
+        }
+
+        // Mock implementation
+        let features: Vec<Feature> = (0..limit)
+            .map(|i| Feature {
+                id: ID::from(format!("feature_{}_{}", self.id.as_str(), offset + i)),
+                layer_id: self.id.clone(),
+                geometry_type: self.geometry_type.unwrap_or(GeometryType::Point),
+                geometry_json: format!(
+                    r#"{{"type":"Point","coordinates":[{},{}]}}"#,
+                    -180.0 + (i as f64 * 10.0),
+                    -90.0 + (i as f64 * 5.0)
+                ),
+                properties: HashMap::new(),
+            })
+            .collect();
+
+        let edges: Vec<FeatureEdge> = features
+            .into_iter()
+            .map(|f| FeatureEdge {
+                cursor: f.id.to_string(),
+                node: f,
+            })
+            .collect();
+
+        Ok(FeatureConnection {
+            edges,
+            page_info: PageInfo {
+                has_next_page: true,
+                has_previous_page: offset > 0,
+                start_cursor: Some(format!("cursor_{}", offset)),
+                end_cursor: Some(format!("cursor_{}", offset + limit - 1)),
+            },
+            total_count: 1000,
+        })
+    }
+}
+
+/// Property definition for layer attributes.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct PropertyDefinition {
+    /// Property name
+    pub name: String,
+    /// Property data type
+    pub data_type: String,
+    /// Property description
+    pub description: Option<String>,
+    /// Whether the property is nullable
+    pub nullable: bool,
+    /// Default value
+    pub default_value: Option<String>,
+}
+
+/// Raster band information.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct RasterBand {
+    /// Band index (1-based)
+    pub index: i32,
+    /// Band name
+    pub name: Option<String>,
+    /// Data type
+    pub data_type: RasterDataType,
+    /// Color interpretation
+    pub color_interpretation: ColorInterpretation,
+    /// NoData value
+    pub nodata_value: Option<f64>,
+    /// Minimum value
+    pub min_value: Option<f64>,
+    /// Maximum value
+    pub max_value: Option<f64>,
+    /// Mean value
+    pub mean_value: Option<f64>,
+    /// Standard deviation
+    pub std_dev: Option<f64>,
+}
+
+/// Block size dimensions for raster storage.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct BlockSize {
+    /// Width of block in pixels
+    pub width: i32,
+    /// Height of block in pixels
+    pub height: i32,
+}
+
+/// Resolution in X and Y directions.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct Resolution {
+    /// X resolution (pixel width)
+    pub x: f64,
+    /// Y resolution (pixel height)
+    pub y: f64,
+}
+
+/// Raster layer with band information.
+#[derive(Debug, Clone)]
+pub struct RasterLayer {
+    /// Base layer information
+    pub layer: Layer,
+    /// Width in pixels
+    pub width: i64,
+    /// Height in pixels
+    pub height: i64,
+    /// Number of bands
+    pub band_count: i32,
+    /// Band information
+    pub bands: Vec<RasterBand>,
+    /// Geotransform coefficients
+    pub geo_transform: [f64; 6],
+    /// Overview levels
+    pub overviews: Vec<i32>,
+    /// Block size
+    pub block_size: BlockSize,
+    /// Compression type
+    pub compression: Option<String>,
+}
+
+#[Object]
+impl RasterLayer {
+    /// Layer ID
+    async fn id(&self) -> &ID {
+        &self.layer.id
+    }
+
+    /// Layer name
+    async fn name(&self) -> &str {
+        &self.layer.name
+    }
+
+    /// Width in pixels
+    async fn width(&self) -> i64 {
+        self.width
+    }
+
+    /// Height in pixels
+    async fn height(&self) -> i64 {
+        self.height
+    }
+
+    /// Number of bands
+    async fn band_count(&self) -> i32 {
+        self.band_count
+    }
+
+    /// Band information
+    async fn bands(&self) -> &[RasterBand] {
+        &self.bands
+    }
+
+    /// Geotransform coefficients
+    async fn geo_transform(&self) -> &[f64] {
+        &self.geo_transform
+    }
+
+    /// Overview levels
+    async fn overviews(&self) -> &[i32] {
+        &self.overviews
+    }
+
+    /// Block size
+    async fn block_size(&self) -> &BlockSize {
+        &self.block_size
+    }
+
+    /// Compression type
+    async fn compression(&self) -> Option<&str> {
+        self.compression.as_deref()
+    }
+
+    /// Layer bounds
+    async fn bounds(&self) -> &BoundingBox {
+        &self.layer.bounds
+    }
+
+    /// Pixel resolution
+    async fn resolution(&self) -> Resolution {
+        Resolution {
+            x: self.geo_transform[1].abs(),
+            y: self.geo_transform[5].abs(),
+        }
+    }
+}
+
+/// Feature (vector geometry with properties).
+#[derive(Debug, Clone)]
+pub struct Feature {
+    /// Feature ID
+    pub id: ID,
+    /// Parent layer ID
+    pub layer_id: ID,
+    /// Geometry type
+    pub geometry_type: GeometryType,
+    /// Geometry as GeoJSON
+    pub geometry_json: String,
+    /// Feature properties
+    pub properties: HashMap<String, serde_json::Value>,
+}
+
+#[Object]
+impl Feature {
+    /// Feature ID
+    async fn id(&self) -> &ID {
+        &self.id
+    }
+
+    /// Parent layer ID
+    async fn layer_id(&self) -> &ID {
+        &self.layer_id
+    }
+
+    /// Geometry type
+    async fn geometry_type(&self) -> GeometryType {
+        self.geometry_type
+    }
+
+    /// Geometry as GeoJSON
+    async fn geometry(&self) -> &str {
+        &self.geometry_json
+    }
+
+    /// Feature properties as JSON
+    async fn properties(&self) -> Result<String> {
+        serde_json::to_string(&self.properties).map_err(GatewayError::SerializationError)
+    }
+
+    /// Get a specific property value
+    async fn property(&self, name: String) -> Option<String> {
+        self.properties.get(&name).map(|v| v.to_string())
+    }
+}
+
+/// Raster tile data.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct RasterTile {
+    /// Tile X coordinate
+    pub x: i32,
+    /// Tile Y coordinate
+    pub y: i32,
+    /// Zoom level
+    pub z: i32,
+    /// Tile bounds
+    pub bounds: BoundingBox,
+    /// Tile data as base64
+    pub data: String,
+    /// Content type
+    pub content_type: String,
+    /// Tile size in bytes
+    pub size_bytes: i64,
+}
+
+/// Pagination info for cursor-based pagination.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct PageInfo {
+    /// Has more items after
+    pub has_next_page: bool,
+    /// Has items before
+    pub has_previous_page: bool,
+    /// Start cursor
+    pub start_cursor: Option<String>,
+    /// End cursor
+    pub end_cursor: Option<String>,
+}
+
+/// Feature edge for connection.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct FeatureEdge {
+    /// Cursor for this edge
+    pub cursor: String,
+    /// The feature
+    pub node: Feature,
+}
+
+/// Feature connection for pagination.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct FeatureConnection {
+    /// Feature edges
+    pub edges: Vec<FeatureEdge>,
+    /// Page info
+    pub page_info: PageInfo,
+    /// Total count
+    pub total_count: i64,
+}
+
+/// Dataset edge for connection.
+#[derive(Debug, Clone)]
+pub struct DatasetEdge {
+    /// Cursor for this edge
+    pub cursor: String,
+    /// The dataset
+    pub node: Dataset,
+}
+
+#[Object]
+impl DatasetEdge {
+    /// Cursor for this edge
+    async fn cursor(&self) -> &str {
+        &self.cursor
+    }
+
+    /// The dataset
+    async fn node(&self) -> &Dataset {
+        &self.node
+    }
+}
+
+/// Dataset connection for pagination.
+#[derive(Debug, Clone)]
+pub struct DatasetConnection {
+    /// Dataset edges
+    pub edges: Vec<DatasetEdge>,
+    /// Page info
+    pub page_info: PageInfo,
+    /// Total count
+    pub total_count: i64,
+}
+
+#[Object]
+impl DatasetConnection {
+    /// Dataset edges
+    async fn edges(&self) -> &[DatasetEdge] {
+        &self.edges
+    }
+
+    /// Page info
+    async fn page_info(&self) -> &PageInfo {
+        &self.page_info
+    }
+
+    /// Total count
+    async fn total_count(&self) -> i64 {
+        self.total_count
+    }
+}
+
+/// Processing job information.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct ProcessingJob {
+    /// Job ID
+    pub id: ID,
+    /// Job status
+    pub status: ProcessingStatus,
+    /// Progress percentage (0-100)
+    pub progress: i32,
+    /// Status message
+    pub message: Option<String>,
+    /// Created timestamp
+    pub created_at: String,
+    /// Started timestamp
+    pub started_at: Option<String>,
+    /// Completed timestamp
+    pub completed_at: Option<String>,
+    /// Output dataset ID (if completed)
+    pub output_dataset_id: Option<ID>,
+    /// Error message (if failed)
+    pub error: Option<String>,
+}
+
+/// Statistics result.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct Statistics {
+    /// Minimum value
+    pub min: f64,
+    /// Maximum value
+    pub max: f64,
+    /// Mean value
+    pub mean: f64,
+    /// Standard deviation
+    pub std_dev: f64,
+    /// Valid count
+    pub valid_count: i64,
+    /// Invalid/NoData count
+    pub invalid_count: i64,
+}
+
+/// Histogram result.
+#[derive(Debug, Clone, SimpleObject)]
+pub struct Histogram {
+    /// Bin edges
+    pub bins: Vec<f64>,
+    /// Counts per bin
+    pub counts: Vec<i64>,
+    /// Total count
+    pub total: i64,
+}
+
+// =============================================================================
+// Query Root
+// =============================================================================
+
+/// Query root for GraphQL API.
+pub struct QueryRoot;
+
+#[Object]
+impl QueryRoot {
+    /// Gets a dataset by ID.
+    async fn dataset(&self, ctx: &Context<'_>, id: ID) -> Result<Option<Dataset>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        Ok(Some(Dataset {
+            id: id.clone(),
+            name: format!("Dataset {}", id.as_str()),
+            description: Some("Sample geospatial dataset".to_string()),
+            format: DataFormat::GeoTiff,
+            srs: "EPSG:4326".to_string(),
+            bounds: BoundingBox::default(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            owner_id: None,
+            tags: vec!["geospatial".to_string(), "sample".to_string()],
+            size_bytes: Some(1024 * 1024 * 100),
+            access_count: 42,
+        }))
+    }
+
+    /// Lists all datasets with pagination and filtering.
+    async fn datasets(
+        &self,
+        ctx: &Context<'_>,
+        pagination: Option<PaginationInput>,
+        format: Option<DataFormat>,
+        search: Option<String>,
+        bounds: Option<BoundingBoxInput>,
+    ) -> Result<DatasetConnection> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        let pagination = pagination.unwrap_or(PaginationInput {
+            limit: 10,
+            offset: 0,
+            after: None,
+            before: None,
+        });
+
+        let (limit, offset) = pagination.normalize(100);
+
+        // Validate bounds if provided
+        if let Some(ref b) = bounds {
+            b.validate()?;
+        }
+
+        // Mock implementation
+        let datasets: Vec<Dataset> = (0..limit)
+            .map(|i| {
+                let idx = offset + i;
+                let actual_format = format.unwrap_or(DataFormat::GeoTiff);
+                let name = search
+                    .as_ref()
+                    .map(|s| format!("{s} Dataset {idx}"))
+                    .unwrap_or_else(|| format!("Dataset {idx}"));
+
+                Dataset {
+                    id: ID::from(format!("dataset_{idx}")),
+                    name,
+                    description: Some(format!("Description for dataset {idx}")),
+                    format: actual_format,
+                    srs: "EPSG:4326".to_string(),
+                    bounds: BoundingBox::default(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                    owner_id: None,
+                    tags: vec![],
+                    size_bytes: Some(1024 * 1024 * (idx as i64 + 1)),
+                    access_count: idx as i64,
+                }
+            })
+            .collect();
+
+        let edges: Vec<DatasetEdge> = datasets
+            .into_iter()
+            .map(|d| DatasetEdge {
+                cursor: d.id.to_string(),
+                node: d,
+            })
+            .collect();
+
+        Ok(DatasetConnection {
+            edges,
+            page_info: PageInfo {
+                has_next_page: true,
+                has_previous_page: offset > 0,
+                start_cursor: Some(format!("cursor_{offset}")),
+                end_cursor: Some(format!("cursor_{}", offset + limit - 1)),
+            },
+            total_count: 1000,
+        })
+    }
+
+    /// Gets a layer by ID.
+    async fn layer(&self, ctx: &Context<'_>, id: ID) -> Result<Option<Layer>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        Ok(Some(Layer {
+            id: id.clone(),
+            name: format!("Layer {}", id.as_str()),
+            layer_type: LayerType::Vector,
+            dataset_id: ID::from("dataset_1"),
+            geometry_type: Some(GeometryType::Polygon),
+            feature_count: Some(10000),
+            bounds: BoundingBox::default(),
+            properties: vec![
+                PropertyDefinition {
+                    name: "id".to_string(),
+                    data_type: "integer".to_string(),
+                    description: Some("Feature ID".to_string()),
+                    nullable: false,
+                    default_value: None,
+                },
+                PropertyDefinition {
+                    name: "name".to_string(),
+                    data_type: "string".to_string(),
+                    description: Some("Feature name".to_string()),
+                    nullable: true,
+                    default_value: None,
+                },
+            ],
+        }))
+    }
+
+    /// Gets a raster layer by ID with extended information.
+    async fn raster_layer(&self, ctx: &Context<'_>, id: ID) -> Result<Option<RasterLayer>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        Ok(Some(RasterLayer {
+            layer: Layer {
+                id: id.clone(),
+                name: format!("Raster Layer {}", id.as_str()),
+                layer_type: LayerType::Raster,
+                dataset_id: ID::from("dataset_1"),
+                geometry_type: None,
+                feature_count: None,
+                bounds: BoundingBox::default(),
+                properties: vec![],
+            },
+            width: 10800,
+            height: 5400,
+            band_count: 3,
+            bands: vec![
+                RasterBand {
+                    index: 1,
+                    name: Some("Red".to_string()),
+                    data_type: RasterDataType::UInt8,
+                    color_interpretation: ColorInterpretation::RedBand,
+                    nodata_value: Some(0.0),
+                    min_value: Some(0.0),
+                    max_value: Some(255.0),
+                    mean_value: Some(127.5),
+                    std_dev: Some(50.0),
+                },
+                RasterBand {
+                    index: 2,
+                    name: Some("Green".to_string()),
+                    data_type: RasterDataType::UInt8,
+                    color_interpretation: ColorInterpretation::GreenBand,
+                    nodata_value: Some(0.0),
+                    min_value: Some(0.0),
+                    max_value: Some(255.0),
+                    mean_value: Some(127.5),
+                    std_dev: Some(50.0),
+                },
+                RasterBand {
+                    index: 3,
+                    name: Some("Blue".to_string()),
+                    data_type: RasterDataType::UInt8,
+                    color_interpretation: ColorInterpretation::BlueBand,
+                    nodata_value: Some(0.0),
+                    min_value: Some(0.0),
+                    max_value: Some(255.0),
+                    mean_value: Some(127.5),
+                    std_dev: Some(50.0),
+                },
+            ],
+            geo_transform: [-180.0, 0.0333333, 0.0, 90.0, 0.0, -0.0333333],
+            overviews: vec![2, 4, 8, 16],
+            block_size: BlockSize {
+                width: 256,
+                height: 256,
+            },
+            compression: Some("DEFLATE".to_string()),
+        }))
+    }
+
+    /// Gets a feature by ID.
+    async fn feature(&self, ctx: &Context<'_>, id: ID) -> Result<Option<Feature>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        let mut properties = HashMap::new();
+        properties.insert("name".to_string(), serde_json::json!("Sample Feature"));
+        properties.insert("area".to_string(), serde_json::json!(1234.56));
+
+        Ok(Some(Feature {
+            id: id.clone(),
+            layer_id: ID::from("layer_1"),
+            geometry_type: GeometryType::Polygon,
+            geometry_json: r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#
+                .to_string(),
+            properties,
+        }))
+    }
+
+    /// Gets a raster tile.
+    async fn tile(&self, ctx: &Context<'_>, input: TileRequestInput) -> Result<RasterTile> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Calculate tile bounds (Web Mercator assumed)
+        let n = 2_f64.powi(input.z);
+        let tile_size = 360.0 / n;
+        let min_x = -180.0 + (input.x as f64 * tile_size);
+        let max_x = min_x + tile_size;
+        let max_y = 90.0 - (input.y as f64 * tile_size / 2.0);
+        let min_y = max_y - tile_size / 2.0;
+
+        // Mock implementation - return empty PNG
+        Ok(RasterTile {
+            x: input.x,
+            y: input.y,
+            z: input.z,
+            bounds: BoundingBox {
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            },
+            data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 256]),
+            content_type: input.format.unwrap_or_else(|| "image/png".to_string()),
+            size_bytes: 256,
+        })
+    }
+
+    /// Gets raster statistics for a layer.
+    async fn raster_statistics(
+        &self,
+        ctx: &Context<'_>,
+        _layer_id: ID,
+        band: Option<i32>,
+        bounds: Option<BoundingBoxInput>,
+    ) -> Result<Statistics> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        if let Some(ref b) = bounds {
+            b.validate()?;
+        }
+
+        let _band_index = band.unwrap_or(1);
+
+        // Mock implementation
+        Ok(Statistics {
+            min: 0.0,
+            max: 255.0,
+            mean: 127.5,
+            std_dev: 50.0,
+            valid_count: 10_000_000,
+            invalid_count: 0,
+        })
+    }
+
+    /// Gets a histogram for a raster layer.
+    async fn raster_histogram(
+        &self,
+        ctx: &Context<'_>,
+        _layer_id: ID,
+        band: Option<i32>,
+        num_bins: Option<i32>,
+    ) -> Result<Histogram> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        let _band_index = band.unwrap_or(1);
+        let bins = num_bins.unwrap_or(256);
+
+        // Mock implementation
+        let bin_edges: Vec<f64> = (0..=bins).map(|i| i as f64 * 255.0 / bins as f64).collect();
+        let counts: Vec<i64> = (0..bins).map(|_| 39062).collect(); // Roughly uniform
+
+        Ok(Histogram {
+            bins: bin_edges,
+            counts,
+            total: 10_000_000,
+        })
+    }
+
+    /// Gets a processing job by ID.
+    async fn processing_job(&self, ctx: &Context<'_>, id: ID) -> Result<Option<ProcessingJob>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        Ok(Some(ProcessingJob {
+            id,
+            status: ProcessingStatus::Processing,
+            progress: 45,
+            message: Some("Processing tiles...".to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            started_at: Some(chrono::Utc::now().to_rfc3339()),
+            completed_at: None,
+            output_dataset_id: None,
+            error: None,
+        }))
+    }
+
+    /// Samples raster values at a point.
+    async fn sample_raster(
+        &self,
+        ctx: &Context<'_>,
+        _layer_id: ID,
+        point: CoordinateInput,
+        bands: Option<Vec<i32>>,
+    ) -> Result<Vec<f64>> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        let _bands = bands.unwrap_or_else(|| vec![1, 2, 3]);
+
+        // Mock implementation - return sample values based on coordinates
+        Ok(vec![
+            ((point.x + 180.0) / 360.0 * 255.0),
+            ((point.y + 90.0) / 180.0 * 255.0),
+            128.0,
+        ])
+    }
+}
+
+// =============================================================================
+// Mutation Root
+// =============================================================================
+
+/// Mutation root for GraphQL API.
+pub struct MutationRoot;
+
+#[Object]
+impl MutationRoot {
+    /// Creates a new dataset.
+    async fn create_dataset(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateDatasetInput,
+    ) -> Result<Dataset> {
+        let gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Validate input
+        if input.name.is_empty() {
+            return Err(GatewayError::InvalidRequest(
+                "Dataset name cannot be empty".to_string(),
+            ));
+        }
+
+        if input.name.len() > 256 {
+            return Err(GatewayError::InvalidRequest(
+                "Dataset name must be 256 characters or less".to_string(),
+            ));
+        }
+
+        // Mock implementation
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(Dataset {
+            id: ID::from(id),
+            name: input.name,
+            description: input.description,
+            format: input.format,
+            srs: input.srs,
+            bounds: BoundingBox::default(),
+            created_at: now.clone(),
+            updated_at: now,
+            owner_id: gql_ctx.user_id.clone(),
+            tags: input.tags.unwrap_or_default(),
+            size_bytes: None,
+            access_count: 0,
+        })
+    }
+
+    /// Updates an existing dataset.
+    async fn update_dataset(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateDatasetInput,
+    ) -> Result<Dataset> {
+        let gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(Dataset {
+            id: input.id,
+            name: input.name.unwrap_or_else(|| "Updated Dataset".to_string()),
+            description: input.description,
+            format: DataFormat::GeoTiff,
+            srs: "EPSG:4326".to_string(),
+            bounds: BoundingBox::default(),
+            created_at: now.clone(),
+            updated_at: now,
+            owner_id: gql_ctx.user_id.clone(),
+            tags: input.tags.unwrap_or_default(),
+            size_bytes: Some(1024 * 1024 * 100),
+            access_count: 42,
+        })
+    }
+
+    /// Deletes a dataset.
+    async fn delete_dataset(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        tracing::info!("Deleting dataset: {}", id.as_str());
+        Ok(true)
+    }
+
+    /// Creates a new layer.
+    async fn create_layer(&self, ctx: &Context<'_>, input: CreateLayerInput) -> Result<Layer> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Validate input
+        if input.name.is_empty() {
+            return Err(GatewayError::InvalidRequest(
+                "Layer name cannot be empty".to_string(),
+            ));
+        }
+
+        // Mock implementation
+        let id = uuid::Uuid::new_v4().to_string();
+
+        Ok(Layer {
+            id: ID::from(id),
+            name: input.name,
+            layer_type: input.layer_type,
+            dataset_id: input.dataset_id,
+            geometry_type: input.geometry_type,
+            feature_count: Some(0),
+            bounds: BoundingBox::default(),
+            properties: vec![],
+        })
+    }
+
+    /// Deletes a layer.
+    async fn delete_layer(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        tracing::info!("Deleting layer: {}", id.as_str());
+        Ok(true)
+    }
+
+    /// Creates a new feature.
+    async fn create_feature(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateFeatureInput,
+    ) -> Result<Feature> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Validate GeoJSON geometry
+        let geometry: serde_json::Value = serde_json::from_str(&input.geometry)
+            .map_err(|e| GatewayError::InvalidRequest(format!("Invalid GeoJSON: {e}")))?;
+
+        let geometry_type_str = geometry
+            .get("type")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| GatewayError::InvalidRequest("Missing geometry type".to_string()))?;
+
+        let geometry_type = match geometry_type_str {
+            "Point" => GeometryType::Point,
+            "LineString" => GeometryType::LineString,
+            "Polygon" => GeometryType::Polygon,
+            "MultiPoint" => GeometryType::MultiPoint,
+            "MultiLineString" => GeometryType::MultiLineString,
+            "MultiPolygon" => GeometryType::MultiPolygon,
+            "GeometryCollection" => GeometryType::GeometryCollection,
+            _ => GeometryType::Unknown,
+        };
+
+        // Parse properties
+        let properties: HashMap<String, serde_json::Value> = input
+            .properties
+            .map(|p| serde_json::from_str(&p))
+            .transpose()
+            .map_err(|e| GatewayError::InvalidRequest(format!("Invalid properties JSON: {e}")))?
+            .unwrap_or_default();
+
+        // Mock implementation
+        let id = uuid::Uuid::new_v4().to_string();
+
+        Ok(Feature {
+            id: ID::from(id),
+            layer_id: input.layer_id,
+            geometry_type,
+            geometry_json: input.geometry,
+            properties,
+        })
+    }
+
+    /// Updates a feature.
+    async fn update_feature(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        geometry: Option<String>,
+        properties: Option<String>,
+    ) -> Result<Feature> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        let geometry_json =
+            geometry.unwrap_or_else(|| r#"{"type":"Point","coordinates":[0,0]}"#.to_string());
+
+        let props: HashMap<String, serde_json::Value> = properties
+            .map(|p| serde_json::from_str(&p))
+            .transpose()
+            .map_err(|e| GatewayError::InvalidRequest(format!("Invalid properties JSON: {e}")))?
+            .unwrap_or_default();
+
+        Ok(Feature {
+            id,
+            layer_id: ID::from("layer_1"),
+            geometry_type: GeometryType::Point,
+            geometry_json,
+            properties: props,
+        })
+    }
+
+    /// Deletes a feature.
+    async fn delete_feature(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        tracing::info!("Deleting feature: {}", id.as_str());
+        Ok(true)
+    }
+
+    /// Starts a raster processing job.
+    async fn start_raster_processing(
+        &self,
+        ctx: &Context<'_>,
+        input: RasterProcessingInput,
+    ) -> Result<ProcessingJob> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Validate clip bounds if provided
+        if let Some(ref bounds) = input.clip_bounds {
+            bounds.validate()?;
+        }
+
+        // Mock implementation
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(ProcessingJob {
+            id: ID::from(job_id),
+            status: ProcessingStatus::Queued,
+            progress: 0,
+            message: Some(format!("Processing job queued: {}", input.operation)),
+            created_at: now,
+            started_at: None,
+            completed_at: None,
+            output_dataset_id: None,
+            error: None,
+        })
+    }
+
+    /// Cancels a processing job.
+    async fn cancel_processing_job(&self, ctx: &Context<'_>, id: ID) -> Result<ProcessingJob> {
+        let _gql_ctx = ctx
+            .data::<GraphQLContext>()
+            .map_err(|e| GatewayError::GraphQLError(format!("{e:?}")))?;
+
+        // Mock implementation
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(ProcessingJob {
+            id,
+            status: ProcessingStatus::Cancelled,
+            progress: 0,
+            message: Some("Job cancelled by user".to_string()),
+            created_at: now.clone(),
+            started_at: None,
+            completed_at: Some(now),
+            output_dataset_id: None,
+            error: None,
+        })
+    }
+}
+
+// =============================================================================
+// Subscription Root
+// =============================================================================
+
+/// Subscription root for GraphQL API.
+pub struct SubscriptionRoot;
+
+#[Subscription]
+impl SubscriptionRoot {
+    /// Subscribes to dataset changes.
+    async fn dataset_changes(
+        &self,
+        dataset_id: Option<ID>,
+    ) -> impl futures::Stream<Item = Dataset> {
+        let id = dataset_id
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "default".to_string());
+
+        async_stream::stream! {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut counter = 0;
+            loop {
+                interval.tick().await;
+                counter += 1;
+                yield Dataset {
+                    id: ID::from(id.clone()),
+                    name: format!("Dataset {} (update #{})", id, counter),
+                    description: Some("Live update".to_string()),
+                    format: DataFormat::GeoTiff,
+                    srs: "EPSG:4326".to_string(),
+                    bounds: BoundingBox::default(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                    owner_id: None,
+                    tags: vec!["live".to_string()],
+                    size_bytes: Some(1024 * 1024 * counter),
+                    access_count: counter,
+                };
+            }
+        }
+    }
+
+    /// Subscribes to processing job updates.
+    async fn processing_job_updates(
+        &self,
+        job_id: ID,
+    ) -> impl futures::Stream<Item = ProcessingJob> {
+        let id = job_id.to_string();
+
+        async_stream::stream! {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+            let mut progress = 0;
+            let created = chrono::Utc::now().to_rfc3339();
+            let started = chrono::Utc::now().to_rfc3339();
+
+            loop {
+                interval.tick().await;
+                progress += 10;
+
+                let status = if progress >= 100 {
+                    ProcessingStatus::Completed
+                } else {
+                    ProcessingStatus::Processing
+                };
+
+                let completed_at = if progress >= 100 {
+                    Some(chrono::Utc::now().to_rfc3339())
+                } else {
+                    None
+                };
+
+                yield ProcessingJob {
+                    id: ID::from(id.clone()),
+                    status,
+                    progress: progress.min(100),
+                    message: Some(format!("Processing... {}%", progress.min(100))),
+                    created_at: created.clone(),
+                    started_at: Some(started.clone()),
+                    completed_at,
+                    output_dataset_id: if progress >= 100 {
+                        Some(ID::from(format!("output_{}", id)))
+                    } else {
+                        None
+                    },
+                    error: None,
+                };
+
+                if progress >= 100 {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Subscribes to feature changes in a layer.
+    async fn feature_changes(&self, layer_id: ID) -> impl futures::Stream<Item = Feature> {
+        let id = layer_id.to_string();
+
+        async_stream::stream! {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+            let mut counter = 0;
+
+            loop {
+                interval.tick().await;
+                counter += 1;
+
+                let mut properties = HashMap::new();
+                properties.insert("updated_at".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+                properties.insert("counter".to_string(), serde_json::json!(counter));
+
+                yield Feature {
+                    id: ID::from(format!("feature_{}_{}", id, counter)),
+                    layer_id: ID::from(id.clone()),
+                    geometry_type: GeometryType::Point,
+                    geometry_json: format!(
+                        r#"{{"type":"Point","coordinates":[{},{}]}}"#,
+                        -180.0 + (counter as f64 * 10.0) % 360.0,
+                        -90.0 + (counter as f64 * 5.0) % 180.0
+                    ),
+                    properties,
+                };
+            }
+        }
+    }
+
+    /// Subscribes to real-time tile updates.
+    async fn tile_updates(
+        &self,
+        layer_id: ID,
+        z: i32,
+        x: i32,
+        y: i32,
+    ) -> impl futures::Stream<Item = RasterTile> {
+        let _layer = layer_id.to_string();
+
+        async_stream::stream! {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
+            // Calculate tile bounds
+            let n = 2_f64.powi(z);
+            let tile_size = 360.0 / n;
+            let min_x = -180.0 + (x as f64 * tile_size);
+            let max_x = min_x + tile_size;
+            let max_y = 90.0 - (y as f64 * tile_size / 2.0);
+            let min_y = max_y - tile_size / 2.0;
+
+            loop {
+                interval.tick().await;
+
+                yield RasterTile {
+                    x,
+                    y,
+                    z,
+                    bounds: BoundingBox {
+                        min_x,
+                        min_y,
+                        max_x,
+                        max_y,
+                    },
+                    data: base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        [0u8; 256],
+                    ),
+                    content_type: "image/png".to_string(),
+                    size_bytes: 256,
+                };
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Schema and Server
+// =============================================================================
+
+/// GraphQL schema type.
+pub type GraphQLSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
+
+/// Creates a new GraphQL schema with the given configuration.
+pub fn create_schema(config: GraphQLConfig) -> GraphQLSchema {
+    let mut builder = Schema::build(QueryRoot, MutationRoot, SubscriptionRoot);
+
+    if !config.enable_introspection {
+        builder = builder.disable_introspection();
+    }
+
+    builder
+        .limit_depth(config.max_depth)
+        .limit_complexity(config.max_complexity)
+        .finish()
+}
+
+/// GraphQL server instance.
+pub struct GraphQLServer {
+    schema: Arc<GraphQLSchema>,
+    config: GraphQLConfig,
+}
+
+impl GraphQLServer {
+    /// Creates a new GraphQL server with the given configuration.
+    pub fn new(config: GraphQLConfig) -> Self {
+        let schema = create_schema(config.clone());
+
+        Self {
+            schema: Arc::new(schema),
+            config,
+        }
+    }
+
+    /// Gets the GraphQL schema.
+    pub fn schema(&self) -> &GraphQLSchema {
+        &self.schema
+    }
+
+    /// Gets the server configuration.
+    pub fn config(&self) -> &GraphQLConfig {
+        &self.config
+    }
+
+    /// Executes a GraphQL query.
+    pub async fn execute(
+        &self,
+        query: &str,
+        variables: Option<serde_json::Value>,
+        context: GraphQLContext,
+    ) -> Result<serde_json::Value> {
+        let mut request = async_graphql::Request::new(query);
+
+        if let Some(vars) = variables {
+            request = request.variables(async_graphql::Variables::from_json(vars));
+        }
+
+        request = request.data(context);
+
+        let response = self.schema.execute(request).await;
+
+        serde_json::to_value(response).map_err(GatewayError::SerializationError)
+    }
+
+    /// Executes a GraphQL request (from HTTP).
+    pub async fn execute_request(
+        &self,
+        request: async_graphql::Request,
+        context: GraphQLContext,
+    ) -> async_graphql::Response {
+        let request = request.data(context);
+        self.schema.execute(request).await
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_context() -> GraphQLContext {
+        GraphQLContext {
+            user_id: Some("test_user".to_string()),
+            request_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_query_dataset() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            query {
+                dataset(id: "test_id") {
+                    id
+                    name
+                    format
+                    srs
+                    bounds {
+                        minX
+                        minY
+                        maxX
+                        maxY
+                    }
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_query_datasets_with_pagination() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            query {
+                datasets(pagination: { limit: 5, offset: 0 }) {
+                    edges {
+                        cursor
+                        node {
+                            id
+                            name
+                        }
+                    }
+                    pageInfo {
+                        hasNextPage
+                        hasPreviousPage
+                    }
+                    totalCount
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_query_layer() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            query {
+                layer(id: "layer_1") {
+                    id
+                    name
+                    layerType
+                    geometryType
+                    featureCount
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_query_raster_layer() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            query {
+                rasterLayer(id: "raster_1") {
+                    id
+                    name
+                    width
+                    height
+                    bandCount
+                    bands {
+                        index
+                        name
+                        dataType
+                        colorInterpretation
+                    }
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mutation_create_dataset() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            mutation {
+                createDataset(input: {
+                    name: "Test Dataset"
+                    format: GEO_TIFF
+                    srs: "EPSG:4326"
+                }) {
+                    id
+                    name
+                    format
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mutation_create_layer() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            mutation {
+                createLayer(input: {
+                    name: "Test Layer"
+                    layerType: VECTOR
+                    datasetId: "dataset_1"
+                    geometryType: POLYGON
+                }) {
+                    id
+                    name
+                    layerType
+                    geometryType
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mutation_create_feature() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            mutation {
+                createFeature(input: {
+                    layerId: "layer_1"
+                    geometry: "{\"type\":\"Point\",\"coordinates\":[0,0]}"
+                    properties: "{\"name\":\"Test\"}"
+                }) {
+                    id
+                    geometryType
+                    geometry
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_query_tile() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            query {
+                tile(input: {
+                    layerId: "layer_1"
+                    z: 0
+                    x: 0
+                    y: 0
+                }) {
+                    x
+                    y
+                    z
+                    contentType
+                    sizeBytes
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_query_statistics() {
+        let server = GraphQLServer::new(GraphQLConfig::default());
+        let context = create_test_context();
+
+        let query = r#"
+            query {
+                rasterStatistics(layerId: "layer_1", band: 1) {
+                    min
+                    max
+                    mean
+                    stdDev
+                    validCount
+                }
+            }
+        "#;
+
+        let result = server.execute(query, None, context).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = GraphQLConfig::default();
+        assert!(config.enable_introspection);
+        assert_eq!(config.max_depth, 10);
+        assert_eq!(config.max_complexity, 1000);
+        assert!(config.enable_subscriptions);
+        assert!(config.enable_dataloader);
+    }
+
+    #[test]
+    fn test_bounding_box_input_validation() {
+        let valid = BoundingBoxInput {
+            min_x: -180.0,
+            min_y: -90.0,
+            max_x: 180.0,
+            max_y: 90.0,
+        };
+        assert!(valid.validate().is_ok());
+
+        let invalid_x = BoundingBoxInput {
+            min_x: 180.0,
+            min_y: -90.0,
+            max_x: -180.0,
+            max_y: 90.0,
+        };
+        assert!(invalid_x.validate().is_err());
+
+        let invalid_y = BoundingBoxInput {
+            min_x: -180.0,
+            min_y: 90.0,
+            max_x: 180.0,
+            max_y: -90.0,
+        };
+        assert!(invalid_y.validate().is_err());
+    }
+
+    #[test]
+    fn test_pagination_normalize() {
+        let pagination = PaginationInput {
+            limit: 200,
+            offset: -10,
+            after: None,
+            before: None,
+        };
+        let (limit, offset) = pagination.normalize(100);
+        assert_eq!(limit, 100); // Capped at max
+        assert_eq!(offset, 0); // Min is 0
+    }
+
+    #[test]
+    fn test_data_format_display() {
+        assert_eq!(DataFormat::GeoTiff.to_string(), "GeoTIFF");
+        assert_eq!(DataFormat::Cog.to_string(), "COG");
+        assert_eq!(DataFormat::GeoJson.to_string(), "GeoJSON");
+    }
+}

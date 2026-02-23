@@ -1,0 +1,42 @@
+[package]
+name = "oxigdal-wasm"
+description = "WebAssembly bindings for OxiGDAL - Browser-based geospatial processing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-wasm"
+readme = "README.md"
+keywords = ["wasm", "science", "cog", "browser", "webassembly"]
+categories = ["wasm", "science", "web-programming"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+oxigdal-geotiff = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+
+# Error handling
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true

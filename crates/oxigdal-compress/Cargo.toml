@@ -1,0 +1,57 @@
+[package]
+name = "oxigdal-compress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-compress"
+readme = "README.md"
+description = "Advanced compression codecs and auto-selection for geospatial data"
+keywords = ["compression", "science", "codec", "zstd", "lz4"]
+categories = ["compression", "science", "encoding"]
+
+[dependencies]
+# Workspace dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+rayon = { workspace = true, optional = true }
+num-traits = { workspace = true }
+dashmap = { workspace = true }
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+
+# Compression libraries
+lz4 = { workspace = true }
+zstd = { workspace = true, features = ["zdict_builder"] }
+flate2 = { workspace = true }
+brotli = "7"
+snap = "1"
+
+# Additional dependencies
+bytemuck = { workspace = true }
+ahash = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = ["parallel"]
+parallel = ["rayon"]
+async = ["tokio", "futures", "async-trait"]
+all = ["parallel", "async"]
+
+[[bench]]
+name = "compression_bench"
+harness = false
+
+[lints]
+workspace = true

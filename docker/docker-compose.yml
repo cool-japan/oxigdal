@@ -1,0 +1,211 @@
+# OxiGDAL Docker Compose - Production Configuration
+# Multi-service composition for production deployment
+# Author: COOLJAPAN OU (Team Kitasan)
+
+version: '3.9'
+
+services:
+  # OxiGDAL tile server - WMS/WMTS/WFS
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    image: oxigdal/server:latest
+    container_name: oxigdal-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # HTTP server
+      - "8081:8081"  # Metrics endpoint
+    volumes:
+      - data:/data:ro  # Read-only data volume
+      - cache:/cache   # Cache volume
+      - ./config/server.toml:/config/server.toml:ro
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+      - OXIGDAL_HOST=0.0.0.0
+      - OXIGDAL_PORT=8080
+      - OXIGDAL_DATA_DIR=/data
+      - OXIGDAL_CACHE_DIR=/cache
+      - OXIGDAL_CACHE_SIZE=${OXIGDAL_CACHE_SIZE:-1024}
+      - OXIGDAL_MAX_TILE_AGE=${OXIGDAL_MAX_TILE_AGE:-3600}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - oxigdal-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  # PostgreSQL with PostGIS for vector data
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: oxigdal-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-oxigdal}
+      - POSTGRES_USER=${POSTGRES_USER:-oxigdal}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oxigdal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - oxigdal-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: oxigdal-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - oxigdal-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: oxigdal-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - oxigdal-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: oxigdal-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/oxigdal.json:ro
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    networks:
+      - oxigdal-network
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: oxigdal-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      - server
+    networks:
+      - oxigdal-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+networks:
+  oxigdal-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${DATA_PATH:-./data}
+      o: bind
+  cache:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  nginx-logs:
+    driver: local

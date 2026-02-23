@@ -1,0 +1,81 @@
+[package]
+name = "oxigdal-ml-foundation"
+description = "Deep learning training infrastructure and model architectures for OxiGDAL - Transfer learning, training loops, optimizers, and augmentation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-ml-foundation"
+readme = "README.md"
+keywords = ["gdal", "science", "deep-learning", "training", "transfer-learning"]
+categories = ["science", "graphics", "algorithms"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std", "oxigdal-core/std"]
+# SciRS2 ML backend for training (Pure Rust - COOLJAPAN compliant)
+ml = ["dep:scirs2-neural", "dep:scirs2-autograd", "dep:scirs2-optimize", "dep:scirs2-datasets", "dep:scirs2-metrics", "dep:scirs2-linalg"]
+# ONNX export support
+onnx = []
+# GPU acceleration with scirs2-core backends
+gpu = ["ml", "scirs2-core/gpu"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# OxiGDAL ecosystem
+oxigdal-core = { workspace = true }
+oxigdal-geotiff = { workspace = true }
+
+# Numerical computing - Pure Rust
+# Using scirs2-core for COOLJAPAN compliance (Pure Rust Policy)
+scirs2-core = { workspace = true, features = ["random"] }
+ndarray = { workspace = true }  # Temporary, will migrate to scirs2-core
+num-traits = { workspace = true }
+
+# Image processing
+image = { workspace = true }
+
+# Random number generation
+getrandom = { workspace = true }
+
+# SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant, replaces tch-rs)
+scirs2-neural = { workspace = true, optional = true }
+scirs2-autograd = { workspace = true, optional = true }
+scirs2-optimize = { workspace = true, optional = true }
+scirs2-datasets = { workspace = true, optional = true }
+scirs2-metrics = { workspace = true, optional = true }
+scirs2-linalg = { workspace = true, optional = true }
+
+# Parallel processing
+rayon = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization for checkpoints
+byteorder = { workspace = true }
+chrono = { workspace = true }
+
+# Caching for data pipeline
+lru = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+
+[[bench]]
+name = "training_benchmark"
+harness = false
+
+[lints]
+workspace = true

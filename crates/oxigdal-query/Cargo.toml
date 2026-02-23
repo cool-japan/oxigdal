@@ -1,0 +1,67 @@
+[package]
+name = "oxigdal-query"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-query"
+readme = "README.md"
+keywords = ["science", "query", "sql", "optimization", "gis"]
+categories = ["database", "parser-implementations", "data-structures"]
+description = "SQL-like query language and cost-based optimizer for geospatial data"
+
+[dependencies]
+# Core dependencies
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+futures.workspace = true
+async-trait.workspace = true
+
+# Query parsing
+sqlparser = "0.52"
+
+# Concurrency
+dashmap.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+crossbeam.workspace = true
+crossbeam-channel.workspace = true
+
+# Internal dependencies
+oxigdal-core.workspace = true
+
+# Utilities
+chrono.workspace = true
+ahash.workspace = true
+blake3.workspace = true
+
+# Data structures
+rstar.workspace = true
+geo-types.workspace = true
+geo.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+approx.workspace = true
+
+[[bench]]
+name = "query_bench"
+harness = false
+
+[lints]
+workspace = true

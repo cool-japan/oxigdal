@@ -1,0 +1,86 @@
+[package]
+name = "oxigdal-temporal"
+description = "Multi-temporal raster analysis for OxiGDAL - Time series, change detection, phenology, and data cube operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-temporal"
+readme = "README.md"
+keywords = ["gdal", "science", "timeseries", "temporal", "datacube"]
+categories = ["science", "algorithms", "data-structures"]
+
+[features]
+default = [
+    "std",
+    "timeseries",
+    "compositing",
+    "interpolation",
+    "aggregation",
+    "change_detection",
+    "trend_analysis",
+    "phenology",
+]
+std = ["thiserror/std", "serde/std", "chrono/std"]
+alloc = []
+timeseries = []
+compositing = []
+interpolation = []
+aggregation = []
+change_detection = []
+trend_analysis = []
+phenology = []
+datacube = []
+zarr = ["dep:oxigdal-zarr", "oxigdal-zarr?/v3", "oxigdal-zarr?/memory"]
+filesystem = ["zarr", "oxigdal-zarr?/filesystem"]
+parallel = ["dep:rayon"]
+all_temporal = [
+    "timeseries",
+    "compositing",
+    "interpolation",
+    "aggregation",
+    "change_detection",
+    "trend_analysis",
+    "phenology",
+    "datacube",
+    "parallel",
+    "zarr",
+    "filesystem",
+]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+oxigdal-analytics = { workspace = true }
+oxigdal-zarr = { workspace = true, optional = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+num-traits = { workspace = true }
+approx = { workspace = true }
+
+# Scientific computing - Use SciRS2 ecosystem
+# Note: scirs2-core includes ndarray as required dependency
+scirs2-core = { version = "0.2.0", features = ["array", "array_stats", "linalg", "random"] }
+
+# Parallelization
+rayon = { workspace = true, optional = true }
+
+# Async support for data cube operations
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,316 @@
+//! CloudWatch monitoring integration
+
+use crate::error::{KinesisError, Result};
+use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::{Dimension, MetricDatum, StandardUnit, Statistic};
+use chrono::{DateTime, Utc};
+use std::sync::Arc;
+use tracing::debug;
+
+/// Parameters for getting metric statistics
+pub struct MetricStatisticsParams<'a> {
+    /// CloudWatch namespace
+    pub namespace: &'a str,
+    /// Metric name
+    pub metric_name: &'a str,
+    /// Metric dimensions (name, value pairs)
+    pub dimensions: Vec<(&'a str, &'a str)>,
+    /// Start time for metrics query
+    pub start_time: DateTime<Utc>,
+    /// End time for metrics query
+    pub end_time: DateTime<Utc>,
+    /// Period in seconds for data points
+    pub period_seconds: i32,
+    /// Statistics to retrieve (e.g., "Average", "Sum", "Maximum")
+    pub statistics: Vec<&'a str>,
+}
+
+/// CloudWatch monitor
+pub struct CloudWatchMonitor {
+    client: Arc<CloudWatchClient>,
+}
+
+impl CloudWatchMonitor {
+    /// Creates a new CloudWatch monitor
+    pub fn new(client: CloudWatchClient) -> Self {
+        Self {
+            client: Arc::new(client),
+        }
+    }
+
+    /// Gets metric statistics from CloudWatch
+    pub async fn get_metric_statistics(
+        &self,
+        params: MetricStatisticsParams<'_>,
+    ) -> Result<Vec<f64>> {
+        let dims: Vec<Dimension> = params
+            .dimensions
+            .into_iter()
+            .map(|(name, value)| Dimension::builder().name(name).value(value).build())
+            .collect();
+
+        let stats: Vec<Statistic> = params.statistics.into_iter().map(Statistic::from).collect();
+
+        let response = self
+            .client
+            .get_metric_statistics()
+            .namespace(params.namespace)
+            .metric_name(params.metric_name)
+            .set_dimensions(Some(dims))
+            .start_time(aws_sdk_cloudwatch::primitives::DateTime::from_secs(
+                params.start_time.timestamp(),
+            ))
+            .end_time(aws_sdk_cloudwatch::primitives::DateTime::from_secs(
+                params.end_time.timestamp(),
+            ))
+            .period(params.period_seconds)
+            .set_statistics(Some(stats))
+            .send()
+            .await
+            .map_err(|e| KinesisError::Monitoring {
+                message: e.to_string(),
+            })?;
+
+        let mut values = Vec::new();
+        for datapoint in response.datapoints() {
+            if let Some(avg) = datapoint.average() {
+                values.push(avg);
+            }
+        }
+
+        Ok(values)
+    }
+
+    /// Puts a metric to CloudWatch
+    pub async fn put_metric(
+        &self,
+        namespace: &str,
+        metric_name: &str,
+        value: f64,
+        unit: &str,
+        dimensions: Vec<(&str, &str)>,
+    ) -> Result<()> {
+        let dims: Vec<Dimension> = dimensions
+            .into_iter()
+            .map(|(name, value)| Dimension::builder().name(name).value(value).build())
+            .collect();
+
+        let metric = MetricDatum::builder()
+            .metric_name(metric_name)
+            .value(value)
+            .unit(StandardUnit::from(unit))
+            .set_dimensions(Some(dims))
+            .timestamp(aws_sdk_cloudwatch::primitives::DateTime::from_secs(
+                Utc::now().timestamp(),
+            ))
+            .build();
+
+        self.client
+            .put_metric_data()
+            .namespace(namespace)
+            .metric_data(metric)
+            .send()
+            .await
+            .map_err(|e| KinesisError::Monitoring {
+                message: e.to_string(),
+            })?;
+
+        debug!("Put metric: {} = {}", metric_name, value);
+        Ok(())
+    }
+
+    /// Puts multiple metrics to CloudWatch
+    pub async fn put_metrics(&self, namespace: &str, metrics: Vec<MetricData>) -> Result<()> {
+        let metric_data: Vec<MetricDatum> = metrics
+            .into_iter()
+            .map(|m| {
+                let dims: Vec<Dimension> = m
+                    .dimensions
+                    .into_iter()
+                    .map(|(name, value)| Dimension::builder().name(name).value(value).build())
+                    .collect();
+
+                MetricDatum::builder()
+                    .metric_name(&m.metric_name)
+                    .value(m.value)
+                    .unit(StandardUnit::from(m.unit.as_str()))
+                    .set_dimensions(Some(dims))
+                    .timestamp(aws_sdk_cloudwatch::primitives::DateTime::from_secs(
+                        m.timestamp.timestamp(),
+                    ))
+                    .build()
+            })
+            .collect();
+
+        let count = metric_data.len();
+        self.client
+            .put_metric_data()
+            .namespace(namespace)
+            .set_metric_data(Some(metric_data))
+            .send()
+            .await
+            .map_err(|e| KinesisError::Monitoring {
+                message: e.to_string(),
+            })?;
+
+        debug!("Put {} metrics", count);
+        Ok(())
+    }
+
+    /// Describes alarms for a metric
+    pub async fn describe_alarms_for_metric(
+        &self,
+        namespace: &str,
+        metric_name: &str,
+        dimensions: Vec<(&str, &str)>,
+    ) -> Result<Vec<String>> {
+        let dims: Vec<Dimension> = dimensions
+            .into_iter()
+            .map(|(name, value)| Dimension::builder().name(name).value(value).build())
+            .collect();
+
+        let response = self
+            .client
+            .describe_alarms_for_metric()
+            .namespace(namespace)
+            .metric_name(metric_name)
+            .set_dimensions(Some(dims))
+            .send()
+            .await
+            .map_err(|e| KinesisError::Monitoring {
+                message: e.to_string(),
+            })?;
+
+        Ok(response
+            .metric_alarms()
+            .iter()
+            .filter_map(|a| a.alarm_name().map(|n| n.to_string()))
+            .collect())
+    }
+}
+
+/// Metric data structure
+pub struct MetricData {
+    /// Metric name
+    pub metric_name: String,
+    /// Metric value
+    pub value: f64,
+    /// Unit
+    pub unit: String,
+    /// Dimensions
+    pub dimensions: Vec<(String, String)>,
+    /// Timestamp
+    pub timestamp: DateTime<Utc>,
+}
+
+impl MetricData {
+    /// Creates a new metric data
+    pub fn new(metric_name: impl Into<String>, value: f64, unit: impl Into<String>) -> Self {
+        Self {
+            metric_name: metric_name.into(),
+            value,
+            unit: unit.into(),
+            dimensions: Vec::new(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// Adds a dimension
+    pub fn add_dimension(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.dimensions.push((name.into(), value.into()));
+        self
+    }
+
+    /// Sets the timestamp
+    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+        self.timestamp = timestamp;
+        self
+    }
+}
+
+/// Metric filter for querying metrics
+pub struct MetricFilter {
+    /// Namespace
+    pub namespace: String,
+    /// Metric name
+    pub metric_name: String,
+    /// Dimensions
+    pub dimensions: Vec<(String, String)>,
+    /// Start time
+    pub start_time: DateTime<Utc>,
+    /// End time
+    pub end_time: DateTime<Utc>,
+    /// Period in seconds
+    pub period_seconds: i32,
+}
+
+impl MetricFilter {
+    /// Creates a new metric filter
+    pub fn new(namespace: impl Into<String>, metric_name: impl Into<String>) -> Self {
+        let now = Utc::now();
+        Self {
+            namespace: namespace.into(),
+            metric_name: metric_name.into(),
+            dimensions: Vec::new(),
+            start_time: now - chrono::Duration::try_hours(1).unwrap_or_default(),
+            end_time: now,
+            period_seconds: 300,
+        }
+    }
+
+    /// Adds a dimension
+    pub fn add_dimension(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.dimensions.push((name.into(), value.into()));
+        self
+    }
+
+    /// Sets the time range
+    pub fn with_time_range(mut self, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
+        self.start_time = start;
+        self.end_time = end;
+        self
+    }
+
+    /// Sets the period
+    pub fn with_period_seconds(mut self, seconds: i32) -> Self {
+        self.period_seconds = seconds;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metric_data_creation() {
+        let metric = MetricData::new("TestMetric", 123.45, "Count")
+            .add_dimension("StreamName", "test-stream")
+            .add_dimension("ShardId", "shard-0001");
+
+        assert_eq!(metric.metric_name, "TestMetric");
+        assert_eq!(metric.value, 123.45);
+        assert_eq!(metric.unit, "Count");
+        assert_eq!(metric.dimensions.len(), 2);
+    }
+
+    #[test]
+    fn test_metric_filter_creation() {
+        let filter = MetricFilter::new("AWS/Kinesis", "IncomingRecords")
+            .add_dimension("StreamName", "test-stream")
+            .with_period_seconds(60);
+
+        assert_eq!(filter.namespace, "AWS/Kinesis");
+        assert_eq!(filter.metric_name, "IncomingRecords");
+        assert_eq!(filter.period_seconds, 60);
+        assert_eq!(filter.dimensions.len(), 1);
+    }
+
+    #[test]
+    fn test_metric_data_with_timestamp() {
+        let timestamp = Utc::now();
+        let metric = MetricData::new("TestMetric", 100.0, "Count").with_timestamp(timestamp);
+
+        assert_eq!(metric.timestamp, timestamp);
+    }
+}

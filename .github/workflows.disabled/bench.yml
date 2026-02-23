@@ -1,0 +1,287 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Run benchmarks and compare with baseline
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench-cache"
+          cache-on-failure: true
+
+      - name: Download baseline benchmark (if exists)
+        uses: actions/cache@v4
+        with:
+          path: ./target/criterion
+          key: benchmark-baseline-${{ runner.os }}-${{ github.base_ref || 'main' }}
+          restore-keys: |
+            benchmark-baseline-${{ runner.os }}-
+
+      - name: Run benchmarks
+        run: |
+          cargo bench --workspace --all-features -- --save-baseline current
+
+      - name: Store benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            target/criterion/
+            !target/criterion/**/*.csv
+          retention-days: 30
+
+      - name: Upload HTML reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-html-reports
+          path: target/criterion/**/report/
+          retention-days: 30
+
+      - name: Save baseline for next run
+        uses: actions/cache/save@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: ./target/criterion
+          key: benchmark-baseline-${{ runner.os }}-${{ github.ref_name }}
+
+  # Compare benchmark results with baseline
+  benchmark-compare:
+    name: Compare with Baseline
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench-compare-cache"
+          cache-on-failure: true
+
+      - name: Install critcmp
+        run: cargo install critcmp
+
+      - name: Download baseline from main branch
+        uses: actions/cache@v4
+        with:
+          path: ./baseline-criterion
+          key: benchmark-baseline-${{ runner.os }}-main
+          restore-keys: |
+            benchmark-baseline-${{ runner.os }}-
+
+      - name: Run baseline benchmarks (main)
+        if: github.base_ref == 'main'
+        run: |
+          git checkout main
+          cargo bench --workspace --all-features -- --save-baseline main
+          git checkout ${{ github.head_ref }}
+
+      - name: Run current benchmarks
+        run: |
+          cargo bench --workspace --all-features -- --save-baseline current
+
+      - name: Compare benchmarks
+        run: |
+          critcmp main current > comparison.txt || true
+          cat comparison.txt
+
+      - name: Generate comparison summary
+        run: |
+          echo "# Benchmark Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat comparison.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison
+          path: comparison.txt
+          retention-days: 30
+
+  # Continuous benchmarking with criterion
+  benchmark-continuous:
+    name: Continuous Benchmark Tracking
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench-continuous-cache"
+          cache-on-failure: true
+
+      - name: Run benchmarks
+        run: |
+          cargo bench --workspace --all-features -- --output-format bencher > bench-output.txt
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: OxiGDAL Benchmarks
+          tool: 'cargo'
+          output-file-path: bench-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
+
+  # Performance regression detection
+  regression-check:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "regression-cache"
+          cache-on-failure: true
+
+      - name: Install cargo-criterion
+        run: cargo install cargo-criterion
+
+      - name: Run benchmarks with regression detection
+        run: |
+          cargo criterion --workspace --all-features --message-format json > criterion-output.json
+
+      - name: Analyze regressions
+        run: |
+          echo "Checking for performance regressions..."
+          # Parse JSON and check for regressions > 10%
+          if grep -q '"change":.*"Regressed"' criterion-output.json; then
+            echo "⚠️ Performance regressions detected!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Review the benchmark artifacts for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No significant performance regressions detected" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload criterion output
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-output
+          path: criterion-output.json
+          retention-days: 30
+
+  # Memory benchmarks
+  benchmark-memory:
+    name: Memory Usage Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench-memory-cache"
+          cache-on-failure: true
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Install cargo-valgrind
+        run: cargo install cargo-valgrind
+
+      - name: Run memory benchmarks
+        run: |
+          cargo valgrind test --package oxigdal-core --release -- --nocapture > memory-report.txt || true
+
+      - name: Generate memory summary
+        run: |
+          echo "# Memory Usage Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Memory profiling completed. Check artifacts for detailed report." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload memory report
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-benchmarks
+          path: memory-report.txt
+          retention-days: 30
+
+  # Benchmark summary
+  benchmark-summary:
+    name: Benchmark Summary
+    needs: [benchmark, benchmark-memory]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Jobs Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Performance Benchmarks: ${{ needs.benchmark.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Memory Benchmarks: ${{ needs.benchmark-memory.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.benchmark.result }}" == "success" ]; then
+            echo "✅ **Benchmarks completed successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "View detailed benchmark reports in the artifacts section." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some benchmark jobs encountered issues.**" >> $GITHUB_STEP_SUMMARY
+          fi

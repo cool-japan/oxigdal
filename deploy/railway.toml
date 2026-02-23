@@ -1,0 +1,65 @@
+# OxiGDAL Railway Configuration
+# Configuration for Railway platform deployment
+# Author: COOLJAPAN OU (Team Kitasan)
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "docker/Dockerfile.server"
+
+[deploy]
+startCommand = "oxigdal-server --host 0.0.0.0 --port $PORT"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+
+numReplicas = 2
+
+[[services]]
+name = "oxigdal-server"
+
+[services.resources]
+cpu = 2
+memory = 4096
+
+[[services.ports]]
+port = 8080
+protocol = "http"
+
+# Environment Variables
+# Set these in Railway dashboard or via railway vars set:
+#
+# RUST_LOG=info
+# RUST_BACKTRACE=1
+# OXIGDAL_HOST=0.0.0.0
+# OXIGDAL_PORT=$PORT
+# OXIGDAL_DATA_DIR=/data
+# OXIGDAL_CACHE_DIR=/cache
+#
+# PostgreSQL (from Railway addon):
+# DATABASE_URL=${{Postgres.DATABASE_URL}}
+# POSTGRES_HOST=${{Postgres.HOST}}
+# POSTGRES_PORT=${{Postgres.PORT}}
+# POSTGRES_DB=${{Postgres.DATABASE}}
+# POSTGRES_USER=${{Postgres.USER}}
+# POSTGRES_PASSWORD=${{Postgres.PASSWORD}}
+#
+# Redis (from Railway addon):
+# REDIS_URL=${{Redis.REDIS_URL}}
+# REDIS_HOST=${{Redis.REDIS_HOST}}
+# REDIS_PORT=${{Redis.REDIS_PORT}}
+
+# Volumes (configure in Railway dashboard)
+[[volumes]]
+name = "data"
+mountPath = "/data"
+
+[[volumes]]
+name = "cache"
+mountPath = "/cache"
+
+# Add these services via Railway dashboard:
+# 1. PostgreSQL database
+# 2. Redis cache
+# 3. Object storage (optional)

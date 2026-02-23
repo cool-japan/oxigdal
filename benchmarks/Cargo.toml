@@ -1,0 +1,89 @@
+[package]
+name = "oxigdal-benchmarks"
+description = "Performance benchmarks for OxiGDAL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+default = ["deflate", "lzw", "zstd"]
+deflate = ["oxigdal-geotiff/deflate"]
+lzw = ["oxigdal-geotiff/lzw"]
+zstd = ["oxigdal-geotiff/zstd"]
+
+[dependencies]
+oxigdal-core = { workspace = true, features = ["std"] }
+oxigdal-geotiff = { workspace = true, features = ["std"] }
+oxigdal-geojson = { workspace = true, features = ["std"] }
+oxigdal-geoparquet = { workspace = true }
+oxigdal-algorithms = { workspace = true, features = ["parallel"] }
+criterion.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+rayon.workspace = true
+pprof = { workspace = true }
+
+[[bench]]
+name = "geo_transform"
+harness = false
+path = "../benches/geo_transform.rs"
+
+[[bench]]
+name = "bounding_box"
+harness = false
+path = "../benches/bounding_box.rs"
+
+[[bench]]
+name = "raster_buffer"
+harness = false
+path = "../benches/raster_buffer.rs"
+
+[[bench]]
+name = "compression"
+harness = false
+path = "../benches/compression.rs"
+
+[[bench]]
+name = "tiff_parsing"
+harness = false
+path = "../benches/tiff_parsing.rs"
+
+[[bench]]
+name = "geojson_bench"
+harness = false
+path = "../benches/geojson_bench.rs"
+
+# Temporarily disabled due to compilation errors in oxigdal-algorithms
+# [[bench]]
+# name = "algorithms_bench"
+# harness = false
+# path = "../benches/algorithms_bench.rs"
+
+[[bench]]
+name = "tile_bench"
+harness = false
+path = "../benches/tile_bench.rs"
+
+[[bench]]
+name = "geotiff_writer_bench"
+harness = false
+path = "../benches/geotiff_writer_bench.rs"
+
+[[bench]]
+name = "driver_throughput"
+harness = false
+path = "../benches/driver_throughput.rs"
+
+[[bench]]
+name = "gdal_comparison"
+harness = false
+path = "../benches/gdal_comparison.rs"
+
+[lints]
+workspace = true

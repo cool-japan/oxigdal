@@ -1,0 +1,76 @@
+[package]
+name = "oxigdal-cluster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-cluster"
+readme = "README.md"
+keywords = ["gis", "science", "distributed", "cluster", "processing"]
+categories = ["science", "concurrency", "network-programming"]
+description = "Distributed geospatial processing cluster for OxiGDAL"
+
+[dependencies]
+# Error handling
+thiserror = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+
+# Distributed computing
+tonic = { workspace = true }
+prost = { workspace = true }
+arrow-flight = { workspace = true }
+
+# Concurrency
+dashmap = { workspace = true }
+parking_lot = "0.12"
+
+# Time
+chrono = { workspace = true }
+
+# Utilities
+tracing = { workspace = true }
+uuid = { workspace = true }
+lru = { workspace = true }
+
+# Compression
+flate2 = { workspace = true }
+zstd = { workspace = true }
+
+# System info
+sysinfo = { workspace = true }
+
+# Hashing
+ahash = "0.8"
+
+# System
+num_cpus = { workspace = true }
+
+[features]
+default = []
+# Note: Raft-based consensus is planned for a future release
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "cluster_bench"
+harness = false
+
+[lints]
+workspace = true

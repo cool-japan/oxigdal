@@ -1,0 +1,39 @@
+[package]
+name = "oxigdal-metadata"
+description = "Metadata standards support for OxiGDAL - ISO 19115, FGDC, INSPIRE, DataCite, DCAT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-metadata"
+readme = "README.md"
+keywords = ["metadata", "science", "iso19115", "fgdc", "inspire"]
+categories = ["science", "data-structures", "parser-implementations"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+xml = ["dep:quick-xml"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+
+# XML support
+quick-xml = { workspace = true, optional = true, features = ["serialize"] }
+
+# Internal crates
+oxigdal-core = { workspace = true }
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

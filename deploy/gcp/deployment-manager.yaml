@@ -1,0 +1,291 @@
+# OxiGDAL Google Cloud Deployment Manager Configuration
+# Deploys OxiGDAL on GCP with Cloud Run and Cloud SQL
+# Author: COOLJAPAN OU (Team Kitasan)
+
+imports:
+- path: templates/cloud-run.jinja
+- path: templates/cloud-sql.jinja
+- path: templates/memorystore.jinja
+- path: templates/storage.jinja
+- path: templates/networking.jinja
+
+resources:
+# VPC Network
+- name: oxigdal-network
+  type: compute.v1.network
+  properties:
+    autoCreateSubnetworks: false
+
+# Subnet
+- name: oxigdal-subnet
+  type: compute.v1.subnetwork
+  properties:
+    network: $(ref.oxigdal-network.selfLink)
+    ipCidrRange: 10.0.0.0/24
+    region: us-central1
+    privateIpGoogleAccess: true
+
+# Cloud SQL PostgreSQL Instance
+- name: oxigdal-postgres
+  type: sqladmin.v1beta4.instance
+  properties:
+    region: us-central1
+    databaseVersion: POSTGRES_16
+    settings:
+      tier: db-custom-2-4096
+      ipConfiguration:
+        ipv4Enabled: true
+        authorizedNetworks:
+        - name: allow-all
+          value: 0.0.0.0/0  # TODO: Restrict in production
+        privateNetwork: $(ref.oxigdal-network.selfLink)
+      backupConfiguration:
+        enabled: true
+        startTime: "03:00"
+        backupRetentionSettings:
+          retainedBackups: 7
+          retentionUnit: COUNT
+      databaseFlags:
+      - name: max_connections
+        value: "100"
+      - name: shared_buffers
+        value: "262144"
+      availabilityType: REGIONAL
+      dataDiskType: PD_SSD
+      dataDiskSizeGb: 20
+
+# Cloud SQL Database
+- name: oxigdal-database
+  type: sqladmin.v1beta4.database
+  properties:
+    instance: $(ref.oxigdal-postgres.name)
+    name: oxigdal
+    charset: UTF8
+
+# Cloud SQL User
+- name: oxigdal-db-user
+  type: sqladmin.v1beta4.user
+  properties:
+    instance: $(ref.oxigdal-postgres.name)
+    name: oxigdal
+    password: CHANGE_ME  # Use Secret Manager in production
+
+# Memorystore Redis Instance
+- name: oxigdal-redis
+  type: redis.v1.instance
+  properties:
+    tier: STANDARD_HA
+    memorySizeGb: 2
+    region: us-central1
+    redisVersion: REDIS_7_0
+    authorizedNetwork: $(ref.oxigdal-network.selfLink)
+    redisConfigs:
+      maxmemory-policy: allkeys-lru
+
+# Cloud Storage Bucket
+- name: oxigdal-data-bucket
+  type: storage.v1.bucket
+  properties:
+    location: US
+    storageClass: STANDARD
+    versioning:
+      enabled: true
+    lifecycle:
+      rule:
+      - action:
+          type: SetStorageClass
+          storageClass: NEARLINE
+        condition:
+          age: 90
+      - action:
+          type: SetStorageClass
+          storageClass: COLDLINE
+        condition:
+          age: 180
+    iamConfiguration:
+      uniformBucketLevelAccess:
+        enabled: true
+
+# Service Account for Cloud Run
+- name: oxigdal-service-account
+  type: iam.v1.serviceAccount
+  properties:
+    accountId: oxigdal-server
+    displayName: OxiGDAL Server Service Account
+
+# IAM Policy Bindings
+- name: oxigdal-storage-access
+  type: storage.v1.bucket
+  properties:
+    bucket: $(ref.oxigdal-data-bucket.name)
+  accessControl:
+    entity: serviceAccount:$(ref.oxigdal-service-account.email)
+    role: READER
+
+# Cloud Run Service
+- name: oxigdal-server
+  type: run.v1.service
+  properties:
+    apiVersion: serving.knative.dev/v1
+    kind: Service
+    metadata:
+      name: oxigdal-server
+      namespace: PROJECT_ID  # Replace with actual project ID
+      annotations:
+        run.googleapis.com/ingress: all
+        run.googleapis.com/client-name: gcloud
+    spec:
+      template:
+        metadata:
+          annotations:
+            autoscaling.knative.dev/minScale: "2"
+            autoscaling.knative.dev/maxScale: "20"
+            run.googleapis.com/vpc-access-connector: oxigdal-connector
+            run.googleapis.com/vpc-access-egress: private-ranges-only
+            run.googleapis.com/execution-environment: gen2
+        spec:
+          serviceAccountName: $(ref.oxigdal-service-account.email)
+          containerConcurrency: 80
+          timeoutSeconds: 300
+          containers:
+          - image: ghcr.io/cool-japan/oxigdal-server:latest
+            ports:
+            - containerPort: 8080
+              protocol: TCP
+            env:
+            - name: RUST_LOG
+              value: info
+            - name: OXIGDAL_HOST
+              value: "0.0.0.0"
+            - name: OXIGDAL_PORT
+              value: "8080"
+            - name: POSTGRES_HOST
+              value: /cloudsql/PROJECT_ID:us-central1:oxigdal-postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: oxigdal
+            - name: POSTGRES_USER
+              value: oxigdal
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: oxigdal-db-password
+                  key: password
+            - name: REDIS_HOST
+              value: $(ref.oxigdal-redis.host)
+            - name: REDIS_PORT
+              value: $(ref.oxigdal-redis.port)
+            - name: GCS_BUCKET
+              value: $(ref.oxigdal-data-bucket.name)
+            resources:
+              limits:
+                cpu: "2000m"
+                memory: 4Gi
+            livenessProbe:
+              httpGet:
+                path: /health
+                port: 8080
+              initialDelaySeconds: 10
+              periodSeconds: 10
+            startupProbe:
+              httpGet:
+                path: /health
+                port: 8080
+              initialDelaySeconds: 0
+              periodSeconds: 1
+              failureThreshold: 30
+
+# VPC Access Connector
+- name: oxigdal-connector
+  type: vpcaccess.v1.connector
+  properties:
+    network: $(ref.oxigdal-network.name)
+    ipCidrRange: 10.8.0.0/28
+    region: us-central1
+    minThroughput: 200
+    maxThroughput: 1000
+
+# Cloud Monitoring Alert Policy
+- name: oxigdal-cpu-alert
+  type: monitoring.v3.alertPolicy
+  properties:
+    displayName: OxiGDAL High CPU Usage
+    combiner: OR
+    conditions:
+    - displayName: CPU Utilization above 80%
+      conditionThreshold:
+        filter: |
+          metric.type="run.googleapis.com/container/cpu/utilizations"
+          resource.type="cloud_run_revision"
+          resource.label.service_name="oxigdal-server"
+        comparison: COMPARISON_GT
+        thresholdValue: 0.8
+        duration: 300s
+    notificationChannels: []  # Add notification channels as needed
+    enabled: true
+
+# Cloud Monitoring Dashboard
+- name: oxigdal-dashboard
+  type: monitoring.v1.dashboard
+  properties:
+    displayName: OxiGDAL Monitoring Dashboard
+    dashboardFilters: []
+    gridLayout:
+      columns: 12
+      widgets:
+      - title: CPU Utilization
+        xyChart:
+          dataSets:
+          - timeSeriesQuery:
+              timeSeriesFilter:
+                filter: |
+                  metric.type="run.googleapis.com/container/cpu/utilizations"
+                  resource.type="cloud_run_revision"
+                  resource.label.service_name="oxigdal-server"
+              unitOverride: "1"
+          timeshiftDuration: 0s
+          yAxis:
+            label: y1Axis
+            scale: LINEAR
+      - title: Memory Utilization
+        xyChart:
+          dataSets:
+          - timeSeriesQuery:
+              timeSeriesFilter:
+                filter: |
+                  metric.type="run.googleapis.com/container/memory/utilizations"
+                  resource.type="cloud_run_revision"
+                  resource.label.service_name="oxigdal-server"
+              unitOverride: "1"
+          timeshiftDuration: 0s
+          yAxis:
+            label: y1Axis
+            scale: LINEAR
+      - title: Request Count
+        xyChart:
+          dataSets:
+          - timeSeriesQuery:
+              timeSeriesFilter:
+                filter: |
+                  metric.type="run.googleapis.com/request_count"
+                  resource.type="cloud_run_revision"
+                  resource.label.service_name="oxigdal-server"
+          timeshiftDuration: 0s
+          yAxis:
+            label: y1Axis
+            scale: LINEAR
+
+outputs:
+- name: cloud-run-url
+  value: $(ref.oxigdal-server.status.url)
+- name: postgres-connection
+  value: $(ref.oxigdal-postgres.connectionName)
+- name: redis-host
+  value: $(ref.oxigdal-redis.host)
+- name: redis-port
+  value: $(ref.oxigdal-redis.port)
+- name: storage-bucket
+  value: $(ref.oxigdal-data-bucket.name)
+- name: service-account-email
+  value: $(ref.oxigdal-service-account.email)

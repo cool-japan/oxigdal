@@ -1,0 +1,63 @@
+[package]
+name = "oxigdal-jupyter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-jupyter"
+readme = "README.md"
+description = "Jupyter integration for OxiGDAL with interactive widgets and visualization"
+keywords = ["gis", "science", "jupyter", "notebook", "visualization"]
+categories = ["science", "visualization", "development-tools"]
+
+[dependencies]
+# Internal dependencies
+oxigdal-core.workspace = true
+oxigdal-algorithms.workspace = true
+oxigdal-geotiff.workspace = true
+oxigdal-geojson.workspace = true
+
+# Jupyter kernel
+evcxr.workspace = true
+
+# Visualization
+plotters.workspace = true
+plotters-backend.workspace = true
+image.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Display and formatting
+comfy-table.workspace = true
+colored.workspace = true
+
+# Async support
+tokio = { workspace = true, optional = true }
+
+# Utilities
+num-traits.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = []
+async = ["tokio"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

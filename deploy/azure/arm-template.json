@@ -1,0 +1,471 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "OxiGDAL Azure Resource Manager Template",
+    "author": "COOLJAPAN OU (Team Kitasan)"
+  },
+  "parameters": {
+    "projectName": {
+      "type": "string",
+      "defaultValue": "oxigdal",
+      "metadata": {
+        "description": "Project name prefix for resources"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "production",
+      "allowedValues": [
+        "development",
+        "staging",
+        "production"
+      ],
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for resources"
+      }
+    },
+    "containerImage": {
+      "type": "string",
+      "defaultValue": "ghcr.io/cool-japan/oxigdal-server:latest",
+      "metadata": {
+        "description": "Docker container image"
+      }
+    },
+    "containerInstances": {
+      "type": "int",
+      "defaultValue": 2,
+      "minValue": 1,
+      "maxValue": 20,
+      "metadata": {
+        "description": "Number of container instances"
+      }
+    },
+    "cpuCores": {
+      "type": "int",
+      "defaultValue": 2,
+      "allowedValues": [1, 2, 4],
+      "metadata": {
+        "description": "Number of CPU cores per container"
+      }
+    },
+    "memoryInGb": {
+      "type": "int",
+      "defaultValue": 4,
+      "allowedValues": [2, 4, 8, 16],
+      "metadata": {
+        "description": "Memory in GB per container"
+      }
+    },
+    "databaseSku": {
+      "type": "string",
+      "defaultValue": "Standard_B2s",
+      "metadata": {
+        "description": "PostgreSQL SKU"
+      }
+    },
+    "databaseStorageSizeGB": {
+      "type": "int",
+      "defaultValue": 32,
+      "minValue": 32,
+      "maxValue": 16384,
+      "metadata": {
+        "description": "Database storage size in GB"
+      }
+    },
+    "administratorLogin": {
+      "type": "string",
+      "defaultValue": "oxigdal",
+      "metadata": {
+        "description": "Administrator login for database"
+      }
+    },
+    "administratorPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Administrator password for database"
+      }
+    },
+    "redisCacheSKU": {
+      "type": "string",
+      "defaultValue": "Standard",
+      "allowedValues": [
+        "Basic",
+        "Standard",
+        "Premium"
+      ],
+      "metadata": {
+        "description": "Redis Cache SKU"
+      }
+    },
+    "redisCacheFamily": {
+      "type": "string",
+      "defaultValue": "C",
+      "allowedValues": ["C", "P"],
+      "metadata": {
+        "description": "Redis Cache family"
+      }
+    },
+    "redisCacheCapacity": {
+      "type": "int",
+      "defaultValue": 1,
+      "allowedValues": [0, 1, 2, 3, 4, 5, 6],
+      "metadata": {
+        "description": "Redis Cache capacity"
+      }
+    }
+  },
+  "variables": {
+    "resourcePrefix": "[concat(parameters('projectName'), '-', parameters('environment'))]",
+    "vnetName": "[concat(variables('resourcePrefix'), '-vnet')]",
+    "subnetName": "[concat(variables('resourcePrefix'), '-subnet')]",
+    "nsgName": "[concat(variables('resourcePrefix'), '-nsg')]",
+    "publicIPName": "[concat(variables('resourcePrefix'), '-pip')]",
+    "loadBalancerName": "[concat(variables('resourcePrefix'), '-lb')]",
+    "containerGroupName": "[concat(variables('resourcePrefix'), '-cg')]",
+    "postgresServerName": "[concat(variables('resourcePrefix'), '-postgres')]",
+    "redisCacheName": "[concat(variables('resourcePrefix'), '-redis')]",
+    "storageAccountName": "[concat(replace(variables('resourcePrefix'), '-', ''), 'data')]",
+    "logAnalyticsWorkspace": "[concat(variables('resourcePrefix'), '-logs')]",
+    "applicationInsights": "[concat(variables('resourcePrefix'), '-insights')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-04-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": ["10.0.0.0/16"]
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.0.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              },
+              "delegations": [
+                {
+                  "name": "Microsoft.ContainerInstance.containerGroups",
+                  "properties": {
+                    "serviceName": "Microsoft.ContainerInstance/containerGroups"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-04-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "AllowHTTP",
+            "properties": {
+              "priority": 100,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "80"
+            }
+          },
+          {
+            "name": "AllowHTTPS",
+            "properties": {
+              "priority": 110,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "443"
+            }
+          },
+          {
+            "name": "AllowApp",
+            "properties": {
+              "priority": 120,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "8080"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-04-01",
+      "name": "[variables('publicIPName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "dnsSettings": {
+          "domainNameLabel": "[variables('resourcePrefix')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "apiVersion": "2023-03-01-preview",
+      "name": "[variables('postgresServerName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "[parameters('databaseSku')]",
+        "tier": "Burstable"
+      },
+      "properties": {
+        "administratorLogin": "[parameters('administratorLogin')]",
+        "administratorLoginPassword": "[parameters('administratorPassword')]",
+        "version": "16",
+        "storage": {
+          "storageSizeGB": "[parameters('databaseStorageSizeGB')]"
+        },
+        "backup": {
+          "backupRetentionDays": 7,
+          "geoRedundantBackup": "Disabled"
+        },
+        "highAvailability": {
+          "mode": "[if(equals(parameters('environment'), 'production'), 'ZoneRedundant', 'Disabled')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+      "apiVersion": "2023-03-01-preview",
+      "name": "[concat(variables('postgresServerName'), '/oxigdal')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))]"
+      ],
+      "properties": {
+        "charset": "UTF8",
+        "collation": "en_US.utf8"
+      }
+    },
+    {
+      "type": "Microsoft.Cache/redis",
+      "apiVersion": "2023-08-01",
+      "name": "[variables('redisCacheName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "[parameters('redisCacheSKU')]",
+          "family": "[parameters('redisCacheFamily')]",
+          "capacity": "[parameters('redisCacheCapacity')]"
+        },
+        "enableNonSslPort": false,
+        "minimumTlsVersion": "1.2",
+        "redisConfiguration": {
+          "maxmemory-policy": "allkeys-lru"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "properties": {
+        "accessTier": "Hot",
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2",
+        "encryption": {
+          "services": {
+            "blob": {
+              "enabled": true
+            },
+            "file": {
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageAccountName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "deleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        }
+      }
+    },
+    {
+      "type": "Microsoft.ContainerInstance/containerGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('containerGroupName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "containers": [
+          {
+            "name": "oxigdal-server",
+            "properties": {
+              "image": "[parameters('containerImage')]",
+              "ports": [
+                {
+                  "protocol": "TCP",
+                  "port": 8080
+                }
+              ],
+              "environmentVariables": [
+                {
+                  "name": "RUST_LOG",
+                  "value": "info"
+                },
+                {
+                  "name": "OXIGDAL_HOST",
+                  "value": "0.0.0.0"
+                },
+                {
+                  "name": "OXIGDAL_PORT",
+                  "value": "8080"
+                },
+                {
+                  "name": "POSTGRES_HOST",
+                  "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))).fullyQualifiedDomainName]"
+                },
+                {
+                  "name": "POSTGRES_PORT",
+                  "value": "5432"
+                },
+                {
+                  "name": "POSTGRES_DB",
+                  "value": "oxigdal"
+                },
+                {
+                  "name": "POSTGRES_USER",
+                  "value": "[parameters('administratorLogin')]"
+                },
+                {
+                  "name": "POSTGRES_PASSWORD",
+                  "secureValue": "[parameters('administratorPassword')]"
+                },
+                {
+                  "name": "REDIS_HOST",
+                  "value": "[reference(resourceId('Microsoft.Cache/redis', variables('redisCacheName'))).hostName]"
+                },
+                {
+                  "name": "REDIS_PORT",
+                  "value": "6380"
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": "[parameters('cpuCores')]",
+                  "memoryInGB": "[parameters('memoryInGb')]"
+                }
+              }
+            }
+          }
+        ],
+        "osType": "Linux",
+        "ipAddress": {
+          "type": "Public",
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8080
+            }
+          ],
+          "dnsNameLabel": "[variables('resourcePrefix')]"
+        },
+        "restartPolicy": "Always"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))]",
+        "[resourceId('Microsoft.Cache/redis', variables('redisCacheName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('logAnalyticsWorkspace')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('applicationInsights')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsWorkspace'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsWorkspace'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "containerGroupFQDN": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', variables('containerGroupName'))).ipAddress.fqdn]"
+    },
+    "containerGroupIP": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', variables('containerGroupName'))).ipAddress.ip]"
+    },
+    "postgresServerFQDN": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))).fullyQualifiedDomainName]"
+    },
+    "redisHostName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cache/redis', variables('redisCacheName'))).hostName]"
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageAccountName')]"
+    },
+    "applicationInsightsKey": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('applicationInsights'))).InstrumentationKey]"
+    }
+  }
+}

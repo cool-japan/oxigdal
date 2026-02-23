@@ -1,0 +1,76 @@
+[package]
+name = "oxigdal-mobile"
+description = "Mobile FFI bindings for OxiGDAL - iOS and Android support for Pure Rust geospatial library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-mobile"
+readme = "README.md"
+keywords = ["gdal", "science", "mobile", "ios", "android"]
+categories = ["science", "api-bindings", "external-ffi-bindings"]
+
+[lib]
+# cdylib and staticlib are only needed for mobile deployment builds
+# Use rlib for development and testing; build cdylib/staticlib with:
+#   cargo build --crate-type cdylib --crate-type staticlib --release
+crate-type = ["rlib"]
+
+[features]
+default = ["std"]
+std = ["oxigdal-core/std"]
+ios = ["std"]
+android = ["std", "jni"]
+offline = ["std"]
+filters = ["std"]
+tiles = ["std"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+oxigdal-geotiff = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+
+# JNI support for Android
+jni = { version = "0.21", optional = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]
+cbindgen = "0.27"
+
+# Mobile-specific lints (FFI requires different rules)
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+panic = "deny"
+expect_used = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+doc_markdown = "allow"
+suboptimal_flops = "allow"
+manual_midpoint = "allow"
+similar_names = "allow"
+module_name_repetitions = "allow"
+not_unsafe_ptr_arg_deref = "allow"
+missing_safety_doc = "allow"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

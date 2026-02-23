@@ -1,0 +1,114 @@
+# OxiGDAL Base Docker Image
+# Multi-stage build for optimized production images
+# Author: COOLJAPAN OU (Team Kitasan)
+
+# Stage 1: Builder with full Rust toolchain
+FROM rust:1.85-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /build
+
+# Copy workspace manifest first for better layer caching
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy source files for all crates to cache dependencies
+RUN mkdir -p crates/oxigdal-core/src \
+    crates/oxigdal-algorithms/src \
+    crates/oxigdal-proj/src \
+    crates/oxigdal-qc/src \
+    crates/oxigdal-drivers/geotiff/src \
+    crates/oxigdal-drivers/geojson/src \
+    crates/oxigdal-drivers/zarr/src \
+    crates/oxigdal-drivers/flatgeobuf/src \
+    crates/oxigdal-drivers/shapefile/src \
+    crates/oxigdal-drivers/netcdf/src \
+    crates/oxigdal-drivers/geoparquet/src \
+    crates/oxigdal-drivers/hdf5/src \
+    crates/oxigdal-drivers/vrt/src \
+    crates/oxigdal-drivers/grib/src \
+    crates/oxigdal-wasm/src \
+    crates/oxigdal-mobile/src \
+    crates/oxigdal-examples/src \
+    crates/oxigdal-cli/src \
+    crates/oxigdal-cloud/src \
+    crates/oxigdal-3d/src \
+    crates/oxigdal-server/src \
+    crates/oxigdal-postgis/src \
+    crates/oxigdal-analytics/src \
+    crates/oxigdal-temporal/src \
+    crates/oxigdal-rs3gw/src \
+    crates/oxigdal-distributed/src \
+    crates/oxigdal-python/src \
+    crates/oxigdal-stac/src \
+    crates/oxigdal-ml/src \
+    crates/oxigdal-metadata/src \
+    crates/oxigdal-ws/src \
+    crates/oxigdal-etl/src \
+    crates/oxigdal-gpu/src \
+    crates/oxigdal-bench/src \
+    crates/oxigdal-services/src \
+    benchmarks/src
+
+# Create minimal Cargo.toml files for dependency caching
+COPY crates/*/Cargo.toml crates/
+COPY crates/oxigdal-drivers/*/Cargo.toml crates/oxigdal-drivers/
+
+# Stage 2: Minimal runtime base
+FROM debian:bookworm-slim AS runtime-base
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN useradd -m -u 1000 -s /bin/bash oxigdal
+
+# Set environment variables
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=1
+
+# Stage 3: Development base (includes build tools)
+FROM rust:1.85-bookworm AS dev-base
+
+# Install development dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    git \
+    vim \
+    tmux \
+    ripgrep \
+    fd-find \
+    bat \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install additional Rust tools
+RUN cargo install cargo-watch cargo-edit cargo-outdated cargo-audit
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Set environment for development
+ENV RUST_LOG=debug \
+    RUST_BACKTRACE=full
+
+LABEL org.opencontainers.image.title="OxiGDAL Base Images" \
+      org.opencontainers.image.description="Base Docker images for OxiGDAL geospatial library" \
+      org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.licenses="Apache-2.0"

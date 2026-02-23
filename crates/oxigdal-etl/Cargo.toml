@@ -1,0 +1,77 @@
+[package]
+name = "oxigdal-etl"
+description = "Streaming ETL framework for continuous geospatial data processing with OxiGDAL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-etl"
+readme = "README.md"
+keywords = ["etl", "streaming", "science", "pipeline", "data-processing"]
+categories = ["science", "asynchronous", "data-structures"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+kafka = ["dep:rdkafka"]
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
+s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
+stac = ["dep:reqwest"]
+http = ["dep:reqwest"]
+scheduler = ["dep:cron"]
+all = ["kafka", "postgres", "s3", "stac", "http", "scheduler"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time", "fs", "io-util"] }
+futures.workspace = true
+async-trait.workspace = true
+
+# Stream processing
+dashmap.workspace = true
+lru.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Optional: Kafka support
+rdkafka = { version = "0.37", optional = true, default-features = false, features = ["tokio"] }
+
+# Optional: PostgreSQL support
+tokio-postgres = { workspace = true, optional = true, features = ["with-serde_json-1"] }
+deadpool-postgres = { workspace = true, optional = true }
+
+# Optional: S3 support
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+
+# Optional: HTTP/STAC support
+reqwest = { workspace = true, optional = true }
+
+# Optional: Scheduler support
+cron = { version = "0.13", optional = true }
+
+# Utilities
+chrono.workspace = true
+num-traits.workspace = true
+regex.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+criterion.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "name": "oxigdal-cog-viewer",
+  "version": 2,
+  "buildCommand": "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && command -v wasm-opt >/dev/null 2>&1 && wasm-opt -Oz -o ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm && mv ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm || true",
+  "outputDirectory": ".",
+  "installCommand": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env && rustup target add wasm32-unknown-unknown && cargo install wasm-pack",
+  "framework": null,
+  "routes": [
+    {
+      "src": "/cog-viewer",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/cog-viewer/(.*)",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/$1"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, HEAD, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Range, Content-Type"
+        },
+        {
+          "key": "Access-Control-Expose-Headers",
+          "value": "Content-Length, Content-Range, Accept-Ranges"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)\\.(wasm)",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/wasm"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)\\.(js)",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/javascript; charset=utf-8"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)\\.(css)",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/css; charset=utf-8"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)\\.(html)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/pkg/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/cog-viewer",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/cog-viewer/:path*",
+      "destination": "/index.html"
+    }
+  ],
+  "redirects": [],
+  "trailingSlash": false,
+  "cleanUrls": true,
+  "github": {
+    "enabled": true,
+    "autoAlias": true,
+    "autoJobCancellation": true,
+    "silent": false
+  }
+}

@@ -1,0 +1,85 @@
+[package]
+name = "oxigdal-pwa"
+description = "Progressive Web App capabilities for OxiGDAL - Offline geospatial applications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-pwa"
+readme = "README.md"
+keywords = ["pwa", "service-worker", "offline", "science", "wasm"]
+categories = ["wasm", "web-programming", "science"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+notifications = []
+background-sync = []
+geospatial-cache = ["oxigdal-core"]
+
+[dependencies]
+oxigdal-core = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = [
+    "ServiceWorker",
+    "ServiceWorkerContainer",
+    "ServiceWorkerRegistration",
+    "ServiceWorkerState",
+    "ServiceWorkerGlobalScope",
+    "ExtendableEvent",
+    "ExtendableMessageEvent",
+    "FetchEvent",
+    "NotificationEvent",
+    "PushEvent",
+    "PushManager",
+    "PushSubscription",
+    "PushSubscriptionOptions",
+    "Cache",
+    "CacheStorage",
+    "Request",
+    "Response",
+    "Headers",
+    "Notification",
+    "NotificationOptions",
+    "NotificationPermission",
+    "Navigator",
+    "Storage",
+    "StorageManager",
+    "StorageEstimate",
+    "MessageEvent",
+    "Client",
+    "Clients",
+    "WindowClient",
+    "MediaQueryList",
+    "MediaQueryListEvent",
+    "Location",
+    "MessageChannel",
+    "MessagePort",
+    "RegistrationOptions",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+
+# Error handling
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true

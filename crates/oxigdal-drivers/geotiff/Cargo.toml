@@ -1,0 +1,50 @@
+[package]
+name = "oxigdal-geotiff"
+description = "GeoTIFF/COG driver for OxiGDAL - Pure Rust GDAL reimplementation with cloud-optimized reading and writing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-geotiff"
+readme = "README.md"
+keywords = ["geotiff", "cog", "tiff", "raster", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std", "deflate", "lzw"]
+std = ["oxigdal-core/std", "thiserror/std"]
+async = ["oxigdal-core/async", "dep:tokio"]
+deflate = ["dep:flate2"]
+lzw = ["dep:oxiarc-lzw"]
+zstd = ["dep:zstd"]
+jpeg = ["dep:jpeg-decoder", "dep:jpeg-encoder"]
+webp = []
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+# Compression
+flate2 = { workspace = true, optional = true }
+oxiarc-lzw = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+jpeg-decoder = { workspace = true, optional = true }
+jpeg-encoder = { workspace = true, optional = true }
+
+# Async
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion.workspace = true
+
+[lints]
+workspace = true

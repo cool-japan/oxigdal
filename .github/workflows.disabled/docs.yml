@@ -1,0 +1,248 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**/*.rs'
+      - '**/Cargo.toml'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**/*.rs'
+      - '**/Cargo.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: "--cfg docsrs -D warnings"
+
+jobs:
+  # Build documentation
+  build-docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: rust-docs
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "docs-cache"
+          cache-on-failure: true
+
+      - name: Build documentation
+        run: |
+          cargo +nightly doc \
+            --workspace \
+            --all-features \
+            --no-deps \
+            --document-private-items
+
+      - name: Add index redirect
+        run: |
+          cat > target/doc/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <title>OxiGDAL Documentation</title>
+              <meta http-equiv="refresh" content="0; url=oxigdal_core/index.html">
+            </head>
+            <body>
+              <p>Redirecting to <a href="oxigdal_core/index.html">oxigdal_core documentation</a>...</p>
+            </body>
+          </html>
+          EOF
+
+      - name: Create .nojekyll file
+        run: touch target/doc/.nojekyll
+
+      - name: Upload documentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: target/doc/
+          retention-days: 30
+
+  # Deploy to GitHub Pages (only on main branch)
+  deploy-docs:
+    name: Deploy to GitHub Pages
+    needs: build-docs
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages-docs
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download documentation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: docs
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Check documentation coverage
+  check-doc-coverage:
+    name: Check Documentation Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "doc-coverage-cache"
+          cache-on-failure: true
+
+      - name: Install cargo-doc-coverage
+        run: |
+          cargo install cargo-doc-coverage || true
+
+      - name: Check documentation coverage
+        run: |
+          # Generate documentation coverage report
+          RUSTDOCFLAGS="-Z unstable-options --show-coverage" \
+            cargo +nightly doc \
+            --workspace \
+            --all-features \
+            --no-deps \
+            2>&1 | tee doc-coverage.txt
+
+      - name: Parse coverage statistics
+        run: |
+          echo "# Documentation Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          grep -A 20 "coverage:" doc-coverage.txt || echo "No coverage data available" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-coverage
+          path: doc-coverage.txt
+          retention-days: 30
+
+  # Validate documentation examples
+  test-doc-examples:
+    name: Test Documentation Examples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "doc-tests-cache"
+          cache-on-failure: true
+
+      - name: Run doc tests
+        run: |
+          cargo test --workspace --all-features --doc
+
+  # Check for broken links in documentation
+  check-doc-links:
+    name: Check Documentation Links
+    runs-on: ubuntu-latest
+    needs: build-docs
+    steps:
+      - name: Download documentation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: target/doc
+
+      - name: Install lychee
+        uses: taiki-e/install-action@v2
+        with:
+          tool: lychee
+
+      - name: Check links
+        run: |
+          lychee \
+            --accept 200,429 \
+            --exclude-path '**/target/**' \
+            --exclude-path '**/\.git/**' \
+            --timeout 30 \
+            --max-retries 3 \
+            'target/doc/**/*.html' \
+            > link-check-results.txt || true
+
+      - name: Display link check results
+        run: |
+          echo "# Link Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat link-check-results.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload link check results
+        uses: actions/upload-artifact@v4
+        with:
+          name: link-check-results
+          path: link-check-results.txt
+          retention-days: 30
+
+  # Documentation summary
+  docs-summary:
+    name: Documentation Summary
+    needs: [build-docs, check-doc-coverage, test-doc-examples, check-doc-links]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Documentation Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Jobs Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Build Docs: ${{ needs.build-docs.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Doc Coverage: ${{ needs.check-doc-coverage.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Doc Examples: ${{ needs.test-doc-examples.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Link Check: ${{ needs.check-doc-links.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.build-docs.result }}" == "success" ] && \
+             [ "${{ needs.test-doc-examples.result }}" == "success" ]; then
+            echo "✅ **Documentation built and validated successfully!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some documentation jobs encountered issues.**" >> $GITHUB_STEP_SUMMARY
+          fi

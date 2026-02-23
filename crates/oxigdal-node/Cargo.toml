@@ -1,0 +1,58 @@
+[package]
+name = "oxigdal-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-node"
+readme = "README.md"
+description = "Node.js bindings for OxiGDAL - Pure Rust geospatial data abstraction library"
+keywords = ["science", "gdal", "raster", "gis", "nodejs"]
+categories = ["science", "api-bindings"]
+
+[lib]
+name = "oxigdal_node"
+crate-type = ["cdylib"]
+
+[dependencies]
+# OxiGDAL ecosystem
+oxigdal-core.workspace = true
+oxigdal-algorithms.workspace = true
+oxigdal-geotiff.workspace = true
+oxigdal-geojson.workspace = true
+oxigdal-proj.workspace = true
+
+# napi-rs for Node.js bindings
+napi = { version = "2", features = ["async", "tokio_rt", "napi8", "serde-json"] }
+napi-derive = "2"
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Utilities
+bytes.workspace = true
+num-traits.workspace = true
+
+[build-dependencies]
+napi-build = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = ["geotiff", "geojson", "proj"]
+geotiff = []
+geojson = []
+proj = []
+algorithms = []
+async-io = []

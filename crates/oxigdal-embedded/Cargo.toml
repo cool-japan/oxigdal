@@ -1,0 +1,63 @@
+[package]
+name = "oxigdal-embedded"
+description = "Embedded systems support for OxiGDAL - no_std compatible geospatial processing for ARM, RISC-V, and ESP32"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-embedded"
+readme = "README.md"
+keywords = ["gdal", "science", "embedded", "no-std", "arm"]
+categories = ["science", "embedded", "no-std"]
+
+[features]
+default = ["alloc"]
+std = ["thiserror/std", "serde/std", "oxigdal-core/std"]
+alloc = ["serde/alloc", "oxigdal-core/alloc"]
+
+# Target-specific features
+arm = []
+riscv = []
+esp32 = []
+
+# Power management features
+low-power = []
+sleep-modes = ["low-power"]
+
+# Real-time features
+realtime = []
+static-pool = ["alloc"]
+
+# Minimal footprint
+minimal = []
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+byteorder = { workspace = true }
+num-traits = { workspace = true }
+
+# Embedded-specific dependencies
+critical-section = { workspace = true }
+portable-atomic = { workspace = true }
+heapless = { workspace = true }
+embedded-hal = { workspace = true }
+libm = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+# Use workspace lints
+[lints]
+workspace = true
+
+# NOTE: ESP32 cfg conditions (esp32, esp32s2, etc.) are declared in build.rs
+# to avoid conflicts with workspace lints
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

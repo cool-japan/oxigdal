@@ -1,0 +1,64 @@
+[package]
+name = "oxigdal-distributed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-distributed"
+readme = "README.md"
+description = "Distributed processing capabilities for OxiGDAL using Apache Arrow Flight"
+keywords = ["science", "distributed", "arrow-flight", "rpc", "gis"]
+categories = ["science", "network-programming", "concurrency"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Arrow ecosystem
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-flight = { workspace = true }
+
+# gRPC and networking
+tonic = { workspace = true }
+prost = { workspace = true }
+tower = { workspace = true }
+
+# Compression
+flate2 = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Additional utilities
+bytes = { workspace = true }
+num-traits = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[features]
+default = []
+
+[lib]
+doctest = false
+
+[[bench]]
+name = "distributed_bench"
+harness = false

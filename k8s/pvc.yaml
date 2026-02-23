@@ -1,0 +1,101 @@
+# OxiGDAL Kubernetes Persistent Volume Claims
+# Storage definitions for data persistence
+# Author: COOLJAPAN OU (Team Kitasan)
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oxigdal-data
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+  - ReadOnlyMany  # Multiple pods can read the data
+  storageClassName: fast-ssd  # Adjust based on your cluster
+  resources:
+    requests:
+      storage: 100Gi
+  volumeMode: Filesystem
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 20Gi
+  volumeMode: Filesystem
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 10Gi
+  volumeMode: Filesystem
+
+---
+# Optional: NFS-based shared storage for multi-node access
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: oxigdal-data-nfs
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: storage
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+  - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs
+  mountOptions:
+  - hard
+  - nfsvers=4.1
+  nfs:
+    server: nfs-server.example.com  # Replace with your NFS server
+    path: /exports/oxigdal/data
+
+---
+# Optional: S3-compatible storage (using CSI driver)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oxigdal-s3-data
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: storage
+  annotations:
+    # S3 CSI driver annotations
+    csi.storage.k8s.io/bucket-name: oxigdal-data
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: s3-storage
+  resources:
+    requests:
+      storage: 1Ti  # Nominal size for S3
+  volumeMode: Filesystem

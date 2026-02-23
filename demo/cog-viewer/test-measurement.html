@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Measurement Tools Test - OxiGDAL COG Viewer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            padding: 20px;
+            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+            color: white;
+        }
+
+        .controls {
+            padding: 20px;
+            background: #f3f4f6;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #1e40af;
+        }
+
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        #map {
+            flex: 1;
+        }
+
+        .info-panel {
+            padding: 20px;
+            background: white;
+            border-top: 2px solid #e5e7eb;
+        }
+
+        .result {
+            font-size: 18px;
+            font-weight: 600;
+            color: #2563eb;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Measurement Tools Test</h1>
+        <p>Test the distance and area measurement functionality</p>
+    </div>
+
+    <div class="controls">
+        <button id="measure-distance" class="btn-primary">📏 Measure Distance</button>
+        <button id="measure-area" class="btn-primary">📐 Measure Area</button>
+        <button id="clear-measurements" class="btn-secondary">🗑️ Clear</button>
+        <button id="add-test-points" class="btn-secondary">🎯 Add Test Points</button>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="info-panel">
+        <div><strong>Instructions:</strong></div>
+        <div>1. Click "Measure Distance" or "Measure Area"</div>
+        <div>2. Click on the map to add measurement points</div>
+        <div>3. Distance requires 2+ points, Area requires 3+ points</div>
+        <div id="result" class="result"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([37.7749, -122.4194], 13);
+
+        // Add OpenStreetMap base layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 19,
+        }).addTo(map);
+
+        // Measurement state
+        const measurements = {
+            active: false,
+            type: null,
+            coordinates: [],
+            polyline: null,
+            polygon: null,
+            markers: [],
+            label: null,
+        };
+
+        // Event handlers
+        document.getElementById('measure-distance').addEventListener('click', () => startMeasurement('distance'));
+        document.getElementById('measure-area').addEventListener('click', () => startMeasurement('area'));
+        document.getElementById('clear-measurements').addEventListener('click', clearMeasurements);
+        document.getElementById('add-test-points').addEventListener('click', addTestPoints);
+
+        map.on('click', handleMapClick);
+
+        function startMeasurement(type) {
+            clearMeasurements();
+            measurements.active = true;
+            measurements.type = type;
+            measurements.coordinates = [];
+            document.getElementById('map').style.cursor = 'crosshair';
+            updateResult(`Click on map to measure ${type}`);
+        }
+
+        function handleMapClick(e) {
+            if (!measurements.active) return;
+
+            measurements.coordinates.push(e.latlng);
+
+            const marker = L.circleMarker(e.latlng, {
+                radius: 5,
+                color: '#2563eb',
+                fillColor: '#3b82f6',
+                fillOpacity: 0.8,
+            }).addTo(map);
+            measurements.markers.push(marker);
+
+            if (measurements.type === 'distance') {
+                updateDistanceMeasurement();
+            } else if (measurements.type === 'area') {
+                updateAreaMeasurement();
+            }
+        }
+
+        function updateDistanceMeasurement() {
+            const coords = measurements.coordinates;
+            if (coords.length < 2) return;
+
+            if (measurements.polyline) {
+                map.removeLayer(measurements.polyline);
+            }
+
+            measurements.polyline = L.polyline(coords, {
+                color: '#2563eb',
+                weight: 3,
+                opacity: 0.8,
+            }).addTo(map);
+
+            let totalDistance = 0;
+            for (let i = 0; i < coords.length - 1; i++) {
+                totalDistance += coords[i].distanceTo(coords[i + 1]);
+            }
+
+            const distanceKm = (totalDistance / 1000).toFixed(2);
+            const distanceMi = (totalDistance / 1609.34).toFixed(2);
+
+            const lastCoord = coords[coords.length - 1];
+            if (measurements.label) {
+                map.removeLayer(measurements.label);
+            }
+
+            measurements.label = L.popup({
+                closeButton: false,
+            })
+                .setLatLng(lastCoord)
+                .setContent(`<strong>Distance:</strong><br>${distanceKm} km<br>${distanceMi} mi`)
+                .openOn(map);
+
+            updateResult(`Distance: ${distanceKm} km (${distanceMi} mi)`);
+        }
+
+        function updateAreaMeasurement() {
+            const coords = measurements.coordinates;
+
+            if (coords.length < 3) {
+                if (coords.length === 2) {
+                    if (measurements.polyline) {
+                        map.removeLayer(measurements.polyline);
+                    }
+                    measurements.polyline = L.polyline(coords, {
+                        color: '#2563eb',
+                        weight: 3,
+                        opacity: 0.8,
+                        dashArray: '5, 5',
+                    }).addTo(map);
+                }
+                return;
+            }
+
+            if (measurements.polyline) {
+                map.removeLayer(measurements.polyline);
+                measurements.polyline = null;
+            }
+
+            if (measurements.polygon) {
+                map.removeLayer(measurements.polygon);
+            }
+
+            measurements.polygon = L.polygon(coords, {
+                color: '#2563eb',
+                fillColor: '#3b82f6',
+                fillOpacity: 0.3,
+                weight: 3,
+            }).addTo(map);
+
+            const area = calculatePolygonArea(coords);
+            const areaSqKm = (area / 1000000).toFixed(2);
+            const areaSqMi = (area / 2589988.11).toFixed(2);
+            const areaHectares = (area / 10000).toFixed(2);
+
+            const center = measurements.polygon.getBounds().getCenter();
+            if (measurements.label) {
+                map.removeLayer(measurements.label);
+            }
+
+            measurements.label = L.popup({
+                closeButton: false,
+            })
+                .setLatLng(center)
+                .setContent(`<strong>Area:</strong><br>${areaSqKm} km²<br>${areaSqMi} mi²<br>${areaHectares} ha`)
+                .openOn(map);
+
+            updateResult(`Area: ${areaSqKm} km² (${areaHectares} ha)`);
+        }
+
+        function calculatePolygonArea(latlngs) {
+            if (latlngs.length < 3) return 0;
+
+            const earthRadius = 6371000; // meters
+            let area = 0;
+
+            for (let i = 0; i < latlngs.length; i++) {
+                const j = (i + 1) % latlngs.length;
+                const lat1 = latlngs[i].lat * Math.PI / 180;
+                const lat2 = latlngs[j].lat * Math.PI / 180;
+                const lng1 = latlngs[i].lng * Math.PI / 180;
+                const lng2 = latlngs[j].lng * Math.PI / 180;
+
+                area += (lng2 - lng1) * (2 + Math.sin(lat1) + Math.sin(lat2));
+            }
+
+            area = Math.abs(area * earthRadius * earthRadius / 2);
+            return area;
+        }
+
+        function clearMeasurements() {
+            measurements.active = false;
+            measurements.type = null;
+            measurements.coordinates = [];
+
+            measurements.markers.forEach(marker => map.removeLayer(marker));
+            measurements.markers = [];
+
+            if (measurements.polyline) {
+                map.removeLayer(measurements.polyline);
+                measurements.polyline = null;
+            }
+
+            if (measurements.polygon) {
+                map.removeLayer(measurements.polygon);
+                measurements.polygon = null;
+            }
+
+            if (measurements.label) {
+                map.removeLayer(measurements.label);
+                measurements.label = null;
+            }
+
+            document.getElementById('map').style.cursor = '';
+            updateResult('');
+        }
+
+        function addTestPoints() {
+            clearMeasurements();
+
+            // Add a test square
+            const center = map.getCenter();
+            const testPoints = [
+                L.latLng(center.lat + 0.01, center.lng - 0.01),
+                L.latLng(center.lat + 0.01, center.lng + 0.01),
+                L.latLng(center.lat - 0.01, center.lng + 0.01),
+                L.latLng(center.lat - 0.01, center.lng - 0.01),
+            ];
+
+            testPoints.forEach(point => {
+                const marker = L.circleMarker(point, {
+                    radius: 5,
+                    color: '#10b981',
+                    fillColor: '#34d399',
+                    fillOpacity: 0.8,
+                }).addTo(map);
+            });
+
+            const polygon = L.polygon(testPoints, {
+                color: '#10b981',
+                fillColor: '#34d399',
+                fillOpacity: 0.3,
+                weight: 3,
+            }).addTo(map);
+
+            const area = calculatePolygonArea(testPoints);
+            const areaSqKm = (area / 1000000).toFixed(2);
+
+            updateResult(`Test square: ${areaSqKm} km²`);
+        }
+
+        function updateResult(text) {
+            document.getElementById('result').textContent = text;
+        }
+
+        console.log('Measurement tools test page loaded');
+        updateResult('Click a measurement button to start');
+    </script>
+</body>
+</html>

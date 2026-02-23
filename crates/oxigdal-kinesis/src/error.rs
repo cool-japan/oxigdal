@@ -1,0 +1,179 @@
+//! Error types for OxiGDAL Kinesis integration
+
+use thiserror::Error;
+
+/// Result type for Kinesis operations
+pub type Result<T> = core::result::Result<T, KinesisError>;
+
+/// Error types for Kinesis operations
+#[derive(Error, Debug, Clone)]
+pub enum KinesisError {
+    /// AWS SDK error
+    #[error("AWS SDK error: {message}")]
+    AwsSdk {
+        /// Error message
+        message: String,
+    },
+
+    /// Kinesis service error
+    #[error("Kinesis service error: {message}")]
+    Service {
+        /// Error message
+        message: String,
+    },
+
+    /// Stream not found
+    #[error("Stream not found: {stream_name}")]
+    StreamNotFound {
+        /// Stream name
+        stream_name: String,
+    },
+
+    /// Shard not found
+    #[error("Shard not found: {shard_id}")]
+    ShardNotFound {
+        /// Shard ID
+        shard_id: String,
+    },
+
+    /// Invalid configuration
+    #[error("Invalid configuration: {message}")]
+    InvalidConfig {
+        /// Error message
+        message: String,
+    },
+
+    /// Serialization error
+    #[error("Serialization error: {message}")]
+    Serialization {
+        /// Error message
+        message: String,
+    },
+
+    /// Deserialization error
+    #[error("Deserialization error: {message}")]
+    Deserialization {
+        /// Error message
+        message: String,
+    },
+
+    /// Compression error
+    #[error("Compression error: {message}")]
+    Compression {
+        /// Error message
+        message: String,
+    },
+
+    /// Decompression error
+    #[error("Decompression error: {message}")]
+    Decompression {
+        /// Error message
+        message: String,
+    },
+
+    /// Checkpoint error
+    #[error("Checkpoint error: {message}")]
+    Checkpoint {
+        /// Error message
+        message: String,
+    },
+
+    /// Throughput exceeded
+    #[error("Throughput exceeded: {message}")]
+    ThroughputExceeded {
+        /// Error message
+        message: String,
+    },
+
+    /// Record too large
+    #[error("Record too large: {size} bytes (max: {max_size})")]
+    RecordTooLarge {
+        /// Actual size
+        size: usize,
+        /// Maximum allowed size
+        max_size: usize,
+    },
+
+    /// Batch too large
+    #[error("Batch too large: {size} bytes (max: {max_size})")]
+    BatchTooLarge {
+        /// Actual size
+        size: usize,
+        /// Maximum allowed size
+        max_size: usize,
+    },
+
+    /// Firehose error
+    #[error("Firehose error: {message}")]
+    Firehose {
+        /// Error message
+        message: String,
+    },
+
+    /// Analytics error
+    #[error("Analytics error: {message}")]
+    Analytics {
+        /// Error message
+        message: String,
+    },
+
+    /// Monitoring error
+    #[error("Monitoring error: {message}")]
+    Monitoring {
+        /// Error message
+        message: String,
+    },
+
+    /// IO error
+    #[error("IO error: {message}")]
+    Io {
+        /// Error message
+        message: String,
+    },
+
+    /// Not supported
+    #[error("Operation not supported: {operation}")]
+    NotSupported {
+        /// Operation name
+        operation: String,
+    },
+
+    /// Timeout
+    #[error("Operation timed out: {operation}")]
+    Timeout {
+        /// Operation name
+        operation: String,
+    },
+
+    /// Invalid state
+    #[error("Invalid state: {message}")]
+    InvalidState {
+        /// Error message
+        message: String,
+    },
+
+    /// OxiGDAL core error
+    #[error("OxiGDAL error: {message}")]
+    OxiGdal {
+        /// Error message
+        message: String,
+    },
+
+    /// Serde JSON error
+    #[error("JSON error: {message}")]
+    SerdeJson {
+        /// Error message
+        message: String,
+    },
+}
+// AWS SDK error conversions removed due to conflicts
+// Use .map_err(|e| KinesisError::AwsSdk { message: e.to_string() }) instead
+
+impl KinesisError {
+    /// Convert any AWS SDK error to KinesisError
+    pub fn from_aws_error<E: std::error::Error>(err: E) -> Self {
+        Self::AwsSdk {
+            message: err.to_string(),
+        }
+    }
+}

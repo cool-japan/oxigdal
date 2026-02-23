@@ -1,0 +1,67 @@
+# OxiGDAL CLI Docker Image
+# Provides oxigdal command-line tool for geospatial operations
+# Author: COOLJAPAN OU (Team Kitasan)
+
+# Build stage
+FROM rust:1.85-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY benchmarks ./benchmarks
+
+# Build CLI in release mode with optimizations
+RUN cargo build --release --bin oxigdal \
+    && strip target/release/oxigdal
+
+# Runtime stage - minimal image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash oxigdal
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/oxigdal /usr/local/bin/oxigdal
+
+# Create data directory
+RUN mkdir -p /data && chown oxigdal:oxigdal /data
+
+# Switch to non-root user
+USER oxigdal
+WORKDIR /data
+
+# Set environment
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=1 \
+    PATH=/usr/local/bin:$PATH
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD oxigdal --version || exit 1
+
+# Default command shows help
+ENTRYPOINT ["oxigdal"]
+CMD ["--help"]
+
+LABEL org.opencontainers.image.title="OxiGDAL CLI" \
+      org.opencontainers.image.description="Command-line interface for OxiGDAL geospatial operations" \
+      org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="0.1.0"

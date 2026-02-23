@@ -1,0 +1,86 @@
+[package]
+name = "oxigdal-services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-services"
+readme = "README.md"
+description = "OGC Web Services (WFS, WCS, WPS, CSW) for OxiGDAL"
+keywords = ["gis", "science", "ogc", "wfs", "wcs"]
+categories = ["web-programming::http-server", "science"]
+
+[dependencies]
+# Internal dependencies
+oxigdal-core.workspace = true
+oxigdal-algorithms.workspace = true
+oxigdal-proj.workspace = true
+oxigdal-geotiff.workspace = true
+oxigdal-geojson.workspace = true
+
+# Web framework
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow = "1"
+
+# XML processing
+quick-xml.workspace = true
+
+# GeoJSON and geometry
+geojson.workspace = true
+geo-types.workspace = true
+geo.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Utilities
+bytes.workspace = true
+num-traits.workspace = true
+chrono.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+# Caching and concurrency
+lru.workspace = true
+dashmap.workspace = true
+
+# Compression
+flate2.workspace = true
+
+[dev-dependencies]
+# Testing
+tempfile.workspace = true
+proptest.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+
+[lints]
+workspace = true
+
+[lib]
+name = "oxigdal_services"
+path = "src/lib.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

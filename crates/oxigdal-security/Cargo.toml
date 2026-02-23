@@ -1,0 +1,77 @@
+[package]
+name = "oxigdal-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-security"
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["security", "encryption", "access-control", "compliance", "audit"]
+categories = ["cryptography", "authentication", "science"]
+description = "Enterprise security features for OxiGDAL: encryption, access control, compliance"
+
+[dependencies]
+# Crypto primitives
+ring = "0.17"
+rustls = "0.23"
+argon2 = "0.5"
+sha2 = "0.10"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+
+# UUID and time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Data structures
+dashmap = "6.1"
+petgraph = "0.6"
+
+# Compression
+zstd = "0.13"
+
+# Random
+rand = "0.8"
+rand_distr = "0.4"
+getrandom = "0.2"
+
+# Encoding
+base64 = "0.22"
+
+# Pattern matching
+regex = "1"
+
+# TLS support
+webpki-roots = "0.26"
+rustls-pemfile = "2"
+
+# Concurrency
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "security_bench"
+harness = false
+
+[lib]
+doctest = false

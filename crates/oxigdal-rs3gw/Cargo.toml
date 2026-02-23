@@ -1,0 +1,74 @@
+[package]
+name = "oxigdal-rs3gw"
+description = "rs3gw storage backend for OxiGDAL - High-performance cloud storage access"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["oxigdal", "rs3gw", "s3", "science", "network-programming"]
+categories = ["science", "filesystem"]
+
+[features]
+default = ["local"]
+local = []
+s3 = []
+minio = ["s3"]
+gcs = []
+azure = []
+all-backends = ["local", "s3", "gcs", "azure"]
+dedup = []
+encryption = ["getrandom", "hmac", "sha2"]
+ml-cache = []
+zarr = ["oxigdal-zarr"]
+async = ["oxigdal-core/async", "async-trait", "oxigdal-zarr?/async"]
+
+[dependencies]
+# Internal crates
+oxigdal-core.workspace = true
+oxigdal-zarr = { workspace = true, optional = true, features = [] }
+
+# rs3gw storage backend (from crates.io)
+rs3gw.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Bytes handling
+bytes.workspace = true
+
+# Async support
+tokio = { workspace = true, features = ["sync", "time"] }
+async-trait = { workspace = true, optional = true }
+
+# Futures for async streams
+futures = { workspace = true }
+
+# LRU cache for tile caching
+moka = { version = "0.12", features = ["future"] }
+
+# Serialization
+serde_json = { workspace = true }
+
+# Encryption dependencies (optional)
+getrandom = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "datasource_benchmarks"
+harness = false

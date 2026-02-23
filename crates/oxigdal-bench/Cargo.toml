@@ -1,0 +1,99 @@
+[package]
+name = "oxigdal-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-bench"
+readme = "README.md"
+description = "Comprehensive performance profiling and benchmarking suite for OxiGDAL"
+keywords = ["benchmark", "profiling", "performance", "science", "gdal"]
+categories = ["development-tools::profiling", "science"]
+
+[dependencies]
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async runtime
+tokio = { workspace = true, optional = true }
+
+# Time and statistics
+chrono.workspace = true
+
+# Internal oxigdal crates
+oxigdal-core.workspace = true
+oxigdal-algorithms = { workspace = true, optional = true }
+oxigdal-geotiff = { workspace = true, optional = true }
+oxigdal-geojson = { workspace = true, optional = true }
+oxigdal-cloud = { workspace = true, optional = true }
+oxigdal-ml = { workspace = true, optional = true }
+oxigdal-analytics = { workspace = true, optional = true }
+
+# Benchmarking
+criterion.workspace = true
+
+# Profiling
+pprof = { version = "0.15", default-features = false, features = ["flamegraph", "prost-codec"] }
+
+# Parallel processing
+rayon.workspace = true
+
+# Statistics and reporting
+tinytemplate = "1"
+num-traits.workspace = true
+
+# System information
+sysinfo = "0.34"
+
+# Temporary files
+tempfile.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[features]
+default = []
+async = ["tokio"]
+raster = ["oxigdal-geotiff"]
+vector = ["oxigdal-geojson"]
+cloud = ["oxigdal-cloud", "async"]
+ml = ["oxigdal-ml"]
+analytics = ["oxigdal-analytics", "oxigdal-algorithms"]
+full = ["async", "raster", "vector", "cloud", "ml", "analytics"]
+
+[[bench]]
+name = "raster_ops"
+harness = false
+required-features = ["raster"]
+
+[[bench]]
+name = "vector_ops"
+harness = false
+required-features = ["vector"]
+
+[[bench]]
+name = "io_ops"
+harness = false
+
+[[bench]]
+name = "cloud_ops"
+harness = false
+required-features = ["cloud"]
+
+[[bench]]
+name = "ml_inference"
+harness = false
+required-features = ["ml"]
+
+[lints]
+workspace = true

@@ -1,0 +1,140 @@
+[package]
+name = "oxigdal-algorithms"
+description = "High-performance SIMD-optimized raster and vector algorithms for OxiGDAL - Pure Rust geospatial processing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-algorithms"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "raster", "algorithms"]
+categories = ["science", "algorithms"]
+
+[features]
+default = ["std", "simd", "dsl"]
+std = ["thiserror/std", "serde/std"]
+simd = []  # Portable SIMD optimizations (stable Rust)
+simd_nightly = ["simd"]  # Unstable SIMD features (nightly Rust)
+avx2 = ["simd"]  # AVX2 optimizations (x86-64)
+avx512 = ["simd", "avx2"]  # AVX-512 optimizations (x86-64)
+neon = ["simd"]  # NEON optimizations (ARM)
+parallel = ["dep:rayon"]
+arrow = ["dep:arrow-array", "dep:arrow-buffer", "std"]
+dsl = ["dep:pest", "dep:pest_derive", "std"]  # Advanced DSL for raster algebra
+
+[dependencies]
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+# Numeric operations
+num-traits = "0.2"
+
+# Arrow support
+arrow-array = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+
+# Parallelization
+rayon = { workspace = true, optional = true }
+fastrand = { workspace = true }
+
+# Logging (for parallel progress)
+tracing = { workspace = true }
+
+# DSL parser
+pest = { version = "2", optional = true }
+pest_derive = { version = "2", optional = true }
+
+# Spatial indexing and triangulation
+rstar = { workspace = true }
+delaunator = { workspace = true }
+
+[dev-dependencies]
+proptest.workspace = true
+criterion = "0.7"
+approx = "0.5"
+pprof = { workspace = true }
+rayon = { workspace = true }
+
+[[bench]]
+name = "simd_raster"
+harness = false
+
+[[bench]]
+name = "simd_stats"
+harness = false
+
+[[bench]]
+name = "simd_resample"
+harness = false
+
+[[bench]]
+name = "parallel"
+harness = false
+required-features = ["parallel"]
+
+[[bench]]
+name = "dsl"
+harness = false
+required-features = ["dsl"]
+
+[[bench]]
+name = "simd_advanced"
+harness = false
+required-features = ["simd"]
+
+[[bench]]
+name = "raster_algorithms"
+harness = false
+
+[[bench]]
+name = "vector_algorithms"
+harness = false
+
+[[bench]]
+name = "memory_profiling"
+harness = false
+
+[[bench]]
+name = "advanced_algorithms"
+harness = false
+required-features = ["simd"]
+
+[[bench]]
+name = "hydrology"
+harness = false
+
+[[bench]]
+name = "terrain"
+harness = false
+
+[[bench]]
+name = "network"
+harness = false
+
+[[bench]]
+name = "clustering"
+harness = false
+
+[[bench]]
+name = "simd_vs_scalar"
+harness = false
+
+[[bench]]
+name = "filters"
+harness = false
+
+[[bench]]
+name = "parallel_statistics"
+harness = false
+required-features = ["parallel"]
+
+[[bench]]
+name = "object_pooling"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,81 @@
+[package]
+name = "oxigdal-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-python"
+readme = "README.md"
+description = "Python bindings for OxiGDAL - Pure Rust geospatial data abstraction library"
+keywords = ["science", "gdal", "raster", "gis", "python"]
+categories = ["science", "api-bindings"]
+
+# Exclude from standard publishing - this should be published through Maturin/PyPI
+publish = false
+
+[lib]
+name = "oxigdal_python"
+crate-type = ["cdylib"]
+doc = false  # Exclude from rustdoc to avoid collision with main oxigdal crates
+
+[dependencies]
+# OxiGDAL ecosystem
+oxigdal-core.workspace = true
+oxigdal-algorithms.workspace = true
+oxigdal-geotiff.workspace = true
+oxigdal-geojson.workspace = true
+oxigdal-shapefile = { workspace = true, optional = true }
+oxigdal-zarr = { workspace = true, optional = true }
+oxigdal-proj.workspace = true
+oxigdal-cloud = { workspace = true, optional = true }
+
+# PyO3 for Python bindings
+# Note: Using 0.24.x for stability. 0.28+ requires significant API migrations.
+pyo3 = { version = "0.24", features = ["abi3-py39", "num-bigint"] }
+numpy = "0.24"
+
+# TODO: Add async support when pyo3-asyncio 0.23 is released
+# pyo3-asyncio = { version = "0.23", features = ["tokio-runtime"], optional = true }
+# tokio = { workspace = true, optional = true }
+# futures = { workspace = true, optional = true }
+# async-trait = { workspace = true, optional = true }
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Numeric types
+num-traits.workspace = true
+
+# Utilities
+bytes.workspace = true
+regex.workspace = true
+
+# Algorithms and image processing
+scirs2-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.24"
+
+[features]
+default = ["extension-module", "geotiff", "geojson", "algorithms"]
+# extension-module: Use this when building the Python extension (.so/.dylib)
+# For tests, build without default features: cargo test --no-default-features --features geotiff,geojson,algorithms
+extension-module = ["pyo3/extension-module"]
+geotiff = []
+geojson = []
+shapefile = ["oxigdal-shapefile"]
+zarr = ["oxigdal-zarr"]
+algorithms = []
+cloud = ["oxigdal-cloud"]
+# async = ["pyo3-asyncio", "tokio", "futures"]  # TODO: Enable when pyo3-asyncio is updated

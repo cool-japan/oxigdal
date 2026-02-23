@@ -1,0 +1,87 @@
+[package]
+name = "oxigdal-kafka"
+description = "Apache Kafka integration for OxiGDAL - async producer/consumer with schema registry and transactions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-kafka"
+readme = "README.md"
+keywords = ["kafka", "messaging", "streaming", "science", "async"]
+categories = ["network-programming", "asynchronous", "science"]
+
+[features]
+default = ["std", "producer", "consumer"]
+std = ["thiserror/std", "serde/std"]
+producer = []
+consumer = []
+schema-registry = ["dep:apache-avro"]
+transactions = []
+compression-all = ["compression-gzip", "compression-snappy", "compression-lz4", "compression-zstd"]
+compression-gzip = ["flate2"]
+compression-snappy = ["snap"]
+compression-lz4 = ["lz4"]
+compression-zstd = ["zstd"]
+all = ["producer", "consumer", "schema-registry", "transactions", "compression-all"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time", "fs", "io-util", "rt"] }
+futures.workspace = true
+async-trait.workspace = true
+
+# Kafka client (pure Rust rdkafka with tokio support)
+rdkafka = { workspace = true, features = ["tokio", "cmake-build"] }
+
+# Serialization
+apache-avro = { version = "0.18", optional = true, default-features = false, features = ["snappy"] }
+
+# Compression
+flate2 = { workspace = true, optional = true }
+snap = { workspace = true, optional = true }
+lz4 = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+
+# Concurrency
+dashmap.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Utilities
+chrono.workspace = true
+num-traits.workspace = true
+regex.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+# HTTP client for schema registry
+reqwest = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+criterion.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+
+[[bench]]
+name = "kafka_benchmarks"
+harness = false
+
+[lints]
+workspace = true

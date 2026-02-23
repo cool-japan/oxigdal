@@ -1,0 +1,84 @@
+[package]
+name = "oxigdal-examples"
+description = "Example programs demonstrating OxiGDAL usage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "read-geotiff"
+path = "src/read_geotiff.rs"
+
+[[bin]]
+name = "cog-tiles"
+path = "src/cog_tiles.rs"
+
+[[bin]]
+name = "list-tiff-structure"
+path = "src/list_tiff_structure.rs"
+
+[[bin]]
+name = "buffer-ops"
+path = "src/buffer_ops.rs"
+
+[[bin]]
+name = "write-geotiff"
+path = "src/write_geotiff.rs"
+
+[[bin]]
+name = "create-cog"
+path = "src/create_cog.rs"
+
+[[bin]]
+name = "geotiff-with-overviews"
+path = "src/geotiff_with_overviews.rs"
+
+[[bin]]
+name = "create-geoparquet-samples"
+path = "src/create_test_geoparquet_samples.rs"
+
+[features]
+default = []
+zstd = ["oxigdal-geotiff/zstd"]
+
+[dependencies]
+oxigdal-core = { workspace = true }
+oxigdal-geotiff = { workspace = true }
+oxigdal-algorithms = { workspace = true }
+oxigdal-proj = { workspace = true }
+oxigdal-stac = { workspace = true }
+oxigdal-geojson = { workspace = true }
+oxigdal-geoparquet = { workspace = true }
+oxigdal-zarr = { workspace = true }
+oxigdal-netcdf = { workspace = true }
+oxigdal-shapefile = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time and dates
+chrono = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }
+
+# Cloud
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,2343 @@
+//! Comprehensive tests for NetCDF driver.
+//!
+//! This file contains extensive tests covering:
+//! 1. Reader tests (parsing, dimension handling, variable access)
+//! 2. Writer tests (creation, metadata, attributes)
+//! 3. Round-trip tests
+//! 4. Edge cases and error handling
+//!
+//! Following COOLJAPAN policies:
+//! - No unwrap() usage
+//! - Use std::env::temp_dir() for temp files
+//! - Pure Rust only
+
+use oxigdal_netcdf::{
+    Attribute, AttributeValue, Attributes, CfMetadata, DataType, Dimension, DimensionSize,
+    Dimensions, NetCdfError, NetCdfMetadata, NetCdfReader, NetCdfVersion, NetCdfWriter, Variable,
+    Variables,
+};
+use std::env;
+use std::path::PathBuf;
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Create a temporary file path in the system temp directory.
+fn temp_file_path(name: &str) -> PathBuf {
+    let mut path = env::temp_dir();
+    path.push(format!(
+        "oxigdal_netcdf_test_{}_{}.nc",
+        name,
+        std::process::id()
+    ));
+    path
+}
+
+// ============================================================================
+// Module: Dimension Tests
+// ============================================================================
+
+mod dimension_tests {
+    use super::*;
+
+    #[test]
+    fn test_dimension_new_fixed() {
+        let dim = Dimension::new("test_dim", 100).expect("Failed to create dimension");
+        assert_eq!(dim.name(), "test_dim");
+        assert_eq!(dim.len(), 100);
+        assert!(!dim.is_unlimited());
+        assert!(!dim.is_empty());
+    }
+
+    #[test]
+    fn test_dimension_new_unlimited() {
+        let dim =
+            Dimension::new_unlimited("time", 50).expect("Failed to create unlimited dimension");
+        assert_eq!(dim.name(), "time");
+        assert_eq!(dim.len(), 50);
+        assert!(dim.is_unlimited());
+    }
+
+    #[test]
+    fn test_dimension_empty_name_fails() {
+        let result = Dimension::new("", 100);
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::DimensionError(msg)) => {
+                assert!(
+                    msg.contains("empty"),
+                    "Error message should mention empty: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected DimensionError"),
+        }
+    }
+
+    #[test]
+    fn test_dimension_zero_size() {
+        let dim = Dimension::new("empty_dim", 0).expect("Should allow zero size");
+        assert!(dim.is_empty());
+        assert_eq!(dim.len(), 0);
+    }
+
+    #[test]
+    fn test_dimension_set_len_unlimited() {
+        let mut dim = Dimension::new_unlimited("time", 10).expect("Failed to create dimension");
+        dim.set_len(100)
+            .expect("Should allow changing unlimited dimension size");
+        assert_eq!(dim.len(), 100);
+    }
+
+    #[test]
+    fn test_dimension_set_len_fixed_fails() {
+        let mut dim = Dimension::new("fixed", 10).expect("Failed to create dimension");
+        let result = dim.set_len(100);
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::UnlimitedDimensionError(msg)) => {
+                assert!(
+                    msg.contains("fixed"),
+                    "Error should mention fixed dimension: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected UnlimitedDimensionError"),
+        }
+    }
+
+    #[test]
+    fn test_dimension_size_enum_fixed() {
+        let size = DimensionSize::Fixed(100);
+        assert_eq!(size.len(), 100);
+        assert!(!size.is_unlimited());
+        assert!(!size.is_empty());
+    }
+
+    #[test]
+    fn test_dimension_size_enum_unlimited() {
+        let size = DimensionSize::Unlimited(50);
+        assert_eq!(size.len(), 50);
+        assert!(size.is_unlimited());
+    }
+
+    #[test]
+    fn test_dimensions_collection_basic() {
+        let mut dims = Dimensions::new();
+        assert!(dims.is_empty());
+        assert_eq!(dims.len(), 0);
+
+        dims.add(Dimension::new("x", 10).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+        dims.add(Dimension::new("y", 20).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+        dims.add(Dimension::new("z", 30).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+
+        assert_eq!(dims.len(), 3);
+        assert!(!dims.is_empty());
+        assert!(dims.contains("x"));
+        assert!(dims.contains("y"));
+        assert!(dims.contains("z"));
+        assert!(!dims.contains("w"));
+    }
+
+    #[test]
+    fn test_dimensions_get_by_name() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("test", 100).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+
+        let dim = dims.get("test").expect("Dimension should exist");
+        assert_eq!(dim.len(), 100);
+
+        assert!(dims.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_dimensions_get_by_index() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("first", 10).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+        dims.add(Dimension::new("second", 20).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+
+        let first = dims.get_by_index(0).expect("Index 0 should exist");
+        assert_eq!(first.name(), "first");
+
+        let second = dims.get_by_index(1).expect("Index 1 should exist");
+        assert_eq!(second.name(), "second");
+
+        assert!(dims.get_by_index(2).is_none());
+    }
+
+    #[test]
+    fn test_dimensions_duplicate_fails() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("test", 10).expect("Valid dimension"))
+            .expect("First add should succeed");
+
+        let result = dims.add(Dimension::new("test", 20).expect("Valid dimension"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dimensions_total_size() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("x", 10).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new("y", 20).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new("z", 5).expect("Valid dimension"))
+            .expect("Failed to add");
+
+        assert_eq!(dims.total_size(), Some(10 * 20 * 5));
+    }
+
+    #[test]
+    fn test_dimensions_shape() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("x", 10).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new("y", 20).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new("z", 30).expect("Valid dimension"))
+            .expect("Failed to add");
+
+        assert_eq!(dims.shape(), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_dimensions_names() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("lat", 180).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new("lon", 360).expect("Valid dimension"))
+            .expect("Failed to add");
+
+        let names = dims.names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"lat"));
+        assert!(names.contains(&"lon"));
+    }
+
+    #[test]
+    fn test_dimensions_unlimited() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("x", 10).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new_unlimited("time", 0).expect("Valid dimension"))
+            .expect("Failed to add");
+        dims.add(Dimension::new("y", 20).expect("Valid dimension"))
+            .expect("Failed to add");
+
+        let unlimited = dims.unlimited().expect("Should have unlimited dimension");
+        assert_eq!(unlimited.name(), "time");
+        assert!(unlimited.is_unlimited());
+    }
+
+    #[test]
+    fn test_dimensions_iterator() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("a", 1).expect("Valid"))
+            .expect("Failed");
+        dims.add(Dimension::new("b", 2).expect("Valid"))
+            .expect("Failed");
+        dims.add(Dimension::new("c", 3).expect("Valid"))
+            .expect("Failed");
+
+        let names: Vec<&str> = dims.iter().map(|d| d.name()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_dimensions_from_iterator() {
+        let dim_vec = vec![
+            Dimension::new("x", 10).expect("Valid"),
+            Dimension::new("y", 20).expect("Valid"),
+        ];
+        let dims: Dimensions = dim_vec.into_iter().collect();
+        assert_eq!(dims.len(), 2);
+    }
+}
+
+// ============================================================================
+// Module: Variable Tests
+// ============================================================================
+
+mod variable_tests {
+    use super::*;
+
+    #[test]
+    fn test_data_type_size() {
+        assert_eq!(DataType::I8.size(), 1);
+        assert_eq!(DataType::U8.size(), 1);
+        assert_eq!(DataType::I16.size(), 2);
+        assert_eq!(DataType::U16.size(), 2);
+        assert_eq!(DataType::I32.size(), 4);
+        assert_eq!(DataType::U32.size(), 4);
+        assert_eq!(DataType::I64.size(), 8);
+        assert_eq!(DataType::U64.size(), 8);
+        assert_eq!(DataType::F32.size(), 4);
+        assert_eq!(DataType::F64.size(), 8);
+        assert_eq!(DataType::Char.size(), 1);
+        assert_eq!(DataType::String.size(), 0); // Variable size
+    }
+
+    #[test]
+    fn test_data_type_name() {
+        assert_eq!(DataType::I8.name(), "i8");
+        assert_eq!(DataType::F32.name(), "f32");
+        assert_eq!(DataType::F64.name(), "f64");
+        assert_eq!(DataType::Char.name(), "char");
+        assert_eq!(DataType::String.name(), "string");
+    }
+
+    #[test]
+    fn test_data_type_is_float() {
+        assert!(DataType::F32.is_float());
+        assert!(DataType::F64.is_float());
+        assert!(!DataType::I32.is_float());
+        assert!(!DataType::Char.is_float());
+    }
+
+    #[test]
+    fn test_data_type_is_integer() {
+        assert!(DataType::I8.is_integer());
+        assert!(DataType::I16.is_integer());
+        assert!(DataType::I32.is_integer());
+        assert!(DataType::I64.is_integer());
+        assert!(DataType::U8.is_integer());
+        assert!(DataType::U16.is_integer());
+        assert!(DataType::U32.is_integer());
+        assert!(DataType::U64.is_integer());
+        assert!(!DataType::F32.is_integer());
+        assert!(!DataType::F64.is_integer());
+    }
+
+    #[test]
+    fn test_data_type_is_signed() {
+        assert!(DataType::I8.is_signed());
+        assert!(DataType::I16.is_signed());
+        assert!(DataType::I32.is_signed());
+        assert!(DataType::I64.is_signed());
+        assert!(DataType::F32.is_signed());
+        assert!(DataType::F64.is_signed());
+        assert!(!DataType::U8.is_signed());
+        assert!(!DataType::U16.is_signed());
+        assert!(!DataType::U32.is_signed());
+        assert!(!DataType::U64.is_signed());
+    }
+
+    #[test]
+    fn test_data_type_netcdf3_compatible() {
+        assert!(DataType::I8.is_netcdf3_compatible());
+        assert!(DataType::I16.is_netcdf3_compatible());
+        assert!(DataType::I32.is_netcdf3_compatible());
+        assert!(DataType::F32.is_netcdf3_compatible());
+        assert!(DataType::F64.is_netcdf3_compatible());
+        assert!(DataType::Char.is_netcdf3_compatible());
+        // Not compatible with NetCDF-3
+        assert!(!DataType::U16.is_netcdf3_compatible());
+        assert!(!DataType::U32.is_netcdf3_compatible());
+        assert!(!DataType::I64.is_netcdf3_compatible());
+        assert!(!DataType::U64.is_netcdf3_compatible());
+        assert!(!DataType::String.is_netcdf3_compatible());
+    }
+
+    #[test]
+    fn test_variable_new() {
+        let var = Variable::new(
+            "temperature",
+            DataType::F32,
+            vec!["time".to_string(), "lat".to_string(), "lon".to_string()],
+        )
+        .expect("Failed to create variable");
+
+        assert_eq!(var.name(), "temperature");
+        assert_eq!(var.data_type(), DataType::F32);
+        assert_eq!(var.ndims(), 3);
+        assert_eq!(
+            var.dimension_names(),
+            &["time".to_string(), "lat".to_string(), "lon".to_string()]
+        );
+        assert!(!var.is_scalar());
+        assert!(!var.is_coordinate());
+    }
+
+    #[test]
+    fn test_variable_new_coordinate() {
+        let var = Variable::new_coordinate("time", DataType::F64)
+            .expect("Failed to create coordinate variable");
+
+        assert_eq!(var.name(), "time");
+        assert_eq!(var.data_type(), DataType::F64);
+        assert_eq!(var.ndims(), 1);
+        assert_eq!(var.dimension_names(), &["time".to_string()]);
+        assert!(var.is_coordinate());
+        assert!(!var.is_scalar());
+    }
+
+    #[test]
+    fn test_variable_scalar() {
+        let var =
+            Variable::new("global_mean", DataType::F64, vec![]).expect("Failed to create scalar");
+
+        assert!(var.is_scalar());
+        assert_eq!(var.ndims(), 0);
+        assert!(var.dimension_names().is_empty());
+    }
+
+    #[test]
+    fn test_variable_empty_name_fails() {
+        let result = Variable::new("", DataType::F32, vec!["x".to_string()]);
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::VariableError(msg)) => {
+                assert!(msg.contains("empty"), "Error should mention empty: {}", msg);
+            }
+            _ => panic!("Expected VariableError"),
+        }
+    }
+
+    #[test]
+    fn test_variable_shape() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("time", 10).expect("Valid"))
+            .expect("Failed");
+        dims.add(Dimension::new("lat", 180).expect("Valid"))
+            .expect("Failed");
+        dims.add(Dimension::new("lon", 360).expect("Valid"))
+            .expect("Failed");
+
+        let var = Variable::new(
+            "temp",
+            DataType::F32,
+            vec!["time".to_string(), "lat".to_string(), "lon".to_string()],
+        )
+        .expect("Failed to create variable");
+
+        let shape = var.shape(&dims).expect("Failed to get shape");
+        assert_eq!(shape, vec![10, 180, 360]);
+    }
+
+    #[test]
+    fn test_variable_size() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        dims.add(Dimension::new("y", 20).expect("Valid"))
+            .expect("Failed");
+
+        let var = Variable::new(
+            "data",
+            DataType::F32,
+            vec!["x".to_string(), "y".to_string()],
+        )
+        .expect("Failed to create variable");
+
+        let size = var.size(&dims).expect("Failed to get size");
+        assert_eq!(size, 10 * 20);
+    }
+
+    #[test]
+    fn test_variable_size_bytes() {
+        let mut dims = Dimensions::new();
+        dims.add(Dimension::new("x", 100).expect("Valid"))
+            .expect("Failed");
+
+        let var = Variable::new("data", DataType::F64, vec!["x".to_string()])
+            .expect("Failed to create variable");
+
+        let size_bytes = var.size_bytes(&dims).expect("Failed to get size bytes");
+        assert_eq!(size_bytes, 100 * 8); // 100 elements * 8 bytes per f64
+    }
+
+    #[test]
+    fn test_variable_scalar_size() {
+        let dims = Dimensions::new();
+        let var = Variable::new("scalar", DataType::F32, vec![]).expect("Failed to create scalar");
+
+        let size = var.size(&dims).expect("Failed to get size");
+        assert_eq!(size, 1); // Scalar has size 1
+    }
+
+    #[test]
+    fn test_variable_missing_dimension() {
+        let dims = Dimensions::new(); // Empty dimensions
+
+        let var = Variable::new("data", DataType::F32, vec!["missing".to_string()])
+            .expect("Failed to create variable");
+
+        let result = var.shape(&dims);
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::DimensionNotFound { name }) => {
+                assert_eq!(name, "missing");
+            }
+            _ => panic!("Expected DimensionNotFound"),
+        }
+    }
+
+    #[test]
+    fn test_variable_set_coordinate() {
+        let mut var = Variable::new("data", DataType::F32, vec!["data".to_string()])
+            .expect("Failed to create variable");
+
+        assert!(!var.is_coordinate());
+        var.set_coordinate(true);
+        assert!(var.is_coordinate());
+        var.set_coordinate(false);
+        assert!(!var.is_coordinate());
+    }
+
+    #[test]
+    fn test_variables_collection() {
+        let mut vars = Variables::new();
+        assert!(vars.is_empty());
+
+        vars.add(Variable::new_coordinate("time", DataType::F64).expect("Valid"))
+            .expect("Failed");
+        vars.add(Variable::new("temp", DataType::F32, vec!["time".to_string()]).expect("Valid"))
+            .expect("Failed");
+
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains("time"));
+        assert!(vars.contains("temp"));
+        assert!(!vars.contains("other"));
+    }
+
+    #[test]
+    fn test_variables_coordinates_filter() {
+        let mut vars = Variables::new();
+        vars.add(Variable::new_coordinate("time", DataType::F64).expect("Valid"))
+            .expect("Failed");
+        vars.add(Variable::new_coordinate("lat", DataType::F32).expect("Valid"))
+            .expect("Failed");
+        vars.add(Variable::new("temp", DataType::F32, vec!["time".to_string()]).expect("Valid"))
+            .expect("Failed");
+
+        let coords: Vec<_> = vars.coordinates().collect();
+        assert_eq!(coords.len(), 2);
+
+        let data_vars: Vec<_> = vars.data_variables().collect();
+        assert_eq!(data_vars.len(), 1);
+        assert_eq!(data_vars[0].name(), "temp");
+    }
+
+    #[test]
+    fn test_variables_duplicate_fails() {
+        let mut vars = Variables::new();
+        vars.add(Variable::new("test", DataType::F32, vec![]).expect("Valid"))
+            .expect("First add should succeed");
+
+        let result = vars.add(Variable::new("test", DataType::F64, vec![]).expect("Valid"));
+        assert!(result.is_err());
+    }
+}
+
+// ============================================================================
+// Module: Attribute Tests
+// ============================================================================
+
+mod attribute_tests {
+    use super::*;
+
+    #[test]
+    fn test_attribute_value_text() {
+        let val = AttributeValue::text("Test string");
+        assert_eq!(val.as_text().expect("Should be text"), "Test string");
+        assert_eq!(val.type_name(), "text");
+        assert_eq!(val.len(), 11); // "Test string" length
+    }
+
+    #[test]
+    fn test_attribute_value_i8() {
+        let val = AttributeValue::i8(42);
+        assert_eq!(val.type_name(), "i8");
+        assert_eq!(val.len(), 1);
+    }
+
+    #[test]
+    fn test_attribute_value_i8_array() {
+        let val = AttributeValue::i8_array(vec![1, 2, 3, 4, 5]);
+        assert_eq!(val.type_name(), "i8");
+        assert_eq!(val.len(), 5);
+    }
+
+    #[test]
+    fn test_attribute_value_i32() {
+        let val = AttributeValue::i32(42);
+        assert_eq!(val.as_i32().expect("Should be i32"), 42);
+        assert_eq!(val.type_name(), "i32");
+    }
+
+    #[test]
+    fn test_attribute_value_i32_array() {
+        let val = AttributeValue::i32_array(vec![1, 2, 3]);
+        assert_eq!(val.type_name(), "i32");
+        assert_eq!(val.len(), 3);
+        // as_i32 should fail for arrays
+        assert!(val.as_i32().is_err());
+    }
+
+    #[test]
+    fn test_attribute_value_f32() {
+        let val = AttributeValue::f32(3.14);
+        assert_eq!(val.type_name(), "f32");
+        assert_eq!(val.len(), 1);
+    }
+
+    #[test]
+    fn test_attribute_value_f64() {
+        let val = AttributeValue::f64(std::f64::consts::PI);
+        assert!((val.as_f64().expect("Should be f64") - std::f64::consts::PI).abs() < 1e-10);
+        assert_eq!(val.type_name(), "f64");
+    }
+
+    #[test]
+    fn test_attribute_value_f64_array() {
+        let val = AttributeValue::f64_array(vec![1.0, 2.0, 3.0]);
+        assert_eq!(val.type_name(), "f64");
+        assert_eq!(val.len(), 3);
+        // as_f64 should fail for arrays
+        assert!(val.as_f64().is_err());
+    }
+
+    #[test]
+    fn test_attribute_value_type_mismatch() {
+        let val = AttributeValue::i32(42);
+        assert!(val.as_text().is_err());
+        assert!(val.as_f64().is_err());
+    }
+
+    #[test]
+    fn test_attribute_new() {
+        let attr = Attribute::new("title", AttributeValue::text("Test"))
+            .expect("Failed to create attribute");
+        assert_eq!(attr.name(), "title");
+        assert_eq!(attr.value().as_text().expect("Should be text"), "Test");
+    }
+
+    #[test]
+    fn test_attribute_empty_name_fails() {
+        let result = Attribute::new("", AttributeValue::text("value"));
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::AttributeError(msg)) => {
+                assert!(msg.contains("empty"), "Error should mention empty: {}", msg);
+            }
+            _ => panic!("Expected AttributeError"),
+        }
+    }
+
+    #[test]
+    fn test_attributes_collection() {
+        let mut attrs = Attributes::new();
+        assert!(attrs.is_empty());
+
+        attrs
+            .add(Attribute::new("title", AttributeValue::text("Test")).expect("Valid"))
+            .expect("Failed");
+        attrs
+            .add(Attribute::new("version", AttributeValue::i32(1)).expect("Valid"))
+            .expect("Failed");
+
+        assert_eq!(attrs.len(), 2);
+        assert!(attrs.contains("title"));
+        assert!(attrs.contains("version"));
+    }
+
+    #[test]
+    fn test_attributes_get_value() {
+        let mut attrs = Attributes::new();
+        attrs
+            .add(Attribute::new("count", AttributeValue::i32(42)).expect("Valid"))
+            .expect("Failed");
+
+        let value = attrs.get_value("count").expect("Attribute should exist");
+        assert_eq!(value.as_i32().expect("Should be i32"), 42);
+
+        assert!(attrs.get_value("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_attributes_set_replace() {
+        let mut attrs = Attributes::new();
+        attrs.set(Attribute::new("test", AttributeValue::i32(1)).expect("Valid"));
+        assert_eq!(
+            attrs
+                .get_value("test")
+                .expect("Should exist")
+                .as_i32()
+                .expect("Should be i32"),
+            1
+        );
+
+        // Replace existing
+        attrs.set(Attribute::new("test", AttributeValue::i32(2)).expect("Valid"));
+        assert_eq!(
+            attrs
+                .get_value("test")
+                .expect("Should exist")
+                .as_i32()
+                .expect("Should be i32"),
+            2
+        );
+        assert_eq!(attrs.len(), 1); // Still only one attribute
+    }
+
+    #[test]
+    fn test_attributes_remove() {
+        let mut attrs = Attributes::new();
+        attrs.set(Attribute::new("test", AttributeValue::i32(1)).expect("Valid"));
+        assert!(attrs.contains("test"));
+
+        let removed = attrs.remove("test");
+        assert!(removed.is_some());
+        assert!(!attrs.contains("test"));
+
+        // Remove nonexistent
+        assert!(attrs.remove("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_attributes_names() {
+        let mut attrs = Attributes::new();
+        attrs
+            .add(Attribute::new("first", AttributeValue::text("a")).expect("Valid"))
+            .expect("Failed");
+        attrs
+            .add(Attribute::new("second", AttributeValue::text("b")).expect("Valid"))
+            .expect("Failed");
+
+        let names = attrs.names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"first"));
+        assert!(names.contains(&"second"));
+    }
+
+    #[test]
+    fn test_attributes_duplicate_fails() {
+        let mut attrs = Attributes::new();
+        attrs
+            .add(Attribute::new("test", AttributeValue::i32(1)).expect("Valid"))
+            .expect("First add should succeed");
+
+        let result = attrs.add(Attribute::new("test", AttributeValue::i32(2)).expect("Valid"));
+        assert!(result.is_err());
+    }
+}
+
+// ============================================================================
+// Module: Metadata Tests
+// ============================================================================
+
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn test_netcdf_version_classic() {
+        let version = NetCdfVersion::Classic;
+        assert!(version.is_netcdf3());
+        assert!(!version.is_netcdf4());
+        assert_eq!(version.version_number(), 3);
+        assert_eq!(version.format_name(), "NetCDF-3 Classic");
+    }
+
+    #[test]
+    fn test_netcdf_version_offset64bit() {
+        let version = NetCdfVersion::Offset64Bit;
+        assert!(version.is_netcdf3());
+        assert!(!version.is_netcdf4());
+        assert_eq!(version.version_number(), 3);
+        assert_eq!(version.format_name(), "NetCDF-3 64-bit Offset");
+    }
+
+    #[test]
+    fn test_netcdf_version_netcdf4() {
+        let version = NetCdfVersion::NetCdf4;
+        assert!(!version.is_netcdf3());
+        assert!(version.is_netcdf4());
+        assert_eq!(version.version_number(), 4);
+        assert_eq!(version.format_name(), "NetCDF-4");
+    }
+
+    #[test]
+    fn test_netcdf_version_netcdf4_classic() {
+        let version = NetCdfVersion::NetCdf4Classic;
+        assert!(!version.is_netcdf3());
+        assert!(version.is_netcdf4());
+        assert_eq!(version.version_number(), 4);
+        assert_eq!(version.format_name(), "NetCDF-4 Classic");
+    }
+
+    #[test]
+    fn test_netcdf_version_default() {
+        let version = NetCdfVersion::default();
+        assert_eq!(version, NetCdfVersion::Classic);
+    }
+
+    #[test]
+    fn test_cf_metadata_new() {
+        let cf = CfMetadata::new();
+        assert!(cf.conventions.is_none());
+        assert!(cf.title.is_none());
+        assert!(cf.institution.is_none());
+        assert!(!cf.has_conventions());
+        assert!(!cf.is_cf_compliant());
+    }
+
+    #[test]
+    fn test_cf_metadata_cf_compliant() {
+        let mut cf = CfMetadata::new();
+        cf.conventions = Some("CF-1.8".to_string());
+        assert!(cf.has_conventions());
+        assert!(cf.is_cf_compliant());
+    }
+
+    #[test]
+    fn test_cf_metadata_non_cf_conventions() {
+        let mut cf = CfMetadata::new();
+        cf.conventions = Some("Other-1.0".to_string());
+        assert!(cf.has_conventions());
+        assert!(!cf.is_cf_compliant()); // Doesn't start with "CF-"
+    }
+
+    #[test]
+    fn test_cf_metadata_from_attributes() {
+        let mut attrs = Attributes::new();
+        attrs
+            .add(Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("Valid"))
+            .expect("Failed");
+        attrs
+            .add(Attribute::new("title", AttributeValue::text("Test Data")).expect("Valid"))
+            .expect("Failed");
+        attrs
+            .add(Attribute::new("institution", AttributeValue::text("Test Lab")).expect("Valid"))
+            .expect("Failed");
+        attrs
+            .add(Attribute::new("source", AttributeValue::text("Model")).expect("Valid"))
+            .expect("Failed");
+
+        let cf = CfMetadata::from_attributes(&attrs);
+        assert_eq!(cf.conventions.as_deref(), Some("CF-1.8"));
+        assert_eq!(cf.title.as_deref(), Some("Test Data"));
+        assert_eq!(cf.institution.as_deref(), Some("Test Lab"));
+        assert_eq!(cf.source.as_deref(), Some("Model"));
+    }
+
+    #[test]
+    fn test_cf_metadata_to_attributes() {
+        let mut cf = CfMetadata::new();
+        cf.conventions = Some("CF-1.8".to_string());
+        cf.title = Some("Test".to_string());
+        cf.institution = Some("Lab".to_string());
+
+        let attrs = cf.to_attributes();
+        assert!(attrs.contains("Conventions"));
+        assert!(attrs.contains("title"));
+        assert!(attrs.contains("institution"));
+        assert_eq!(attrs.len(), 3);
+    }
+
+    #[test]
+    fn test_netcdf_metadata_new() {
+        let metadata = NetCdfMetadata::new(NetCdfVersion::Classic);
+        assert_eq!(metadata.version(), NetCdfVersion::Classic);
+        assert!(metadata.dimensions().is_empty());
+        assert!(metadata.variables().is_empty());
+        assert!(metadata.global_attributes().is_empty());
+        assert!(metadata.cf_metadata().is_none());
+    }
+
+    #[test]
+    fn test_netcdf_metadata_new_classic() {
+        let metadata = NetCdfMetadata::new_classic();
+        assert_eq!(metadata.version(), NetCdfVersion::Classic);
+    }
+
+    #[test]
+    fn test_netcdf_metadata_new_netcdf4() {
+        let metadata = NetCdfMetadata::new_netcdf4();
+        assert_eq!(metadata.version(), NetCdfVersion::NetCdf4);
+    }
+
+    #[test]
+    fn test_netcdf_metadata_default() {
+        let metadata = NetCdfMetadata::default();
+        assert_eq!(metadata.version(), NetCdfVersion::Classic);
+    }
+
+    #[test]
+    fn test_netcdf_metadata_add_dimension() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+
+        assert_eq!(metadata.dimensions().len(), 1);
+        assert!(metadata.dimensions().contains("x"));
+    }
+
+    #[test]
+    fn test_netcdf_metadata_add_variable() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        metadata
+            .variables_mut()
+            .add(Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"))
+            .expect("Failed");
+
+        assert_eq!(metadata.variables().len(), 1);
+        assert!(metadata.variables().contains("data"));
+    }
+
+    #[test]
+    fn test_netcdf_metadata_add_global_attribute() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .global_attributes_mut()
+            .add(Attribute::new("title", AttributeValue::text("Test")).expect("Valid"))
+            .expect("Failed");
+
+        assert!(metadata.global_attributes().contains("title"));
+    }
+
+    #[test]
+    fn test_netcdf_metadata_validate_success() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        metadata
+            .variables_mut()
+            .add(Variable::new_coordinate("x", DataType::F32).expect("Valid"))
+            .expect("Failed");
+
+        assert!(metadata.validate().is_ok());
+    }
+
+    #[test]
+    fn test_netcdf_metadata_validate_missing_dimension() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        // Add variable without corresponding dimension
+        metadata
+            .variables_mut()
+            .add(Variable::new("data", DataType::F32, vec!["missing".to_string()]).expect("Valid"))
+            .expect("Failed");
+
+        let result = metadata.validate();
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::DimensionNotFound { name }) => {
+                assert_eq!(name, "missing");
+            }
+            _ => panic!("Expected DimensionNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_netcdf_metadata_validate_incompatible_type() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        // U16 is not compatible with NetCDF-3
+        metadata
+            .variables_mut()
+            .add(Variable::new("data", DataType::U16, vec!["x".to_string()]).expect("Valid"))
+            .expect("Failed");
+
+        let result = metadata.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_netcdf_metadata_validate_multiple_unlimited_dims() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new_unlimited("time", 10).expect("Valid"))
+            .expect("Failed");
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new_unlimited("level", 5).expect("Valid"))
+            .expect("Failed");
+
+        let result = metadata.validate();
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::UnlimitedDimensionError(msg)) => {
+                assert!(
+                    msg.contains("one unlimited"),
+                    "Error should mention one unlimited: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected UnlimitedDimensionError"),
+        }
+    }
+
+    #[test]
+    fn test_netcdf_metadata_summary() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        metadata
+            .dimensions_mut()
+            .add(Dimension::new("y", 20).expect("Valid"))
+            .expect("Failed");
+        metadata
+            .variables_mut()
+            .add(
+                Variable::new(
+                    "data",
+                    DataType::F32,
+                    vec!["x".to_string(), "y".to_string()],
+                )
+                .expect("Valid"),
+            )
+            .expect("Failed");
+        metadata
+            .global_attributes_mut()
+            .add(Attribute::new("title", AttributeValue::text("Test")).expect("Valid"))
+            .expect("Failed");
+
+        let summary = metadata.summary();
+        assert!(summary.contains("NetCDF-3"));
+        assert!(summary.contains("2 dimensions"));
+        assert!(summary.contains("1 variables"));
+        assert!(summary.contains("1 global attributes"));
+    }
+
+    #[test]
+    fn test_netcdf_metadata_parse_cf_metadata() {
+        let mut metadata = NetCdfMetadata::new_classic();
+        metadata
+            .global_attributes_mut()
+            .add(Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("Valid"))
+            .expect("Failed");
+        metadata
+            .global_attributes_mut()
+            .add(Attribute::new("title", AttributeValue::text("Test Data")).expect("Valid"))
+            .expect("Failed");
+
+        metadata.parse_cf_metadata();
+
+        let cf = metadata.cf_metadata().expect("CF metadata should exist");
+        assert!(cf.is_cf_compliant());
+        assert_eq!(cf.conventions.as_deref(), Some("CF-1.8"));
+    }
+}
+
+// ============================================================================
+// Module: Writer Tests
+// ============================================================================
+
+#[cfg(feature = "netcdf3")]
+mod writer_tests {
+    use super::*;
+
+    #[test]
+    fn test_writer_create() {
+        let path = temp_file_path("writer_create");
+        let writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        assert!(writer.metadata().dimensions().is_empty());
+        assert!(writer.metadata().variables().is_empty());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_dimension() {
+        let path = temp_file_path("writer_add_dim");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid dimension"))
+            .expect("Failed to add dimension");
+
+        assert_eq!(writer.metadata().dimensions().len(), 1);
+        assert!(writer.metadata().dimensions().contains("x"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_variable() {
+        let path = temp_file_path("writer_add_var");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed to add dimension");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed to add variable");
+
+        assert_eq!(writer.metadata().variables().len(), 1);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_variable_missing_dimension() {
+        let path = temp_file_path("writer_missing_dim");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        // Try to add variable without adding its dimension first
+        let result = writer.add_variable(
+            Variable::new("data", DataType::F32, vec!["missing".to_string()]).expect("Valid"),
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::DimensionNotFound { name }) => {
+                assert_eq!(name, "missing");
+            }
+            _ => panic!("Expected DimensionNotFound error"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_global_attribute() {
+        let path = temp_file_path("writer_global_attr");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_global_attribute(
+                Attribute::new("title", AttributeValue::text("Test")).expect("Valid"),
+            )
+            .expect("Failed to add global attribute");
+
+        assert!(writer.metadata().global_attributes().contains("title"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_variable_attribute() {
+        let path = temp_file_path("writer_var_attr");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("temp", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+        writer
+            .add_variable_attribute(
+                "temp",
+                Attribute::new("units", AttributeValue::text("celsius")).expect("Valid"),
+            )
+            .expect("Failed to add variable attribute");
+
+        let var = writer
+            .metadata()
+            .variables()
+            .get("temp")
+            .expect("Variable should exist");
+        assert!(var.attributes().contains("units"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_variable_attribute_missing_var() {
+        let path = temp_file_path("writer_missing_var");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        let result = writer.add_variable_attribute(
+            "nonexistent",
+            Attribute::new("units", AttributeValue::text("test")).expect("Valid"),
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::VariableNotFound { name }) => {
+                assert_eq!(name, "nonexistent");
+            }
+            _ => panic!("Expected VariableNotFound error"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_end_define_mode() {
+        let path = temp_file_path("writer_end_define");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        // Should not be able to add more dimensions or variables after define mode
+        let result = writer.add_dimension(Dimension::new("y", 20).expect("Valid"));
+        assert!(result.is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_before_end_define_fails() {
+        let path = temp_file_path("writer_write_before_define");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+
+        // Try to write before ending define mode
+        let data = vec![0.0f32; 10];
+        let result = writer.write_f32("data", &data);
+        assert!(result.is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_f32() {
+        let path = temp_file_path("writer_write_f32");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 5).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        writer
+            .write_f32("data", &data)
+            .expect("Failed to write data");
+        writer.close().expect("Failed to close");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_f64() {
+        let path = temp_file_path("writer_write_f64");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 5).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::F64, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        writer
+            .write_f64("data", &data)
+            .expect("Failed to write data");
+        writer.close().expect("Failed to close");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_i32() {
+        let path = temp_file_path("writer_write_i32");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 5).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::I32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        let data: Vec<i32> = vec![1, 2, 3, 4, 5];
+        writer
+            .write_i32("data", &data)
+            .expect("Failed to write data");
+        writer.close().expect("Failed to close");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_wrong_size() {
+        let path = temp_file_path("writer_wrong_size");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+            )
+            .expect("Failed");
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        // Data size doesn't match dimension
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0]; // Only 3 elements, expected 10
+        let result = writer.write_f32("data", &data);
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::InvalidShape { .. }) => {}
+            _ => panic!("Expected InvalidShape error"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_missing_variable() {
+        let path = temp_file_path("writer_write_missing");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        let data = vec![0.0f32; 10];
+        let result = writer.write_f32("nonexistent", &data);
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::VariableNotFound { name }) => {
+                assert_eq!(name, "nonexistent");
+            }
+            _ => panic!("Expected VariableNotFound error"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_create_netcdf4_fails_without_feature() {
+        let path = temp_file_path("writer_netcdf4");
+        let result = NetCdfWriter::create(&path, NetCdfVersion::NetCdf4);
+
+        // Without netcdf4 feature, this should fail
+        #[cfg(not(feature = "netcdf4"))]
+        assert!(result.is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+// ============================================================================
+// Module: Reader Tests
+// ============================================================================
+
+#[cfg(feature = "netcdf3")]
+mod reader_tests {
+    use super::*;
+
+    fn create_test_file(path: &PathBuf) {
+        let mut writer =
+            NetCdfWriter::create(path, NetCdfVersion::Classic).expect("Failed to create writer");
+
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_dimension(Dimension::new("y", 20).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(Variable::new_coordinate("x", DataType::F32).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(Variable::new_coordinate("y", DataType::F32).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_variable(
+                Variable::new(
+                    "data",
+                    DataType::F64,
+                    vec!["x".to_string(), "y".to_string()],
+                )
+                .expect("Valid"),
+            )
+            .expect("Failed");
+        writer
+            .add_global_attribute(
+                Attribute::new("title", AttributeValue::text("Test File")).expect("Valid"),
+            )
+            .expect("Failed");
+        writer
+            .add_variable_attribute(
+                "data",
+                Attribute::new("units", AttributeValue::text("meters")).expect("Valid"),
+            )
+            .expect("Failed");
+
+        writer.end_define_mode().expect("Failed to end define mode");
+
+        // Write data
+        let x_data: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let y_data: Vec<f32> = (0..20).map(|i| i as f32 * 0.5).collect();
+        let data: Vec<f64> = (0..200).map(|i| i as f64 * 0.1).collect();
+
+        writer.write_f32("x", &x_data).expect("Failed to write x");
+        writer.write_f32("y", &y_data).expect("Failed to write y");
+        writer
+            .write_f64("data", &data)
+            .expect("Failed to write data");
+
+        writer.close().expect("Failed to close");
+    }
+
+    #[test]
+    fn test_reader_open() {
+        let path = temp_file_path("reader_open");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        assert_eq!(reader.version(), NetCdfVersion::Classic);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_dimensions() {
+        let path = temp_file_path("reader_dims");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let dims = reader.dimensions();
+
+        assert_eq!(dims.len(), 2);
+        assert!(dims.contains("x"));
+        assert!(dims.contains("y"));
+
+        let x_dim = dims.get("x").expect("x dimension should exist");
+        assert_eq!(x_dim.len(), 10);
+
+        let y_dim = dims.get("y").expect("y dimension should exist");
+        assert_eq!(y_dim.len(), 20);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_variables() {
+        let path = temp_file_path("reader_vars");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let vars = reader.variables();
+
+        assert_eq!(vars.len(), 3);
+        assert!(vars.contains("x"));
+        assert!(vars.contains("y"));
+        assert!(vars.contains("data"));
+
+        let data_var = vars.get("data").expect("data variable should exist");
+        assert_eq!(data_var.data_type(), DataType::F64);
+        assert_eq!(data_var.ndims(), 2);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_global_attributes() {
+        let path = temp_file_path("reader_global_attrs");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let attrs = reader.global_attributes();
+
+        assert!(attrs.contains("title"));
+        let title = attrs.get("title").expect("title should exist");
+        assert_eq!(
+            title.value().as_text().expect("Should be text"),
+            "Test File"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_variable_attributes() {
+        let path = temp_file_path("reader_var_attrs");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let var = reader.variables().get("data").expect("data should exist");
+        let attrs = var.attributes();
+
+        assert!(attrs.contains("units"));
+        let units = attrs.get("units").expect("units should exist");
+        assert_eq!(units.value().as_text().expect("Should be text"), "meters");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_read_f32() {
+        let path = temp_file_path("reader_read_f32");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let data = reader.read_f32("x").expect("Failed to read x");
+
+        assert_eq!(data.len(), 10);
+        for (i, &val) in data.iter().enumerate() {
+            assert!(
+                (val - i as f32).abs() < f32::EPSILON,
+                "Mismatch at index {}",
+                i
+            );
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_read_f64() {
+        let path = temp_file_path("reader_read_f64");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let data = reader.read_f64("data").expect("Failed to read data");
+
+        assert_eq!(data.len(), 200);
+        for (i, &val) in data.iter().enumerate() {
+            let expected = i as f64 * 0.1;
+            assert!((val - expected).abs() < 1e-10, "Mismatch at index {}", i);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_read_nonexistent_variable() {
+        let path = temp_file_path("reader_nonexistent");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let result = reader.read_f32("nonexistent");
+
+        assert!(result.is_err());
+        match result {
+            Err(NetCdfError::VariableNotFound { name }) => {
+                assert_eq!(name, "nonexistent");
+            }
+            _ => panic!("Expected VariableNotFound error"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_metadata_summary() {
+        let path = temp_file_path("reader_summary");
+        create_test_file(&path);
+
+        let reader = NetCdfReader::open(&path).expect("Failed to open file");
+        let summary = reader.metadata().summary();
+
+        assert!(summary.contains("NetCDF-3"));
+        assert!(summary.contains("2 dimensions"));
+        assert!(summary.contains("3 variables"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_reader_open_nonexistent_file() {
+        let path = temp_file_path("nonexistent_file_that_does_not_exist");
+        let result = NetCdfReader::open(&path);
+        assert!(result.is_err());
+    }
+}
+
+// ============================================================================
+// Module: Round-trip Tests
+// ============================================================================
+
+#[cfg(feature = "netcdf3")]
+mod roundtrip_tests {
+    use super::*;
+
+    #[test]
+    fn test_roundtrip_simple() {
+        let path = temp_file_path("roundtrip_simple");
+
+        // Write
+        {
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
+            writer
+                .add_dimension(Dimension::new("x", 5).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(
+                    Variable::new("values", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+                )
+                .expect("Failed");
+            writer.end_define_mode().expect("Failed");
+
+            let data: Vec<f32> = vec![1.1, 2.2, 3.3, 4.4, 5.5];
+            writer.write_f32("values", &data).expect("Failed to write");
+            writer.close().expect("Failed to close");
+        }
+
+        // Read and verify
+        {
+            let reader = NetCdfReader::open(&path).expect("Failed to open");
+            let data = reader.read_f32("values").expect("Failed to read");
+
+            assert_eq!(data.len(), 5);
+            let expected: Vec<f32> = vec![1.1, 2.2, 3.3, 4.4, 5.5];
+            for (i, (&got, &exp)) in data.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (got - exp).abs() < 1e-6,
+                    "Mismatch at index {}: got {}, expected {}",
+                    i,
+                    got,
+                    exp
+                );
+            }
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_multidimensional() {
+        let path = temp_file_path("roundtrip_multi");
+
+        // Write
+        {
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
+            writer
+                .add_dimension(Dimension::new("x", 3).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_dimension(Dimension::new("y", 4).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(
+                    Variable::new(
+                        "matrix",
+                        DataType::F64,
+                        vec!["x".to_string(), "y".to_string()],
+                    )
+                    .expect("Valid"),
+                )
+                .expect("Failed");
+            writer.end_define_mode().expect("Failed");
+
+            let data: Vec<f64> = (0..12).map(|i| i as f64 * 1.5).collect();
+            writer.write_f64("matrix", &data).expect("Failed to write");
+            writer.close().expect("Failed to close");
+        }
+
+        // Read and verify
+        {
+            let reader = NetCdfReader::open(&path).expect("Failed to open");
+
+            let var = reader
+                .variables()
+                .get("matrix")
+                .expect("Variable should exist");
+            let shape = var.shape(reader.dimensions()).expect("Failed to get shape");
+            assert_eq!(shape, vec![3, 4]);
+
+            let data = reader.read_f64("matrix").expect("Failed to read");
+            assert_eq!(data.len(), 12);
+
+            for i in 0..12 {
+                let expected = i as f64 * 1.5;
+                assert!(
+                    (data[i] - expected).abs() < 1e-10,
+                    "Mismatch at index {}",
+                    i
+                );
+            }
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_with_attributes() {
+        let path = temp_file_path("roundtrip_attrs");
+
+        // Write
+        {
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
+
+            // Global attributes
+            writer
+                .add_global_attribute(
+                    Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("Valid"),
+                )
+                .expect("Failed");
+            writer
+                .add_global_attribute(
+                    Attribute::new("title", AttributeValue::text("Test Dataset")).expect("Valid"),
+                )
+                .expect("Failed");
+            writer
+                .add_global_attribute(
+                    Attribute::new("version", AttributeValue::i32(1)).expect("Valid"),
+                )
+                .expect("Failed");
+
+            writer
+                .add_dimension(Dimension::new("x", 5).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(
+                    Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
+                )
+                .expect("Failed");
+
+            // Variable attributes
+            writer
+                .add_variable_attribute(
+                    "data",
+                    Attribute::new("units", AttributeValue::text("meters")).expect("Valid"),
+                )
+                .expect("Failed");
+            writer
+                .add_variable_attribute(
+                    "data",
+                    Attribute::new("long_name", AttributeValue::text("Distance")).expect("Valid"),
+                )
+                .expect("Failed");
+            writer
+                .add_variable_attribute(
+                    "data",
+                    Attribute::new("scale_factor", AttributeValue::f64(1.5)).expect("Valid"),
+                )
+                .expect("Failed");
+
+            writer.end_define_mode().expect("Failed");
+
+            let data = vec![1.0f32; 5];
+            writer.write_f32("data", &data).expect("Failed to write");
+            writer.close().expect("Failed to close");
+        }
+
+        // Read and verify
+        {
+            let reader = NetCdfReader::open(&path).expect("Failed to open");
+
+            // Check global attributes
+            let global_attrs = reader.global_attributes();
+            assert!(global_attrs.contains("Conventions"));
+            assert!(global_attrs.contains("title"));
+            assert!(global_attrs.contains("version"));
+
+            let conventions = global_attrs.get("Conventions").expect("Should exist");
+            assert_eq!(
+                conventions.value().as_text().expect("Should be text"),
+                "CF-1.8"
+            );
+
+            // Check CF metadata was parsed
+            let cf = reader.cf_metadata().expect("CF metadata should exist");
+            assert!(cf.is_cf_compliant());
+            assert_eq!(cf.title.as_deref(), Some("Test Dataset"));
+
+            // Check variable attributes
+            let var = reader.variables().get("data").expect("Should exist");
+            let var_attrs = var.attributes();
+            assert!(var_attrs.contains("units"));
+            assert!(var_attrs.contains("long_name"));
+            assert!(var_attrs.contains("scale_factor"));
+
+            let units = var_attrs.get("units").expect("Should exist");
+            assert_eq!(units.value().as_text().expect("Should be text"), "meters");
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_coordinate_variables() {
+        let path = temp_file_path("roundtrip_coords");
+
+        // Write
+        {
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
+
+            writer
+                .add_dimension(Dimension::new("lat", 3).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_dimension(Dimension::new("lon", 4).expect("Valid"))
+                .expect("Failed");
+
+            writer
+                .add_variable(Variable::new_coordinate("lat", DataType::F64).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(Variable::new_coordinate("lon", DataType::F64).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(
+                    Variable::new(
+                        "temp",
+                        DataType::F32,
+                        vec!["lat".to_string(), "lon".to_string()],
+                    )
+                    .expect("Valid"),
+                )
+                .expect("Failed");
+
+            writer
+                .add_variable_attribute(
+                    "lat",
+                    Attribute::new("units", AttributeValue::text("degrees_north")).expect("Valid"),
+                )
+                .expect("Failed");
+            writer
+                .add_variable_attribute(
+                    "lon",
+                    Attribute::new("units", AttributeValue::text("degrees_east")).expect("Valid"),
+                )
+                .expect("Failed");
+            writer
+                .add_variable_attribute(
+                    "temp",
+                    Attribute::new("units", AttributeValue::text("K")).expect("Valid"),
+                )
+                .expect("Failed");
+
+            writer.end_define_mode().expect("Failed");
+
+            let lat_data = vec![30.0, 40.0, 50.0];
+            let lon_data = vec![-120.0, -110.0, -100.0, -90.0];
+            let temp_data = vec![280.0f32; 12];
+
+            writer
+                .write_f64("lat", &lat_data)
+                .expect("Failed to write lat");
+            writer
+                .write_f64("lon", &lon_data)
+                .expect("Failed to write lon");
+            writer
+                .write_f32("temp", &temp_data)
+                .expect("Failed to write temp");
+
+            writer.close().expect("Failed to close");
+        }
+
+        // Read and verify
+        {
+            let reader = NetCdfReader::open(&path).expect("Failed to open");
+
+            // Check coordinate variables
+            let lat_var = reader.variables().get("lat").expect("Should exist");
+            assert!(lat_var.is_coordinate());
+
+            let lon_var = reader.variables().get("lon").expect("Should exist");
+            assert!(lon_var.is_coordinate());
+
+            // Check data variable
+            let temp_var = reader.variables().get("temp").expect("Should exist");
+            assert!(!temp_var.is_coordinate());
+
+            // Verify coordinate data
+            let lat_data = reader.read_f64("lat").expect("Failed to read lat");
+            assert_eq!(lat_data, vec![30.0, 40.0, 50.0]);
+
+            let lon_data = reader.read_f64("lon").expect("Failed to read lon");
+            assert_eq!(lon_data, vec![-120.0, -110.0, -100.0, -90.0]);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_integer_data() {
+        let path = temp_file_path("roundtrip_int");
+
+        // Write
+        {
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
+
+            writer
+                .add_dimension(Dimension::new("x", 10).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(
+                    Variable::new("counts", DataType::I32, vec!["x".to_string()]).expect("Valid"),
+                )
+                .expect("Failed");
+            writer.end_define_mode().expect("Failed");
+
+            let data: Vec<i32> = (0..10).map(|i| i * 100 - 500).collect();
+            writer.write_i32("counts", &data).expect("Failed to write");
+            writer.close().expect("Failed to close");
+        }
+
+        // Read and verify
+        {
+            let reader = NetCdfReader::open(&path).expect("Failed to open");
+            let data = reader.read_i32("counts").expect("Failed to read");
+
+            assert_eq!(data.len(), 10);
+            let expected: Vec<i32> = (0..10).map(|i| i * 100 - 500).collect();
+            assert_eq!(data, expected);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_unlimited_dimension() {
+        let path = temp_file_path("roundtrip_unlimited");
+
+        // Write
+        {
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
+
+            writer
+                .add_dimension(Dimension::new_unlimited("time", 0).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_dimension(Dimension::new("x", 5).expect("Valid"))
+                .expect("Failed");
+
+            writer
+                .add_variable(Variable::new_coordinate("time", DataType::F64).expect("Valid"))
+                .expect("Failed");
+            writer
+                .add_variable(
+                    Variable::new(
+                        "data",
+                        DataType::F32,
+                        vec!["time".to_string(), "x".to_string()],
+                    )
+                    .expect("Valid"),
+                )
+                .expect("Failed");
+
+            writer.end_define_mode().expect("Failed");
+            writer.close().expect("Failed to close");
+        }
+
+        // Read and verify
+        {
+            let reader = NetCdfReader::open(&path).expect("Failed to open");
+
+            let time_dim = reader.dimensions().get("time").expect("Should exist");
+            assert!(time_dim.is_unlimited());
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+// ============================================================================
+// Module: Error Handling Tests
+// ============================================================================
+
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn test_error_display_dimension_not_found() {
+        let err = NetCdfError::DimensionNotFound {
+            name: "missing_dim".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("missing_dim"), "Error message: {}", msg);
+        assert!(
+            msg.to_lowercase().contains("not found"),
+            "Error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_error_display_variable_not_found() {
+        let err = NetCdfError::VariableNotFound {
+            name: "missing_var".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("missing_var"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_attribute_not_found() {
+        let err = NetCdfError::AttributeNotFound {
+            name: "missing_attr".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("missing_attr"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_data_type_mismatch() {
+        let err = NetCdfError::DataTypeMismatch {
+            expected: "f32".to_string(),
+            found: "i32".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("f32"), "Error message: {}", msg);
+        assert!(msg.contains("i32"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_invalid_shape() {
+        let err = NetCdfError::InvalidShape {
+            message: "Data size mismatch".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("shape"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_index_out_of_bounds() {
+        let err = NetCdfError::IndexOutOfBounds {
+            index: 100,
+            length: 50,
+            dimension: "x".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("100"), "Error message: {}", msg);
+        assert!(msg.contains("50"), "Error message: {}", msg);
+        assert!(msg.contains("x"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_netcdf4_not_available() {
+        let err = NetCdfError::NetCdf4NotAvailable;
+        let msg = err.to_string();
+        assert!(msg.contains("NetCDF-4"), "Error message: {}", msg);
+        assert!(msg.contains("netcdf4"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_feature_not_enabled() {
+        let err = NetCdfError::FeatureNotEnabled {
+            feature: "compression".to_string(),
+            message: "Enable feature to use".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("compression"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_unlimited_dimension() {
+        let err = NetCdfError::UnlimitedDimensionError("Cannot change fixed dimension".to_string());
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("unlimited") || msg.contains("fixed"),
+            "Error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_error_display_cf_conventions() {
+        let err = NetCdfError::CfConventionsError("Invalid CF metadata".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("CF"), "Error message: {}", msg);
+    }
+
+    #[test]
+    fn test_error_display_io() {
+        let err = NetCdfError::Io("File not found".to_string());
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("i/o") || msg.contains("I/O"),
+            "Error message: {}",
+            msg
+        );
+    }
+}
+
+// ============================================================================
+// Module: Edge Cases Tests
+// ============================================================================
+
+mod edge_cases_tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_dimensions_collection() {
+        let dims = Dimensions::new();
+        assert!(dims.is_empty());
+        assert_eq!(dims.len(), 0);
+        assert!(dims.unlimited().is_none());
+        assert_eq!(dims.total_size(), Some(0));
+        assert!(dims.shape().is_empty());
+        assert!(dims.names().is_empty());
+    }
+
+    #[test]
+    fn test_empty_variables_collection() {
+        let vars = Variables::new();
+        assert!(vars.is_empty());
+        assert_eq!(vars.len(), 0);
+        assert!(vars.names().is_empty());
+        assert_eq!(vars.coordinates().count(), 0);
+        assert_eq!(vars.data_variables().count(), 0);
+    }
+
+    #[test]
+    fn test_empty_attributes_collection() {
+        let attrs = Attributes::new();
+        assert!(attrs.is_empty());
+        assert_eq!(attrs.len(), 0);
+        assert!(attrs.names().is_empty());
+    }
+
+    #[test]
+    fn test_dimension_very_large_size() {
+        // Test with a large but reasonable dimension size
+        let dim = Dimension::new("large", 1_000_000).expect("Should handle large size");
+        assert_eq!(dim.len(), 1_000_000);
+    }
+
+    #[test]
+    fn test_variable_many_dimensions() {
+        let mut dims = Dimensions::new();
+        let dim_names: Vec<String> = (0..10).map(|i| format!("dim_{}", i)).collect();
+
+        for name in &dim_names {
+            dims.add(Dimension::new(name, 2).expect("Valid"))
+                .expect("Failed");
+        }
+
+        let var = Variable::new("high_dim", DataType::F32, dim_names.clone()).expect("Valid");
+        assert_eq!(var.ndims(), 10);
+
+        let shape = var.shape(&dims).expect("Should work");
+        assert_eq!(shape.len(), 10);
+
+        let size = var.size(&dims).expect("Should work");
+        assert_eq!(size, 2usize.pow(10)); // 2^10 = 1024
+    }
+
+    #[test]
+    fn test_attribute_empty_string() {
+        let attr = Attribute::new("empty_text", AttributeValue::text("")).expect("Valid");
+        assert!(attr.value().is_empty());
+        assert_eq!(attr.value().len(), 0);
+    }
+
+    #[test]
+    fn test_attribute_long_string() {
+        let long_text = "A".repeat(10000);
+        let attr =
+            Attribute::new("long_text", AttributeValue::text(long_text.clone())).expect("Valid");
+        assert_eq!(attr.value().as_text().expect("Should be text"), long_text);
+    }
+
+    #[test]
+    fn test_attribute_unicode_string() {
+        let unicode_text = "Hello, \u{4e16}\u{754c}! \u{1F600}"; // "Hello, 世界! 😀"
+        let attr = Attribute::new("unicode", AttributeValue::text(unicode_text)).expect("Valid");
+        assert_eq!(
+            attr.value().as_text().expect("Should be text"),
+            unicode_text
+        );
+    }
+
+    #[test]
+    fn test_dimension_name_special_chars() {
+        // NetCDF allows certain special characters in names
+        let dim = Dimension::new("dim_with_underscore", 10).expect("Valid");
+        assert_eq!(dim.name(), "dim_with_underscore");
+    }
+
+    #[test]
+    fn test_variable_name_numbers() {
+        let var = Variable::new("var123", DataType::F32, vec![]).expect("Valid");
+        assert_eq!(var.name(), "var123");
+    }
+
+    #[test]
+    fn test_cf_metadata_empty_fields() {
+        let cf = CfMetadata::new();
+        let attrs = cf.to_attributes();
+        assert!(attrs.is_empty()); // No attributes for empty metadata
+    }
+
+    #[test]
+    fn test_cf_metadata_partial_fields() {
+        let mut cf = CfMetadata::new();
+        cf.conventions = Some("CF-1.8".to_string());
+        // Only conventions set, other fields None
+
+        let attrs = cf.to_attributes();
+        assert_eq!(attrs.len(), 1);
+        assert!(attrs.contains("Conventions"));
+        assert!(!attrs.contains("title")); // Not set
+    }
+
+    #[test]
+    fn test_metadata_validate_empty() {
+        let metadata = NetCdfMetadata::new_classic();
+        // Empty metadata should be valid
+        assert!(metadata.validate().is_ok());
+    }
+
+    #[test]
+    fn test_attribute_value_empty_arrays() {
+        let val = AttributeValue::f64_array(vec![]);
+        assert!(val.is_empty());
+        assert_eq!(val.len(), 0);
+    }
+}
+
+// ============================================================================
+// Module: Library Info Tests
+// ============================================================================
+
+mod lib_tests {
+    use oxigdal_netcdf::{
+        NAME, VERSION, has_netcdf3, has_netcdf4, info, is_pure_rust, supported_versions,
+    };
+
+    #[test]
+    fn test_version_constants() {
+        assert!(!VERSION.is_empty());
+        assert_eq!(NAME, "oxigdal-netcdf");
+    }
+
+    #[test]
+    fn test_pure_rust_status() {
+        // Without netcdf4 feature, should be pure rust
+        #[cfg(not(feature = "netcdf4"))]
+        assert!(is_pure_rust());
+
+        // With netcdf4 feature, not pure rust
+        #[cfg(feature = "netcdf4")]
+        assert!(!is_pure_rust());
+    }
+
+    #[test]
+    fn test_feature_detection() {
+        #[cfg(feature = "netcdf3")]
+        assert!(has_netcdf3());
+
+        #[cfg(not(feature = "netcdf3"))]
+        assert!(!has_netcdf3());
+
+        #[cfg(feature = "netcdf4")]
+        assert!(has_netcdf4());
+
+        #[cfg(not(feature = "netcdf4"))]
+        assert!(!has_netcdf4());
+    }
+
+    #[test]
+    fn test_supported_versions() {
+        let versions = supported_versions();
+
+        #[cfg(feature = "netcdf3")]
+        {
+            assert!(versions.contains(&super::NetCdfVersion::Classic));
+            assert!(versions.contains(&super::NetCdfVersion::Offset64Bit));
+        }
+
+        #[cfg(feature = "netcdf4")]
+        {
+            assert!(versions.contains(&super::NetCdfVersion::NetCdf4));
+            assert!(versions.contains(&super::NetCdfVersion::NetCdf4Classic));
+        }
+    }
+
+    #[test]
+    fn test_info_string() {
+        let info_str = info();
+        assert!(info_str.contains(NAME));
+        assert!(info_str.contains(VERSION));
+
+        #[cfg(not(feature = "netcdf4"))]
+        assert!(info_str.contains("Pure Rust"));
+    }
+}

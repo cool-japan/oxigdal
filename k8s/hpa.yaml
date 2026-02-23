@@ -1,0 +1,127 @@
+# OxiGDAL Kubernetes Horizontal Pod Autoscaler
+# Auto-scaling configuration based on metrics
+# Author: COOLJAPAN OU (Team Kitasan)
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: oxigdal-server-hpa
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: oxigdal-server
+
+  minReplicas: 3
+  maxReplicas: 20
+
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 4
+        periodSeconds: 30
+      selectPolicy: Max
+
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+  # Custom metrics (requires metrics server and custom metrics API)
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "1000"
+
+  - type: Pods
+    pods:
+      metric:
+        name: tile_generation_queue_length
+      target:
+        type: AverageValue
+        averageValue: "100"
+
+---
+# Vertical Pod Autoscaler (optional, requires VPA installed)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: oxigdal-server-vpa
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: autoscaling
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: oxigdal-server
+
+  updatePolicy:
+    updateMode: Auto  # Can be: Off, Initial, Recreate, Auto
+
+  resourcePolicy:
+    containerPolicies:
+    - containerName: oxigdal-server
+      minAllowed:
+        cpu: 250m
+        memory: 512Mi
+      maxAllowed:
+        cpu: 4000m
+        memory: 8Gi
+      controlledResources:
+      - cpu
+      - memory
+      mode: Auto
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: oxigdal-server-pdb
+  namespace: oxigdal
+  labels:
+    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/component: availability
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oxigdal
+      app.kubernetes.io/component: server
+  unhealthyPodEvictionPolicy: AlwaysAllow

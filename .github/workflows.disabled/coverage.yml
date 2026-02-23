@@ -1,0 +1,280 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Generate coverage using cargo-tarpaulin
+  coverage:
+    name: Generate Test Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "coverage-cache"
+          cache-on-failure: true
+
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+
+      - name: Generate coverage (tarpaulin)
+        run: |
+          cargo tarpaulin \
+            --workspace \
+            --all-features \
+            --timeout 600 \
+            --out Xml \
+            --out Html \
+            --output-dir coverage \
+            --exclude-files "crates/oxigdal-examples/*" \
+            --exclude-files "crates/oxigdal-python/*" \
+            --exclude-files "benchmarks/*" \
+            --exclude-files "*/tests/*" \
+            -- --test-threads 1
+
+      - name: Generate coverage summary
+        run: |
+          echo "# Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Extract coverage percentage from XML
+          if [ -f coverage/cobertura.xml ]; then
+            coverage=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
+            coverage_percent=$(awk "BEGIN {printf \"%.2f\", $coverage * 100}")
+            echo "**Overall Coverage: ${coverage_percent}%**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Set coverage badge color
+            if (( $(echo "$coverage_percent >= 80" | bc -l) )); then
+              echo "✅ Coverage is above 80% threshold" >> $GITHUB_STEP_SUMMARY
+            elif (( $(echo "$coverage_percent >= 60" | bc -l) )); then
+              echo "⚠️ Coverage is between 60-80%" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ Coverage is below 60% threshold" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/cobertura.xml
+          flags: unittests
+          name: oxigdal-coverage
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+      - name: Archive coverage HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/index.html
+          retention-days: 30
+
+  # Alternative coverage with llvm-cov (more accurate)
+  coverage-llvm:
+    name: Generate Coverage (LLVM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "coverage-llvm-cache"
+          cache-on-failure: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --all-features \
+            --lcov \
+            --output-path lcov.info \
+            --ignore-filename-regex '(tests?|benches|examples)/'
+
+      - name: Generate HTML report
+        run: |
+          cargo llvm-cov report \
+            --html \
+            --output-dir coverage-llvm
+
+      - name: Upload to Codecov (LLVM)
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./lcov.info
+          flags: llvm-cov
+          name: oxigdal-coverage-llvm
+          fail_ci_if_error: false
+
+      - name: Upload LLVM coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-llvm-report
+          path: coverage-llvm/
+          retention-days: 30
+
+  # Per-crate coverage analysis
+  coverage-per-crate:
+    name: Per-Crate Coverage Analysis
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - oxigdal-core
+          - oxigdal-algorithms
+          - oxigdal-proj
+          - oxigdal-stac
+          - oxigdal-geotiff
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "coverage-${{ matrix.crate }}"
+          cache-on-failure: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate per-crate coverage
+        run: |
+          cargo llvm-cov \
+            --package ${{ matrix.crate }} \
+            --all-features \
+            --lcov \
+            --output-path coverage-${{ matrix.crate }}.info
+
+      - name: Upload per-crate coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage-${{ matrix.crate }}.info
+          flags: ${{ matrix.crate }}
+          name: ${{ matrix.crate }}-coverage
+          fail_ci_if_error: false
+
+  # Comment coverage on PRs
+  coverage-comment:
+    name: Comment Coverage on PR
+    needs: [coverage]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage
+
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          if [ -f coverage/cobertura.xml ]; then
+            coverage=$(grep -oP 'line-rate="\K[0-9.]+' coverage/cobertura.xml | head -1)
+            coverage_percent=$(awk "BEGIN {printf \"%.2f\", $coverage * 100}")
+            echo "percentage=$coverage_percent" >> $GITHUB_OUTPUT
+          else
+            echo "percentage=0.00" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = '${{ steps.coverage.outputs.percentage }}';
+            const body = `## Code Coverage Report\n\n**Coverage: ${coverage}%**\n\n` +
+              (parseFloat(coverage) >= 80 ? '✅ Great coverage!' :
+               parseFloat(coverage) >= 60 ? '⚠️ Coverage could be improved' :
+               '❌ Coverage is below recommended threshold') +
+              '\n\n[View full coverage report in artifacts]';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # Coverage summary
+  coverage-summary:
+    name: Coverage Summary
+    needs: [coverage, coverage-llvm, coverage-per-crate]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Jobs Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Tarpaulin Coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- LLVM Coverage: ${{ needs.coverage-llvm.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Per-Crate Coverage: ${{ needs.coverage-per-crate.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.coverage.result }}" == "success" ] && \
+             [ "${{ needs.coverage-llvm.result }}" == "success" ]; then
+            echo "✅ **Coverage reports generated successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "View detailed reports in the artifacts section." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some coverage jobs failed. Check the logs for details.**" >> $GITHUB_STEP_SUMMARY
+          fi

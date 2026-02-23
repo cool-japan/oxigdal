@@ -1,0 +1,268 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Check for known vulnerabilities in dependencies
+  cargo-audit:
+    name: Audit Dependencies for Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run cargo audit
+        run: |
+          cargo audit --deny warnings --deny unmaintained --deny unsound
+
+      - name: Generate audit report
+        if: always()
+        run: |
+          cargo audit --json > audit-report.json || true
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-report
+          path: audit-report.json
+          retention-days: 30
+
+  # Check licenses and dependencies
+  cargo-deny:
+    name: Check Licenses and Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Create deny.toml if not exists
+        run: |
+          if [ ! -f deny.toml ]; then
+            cat > deny.toml << 'EOF'
+          # cargo-deny configuration
+          [advisories]
+          db-path = "~/.cargo/advisory-db"
+          db-urls = ["https://github.com/rustsec/advisory-db"]
+          vulnerability = "deny"
+          unmaintained = "warn"
+          yanked = "deny"
+          notice = "warn"
+
+          [licenses]
+          unlicensed = "deny"
+          allow = [
+              "Apache-2.0",
+              "MIT",
+              "BSD-2-Clause",
+              "BSD-3-Clause",
+              "ISC",
+              "Unicode-DFS-2016",
+              "Zlib",
+          ]
+          deny = []
+          copyleft = "warn"
+
+          [licenses.private]
+          ignore = false
+
+          [bans]
+          multiple-versions = "warn"
+          wildcards = "allow"
+          highlight = "all"
+
+          # Deny known problematic crates
+          deny = []
+
+          # Skip crates with multiple versions (common in ecosystem)
+          skip = []
+          skip-tree = []
+
+          [sources]
+          unknown-registry = "deny"
+          unknown-git = "deny"
+          allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+          allow-git = []
+          EOF
+          fi
+
+      - name: Check advisories
+        run: |
+          cargo deny check advisories
+
+      - name: Check licenses
+        run: |
+          cargo deny check licenses
+
+      - name: Check bans
+        run: |
+          cargo deny check bans
+
+      - name: Check sources
+        run: |
+          cargo deny check sources
+
+  # Dependency review (GitHub native)
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-3.0, LGPL-3.0, AGPL-3.0
+
+  # Check for outdated dependencies
+  cargo-outdated:
+    name: Check Outdated Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-outdated
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-outdated
+
+      - name: Check for outdated dependencies
+        run: |
+          cargo outdated --workspace --root-deps-only --format json > outdated.json || true
+
+      - name: Generate outdated report
+        run: |
+          if [ -f outdated.json ]; then
+            echo "Outdated dependencies found:"
+            cat outdated.json
+          fi
+
+      - name: Upload outdated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: outdated-dependencies
+          path: outdated.json
+          retention-days: 7
+        if: always()
+
+  # Analyze unsafe code usage
+  check-unsafe:
+    name: Analyze Unsafe Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: rust-src
+
+      - name: Install cargo-geiger
+        run: |
+          cargo install cargo-geiger --locked
+
+      - name: Run cargo geiger
+        run: |
+          cargo geiger --all-features --output-format GitHubMarkdown > geiger-report.md || true
+
+      - name: Display unsafe usage
+        run: |
+          cat geiger-report.md
+
+      - name: Upload geiger report
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsafe-code-analysis
+          path: geiger-report.md
+          retention-days: 30
+
+  # Security summary
+  security-summary:
+    name: Security Summary
+    needs: [cargo-audit, cargo-deny, cargo-outdated, check-unsafe]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+
+      - name: Generate security summary
+        run: |
+          echo "# Security Audit Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Vulnerability Audit: ${{ needs.cargo-audit.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- License/Dependency Check: ${{ needs.cargo-deny.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Outdated Dependencies: ${{ needs.cargo-outdated.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Unsafe Code Analysis: ${{ needs.check-unsafe.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.cargo-audit.result }}" == "success" ] && \
+             [ "${{ needs.cargo-deny.result }}" == "success" ]; then
+            echo "✅ **All critical security checks passed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Some security checks failed. Please review the logs.**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check critical jobs
+        run: |
+          if [ "${{ needs.cargo-audit.result }}" != "success" ] || \
+             [ "${{ needs.cargo-deny.result }}" != "success" ]; then
+            echo "Critical security checks failed"
+            exit 1
+          fi
+          echo "All critical security checks passed"

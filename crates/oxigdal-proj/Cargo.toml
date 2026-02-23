@@ -1,0 +1,39 @@
+[package]
+name = "oxigdal-proj"
+description = "Pure Rust coordinate transformation and projection support for OxiGDAL - EPSG database and CRS operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-proj"
+readme = "README.md"
+keywords = ["gdal", "projection", "crs", "coordinate", "transform"]
+categories = ["science", "algorithms"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+proj-sys = ["dep:proj"]  # Optional C bindings to PROJ library
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+num-traits = { workspace = true }
+once_cell = "1.21"
+
+# Pure Rust projection implementation (default)
+proj4rs = "0.1.9"
+
+# Optional C bindings to PROJ library
+proj = { version = "0.31", optional = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,98 @@
+[package]
+name = "oxigdal-mqtt"
+description = "MQTT protocol support for OxiGDAL - IoT sensor data integration, pub/sub messaging, and geospatial time-series streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-mqtt"
+readme = "README.md"
+keywords = ["mqtt", "iot", "science", "telemetry", "sensors"]
+categories = ["network-programming", "science", "asynchronous"]
+
+[features]
+default = ["std", "mqtt5"]
+std = ["thiserror/std", "serde/std"]
+# MQTT protocol versions
+mqtt3 = []
+mqtt5 = []
+all_protocols = ["mqtt3", "mqtt5"]
+# QoS features
+qos0 = []
+qos1 = []
+qos2 = []
+all_qos = ["qos0", "qos1", "qos2"]
+# Additional features
+persistence = ["dep:sled"]
+tls = ["rumqttc/use-rustls"]
+websocket = ["rumqttc/websocket"]
+compression = ["dep:flate2"]
+geospatial = ["dep:geo-types", "dep:geojson"]
+
+[dependencies]
+# Core dependencies
+oxigdal-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# MQTT client (Pure Rust implementation - COOLJAPAN Policy)
+rumqttc = { version = "0.24", default-features = false, features = ["url"] }
+
+# Persistence (optional)
+# SECURITY NOTE: sled 0.34.7 uses unmaintained dependencies:
+#   - RUSTSEC-2025-0057 (fxhash 0.2.1)
+#   - RUSTSEC-2024-0384 (instant 0.1.13 via parking_lot 0.11)
+# Risk: Low (optional feature, stable code, no known vulnerabilities)
+# Future: Consider migrating to redb (maintained, better performance)
+sled = { version = "0.34", optional = true }
+
+# Compression (optional)
+flate2 = { workspace = true, optional = true }
+
+# Geospatial (optional)
+geo-types = { workspace = true, optional = true }
+geojson = { workspace = true, optional = true }
+
+# Utilities
+dashmap = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "publish"
+harness = false
+
+[[bench]]
+name = "subscribe"
+harness = false
+
+[[example]]
+name = "basic_pubsub"
+path = "examples/basic_pubsub.rs"
+
+[[example]]
+name = "iot_sensor"
+path = "examples/iot_sensor.rs"
+required-features = ["geospatial"]
+
+
+[lints]
+workspace = true

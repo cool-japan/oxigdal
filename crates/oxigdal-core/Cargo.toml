@@ -1,0 +1,56 @@
+[package]
+name = "oxigdal-core"
+description = "Core abstractions for OxiGDAL - Pure Rust GDAL reimplementation with zero-copy buffers and cloud-native support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-core"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "raster", "vector"]
+categories = ["science", "data-structures", "no-std"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+alloc = []
+arrow = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema", "std"]
+async = ["dep:async-trait", "dep:futures", "std"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true, optional = true }
+
+# Memory optimization dependencies
+libc = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+bytemuck = { workspace = true }
+
+# Arrow support
+arrow-array = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+
+# Async support
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "memory_bench"
+harness = false
+
+[lints]
+workspace = true

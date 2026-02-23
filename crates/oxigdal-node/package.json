@@ -1,0 +1,86 @@
+{
+  "name": "@oxigdal/node",
+  "version": "0.1.0",
+  "description": "Node.js bindings for OxiGDAL - Pure Rust geospatial data abstraction library",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "oxigdal",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-pc-windows-msvc"
+      ]
+    }
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "jest",
+    "universal": "napi universal",
+    "version": "napi version"
+  },
+  "keywords": [
+    "geospatial",
+    "gdal",
+    "raster",
+    "vector",
+    "gis",
+    "cog",
+    "geotiff",
+    "geojson",
+    "pure-rust",
+    "napi-rs"
+  ],
+  "author": "COOLJAPAN OU (Team Kitasan)",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cool-japan/oxigdal.git",
+    "directory": "crates/oxigdal-node"
+  },
+  "homepage": "https://github.com/cool-japan/oxigdal",
+  "bugs": {
+    "url": "https://github.com/cool-japan/oxigdal/issues"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">= 16"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE",
+    "oxigdal.*.node"
+  ],
+  "optionalDependencies": {
+    "@oxigdal/node-win32-x64-msvc": "0.1.0",
+    "@oxigdal/node-darwin-x64": "0.1.0",
+    "@oxigdal/node-linux-x64-gnu": "0.1.0",
+    "@oxigdal/node-darwin-arm64": "0.1.0",
+    "@oxigdal/node-linux-arm64-gnu": "0.1.0",
+    "@oxigdal/node-linux-x64-musl": "0.1.0",
+    "@oxigdal/node-linux-arm64-musl": "0.1.0",
+    "@oxigdal/node-win32-arm64-msvc": "0.1.0"
+  }
+}

@@ -1,0 +1,82 @@
+[package]
+name = "oxigdal-3d"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-3d"
+readme = "README.md"
+description = "3D visualization, point clouds, and terrain mesh support for OxiGDAL"
+keywords = ["gis", "science", "3d", "pointcloud", "mesh"]
+categories = ["science", "graphics", "visualization"]
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rayon.workspace = true
+num-traits.workspace = true
+approx.workspace = true
+tracing.workspace = true
+
+# Internal dependencies
+oxigdal-core.workspace = true
+
+# Point cloud dependencies
+las = "0.9"
+laz = { version = "0.11", default-features = false }
+
+# Mesh and 3D formats
+gltf = { version = "1", features = ["import"] }
+gltf-json = "1"
+
+# Geometry and triangulation
+delaunator = "1"
+geo = "0.28"
+geo-types = "0.7"
+
+# Spatial indexing
+rstar = "0.12"
+
+# Compression (for COPC, EPT)
+flate2.workspace = true
+zstd.workspace = true
+
+# Base64 encoding for 3D Tiles
+base64 = "0.22"
+
+# GLB binary support
+bytemuck.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+approx.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[features]
+default = ["las-laz", "mesh", "terrain", "tiles3d"]
+las-laz = []
+mesh = []
+terrain = []
+tiles3d = []
+async = ["tokio", "futures", "async-trait", "reqwest"]
+copc = ["async"]
+ept = ["async"]
+
+# C/Fortran dependencies feature-gated (Pure Rust Policy)
+# pdal-support = ["pdal-sys"]  # Future: if needed
+# pcl-support = ["pcl-sys"]    # Future: if needed
+
+[lints]
+workspace = true
