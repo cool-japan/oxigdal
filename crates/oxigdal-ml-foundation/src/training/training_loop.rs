@@ -483,7 +483,7 @@ pub mod utils {
     /// * `gradients` - List of gradient tensors
     ///
     /// Returns the L2 norm of the concatenated gradients.
-    pub fn compute_gradient_norm(gradients: &[ndarray::Array2<f32>]) -> f32 {
+    pub fn compute_gradient_norm(gradients: &[scirs2_core::ndarray::Array2<f32>]) -> f32 {
         let mut total_norm_sq = 0.0f32;
 
         for grad in gradients {
@@ -498,7 +498,10 @@ pub mod utils {
     /// # Arguments
     /// * `gradients` - Mutable list of gradient tensors
     /// * `max_norm` - Maximum allowed gradient norm
-    pub fn clip_gradients_by_norm(gradients: &mut [ndarray::Array2<f32>], max_norm: f32) {
+    pub fn clip_gradients_by_norm(
+        gradients: &mut [scirs2_core::ndarray::Array2<f32>],
+        max_norm: f32,
+    ) {
         let total_norm = compute_gradient_norm(gradients);
 
         if total_norm > max_norm {
@@ -525,7 +528,7 @@ mod tests {
     use super::utils::*;
     use super::*;
     use approx::assert_relative_eq;
-    use ndarray::arr2;
+    use scirs2_core::ndarray::arr2;
 
     #[test]
     fn test_trainer_creation() {

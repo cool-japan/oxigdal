@@ -122,29 +122,17 @@ pub fn apply_predictor_forward(
 
 #[cfg(feature = "deflate")]
 fn decompress_deflate(data: &[u8], _expected_size: usize) -> Result<Vec<u8>> {
-    use std::io::Read;
-
-    let mut decoder = flate2::read::ZlibDecoder::new(data);
-    let mut output = Vec::new();
-    decoder.read_to_end(&mut output).map_err(|e| {
+    oxiarc_deflate::zlib_decompress(data).map_err(|e| {
         OxiGdalError::Compression(CompressionError::DecompressionFailed {
             message: format!("DEFLATE decompression failed: {}", e),
         })
-    })?;
-    Ok(output)
+    })
 }
 
 #[cfg(feature = "deflate")]
 fn compress_deflate(data: &[u8]) -> Result<Vec<u8>> {
-    use std::io::Write;
-
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(data).map_err(|e| {
-        OxiGdalError::Compression(CompressionError::CompressionFailed {
-            message: format!("DEFLATE compression failed: {}", e),
-        })
-    })?;
-    encoder.finish().map_err(|e| {
+    // Default compression level 6
+    oxiarc_deflate::zlib_compress(data, 6).map_err(|e| {
         OxiGdalError::Compression(CompressionError::CompressionFailed {
             message: format!("DEFLATE compression failed: {}", e),
         })
@@ -174,7 +162,7 @@ fn compress_lzw(data: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(feature = "zstd")]
 fn decompress_zstd(data: &[u8], _expected_size: usize) -> Result<Vec<u8>> {
-    zstd::decode_all(data).map_err(|e| {
+    oxiarc_zstd::decode_all(data).map_err(|e| {
         OxiGdalError::Compression(CompressionError::DecompressionFailed {
             message: format!("ZSTD decompression failed: {}", e),
         })
@@ -183,7 +171,7 @@ fn decompress_zstd(data: &[u8], _expected_size: usize) -> Result<Vec<u8>> {
 
 #[cfg(feature = "zstd")]
 fn compress_zstd(data: &[u8]) -> Result<Vec<u8>> {
-    zstd::encode_all(data, 3).map_err(|e| {
+    oxiarc_zstd::encode_all(data, 3).map_err(|e| {
         OxiGdalError::Compression(CompressionError::CompressionFailed {
             message: format!("ZSTD compression failed: {}", e),
         })

@@ -2,7 +2,7 @@
 
 use crate::augmentation::Augmentation;
 use crate::{Error, Result};
-use ndarray::Array3;
+use scirs2_core::ndarray::Array3;
 use serde::{Deserialize, Serialize};
 
 /// Brightness adjustment.
@@ -101,7 +101,7 @@ impl Augmentation for Gamma {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array3;
+    use scirs2_core::ndarray::Array3;
 
     #[test]
     fn test_brightness() {

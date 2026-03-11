@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-11
+
+### Added
+
+- **EPSG Database Expansion** (`oxigdal-proj`): Expanded from 20 to 211+ EPSG definitions including all 120 WGS84 UTM zones (32601-32660 North, 32701-32760 South), JGD2011, GDA2020, CGCS2000, polar stereographic projections, and State Plane zones
+- **JPEG2000 EBCOT Tier-1 Decoder** (`oxigdal-jpeg2000`): Full MQ arithmetic coder with Significance Propagation, Magnitude Refinement, and Cleanup passes; split into submodules (`mq.rs`, `contexts.rs`, `passes.rs`, `decoder.rs`)
+- **GeoTIFF Floating-Point Predictor** (`oxigdal-geotiff`): Implemented TIFF Technical Note 3 predictor (horizontal differencing + byte reordering) for Float32/Float64 with full round-trip support
+- **Streaming Raster Reader Integration** (`oxigdal-streaming`): Real GeoTIFF driver integration replacing placeholder metadata/data; format detection, metadata from real files, chunk reading via CogReader
+- **Pure Rust Compression Migration**: Replaced `flate2` (C) with `oxiarc-deflate` and `zstd` (C) with `oxiarc-zstd` in GeoTIFF driver per COOLJAPAN Pure Rust Policy
+- **CLI Command Implementations** (`oxigdal-cli`): Functional `inspect` (reads headers/metadata), `convert` (GeoTIFF-to-COG), and `buildvrt` (generates VRT XML) commands
+- **Compression Benchmarks** (`oxigdal-compress`): Real codec benchmarks for deflate, lzw, zstd, bzip2, and lz4 via oxiarc ecosystem
+- **Driver Test Coverage**: 20+ integration tests per driver for GeoTIFF, Shapefile, and GeoJSON including round-trip, edge cases, error handling, and multi-band/multi-feature scenarios
+- **DEM CLI Terrain Analysis** (`oxigdal-cli`): Activated all 6 terrain operations (`hillshade`, `slope`, `aspect`, `TRI`, `TPI`, `roughness`) — previously blocked by `bail!("not yet implemented")`; slope percent/degree modes and zero-for-flat aspect option added
+- **DSL Statistical Functions** (`oxigdal-algorithms`): Implemented `median` (sort-based), `mode` (frequency-map with f64::to_bits), and `percentile` (NumPy-compatible linear interpolation) in DSL function evaluator
+- **DSL For-Loop Support** (`oxigdal-algorithms`): `Expr::ForLoop` now evaluates via child scope iteration with 1M-iteration guard against OOM
+- **WASM Huffman Decompression** (`oxigdal-wasm`): Implemented full round-trip Huffman decompression — frequency table stored in compressed header, tree reconstructed on decode, single-symbol edge case handled
+- **WASM Huffman Decoder** (`oxigdal-wasm`): Canonical Huffman encoding/decoding for WebAssembly compression
+- **Server-Side Map Rendering** (`oxigdal-server`): Tile rendering pipeline with dynamic styling
+- **Delta Encoding** (`oxigdal-compress`): Delta-of-delta and XOR-delta encoding for time-series raster data
+- **Grouped Aggregation Engine** (`oxigdal-analytics`): SQL-style GROUP BY aggregation with min/max/sum/mean/count/variance/stddev
+- **HDF5 SWMR Protocol** (`oxigdal-hdf5`): Single Writer Multiple Reader protocol for concurrent HDF5 access
+- **FlatGeobuf Spatial Indexing** (`oxigdal-flatgeobuf`): Hilbert R-tree spatial indexing improvements
+
+### Fixed
+
+- **Compilation Blocker**: Fixed workspace version mismatch (0.3.0 → 0.1.1) that blocked all compilation
+- **oxiarc-deflate Bug**: Fixed `rle_encode_lengths` Huffman run-length encoding overflow for large homogeneous datasets; applied local patch via `[patch.crates-io]`
+- **Dependency Versions**: Corrected oxiarc-* (0.3.0 → 0.2.2), oxicode (0.3.0 → 0.1.1), rs3gw (0.3.0 → 0.1.0), scirs2-core (corrected to 0.3.1)
+- **Security**: Updated quinn-proto (RUSTSEC-2026-0037, DoS vulnerability, CVSS 8.7) and yanked wasm-bindgen 0.2.111 → 0.2.114
+- **Invalid crates.io Category**: Fixed `science::geo` → `science` in oxigdal crate metadata
+- **JPEG2000 Module Conflict**: Removed duplicate `tier1.rs` conflicting with `tier1/` directory module
+- **File Size Policy**: Split `reader.rs` (2099 lines) into `reader/mod.rs` + `reader/tests.rs` to comply with 2000-line limit
+- **Hardcoded Version Strings**: Replaced hardcoded `"0.1.0"` strings with `env!("CARGO_PKG_VERSION")` in oxigdal-hdf5 and oxigdal-mobile
+- **Test Isolation**: Fixed `oxigdal-edge` integration test race condition using unique temp dirs with `AtomicU64` counter
+- **ml-foundation Doctest**: Added `#[cfg(not(feature = "ml"))] impl Dataset for GeoTiffDataset` stub to satisfy trait bound in non-ml builds
+
+### Changed
+
+- **Refactored `calculator.rs`** (`oxigdal-algorithms`): Split 1,982-line monolithic file into 7 focused modules (`ast.rs`, `lexer.rs`, `parser.rs`, `optimizer.rs`, `evaluator.rs`, `ops.rs`, `mod.rs`) per 2,000-line policy; zero breaking changes
+- **Dependency Updates**: Arrow ecosystem 57→58, sysinfo 0.36→0.38, criterion 0.7→0.8, tokio-tungstenite 0.25→0.28 (API fix applied), redis 0.27→1.0, all SciRS2 subcrates 0.2.0→0.3.1
+- Workspace now has **69 crates** (~505K total SLoC, ~480K Rust)
+- All internal crates use `version.workspace = true`
+- CHANGELOG, README, and publish script updated for v0.1.1
+
 ## [0.1.0] - 2026-02-22
 
 **The Independence Release** -- First public release of OxiGDAL, a pure Rust
@@ -61,7 +105,7 @@ $18.3M equivalent (COCOMO model).
   Rectangular (I-XIX zones, JGD2000/JGD2011)
 - Complete WKT2 (ISO 19162:2019) parser with WKT1 (OGC 01-009) and ESRI WKT
   backward compatibility
-- 1,000+ embedded EPSG CRS definitions with O(1) lookup via perfect hashing
+- 211+ embedded EPSG CRS definitions with O(1) lookup
 - Datum transformations: 7-parameter Helmert (Bursa-Wolf), 3/5-parameter
   Molodensky, NTv2 grid interpolation, NADCON (NAD27-NAD83)
 - Automatic transformation path finding between arbitrary CRS pairs
@@ -287,7 +331,7 @@ driver plugin architecture
 - `oxicode` replaces `bincode` for binary serialization (COOLJAPAN Policy)
 - `OxiArc` ecosystem (`oxiarc-*`) replaces the `zip` crate for archive
   handling (COOLJAPAN Pure Rust Policy)
-- Arrow ecosystem pinned to version 57 across all crates for consistency
+- Arrow ecosystem pinned to version 57 across all crates for consistency (upgraded to 58 in v0.1.1)
 - Release profile configured with LTO, single codegen unit, and `opt-level = 3`
 - `SensorValue` deserialization rewritten with custom `Deserialize` impl to
   handle `serde_json/arbitrary_precision` correctly (replaced derived
@@ -343,7 +387,7 @@ driver plugin architecture
 - **Workspace Crates**: 68
 - **Format Drivers**: 11 (GeoTIFF, COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf,
   Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT)
-- **Map Projections**: 20+ implemented, 1,000+ EPSG codes embedded
+- **Map Projections**: 20+ implemented, 211+ EPSG codes embedded
 - **Estimated Cost**: $18,275,174 (COCOMO model)
 
 **Platform Support**
@@ -405,5 +449,6 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigdal>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigdal/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/cool-japan/oxigdal/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.0

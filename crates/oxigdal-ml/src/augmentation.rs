@@ -6,8 +6,7 @@
 use crate::error::{PreprocessingError, Result};
 use oxigdal_core::buffer::RasterBuffer;
 // use oxigdal_core::types::RasterDataType;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use scirs2_core::random::prelude::{StdRng, seeded_rng};
 use tracing::debug;
 
 /// Generates a Gaussian random number using Box-Muller transform
@@ -460,7 +459,7 @@ pub fn random_crop(
     }
 
     // Use SciRS2-Core RNG for random offset
-    let mut rng = StdRng::seed_from_u64(
+    let mut rng = seeded_rng(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -585,7 +584,7 @@ pub fn add_gaussian_noise(input: &RasterBuffer, std_dev: f32) -> Result<RasterBu
     let mut output = input.clone();
 
     // Use SciRS2-Core RNG with Box-Muller transform for Gaussian noise
-    let mut rng = StdRng::seed_from_u64(
+    let mut rng = seeded_rng(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

@@ -15,6 +15,7 @@ Cargo.lock
 **/*.backup
 **/*.bak
 **/*.fix
+**/*.old
 **/*.awsfix
 **/*.bak[1-9]
 **/*.fix[1-9]

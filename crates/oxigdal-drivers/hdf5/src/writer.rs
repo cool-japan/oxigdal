@@ -9,8 +9,6 @@ use crate::datatype::{Datatype, TypeConverter};
 use crate::error::{Hdf5Error, Result};
 use crate::group::{Group, ObjectRef, ObjectType, PathUtils};
 use byteorder::{LittleEndian, WriteBytesExt};
-use flate2::Compression;
-use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -442,15 +440,8 @@ impl Hdf5Writer {
     fn compress_data(&self, data: &[u8], filter: CompressionFilter) -> Result<Vec<u8>> {
         match filter {
             CompressionFilter::None => Ok(data.to_vec()),
-            CompressionFilter::Gzip { level } => {
-                let mut encoder = GzEncoder::new(Vec::new(), Compression::new(level as u32));
-                encoder
-                    .write_all(data)
-                    .map_err(|e| Hdf5Error::compression(e.to_string()))?;
-                encoder
-                    .finish()
-                    .map_err(|e| Hdf5Error::compression(e.to_string()))
-            }
+            CompressionFilter::Gzip { level } => oxiarc_archive::gzip::compress(data, level)
+                .map_err(|e| Hdf5Error::compression(e.to_string())),
             CompressionFilter::Lzf | CompressionFilter::Szip => {
                 Err(Hdf5Error::feature_not_available(format!(
                     "{:?} compression (use GZIP or enable hdf5_sys feature)",

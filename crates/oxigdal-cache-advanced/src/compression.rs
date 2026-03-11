@@ -261,14 +261,14 @@ impl AdaptiveCompressor {
     /// Compress with Zstd
     fn compress_zstd(&self, data: &[u8]) -> Result<Bytes> {
         let level = self.default_level.to_zstd_level();
-        zstd::encode_all(data, level)
+        oxiarc_zstd::encode_all(data, level)
             .map(Bytes::from)
             .map_err(|e| CacheError::Compression(e.to_string()))
     }
 
     /// Decompress with Zstd
     fn decompress_zstd(&self, data: &[u8]) -> Result<Bytes> {
-        zstd::decode_all(data)
+        oxiarc_zstd::decode_all(data)
             .map(Bytes::from)
             .map_err(|e| CacheError::Decompression(e.to_string()))
     }

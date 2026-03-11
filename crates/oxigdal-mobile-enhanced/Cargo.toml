@@ -56,8 +56,8 @@ crossbeam = { workspace = true }
 num_cpus = { workspace = true }
 
 # Compression for network efficiency
-flate2 = { workspace = true }
-zstd = { workspace = true }
+oxiarc-deflate = { workspace = true }
+oxiarc-zstd = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }

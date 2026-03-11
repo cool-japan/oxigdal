@@ -1,7 +1,7 @@
 //! Optimization algorithms for training neural networks.
 
 use crate::{Error, Result};
-use ndarray::{Array2, ArrayView2};
+use scirs2_core::ndarray::{Array2, ArrayView2};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -394,7 +394,7 @@ impl Optimizer for AdamW {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::arr2;
+    use scirs2_core::ndarray::arr2;
 
     #[test]
     fn test_sgd_creation() {

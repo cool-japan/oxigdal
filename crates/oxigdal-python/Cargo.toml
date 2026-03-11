@@ -18,7 +18,7 @@ publish = false
 
 [lib]
 name = "oxigdal_python"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 doc = false  # Exclude from rustdoc to avoid collision with main oxigdal crates
 
 [dependencies]
@@ -68,9 +68,10 @@ proptest.workspace = true
 pyo3-build-config = "0.24"
 
 [features]
-default = ["extension-module", "geotiff", "geojson", "algorithms"]
-# extension-module: Use this when building the Python extension (.so/.dylib)
-# For tests, build without default features: cargo test --no-default-features --features geotiff,geojson,algorithms
+default = ["geotiff", "geojson", "algorithms"]
+# extension-module: Use this when building the Python extension (.so/.dylib).
+# Activated by maturin via pyproject.toml [tool.maturin] features.
+# Do NOT include in default features — it causes link failures in workspace tests.
 extension-module = ["pyo3/extension-module"]
 geotiff = []
 geojson = []

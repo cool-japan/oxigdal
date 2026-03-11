@@ -175,43 +175,27 @@ impl LruTtlCache {
         &self.stats
     }
 
-    /// Compresses data using flate2
+    /// Compresses data using gzip
     fn compress(&self, data: &Bytes) -> Result<Bytes> {
-        use flate2::Compression;
-        use flate2::write::GzEncoder;
-        use std::io::Write;
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(data).map_err(|e| {
-            CloudError::Cache(CacheError::Compression {
-                message: format!("Compression failed: {e}"),
+        oxiarc_archive::gzip::compress(data, 6)
+            .map(Bytes::from)
+            .map_err(|e| {
+                CloudError::Cache(CacheError::Compression {
+                    message: format!("Compression failed: {e}"),
+                })
             })
-        })?;
-
-        let compressed = encoder.finish().map_err(|e| {
-            CloudError::Cache(CacheError::Compression {
-                message: format!("Compression failed: {e}"),
-            })
-        })?;
-
-        Ok(Bytes::from(compressed))
     }
 
     /// Decompresses data
     fn decompress(&self, data: &Bytes) -> Result<Bytes> {
-        use flate2::read::GzDecoder;
-        use std::io::Read;
-
-        let mut decoder = GzDecoder::new(&data[..]);
-        let mut decompressed = Vec::new();
-
-        decoder.read_to_end(&mut decompressed).map_err(|e| {
-            CloudError::Cache(CacheError::Decompression {
-                message: format!("Decompression failed: {e}"),
+        let mut reader = std::io::Cursor::new(data.as_ref());
+        oxiarc_archive::gzip::decompress(&mut reader)
+            .map(Bytes::from)
+            .map_err(|e| {
+                CloudError::Cache(CacheError::Decompression {
+                    message: format!("Decompression failed: {e}"),
+                })
             })
-        })?;
-
-        Ok(Bytes::from(decompressed))
     }
 }
 

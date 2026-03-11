@@ -29,7 +29,7 @@ async-trait = { workspace = true }
 
 # Compression
 lz4 = { workspace = true }
-zstd = { workspace = true }
+oxiarc-zstd = { workspace = true }
 snap = "1"
 
 # Caching
@@ -43,9 +43,8 @@ rayon = { workspace = true }
 tempfile = { workspace = true }
 fastrand = { workspace = true }
 
-# ML & analytics
+# ML & analytics — ndarray accessed via scirs2-core re-export (SciRS2 Policy)
 scirs2-core = { workspace = true }
-ndarray = { workspace = true }
 
 # Networking for distributed cache
 tonic = { workspace = true }

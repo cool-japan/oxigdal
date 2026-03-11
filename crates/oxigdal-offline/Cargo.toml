@@ -53,7 +53,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
-flate2 = { workspace = true }
+oxiarc-deflate = { workspace = true }
 
 # Internal dependencies
 oxigdal-core = { workspace = true }

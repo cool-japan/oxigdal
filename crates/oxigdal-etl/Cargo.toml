@@ -65,7 +65,7 @@ cron = { version = "0.13", optional = true }
 chrono.workspace = true
 num-traits.workspace = true
 regex.workspace = true
-flate2.workspace = true
+oxiarc-archive = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

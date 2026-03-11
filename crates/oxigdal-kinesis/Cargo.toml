@@ -28,7 +28,7 @@ monitoring = ["async", "dep:aws-sdk-cloudwatch"]
 async = ["oxigdal-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
 checkpointing = ["streams", "dep:aws-sdk-dynamodb"]
 enhanced-fanout = ["streams"]
-compression = ["dep:flate2", "dep:zstd"]
+compression = ["dep:oxiarc-archive", "dep:oxiarc-zstd"]
 
 [dependencies]
 oxigdal-core = { workspace = true }
@@ -54,8 +54,8 @@ aws-config = { workspace = true }
 aws-smithy-types = { version = "1", features = ["byte-stream-poll-next"] }
 
 # Compression
-flate2 = { workspace = true, optional = true }
-zstd = { workspace = true, optional = true }
+oxiarc-archive = { workspace = true, optional = true }
+oxiarc-zstd = { workspace = true, optional = true }
 
 # Utilities
 dashmap = { workspace = true }

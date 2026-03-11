@@ -56,7 +56,7 @@ num-traits = { workspace = true }
 # hdf5 = { version = "0.8", optional = true }
 
 # Compression support (Pure Rust)
-flate2 = { workspace = true }  # GZIP compression
+oxiarc-archive = { workspace = true }  # GZIP compression
 
 # Async
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }

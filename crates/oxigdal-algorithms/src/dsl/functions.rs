@@ -380,20 +380,74 @@ fn fn_mean(args: &[Value]) -> Result<Value> {
     Ok(Value::Number(sum / count as f64))
 }
 
-fn fn_median(_args: &[Value]) -> Result<Value> {
-    // Simplified version - full implementation would collect all values and sort
-    Err(AlgorithmError::InvalidParameter {
-        parameter: "median",
-        message: "Not yet implemented".to_string(),
-    })
+fn fn_median(args: &[Value]) -> Result<Value> {
+    let raster = args[0].as_raster()?;
+    let mut values: Vec<f64> = Vec::with_capacity((raster.width() * raster.height()) as usize);
+
+    for y in 0..raster.height() {
+        for x in 0..raster.width() {
+            if let Ok(val) = raster.get_pixel(x, y) {
+                if val.is_finite() {
+                    values.push(val);
+                }
+            }
+        }
+    }
+
+    if values.is_empty() {
+        return Err(AlgorithmError::EmptyInput {
+            operation: "median",
+        });
+    }
+
+    // Sort using total ordering on finite f64 values (all NaN/inf already excluded above)
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mid = values.len() / 2;
+    let median = if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    };
+
+    Ok(Value::Number(median))
 }
 
-fn fn_mode(_args: &[Value]) -> Result<Value> {
-    // Simplified version
-    Err(AlgorithmError::InvalidParameter {
-        parameter: "mode",
-        message: "Not yet implemented".to_string(),
-    })
+fn fn_mode(args: &[Value]) -> Result<Value> {
+    let raster = args[0].as_raster()?;
+
+    // Use a frequency map keyed by integer bit pattern for exact equality
+    // (suitable for raster data that is typically quantized)
+    use std::collections::HashMap;
+    let mut freq: HashMap<u64, (f64, u64)> = HashMap::new();
+
+    for y in 0..raster.height() {
+        for x in 0..raster.width() {
+            if let Ok(val) = raster.get_pixel(x, y) {
+                if val.is_finite() {
+                    let key = val.to_bits();
+                    let entry = freq.entry(key).or_insert((val, 0));
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+
+    if freq.is_empty() {
+        return Err(AlgorithmError::EmptyInput { operation: "mode" });
+    }
+
+    // Find the value with the highest frequency; break ties by smallest value
+    let mode = freq
+        .values()
+        .max_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|(val, _)| *val)
+        .ok_or(AlgorithmError::EmptyInput { operation: "mode" })?;
+
+    Ok(Value::Number(mode))
 }
 
 fn fn_stddev(args: &[Value]) -> Result<Value> {
@@ -488,12 +542,50 @@ fn fn_product(args: &[Value]) -> Result<Value> {
     Ok(Value::Number(product))
 }
 
-fn fn_percentile(_args: &[Value]) -> Result<Value> {
-    // Simplified version
-    Err(AlgorithmError::InvalidParameter {
-        parameter: "percentile",
-        message: "Not yet implemented".to_string(),
-    })
+fn fn_percentile(args: &[Value]) -> Result<Value> {
+    let raster = args[0].as_raster()?;
+    let p = args[1].as_number()?;
+
+    if !(0.0..=100.0).contains(&p) {
+        return Err(AlgorithmError::InvalidParameter {
+            parameter: "percentile",
+            message: format!("Percentile must be in [0, 100], got {p}"),
+        });
+    }
+
+    let mut values: Vec<f64> = Vec::with_capacity((raster.width() * raster.height()) as usize);
+
+    for y in 0..raster.height() {
+        for x in 0..raster.width() {
+            if let Ok(val) = raster.get_pixel(x, y) {
+                if val.is_finite() {
+                    values.push(val);
+                }
+            }
+        }
+    }
+
+    if values.is_empty() {
+        return Err(AlgorithmError::EmptyInput {
+            operation: "percentile",
+        });
+    }
+
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let n = values.len();
+    if n == 1 {
+        return Ok(Value::Number(values[0]));
+    }
+
+    // Linear interpolation method (same as numpy's default)
+    let rank = p / 100.0 * (n - 1) as f64;
+    let lower = rank.floor() as usize;
+    let upper = (lower + 1).min(n - 1);
+    let frac = rank - lower as f64;
+    let result = values[lower] + frac * (values[upper] - values[lower]);
+
+    Ok(Value::Number(result))
 }
 
 // Spatial filters

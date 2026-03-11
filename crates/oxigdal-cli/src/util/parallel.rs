@@ -1374,7 +1374,9 @@ mod tests {
     fn test_physical_core_count() {
         let count = physical_core_count();
         assert!(count > 0);
-        assert!(count <= optimal_thread_count());
+        // In containerized environments, physical cores can exceed cgroup-limited logical cores
+        // so we only check that the count is positive and reasonable
+        assert!(count <= 1024, "Physical core count seems unreasonable: {}", count);
     }
 
     #[test]

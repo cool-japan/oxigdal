@@ -1247,10 +1247,10 @@ mod tests {
     fn test_tokenize_comparison() {
         let mut tokenizer = Tokenizer::new("A > 0 && B <= 10");
         let tokens = tokenizer.tokenize().expect("Should tokenize");
-
-        assert!(matches!(tokens[2], Token::Greater));
-        assert!(matches!(tokens[4], Token::And));
-        assert!(matches!(tokens[6], Token::LessEqual));
+        // Tokens (whitespace skipped): [A, >, 0, &&, B, <=, 10, EOF]
+        assert!(matches!(tokens[1], Token::Greater));
+        assert!(matches!(tokens[3], Token::And));
+        assert!(matches!(tokens[5], Token::LessEqual));
     }
 
     #[test]
@@ -1515,7 +1515,11 @@ mod tests {
             .evaluate(&expr, &arrays, 1, 2)
             .expect("Should evaluate");
 
-        assert_eq!(result, vec![0.6, 0.3]);
+        // Use approximate comparison to handle floating-point rounding
+        // (e.g. 0.8 - 0.2 = 0.6000000000000001 in IEEE 754)
+        assert_eq!(result.len(), 2);
+        assert!((result[0] - 0.6).abs() < 1e-10, "result[0] = {}", result[0]);
+        assert!((result[1] - 0.3).abs() < 1e-10, "result[1] = {}", result[1]);
     }
 
     #[test]

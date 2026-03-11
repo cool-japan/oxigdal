@@ -28,7 +28,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 
 # Compression (optimized for edge)
-flate2 = { workspace = true }
+oxiarc-deflate = { workspace = true }
 lz4 = { workspace = true }
 snap = { workspace = true }
 

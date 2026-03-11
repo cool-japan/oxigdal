@@ -1646,8 +1646,9 @@ mod tests {
 
     #[test]
     fn test_histogram_validation() {
-        // Test that histogram rejects invalid bin count
-        // Note: This test validates function logic without Python runtime
+        // Test that histogram rejects invalid bin count.
+        // Initialize the Python interpreter so pyo3 APIs work in unit tests.
+        pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let array = numpy::PyArray2::zeros(py, [10, 10], false);
             let result = histogram(py, &array, 1, None, None);

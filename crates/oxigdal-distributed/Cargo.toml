@@ -37,7 +37,7 @@ prost = { workspace = true }
 tower = { workspace = true }
 
 # Compression
-flate2 = { workspace = true }
+oxiarc-archive = { workspace = true }
 
 # Logging
 tracing = { workspace = true }

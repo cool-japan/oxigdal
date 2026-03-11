@@ -67,7 +67,7 @@ url.workspace = true
 quick-xml = { version = "0.37", features = ["serialize"] }
 
 # Compression
-flate2.workspace = true
+oxiarc-archive = { workspace = true }
 
 [dev-dependencies]
 # Testing

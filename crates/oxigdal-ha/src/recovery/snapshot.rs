@@ -201,12 +201,12 @@ impl SnapshotManager {
 
     /// Compress snapshot data.
     fn compress_snapshot(&self, data: &[u8]) -> HaResult<Vec<u8>> {
-        zstd::encode_all(data, 3).map_err(|e| HaError::Compression(e.to_string()))
+        oxiarc_zstd::encode_all(data, 3).map_err(|e| HaError::Compression(e.to_string()))
     }
 
     /// Decompress snapshot data.
     fn decompress_snapshot(&self, data: &[u8]) -> HaResult<Vec<u8>> {
-        zstd::decode_all(data).map_err(|e| HaError::Decompression(e.to_string()))
+        oxiarc_zstd::decode_all(data).map_err(|e| HaError::Decompression(e.to_string()))
     }
 
     /// Get snapshot file path.

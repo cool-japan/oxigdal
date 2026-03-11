@@ -1,6 +1,6 @@
 //! Differential privacy.
 
-use rand::Rng;
+use scirs2_core::random::prelude::{Normal, thread_rng};
 
 /// Laplace mechanism for differential privacy.
 pub struct LaplaceMechanism {
@@ -25,8 +25,8 @@ impl LaplaceMechanism {
     }
 
     fn sample_laplace(&self, scale: f64) -> f64 {
-        let mut rng = rand::thread_rng();
-        let u: f64 = rng.gen_range(-0.5..0.5);
+        let mut rng = thread_rng();
+        let u: f64 = rng.random_range(-0.5..0.5);
         -scale * u.signum() * (1.0 - 2.0 * u.abs()).ln()
     }
 }
@@ -51,8 +51,8 @@ impl GaussianMechanism {
     /// Add noise to a value.
     pub fn add_noise(&self, value: f64) -> f64 {
         let sigma = self.sensitivity * (2.0 * (1.25 / self.delta).ln()).sqrt() / self.epsilon;
-        let mut rng = rand::thread_rng();
-        let noise: f64 = rng.sample(rand_distr::Normal::new(0.0, sigma).expect("Invalid sigma"));
+        let mut rng = thread_rng();
+        let noise: f64 = rng.sample(Normal::new(0.0, sigma).expect("Invalid sigma"));
         value + noise
     }
 }

@@ -1,11 +1,10 @@
 //! Tests for ndarray and rand integration
 //!
 //! Verifies that ndarray and random number generation work correctly
-//! in the oxigdal-ml crate.
+//! in the oxigdal-ml crate, using scirs2_core instead of direct ndarray/rand.
 
-use ndarray::{Array1, Array2, Array3, Array4, Axis, s};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use scirs2_core::ndarray::{Array1, Array2, Array3, Array4, Axis, s};
+use scirs2_core::random::prelude::{SeedableRng, StdRng, seeded_rng};
 
 /// Test that ndarray types work correctly
 #[test]
@@ -119,7 +118,7 @@ fn test_ndarray_creation() {
 #[test]
 fn test_random_basic() {
     // Create RNG with fixed seed for reproducibility
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = seeded_rng(42);
 
     // Generate random numbers
     let r1: f64 = rng.random();
@@ -150,7 +149,7 @@ fn test_random_reproducibility() {
 /// Test random number generation with different types
 #[test]
 fn test_random_types() {
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = seeded_rng(42);
 
     // Test f64
     let r_f64: f64 = rng.random();
@@ -166,7 +165,7 @@ fn test_random_types() {
 fn test_gaussian_random() {
     use std::f64::consts::PI;
 
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = seeded_rng(42);
 
     // Generate Gaussian random numbers using Box-Muller
     let mut samples = Vec::new();
@@ -195,7 +194,7 @@ fn test_gaussian_random() {
 /// Test ndarray and random together (typical ML use case)
 #[test]
 fn test_ndarray_random_combined() {
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = seeded_rng(42);
 
     // Create array and fill with random values
     let mut arr = Array2::<f64>::zeros((10, 10));
@@ -281,9 +280,9 @@ fn test_ndarray_functionality() {
     let _ = Axis(0);
     let _ = arr.sum_axis(Axis(0));
 
-    // Random numbers
-    let mut rng = StdRng::seed_from_u64(42);
+    // Random numbers via scirs2_core
+    let mut rng = seeded_rng(42);
     let _: f64 = rng.random();
 
-    // All ndarray and rand functionality available ✓
+    // All ndarray and random functionality available via scirs2_core
 }

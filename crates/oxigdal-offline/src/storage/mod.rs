@@ -214,10 +214,6 @@ impl StorageStatistics {
 pub mod compression {
     use crate::error::{Error, Result};
     use bytes::Bytes;
-    use flate2::Compression;
-    use flate2::read::DeflateDecoder;
-    use flate2::write::DeflateEncoder;
-    use std::io::{Read, Write};
 
     /// Compress data if it exceeds threshold
     pub fn compress_if_needed(data: &[u8], threshold: usize) -> Result<(Bytes, bool)> {
@@ -226,14 +222,8 @@ pub mod compression {
         }
 
         // Use DEFLATE compression
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(data)
-            .map_err(|e| Error::storage(e.to_string()))?;
-
-        let compressed = encoder
-            .finish()
-            .map_err(|e| Error::storage(e.to_string()))?;
+        let compressed =
+            oxiarc_deflate::deflate(data, 6).map_err(|e| Error::storage(e.to_string()))?;
 
         // Only use compression if it actually reduces size
         if compressed.len() < data.len() {
@@ -250,13 +240,9 @@ pub mod compression {
         }
 
         // Decompress using DEFLATE
-        let mut decoder = DeflateDecoder::new(data);
-        let mut decompressed = Vec::new();
-        decoder
-            .read_to_end(&mut decompressed)
-            .map_err(|e| Error::storage(format!("Decompression failed: {}", e)))?;
-
-        Ok(Bytes::from(decompressed))
+        oxiarc_deflate::inflate(data)
+            .map(Bytes::from)
+            .map_err(|e| Error::storage(format!("Decompression failed: {}", e)))
     }
 }
 

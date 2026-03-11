@@ -8,20 +8,22 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![COOLJAPAN](https://img.shields.io/badge/COOLJAPAN-Ecosystem-brightgreen.svg)](https://github.com/cool-japan)
 
-OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.0** on 2026-02-22, it delivers ~500,000 SLoC across **68 workspace crates**, covering 11 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.1** on 2026-03-11, it delivers ~480,000 Rust SLoC across **69 workspace crates**, covering 11 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.1.0 (released 2026-02-22) |
-| **Rust SLoC** | ~500,000 across 1,739 `.rs` files |
-| **Workspace crates** | 68 |
+| **Version** | 0.1.1 (released 2026-03-11) |
+| **Rust SLoC** | ~480,000 across 1,751 `.rs` files |
+| **Total SLoC** | 505,510 (all languages) |
+| **Workspace crates** | 69 |
+| **Tests** | 7,486 passing (45 skipped), 0 failures |
 | **Format drivers** | 11 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT) |
-| **EPSG definitions** | 1,000+ embedded, O(1) lookup |
+| **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
-| **Estimated dev cost** | $18.3M equivalent (COCOMO) |
+| **Estimated dev cost** | $18.6M equivalent (COCOMO) |
 
 ## Why OxiGDAL?
 
@@ -60,13 +62,13 @@ fn main() -> oxigdal::Result<()> {
 
 ## Architecture
 
-68 workspace crates organized into functional layers:
+69 workspace crates organized into functional layers:
 
 ```
 Core & Algorithms
   oxigdal                    Umbrella crate (unified API entry-point)
   oxigdal-core               Types, traits, async I/O, Arrow buffers, no_std core
-  oxigdal-proj               Pure Rust PROJ: 20+ projections, 1000+ EPSG, WKT2
+  oxigdal-proj               Pure Rust PROJ: 20+ projections, 211+ EPSG, WKT2
   oxigdal-algorithms         SIMD raster/vector algorithms (AVX2, AVX-512, NEON)
   oxigdal-qc                 Data validation, anomaly detection, quality scoring
 
@@ -80,7 +82,7 @@ Format Drivers (11 formats)
   netcdf       NetCDF        CF conventions, unlimited dims, group hierarchies
   hdf5         HDF5          Hierarchical, chunking, compression, attributes
   grib         GRIB1/2       Meteorological parameter/level tables
-  jpeg2000     JPEG2000      Wavelet DWT, codestream parsing (tier-1)
+  jpeg2000     JPEG2000      Wavelet DWT, full EBCOT tier-1 decoder (MQ coder, 3-pass)
   vrt          VRT           Band math, source mosaicking, on-the-fly processing
 
 Cloud & Storage
@@ -174,7 +176,7 @@ Tooling
 | `geojson` | yes | GeoJSON (RFC 7946) |
 | `shapefile` | yes | ESRI Shapefile |
 | `full` | no | All 11 format drivers |
-| `proj` | no | CRS transformations (20+ projections, 1000+ EPSG) |
+| `proj` | no | CRS transformations (20+ projections, 211+ EPSG) |
 | `algorithms` | no | SIMD raster/vector algorithms |
 | `cloud` | no | S3, GCS, Azure Blob storage |
 | `async` | no | Async I/O traits |
@@ -339,7 +341,7 @@ oxigdal warp --t_srs EPSG:32654 input.tif output.tif
 | Policy | Status |
 |--------|--------|
 | Pure Rust (default features) | 100% Rust; C/Fortran behind feature flags |
-| No `unwrap()` | `clippy::unwrap_used = "deny"` (99.83% calls eliminated) |
+| No `unwrap()` | `clippy::unwrap_used = "deny"` (0 in production code; 2 in non-compiled doc comments) |
 | Workspace versions | All via `*.workspace = true` |
 | Latest crates | All deps at latest crates.io versions |
 | No OpenBLAS | Uses `oxiblas` |
@@ -352,6 +354,7 @@ oxigdal warp --t_srs EPSG:32654 input.tif output.tif
 | Release | Target | Focus |
 |---------|--------|-------|
 | **v0.1.0** | 2026-02-22 (released) | Independence: 68 crates, 11 drivers, ~500K SLoC, full enterprise stack |
+| **v0.1.1** | 2026-03-11 (released) | EBCOT tier-1 decoder, EPSG expansion (211+), floating-point predictor, Pure Rust compression, CLI commands, 69 crates, 7,486 tests |
 | **v0.2.0** | Q2 2026 | 100+ projections, GPU expansion, advanced ML pipelines, JPEG2000 tier-2 |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |

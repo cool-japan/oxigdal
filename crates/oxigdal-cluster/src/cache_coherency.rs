@@ -401,13 +401,13 @@ impl DistributedCache {
 
     /// Compress data using zstd.
     fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::encode_all(data, 3)
+        oxiarc_zstd::encode_all(data, 3)
             .map_err(|e| ClusterError::CacheError(format!("Compression error: {}", e)))
     }
 
     /// Decompress data using zstd.
     fn decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::decode_all(data)
+        oxiarc_zstd::decode_all(data)
             .map_err(|e| ClusterError::CacheError(format!("Decompression error: {}", e)))
     }
 

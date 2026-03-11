@@ -25,7 +25,6 @@ use crate::util::{progress, raster};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use console::style;
-// Import terrain analysis functions for type checking (used in dead_code sections)
 use oxigdal_algorithms::raster::{
     CombinedHillshadeParams, aspect, combined_hillshade, compute_roughness as roughness,
     compute_tpi as topographic_position_index, compute_tri as terrain_ruggedness_index, hillshade,
@@ -215,413 +214,409 @@ struct DemResult {
     processing_time_ms: u128,
 }
 
-pub fn execute(_args: DemArgs, _format: OutputFormat) -> Result<()> {
-    // Note: DEM terrain analysis is not yet implemented in oxigdal-algorithms
-    // The terrain module needs to be implemented first
-    anyhow::bail!("DEM terrain analysis is not yet implemented. This feature is coming soon!");
-
-    // This code will be activated once the terrain module is implemented:
-    // match args.operation {
-    //     DemOperation::Hillshade(hs_args) => execute_hillshade(hs_args, format),
-    //     DemOperation::Slope(slope_args) => execute_slope(slope_args, format),
-    //     DemOperation::Aspect(aspect_args) => execute_aspect(aspect_args, format),
-    //     DemOperation::Tri(tri_args) => execute_tri(tri_args, format),
-    //     DemOperation::Tpi(tpi_args) => execute_tpi(tpi_args, format),
-    //     DemOperation::Roughness(rough_args) => execute_roughness(rough_args, format),
-    // }
+pub fn execute(args: DemArgs, format: OutputFormat) -> Result<()> {
+    match args.operation {
+        DemOperation::Hillshade(hs_args) => execute_hillshade(hs_args, format),
+        DemOperation::Slope(slope_args) => execute_slope(slope_args, format),
+        DemOperation::Aspect(aspect_args) => execute_aspect(aspect_args, format),
+        DemOperation::Tri(tri_args) => execute_tri(tri_args, format),
+        DemOperation::Tpi(tpi_args) => execute_tpi(tpi_args, format),
+        DemOperation::Roughness(rough_args) => execute_roughness(rough_args, format),
+    }
 }
 
-#[allow(dead_code, unused_variables)]
 fn execute_hillshade(args: HillshadeArgs, format: OutputFormat) -> Result<()> {
-    // Note: terrain analysis is not yet implemented
-    anyhow::bail!("Hillshade generation is not yet implemented");
+    let start = std::time::Instant::now();
 
-    #[allow(unreachable_code)]
-    {
-        let start = std::time::Instant::now();
+    // Validate inputs
+    if !args.input.exists() {
+        anyhow::bail!("Input file not found: {}", args.input.display());
+    }
 
-        // Validate inputs
-        if !args.input.exists() {
-            anyhow::bail!("Input file not found: {}", args.input.display());
-        }
+    if args.output.exists() && !args.overwrite {
+        anyhow::bail!(
+            "Output file already exists: {}. Use --overwrite to replace.",
+            args.output.display()
+        );
+    }
 
-        if args.output.exists() && !args.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {}. Use --overwrite to replace.",
-                args.output.display()
-            );
-        }
+    if !(0.0..=360.0).contains(&args.azimuth) {
+        anyhow::bail!("Azimuth must be between 0 and 360 degrees");
+    }
 
-        if !(0.0..=360.0).contains(&args.azimuth) {
-            anyhow::bail!("Azimuth must be between 0 and 360 degrees");
-        }
+    if !(0.0..=90.0).contains(&args.altitude) {
+        anyhow::bail!("Altitude must be between 0 and 90 degrees");
+    }
 
-        if !(0.0..=90.0).contains(&args.altitude) {
-            anyhow::bail!("Altitude must be between 0 and 90 degrees");
-        }
+    // Read DEM
+    let pb = progress::create_spinner("Reading DEM");
+    let raster_info =
+        raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
 
-        // Read DEM
-        let pb = progress::create_spinner("Reading DEM");
-        let raster_info =
-            raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
+    let dem_data =
+        raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
+            .context("Failed to read DEM data")?;
+    pb.finish_and_clear();
 
-        let dem_data =
-            raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
-                .context("Failed to read DEM data")?;
-        pb.finish_and_clear();
+    // Calculate hillshade
+    let pb = progress::create_spinner(if args.combined {
+        "Calculating combined hillshade"
+    } else {
+        "Calculating hillshade"
+    });
 
-        // Calculate hillshade
-        let pb = progress::create_spinner(if args.combined {
-            "Calculating combined hillshade"
-        } else {
-            "Calculating hillshade"
-        });
+    let hillshade_band = if args.combined {
+        // Use combined/multidirectional hillshade with GDAL-style weights
+        let combined_params = CombinedHillshadeParams::gdal_multidirectional()
+            .with_altitude(args.altitude)
+            .with_z_factor(args.z_factor)
+            .with_pixel_size(1.0)
+            .with_scale(args.scale);
 
-        let hillshade_band = if args.combined {
-            // Use combined/multidirectional hillshade with GDAL-style weights
-            let combined_params = CombinedHillshadeParams::gdal_multidirectional()
-                .with_altitude(args.altitude)
-                .with_z_factor(args.z_factor)
-                .with_pixel_size(1.0)
-                .with_scale(args.scale);
-
-            combined_hillshade(&dem_data, combined_params)
-                .context("Failed to calculate combined hillshade")?
-        } else {
-            // Standard single-direction hillshade
-            use oxigdal_algorithms::raster::HillshadeParams;
-            let params = HillshadeParams {
-                azimuth: args.azimuth,
-                altitude: args.altitude,
-                z_factor: args.z_factor,
-                pixel_size: 1.0,
-                scale: args.scale,
-            };
-            hillshade(&dem_data, params).context("Failed to calculate hillshade")?
+        combined_hillshade(&dem_data, combined_params)
+            .context("Failed to calculate combined hillshade")?
+    } else {
+        // Standard single-direction hillshade
+        use oxigdal_algorithms::raster::HillshadeParams;
+        let params = HillshadeParams {
+            azimuth: args.azimuth,
+            altitude: args.altitude,
+            z_factor: args.z_factor,
+            pixel_size: 1.0,
+            scale: args.scale,
         };
-        pb.finish_and_clear();
+        hillshade(&dem_data, params).context("Failed to calculate hillshade")?
+    };
+    pb.finish_and_clear();
 
-        // Write output
-        let pb = progress::create_spinner("Writing output");
-        raster::write_single_band(
-            &args.output,
-            &hillshade_band,
-            raster_info.geo_transform,
-            raster_info.epsg_code,
-            None,
-        )
-        .context("Failed to write hillshade output")?;
-        pb.finish_with_message("Hillshade generation complete");
+    // Write output
+    let pb = progress::create_spinner("Writing output");
+    raster::write_single_band(
+        &args.output,
+        &hillshade_band,
+        raster_info.geo_transform,
+        raster_info.epsg_code,
+        None,
+    )
+    .context("Failed to write hillshade output")?;
+    pb.finish_with_message("Hillshade generation complete");
 
-        output_result(
-            "Hillshade",
-            &args.input,
-            &args.output,
-            raster_info.width,
-            raster_info.height,
-            start.elapsed().as_millis(),
-            format,
-        )
-    }
+    output_result(
+        "Hillshade",
+        &args.input,
+        &args.output,
+        raster_info.width,
+        raster_info.height,
+        start.elapsed().as_millis(),
+        format,
+    )
 }
 
-#[allow(dead_code, unused_variables)]
 fn execute_slope(args: SlopeArgs, format: OutputFormat) -> Result<()> {
-    anyhow::bail!("Slope calculation is not yet implemented");
-    #[allow(unreachable_code)]
-    {
-        let start = std::time::Instant::now();
+    let start = std::time::Instant::now();
 
-        // Validate inputs
-        if !args.input.exists() {
-            anyhow::bail!("Input file not found: {}", args.input.display());
-        }
-
-        if args.output.exists() && !args.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {}. Use --overwrite to replace.",
-                args.output.display()
-            );
-        }
-
-        // Read DEM
-        let pb = progress::create_spinner("Reading DEM");
-        let raster_info =
-            raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
-
-        let dem_data =
-            raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
-                .context("Failed to read DEM data")?;
-        pb.finish_and_clear();
-
-        // Calculate slope
-        let pb = progress::create_spinner("Calculating slope");
-        let _use_percent = matches!(args.slope_format, SlopeFormat::Percent);
-        // Note: slope function signature is (dem, pixel_size, z_factor)
-        let slope_band = slope(&dem_data, args.scale, 1.0).context("Failed to calculate slope")?;
-        pb.finish_and_clear();
-
-        // Write output
-        let pb = progress::create_spinner("Writing output");
-        raster::write_single_band(
-            &args.output,
-            &slope_band,
-            raster_info.geo_transform,
-            raster_info.epsg_code,
-            None,
-        )
-        .context("Failed to write slope output")?;
-        pb.finish_with_message("Slope calculation complete");
-
-        output_result(
-            "Slope",
-            &args.input,
-            &args.output,
-            raster_info.width,
-            raster_info.height,
-            start.elapsed().as_millis(),
-            format,
-        )
+    // Validate inputs
+    if !args.input.exists() {
+        anyhow::bail!("Input file not found: {}", args.input.display());
     }
+
+    if args.output.exists() && !args.overwrite {
+        anyhow::bail!(
+            "Output file already exists: {}. Use --overwrite to replace.",
+            args.output.display()
+        );
+    }
+
+    // Read DEM
+    let pb = progress::create_spinner("Reading DEM");
+    let raster_info =
+        raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
+
+    let dem_data =
+        raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
+            .context("Failed to read DEM data")?;
+    pb.finish_and_clear();
+
+    // Calculate slope
+    let pb = progress::create_spinner("Calculating slope");
+    // slope(dem, pixel_size, z_factor) — z_factor=1.0, scale applies as pixel_size
+    let slope_band = slope(&dem_data, args.scale, 1.0).context("Failed to calculate slope")?;
+
+    // Convert to percent if requested (slope is returned in degrees, convert per-pixel)
+    let slope_band = if matches!(args.slope_format, SlopeFormat::Percent) {
+        use oxigdal_algorithms::raster::{SlopeUnits, convert_slope_degrees};
+        let mut pct_band = oxigdal_core::buffer::RasterBuffer::zeros(
+            slope_band.width(),
+            slope_band.height(),
+            slope_band.data_type(),
+        );
+        for y in 0..slope_band.height() {
+            for x in 0..slope_band.width() {
+                let deg = slope_band
+                    .get_pixel(x, y)
+                    .context("Failed to read slope pixel")?;
+                let pct = convert_slope_degrees(deg, SlopeUnits::Percent);
+                pct_band
+                    .set_pixel(x, y, pct)
+                    .context("Failed to set slope percent pixel")?;
+            }
+        }
+        pct_band
+    } else {
+        slope_band
+    };
+    pb.finish_and_clear();
+
+    // Write output
+    let pb = progress::create_spinner("Writing output");
+    raster::write_single_band(
+        &args.output,
+        &slope_band,
+        raster_info.geo_transform,
+        raster_info.epsg_code,
+        None,
+    )
+    .context("Failed to write slope output")?;
+    pb.finish_with_message("Slope calculation complete");
+
+    output_result(
+        "Slope",
+        &args.input,
+        &args.output,
+        raster_info.width,
+        raster_info.height,
+        start.elapsed().as_millis(),
+        format,
+    )
 }
 
-#[allow(dead_code, unused_variables)]
 fn execute_aspect(args: AspectArgs, format: OutputFormat) -> Result<()> {
-    anyhow::bail!("Aspect calculation is not yet implemented");
-    #[allow(unreachable_code)]
-    {
-        let start = std::time::Instant::now();
+    let start = std::time::Instant::now();
 
-        // Validate inputs
-        if !args.input.exists() {
-            anyhow::bail!("Input file not found: {}", args.input.display());
-        }
-
-        if args.output.exists() && !args.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {}. Use --overwrite to replace.",
-                args.output.display()
-            );
-        }
-
-        // Read DEM
-        let pb = progress::create_spinner("Reading DEM");
-        let raster_info =
-            raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
-
-        let dem_data =
-            raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
-                .context("Failed to read DEM data")?;
-        pb.finish_and_clear();
-
-        // Calculate aspect
-        let pb = progress::create_spinner("Calculating aspect");
-        let _zero_for_flat = args.zero_for_flat;
-        // Note: aspect function signature is (dem, pixel_size, z_factor)
-        let aspect_band = aspect(&dem_data, 1.0, 1.0).context("Failed to calculate aspect")?;
-        pb.finish_and_clear();
-
-        // Write output
-        let pb = progress::create_spinner("Writing output");
-        raster::write_single_band(
-            &args.output,
-            &aspect_band,
-            raster_info.geo_transform,
-            raster_info.epsg_code,
-            None,
-        )
-        .context("Failed to write aspect output")?;
-        pb.finish_with_message("Aspect calculation complete");
-
-        output_result(
-            "Aspect",
-            &args.input,
-            &args.output,
-            raster_info.width,
-            raster_info.height,
-            start.elapsed().as_millis(),
-            format,
-        )
+    // Validate inputs
+    if !args.input.exists() {
+        anyhow::bail!("Input file not found: {}", args.input.display());
     }
+
+    if args.output.exists() && !args.overwrite {
+        anyhow::bail!(
+            "Output file already exists: {}. Use --overwrite to replace.",
+            args.output.display()
+        );
+    }
+
+    // Read DEM
+    let pb = progress::create_spinner("Reading DEM");
+    let raster_info =
+        raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
+
+    let dem_data =
+        raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
+            .context("Failed to read DEM data")?;
+    pb.finish_and_clear();
+
+    // Calculate aspect — aspect(dem, pixel_size, z_factor)
+    let pb = progress::create_spinner("Calculating aspect");
+    let mut aspect_band = aspect(&dem_data, 1.0, 1.0).context("Failed to calculate aspect")?;
+
+    // Optionally map flat areas (-9999) to 0
+    if args.zero_for_flat {
+        let flat_sentinel = -9999.0_f64;
+        for y in 0..aspect_band.height() {
+            for x in 0..aspect_band.width() {
+                if let Ok(v) = aspect_band.get_pixel(x, y) {
+                    if (v - flat_sentinel).abs() < 1.0 {
+                        aspect_band
+                            .set_pixel(x, y, 0.0)
+                            .context("Failed to set pixel")?;
+                    }
+                }
+            }
+        }
+    }
+    pb.finish_and_clear();
+
+    // Write output
+    let pb = progress::create_spinner("Writing output");
+    raster::write_single_band(
+        &args.output,
+        &aspect_band,
+        raster_info.geo_transform,
+        raster_info.epsg_code,
+        None,
+    )
+    .context("Failed to write aspect output")?;
+    pb.finish_with_message("Aspect calculation complete");
+
+    output_result(
+        "Aspect",
+        &args.input,
+        &args.output,
+        raster_info.width,
+        raster_info.height,
+        start.elapsed().as_millis(),
+        format,
+    )
 }
 
-#[allow(dead_code, unused_variables)]
 fn execute_tri(args: TriArgs, format: OutputFormat) -> Result<()> {
-    anyhow::bail!("Tri calculation is not yet implemented");
-    #[allow(unreachable_code)]
-    {
-        let start = std::time::Instant::now();
+    let start = std::time::Instant::now();
 
-        // Validate inputs
-        if !args.input.exists() {
-            anyhow::bail!("Input file not found: {}", args.input.display());
-        }
-
-        if args.output.exists() && !args.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {}. Use --overwrite to replace.",
-                args.output.display()
-            );
-        }
-
-        // Read DEM
-        let pb = progress::create_spinner("Reading DEM");
-        let raster_info =
-            raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
-
-        let dem_data =
-            raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
-                .context("Failed to read DEM data")?;
-        pb.finish_and_clear();
-
-        // Calculate TRI
-        let pb = progress::create_spinner("Calculating TRI");
-        // Note: TRI function signature is (dem, cell_size)
-        let tri_band =
-            terrain_ruggedness_index(&dem_data, 1.0).context("Failed to calculate TRI")?;
-        pb.finish_and_clear();
-
-        // Write output
-        let pb = progress::create_spinner("Writing output");
-        raster::write_single_band(
-            &args.output,
-            &tri_band,
-            raster_info.geo_transform,
-            raster_info.epsg_code,
-            None,
-        )
-        .context("Failed to write TRI output")?;
-        pb.finish_with_message("TRI calculation complete");
-
-        output_result(
-            "TRI",
-            &args.input,
-            &args.output,
-            raster_info.width,
-            raster_info.height,
-            start.elapsed().as_millis(),
-            format,
-        )
+    // Validate inputs
+    if !args.input.exists() {
+        anyhow::bail!("Input file not found: {}", args.input.display());
     }
+
+    if args.output.exists() && !args.overwrite {
+        anyhow::bail!(
+            "Output file already exists: {}. Use --overwrite to replace.",
+            args.output.display()
+        );
+    }
+
+    // Read DEM
+    let pb = progress::create_spinner("Reading DEM");
+    let raster_info =
+        raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
+
+    let dem_data =
+        raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
+            .context("Failed to read DEM data")?;
+    pb.finish_and_clear();
+
+    // Calculate TRI — terrain_ruggedness_index(dem, cell_size)
+    let pb = progress::create_spinner("Calculating TRI");
+    let tri_band = terrain_ruggedness_index(&dem_data, 1.0).context("Failed to calculate TRI")?;
+    pb.finish_and_clear();
+
+    // Write output
+    let pb = progress::create_spinner("Writing output");
+    raster::write_single_band(
+        &args.output,
+        &tri_band,
+        raster_info.geo_transform,
+        raster_info.epsg_code,
+        None,
+    )
+    .context("Failed to write TRI output")?;
+    pb.finish_with_message("TRI calculation complete");
+
+    output_result(
+        "TRI",
+        &args.input,
+        &args.output,
+        raster_info.width,
+        raster_info.height,
+        start.elapsed().as_millis(),
+        format,
+    )
 }
 
-#[allow(dead_code, unused_variables)]
 fn execute_tpi(args: TpiArgs, format: OutputFormat) -> Result<()> {
-    anyhow::bail!("Tpi calculation is not yet implemented");
-    #[allow(unreachable_code)]
-    {
-        let start = std::time::Instant::now();
+    let start = std::time::Instant::now();
 
-        // Validate inputs
-        if !args.input.exists() {
-            anyhow::bail!("Input file not found: {}", args.input.display());
-        }
-
-        if args.output.exists() && !args.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {}. Use --overwrite to replace.",
-                args.output.display()
-            );
-        }
-
-        // Read DEM
-        let pb = progress::create_spinner("Reading DEM");
-        let raster_info =
-            raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
-
-        let dem_data =
-            raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
-                .context("Failed to read DEM data")?;
-        pb.finish_and_clear();
-
-        // Calculate TPI
-        let pb = progress::create_spinner("Calculating TPI");
-        // Note: TPI function signature is (dem, neighborhood_size, cell_size)
-        let tpi_band =
-            topographic_position_index(&dem_data, 3, 1.0).context("Failed to calculate TPI")?;
-        pb.finish_and_clear();
-
-        // Write output
-        let pb = progress::create_spinner("Writing output");
-        raster::write_single_band(
-            &args.output,
-            &tpi_band,
-            raster_info.geo_transform,
-            raster_info.epsg_code,
-            None,
-        )
-        .context("Failed to write TPI output")?;
-        pb.finish_with_message("TPI calculation complete");
-
-        output_result(
-            "TPI",
-            &args.input,
-            &args.output,
-            raster_info.width,
-            raster_info.height,
-            start.elapsed().as_millis(),
-            format,
-        )
+    // Validate inputs
+    if !args.input.exists() {
+        anyhow::bail!("Input file not found: {}", args.input.display());
     }
+
+    if args.output.exists() && !args.overwrite {
+        anyhow::bail!(
+            "Output file already exists: {}. Use --overwrite to replace.",
+            args.output.display()
+        );
+    }
+
+    // Read DEM
+    let pb = progress::create_spinner("Reading DEM");
+    let raster_info =
+        raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
+
+    let dem_data =
+        raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
+            .context("Failed to read DEM data")?;
+    pb.finish_and_clear();
+
+    // Calculate TPI — topographic_position_index(dem, neighborhood_size, cell_size)
+    let pb = progress::create_spinner("Calculating TPI");
+    let tpi_band =
+        topographic_position_index(&dem_data, 3, 1.0).context("Failed to calculate TPI")?;
+    pb.finish_and_clear();
+
+    // Write output
+    let pb = progress::create_spinner("Writing output");
+    raster::write_single_band(
+        &args.output,
+        &tpi_band,
+        raster_info.geo_transform,
+        raster_info.epsg_code,
+        None,
+    )
+    .context("Failed to write TPI output")?;
+    pb.finish_with_message("TPI calculation complete");
+
+    output_result(
+        "TPI",
+        &args.input,
+        &args.output,
+        raster_info.width,
+        raster_info.height,
+        start.elapsed().as_millis(),
+        format,
+    )
 }
 
-#[allow(dead_code, unused_variables)]
 fn execute_roughness(args: RoughnessArgs, format: OutputFormat) -> Result<()> {
-    anyhow::bail!("Roughness calculation is not yet implemented");
-    #[allow(unreachable_code)]
-    {
-        let start = std::time::Instant::now();
+    let start = std::time::Instant::now();
 
-        // Validate inputs
-        if !args.input.exists() {
-            anyhow::bail!("Input file not found: {}", args.input.display());
-        }
-
-        if args.output.exists() && !args.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {}. Use --overwrite to replace.",
-                args.output.display()
-            );
-        }
-
-        // Read DEM
-        let pb = progress::create_spinner("Reading DEM");
-        let raster_info =
-            raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
-
-        let dem_data =
-            raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
-                .context("Failed to read DEM data")?;
-        pb.finish_and_clear();
-
-        // Calculate roughness
-        let pb = progress::create_spinner("Calculating roughness");
-        // Note: roughness function signature is (dem, neighborhood_size)
-        let roughness_band = roughness(&dem_data, 3).context("Failed to calculate roughness")?;
-        pb.finish_and_clear();
-
-        // Write output
-        let pb = progress::create_spinner("Writing output");
-        raster::write_single_band(
-            &args.output,
-            &roughness_band,
-            raster_info.geo_transform,
-            raster_info.epsg_code,
-            None,
-        )
-        .context("Failed to write roughness output")?;
-        pb.finish_with_message("Roughness calculation complete");
-
-        output_result(
-            "Roughness",
-            &args.input,
-            &args.output,
-            raster_info.width,
-            raster_info.height,
-            start.elapsed().as_millis(),
-            format,
-        )
+    // Validate inputs
+    if !args.input.exists() {
+        anyhow::bail!("Input file not found: {}", args.input.display());
     }
+
+    if args.output.exists() && !args.overwrite {
+        anyhow::bail!(
+            "Output file already exists: {}. Use --overwrite to replace.",
+            args.output.display()
+        );
+    }
+
+    // Read DEM
+    let pb = progress::create_spinner("Reading DEM");
+    let raster_info =
+        raster::read_raster_info(&args.input).context("Failed to read DEM metadata")?;
+
+    let dem_data =
+        raster::read_band_region(&args.input, 0, 0, 0, raster_info.width, raster_info.height)
+            .context("Failed to read DEM data")?;
+    pb.finish_and_clear();
+
+    // Calculate roughness — roughness(dem, neighborhood_size)
+    let pb = progress::create_spinner("Calculating roughness");
+    let roughness_band = roughness(&dem_data, 3).context("Failed to calculate roughness")?;
+    pb.finish_and_clear();
+
+    // Write output
+    let pb = progress::create_spinner("Writing output");
+    raster::write_single_band(
+        &args.output,
+        &roughness_band,
+        raster_info.geo_transform,
+        raster_info.epsg_code,
+        None,
+    )
+    .context("Failed to write roughness output")?;
+    pb.finish_with_message("Roughness calculation complete");
+
+    output_result(
+        "Roughness",
+        &args.input,
+        &args.output,
+        raster_info.width,
+        raster_info.height,
+        start.elapsed().as_millis(),
+        format,
+    )
 }
 
 fn output_result(

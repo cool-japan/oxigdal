@@ -5,9 +5,9 @@
 
 use crate::augmentation::AugmentationPipeline;
 use crate::{Error, Result};
-use ndarray::Array3;
 use oxigdal_core::buffer::RasterBuffer;
 use oxigdal_core::types::RasterDataType;
+use scirs2_core::ndarray::Array3;
 
 /// Applies an augmentation pipeline to a raster buffer.
 ///

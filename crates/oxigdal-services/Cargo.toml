@@ -66,7 +66,7 @@ lru.workspace = true
 dashmap.workspace = true
 
 # Compression
-flate2.workspace = true
+oxiarc-archive = { workspace = true }
 
 [dev-dependencies]
 # Testing

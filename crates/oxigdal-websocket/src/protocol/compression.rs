@@ -2,7 +2,6 @@
 
 use crate::error::{Error, Result};
 use bytes::{Bytes, BytesMut};
-use std::io::{Read, Write};
 
 /// Compression type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,12 +35,12 @@ impl CompressionLevel {
         }
     }
 
-    /// Get gzip compression level
-    pub fn gzip_level(&self) -> flate2::Compression {
+    /// Get gzip compression level as u8
+    pub fn gzip_level_u8(&self) -> u8 {
         match self {
-            CompressionLevel::Fast => flate2::Compression::fast(),
-            CompressionLevel::Default => flate2::Compression::default(),
-            CompressionLevel::Best => flate2::Compression::best(),
+            CompressionLevel::Fast => 1,
+            CompressionLevel::Default => 6,
+            CompressionLevel::Best => 9,
         }
     }
 }
@@ -81,47 +80,30 @@ impl CompressionCodec {
 
     /// Compress data using gzip
     fn compress_gzip(&self, data: &[u8]) -> Result<BytesMut> {
-        use flate2::write::GzEncoder;
-
-        let mut encoder = GzEncoder::new(Vec::new(), self.level.gzip_level());
-        encoder
-            .write_all(data)
+        let compressed = oxiarc_archive::gzip::compress(data, self.level.gzip_level_u8())
             .map_err(|e| Error::Compression(format!("Gzip compression failed: {}", e)))?;
-
-        let compressed = encoder
-            .finish()
-            .map_err(|e| Error::Compression(format!("Gzip finish failed: {}", e)))?;
-
         Ok(BytesMut::from(&compressed[..]))
     }
 
     /// Decompress data using gzip
     fn decompress_gzip(&self, data: &[u8]) -> Result<Bytes> {
-        use flate2::read::GzDecoder;
-
-        let mut decoder = GzDecoder::new(data);
-        let mut decompressed = Vec::new();
-
-        decoder
-            .read_to_end(&mut decompressed)
+        let mut reader = std::io::Cursor::new(data);
+        let decompressed = oxiarc_archive::gzip::decompress(&mut reader)
             .map_err(|e| Error::Compression(format!("Gzip decompression failed: {}", e)))?;
-
         Ok(Bytes::from(decompressed))
     }
 
     /// Compress data using zstd
     fn compress_zstd(&self, data: &[u8]) -> Result<BytesMut> {
-        let compressed = zstd::encode_all(data, self.level.zstd_level())
+        let compressed = oxiarc_zstd::encode_all(data, self.level.zstd_level())
             .map_err(|e| Error::Compression(format!("Zstd compression failed: {}", e)))?;
-
         Ok(BytesMut::from(&compressed[..]))
     }
 
     /// Decompress data using zstd
     fn decompress_zstd(&self, data: &[u8]) -> Result<Bytes> {
-        let decompressed = zstd::decode_all(data)
+        let decompressed = oxiarc_zstd::decode_all(data)
             .map_err(|e| Error::Compression(format!("Zstd decompression failed: {}", e)))?;
-
         Ok(Bytes::from(decompressed))
     }
 

@@ -44,11 +44,10 @@ dashmap = "6.1"
 petgraph = "0.6"
 
 # Compression
-zstd = "0.13"
+oxiarc-zstd = { workspace = true }
 
-# Random
-rand = "0.8"
-rand_distr = "0.4"
+# Random — use scirs2-core for RNG (SciRS2 Policy: no direct rand/rand_distr)
+scirs2-core = { workspace = true, features = ["random"] }
 getrandom = "0.2"
 
 # Encoding

@@ -1,7 +1,7 @@
 //! HDF5 filter pipeline for data transformation and compression.
 //!
 //! This module provides comprehensive filter support including:
-//! - GZIP compression (Pure Rust via flate2)
+//! - GZIP compression (Pure Rust via oxiarc-archive)
 //! - Shuffle filter for better compression (Pure Rust)
 //! - Fletcher32 checksum filter (Pure Rust)
 //! - ScaleOffset filter (Pure Rust)
@@ -19,11 +19,7 @@ pub mod szip;
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
-use flate2::Compression;
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
 
 /// HDF5 filter identifier
 #[repr(u16)]
@@ -333,25 +329,16 @@ fn apply_filter_reverse(
 /// Apply DEFLATE compression
 fn apply_deflate_forward(data: &[u8], params: &[u32]) -> Result<Vec<u8>> {
     let level = params.first().copied().unwrap_or(6);
-    let level = level.clamp(1, 9);
+    let level = level.clamp(1, 9) as u8;
 
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::new(level));
-    encoder
-        .write_all(data)
-        .map_err(|e| Hdf5Error::Compression(e.to_string()))?;
-    encoder
-        .finish()
-        .map_err(|e| Hdf5Error::Compression(e.to_string()))
+    oxiarc_archive::gzip::compress(data, level).map_err(|e| Hdf5Error::Compression(e.to_string()))
 }
 
 /// Apply DEFLATE decompression
 fn apply_deflate_reverse(data: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = GzDecoder::new(data);
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .map_err(|e| Hdf5Error::Decompression(e.to_string()))?;
-    Ok(decompressed)
+    let mut reader = std::io::Cursor::new(data);
+    oxiarc_archive::gzip::decompress(&mut reader)
+        .map_err(|e| Hdf5Error::Decompression(e.to_string()))
 }
 
 // =============================================================================

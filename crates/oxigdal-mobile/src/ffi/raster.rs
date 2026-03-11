@@ -962,11 +962,26 @@ pub unsafe extern "C" fn oxigdal_dataset_set_projection_epsg(
 pub unsafe extern "C" fn oxigdal_get_version(out_version: *mut OxiGdalVersion) -> OxiGdalErrorCode {
     check_null!(out_version, "out_version");
 
+    let version_str = env!("CARGO_PKG_VERSION");
+    let mut parts = version_str.splitn(3, '.');
+    let major = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+
     unsafe {
         *out_version = OxiGdalVersion {
-            major: 0,
-            minor: 1,
-            patch: 0,
+            major,
+            minor,
+            patch,
         };
     }
 
@@ -1157,7 +1172,7 @@ pub unsafe extern "C" fn oxigdal_buffer_color_balance(
 /// Pointer to version string (caller must free with oxigdal_string_free)
 #[unsafe(no_mangle)]
 pub extern "C" fn oxigdal_get_version_string() -> *mut c_char {
-    match CString::new("0.1.0") {
+    match CString::new(env!("CARGO_PKG_VERSION")) {
         Ok(s) => s.into_raw(),
         Err(_) => ptr::null_mut(),
     }
@@ -1179,9 +1194,23 @@ mod tests {
         unsafe {
             let result = oxigdal_get_version(&mut version);
             assert_eq!(result, OxiGdalErrorCode::Success);
-            assert_eq!(version.major, 0);
-            assert_eq!(version.minor, 1);
-            assert_eq!(version.patch, 0);
+            let version_str = env!("CARGO_PKG_VERSION");
+            let mut parts = version_str.splitn(3, '.');
+            let expected_major = parts
+                .next()
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            let expected_minor = parts
+                .next()
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            let expected_patch = parts
+                .next()
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            assert_eq!(version.major, expected_major);
+            assert_eq!(version.minor, expected_minor);
+            assert_eq!(version.patch, expected_patch);
         }
     }
 
@@ -1193,7 +1222,7 @@ mod tests {
         unsafe {
             let version_cstr = CStr::from_ptr(version_ptr);
             let version_str = version_cstr.to_str().expect("valid UTF-8");
-            assert_eq!(version_str, "0.1.0");
+            assert_eq!(version_str, env!("CARGO_PKG_VERSION"));
             oxigdal_string_free(version_ptr);
         }
     }

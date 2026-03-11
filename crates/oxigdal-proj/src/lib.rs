@@ -157,7 +157,7 @@ mod tests {
     fn test_version_info() {
         let info = info();
         assert!(info.contains("oxigdal-proj"));
-        assert!(info.contains("0.1.0"));
+        assert!(info.contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

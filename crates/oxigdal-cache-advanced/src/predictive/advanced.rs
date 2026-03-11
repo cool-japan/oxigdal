@@ -10,7 +10,7 @@
 
 use crate::error::{CacheError, Result};
 use crate::multi_tier::CacheKey;
-use ndarray::{Array1, Array2, Axis};
+use scirs2_core::ndarray::{Array1, Array2, Axis};
 use std::collections::{HashMap, VecDeque};
 
 /// Generate normal distributed random number using Box-Muller transform

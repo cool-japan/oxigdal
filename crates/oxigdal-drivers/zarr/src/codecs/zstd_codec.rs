@@ -68,7 +68,7 @@ impl Codec for ZstdCodec {
     }
 
     fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::encode_all(data, self.level).map_err(|e| {
+        oxiarc_zstd::encode_all(data, self.level).map_err(|e| {
             ZarrError::Codec(CodecError::CompressionFailed {
                 message: format!("Zstd compression failed: {e}"),
             })
@@ -76,7 +76,7 @@ impl Codec for ZstdCodec {
     }
 
     fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::decode_all(data).map_err(|e| {
+        oxiarc_zstd::decode_all(data).map_err(|e| {
             ZarrError::Codec(CodecError::DecompressionFailed {
                 message: format!("Zstd decompression failed: {e}"),
             })
@@ -84,8 +84,8 @@ impl Codec for ZstdCodec {
     }
 
     fn max_encoded_size(&self, input_size: usize) -> usize {
-        // Zstd max compressed size
-        zstd::zstd_safe::compress_bound(input_size)
+        // Conservative estimate: input + (input / 255) + 32 overhead
+        input_size + (input_size / 255) + 32
     }
 
     fn clone_box(&self) -> Box<dyn Codec> {

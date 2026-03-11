@@ -438,7 +438,9 @@ mod tests {
 
     #[test]
     fn test_processing_mode_concurrent_operations() {
-        let cpu_count = num_cpus::get();
+        let cpu_count = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
         assert_eq!(
             ProcessingMode::HighPerformance.max_concurrent_operations(),
             cpu_count

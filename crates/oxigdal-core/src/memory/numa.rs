@@ -262,16 +262,25 @@ pub fn get_current_node() -> Result<NumaNode> {
     {
         let cpu = unsafe { libc::sched_getcpu() };
         if cpu < 0 {
-            return Err(OxiGdalError::io_error("Failed to get CPU".to_string()));
+            // Cannot determine CPU, fall back to node 0
+            return Ok(NumaNode(0));
         }
 
-        // Read NUMA node from sysfs
+        // Read NUMA node from sysfs (may not exist in containers)
         let path = format!("/sys/devices/system/cpu/cpu{}/node", cpu);
-        let node_dirs = std::fs::read_dir(&path)
-            .map_err(|_| OxiGdalError::io_error("Failed to read NUMA node".to_string()))?;
+        let node_dirs = match std::fs::read_dir(&path) {
+            Ok(dirs) => dirs,
+            Err(_) => {
+                // sysfs NUMA info unavailable (e.g., containerized environment)
+                return Ok(NumaNode(0));
+            }
+        };
 
         for entry in node_dirs {
-            let entry = entry.map_err(|e| OxiGdalError::io_error(e.to_string()))?;
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 

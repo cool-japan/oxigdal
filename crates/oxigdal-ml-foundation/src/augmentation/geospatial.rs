@@ -2,7 +2,7 @@
 
 use crate::augmentation::Augmentation;
 use crate::{Error, Result};
-use ndarray::Array3;
+use scirs2_core::ndarray::Array3;
 use serde::{Deserialize, Serialize};
 
 /// Band selection (select specific spectral bands).
@@ -137,7 +137,7 @@ impl Augmentation for SpectralNormalization {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array3;
+    use scirs2_core::ndarray::Array3;
 
     #[test]
     fn test_band_selection() {

@@ -115,25 +115,13 @@ fn parse_hdf5_datatype<R: Read>(
     Ok((data_type, size))
 }
 /// Decompress deflate-compressed data
-pub(crate) fn decompress_deflate(data: &[u8], uncompressed_size: usize) -> Result<Vec<u8>> {
-    use std::io::Cursor;
-    let mut decoder = flate2::read::ZlibDecoder::new(Cursor::new(data));
-    let mut result = Vec::with_capacity(uncompressed_size);
-    decoder
-        .read_to_end(&mut result)
-        .map_err(|e| NetCdfError::InvalidCompressionParams(e.to_string()))?;
-    Ok(result)
+pub(crate) fn decompress_deflate(data: &[u8], _uncompressed_size: usize) -> Result<Vec<u8>> {
+    oxiarc_deflate::zlib_decompress(data)
+        .map_err(|e| NetCdfError::InvalidCompressionParams(e.to_string()))
 }
 /// Compress data with deflate
 pub(crate) fn compress_deflate(data: &[u8], level: u8) -> Result<Vec<u8>> {
-    use std::io::Write as IoWrite;
-    let compression = flate2::Compression::new(u32::from(level.min(9)));
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), compression);
-    encoder
-        .write_all(data)
-        .map_err(|e| NetCdfError::InvalidCompressionParams(e.to_string()))?;
-    encoder
-        .finish()
+    oxiarc_deflate::zlib_compress(data, level.min(9))
         .map_err(|e| NetCdfError::InvalidCompressionParams(e.to_string()))
 }
 /// Apply shuffle filter (rearrange bytes for better compression)

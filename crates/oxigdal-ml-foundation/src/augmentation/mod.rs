@@ -8,7 +8,7 @@ pub mod geospatial;
 pub mod noise;
 
 use crate::{Error, Result};
-use ndarray::Array3;
+use scirs2_core::ndarray::Array3;
 use serde::{Deserialize, Serialize};
 
 /// Trait for data augmentation transforms.
@@ -304,7 +304,7 @@ impl Augmentation for Clip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array3;
+    use scirs2_core::ndarray::Array3;
 
     fn create_test_image() -> Array3<f32> {
         Array3::from_shape_fn((3, 4, 4), |(c, h, w)| {

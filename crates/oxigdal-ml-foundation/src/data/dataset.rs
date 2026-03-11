@@ -293,6 +293,35 @@ impl GeoTiffDataset {
     }
 }
 
+#[cfg(not(feature = "ml"))]
+impl Dataset for GeoTiffDataset {
+    fn len(&self) -> usize {
+        self.file_paths.len() * self.patches_per_image
+    }
+
+    fn get_batch(&self, _indices: &[usize]) -> Result<(Vec<f32>, Vec<f32>)> {
+        Err(Error::InvalidState(
+            "Dataset loading requires the 'ml' feature".to_string(),
+        ))
+    }
+
+    fn shapes(&self) -> (Vec<usize>, Vec<usize>) {
+        let input_shape = vec![
+            1, // batch size placeholder
+            self.num_channels,
+            self.patch_size.0,
+            self.patch_size.1,
+        ];
+        let output_shape = vec![
+            1, // batch size placeholder
+            self.num_classes,
+            self.patch_size.0,
+            self.patch_size.1,
+        ];
+        (input_shape, output_shape)
+    }
+}
+
 #[cfg(feature = "ml")]
 impl DatasetTrait for GeoTiffDataset {
     fn len(&self) -> usize {
@@ -366,7 +395,9 @@ mod getrandom {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ml")]
     use std::env;
+    #[cfg(feature = "ml")]
     use std::fs;
 
     /// Helper to create a test GeoTIFF file

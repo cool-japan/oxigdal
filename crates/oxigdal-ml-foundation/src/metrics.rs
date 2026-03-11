@@ -3,7 +3,7 @@
 //! Provides common metrics for classification, segmentation, and detection tasks.
 
 use crate::{Error, Result};
-use ndarray::{Array2, ArrayView1, ArrayView2};
+use scirs2_core::ndarray::{Array2, ArrayView1, ArrayView2};
 
 /// Evaluation metrics container.
 #[derive(Debug, Clone, Default)]
@@ -274,7 +274,7 @@ impl Metrics {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use ndarray::arr1;
+    use scirs2_core::ndarray::arr1;
 
     #[test]
     fn test_accuracy() {

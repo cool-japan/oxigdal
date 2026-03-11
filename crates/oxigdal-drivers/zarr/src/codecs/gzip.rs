@@ -1,17 +1,14 @@
 //! Gzip compression codec for Zarr
 //!
-//! This module provides gzip compression and decompression using the flate2 crate.
+//! This module provides gzip compression and decompression using oxiarc-archive.
 
 use super::Codec;
 use crate::error::{CodecError, Result, ZarrError};
-use flate2::Compression;
-use flate2::read::{GzDecoder, GzEncoder};
-use std::io::Read;
 
 /// Gzip codec
 #[derive(Debug, Clone)]
 pub struct GzipCodec {
-    level: Compression,
+    level: u32,
 }
 
 impl GzipCodec {
@@ -30,39 +27,31 @@ impl GzipCodec {
             }));
         }
 
-        Ok(Self {
-            level: Compression::new(level),
-        })
+        Ok(Self { level })
     }
 
     /// Creates a new Gzip codec with default compression level (6)
     #[must_use]
     pub fn default_level() -> Self {
-        Self {
-            level: Compression::default(),
-        }
+        Self { level: 6 }
     }
 
     /// Creates a new Gzip codec with fast compression (level 1)
     #[must_use]
     pub fn fast() -> Self {
-        Self {
-            level: Compression::fast(),
-        }
+        Self { level: 1 }
     }
 
     /// Creates a new Gzip codec with best compression (level 9)
     #[must_use]
     pub fn best() -> Self {
-        Self {
-            level: Compression::best(),
-        }
+        Self { level: 9 }
     }
 
     /// Returns the compression level
     #[must_use]
     pub fn level(&self) -> u32 {
-        self.level.level()
+        self.level
     }
 }
 
@@ -78,29 +67,20 @@ impl Codec for GzipCodec {
     }
 
     fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut encoder = GzEncoder::new(data, self.level);
-        let mut compressed = Vec::new();
-
-        encoder.read_to_end(&mut compressed).map_err(|e| {
+        oxiarc_archive::gzip::compress(data, self.level as u8).map_err(|e| {
             ZarrError::Codec(CodecError::CompressionFailed {
                 message: format!("Gzip compression failed: {e}"),
             })
-        })?;
-
-        Ok(compressed)
+        })
     }
 
     fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut decoder = GzDecoder::new(data);
-        let mut decompressed = Vec::new();
-
-        decoder.read_to_end(&mut decompressed).map_err(|e| {
+        let mut reader = std::io::Cursor::new(data);
+        oxiarc_archive::gzip::decompress(&mut reader).map_err(|e| {
             ZarrError::Codec(CodecError::DecompressionFailed {
                 message: format!("Gzip decompression failed: {e}"),
             })
-        })?;
-
-        Ok(decompressed)
+        })
     }
 
     fn max_encoded_size(&self, input_size: usize) -> usize {

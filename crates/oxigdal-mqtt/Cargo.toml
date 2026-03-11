@@ -29,7 +29,7 @@ all_qos = ["qos0", "qos1", "qos2"]
 persistence = ["dep:sled"]
 tls = ["rumqttc/use-rustls"]
 websocket = ["rumqttc/websocket"]
-compression = ["dep:flate2"]
+compression = ["dep:oxiarc-archive"]
 geospatial = ["dep:geo-types", "dep:geojson"]
 
 [dependencies]
@@ -59,7 +59,7 @@ rumqttc = { version = "0.24", default-features = false, features = ["url"] }
 sled = { version = "0.34", optional = true }
 
 # Compression (optional)
-flate2 = { workspace = true, optional = true }
+oxiarc-archive = { workspace = true, optional = true }
 
 # Geospatial (optional)
 geo-types = { workspace = true, optional = true }

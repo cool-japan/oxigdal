@@ -569,6 +569,7 @@ pub fn version() -> &'static str {
 /// assert!(drivers.contains(&"GeoJSON"));   // default feature
 /// assert!(drivers.contains(&"ESRI Shapefile")); // default feature
 /// ```
+#[allow(clippy::vec_init_then_push)]
 pub fn drivers() -> Vec<&'static str> {
     let mut list = Vec::new();
 
@@ -639,13 +640,34 @@ mod tests {
 
     #[test]
     fn test_format_detection() {
-        assert_eq!(DatasetFormat::from_extension("world.tif"), DatasetFormat::GeoTiff);
-        assert_eq!(DatasetFormat::from_extension("data.geojson"), DatasetFormat::GeoJson);
-        assert_eq!(DatasetFormat::from_extension("map.shp"), DatasetFormat::Shapefile);
-        assert_eq!(DatasetFormat::from_extension("cloud.zarr"), DatasetFormat::Zarr);
-        assert_eq!(DatasetFormat::from_extension("output.parquet"), DatasetFormat::GeoParquet);
-        assert_eq!(DatasetFormat::from_extension("scene.vrt"), DatasetFormat::Vrt);
-        assert_eq!(DatasetFormat::from_extension("README.md"), DatasetFormat::Unknown);
+        assert_eq!(
+            DatasetFormat::from_extension("world.tif"),
+            DatasetFormat::GeoTiff
+        );
+        assert_eq!(
+            DatasetFormat::from_extension("data.geojson"),
+            DatasetFormat::GeoJson
+        );
+        assert_eq!(
+            DatasetFormat::from_extension("map.shp"),
+            DatasetFormat::Shapefile
+        );
+        assert_eq!(
+            DatasetFormat::from_extension("cloud.zarr"),
+            DatasetFormat::Zarr
+        );
+        assert_eq!(
+            DatasetFormat::from_extension("output.parquet"),
+            DatasetFormat::GeoParquet
+        );
+        assert_eq!(
+            DatasetFormat::from_extension("scene.vrt"),
+            DatasetFormat::Vrt
+        );
+        assert_eq!(
+            DatasetFormat::from_extension("README.md"),
+            DatasetFormat::Unknown
+        );
     }
 
     #[test]

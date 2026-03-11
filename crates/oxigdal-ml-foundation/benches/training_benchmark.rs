@@ -2,7 +2,6 @@
 #![allow(missing_docs, clippy::expect_used)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use ndarray::{Array2, Array3};
 use oxigdal_ml_foundation::{
     augmentation::{Augmentation, geometric::HorizontalFlip},
     training::{
@@ -11,6 +10,7 @@ use oxigdal_ml_foundation::{
         schedulers::{CosineAnnealingLR, LRScheduler, StepLR},
     },
 };
+use scirs2_core::ndarray::{Array2, Array3};
 use std::hint::black_box;
 
 fn loss_benchmark(c: &mut Criterion) {

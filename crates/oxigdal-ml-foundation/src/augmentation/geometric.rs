@@ -2,7 +2,7 @@
 
 use crate::augmentation::Augmentation;
 use crate::{Error, Result};
-use ndarray::Array3;
+use scirs2_core::ndarray::Array3;
 use serde::{Deserialize, Serialize};
 
 /// Horizontal flip augmentation.
@@ -145,7 +145,7 @@ impl Augmentation for CenterCrop {
         let start_h = (h - self.height) / 2;
         let start_w = (w - self.width) / 2;
 
-        let cropped = image.slice(ndarray::s![
+        let cropped = image.slice(scirs2_core::ndarray::s![
             ..,
             start_h..start_h + self.height,
             start_w..start_w + self.width
@@ -162,7 +162,7 @@ impl Augmentation for CenterCrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::arr3;
+    use scirs2_core::ndarray::arr3;
 
     #[test]
     fn test_horizontal_flip() {

@@ -242,12 +242,12 @@ mod tests {
     fn test_version_info() {
         let info = version_info();
         assert!(info.contains("oxigdal-hdf5"));
-        assert!(info.contains("0.1.0"));
+        assert!(info.contains(VERSION));
     }
 
     #[test]
     fn test_constants() {
         assert_eq!(NAME, "oxigdal-hdf5");
-        assert_eq!(VERSION, "0.1.0");
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
     }
 }

@@ -45,8 +45,7 @@ uuid = { workspace = true }
 lru = { workspace = true }
 
 # Compression
-flate2 = { workspace = true }
-zstd = { workspace = true }
+oxiarc-zstd = { workspace = true }
 
 # System info
 sysinfo = { workspace = true }

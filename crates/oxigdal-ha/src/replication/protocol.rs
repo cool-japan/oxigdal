@@ -4,7 +4,7 @@ use super::{ReplicationEvent, VectorClock};
 use crate::error::{HaError, HaResult};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Write;
 use uuid::Uuid;
 
 /// Replication protocol version.
@@ -277,22 +277,10 @@ pub fn compress_data(data: &[u8], algorithm: CompressionAlgorithm) -> HaResult<V
             Ok(compressed)
         }
         CompressionAlgorithm::Zstd => {
-            let compressed =
-                zstd::encode_all(data, 3).map_err(|e| HaError::Compression(e.to_string()))?;
-            Ok(compressed)
+            oxiarc_zstd::encode_all(data, 3).map_err(|e| HaError::Compression(e.to_string()))
         }
         CompressionAlgorithm::Gzip => {
-            use flate2::Compression;
-            use flate2::write::GzEncoder;
-
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(data)
-                .map_err(|e| HaError::Compression(e.to_string()))?;
-
-            encoder
-                .finish()
-                .map_err(|e| HaError::Compression(e.to_string()))
+            oxiarc_archive::gzip::compress(data, 6).map_err(|e| HaError::Compression(e.to_string()))
         }
     }
 }
@@ -302,6 +290,7 @@ pub fn decompress_data(data: &[u8], algorithm: CompressionAlgorithm) -> HaResult
     match algorithm {
         CompressionAlgorithm::None => Ok(data.to_vec()),
         CompressionAlgorithm::Lz4 => {
+            use std::io::Read;
             let mut decoder =
                 lz4::Decoder::new(data).map_err(|e| HaError::Decompression(e.to_string()))?;
 
@@ -313,18 +302,12 @@ pub fn decompress_data(data: &[u8], algorithm: CompressionAlgorithm) -> HaResult
             Ok(decompressed)
         }
         CompressionAlgorithm::Zstd => {
-            zstd::decode_all(data).map_err(|e| HaError::Decompression(e.to_string()))
+            oxiarc_zstd::decode_all(data).map_err(|e| HaError::Decompression(e.to_string()))
         }
         CompressionAlgorithm::Gzip => {
-            use flate2::read::GzDecoder;
-
-            let mut decoder = GzDecoder::new(data);
-            let mut decompressed = Vec::new();
-            decoder
-                .read_to_end(&mut decompressed)
-                .map_err(|e| HaError::Decompression(e.to_string()))?;
-
-            Ok(decompressed)
+            let mut reader = std::io::Cursor::new(data);
+            oxiarc_archive::gzip::decompress(&mut reader)
+                .map_err(|e| HaError::Decompression(e.to_string()))
         }
     }
 }

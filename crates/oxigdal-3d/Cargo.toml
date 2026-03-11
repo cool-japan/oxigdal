@@ -49,8 +49,8 @@ geo-types = "0.7"
 rstar = "0.12"
 
 # Compression (for COPC, EPT)
-flate2.workspace = true
-zstd.workspace = true
+oxiarc-archive = { workspace = true }
+oxiarc-zstd = { workspace = true }
 
 # Base64 encoding for 3D Tiles
 base64 = "0.22"

@@ -239,33 +239,21 @@ impl NetworkOptimizer {
 
     /// Compress data with specific method
     pub fn compress_with_method(&self, data: &[u8], method: CompressionMethod) -> Result<Bytes> {
-        let compressed = match method {
-            CompressionMethod::None => Bytes::copy_from_slice(data),
-            CompressionMethod::Deflate => {
-                use flate2::Compression;
-                use flate2::write::ZlibEncoder;
-                use std::io::Write;
-
-                let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-                encoder
-                    .write_all(data)
-                    .map_err(|e| MobileError::CompressionError(e.to_string()))?;
-                let compressed = encoder
-                    .finish()
-                    .map_err(|e| MobileError::CompressionError(e.to_string()))?;
-                Bytes::from(compressed)
-            }
-            CompressionMethod::Zstd => {
-                let compressed = zstd::encode_all(data, 3)
-                    .map_err(|e| MobileError::CompressionError(e.to_string()))?;
-                Bytes::from(compressed)
-            }
-            CompressionMethod::Lz4 => {
-                // LZ4 compression would go here
-                // For now, use deflate as fallback
-                return self.compress_with_method(data, CompressionMethod::Deflate);
-            }
-        };
+        let compressed =
+            match method {
+                CompressionMethod::None => Bytes::copy_from_slice(data),
+                CompressionMethod::Deflate => oxiarc_deflate::zlib_compress(data, 6)
+                    .map(Bytes::from)
+                    .map_err(|e| MobileError::CompressionError(e.to_string()))?,
+                CompressionMethod::Zstd => oxiarc_zstd::encode_all(data, 3)
+                    .map(Bytes::from)
+                    .map_err(|e| MobileError::CompressionError(e.to_string()))?,
+                CompressionMethod::Lz4 => {
+                    // LZ4 compression would go here
+                    // For now, use deflate as fallback
+                    return self.compress_with_method(data, CompressionMethod::Deflate);
+                }
+            };
 
         // Track data usage
         self.data_usage.write().add_compressed(compressed.len());
@@ -281,19 +269,11 @@ impl NetworkOptimizer {
     ) -> Result<Bytes> {
         let decompressed = match method {
             CompressionMethod::None => Bytes::copy_from_slice(data),
-            CompressionMethod::Deflate => {
-                use flate2::read::ZlibDecoder;
-                use std::io::Read;
-
-                let mut decoder = ZlibDecoder::new(data);
-                let mut decompressed = Vec::new();
-                decoder
-                    .read_to_end(&mut decompressed)
-                    .map_err(|e| MobileError::DecompressionError(e.to_string()))?;
-                Bytes::from(decompressed)
-            }
+            CompressionMethod::Deflate => oxiarc_deflate::zlib_decompress(data)
+                .map(Bytes::from)
+                .map_err(|e| MobileError::DecompressionError(e.to_string()))?,
             CompressionMethod::Zstd => {
-                let decompressed = zstd::decode_all(data)
+                let decompressed = oxiarc_zstd::decode_all(data)
                     .map_err(|e| MobileError::DecompressionError(e.to_string()))?;
                 Bytes::from(decompressed)
             }

@@ -6,7 +6,6 @@
 use crate::error::{EdgeError, Result};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
 
 /// Compression level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,12 +28,12 @@ impl CompressionLevel {
         }
     }
 
-    /// Get Snappy is always fast (no levels)
-    pub fn flate2_level(&self) -> flate2::Compression {
+    /// Get deflate level as u8
+    pub fn deflate_level_u8(&self) -> u8 {
         match self {
-            Self::Fast => flate2::Compression::fast(),
-            Self::Balanced => flate2::Compression::default(),
-            Self::Best => flate2::Compression::best(),
+            Self::Fast => 1,
+            Self::Balanced => 6,
+            Self::Best => 9,
         }
     }
 }
@@ -190,24 +189,16 @@ impl EdgeCompressor {
 
     /// Compress with Deflate
     fn compress_deflate(&self, data: &[u8]) -> Result<Bytes> {
-        let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), self.level.flate2_level());
-        encoder
-            .write_all(data)
-            .map_err(|e| EdgeError::compression(e.to_string()))?;
-        let compressed = encoder
-            .finish()
-            .map_err(|e| EdgeError::compression(e.to_string()))?;
-        Ok(Bytes::from(compressed))
+        oxiarc_deflate::deflate(data, self.level.deflate_level_u8())
+            .map(Bytes::from)
+            .map_err(|e| EdgeError::compression(e.to_string()))
     }
 
     /// Decompress with Deflate
     fn decompress_deflate(&self, data: &[u8]) -> Result<Bytes> {
-        let mut decoder = flate2::read::DeflateDecoder::new(data);
-        let mut decompressed = Vec::new();
-        decoder
-            .read_to_end(&mut decompressed)
-            .map_err(|e| EdgeError::decompression(e.to_string()))?;
-        Ok(Bytes::from(decompressed))
+        oxiarc_deflate::inflate(data)
+            .map(Bytes::from)
+            .map_err(|e| EdgeError::decompression(e.to_string()))
     }
 
     /// Get compression ratio for data

@@ -1,7 +1,7 @@
 //! Loss functions for training neural networks.
 
 use crate::{Error, Result};
-use ndarray::{Array1, Array2, ArrayView2, Axis};
+use scirs2_core::ndarray::{Array1, Array2, ArrayView2, Axis};
 
 /// Trait for loss functions.
 pub trait LossFunction: Send + Sync {
@@ -522,7 +522,7 @@ impl LossFunctionType {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use ndarray::arr2;
+    use scirs2_core::ndarray::arr2;
 
     #[test]
     fn test_mse_loss() {

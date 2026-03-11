@@ -2,7 +2,6 @@
 
 use crate::error::{MobileError, Result};
 use bytes::Bytes;
-use std::io::{Read, Write};
 
 /// Compression strategy for storage
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,26 +110,19 @@ impl StorageCompressor {
     /// Compress using Zstandard
     fn compress_zstd(&self, data: &[u8]) -> Result<Bytes> {
         let level = self.strategy.zstd_level();
-        let compressed = zstd::encode_all(data, level).map_err(|e| {
-            MobileError::CompressionError(format!("Zstd compression failed: {}", e))
-        })?;
-        Ok(Bytes::from(compressed))
+        oxiarc_zstd::encode_all(data, level)
+            .map(Bytes::from)
+            .map_err(|e| MobileError::CompressionError(format!("Zstd compression failed: {}", e)))
     }
 
     /// Compress using Deflate (zlib)
     fn compress_deflate(&self, data: &[u8]) -> Result<Bytes> {
-        use flate2::Compression;
-        use flate2::write::ZlibEncoder;
-
-        let level = self.strategy.deflate_level();
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(level));
-        encoder.write_all(data).map_err(|e| {
-            MobileError::CompressionError(format!("Deflate compression failed: {}", e))
-        })?;
-        let compressed = encoder.finish().map_err(|e| {
-            MobileError::CompressionError(format!("Deflate compression failed: {}", e))
-        })?;
-        Ok(Bytes::from(compressed))
+        let level = self.strategy.deflate_level() as u8;
+        oxiarc_deflate::zlib_compress(data, level)
+            .map(Bytes::from)
+            .map_err(|e| {
+                MobileError::CompressionError(format!("Deflate compression failed: {}", e))
+            })
     }
 
     /// Choose best compression algorithm for data
@@ -172,22 +164,18 @@ impl StorageCompressor {
 
     /// Decompress Zstandard data
     fn decompress_zstd(&self, data: &[u8]) -> Result<Bytes> {
-        let decompressed = zstd::decode_all(data).map_err(|e| {
+        oxiarc_zstd::decode_all(data).map(Bytes::from).map_err(|e| {
             MobileError::DecompressionError(format!("Zstd decompression failed: {}", e))
-        })?;
-        Ok(Bytes::from(decompressed))
+        })
     }
 
     /// Decompress Deflate data
     fn decompress_deflate(&self, data: &[u8]) -> Result<Bytes> {
-        use flate2::read::ZlibDecoder;
-
-        let mut decoder = ZlibDecoder::new(data);
-        let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).map_err(|e| {
-            MobileError::DecompressionError(format!("Deflate decompression failed: {}", e))
-        })?;
-        Ok(Bytes::from(decompressed))
+        oxiarc_deflate::zlib_decompress(data)
+            .map(Bytes::from)
+            .map_err(|e| {
+                MobileError::DecompressionError(format!("Deflate decompression failed: {}", e))
+            })
     }
 }
 

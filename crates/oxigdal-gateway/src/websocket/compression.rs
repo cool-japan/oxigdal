@@ -44,32 +44,14 @@ impl MessageCompressor {
 
     /// Compresses using deflate.
     fn compress_deflate(&self, data: &[u8]) -> Result<Vec<u8>> {
-        use flate2::Compression;
-        use flate2::write::DeflateEncoder;
-        use std::io::Write;
-
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(data)
-            .map_err(|e| GatewayError::InternalError(format!("Compression error: {}", e)))?;
-
-        encoder
-            .finish()
+        oxiarc_deflate::deflate(data, 6)
             .map_err(|e| GatewayError::InternalError(format!("Compression error: {}", e)))
     }
 
     /// Decompresses using deflate.
     fn decompress_deflate(&self, data: &[u8]) -> Result<Vec<u8>> {
-        use flate2::read::DeflateDecoder;
-        use std::io::Read;
-
-        let mut decoder = DeflateDecoder::new(data);
-        let mut decompressed = Vec::new();
-        decoder
-            .read_to_end(&mut decompressed)
-            .map_err(|e| GatewayError::InternalError(format!("Decompression error: {}", e)))?;
-
-        Ok(decompressed)
+        oxiarc_deflate::inflate(data)
+            .map_err(|e| GatewayError::InternalError(format!("Decompression error: {}", e)))
     }
 
     /// Compresses using brotli.

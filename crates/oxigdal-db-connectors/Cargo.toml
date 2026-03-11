@@ -78,7 +78,7 @@ wkt = "0.11"
 
 # Additional utilities
 base64 = "0.22"
-uuid = "1.21"
+uuid = "1.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

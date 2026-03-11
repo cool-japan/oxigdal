@@ -50,7 +50,7 @@ num-traits = { workspace = true }
 netcdf3 = { version = "0.6", optional = true }
 
 # Pure Rust compression for NetCDF-4
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+oxiarc-deflate = { workspace = true }
 
 # C-based NetCDF-4/HDF5 implementation (feature-gated, DISABLED for Pure Rust policy)
 # netcdf = { version = "0.9", optional = true }

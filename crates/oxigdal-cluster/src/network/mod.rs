@@ -608,7 +608,7 @@ impl CompressionManager {
 
         let compressed = match algo {
             CompressionAlgorithm::None => data.to_vec(),
-            CompressionAlgorithm::Zstd => zstd::bulk::compress(data, 3)
+            CompressionAlgorithm::Zstd => oxiarc_zstd::compress_with_level(data, 3)
                 .map_err(|e| ClusterError::CompressionError(e.to_string()))?,
             CompressionAlgorithm::Lz4 | CompressionAlgorithm::Snappy => {
                 // Simplified - in production use actual libraries

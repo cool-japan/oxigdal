@@ -3,10 +3,42 @@
 use bytes::Bytes;
 use oxigdal_edge::*;
 use oxigdal_edge::{resource, runtime, sync};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Generate a unique temporary directory path for a test.
+fn unique_test_dir(label: &str) -> std::path::PathBuf {
+    let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("oxigdal_edge_test_{}_{}_{}", label, ts, id))
+}
+
+/// Create a minimal EdgeConfig that stores data in a unique temp directory.
+fn minimal_config_unique(label: &str) -> runtime::EdgeConfig {
+    let mut cfg = runtime::EdgeConfig::minimal();
+    cfg.data_dir = unique_test_dir(label);
+    cfg
+}
+
+/// Create an offline-first EdgeConfig that stores data in a unique temp directory.
+fn offline_config_unique(label: &str) -> runtime::EdgeConfig {
+    let mut cfg = runtime::EdgeConfig::offline_first();
+    cfg.data_dir = unique_test_dir(label);
+    // Also point the cache to a unique directory to avoid db lock contention.
+    if let Some(ref mut cache_dir) = cfg.cache_config.cache_dir {
+        *cache_dir = unique_test_dir(&format!("{}_cache", label));
+    }
+    cfg
+}
 
 #[tokio::test]
 async fn test_edge_runtime_full_lifecycle() -> Result<()> {
-    let config = EdgeConfig::minimal();
+    let config = minimal_config_unique("full_lifecycle");
+    let data_dir = config.data_dir.clone();
     let runtime = EdgeRuntime::new(config).await?;
 
     // Start runtime
@@ -23,6 +55,9 @@ async fn test_edge_runtime_full_lifecycle() -> Result<()> {
     // Stop runtime
     runtime.stop().await?;
     assert_eq!(runtime.state(), runtime::RuntimeState::Stopped);
+
+    // Cleanup
+    std::fs::remove_dir_all(&data_dir).ok();
 
     Ok(())
 }
@@ -51,8 +86,9 @@ async fn test_cache_with_compression() -> Result<()> {
 
 #[tokio::test]
 async fn test_resource_management_with_runtime() -> Result<()> {
-    let mut config = EdgeConfig::minimal();
+    let mut config = minimal_config_unique("resource_mgmt");
     config.constraints.max_concurrent_ops = 2;
+    let data_dir = config.data_dir.clone();
 
     let runtime = EdgeRuntime::new(config).await?;
     runtime.start().await?;
@@ -73,12 +109,17 @@ async fn test_resource_management_with_runtime() -> Result<()> {
     assert_eq!(results.1?, 2);
 
     runtime.stop().await?;
+
+    // Cleanup
+    std::fs::remove_dir_all(&data_dir).ok();
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_offline_first_mode() -> Result<()> {
-    let config = EdgeConfig::offline_first();
+    let config = offline_config_unique("offline_first");
+    let data_dir = config.data_dir.clone();
     let runtime = EdgeRuntime::new(config).await?;
     runtime.start().await?;
 
@@ -92,7 +133,7 @@ async fn test_offline_first_mode() -> Result<()> {
     runtime.stop().await?;
 
     // Cleanup
-    std::fs::remove_dir_all(".edge_offline").ok();
+    std::fs::remove_dir_all(&data_dir).ok();
 
     Ok(())
 }
@@ -250,8 +291,9 @@ async fn test_crdt_set_operations() -> Result<()> {
 #[tokio::test]
 async fn test_end_to_end_edge_workflow() -> Result<()> {
     // Create edge runtime
-    let mut config = EdgeConfig::minimal();
+    let mut config = minimal_config_unique("e2e_workflow");
     config.mode = runtime::RuntimeMode::Offline;
+    let data_dir = config.data_dir.clone();
 
     let runtime = EdgeRuntime::new(config).await?;
     runtime.start().await?;
@@ -280,14 +322,15 @@ async fn test_end_to_end_edge_workflow() -> Result<()> {
     runtime.stop().await?;
 
     // Cleanup
-    std::fs::remove_dir_all(".edge_minimal").ok();
+    std::fs::remove_dir_all(&data_dir).ok();
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_edge_runtime_pause_resume() -> Result<()> {
-    let config = EdgeConfig::minimal();
+    let config = minimal_config_unique("pause_resume");
+    let data_dir = config.data_dir.clone();
     let runtime = EdgeRuntime::new(config).await?;
 
     runtime.start().await?;
@@ -300,6 +343,10 @@ async fn test_edge_runtime_pause_resume() -> Result<()> {
     assert_eq!(runtime.state(), runtime::RuntimeState::Running);
 
     runtime.stop().await?;
+
+    // Cleanup
+    std::fs::remove_dir_all(&data_dir).ok();
+
     Ok(())
 }
 

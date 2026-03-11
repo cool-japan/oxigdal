@@ -214,10 +214,13 @@ impl<'a> Executor<'a> {
             Expr::Block {
                 statements, result, ..
             } => self.evaluate_block(statements, result.as_deref(), env, band_ctx),
-            Expr::ForLoop { .. } => Err(AlgorithmError::InvalidParameter {
-                parameter: "for",
-                message: "For loops not yet implemented".to_string(),
-            }),
+            Expr::ForLoop {
+                var,
+                start,
+                end,
+                body,
+                ..
+            } => self.evaluate_for_loop(var, start, end, body, env, band_ctx),
         }
     }
 
@@ -748,6 +751,45 @@ impl<'a> Executor<'a> {
                 message: "Condition must be boolean, number, or raster".to_string(),
             }),
         }
+    }
+
+    fn evaluate_for_loop(
+        &mut self,
+        var: &str,
+        start: &Expr,
+        end: &Expr,
+        body: &Expr,
+        env: &Environment,
+        band_ctx: &BandContext,
+    ) -> Result<Value> {
+        let start_val = self.evaluate_expr(start, env, band_ctx)?.as_number()?;
+        let end_val = self.evaluate_expr(end, env, band_ctx)?.as_number()?;
+
+        // Guard against degenerate or excessively large loops to prevent OOM
+        const MAX_ITERATIONS: i64 = 1_000_000;
+        let start_i = start_val.floor() as i64;
+        let end_i = end_val.floor() as i64;
+        let iterations = (end_i - start_i).max(0);
+
+        if iterations > MAX_ITERATIONS {
+            return Err(AlgorithmError::InvalidParameter {
+                parameter: "for",
+                message: format!(
+                    "For loop would execute {iterations} iterations (max {MAX_ITERATIONS})"
+                ),
+            });
+        }
+
+        // Execute body for each integer step in [start, end)
+        let mut last_value = Value::Number(0.0);
+        let mut loop_env = Environment::with_parent(env.clone());
+
+        for i in start_i..end_i {
+            loop_env.define(var.to_string(), Value::Number(i as f64));
+            last_value = self.evaluate_expr(body, &loop_env, band_ctx)?;
+        }
+
+        Ok(last_value)
     }
 
     fn evaluate_block(

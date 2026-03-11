@@ -29,7 +29,7 @@ http = ["async", "dep:reqwest"]
 # Features
 async = ["oxigdal-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
 retry = ["async"]
-cache = ["dep:lru", "dep:dashmap", "dep:flate2", "dep:sha2"]
+cache = ["dep:lru", "dep:dashmap", "dep:oxiarc-archive", "dep:sha2"]
 prefetch = ["async", "cache"]
 
 # Authentication
@@ -76,7 +76,7 @@ hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 # Compression
-flate2 = { workspace = true, optional = true }
+oxiarc-archive = { workspace = true, optional = true }
 
 # OAuth2
 oauth2 = { version = "5", optional = true, default-features = false }

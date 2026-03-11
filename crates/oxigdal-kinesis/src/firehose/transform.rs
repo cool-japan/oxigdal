@@ -251,32 +251,14 @@ impl CompressionTransformer {
 #[async_trait]
 impl Transformer for CompressionTransformer {
     async fn transform(&self, data: &[u8]) -> Result<TransformResult> {
-        use std::io::Write;
-
         let compressed = match self.compression_type {
             CompressionType::Gzip => {
-                let mut encoder =
-                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder
-                    .write_all(data)
-                    .map_err(|e| KinesisError::Compression {
-                        message: e.to_string(),
-                    })?;
-                encoder.finish().map_err(|e| KinesisError::Compression {
+                oxiarc_archive::gzip::compress(data, 6).map_err(|e| KinesisError::Compression {
                     message: e.to_string(),
                 })?
             }
             CompressionType::Zstd => {
-                let mut encoder =
-                    zstd::Encoder::new(Vec::new(), 3).map_err(|e| KinesisError::Compression {
-                        message: e.to_string(),
-                    })?;
-                encoder
-                    .write_all(data)
-                    .map_err(|e| KinesisError::Compression {
-                        message: e.to_string(),
-                    })?;
-                encoder.finish().map_err(|e| KinesisError::Compression {
+                oxiarc_zstd::encode_all(data, 3).map_err(|e| KinesisError::Compression {
                     message: e.to_string(),
                 })?
             }

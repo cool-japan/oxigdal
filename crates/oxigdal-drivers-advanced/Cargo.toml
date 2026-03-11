@@ -24,16 +24,13 @@ byteorder = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 
-# Compression
-flate2 = { workspace = true }
-zstd = { workspace = true }
-
 # XML parsing (for KML/GML)
 quick-xml = { workspace = true }
 
-# ZIP support (for KMZ)
-oxiarc-archive = "0.2.1"
-oxiarc-core = "0.2.1"
+# ZIP support (for KMZ) / Compression
+oxiarc-archive = { workspace = true }
+oxiarc-zstd = { workspace = true }
+oxiarc-core = { workspace = true }
 
 # SQLite (for GeoPackage)
 rusqlite = { workspace = true, features = ["bundled", "blob", "serde_json"] }

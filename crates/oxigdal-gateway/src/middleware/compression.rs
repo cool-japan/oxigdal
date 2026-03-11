@@ -45,17 +45,8 @@ impl CompressionMiddleware {
 
     /// Compresses data using gzip.
     fn compress_gzip(&self, data: &[u8]) -> Result<Vec<u8>> {
-        use flate2::Compression;
-        use flate2::write::GzEncoder;
-        use std::io::Write;
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(data).map_err(|e: std::io::Error| {
-            crate::error::GatewayError::InternalError(e.to_string())
-        })?;
-        encoder
-            .finish()
-            .map_err(|e: std::io::Error| crate::error::GatewayError::InternalError(e.to_string()))
+        oxiarc_archive::gzip::compress(data, 6)
+            .map_err(|e| crate::error::GatewayError::InternalError(e.to_string()))
     }
 
     /// Compresses data using brotli.

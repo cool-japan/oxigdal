@@ -94,21 +94,12 @@ impl MapOperator {
                 Box::pin(async move {
                     let result: Result<Vec<u8>> = match compression {
                         CompressionType::Gzip => {
-                            use flate2::Compression;
-                            use flate2::write::GzEncoder;
-                            use std::io::Write;
-
-                            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-                            encoder.write_all(&item).map_err(|e| {
-                                crate::error::TransformError::Failed {
-                                    message: e.to_string(),
-                                }
-                            })?;
-                            encoder.finish().map_err(|e| {
-                                crate::error::TransformError::Failed {
-                                    message: e.to_string(),
-                                }
-                                .into()
+                            oxiarc_archive::gzip::compress(&item, 6).map_err(|e| {
+                                crate::error::EtlError::Transform(
+                                    crate::error::TransformError::Failed {
+                                        message: e.to_string(),
+                                    },
+                                )
                             })
                         }
                         CompressionType::None => Ok(item),
@@ -128,17 +119,14 @@ impl MapOperator {
                 Box::pin(async move {
                     let result: Result<Vec<u8>> = match compression {
                         CompressionType::Gzip => {
-                            use flate2::read::GzDecoder;
-                            use std::io::Read;
-
-                            let mut decoder = GzDecoder::new(&item[..]);
-                            let mut decompressed = Vec::new();
-                            decoder.read_to_end(&mut decompressed).map_err(|e| {
-                                crate::error::TransformError::Failed {
-                                    message: e.to_string(),
-                                }
-                            })?;
-                            Ok(decompressed)
+                            let mut reader = std::io::Cursor::new(item.as_slice());
+                            oxiarc_archive::gzip::decompress(&mut reader).map_err(|e| {
+                                crate::error::EtlError::Transform(
+                                    crate::error::TransformError::Failed {
+                                        message: e.to_string(),
+                                    },
+                                )
+                            })
                         }
                         CompressionType::None => Ok(item),
                     };

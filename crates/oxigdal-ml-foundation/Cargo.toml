@@ -33,10 +33,8 @@ serde_json = { workspace = true }
 oxigdal-core = { workspace = true }
 oxigdal-geotiff = { workspace = true }
 
-# Numerical computing - Pure Rust
-# Using scirs2-core for COOLJAPAN compliance (Pure Rust Policy)
+# Numerical computing - Pure Rust (SciRS2 Policy: ndarray accessed via scirs2-core re-export)
 scirs2-core = { workspace = true, features = ["random"] }
-ndarray = { workspace = true }  # Temporary, will migrate to scirs2-core
 num-traits = { workspace = true }
 
 # Image processing

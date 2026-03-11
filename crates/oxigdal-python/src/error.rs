@@ -9,7 +9,7 @@ use pyo3::exceptions::{
 use pyo3::prelude::*;
 
 /// Python exception type for OxiGDAL errors
-#[pyclass]
+#[pyclass(name = "OxiGdalError")]
 #[derive(Debug, Clone)]
 pub struct OxiGdalPyError {
     #[pyo3(get, set)]
@@ -164,12 +164,16 @@ mod tests {
 
     #[test]
     fn test_error_conversion() {
+        // Initialize Python interpreter so pyo3 APIs are available in tests.
+        pyo3::prepare_freethreaded_python();
         let err = OxiGdalError::InvalidParameter {
             parameter: "width",
             message: "must be positive".to_string(),
         };
         let py_err: PyErr = oxigdal_error_to_py_err(err);
-        assert!(py_err.to_string().contains("width"));
+        pyo3::Python::with_gil(|_py| {
+            assert!(py_err.to_string().contains("width"));
+        });
     }
 
     #[test]

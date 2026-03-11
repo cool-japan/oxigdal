@@ -42,7 +42,7 @@
 //! ```
 
 use crate::error::{Error, Result};
-use ndarray::{Array1, Array2, Array3, Array4, s};
+use scirs2_core::ndarray::{Array1, Array2, Array3, Array4, s};
 use scirs2_core::random::{SeedableRng, StdRng};
 use serde::{Deserialize, Serialize};
 
@@ -803,7 +803,7 @@ fn add_arrays(a: &Array3<f32>, b: &Array3<f32>) -> Result<Array3<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::arr3;
+    use scirs2_core::ndarray::arr3;
 
     #[test]
     fn test_transformer_config_validation() {

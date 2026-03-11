@@ -144,7 +144,7 @@ impl Connection {
 
                 match ws_msg {
                     WsMessage::Binary(data) => {
-                        let bytes = data.as_slice();
+                        let bytes: &[u8] = &data;
                         self.stats
                             .bytes_received
                             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
@@ -152,7 +152,7 @@ impl Connection {
                         Ok(Some(message))
                     }
                     WsMessage::Text(text) => {
-                        let bytes = text.as_slice();
+                        let bytes = text.as_bytes();
                         self.stats
                             .bytes_received
                             .fetch_add(bytes.len() as u64, Ordering::Relaxed);

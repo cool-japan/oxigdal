@@ -4,11 +4,6 @@
 //! and Huffman coding. It is widely supported and used in formats like gzip and zlib.
 
 use crate::error::{CompressionError, Result};
-use flate2::{
-    Compression,
-    read::{GzDecoder, ZlibDecoder},
-    write::{GzEncoder, ZlibEncoder},
-};
 use std::io::{Read, Write};
 
 /// DEFLATE compression level (0-9, higher = better compression but slower)
@@ -45,9 +40,9 @@ impl DeflateLevel {
         self.0
     }
 
-    /// Convert to flate2 Compression
-    fn to_compression(self) -> Compression {
-        Compression::new(self.0)
+    /// Convert to u8 level for oxiarc
+    fn to_level_u8(self) -> u8 {
+        self.0.clamp(0, 9) as u8
     }
 }
 
@@ -127,22 +122,14 @@ impl DeflateCodec {
             return Ok(Vec::new());
         }
 
-        let mut output = Vec::new();
+        let level = self.config.level.to_level_u8();
 
         match self.config.format {
-            DeflateFormat::Gzip => {
-                let mut encoder = GzEncoder::new(&mut output, self.config.level.to_compression());
-                encoder.write_all(input)?;
-                encoder.finish()?;
-            }
-            DeflateFormat::Zlib | DeflateFormat::Raw => {
-                let mut encoder = ZlibEncoder::new(&mut output, self.config.level.to_compression());
-                encoder.write_all(input)?;
-                encoder.finish()?;
-            }
+            DeflateFormat::Gzip => oxiarc_archive::gzip::compress(input, level)
+                .map_err(|e| CompressionError::Io(std::io::Error::other(e.to_string()))),
+            DeflateFormat::Zlib | DeflateFormat::Raw => oxiarc_deflate::zlib_compress(input, level)
+                .map_err(|e| CompressionError::Io(std::io::Error::other(e.to_string()))),
         }
-
-        Ok(output)
     }
 
     /// Decompress DEFLATE data
@@ -151,56 +138,43 @@ impl DeflateCodec {
             return Ok(Vec::new());
         }
 
-        let mut output = Vec::new();
-
         match self.config.format {
             DeflateFormat::Gzip => {
-                let mut decoder = GzDecoder::new(input);
-                decoder.read_to_end(&mut output)?;
+                let mut reader = std::io::Cursor::new(input);
+                oxiarc_archive::gzip::decompress(&mut reader)
+                    .map_err(|e| CompressionError::Io(std::io::Error::other(e.to_string())))
             }
-            DeflateFormat::Zlib | DeflateFormat::Raw => {
-                let mut decoder = ZlibDecoder::new(input);
-                decoder.read_to_end(&mut output)?;
-            }
+            DeflateFormat::Zlib | DeflateFormat::Raw => oxiarc_deflate::zlib_decompress(input)
+                .map_err(|e| CompressionError::Io(std::io::Error::other(e.to_string()))),
         }
-
-        Ok(output)
     }
 
-    /// Compress data using DEFLATE stream
-    pub fn compress_stream<R: Read, W: Write>(&self, mut reader: R, writer: W) -> Result<usize> {
-        let bytes_written = match self.config.format {
-            DeflateFormat::Gzip => {
-                let mut encoder = GzEncoder::new(writer, self.config.level.to_compression());
-                let n = std::io::copy(&mut reader, &mut encoder)?;
-                encoder.finish()?;
-                n
-            }
-            DeflateFormat::Zlib | DeflateFormat::Raw => {
-                let mut encoder = ZlibEncoder::new(writer, self.config.level.to_compression());
-                let n = std::io::copy(&mut reader, &mut encoder)?;
-                encoder.finish()?;
-                n
-            }
-        };
-
-        Ok(bytes_written as usize)
+    /// Compress data using DEFLATE stream (reads all, compresses, writes)
+    pub fn compress_stream<R: Read, W: Write>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+    ) -> Result<usize> {
+        let mut input = Vec::new();
+        reader.read_to_end(&mut input)?;
+        let compressed = self.compress(&input)?;
+        let n = compressed.len();
+        writer.write_all(&compressed)?;
+        Ok(n)
     }
 
-    /// Decompress DEFLATE stream
-    pub fn decompress_stream<R: Read, W: Write>(&self, reader: R, mut writer: W) -> Result<usize> {
-        let bytes_written = match self.config.format {
-            DeflateFormat::Gzip => {
-                let mut decoder = GzDecoder::new(reader);
-                std::io::copy(&mut decoder, &mut writer)?
-            }
-            DeflateFormat::Zlib | DeflateFormat::Raw => {
-                let mut decoder = ZlibDecoder::new(reader);
-                std::io::copy(&mut decoder, &mut writer)?
-            }
-        };
-
-        Ok(bytes_written as usize)
+    /// Decompress DEFLATE stream (reads all, decompresses, writes)
+    pub fn decompress_stream<R: Read, W: Write>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+    ) -> Result<usize> {
+        let mut input = Vec::new();
+        reader.read_to_end(&mut input)?;
+        let decompressed = self.decompress(&input)?;
+        let n = decompressed.len();
+        writer.write_all(&decompressed)?;
+        Ok(n)
     }
 
     /// Get compression level

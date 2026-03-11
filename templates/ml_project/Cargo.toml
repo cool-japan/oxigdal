@@ -3,6 +3,7 @@ name = "my-oxigdal-ml-project"
 version = "0.1.0"
 edition = "2024"
 authors = ["Your Name <you@example.com>"]
+publish = false
 
 [dependencies]
 oxigdal-core = "0.1"

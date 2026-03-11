@@ -26,7 +26,7 @@ num-traits = { workspace = true }
 once_cell = "1.21"
 
 # Pure Rust projection implementation (default)
-proj4rs = "0.1.9"
+proj4rs = "0.1.10"
 
 # Optional C bindings to PROJ library
 proj = { version = "0.31", optional = true }

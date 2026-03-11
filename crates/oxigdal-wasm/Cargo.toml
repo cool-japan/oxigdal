@@ -30,7 +30,7 @@ web-sys = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-flate2 = { workspace = true }
+oxiarc-deflate = { workspace = true }
 
 # Error handling
 console_error_panic_hook = { version = "0.1", optional = true }

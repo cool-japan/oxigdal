@@ -144,7 +144,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -171,22 +171,22 @@ async-trait = "0.1"
 async-stream = "0.3"
 
 # Arrow ecosystem
-arrow = { version = "57", default-features = false }
-arrow-array = "57"
-arrow-buffer = "57"
-arrow-schema = "57"
-parquet = { version = "57", default-features = false }
+arrow = { version = "58", default-features = false }
+arrow-array = "58"
+arrow-buffer = "58"
+arrow-schema = "58"
+parquet = { version = "58", default-features = false }
 
 # Compression - COOLJAPAN Pure Rust Policy (oxiarc ecosystem)
 # Use oxiarc-* crates instead of C-based compression libraries
-oxiarc-archive = "0.2.1"  # ZIP, TAR, GZIP, LZH, XZ archive formats
-oxiarc-core = "0.2.1"     # Core components for OxiArc
-oxiarc-deflate = "0.2.1"  # Pure Rust DEFLATE (replacement for flate2)
-oxiarc-lzw = "0.2.1"      # Pure Rust LZW compression (updated from 0.2.0)
-oxiarc-lz4 = "0.2.1"      # Pure Rust LZ4 compression
-oxiarc-zstd = "0.2.1"     # Pure Rust Zstandard compression
-oxiarc-bzip2 = "0.2.1"    # Pure Rust BZip2 compression
-oxiarc-lzhuf = "0.2.1"    # Pure Rust LZH compression
+oxiarc-archive = "0.2.3"  # ZIP, TAR, GZIP, LZH, XZ archive formats
+oxiarc-core = "0.2.3"     # Core components for OxiArc
+oxiarc-deflate = "0.2.3"  # Pure Rust DEFLATE (replacement for flate2)
+oxiarc-lzw = "0.2.3"      # Pure Rust LZW compression (updated from 0.2.2)
+oxiarc-lz4 = "0.2.3"      # Pure Rust LZ4 compression
+oxiarc-zstd = "0.2.3"     # Pure Rust Zstandard compression
+oxiarc-bzip2 = "0.2.3"    # Pure Rust BZip2 compression
+oxiarc-lzhuf = "0.2.3"    # Pure Rust LZH compression
 
 # Legacy compression crates (to be phased out, kept for compatibility)
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -250,7 +250,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # COOLJAPAN ecosystem
-scirs2-core = "0.2.0"
+scirs2-core = "0.3.1"
 # numrs2 = { version = "0.1", optional = true }
 # oxiblas = { version = "0.1", optional = true }
 oxicode = "0.1.1"
@@ -263,7 +263,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 proptest = "1"
 
 # Benchmarking
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 pprof = { version = "0.15", default-features = false, features = ["flamegraph", "prost-codec"] }
 
 # Additional dependencies
@@ -276,7 +276,7 @@ tempfile = "3"
 quick-xml = "0.39"
 bytemuck = "1"
 dashmap = "6"
-sysinfo = "0.36"
+sysinfo = "0.38"
 tinytemplate = "1"
 
 # Cloud storage
@@ -456,18 +456,18 @@ aws-sdk-costexplorer = "1"
 
 # Scientific computing
 # scirs2-core already defined above in COOLJAPAN ecosystem section
-ort = { version = "2.0.0-rc.11", default-features = false, features = ["half", "ndarray", "load-dynamic"] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["half", "ndarray", "load-dynamic"] }
 ndarray = "0.17"
 
 # SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant)
-scirs2-neural = "0.2.0"
-scirs2-autograd = "0.2.0"
-scirs2-optimize = "0.2.0"
-scirs2-datasets = "0.2.0"
-scirs2-metrics = "0.2.0"
-scirs2-linalg = "0.2.0"
-scirs2-vision = "0.2.0"
-scirs2-series = "0.2.0"
+scirs2-neural = "0.3.1"
+scirs2-autograd = "0.3.1"
+scirs2-optimize = "0.3.1"
+scirs2-datasets = "0.3.1"
+scirs2-metrics = "0.3.1"
+scirs2-linalg = "0.3.1"
+scirs2-vision = "0.3.1"
+scirs2-series = "0.3.1"
 
 # PostgreSQL
 tokio-postgres = "0.7"
@@ -476,7 +476,7 @@ deadpool-postgres = "0.14"
 tokio-postgres-rustls = "0.13"
 
 # Distributed computing
-arrow-flight = "57"
+arrow-flight = "58"
 tonic = "0.14"
 prost = "0.13"
 parking_lot = "0.12"
@@ -497,8 +497,8 @@ async-graphql-axum = "7"
 jsonwebtoken = "9"
 rustls = { version = "0.23", default-features = false }
 rustls-pemfile = "2"  # RUSTSEC-2025-0134: Unmaintained (archived Aug 2025). Waiting for upstream (tonic, rumqttc) to migrate to rustls-pki-types 1.9+
-tokio-tungstenite = "0.25"
-redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+tokio-tungstenite = "0.28"
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 governor = "0.7"
 
 # Workflow dependencies

@@ -1,6 +1,5 @@
 //! Integration tests for data augmentation.
 
-use ndarray::Array3;
 use oxigdal_ml_foundation::augmentation::{
     Augmentation, AugmentationPipeline, Clip, Identity, Normalize, Standardize,
     color::{Brightness, Contrast, Gamma},
@@ -8,6 +7,7 @@ use oxigdal_ml_foundation::augmentation::{
     geospatial::{BandSelection, SpectralNormalization},
     noise::GaussianNoise,
 };
+use scirs2_core::ndarray::Array3;
 
 fn create_test_image() -> Array3<f32> {
     Array3::from_shape_fn((3, 8, 8), |(c, h, w)| {

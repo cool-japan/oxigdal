@@ -29,8 +29,9 @@ async-trait = { workspace = true, optional = true }
 
 # Compression libraries
 lz4 = { workspace = true }
-zstd = { workspace = true, features = ["zdict_builder"] }
-flate2 = { workspace = true }
+oxiarc-zstd = { workspace = true }
+oxiarc-deflate = { workspace = true }
+oxiarc-archive = { workspace = true }
 brotli = "7"
 snap = "1"
 

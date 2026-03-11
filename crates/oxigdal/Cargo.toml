@@ -11,7 +11,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/oxigdal"
 readme = "README.md"
 keywords = ["gdal", "geospatial", "gis", "raster", "vector"]
-categories = ["science::geo", "parser-implementations", "encoding"]
+categories = ["science", "parser-implementations", "encoding"]
 
 [features]
 default = ["geotiff", "geojson", "shapefile"]

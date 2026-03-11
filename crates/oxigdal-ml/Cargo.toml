@@ -54,17 +54,17 @@ serde_json = { workspace = true }
 oxigdal-core = { workspace = true }
 
 # ONNX Runtime - Pure Rust interface
-ort = { version = "2.0.0-rc.11", default-features = false, features = ["half", "ndarray", "load-dynamic"] }
+ort = { workspace = true }
 
 # Geometry and GeoJSON
 geojson = { workspace = true }
 geo-types = "0.7"
 
-# Numerical operations
+# Numerical operations — ndarray required directly by ort crate (ONNX Runtime public API uses ndarray types)
 ndarray = { workspace = true }
 
-# Random number generation
-rand = "0.9"
+# Random number generation via scirs2-core (SciRS2 Policy: no direct rand usage)
+scirs2-core = { workspace = true, features = ["random"] }
 
 # Image processing primitives
 num-traits = { workspace = true }

@@ -440,7 +440,13 @@ impl HuffmanCompressor {
             }
         }
     }
-    /// Compresses data using Huffman encoding (simplified version)
+    /// Compresses data using Huffman encoding.
+    ///
+    /// Format:
+    /// - 2 bytes: number of distinct symbols (u16 LE)
+    /// - For each symbol: 1 byte symbol value + 4 bytes frequency (u32 LE)
+    /// - 8 bytes: original data length (u64 LE)
+    /// - Remaining bytes: Huffman-encoded bit stream (MSB first within each byte)
     pub fn compress(data: &[u8]) -> Vec<u8> {
         if data.is_empty() {
             return Vec::new();
@@ -452,12 +458,24 @@ impl HuffmanCompressor {
         };
         let mut codes = HashMap::new();
         Self::generate_codes(&tree, Vec::new(), &mut codes);
+
+        // Header: number of symbols (u16 LE)
+        let num_symbols = frequencies.len() as u16;
         let mut compressed = Vec::new();
-        compressed.push(codes.len() as u8);
-        for (&symbol, code) in &codes {
-            compressed.push(symbol);
-            compressed.push(code.len() as u8);
+        compressed.extend_from_slice(&num_symbols.to_le_bytes());
+
+        // Symbol table: (symbol u8, frequency u32 LE) for each distinct byte
+        let mut sorted_symbols: Vec<(u8, u32)> = frequencies.into_iter().collect();
+        sorted_symbols.sort_by_key(|(sym, _)| *sym);
+        for (symbol, freq) in &sorted_symbols {
+            compressed.push(*symbol);
+            compressed.extend_from_slice(&freq.to_le_bytes());
         }
+
+        // Original data length (u64 LE) — needed to know when to stop decoding
+        compressed.extend_from_slice(&(data.len() as u64).to_le_bytes());
+
+        // Encode bit stream (MSB first within each byte)
         let mut bit_buffer = 0u8;
         let mut bit_count = 0u8;
         for &byte in data {
@@ -480,24 +498,127 @@ impl HuffmanCompressor {
         }
         compressed
     }
-    /// Decompresses Huffman-encoded data (simplified version)
+
+    /// Decompresses Huffman-encoded data produced by [`HuffmanCompressor::compress`].
     ///
-    /// Note: This is a placeholder implementation. Full Huffman decompression
-    /// requires storing and reconstructing the Huffman tree, which is not
-    /// implemented in this simplified version. For production use, consider
-    /// using a proper compression library.
-    pub fn decompress(_compressed: &[u8]) -> WasmResult<Vec<u8>> {
-        // TODO: Implement proper Huffman decompression
-        // This would require:
-        // 1. Storing the Huffman tree structure in the compressed data
-        // 2. Reconstructing the tree from the stored structure
-        // 3. Decoding the bit stream using the tree
-        //
-        // For now, this is not implemented to avoid buggy partial implementations
-        Err(WasmError::InvalidOperation {
+    /// Reads the frequency table stored in the header to reconstruct the identical
+    /// Huffman tree, then decodes the bit stream up to the stored original length.
+    pub fn decompress(compressed: &[u8]) -> WasmResult<Vec<u8>> {
+        if compressed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Parse header: number of symbols (u16 LE)
+        if compressed.len() < 2 {
+            return Err(WasmError::InvalidOperation {
+                operation: "Huffman decompression".to_string(),
+                reason: "Data too short to contain symbol count header".to_string(),
+            });
+        }
+        let num_symbols = u16::from_le_bytes([compressed[0], compressed[1]]) as usize;
+        let mut pos = 2usize;
+
+        // Each symbol entry is 5 bytes: symbol(1) + frequency(4)
+        let symbol_table_size = num_symbols * 5;
+        if pos + symbol_table_size + 8 > compressed.len() {
+            return Err(WasmError::InvalidOperation {
+                operation: "Huffman decompression".to_string(),
+                reason: "Data too short to contain symbol table and length header".to_string(),
+            });
+        }
+
+        let mut frequencies: HashMap<u8, u32> = HashMap::new();
+        for _ in 0..num_symbols {
+            let symbol = compressed[pos];
+            pos += 1;
+            let freq = u32::from_le_bytes([
+                compressed[pos],
+                compressed[pos + 1],
+                compressed[pos + 2],
+                compressed[pos + 3],
+            ]);
+            pos += 4;
+            frequencies.insert(symbol, freq);
+        }
+
+        // Parse original data length (u64 LE)
+        let original_len = u64::from_le_bytes([
+            compressed[pos],
+            compressed[pos + 1],
+            compressed[pos + 2],
+            compressed[pos + 3],
+            compressed[pos + 4],
+            compressed[pos + 5],
+            compressed[pos + 6],
+            compressed[pos + 7],
+        ]) as usize;
+        pos += 8;
+
+        if original_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Reconstruct the Huffman tree using the same algorithm as compress
+        let tree = Self::build_tree(&frequencies).ok_or_else(|| WasmError::InvalidOperation {
             operation: "Huffman decompression".to_string(),
-            reason: "Not implemented - use a full compression library for production".to_string(),
-        })
+            reason: "Failed to reconstruct Huffman tree from frequency table".to_string(),
+        })?;
+
+        // Decode the bit stream by traversing the tree
+        let bitstream = &compressed[pos..];
+        let mut result = Vec::with_capacity(original_len);
+        let mut node = &tree;
+
+        'outer: for &byte in bitstream {
+            for bit_idx in (0..8).rev() {
+                let bit = (byte >> bit_idx) & 1;
+                node = match node {
+                    HuffmanNode::Internal { left, right, .. } => {
+                        if bit == 0 {
+                            left
+                        } else {
+                            right
+                        }
+                    }
+                    HuffmanNode::Leaf { .. } => {
+                        // Should not reach here mid-traversal without a leaf
+                        return Err(WasmError::InvalidOperation {
+                            operation: "Huffman decompression".to_string(),
+                            reason: "Unexpected leaf mid-traversal in bit stream".to_string(),
+                        });
+                    }
+                };
+
+                if let HuffmanNode::Leaf { symbol, .. } = node {
+                    result.push(*symbol);
+                    if result.len() == original_len {
+                        break 'outer;
+                    }
+                    // Reset traversal to tree root
+                    node = &tree;
+                }
+            }
+        }
+
+        // Handle single-symbol edge case: entire input was one distinct byte
+        if result.is_empty() && original_len > 0 {
+            if let HuffmanNode::Leaf { symbol, .. } = &tree {
+                result.resize(original_len, *symbol);
+            }
+        }
+
+        if result.len() != original_len {
+            return Err(WasmError::InvalidOperation {
+                operation: "Huffman decompression".to_string(),
+                reason: format!(
+                    "Decoded {} bytes but expected {}",
+                    result.len(),
+                    original_len
+                ),
+            });
+        }
+
+        Ok(result)
     }
 }
 /// LZ77-style compression

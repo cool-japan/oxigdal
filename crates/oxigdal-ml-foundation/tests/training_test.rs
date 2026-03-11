@@ -1,6 +1,5 @@
 //! Integration tests for training functionality.
 
-use ndarray::arr2;
 use oxigdal_ml_foundation::training::{
     TrainingConfig,
     checkpointing::CheckpointManager,
@@ -9,6 +8,7 @@ use oxigdal_ml_foundation::training::{
     optimizers::{Adam, Optimizer, SGD},
     schedulers::{CosineAnnealingLR, LRScheduler, StepLR},
 };
+use scirs2_core::ndarray::arr2;
 use tempfile::TempDir;
 
 #[test]
@@ -119,10 +119,10 @@ fn test_checkpoint_manager() {
 
 #[test]
 fn test_gradient_clipping() {
-    use ndarray::arr2;
     use oxigdal_ml_foundation::training::training_loop::utils::{
         clip_gradients_by_norm, compute_gradient_norm,
     };
+    use scirs2_core::ndarray::arr2;
 
     let grad1 = arr2(&[[3.0, 4.0]]);
     let grad2 = arr2(&[[0.0, 0.0]]);

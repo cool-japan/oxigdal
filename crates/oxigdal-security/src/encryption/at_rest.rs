@@ -4,11 +4,10 @@ use crate::encryption::{EncryptedData, EncryptionAlgorithm, EncryptionMetadata};
 use crate::error::{Result, SecurityError};
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chacha20poly1305::ChaCha20Poly1305;
-use rand::RngCore;
 
 /// Encryptor for data at rest.
 pub struct AtRestEncryptor {
@@ -50,7 +49,7 @@ impl AtRestEncryptor {
                 EncryptionAlgorithm::ChaCha20Poly1305 => 32,
             }
         ];
-        OsRng.fill_bytes(&mut key);
+        getrandom::getrandom(&mut key).expect("getrandom failed");
         key
     }
 
@@ -92,7 +91,7 @@ impl AtRestEncryptor {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        getrandom::getrandom(&mut nonce_bytes).expect("getrandom failed");
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt with optional AAD
@@ -160,7 +159,7 @@ impl AtRestEncryptor {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        getrandom::getrandom(&mut nonce_bytes).expect("getrandom failed");
         let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
         // Encrypt with optional AAD

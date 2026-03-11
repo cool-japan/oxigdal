@@ -28,15 +28,14 @@ dashmap = "6"
 bytes = "1"
 oxicode = { version = "0.1.1", features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
 crc32fast = "1"
-flate2 = "1"
 lz4 = "1"
-zstd = "0.13"
+oxiarc-archive = { workspace = true }
+oxiarc-zstd = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
 criterion = { workspace = true }
 tempfile = "3"
-rand = "0.8"
 
 [[bench]]
 name = "ha_bench"

@@ -65,7 +65,8 @@ lru.workspace = true
 ahash.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
-flate2.workspace = true
+oxiarc-deflate = { workspace = true }
+oxiarc-archive = { workspace = true }
 async-stream.workspace = true
 brotli.workspace = true
 

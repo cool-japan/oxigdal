@@ -749,17 +749,11 @@ impl WasmCogReader {
             }
             8 => {
                 // DEFLATE (TIFF uses Zlib-wrapped DEFLATE)
-                use flate2::read::ZlibDecoder;
-                use std::io::Read;
-
-                let mut decoder = ZlibDecoder::new(&compressed_data[..]);
-                let mut decompressed = Vec::new();
-                decoder.read_to_end(&mut decompressed).map_err(|e| {
+                oxiarc_deflate::zlib_decompress(&compressed_data).map_err(|e| {
                     OxiGdalError::Io(IoError::Read {
                         message: format!("DEFLATE decompression failed: {}", e),
                     })
-                })?;
-                decompressed
+                })?
             }
             _ => {
                 return Err(OxiGdalError::NotSupported {

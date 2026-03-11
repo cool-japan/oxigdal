@@ -29,8 +29,8 @@ http = ["async", "dep:reqwest"]
 memory = []
 
 # Compression codecs
-gzip = ["dep:flate2"]
-zstd = ["dep:zstd"]
+gzip = ["dep:oxiarc-archive"]
+zstd = ["dep:oxiarc-zstd"]
 lz4 = ["dep:lz4"]
 blosc = []  # Disabled for now - incompatible versions
 
@@ -59,8 +59,8 @@ tracing = { workspace = true }
 once_cell = "1"
 
 # Compression
-flate2 = { workspace = true, optional = true }
-zstd = { workspace = true, optional = true }
+oxiarc-archive = { workspace = true, optional = true }
+oxiarc-zstd = { workspace = true, optional = true }
 lz4 = { version = "1", optional = true }
 
 # Blosc (disabled for now - incompatible versions)

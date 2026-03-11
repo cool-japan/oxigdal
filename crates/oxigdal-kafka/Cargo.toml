@@ -21,10 +21,10 @@ consumer = []
 schema-registry = ["dep:apache-avro"]
 transactions = []
 compression-all = ["compression-gzip", "compression-snappy", "compression-lz4", "compression-zstd"]
-compression-gzip = ["flate2"]
+compression-gzip = ["dep:oxiarc-archive"]
 compression-snappy = ["snap"]
 compression-lz4 = ["lz4"]
-compression-zstd = ["zstd"]
+compression-zstd = ["dep:oxiarc-zstd"]
 all = ["producer", "consumer", "schema-registry", "transactions", "compression-all"]
 
 [dependencies]
@@ -48,10 +48,10 @@ rdkafka = { workspace = true, features = ["tokio", "cmake-build"] }
 apache-avro = { version = "0.18", optional = true, default-features = false, features = ["snappy"] }
 
 # Compression
-flate2 = { workspace = true, optional = true }
+oxiarc-archive = { workspace = true, optional = true }
 snap = { workspace = true, optional = true }
 lz4 = { workspace = true, optional = true }
-zstd = { workspace = true, optional = true }
+oxiarc-zstd = { workspace = true, optional = true }
 
 # Concurrency
 dashmap.workspace = true

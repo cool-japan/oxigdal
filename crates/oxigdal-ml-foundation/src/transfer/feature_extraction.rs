@@ -1,7 +1,7 @@
 //! Feature extraction utilities for transfer learning.
 
 use crate::{Error, Result};
-use ndarray::Array2;
+use scirs2_core::ndarray::Array2;
 
 /// Feature extractor for pre-trained models.
 pub struct FeatureExtractor {

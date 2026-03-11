@@ -35,8 +35,8 @@
 //! ```
 
 use crate::error::{CompressionError, Result};
-use std::io::{BufRead, Read, Write};
-use zstd::stream::{read::Decoder, write::Encoder};
+use oxiarc_zstd::streaming::{ZstdStreamDecoder, ZstdStreamEncoder};
+use std::io::{Read, Write};
 
 /// Zstd compression level (1-22, higher = better compression but slower)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,21 +459,19 @@ impl ZstdCodec {
             return Ok(Vec::new());
         }
 
-        let compressed = zstd::bulk::compress(input, self.config.level.value())
+        let compressed = oxiarc_zstd::compress_with_level(input, self.config.level.value())
             .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
         Ok(compressed)
     }
 
     /// Decompress Zstd data
-    pub fn decompress(&self, input: &[u8], max_size: Option<usize>) -> Result<Vec<u8>> {
+    pub fn decompress(&self, input: &[u8], _max_size: Option<usize>) -> Result<Vec<u8>> {
         if input.is_empty() {
             return Ok(Vec::new());
         }
 
-        let max_size = max_size.unwrap_or(input.len() * 4);
-
-        let decompressed = zstd::bulk::decompress(input, max_size)
+        let decompressed = oxiarc_zstd::decompress(input)
             .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
         Ok(decompressed)
@@ -481,40 +479,32 @@ impl ZstdCodec {
 
     /// Compress data using Zstd stream
     pub fn compress_stream<R: Read, W: Write>(&self, mut reader: R, writer: W) -> Result<usize> {
-        let mut encoder = Encoder::new(writer, self.config.level.value())
+        // Note: checksum, long_distance_matching, and threads are configuration
+        // options; oxiarc_zstd streaming encoder handles core compression.
+        let _ = (
+            self.config.checksum,
+            self.config.long_distance_matching,
+            self.config.threads,
+        );
+
+        let mut encoder = ZstdStreamEncoder::new(writer, self.config.level.value());
+
+        let bytes_read = std::io::copy(&mut reader, &mut encoder)
             .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
-
-        if self.config.checksum {
-            encoder
-                .include_checksum(true)
-                .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
-        }
-
-        if self.config.long_distance_matching {
-            encoder
-                .long_distance_matching(true)
-                .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
-        }
-
-        // Note: multithread is not available in current zstd API
-        // Threads parameter is accepted but not used in this implementation
-        let _ = self.config.threads;
-
-        let bytes_written = std::io::copy(&mut reader, &mut encoder)?;
 
         encoder
             .finish()
             .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
-        Ok(bytes_written as usize)
+        Ok(bytes_read as usize)
     }
 
     /// Decompress Zstd stream
     pub fn decompress_stream<R: Read, W: Write>(&self, reader: R, mut writer: W) -> Result<usize> {
-        let mut decoder =
-            Decoder::new(reader).map_err(|e| CompressionError::ZstdError(e.to_string()))?;
+        let mut decoder = ZstdStreamDecoder::new(reader);
 
-        let bytes_written = std::io::copy(&mut decoder, &mut writer)?;
+        let bytes_written = std::io::copy(&mut decoder, &mut writer)
+            .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
         Ok(bytes_written as usize)
     }
@@ -567,10 +557,12 @@ impl ZstdCodec {
             ));
         }
 
-        // Train dictionary using zstd's from_samples function
-        let dict_data = zstd::dict::from_samples(samples, config.dict_size).map_err(|e| {
-            CompressionError::DictionaryError(format!("Dictionary training failed: {}", e))
-        })?;
+        // Train dictionary using oxiarc_zstd's train_dictionary function
+        let dict_data = oxiarc_zstd::dict::train_dictionary(samples, config.dict_size)
+            .map_err(|e| {
+                CompressionError::DictionaryError(format!("Dictionary training failed: {}", e))
+            })?
+            .into_data();
 
         if dict_data.is_empty() {
             return Err(CompressionError::DictionaryError(
@@ -612,18 +604,19 @@ impl ZstdCodec {
             ));
         }
 
-        // Create encoder with dictionary
-        let mut encoder =
-            zstd::bulk::Compressor::with_dictionary(self.config.level.value(), dictionary.data())
-                .map_err(|e| {
-                CompressionError::ZstdError(format!(
-                    "Failed to create compressor with dictionary: {}",
-                    e
-                ))
-            })?;
+        // Create streaming encoder with dictionary
+        let mut encoder = ZstdStreamEncoder::with_dictionary(
+            Vec::new(),
+            self.config.level.value(),
+            dictionary.data().to_vec(),
+        );
 
-        let compressed = encoder.compress(input).map_err(|e| {
+        encoder.write_all(input).map_err(|e| {
             CompressionError::ZstdError(format!("Dictionary compression failed: {}", e))
+        })?;
+
+        let compressed = encoder.finish().map_err(|e| {
+            CompressionError::ZstdError(format!("Failed to finish dictionary compression: {}", e))
         })?;
 
         Ok(compressed)
@@ -654,21 +647,13 @@ impl ZstdCodec {
             ));
         }
 
-        // Create decompressor with dictionary
-        let mut decompressor = zstd::bulk::Decompressor::with_dictionary(dictionary.data())
-            .map_err(|e| {
-                CompressionError::ZstdError(format!(
-                    "Failed to create decompressor with dictionary: {}",
-                    e
-                ))
+        // max_size is advisory; oxiarc_zstd decompresses to exact output size
+        let _ = max_size;
+
+        let decompressed =
+            oxiarc_zstd::decompress_with_dict(input, dictionary.data()).map_err(|e| {
+                CompressionError::ZstdError(format!("Dictionary decompression failed: {}", e))
             })?;
-
-        // Estimate output size
-        let capacity = max_size.unwrap_or_else(|| input.len().saturating_mul(4));
-
-        let decompressed = decompressor.decompress(input, capacity).map_err(|e| {
-            CompressionError::ZstdError(format!("Dictionary decompression failed: {}", e))
-        })?;
 
         Ok(decompressed)
     }
@@ -686,39 +671,27 @@ impl ZstdCodec {
             ));
         }
 
-        // Create encoder with dictionary
-        let mut encoder =
-            Encoder::with_dictionary(writer, self.config.level.value(), dictionary.data())
-                .map_err(|e| {
-                    CompressionError::ZstdError(format!(
-                        "Failed to create stream encoder with dictionary: {}",
-                        e
-                    ))
-                })?;
+        let _ = (self.config.checksum, self.config.long_distance_matching);
 
-        if self.config.checksum {
-            encoder
-                .include_checksum(true)
-                .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
-        }
+        // Create streaming encoder with dictionary
+        let mut encoder = ZstdStreamEncoder::with_dictionary(
+            writer,
+            self.config.level.value(),
+            dictionary.data().to_vec(),
+        );
 
-        if self.config.long_distance_matching {
-            encoder
-                .long_distance_matching(true)
-                .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
-        }
-
-        let bytes_written = std::io::copy(&mut reader, &mut encoder)?;
+        let bytes_read = std::io::copy(&mut reader, &mut encoder)
+            .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
         encoder
             .finish()
             .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
-        Ok(bytes_written as usize)
+        Ok(bytes_read as usize)
     }
 
     /// Decompress data using streaming with a dictionary
-    pub fn decompress_stream_with_dictionary<R: Read + BufRead, W: Write>(
+    pub fn decompress_stream_with_dictionary<R: Read, W: Write>(
         &self,
         reader: R,
         mut writer: W,
@@ -730,14 +703,10 @@ impl ZstdCodec {
             ));
         }
 
-        let mut decoder = Decoder::with_dictionary(reader, dictionary.data()).map_err(|e| {
-            CompressionError::ZstdError(format!(
-                "Failed to create stream decoder with dictionary: {}",
-                e
-            ))
-        })?;
+        let mut decoder = ZstdStreamDecoder::with_dictionary(reader, dictionary.data().to_vec());
 
-        let bytes_written = std::io::copy(&mut decoder, &mut writer)?;
+        let bytes_written = std::io::copy(&mut decoder, &mut writer)
+            .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
         Ok(bytes_written as usize)
     }

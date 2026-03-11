@@ -1,7 +1,9 @@
 //! Database connector benchmarks.
 #![allow(missing_docs, clippy::expect_used)]
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+#[cfg(all(feature = "mysql", feature = "sqlite", feature = "mongodb"))]
+use criterion::BenchmarkId;
+use criterion::{Criterion, criterion_group, criterion_main};
 use geo_types::{Geometry, point, polygon};
 use std::hint::black_box;
 

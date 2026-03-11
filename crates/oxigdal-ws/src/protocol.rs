@@ -616,12 +616,13 @@ impl Message {
 
     /// Compress data using zstd.
     pub fn compress(data: &[u8], level: i32) -> crate::error::Result<Vec<u8>> {
-        zstd::encode_all(data, level).map_err(|e| crate::error::Error::Compression(e.to_string()))
+        oxiarc_zstd::encode_all(data, level)
+            .map_err(|e| crate::error::Error::Compression(e.to_string()))
     }
 
     /// Decompress zstd data.
     pub fn decompress(data: &[u8]) -> crate::error::Result<Vec<u8>> {
-        zstd::decode_all(data).map_err(|e| crate::error::Error::Decompression(e.to_string()))
+        oxiarc_zstd::decode_all(data).map_err(|e| crate::error::Error::Decompression(e.to_string()))
     }
 
     /// Encode message with specified format and compression.
