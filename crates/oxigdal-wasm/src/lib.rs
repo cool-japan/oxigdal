@@ -41,7 +41,7 @@
 //! ## Basic Usage Example (JavaScript)
 //!
 //! ```javascript
-//! import init, { WasmCogViewer } from 'oxigdal-wasm';
+//! import init, { WasmCogViewer } from '@cooljapan/oxigdal';
 //!
 //! async function viewCog(url) {
 //!     // Initialize the WASM module
@@ -78,7 +78,7 @@
 //!     WasmColorPalette,
 //!     WasmProfiler,
 //!     WasmTileCache
-//! } from 'oxigdal-wasm';
+//! } from '@cooljapan/oxigdal';
 //!
 //! async function advancedProcessing() {
 //!     await init();

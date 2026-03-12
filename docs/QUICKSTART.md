@@ -209,7 +209,7 @@ fn bbox_example() -> Result<(), Box<dyn std::error::Error>> {
 OxiGDAL can run in the browser via WebAssembly:
 
 ```javascript
-import init, { WasmCogViewer } from 'oxigdal-wasm';
+import init, { WasmCogViewer } from '@cooljapan/oxigdal';
 
 async function viewCog(url) {
     await init();

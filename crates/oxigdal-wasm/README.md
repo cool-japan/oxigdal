@@ -38,7 +38,7 @@ wasm-pack build --target web
 ## Installation (when published)
 
 ```bash
-npm install oxigdal-wasm
+npm install @cooljapan/oxigdal
 ```
 
 ## Quick Start

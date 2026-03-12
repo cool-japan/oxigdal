@@ -52,9 +52,9 @@ wasm-pack build --target web --out-dir ../../demo/cog-viewer/pkg
 **NPM/Yarn Installation** (when published):
 
 ```bash
-npm install oxigdal-wasm
+npm install @cooljapan/oxigdal
 # or
-yarn add oxigdal-wasm
+yarn add @cooljapan/oxigdal
 ```
 
 **Manual Installation**:

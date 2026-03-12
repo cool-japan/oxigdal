@@ -251,7 +251,7 @@ gdf = oxigdal.read_geoparquet("buildings.parquet")  # Arrow-native
 ### WebAssembly
 
 ```javascript
-import init, { WasmCogViewer } from 'oxigdal-wasm';
+import init, { WasmCogViewer } from '@cooljapan/oxigdal';
 await init();
 
 const viewer = new WasmCogViewer();
