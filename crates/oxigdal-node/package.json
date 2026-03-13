@@ -1,5 +1,5 @@
 {
-  "name": "@oxigdal/node",
+  "name": "@cooljapan/oxigdal-node",
   "version": "0.1.0",
   "description": "Node.js bindings for OxiGDAL - Pure Rust geospatial data abstraction library",
   "main": "index.js",
@@ -74,13 +74,13 @@
     "oxigdal.*.node"
   ],
   "optionalDependencies": {
-    "@oxigdal/node-win32-x64-msvc": "0.1.0",
-    "@oxigdal/node-darwin-x64": "0.1.0",
-    "@oxigdal/node-linux-x64-gnu": "0.1.0",
-    "@oxigdal/node-darwin-arm64": "0.1.0",
-    "@oxigdal/node-linux-arm64-gnu": "0.1.0",
-    "@oxigdal/node-linux-x64-musl": "0.1.0",
-    "@oxigdal/node-linux-arm64-musl": "0.1.0",
-    "@oxigdal/node-win32-arm64-msvc": "0.1.0"
+    "@cooljapan/oxigdal-node-win32-x64-msvc": "0.1.0",
+    "@cooljapan/oxigdal-node-darwin-x64": "0.1.0",
+    "@cooljapan/oxigdal-node-linux-x64-gnu": "0.1.0",
+    "@cooljapan/oxigdal-node-darwin-arm64": "0.1.0",
+    "@cooljapan/oxigdal-node-linux-arm64-gnu": "0.1.0",
+    "@cooljapan/oxigdal-node-linux-x64-musl": "0.1.0",
+    "@cooljapan/oxigdal-node-linux-arm64-musl": "0.1.0",
+    "@cooljapan/oxigdal-node-win32-arm64-msvc": "0.1.0"
   }
 }

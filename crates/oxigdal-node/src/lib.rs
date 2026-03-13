@@ -16,7 +16,7 @@
 //! # Example Usage
 //!
 //! ```javascript
-//! const oxigdal = require('@oxigdal/node');
+//! const oxigdal = require('@cooljapan/oxigdal-node');
 //!
 //! // Open a raster file
 //! const dataset = oxigdal.openRaster('input.tif');
@@ -39,7 +39,7 @@
 //! # Async Example
 //!
 //! ```javascript
-//! const oxigdal = require('@oxigdal/node');
+//! const oxigdal = require('@cooljapan/oxigdal-node');
 //!
 //! async function processRaster() {
 //!   const dataset = await oxigdal.openRasterAsync('input.tif');
