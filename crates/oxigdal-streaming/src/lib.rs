@@ -31,6 +31,7 @@ pub mod error;
 pub mod metrics;
 pub mod state;
 pub mod transformations;
+pub mod v2;
 pub mod windowing;
 
 pub use error::{Result, StreamingError};

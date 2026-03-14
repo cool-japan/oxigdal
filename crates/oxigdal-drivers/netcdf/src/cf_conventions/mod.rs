@@ -39,6 +39,7 @@ mod metadata;
 #[cfg(test)]
 mod tests;
 mod time;
+pub mod v1_11;
 
 // Re-exports
 pub use coordinates::{AxisType, CoordinateDetector, GridMapping, GridMappingType};

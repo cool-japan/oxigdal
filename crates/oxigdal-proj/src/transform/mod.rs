@@ -1,11 +1,30 @@
 //! Coordinate transformation operations.
 //!
 //! This module provides coordinate transformation capabilities between different CRS
-//! using the proj4rs library for pure Rust implementations.
+//! using the proj4rs library for pure Rust implementations, as well as native pure-Rust
+//! implementations of many map projections.
+//!
+//! # Module Structure
+//!
+//! - `cylindrical`   — Cylindrical projections (Mercator, Transverse Mercator, Cassini, etc.)
+//! - `pseudocylindrical` — Pseudo-cylindrical projections (Sinusoidal, Mollweide, Robinson, Eckert IV/VI)
+//! - `conic`         — Conic projections (Lambert Conic, Equidistant Conic, Albers)
+//! - `azimuthal`     — Azimuthal projections (Lambert Azimuthal Equal Area, Azimuthal Equidistant, Gnomonic)
+
+pub mod azimuthal;
+pub mod conic;
+pub mod cylindrical;
+pub mod pseudocylindrical;
 
 use crate::crs::Crs;
 use crate::error::{Error, Result};
 use std::fmt;
+
+// Re-export projection types for easy access
+pub use azimuthal::{AzimuthalEquidistant, Gnomonic, LambertAzimuthalEqualArea};
+pub use conic::{EquidistantConic, LambertConformalConic};
+pub use cylindrical::{CassineSoldner, GaussKruger, TransverseMercator};
+pub use pseudocylindrical::{EckertIV, EckertVI, Mollweide, Robinson, Sinusoidal};
 
 /// A 2D coordinate (x, y) or (longitude, latitude).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -365,10 +384,10 @@ impl Transformer {
         let source_proj_str = self.source_crs.to_proj_string()?;
         let target_proj_str = self.target_crs.to_proj_string()?;
 
-        let _source_proj = proj4rs::Proj::from_proj_string(&source_proj_str)
+        let source_proj = proj4rs::Proj::from_proj_string(&source_proj_str)
             .map_err(|e| Error::from_proj4rs(format!("{:?}", e)))?;
 
-        let _target_proj = proj4rs::Proj::from_proj_string(&target_proj_str)
+        let target_proj = proj4rs::Proj::from_proj_string(&target_proj_str)
             .map_err(|e| Error::from_proj4rs(format!("{:?}", e)))?;
 
         // Convert to radians if source is geographic
@@ -382,7 +401,7 @@ impl Transformer {
 
         // Perform transformation using a mutable array (proj4rs requires slice)
         let mut points = [(x, y)];
-        proj4rs::transform::transform(&_source_proj, &_target_proj, &mut points[..])
+        proj4rs::transform::transform(&source_proj, &target_proj, &mut points[..])
             .map_err(|e| Error::transformation_error(format!("{:?}", e)))?;
 
         let (mut result_x, mut result_y) = points[0];

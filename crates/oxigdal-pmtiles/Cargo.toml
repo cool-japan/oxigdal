@@ -1,0 +1,27 @@
+[package]
+name = "oxigdal-pmtiles"
+description = "Pure Rust PMTiles v3 reader for OxiGDAL - single-file tile archive with varint directory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-pmtiles"
+readme = "README.md"
+keywords = ["pmtiles", "tiles", "gis", "protomaps", "geospatial"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

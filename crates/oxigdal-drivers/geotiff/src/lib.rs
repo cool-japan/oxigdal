@@ -51,6 +51,8 @@
 pub mod cog;
 pub mod compression;
 pub mod geokeys;
+pub mod jpeg_codec;
+pub mod lerc_codec;
 pub mod tiff;
 pub mod writer;
 

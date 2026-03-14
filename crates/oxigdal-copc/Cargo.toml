@@ -1,0 +1,27 @@
+[package]
+name = "oxigdal-copc"
+description = "Pure Rust COPC (Cloud Optimized Point Cloud) reader for OxiGDAL - LAS/LAZ format with spatial index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-copc"
+readme = "README.md"
+keywords = ["copc", "lidar", "pointcloud", "las", "gis"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

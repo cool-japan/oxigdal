@@ -125,6 +125,8 @@
 pub mod crs;
 pub mod epsg;
 pub mod error;
+pub mod grid_shift;
+pub mod projections;
 pub mod transform;
 pub mod wkt;
 
@@ -132,8 +134,15 @@ pub mod wkt;
 pub use crs::{Crs, CrsSource};
 pub use epsg::{CrsType, EpsgDefinition, available_epsg_codes, contains_epsg, lookup_epsg};
 pub use error::{Error, Result};
+pub use grid_shift::{
+    DHDN_TO_ETRS89, Helmert7Params, NAD27_TO_NAD83, NTF_TO_RGF93, OSGB36_TO_ETRS89,
+    dhdn_etrs89_helmert, helmert_3d, helmert_7param, nad27_nad83_poly, ostn15_approx, rgf93_approx,
+};
 pub use transform::{
-    BoundingBox, Coordinate, Coordinate3D, Transformer, transform_coordinate, transform_epsg,
+    AzimuthalEquidistant, BoundingBox, CassineSoldner, Coordinate, Coordinate3D, EckertIV,
+    EckertVI, EquidistantConic, GaussKruger, Gnomonic, LambertAzimuthalEqualArea,
+    LambertConformalConic, Mollweide, Robinson, Sinusoidal, Transformer, TransverseMercator,
+    transform_coordinate, transform_epsg,
 };
 pub use wkt::{WktNode, WktParser, parse_wkt};
 

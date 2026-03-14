@@ -469,4 +469,176 @@ mod tests {
         assert!(html.contains("leaflet"));
         Ok(())
     }
+
+    #[test]
+    fn test_map_widget_satellite_basemap() -> Result<()> {
+        let widget =
+            MapWidget::new("map2", (35.0, 139.0), 12).with_basemap(BasemapProvider::Satellite);
+        let state = widget.state()?;
+        assert!(state.contains_key("center"));
+        assert!(state.contains_key("basemap"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_widget_custom_basemap() -> Result<()> {
+        let url = "https://tiles.example.com/{z}/{x}/{y}.png".to_string();
+        let widget = MapWidget::new("map3", (0.0, 0.0), 5)
+            .with_basemap(BasemapProvider::Custom(url.clone()));
+        let html = widget.render()?;
+        assert!(html.contains(&url));
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_widget_terrain_basemap() -> Result<()> {
+        let widget = MapWidget::new("map4", (0.0, 0.0), 8).with_basemap(BasemapProvider::Terrain);
+        let html = widget.render()?;
+        assert!(html.contains("opentopomap") || html.contains("map4"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_widget_update_center() -> Result<()> {
+        let mut widget = MapWidget::new("map5", (0.0, 0.0), 10);
+        assert_eq!(widget.center(), (0.0, 0.0));
+        widget.set_center((51.5, -0.1));
+        assert_eq!(widget.center(), (51.5, -0.1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_widget_update_zoom() -> Result<()> {
+        let mut widget = MapWidget::new("map6", (0.0, 0.0), 10);
+        widget.set_zoom(15);
+        assert_eq!(widget.zoom(), 15);
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_widget_add_layer() -> Result<()> {
+        let mut widget = MapWidget::new("map7", (0.0, 0.0), 10);
+        widget.add_layer("https://tiles.example.com/{z}/{x}/{y}.png".to_string());
+        let state = widget.state()?;
+        let layers = state.get("layers");
+        assert!(layers.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_widget_update_state() -> Result<()> {
+        let mut widget = MapWidget::new("map8", (0.0, 0.0), 10);
+        let mut state = std::collections::HashMap::new();
+        state.insert("zoom".to_string(), serde_json::json!(7u8));
+        state.insert("center".to_string(), serde_json::json!([10.0f64, 20.0f64]));
+        widget.update_state(state)?;
+        assert_eq!(widget.zoom(), 7);
+        Ok(())
+    }
+
+    #[test]
+    fn test_slider_widget_type_name() {
+        let widget = SliderWidget::new("s1", 0.0, 100.0);
+        assert_eq!(widget.widget_type(), "SliderWidget");
+    }
+
+    #[test]
+    fn test_slider_state_keys() -> Result<()> {
+        let widget = SliderWidget::new("s2", -10.0, 10.0).with_label("Band");
+        let state = widget.state()?;
+        assert!(state.contains_key("value"));
+        assert!(state.contains_key("min"));
+        assert!(state.contains_key("max"));
+        assert!(state.contains_key("step"));
+        assert!(state.contains_key("label"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_slider_render() -> Result<()> {
+        let widget = SliderWidget::new("s3", 0.0, 1.0).with_label("Opacity");
+        let html = widget.render()?;
+        assert!(html.contains("range"));
+        assert!(html.contains("Opacity"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_slider_update_state_via_state_map() -> Result<()> {
+        let mut widget = SliderWidget::new("s4", 0.0, 100.0);
+        let mut state = std::collections::HashMap::new();
+        state.insert("value".to_string(), serde_json::json!(75.0f64));
+        widget.update_state(state)?;
+        assert_eq!(widget.value(), 75.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_slider_step_size() {
+        let widget = SliderWidget::new("s5", 0.0, 100.0).with_step(5.0);
+        // step is private field, check via state
+        let state = widget.state();
+        assert!(state.is_ok());
+    }
+
+    #[test]
+    fn test_dropdown_widget_type_name() -> Result<()> {
+        let widget = DropdownWidget::new("d1", vec!["A".to_string(), "B".to_string()])?;
+        assert_eq!(widget.widget_type(), "DropdownWidget");
+        Ok(())
+    }
+
+    #[test]
+    fn test_dropdown_state_keys() -> Result<()> {
+        let widget = DropdownWidget::new("d2", vec!["X".to_string()])?;
+        let state = widget.state()?;
+        assert!(state.contains_key("options"));
+        assert!(state.contains_key("selected_index"));
+        assert!(state.contains_key("label"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_dropdown_render_contains_options() -> Result<()> {
+        let widget = DropdownWidget::new(
+            "d3",
+            vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+        )?;
+        let html = widget.render()?;
+        assert!(html.contains("Red"));
+        assert!(html.contains("Green"));
+        assert!(html.contains("Blue"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_dropdown_render_marks_selected() -> Result<()> {
+        let mut widget = DropdownWidget::new("d4", vec!["Alpha".to_string(), "Beta".to_string()])?;
+        widget.set_selected_index(1)?;
+        let html = widget.render()?;
+        assert!(html.contains("selected"));
+        assert!(html.contains("Beta"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_dropdown_update_state_via_state_map() -> Result<()> {
+        let mut widget =
+            DropdownWidget::new("d5", vec!["First".to_string(), "Second".to_string()])?;
+        let mut state = std::collections::HashMap::new();
+        state.insert("selected_index".to_string(), serde_json::json!(1usize));
+        widget.update_state(state)?;
+        assert_eq!(widget.selected_value(), "Second");
+        Ok(())
+    }
+
+    #[test]
+    fn test_dropdown_with_label() -> Result<()> {
+        let widget =
+            DropdownWidget::new("d6", vec!["opt".to_string()])?.with_label("Choose Option");
+        let state = widget.state()?;
+        let label = state.get("label").and_then(|v| v.as_str());
+        assert_eq!(label, Some("Choose Option"));
+        Ok(())
+    }
 }

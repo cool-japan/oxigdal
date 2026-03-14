@@ -115,6 +115,24 @@ pub use oxigdal_core::error::OxiGdalError;
 pub use oxigdal_core::error::Result;
 pub use oxigdal_core::types::{BoundingBox, GeoTransform, RasterDataType, RasterMetadata};
 
+// ─── Ergonomic API modules ───────────────────────────────────────────────────
+
+/// Universal dataset opener with automatic format detection.
+pub mod open;
+
+/// Builder patterns for dataset creation and opening.
+pub mod builder;
+
+/// Streaming / iterator API for large datasets.
+pub mod streaming;
+
+pub use builder::{
+    CompressionType, CreateOptions, DatasetCreateBuilder, DatasetOpenBuilder, DatasetWriter,
+    OutputFormat,
+};
+pub use open::{CloudScheme, OpenedDataset, open};
+pub use streaming::{FeatureStream, RasterTile, StreamingExt, StreamingFeature, TileStream};
+
 /// Re-export the core crate for advanced usage
 pub use oxigdal_core as core_types;
 
@@ -263,6 +281,8 @@ pub enum DatasetFormat {
     FlatGeobuf,
     /// JPEG2000 (.jp2, .j2k)
     Jpeg2000,
+    /// GeoPackage (.gpkg, SQLite-based)
+    GeoPackage,
     /// Unknown / user-specified
     Unknown,
 }
@@ -290,6 +310,7 @@ impl DatasetFormat {
             "vrt" => Self::Vrt,
             "fgb" => Self::FlatGeobuf,
             "jp2" | "j2k" => Self::Jpeg2000,
+            "gpkg" => Self::GeoPackage,
             _ => Self::Unknown,
         }
     }
@@ -310,6 +331,7 @@ impl DatasetFormat {
             Self::Vrt => "VRT",
             Self::FlatGeobuf => "FlatGeobuf",
             Self::Jpeg2000 => "JPEG2000",
+            Self::GeoPackage => "GPKG",
             Self::Unknown => "Unknown",
         }
     }

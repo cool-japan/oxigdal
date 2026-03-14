@@ -192,4 +192,54 @@ mod tests {
         assert_eq!(types.uint8, "uint8");
         assert_eq!(types.float32, "float32");
     }
+
+    #[test]
+    fn test_data_types_all_fields() {
+        let types = get_data_types();
+        assert_eq!(types.uint8, "uint8");
+        assert_eq!(types.int16, "int16");
+        assert_eq!(types.uint16, "uint16");
+        assert_eq!(types.int32, "int32");
+        assert_eq!(types.uint32, "uint32");
+        assert_eq!(types.float32, "float32");
+        assert_eq!(types.float64, "float64");
+    }
+
+    #[test]
+    fn test_resampling_methods() {
+        let methods = get_resampling_methods();
+        assert_eq!(methods.nearest_neighbor, "NearestNeighbor");
+        assert_eq!(methods.bilinear, "Bilinear");
+        assert_eq!(methods.bicubic, "Bicubic");
+        assert_eq!(methods.lanczos, "Lanczos");
+    }
+
+    #[test]
+    fn test_module_info_name() {
+        let info = get_info();
+        assert!(info.name.contains("OxiGDAL"));
+    }
+
+    #[test]
+    fn test_module_info_formats_contain_geotiff() {
+        let info = get_info();
+        assert!(
+            info.formats
+                .iter()
+                .any(|f| f.contains("GeoTIFF") || f.contains("tiff") || f.contains("TIFF"))
+        );
+    }
+
+    #[test]
+    fn test_module_info_build_info_not_empty() {
+        let info = get_info();
+        assert!(!info.build_info.is_empty());
+    }
+
+    #[test]
+    fn test_name_function() {
+        let n = name();
+        assert!(!n.is_empty());
+        assert!(n.contains("OxiGDAL") || n.contains("Node"));
+    }
 }

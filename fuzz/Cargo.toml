@@ -1,0 +1,48 @@
+[package]
+name = "oxigdal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxigdal-geotiff = { path = "../crates/oxigdal-drivers/geotiff" }
+oxigdal-jpeg2000 = { path = "../crates/oxigdal-drivers/jpeg2000" }
+oxigdal-grib = { path = "../crates/oxigdal-drivers/grib" }
+oxigdal-geoparquet = { path = "../crates/oxigdal-drivers/geoparquet" }
+
+# Prevent this crate from being included in normal workspace builds
+[workspace]
+
+[[bin]]
+name = "fuzz_geotiff_header"
+path = "fuzz_targets/fuzz_geotiff_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jpeg2000_boxes"
+path = "fuzz_targets/fuzz_jpeg2000_boxes.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_grib2_sections"
+path = "fuzz_targets/fuzz_grib2_sections.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_lerc_decode"
+path = "fuzz_targets/fuzz_lerc_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_wkb_decode"
+path = "fuzz_targets/fuzz_wkb_decode.rs"
+test = false
+doc = false

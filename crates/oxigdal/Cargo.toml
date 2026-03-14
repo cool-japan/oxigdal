@@ -49,6 +49,7 @@ temporal = ["dep:oxigdal-temporal"]
 
 [dependencies]
 oxigdal-core = { workspace = true }
+serde_json = { workspace = true }
 
 # Drivers (all optional)
 oxigdal-geotiff = { workspace = true, optional = true }

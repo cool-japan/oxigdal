@@ -69,6 +69,10 @@ members = [
     "crates/oxigdal-node",
     "crates/oxigdal-python",
     "crates/oxigdal",
+    "crates/oxigdal-gpkg",
+    "crates/oxigdal-mbtiles",
+    "crates/oxigdal-copc",
+    "crates/oxigdal-pmtiles",
     "benchmarks",
 ]
 # Exclude Python bindings from default builds (use maturin for py crate)
@@ -140,6 +144,10 @@ default-members = [
     "crates/oxigdal-sync",
     "crates/oxigdal-node",
     "crates/oxigdal",
+    "crates/oxigdal-gpkg",
+    "crates/oxigdal-mbtiles",
+    "crates/oxigdal-copc",
+    "crates/oxigdal-pmtiles",
     "benchmarks",
 ]
 

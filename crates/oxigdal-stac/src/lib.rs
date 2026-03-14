@@ -77,14 +77,17 @@ pub use serde_json;
 
 // Core modules
 pub mod aggregation;
+pub mod api;
 pub mod asset;
 pub mod builder;
 pub mod catalog;
 pub mod collection;
+pub mod collection_aggregation;
 pub mod cql2;
 pub mod error;
 pub mod extensions;
 pub mod item;
+pub mod transaction;
 
 #[cfg(feature = "reqwest")]
 pub mod pagination;
@@ -96,10 +99,16 @@ pub mod search;
 pub use aggregation::{
     Aggregation, AggregationRequest, AggregationResponse, AggregationResult, Bucket,
 };
+pub use api::{
+    CollectionSummary, CollectionsList, ConformanceDeclaration, FieldsSpec, ItemCollection,
+    LandingPage, SearchContext as ApiSearchContext, SearchRequest as ApiSearchRequest,
+    SortDirection as ApiSortDirection, SortField,
+};
 pub use asset::{Asset, media_types, roles};
 pub use builder::{CatalogBuilder, CollectionBuilder, ItemBuilder};
 pub use catalog::Catalog;
 pub use collection::{Collection, Extent, Provider, SpatialExtent, TemporalExtent};
+pub use collection_aggregation::{CollectionAggregator, CollectionStats, NumericStats};
 pub use cql2::{Cql2Filter, Cql2Operand};
 pub use error::{Result, StacError};
 pub use extensions::{
@@ -107,9 +116,12 @@ pub use extensions::{
     projection::{ProjectionExtension, epsg_codes},
     sar::{FrequencyBand, ObservationDirection, Polarization, SarExtension},
     scientific::{Publication, ScientificExtension},
+    timestamps::TimestampsExtension,
+    version::VersionExtension,
     view::ViewExtension,
 };
 pub use item::{Item, ItemProperties, Link, link_rel};
+pub use transaction::{StacItemStore, TransactionOp, TransactionResult};
 
 #[cfg(feature = "reqwest")]
 pub use pagination::{CursorPagination, PagePagination, Paginator, TokenPagination};

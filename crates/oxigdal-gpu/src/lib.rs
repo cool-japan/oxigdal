@@ -168,6 +168,7 @@
 // Allow elided lifetime patterns
 #![allow(elided_lifetimes_in_associated_constant)]
 
+pub mod algebra;
 pub mod backends;
 pub mod buffer;
 pub mod compute;
@@ -176,9 +177,12 @@ pub mod error;
 pub mod kernels;
 pub mod memory;
 pub mod multi_gpu;
+pub mod reprojection;
 pub mod shaders;
+pub mod webgpu_compat;
 
 // Re-export commonly used items
+pub use algebra::{AlgebraOp, BandExpression, GpuAlgebra};
 pub use buffer::{GpuBuffer, GpuRasterBuffer};
 pub use compute::{ComputePipeline, MultibandPipeline};
 pub use context::{BackendPreference, GpuContext, GpuContextConfig, GpuPowerPreference};
@@ -193,6 +197,8 @@ pub use memory::{MemoryPool, MemoryPoolConfig, StagingBufferManager, VramBudgetM
 pub use multi_gpu::{
     DistributionStrategy, InterGpuTransfer, MultiGpuConfig, MultiGpuManager, WorkDistributor,
 };
+pub use reprojection::{GpuReprojector, ReprojectionConfig, ResampleMethod};
+pub use webgpu_compat::{GpuCapabilities, ShaderRegistry};
 
 /// Library version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

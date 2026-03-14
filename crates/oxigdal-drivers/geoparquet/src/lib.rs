@@ -56,6 +56,7 @@ pub mod arrow_ext;
 pub mod error;
 pub mod geometry;
 pub mod metadata;
+pub mod partitioning;
 pub mod spatial;
 
 mod compression;

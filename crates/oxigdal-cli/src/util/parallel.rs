@@ -1376,7 +1376,11 @@ mod tests {
         assert!(count > 0);
         // In containerized environments, physical cores can exceed cgroup-limited logical cores
         // so we only check that the count is positive and reasonable
-        assert!(count <= 1024, "Physical core count seems unreasonable: {}", count);
+        assert!(
+            count <= 1024,
+            "Physical core count seems unreasonable: {}",
+            count
+        );
     }
 
     #[test]

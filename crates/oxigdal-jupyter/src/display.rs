@@ -480,4 +480,161 @@ mod tests {
         assert!(display.data.contains_key("image/png"));
         Ok(())
     }
+
+    #[test]
+    fn test_display_data_default() {
+        let display = DisplayData::default();
+        assert!(display.data.is_empty());
+        assert!(display.metadata.is_empty());
+        assert!(display.transient.is_empty());
+    }
+
+    #[test]
+    fn test_display_data_with_json() -> Result<()> {
+        let display = DisplayData::new().with_json(serde_json::json!({"key": "value"}))?;
+        assert!(display.data.contains_key("application/json"));
+        let json_str = display.data.get("application/json").map(|s| s.as_str());
+        assert!(json_str.is_some());
+        assert!(json_str.unwrap_or("").contains("key"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_data_with_metadata() {
+        let display = DisplayData::new()
+            .with_metadata("width", serde_json::json!(800))
+            .with_metadata("height", serde_json::json!(600));
+        assert_eq!(display.metadata.get("width"), Some(&serde_json::json!(800)));
+        assert_eq!(
+            display.metadata.get("height"),
+            Some(&serde_json::json!(600))
+        );
+    }
+
+    #[test]
+    fn test_display_data_with_jpeg() -> Result<()> {
+        let img = ImageDisplay::from_jpeg(vec![0xff, 0xd8, 0xff], 50, 50);
+        let display = img.display_data()?;
+        assert!(display.data.contains_key("image/jpeg"));
+        let text = img.display_text();
+        assert!(text.contains("50x50"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_display_image() {
+        let data = vec![1, 2, 3, 4, 5];
+        let img = ImageDisplay::from_png(data.clone(), 10, 10);
+        let raw = img.display_image();
+        assert_eq!(raw, Some(data));
+    }
+
+    #[test]
+    fn test_table_html_contains_headers() -> Result<()> {
+        let mut table = Table::new(vec!["Name".to_string(), "Score".to_string()]);
+        table.add_row(vec!["Alice".to_string(), "95".to_string()])?;
+        let html = table.to_html();
+        assert!(html.contains("Name"));
+        assert!(html.contains("Score"));
+        assert!(html.contains("Alice"));
+        assert!(html.contains("95"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_table_title_in_html() -> Result<()> {
+        let table = Table::new(vec!["Col".to_string()])
+            .with_title("My Table")
+            .build();
+        let html = table.to_html();
+        assert!(html.contains("My Table"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_table_display_data() -> Result<()> {
+        let table = Table::new(vec!["A".to_string(), "B".to_string()]);
+        let data = table.display_data()?;
+        assert!(data.data.contains_key("text/plain"));
+        assert!(data.data.contains_key("text/html"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_table_display_html_method() {
+        let table = Table::new(vec!["X".to_string()]);
+        assert!(table.display_html().is_some());
+    }
+
+    #[test]
+    fn test_map_display_text() {
+        let map = MapDisplay::new((10.5, 20.3), 5);
+        let text = map.display_text();
+        assert!(text.contains("10.5"));
+        assert!(text.contains("20.3"));
+        assert!(text.contains("5"));
+    }
+
+    #[test]
+    fn test_map_display_html_method() {
+        let map = MapDisplay::new((0.0, 0.0), 2);
+        assert!(map.display_html().is_some());
+    }
+
+    #[test]
+    fn test_map_display_html_includes_dimensions() {
+        let map = MapDisplay::new((0.0, 0.0), 10).with_dimensions(1024, 768);
+        let html = map.display_html().unwrap_or_default();
+        assert!(html.contains("1024"));
+        assert!(html.contains("768"));
+    }
+
+    #[test]
+    fn test_map_display_add_layer() {
+        let mut map = MapDisplay::new((0.0, 0.0), 10);
+        map.add_layer(MapLayer::new("layer1", LayerType::Raster, "data://raster"));
+        assert_eq!(map.layers.len(), 1);
+        assert_eq!(map.layers[0].name(), "layer1");
+    }
+
+    #[test]
+    fn test_map_layer_types() {
+        let raster = MapLayer::new("r", LayerType::Raster, "data");
+        let vector = MapLayer::new("v", LayerType::Vector, "data");
+        let tile = MapLayer::new("t", LayerType::Tile, "data");
+        assert!(matches!(raster.layer_type(), LayerType::Raster));
+        assert!(matches!(vector.layer_type(), LayerType::Vector));
+        assert!(matches!(tile.layer_type(), LayerType::Tile));
+        assert_eq!(tile.data(), "data");
+    }
+
+    #[test]
+    fn test_png_base64_encoding() {
+        let raw = b"\x89PNG\r\n\x1a\n"; // PNG magic bytes
+        let display = DisplayData::new().with_png(raw);
+        let encoded = display.data.get("image/png");
+        assert!(encoded.is_some());
+        // Verify it is valid base64
+        use base64::Engine;
+        let decoded =
+            base64::engine::general_purpose::STANDARD.decode(encoded.unwrap_or(&String::new()));
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap_or_default(), raw);
+    }
+
+    #[test]
+    fn test_table_multiple_rows() -> Result<()> {
+        let mut table = Table::new(vec!["ID".to_string(), "Value".to_string()]);
+        for i in 0..5 {
+            table.add_row(vec![i.to_string(), (i * 10).to_string()])?;
+        }
+        let data = table.display_data()?;
+        let text = data
+            .data
+            .get("text/plain")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        assert!(text.contains("40")); // 4 * 10
+        Ok(())
+    }
 }

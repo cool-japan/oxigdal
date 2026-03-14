@@ -479,4 +479,227 @@ mod tests {
         assert!(help.contains("%plot"));
         assert!(help.contains("%info"));
     }
+
+    #[test]
+    fn test_parse_crs_command() -> Result<()> {
+        let cmd = MagicCommand::parse("%crs my_data")?;
+        assert!(matches!(&cmd, MagicCommand::Crs { .. }));
+        if let MagicCommand::Crs { dataset } = cmd {
+            assert_eq!(dataset, "my_data");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_bounds_command() -> Result<()> {
+        let cmd = MagicCommand::parse("%bounds my_data")?;
+        assert!(matches!(&cmd, MagicCommand::Bounds { .. }));
+        if let MagicCommand::Bounds { dataset } = cmd {
+            assert_eq!(dataset, "my_data");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_stats_with_band() -> Result<()> {
+        let cmd = MagicCommand::parse("%stats my_data 2")?;
+        if let MagicCommand::Stats { dataset, band } = cmd {
+            assert_eq!(dataset, "my_data");
+            assert_eq!(band, Some(2));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_stats_without_band() -> Result<()> {
+        let cmd = MagicCommand::parse("%stats my_data")?;
+        if let MagicCommand::Stats { dataset, band } = cmd {
+            assert_eq!(dataset, "my_data");
+            assert!(band.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_plot_with_dimensions() -> Result<()> {
+        let cmd = MagicCommand::parse("%plot ds --width 800 --height 600")?;
+        if let MagicCommand::Plot { dataset, options } = cmd {
+            assert_eq!(dataset, "ds");
+            assert_eq!(options.width, Some(800));
+            assert_eq!(options.height, Some(600));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_plot_short_flags() -> Result<()> {
+        let cmd = MagicCommand::parse("%plot ds -c plasma -b 3")?;
+        if let MagicCommand::Plot { options, .. } = cmd {
+            assert_eq!(options.colormap.as_deref(), Some("plasma"));
+            assert_eq!(options.band, Some(3));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_raster_missing_path_error() {
+        let result = MagicCommand::parse("%load_raster");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("path"));
+    }
+
+    #[test]
+    fn test_info_missing_dataset_error() {
+        let result = MagicCommand::parse("%info");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_crs_missing_dataset_error() {
+        let result = MagicCommand::parse("%crs");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bounds_missing_dataset_error() {
+        let result = MagicCommand::parse("%bounds");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_stats_missing_dataset_error() {
+        let result = MagicCommand::parse("%stats");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_plot_missing_dataset_error() {
+        let result = MagicCommand::parse("%plot");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_magic_prefix_error() {
+        let result = MagicCommand::parse("%");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_info() -> Result<()> {
+        use crate::kernel::Value;
+        let mut ns = HashMap::new();
+        ns.insert("layer".to_string(), Value::Path("/data.tif".into()));
+        let cmd = MagicCommand::Info {
+            dataset: "layer".to_string(),
+        };
+        let output = cmd.execute(&mut ns)?;
+        let text = output.get("text/plain");
+        assert!(text.is_some());
+        assert!(text.unwrap_or(&String::new()).contains("layer"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_crs() -> Result<()> {
+        use crate::kernel::Value;
+        let mut ns = HashMap::new();
+        ns.insert("ds".to_string(), Value::Integer(1));
+        let cmd = MagicCommand::Crs {
+            dataset: "ds".to_string(),
+        };
+        let output = cmd.execute(&mut ns)?;
+        assert!(output.contains_key("text/plain"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_bounds() -> Result<()> {
+        use crate::kernel::Value;
+        let mut ns = HashMap::new();
+        ns.insert("raster".to_string(), Value::Integer(1));
+        let cmd = MagicCommand::Bounds {
+            dataset: "raster".to_string(),
+        };
+        let output = cmd.execute(&mut ns)?;
+        let text = output.get("text/plain").map(|s| s.as_str()).unwrap_or("");
+        assert!(text.contains("Bounds"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_stats() -> Result<()> {
+        use crate::kernel::Value;
+        let mut ns = HashMap::new();
+        ns.insert("data".to_string(), Value::Float(1.0));
+        let cmd = MagicCommand::Stats {
+            dataset: "data".to_string(),
+            band: Some(1),
+        };
+        let output = cmd.execute(&mut ns)?;
+        let text = output.get("text/plain").map(|s| s.as_str()).unwrap_or("");
+        assert!(text.contains("band 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_plot_missing_dataset() {
+        use crate::kernel::Value;
+        let mut ns: HashMap<String, Value> = HashMap::new();
+        let cmd = MagicCommand::Plot {
+            dataset: "nonexistent".to_string(),
+            options: PlotOptions::default(),
+        };
+        let result = cmd.execute(&mut ns);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_info_missing_dataset() {
+        use crate::kernel::Value;
+        let mut ns: HashMap<String, Value> = HashMap::new();
+        let cmd = MagicCommand::Info {
+            dataset: "missing".to_string(),
+        };
+        let result = cmd.execute(&mut ns);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_load_raster() -> Result<()> {
+        use crate::kernel::Value;
+        let mut ns: HashMap<String, Value> = HashMap::new();
+        let cmd = MagicCommand::LoadRaster {
+            path: "/data/raster.tif".to_string(),
+            name: Some("my_raster".to_string()),
+        };
+        let output = cmd.execute(&mut ns)?;
+        assert!(ns.contains_key("my_raster"));
+        let text = output.get("text/plain").map(|s| s.as_str()).unwrap_or("");
+        assert!(text.contains("my_raster"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_list_empty() -> Result<()> {
+        use crate::kernel::Value;
+        let mut ns: HashMap<String, Value> = HashMap::new();
+        let cmd = MagicCommand::List;
+        let output = cmd.execute(&mut ns)?;
+        let text = output.get("text/plain").map(|s| s.as_str()).unwrap_or("");
+        assert!(text.contains("No datasets"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_command_help_text() -> Result<()> {
+        let cmd = MagicCommand::LoadRaster {
+            path: "p".to_string(),
+            name: None,
+        };
+        assert!(cmd.help().contains("load"));
+        let cmd2 = MagicCommand::List;
+        assert!(cmd2.help().contains("list") || cmd2.help().contains("List"));
+        Ok(())
+    }
 }

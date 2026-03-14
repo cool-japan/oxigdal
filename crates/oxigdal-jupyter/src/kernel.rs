@@ -383,4 +383,178 @@ mod tests {
         assert!(result.found);
         Ok(())
     }
+
+    #[test]
+    fn test_custom_config() -> Result<()> {
+        let config = KernelConfig {
+            kernel_name: "test_kernel".to_string(),
+            display_name: "Test Kernel".to_string(),
+            language: "python".to_string(),
+            language_version: "3.11".to_string(),
+            file_extension: ".py".to_string(),
+            mimetype: "text/x-python".to_string(),
+        };
+        let kernel = OxiGdalKernel::with_config(config)?;
+        assert_eq!(kernel.config().kernel_name, "test_kernel");
+        assert_eq!(kernel.config().language, "python");
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_config() -> Result<()> {
+        let kernel = OxiGdalKernel::new()?;
+        assert_eq!(kernel.config().kernel_name, "oxigdal");
+        assert_eq!(kernel.config().language, "rust");
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_count_increments() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        assert_eq!(kernel.execution_count(), 0);
+        kernel.execute("let a = 1")?;
+        assert_eq!(kernel.execution_count(), 1);
+        kernel.execute("let b = 2")?;
+        assert_eq!(kernel.execution_count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_history_tracking() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        kernel.execute("let x = 10")?;
+        kernel.execute("let y = 20")?;
+        let history = kernel.history();
+        assert_eq!(history.len(), 2);
+        assert!(history[0].contains("x"));
+        assert!(history[1].contains("y"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_variable_assignment() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        kernel.execute(r#"let name = "hello""#)?;
+        let ns = kernel.namespace();
+        assert!(ns.contains_key("name"));
+        if let Some(Value::String(s)) = ns.get("name") {
+            assert_eq!(s, "hello");
+        } else {
+            panic!("Expected String value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_float_variable_assignment() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        kernel.execute("let pi = 3.14")?;
+        let ns = kernel.namespace();
+        assert!(ns.contains_key("pi"));
+        if let Some(Value::Float(f)) = ns.get("pi") {
+            assert!((f - 3.14).abs() < 1e-10);
+        } else {
+            panic!("Expected Float value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_boolean_variable_assignment() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        kernel.execute("let flag = true")?;
+        let ns = kernel.namespace();
+        assert!(ns.contains_key("flag"));
+        if let Some(Value::Boolean(b)) = ns.get("flag") {
+            assert!(*b);
+        } else {
+            panic!("Expected Boolean value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_clear_namespace() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        kernel.execute("let x = 1")?;
+        kernel.execute("let y = 2")?;
+        assert!(!kernel.namespace().is_empty());
+        kernel.clear_namespace();
+        assert!(kernel.namespace().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_inspect_variable() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        kernel.execute("let myvar = 42")?;
+        let result = kernel.inspect("myvar", 5)?;
+        assert!(result.found);
+        let text = result.data.get("text/plain");
+        assert!(text.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_inspect_unknown_returns_not_found() -> Result<()> {
+        let kernel = OxiGdalKernel::new()?;
+        let result = kernel.inspect("nonexistent", 5)?;
+        assert!(!result.found);
+        Ok(())
+    }
+
+    #[test]
+    fn test_complete_magic_prefix() -> Result<()> {
+        let kernel = OxiGdalKernel::new()?;
+        let result = kernel.complete("%", 1)?;
+        assert!(!result.matches.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_complete_keywords() -> Result<()> {
+        let kernel = OxiGdalKernel::new()?;
+        let result = kernel.complete("le", 2)?;
+        assert!(result.matches.contains(&"let".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_result_has_ok_status() -> Result<()> {
+        let mut kernel = OxiGdalKernel::new()?;
+        let result = kernel.execute("let z = 99")?;
+        assert_eq!(result.status, "ok");
+        assert!(result.error.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_kernel_config_serialization() -> Result<()> {
+        let config = KernelConfig::default();
+        let json =
+            serde_json::to_string(&config).map_err(|e| crate::JupyterError::Serialization(e))?;
+        assert!(json.contains("oxigdal"));
+        let parsed: KernelConfig =
+            serde_json::from_str(&json).map_err(|e| crate::JupyterError::Serialization(e))?;
+        assert_eq!(parsed.kernel_name, "oxigdal");
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_for_all_magic_commands() -> Result<()> {
+        let kernel = OxiGdalKernel::new()?;
+        let commands = [
+            "%load_raster",
+            "%plot",
+            "%info",
+            "%crs",
+            "%bounds",
+            "%stats",
+        ];
+        for cmd in &commands {
+            let result = kernel.inspect(cmd, 0)?;
+            assert!(result.found, "Help not found for {}", cmd);
+        }
+        Ok(())
+    }
 }
