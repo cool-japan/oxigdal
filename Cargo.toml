@@ -266,7 +266,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # COOLJAPAN ecosystem
-scirs2-core = "0.3.2"
+scirs2-core = "0.3.3"
 # numrs2 = { version = "0.1", optional = true }
 # oxiblas = { version = "0.1", optional = true }
 oxicode = "0.2"
@@ -492,14 +492,14 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["half", 
 ndarray = "0.17"
 
 # SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant)
-scirs2-neural = "0.3.2"
-scirs2-autograd = "0.3.2"
-scirs2-optimize = "0.3.2"
-scirs2-datasets = "0.3.2"
-scirs2-metrics = "0.3.2"
-scirs2-linalg = "0.3.2"
-scirs2-vision = "0.3.2"
-scirs2-series = "0.3.2"
+scirs2-neural = "0.3.3"
+scirs2-autograd = "0.3.3"
+scirs2-optimize = "0.3.3"
+scirs2-datasets = "0.3.3"
+scirs2-metrics = "0.3.3"
+scirs2-linalg = "0.3.3"
+scirs2-vision = "0.3.3"
+scirs2-series = "0.3.3"
 
 # PostgreSQL
 tokio-postgres = "0.7"

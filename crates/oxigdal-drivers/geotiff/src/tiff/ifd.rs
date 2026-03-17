@@ -247,6 +247,122 @@ impl IfdEntry {
         Ok(value)
     }
 
+    /// Gets the value as a single u64, reading from source if not inline
+    ///
+    /// Unlike [`get_u64`](Self::get_u64), this method can handle values stored
+    /// at an external file offset by reading from the data source. It also
+    /// supports Float and Double field types (converting via `as u64`).
+    pub fn get_u64_from_source<S: DataSource>(
+        &self,
+        source: &S,
+        byte_order: ByteOrderType,
+        variant: TiffVariant,
+    ) -> Result<u64> {
+        let bytes = if let Some(ref inline) = self.inline_value {
+            inline.clone()
+        } else {
+            self.get_value_bytes(source, variant)?
+        };
+
+        let value = match self.field_type {
+            FieldType::Byte | FieldType::Undefined => {
+                if bytes.is_empty() {
+                    return Err(OxiGdalError::io_error_builder(
+                        "Empty value bytes for Byte/Undefined tag",
+                    )
+                    .with_operation("get_u64_from_source")
+                    .with_parameter("tag", self.tag.to_string())
+                    .with_suggestion("Tag value data is missing or zero-length")
+                    .build());
+                }
+                u64::from(bytes[0])
+            }
+            FieldType::Short => {
+                if bytes.len() < 2 {
+                    return Err(OxiGdalError::io_error_builder(
+                        "Insufficient bytes for Short tag value",
+                    )
+                    .with_operation("get_u64_from_source")
+                    .with_parameter("tag", self.tag.to_string())
+                    .with_parameter("bytes_available", bytes.len().to_string())
+                    .with_parameter("bytes_needed", "2")
+                    .with_suggestion("Tag value data is truncated or corrupted")
+                    .build());
+                }
+                u64::from(byte_order.read_u16(&bytes))
+            }
+            FieldType::Long => {
+                if bytes.len() < 4 {
+                    return Err(OxiGdalError::io_error_builder(
+                        "Insufficient bytes for Long tag value",
+                    )
+                    .with_operation("get_u64_from_source")
+                    .with_parameter("tag", self.tag.to_string())
+                    .with_parameter("bytes_available", bytes.len().to_string())
+                    .with_parameter("bytes_needed", "4")
+                    .with_suggestion("Tag value data is truncated or corrupted")
+                    .build());
+                }
+                u64::from(byte_order.read_u32(&bytes))
+            }
+            FieldType::Long8 => {
+                if bytes.len() < 8 {
+                    return Err(OxiGdalError::io_error_builder(
+                        "Insufficient bytes for Long8 tag value",
+                    )
+                    .with_operation("get_u64_from_source")
+                    .with_parameter("tag", self.tag.to_string())
+                    .with_parameter("bytes_available", bytes.len().to_string())
+                    .with_parameter("bytes_needed", "8")
+                    .with_suggestion("Tag value data is truncated or corrupted")
+                    .build());
+                }
+                byte_order.read_u64(&bytes)
+            }
+            FieldType::Float => {
+                if bytes.len() < 4 {
+                    return Err(OxiGdalError::io_error_builder(
+                        "Insufficient bytes for Float tag value",
+                    )
+                    .with_operation("get_u64_from_source")
+                    .with_parameter("tag", self.tag.to_string())
+                    .with_parameter("bytes_available", bytes.len().to_string())
+                    .with_parameter("bytes_needed", "4")
+                    .with_suggestion("Tag value data is truncated or corrupted")
+                    .build());
+                }
+                byte_order.read_f32(&bytes) as u64
+            }
+            FieldType::Double => {
+                if bytes.len() < 8 {
+                    return Err(OxiGdalError::io_error_builder(
+                        "Insufficient bytes for Double tag value",
+                    )
+                    .with_operation("get_u64_from_source")
+                    .with_parameter("tag", self.tag.to_string())
+                    .with_parameter("bytes_available", bytes.len().to_string())
+                    .with_parameter("bytes_needed", "8")
+                    .with_suggestion("Tag value data is truncated or corrupted")
+                    .build());
+                }
+                byte_order.read_f64(&bytes) as u64
+            }
+            _ => {
+                return Err(OxiGdalError::invalid_parameter_builder(
+                    "field_type",
+                    "Incompatible field type for u64 conversion",
+                )
+                .with_operation("get_u64_from_source")
+                .with_parameter("tag", self.tag.to_string())
+                .with_parameter("field_type", format!("{:?}", self.field_type))
+                .with_suggestion("Use appropriate getter method for this field type")
+                .build());
+            }
+        };
+
+        Ok(value)
+    }
+
     /// Gets the value as a `Vec<u64>`
     pub fn get_u64_vec<S: DataSource>(
         &self,
@@ -482,6 +598,38 @@ impl Ifd {
 mod tests {
     use super::*;
 
+    /// A simple in-memory DataSource for testing
+    struct TestSource {
+        data: Vec<u8>,
+    }
+
+    impl TestSource {
+        fn new(data: Vec<u8>) -> Self {
+            Self { data }
+        }
+    }
+
+    impl DataSource for TestSource {
+        fn size(&self) -> Result<u64> {
+            Ok(self.data.len() as u64)
+        }
+
+        fn read_range(&self, range: ByteRange) -> Result<Vec<u8>> {
+            let start = range.start as usize;
+            let end = range.end as usize;
+            if end > self.data.len() {
+                return Err(
+                    OxiGdalError::io_error_builder("Read past end of TestSource")
+                        .with_operation("read_range")
+                        .with_parameter("range_end", end.to_string())
+                        .with_parameter("data_len", self.data.len().to_string())
+                        .build(),
+                );
+            }
+            Ok(self.data[start..end].to_vec())
+        }
+    }
+
     #[test]
     fn test_field_type_sizes() {
         assert_eq!(FieldType::Byte.element_size(), 1);
@@ -522,5 +670,113 @@ mod tests {
             .get_u64(ByteOrderType::LittleEndian)
             .expect("should get value");
         assert_eq!(value, 1024);
+    }
+
+    #[test]
+    fn test_get_u64_from_source_inline() {
+        // When inline_value is Some, get_u64_from_source should behave like get_u64
+        let bo = ByteOrderType::LittleEndian;
+
+        // Build a Long inline entry with value 42
+        let mut inline_bytes = vec![0u8; 4];
+        bo.write_u32(&mut inline_bytes, 42);
+
+        let entry = IfdEntry {
+            tag: 256,
+            field_type: FieldType::Long,
+            count: 1,
+            value_offset: 0,
+            inline_value: Some(inline_bytes),
+        };
+
+        // Source data is irrelevant for inline values, but we still need one
+        let source = TestSource::new(vec![0u8; 16]);
+
+        let from_source = entry
+            .get_u64_from_source(&source, bo, TiffVariant::Classic)
+            .expect("inline Long should convert to u64 via get_u64_from_source");
+
+        let from_inline = entry
+            .get_u64(bo)
+            .expect("inline Long should convert to u64 via get_u64");
+
+        assert_eq!(from_source, 42);
+        assert_eq!(from_source, from_inline);
+    }
+
+    #[test]
+    fn test_get_u64_from_source_external_long() {
+        let bo = ByteOrderType::LittleEndian;
+
+        // Build a 64-byte source buffer; store a Long value 0x0000_BEEF at offset 32
+        let mut data = vec![0u8; 64];
+        bo.write_u32(&mut data[32..36], 0x0000_BEEF);
+
+        let source = TestSource::new(data);
+
+        let entry = IfdEntry {
+            tag: 256,
+            field_type: FieldType::Long,
+            count: 1,
+            value_offset: 32,
+            inline_value: None, // external
+        };
+
+        let value = entry
+            .get_u64_from_source(&source, bo, TiffVariant::Classic)
+            .expect("external Long should be read from source");
+
+        assert_eq!(value, 0x0000_BEEF);
+    }
+
+    #[test]
+    fn test_get_u64_from_source_external_double() {
+        let bo = ByteOrderType::LittleEndian;
+
+        // Store a Double (f64) value 12345.0 at offset 16
+        let mut data = vec![0u8; 32];
+        bo.write_f64(&mut data[16..24], 12345.0);
+
+        let source = TestSource::new(data);
+
+        let entry = IfdEntry {
+            tag: 300,
+            field_type: FieldType::Double,
+            count: 1,
+            value_offset: 16,
+            inline_value: None, // external
+        };
+
+        let value = entry
+            .get_u64_from_source(&source, bo, TiffVariant::Classic)
+            .expect("external Double should be read from source and cast to u64");
+
+        // f64 12345.0 as u64 truncates to 12345
+        assert_eq!(value, 12345);
+    }
+
+    #[test]
+    fn test_get_u64_from_source_external_short() {
+        let bo = ByteOrderType::LittleEndian;
+
+        // Store a Short (u16) value 999 at offset 8
+        let mut data = vec![0u8; 16];
+        bo.write_u16(&mut data[8..10], 999);
+
+        let source = TestSource::new(data);
+
+        let entry = IfdEntry {
+            tag: 258,
+            field_type: FieldType::Short,
+            count: 1,
+            value_offset: 8,
+            inline_value: None, // external
+        };
+
+        let value = entry
+            .get_u64_from_source(&source, bo, TiffVariant::Classic)
+            .expect("external Short should be read from source");
+
+        assert_eq!(value, 999);
     }
 }

@@ -441,21 +441,29 @@ fn validate_tile_ordering<S: DataSource>(
 /// Calculates performance metrics
 fn calculate_performance_metrics<S: DataSource>(
     tiff: &TiffFile,
-    _source: &S,
+    source: &S,
 ) -> Result<PerformanceMetrics> {
     let requests_per_tile = 1; // Ideal case: 1 request per tile
     let mut bytes_per_tile = 0u64;
 
     if let Some(ifd) = tiff.ifds.first() {
         if let (Some(tw), Some(th), Some(bps), Some(spp)) = (
-            ifd.get_entry(TiffTag::TileWidth)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
-            ifd.get_entry(TiffTag::TileLength)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
-            ifd.get_entry(TiffTag::BitsPerSample)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
-            ifd.get_entry(TiffTag::SamplesPerPixel)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
+            ifd.get_entry(TiffTag::TileWidth).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
+            ifd.get_entry(TiffTag::TileLength).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
+            ifd.get_entry(TiffTag::BitsPerSample).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
+            ifd.get_entry(TiffTag::SamplesPerPixel).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
         ) {
             bytes_per_tile = tw * th * spp * (bps / 8);
         }

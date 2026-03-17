@@ -204,7 +204,7 @@ impl CogConverter {
                 parameter: "ImageWidth",
                 message: format!("Missing ImageWidth tag in {}", self.input_path),
             })?
-            .get_u64(tiff.byte_order())?;
+            .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
         let height = ifd
             .get_entry(crate::tiff::TiffTag::ImageLength)
@@ -212,7 +212,7 @@ impl CogConverter {
                 parameter: "ImageLength",
                 message: format!("Missing ImageLength tag in {}", self.input_path),
             })?
-            .get_u64(tiff.byte_order())?;
+            .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
         // For now, we'll use placeholder data for analysis
         // In a real implementation, we'd read actual image data
