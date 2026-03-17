@@ -83,125 +83,125 @@ impl VectorMetrics {
             read_count: meter
                 .u64_counter("oxigdal.vector.read.count")
                 .with_description("Number of vector read operations")
-                .init(),
+                .build(),
             read_duration: meter
                 .f64_histogram("oxigdal.vector.read.duration")
                 .with_description("Duration of vector read operations in milliseconds")
-                .init(),
+                .build(),
             features_read: meter
                 .u64_counter("oxigdal.vector.features.read")
                 .with_description("Number of features read")
-                .init(),
+                .build(),
 
             // Write operations
             write_count: meter
                 .u64_counter("oxigdal.vector.write.count")
                 .with_description("Number of vector write operations")
-                .init(),
+                .build(),
             write_duration: meter
                 .f64_histogram("oxigdal.vector.write.duration")
                 .with_description("Duration of vector write operations in milliseconds")
-                .init(),
+                .build(),
             features_written: meter
                 .u64_counter("oxigdal.vector.features.written")
                 .with_description("Number of features written")
-                .init(),
+                .build(),
 
             // Geometry operations
             buffer_count: meter
                 .u64_counter("oxigdal.vector.buffer.count")
                 .with_description("Number of buffer operations")
-                .init(),
+                .build(),
             buffer_duration: meter
                 .f64_histogram("oxigdal.vector.buffer.duration")
                 .with_description("Duration of buffer operations in milliseconds")
-                .init(),
+                .build(),
             intersection_count: meter
                 .u64_counter("oxigdal.vector.intersection.count")
                 .with_description("Number of intersection operations")
-                .init(),
+                .build(),
             intersection_duration: meter
                 .f64_histogram("oxigdal.vector.intersection.duration")
                 .with_description("Duration of intersection operations in milliseconds")
-                .init(),
+                .build(),
             union_count: meter
                 .u64_counter("oxigdal.vector.union.count")
                 .with_description("Number of union operations")
-                .init(),
+                .build(),
             union_duration: meter
                 .f64_histogram("oxigdal.vector.union.duration")
                 .with_description("Duration of union operations in milliseconds")
-                .init(),
+                .build(),
             simplify_count: meter
                 .u64_counter("oxigdal.vector.simplify.count")
                 .with_description("Number of simplify operations")
-                .init(),
+                .build(),
             simplify_duration: meter
                 .f64_histogram("oxigdal.vector.simplify.duration")
                 .with_description("Duration of simplify operations in milliseconds")
-                .init(),
+                .build(),
 
             // Spatial operations
             spatial_index_build_count: meter
                 .u64_counter("oxigdal.vector.spatial_index.build.count")
                 .with_description("Number of spatial index builds")
-                .init(),
+                .build(),
             spatial_index_build_duration: meter
                 .f64_histogram("oxigdal.vector.spatial_index.build.duration")
                 .with_description("Duration of spatial index build in milliseconds")
-                .init(),
+                .build(),
             spatial_query_count: meter
                 .u64_counter("oxigdal.vector.spatial_query.count")
                 .with_description("Number of spatial queries")
-                .init(),
+                .build(),
             spatial_query_duration: meter
                 .f64_histogram("oxigdal.vector.spatial_query.duration")
                 .with_description("Duration of spatial queries in milliseconds")
-                .init(),
+                .build(),
             spatial_join_count: meter
                 .u64_counter("oxigdal.vector.spatial_join.count")
                 .with_description("Number of spatial joins")
-                .init(),
+                .build(),
             spatial_join_duration: meter
                 .f64_histogram("oxigdal.vector.spatial_join.duration")
                 .with_description("Duration of spatial joins in milliseconds")
-                .init(),
+                .build(),
 
             // Transform operations
             reproject_count: meter
                 .u64_counter("oxigdal.vector.reproject.count")
                 .with_description("Number of vector reprojection operations")
-                .init(),
+                .build(),
             reproject_duration: meter
                 .f64_histogram("oxigdal.vector.reproject.duration")
                 .with_description("Duration of vector reprojection in milliseconds")
-                .init(),
+                .build(),
             transform_count: meter
                 .u64_counter("oxigdal.vector.transform.count")
                 .with_description("Number of vector transform operations")
-                .init(),
+                .build(),
             transform_duration: meter
                 .f64_histogram("oxigdal.vector.transform.duration")
                 .with_description("Duration of vector transform in milliseconds")
-                .init(),
+                .build(),
 
             // Statistics
             active_layers: meter
                 .i64_up_down_counter("oxigdal.vector.active_layers")
                 .with_description("Number of active vector layers")
-                .init(),
+                .build(),
             feature_count: meter
                 .f64_histogram("oxigdal.vector.feature_count")
                 .with_description("Number of features in layer")
-                .init(),
+                .build(),
             geometry_complexity: meter
                 .f64_histogram("oxigdal.vector.geometry.complexity")
                 .with_description("Geometry complexity (vertex count)")
-                .init(),
+                .build(),
             layer_size_bytes: meter
                 .f64_histogram("oxigdal.vector.layer.size.bytes")
                 .with_description("Layer size in bytes")
-                .init(),
+                .build(),
         })
     }
 

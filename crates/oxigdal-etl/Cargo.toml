@@ -45,7 +45,7 @@ lru.workspace = true
 tracing.workspace = true
 
 # Optional: Kafka support
-rdkafka = { version = "0.37", optional = true, default-features = false, features = ["tokio"] }
+rdkafka = { version = "0.39", optional = true, default-features = false, features = ["tokio"] }
 
 # Optional: PostgreSQL support
 tokio-postgres = { workspace = true, optional = true, features = ["with-serde_json-1"] }
@@ -59,7 +59,7 @@ aws-config = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
 # Optional: Scheduler support
-cron = { version = "0.13", optional = true }
+cron = { version = "0.15", optional = true }
 
 # Utilities
 chrono.workspace = true

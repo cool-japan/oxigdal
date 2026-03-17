@@ -801,7 +801,7 @@ impl ProgressiveRenderer {
         }
 
         // Sort by priority (higher priority first)
-        self.queue.sort_by(|a, b| b.1.cmp(&a.1));
+        self.queue.sort_by_key(|x| std::cmp::Reverse(x.1));
     }
 
     /// Gets the next tiles to render

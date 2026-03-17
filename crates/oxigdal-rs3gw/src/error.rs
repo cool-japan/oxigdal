@@ -112,6 +112,29 @@ fn map_storage_error(err: StorageError) -> OxiGdalError {
             parameter: "part_number",
             message: "Invalid part number".to_string(),
         },
+        StorageError::AccessDenied => OxiGdalError::InvalidParameter {
+            parameter: "credentials",
+            message: "Access denied".to_string(),
+        },
+        StorageError::InvalidBucketName(ref name) => OxiGdalError::InvalidParameter {
+            parameter: "bucket",
+            message: format!("Invalid bucket name: {name}"),
+        },
+        StorageError::TooManyBuckets => OxiGdalError::InvalidParameter {
+            parameter: "bucket",
+            message: "Too many buckets".to_string(),
+        },
+        StorageError::InvalidPart(ref msg) => OxiGdalError::InvalidParameter {
+            parameter: "part",
+            message: format!("Invalid part: {msg}"),
+        },
+        StorageError::InvalidKey(ref key) => OxiGdalError::InvalidParameter {
+            parameter: "key",
+            message: format!("Invalid key: {key}"),
+        },
+        StorageError::InsufficientStorage => OxiGdalError::Internal {
+            message: "Insufficient storage: no space left on device".to_string(),
+        },
         StorageError::Internal(ref msg) => OxiGdalError::Internal {
             message: msg.clone(),
         },

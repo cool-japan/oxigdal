@@ -14,16 +14,18 @@ categories = ["development-tools::profiling", "network-programming", "science"]
 
 [dependencies]
 # OpenTelemetry core
-opentelemetry = "0.22"
-opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
-opentelemetry-stdout = { version = "0.3", features = ["trace", "metrics"] }
-opentelemetry-otlp = { version = "0.15", optional = true, features = ["metrics", "trace", "tonic"] }
-opentelemetry-jaeger = { version = "0.21", optional = true }
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-stdout = { version = "0.31", features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.31", optional = true, features = ["metrics", "trace", "grpc-tonic"] }
+# opentelemetry-jaeger removed: RUSTSEC-2025-0123 (entire crate unmaintained, patched=[]).
+# The `jaeger` feature falls through to stdout exporter (see traces.rs).
+# Production Jaeger users should configure an OTLP endpoint with Jaeger's native OTLP support.
 
 # Tracing integration
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = "0.23"
+tracing-opentelemetry = "0.32"
 
 # Metrics
 prometheus = "0.14"
@@ -64,11 +66,12 @@ hostname = { workspace = true }
 
 [features]
 default = ["otlp"]
-jaeger = ["opentelemetry-jaeger"]
+# jaeger feature kept for API compatibility; opentelemetry-jaeger dep removed (RUSTSEC-2025-0123)
+jaeger = []
 otlp = ["opentelemetry-otlp"]
 
 [dev-dependencies]
-tokio-test = "0.4"
+tokio-test.workspace = true
 criterion = { workspace = true }
 tempfile = { workspace = true }
 

@@ -37,7 +37,7 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 
 # JNI support for Android
-jni = { version = "0.21", optional = true }
+jni = { version = "0.22", optional = true }
 
 # Logging
 tracing = { workspace = true }
@@ -46,7 +46,7 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]
-cbindgen = "0.27"
+cbindgen = "0.29"
 
 # Mobile-specific lints (FFI requires different rules)
 [lints.rust]

@@ -76,7 +76,7 @@ impl<C> CacheWarmer<C> {
 
         // Return most common next keys
         let mut targets: Vec<_> = next_keys.into_iter().collect();
-        targets.sort_by(|a, b| b.1.cmp(&a.1));
+        targets.sort_by_key(|x| std::cmp::Reverse(x.1));
         targets.into_iter().take(5).map(|(k, _)| k).collect()
     }
 }

@@ -472,7 +472,7 @@ fn extract_simulated_weights(file_data: &[u8], file_size: usize) -> Vec<WeightTe
             // Create realistic layer shapes
             let layer_size = chunk.len();
             let dim1 = (layer_size as f32).sqrt() as usize;
-            let dim2 = if dim1 > 0 { layer_size / dim1 } else { 1 };
+            let dim2 = layer_size.checked_div(dim1).unwrap_or(1);
             let shape = if dim1 * dim2 == layer_size {
                 vec![dim1, dim2]
             } else {

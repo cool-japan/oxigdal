@@ -43,6 +43,7 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
 // Allow partial documentation during development
@@ -52,27 +53,47 @@
 // Allow too many arguments for parquet operations
 #![allow(clippy::too_many_arguments)]
 
+// When no_std is active, bring in alloc for heap allocation (Vec, String, etc.)
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(feature = "std")]
 pub mod arrow_ext;
 pub mod error;
 pub mod geometry;
+#[cfg(feature = "std")]
 pub mod metadata;
+#[cfg(feature = "std")]
+pub mod partitioning;
+#[cfg(feature = "std")]
 pub mod spatial;
 
+#[cfg(feature = "std")]
 mod compression;
+#[cfg(feature = "std")]
 mod reader;
+#[cfg(feature = "std")]
 mod writer;
 
+#[cfg(feature = "std")]
 pub use compression::CompressionType;
 pub use error::{GeoParquetError, Result};
+#[cfg(feature = "std")]
 pub use metadata::{Crs, GeoParquetMetadata, GeometryColumnMetadata};
+#[cfg(feature = "std")]
 pub use reader::GeoParquetReader;
+#[cfg(feature = "std")]
 pub use writer::GeoParquetWriter;
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// GeoParquet specification version
+#[cfg(feature = "std")]
 pub const GEOPARQUET_VERSION: &str = metadata::GEOPARQUET_VERSION;
+/// GeoParquet specification version (no_std)
+#[cfg(not(feature = "std"))]
+pub const GEOPARQUET_VERSION: &str = "1.0.0";
 
 #[cfg(test)]
 mod tests {

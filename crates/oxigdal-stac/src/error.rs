@@ -98,6 +98,18 @@ pub enum StacError {
     #[error("Builder error: {0}")]
     Builder(String),
 
+    /// Item already exists (transaction conflict).
+    #[error("Item already exists: {0}")]
+    AlreadyExists(String),
+
+    /// Item or resource not found.
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    /// Invalid item data.
+    #[error("Invalid item: {0}")]
+    InvalidItem(String),
+
     /// Other error.
     #[error("{0}")]
     Other(String),

@@ -30,7 +30,7 @@ impl Feature {
         if let Some(obj) = properties {
             let keys = Object::keys(&obj)?;
             for key in keys {
-                if let Some(value) = obj.get::<_, String>(&key)? {
+                if let Some(value) = obj.get::<String>(&key)? {
                     props.insert(key, value);
                 }
             }

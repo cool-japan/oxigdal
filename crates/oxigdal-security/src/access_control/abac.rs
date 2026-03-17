@@ -235,7 +235,7 @@ impl AbacEngine {
     pub fn list_policies(&self) -> Vec<AbacPolicy> {
         let mut policies: Vec<_> = self.policies.iter().map(|p| p.clone()).collect();
         // Sort by priority (descending)
-        policies.sort_by(|a, b| b.priority.cmp(&a.priority));
+        policies.sort_by_key(|x| std::cmp::Reverse(x.priority));
         policies
     }
 

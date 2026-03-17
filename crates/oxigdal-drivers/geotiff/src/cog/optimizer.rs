@@ -310,14 +310,12 @@ fn generate_recommendations(
             recommendations
                 .push("Floating-point data: Consider DEFLATE or ZSTD compression".to_string());
         }
-        RasterDataType::UInt8 => {
-            if characteristics.unique_values < 256 {
-                recommendations.push(
-                    "8-bit integer data with limited unique values - highly compressible"
-                        .to_string(),
-                );
-            }
+        RasterDataType::UInt8 if characteristics.unique_values < 256 => {
+            recommendations.push(
+                "8-bit integer data with limited unique values - highly compressible".to_string(),
+            );
         }
+        RasterDataType::UInt8 => {}
         _ => {}
     }
 

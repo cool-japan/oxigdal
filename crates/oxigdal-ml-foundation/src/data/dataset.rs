@@ -385,7 +385,7 @@ mod getrandom {
 
     pub fn get_random_u64() -> Result<u64> {
         let mut buf = [0u8; 8];
-        getrandom::getrandom(&mut buf).map_err(|e| {
+        getrandom::fill(&mut buf).map_err(|e| {
             crate::Error::Numerical(format!("Failed to generate random number: {}", e))
         })?;
         Ok(u64::from_ne_bytes(buf))

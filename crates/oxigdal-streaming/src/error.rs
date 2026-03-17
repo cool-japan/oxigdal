@@ -1,12 +1,16 @@
 //! Error types for the streaming module.
 
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
 /// Result type for streaming operations.
-pub type Result<T> = std::result::Result<T, StreamingError>;
+pub type Result<T> = core::result::Result<T, StreamingError>;
 
 /// Errors that can occur during streaming operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StreamingError {
     /// Core OxiGDAL error
+    #[cfg(feature = "std")]
     #[error("OxiGDAL error: {0}")]
     Core(#[from] oxigdal_core::error::OxiGdalError),
 
@@ -56,10 +60,12 @@ pub enum StreamingError {
     RocksDB(#[from] rocksdb::Error),
 
     /// IO error
+    #[cfg(feature = "std")]
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
     /// Arrow error
+    #[cfg(feature = "std")]
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 
@@ -96,18 +102,21 @@ pub enum StreamingError {
     Other(String),
 }
 
+#[cfg(feature = "std")]
 impl<T> From<crossbeam_channel::SendError<T>> for StreamingError {
     fn from(_: crossbeam_channel::SendError<T>) -> Self {
         StreamingError::SendError
     }
 }
 
+#[cfg(feature = "std")]
 impl From<crossbeam_channel::RecvError> for StreamingError {
     fn from(_: crossbeam_channel::RecvError) -> Self {
         StreamingError::RecvError
     }
 }
 
+#[cfg(feature = "std")]
 impl From<serde_json::Error> for StreamingError {
     fn from(e: serde_json::Error) -> Self {
         StreamingError::SerializationError(e.to_string())

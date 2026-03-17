@@ -19,7 +19,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-bench = "0.1.0"
+oxigdal-bench = "0.1.2"
 ```
 
 ## Quick Start
@@ -134,7 +134,7 @@ if !report.has_regressions() {
 
 ```toml
 [dependencies]
-oxigdal-bench = { version = "0.1.0", features = ["raster", "vector"] }
+oxigdal-bench = { version = "0.1.2", features = ["raster", "vector"] }
 ```
 
 ## Benchmark Scenarios

@@ -69,6 +69,13 @@ members = [
     "crates/oxigdal-node",
     "crates/oxigdal-python",
     "crates/oxigdal",
+    "crates/oxigdal-gpkg",
+    "crates/oxigdal-mbtiles",
+    "crates/oxigdal-copc",
+    "crates/oxigdal-pmtiles",
+    "crates/oxigdal-noalloc",
+    "crates/oxigdal-index",
+    "crates/oxigdal-geojson",
     "benchmarks",
 ]
 # Exclude Python bindings from default builds (use maturin for py crate)
@@ -140,11 +147,17 @@ default-members = [
     "crates/oxigdal-sync",
     "crates/oxigdal-node",
     "crates/oxigdal",
+    "crates/oxigdal-gpkg",
+    "crates/oxigdal-mbtiles",
+    "crates/oxigdal-copc",
+    "crates/oxigdal-pmtiles",
+    "crates/oxigdal-noalloc",
+    "crates/oxigdal-index",
     "benchmarks",
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -179,14 +192,14 @@ parquet = { version = "58", default-features = false }
 
 # Compression - COOLJAPAN Pure Rust Policy (oxiarc ecosystem)
 # Use oxiarc-* crates instead of C-based compression libraries
-oxiarc-archive = "0.2.3"  # ZIP, TAR, GZIP, LZH, XZ archive formats
-oxiarc-core = "0.2.3"     # Core components for OxiArc
-oxiarc-deflate = "0.2.3"  # Pure Rust DEFLATE (replacement for flate2)
-oxiarc-lzw = "0.2.3"      # Pure Rust LZW compression (updated from 0.2.2)
-oxiarc-lz4 = "0.2.3"      # Pure Rust LZ4 compression
-oxiarc-zstd = "0.2.3"     # Pure Rust Zstandard compression
-oxiarc-bzip2 = "0.2.3"    # Pure Rust BZip2 compression
-oxiarc-lzhuf = "0.2.3"    # Pure Rust LZH compression
+oxiarc-archive = "0.2.4"  # ZIP, TAR, GZIP, LZH, XZ archive formats
+oxiarc-core = "0.2.4"     # Core components for OxiArc
+oxiarc-deflate = "0.2.4"  # Pure Rust DEFLATE (replacement for flate2)
+oxiarc-lzw = "0.2.4"      # Pure Rust LZW compression (updated from 0.2.2)
+oxiarc-lz4 = "0.2.4"      # Pure Rust LZ4 compression
+oxiarc-zstd = "0.2.4"     # Pure Rust Zstandard compression
+oxiarc-bzip2 = "0.2.4"    # Pure Rust BZip2 compression
+oxiarc-lzhuf = "0.2.4"    # Pure Rust LZH compression
 
 # Legacy compression crates (to be phased out, kept for compatibility)
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -194,21 +207,24 @@ zstd = { version = "0.13", default-features = false }
 brotli = "8"
 snap = "1"
 jpeg-decoder = "0.3"
-jpeg-encoder = "0.6"
+jpeg-encoder = "0.7"
 
 # Serialization formats
+apache-avro = { version = "0.21", default-features = false }
 flatbuffers = "25"
+rmp-serde = "1.3"
 toml = "1.0"
 
 # HTTP client
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking", "json"] }
 
 # Storage backend
-rs3gw = "0.1.0"
+rs3gw = "0.2"
 
 # WASM support
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+wasm-bindgen-test = "0.3"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window",
@@ -250,10 +266,10 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # COOLJAPAN ecosystem
-scirs2-core = "0.3.1"
+scirs2-core = "0.3.2"
 # numrs2 = { version = "0.1", optional = true }
 # oxiblas = { version = "0.1", optional = true }
-oxicode = "0.1.1"
+oxicode = "0.2"
 
 # Logging
 tracing = "0.1"
@@ -261,6 +277,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Testing
 proptest = "1"
+tokio-test = "0.4"
 
 # Benchmarking
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -268,6 +285,7 @@ pprof = { version = "0.15", default-features = false, features = ["flamegraph", 
 
 # Additional dependencies
 num-traits = "0.2"
+once_cell = "1"
 approx = "0.5"
 rayon = "1"
 lz4 = "1"
@@ -291,8 +309,8 @@ rumqttc = { version = "0.25", default-features = false }
 sled = "0.34"
 
 # Database - SQLite (constrained by proj-sys requirement: >=0.28, <0.36)
-rusqlite = "0.32"  # Compatible with libsqlite3-sys 0.30
-libsqlite3-sys = "0.30"  # Must be >=0.28, <0.36 for proj-sys compatibility
+rusqlite = "0.34"  # Compatible with libsqlite3-sys 0.32
+libsqlite3-sys = "0.32"  # Must be >=0.28, <0.36 for proj-sys compatibility
 
 # Scheduling
 cron = "0.15"
@@ -377,10 +395,16 @@ oxigdal-edge = { path = "crates/oxigdal-edge", version = "0.1" }
 oxigdal-offline = { path = "crates/oxigdal-offline", version = "0.1" }
 oxigdal-embedded = { path = "crates/oxigdal-embedded", version = "0.1" }
 oxigdal-node = { path = "crates/oxigdal-node", version = "0.1" }
+oxigdal-gpkg = { path = "crates/oxigdal-gpkg", version = "0.1" }
+oxigdal-mbtiles = { path = "crates/oxigdal-mbtiles", version = "0.1" }
+oxigdal-copc = { path = "crates/oxigdal-copc", version = "0.1" }
+oxigdal-pmtiles = { path = "crates/oxigdal-pmtiles", version = "0.1" }
+oxigdal-noalloc = { path = "crates/oxigdal-noalloc", version = "0.1" }
+oxigdal-index = { path = "crates/oxigdal-index", version = "0.1" }
 
 # Node.js bindings dependencies
-napi = "2"
-napi-derive = "2"
+napi = "3"
+napi-derive = "3"
 napi-build = "2"
 
 # Embedded-specific dependencies
@@ -395,7 +419,7 @@ hostname = "0.4"
 
 # URL and GeoJSON support
 url = { version = "2", features = ["serde"] }
-geojson = "0.24"
+geojson = "1.0"
 geo-types = "0.7"
 geo = "0.32"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -410,11 +434,18 @@ http-body-util = "0.1"
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-png = "0.17"
+png = "0.18"
 
 # CLI and config
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env", "cargo"] }
+
+# GPU compute
+encase = "0.12"
+glam = { version = "0.32", features = ["bytemuck"] }
+naga = { version = "28", features = ["wgsl-in", "wgsl-out"] }
+pollster = "0.4"
+wgpu = { version = "28", default-features = false, features = ["wgsl", "metal"] }
 
 # 3D/Point cloud
 gltf = { version = "1", features = ["import"] }
@@ -422,11 +453,11 @@ gltf-json = "1"
 delaunator = "1"
 rstar = "0.12"
 las = "0.9"
-laz = { version = "0.11", default-features = false }
+laz = { version = "0.12", default-features = false }
 base64 = "0.22"
 
 # Crypto (for optional features)
-getrandom = "0.2"
+getrandom = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
 
@@ -438,16 +469,17 @@ oauth2 = { version = "5", default-features = false }
 azure_storage = "0.21"
 azure_storage_blobs = "0.21"
 azure_storage_datalake = "0.21"
-azure_core = "0.21"
-azure_identity = "0.21"
+azure_core = "0.33"
+azure_identity = "0.33"
 # Google Cloud SDK - using latest stable versions (reduces tonic/axum duplication)
 google-cloud-storage = "1"  # Upgraded from 0.22
 google-cloud-auth = "1"     # Upgraded from 0.18
 google-cloud-bigquery = "0.15"
-google-cloud-pubsub = "0.32"  # Upgraded from 0.29 to use latest tonic/axum
+google-cloud-pubsub = "0.33"  # Upgraded from 0.29 to use latest tonic/axum
 
 # AWS extended SDK
 aws-sdk-athena = "1"
+aws-smithy-types = { version = "1", features = ["byte-stream-poll-next"] }
 aws-sdk-glue = "1"
 aws-sdk-lambda = "1"
 aws-sdk-sagemaker = "1"
@@ -460,14 +492,14 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["half", 
 ndarray = "0.17"
 
 # SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant)
-scirs2-neural = "0.3.1"
-scirs2-autograd = "0.3.1"
-scirs2-optimize = "0.3.1"
-scirs2-datasets = "0.3.1"
-scirs2-metrics = "0.3.1"
-scirs2-linalg = "0.3.1"
-scirs2-vision = "0.3.1"
-scirs2-series = "0.3.1"
+scirs2-neural = "0.3.2"
+scirs2-autograd = "0.3.2"
+scirs2-optimize = "0.3.2"
+scirs2-datasets = "0.3.2"
+scirs2-metrics = "0.3.2"
+scirs2-linalg = "0.3.2"
+scirs2-vision = "0.3.2"
+scirs2-series = "0.3.2"
 
 # PostgreSQL
 tokio-postgres = "0.7"
@@ -478,7 +510,7 @@ tokio-postgres-rustls = "0.13"
 # Distributed computing
 arrow-flight = "58"
 tonic = "0.14"
-prost = "0.13"
+prost = "0.14"
 parking_lot = "0.12"
 crossbeam = "0.8"
 crossbeam-channel = "0.5"
@@ -494,30 +526,30 @@ aws-credential-types = "1"
 # Gateway dependencies
 async-graphql = "7"
 async-graphql-axum = "7"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rustls = { version = "0.23", default-features = false }
 rustls-pemfile = "2"  # RUSTSEC-2025-0134: Unmaintained (archived Aug 2025). Waiting for upstream (tonic, rumqttc) to migrate to rustls-pki-types 1.9+
 tokio-tungstenite = "0.28"
 redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
-governor = "0.7"
+governor = "0.10"
 
 # Workflow dependencies
-petgraph = "0.6"
+petgraph = "0.8"
 num_cpus = "1"
 
 # Jupyter and dev tools dependencies
 jupyter = "0.2"
 # NOTE: evcxr 0.18 uses json 0.12.4 (RUSTSEC-2022-0081: unmaintained). Low risk: dev tool only.
-evcxr = "0.18"
+evcxr = "0.21"
 plotters = "0.3"
 plotters-backend = "0.3"
-# NOTE: indicatif 0.17 uses number_prefix 0.4.0 (RUSTSEC-2025-0119: unmaintained). No risk: formatting only.
-indicatif = "0.17"
-console = "0.15"
+# indicatif 0.18 replaced number_prefix with unit-prefix (resolves RUSTSEC-2025-0119)
+indicatif = "0.18"
+console = "0.16"
 comfy-table = "7"
-colored = "2"
+colored = "3"
 walkdir = "2"
-notify = "7"
+notify = "8"
 diff = "0.1"
 
 [workspace.lints.rust]

@@ -34,7 +34,7 @@ oxigdal-core.workspace = true
 
 # Point cloud dependencies
 las = "0.9"
-laz = { version = "0.11", default-features = false }
+laz = { version = "0.12", default-features = false }
 
 # Mesh and 3D formats
 gltf = { version = "1", features = ["import"] }
@@ -42,8 +42,8 @@ gltf-json = "1"
 
 # Geometry and triangulation
 delaunator = "1"
-geo = "0.28"
-geo-types = "0.7"
+geo = "0.32"
+geo-types.workspace = true
 
 # Spatial indexing
 rstar = "0.12"
@@ -53,7 +53,7 @@ oxiarc-archive = { workspace = true }
 oxiarc-zstd = { workspace = true }
 
 # Base64 encoding for 3D Tiles
-base64 = "0.22"
+base64.workspace = true
 
 # GLB binary support
 bytemuck.workspace = true

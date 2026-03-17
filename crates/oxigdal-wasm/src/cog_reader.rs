@@ -286,46 +286,45 @@ impl WasmCogReader {
                         Self::read_array(value_bytes, field_type, count, byte_order, backend)
                             .await?;
                 }
-                33550 => {
+                33550 if count >= 2 => {
                     // ModelPixelScaleTag (GeoTIFF)
                     // Contains [ScaleX, ScaleY, ScaleZ] as DOUBLE (type 12)
-                    if count >= 2 {
-                        let doubles = Self::read_double_array(
-                            value_bytes,
-                            field_type,
-                            count,
-                            byte_order,
-                            backend,
-                        )
-                        .await?;
-                        if !doubles.is_empty() {
-                            pixel_scale_x = Some(doubles[0]);
-                        }
-                        if doubles.len() > 1 {
-                            pixel_scale_y = Some(doubles[1]);
-                        }
+                    let doubles = Self::read_double_array(
+                        value_bytes,
+                        field_type,
+                        count,
+                        byte_order,
+                        backend,
+                    )
+                    .await?;
+                    if !doubles.is_empty() {
+                        pixel_scale_x = Some(doubles[0]);
+                    }
+                    if doubles.len() > 1 {
+                        pixel_scale_y = Some(doubles[1]);
                     }
                 }
-                33922 => {
+                33550 => {
+                    // ModelPixelScaleTag with insufficient count - skip
+                }
+                33922 if count >= 6 => {
                     // ModelTiepointTag (GeoTIFF)
                     // Contains [I, J, K, X, Y, Z] as DOUBLE (type 12)
                     // I, J, K = raster coordinates
                     // X, Y, Z = geographic coordinates
-                    if count >= 6 {
-                        let doubles = Self::read_double_array(
-                            value_bytes,
-                            field_type,
-                            count,
-                            byte_order,
-                            backend,
-                        )
-                        .await?;
-                        if doubles.len() >= 6 {
-                            tiepoint_pixel_x = Some(doubles[0]);
-                            tiepoint_pixel_y = Some(doubles[1]);
-                            tiepoint_geo_x = Some(doubles[3]);
-                            tiepoint_geo_y = Some(doubles[4]);
-                        }
+                    let doubles = Self::read_double_array(
+                        value_bytes,
+                        field_type,
+                        count,
+                        byte_order,
+                        backend,
+                    )
+                    .await?;
+                    if doubles.len() >= 6 {
+                        tiepoint_pixel_x = Some(doubles[0]);
+                        tiepoint_pixel_y = Some(doubles[1]);
+                        tiepoint_geo_x = Some(doubles[3]);
+                        tiepoint_geo_y = Some(doubles[4]);
                     }
                 }
                 TAG_GEO_KEY_DIRECTORY => {

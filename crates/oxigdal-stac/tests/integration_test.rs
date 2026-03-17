@@ -67,7 +67,7 @@ fn test_collection_with_extent() {
 #[test]
 fn test_item_with_assets() {
     let datetime = Utc::now();
-    let geometry = geojson::Geometry::new(geojson::Value::Point(vec![-122.4194, 37.7749]));
+    let geometry = geojson::Geometry::new_point([-122.4194, 37.7749]);
 
     let visual_asset = Asset::new("https://example.com/visual.tif")
         .with_title("Visual Asset")
@@ -313,16 +313,21 @@ fn test_helper_functions() {
 
     // Test point_geometry helper
     let point = oxigdal_stac::point_geometry(-122.0, 37.0);
-    assert_eq!(point.value, geojson::Value::Point(vec![-122.0, 37.0]));
+    assert_eq!(
+        point.value,
+        geojson::GeometryValue::new_point([-122.0, 37.0])
+    );
 
     // Test bbox_to_polygon helper
     let polygon = oxigdal_stac::bbox_to_polygon(-122.5, 37.5, -122.0, 38.0);
     match polygon.value {
-        geojson::Value::Polygon(coords) => {
+        geojson::GeometryValue::Polygon {
+            coordinates: coords,
+        } => {
             assert_eq!(coords.len(), 1);
             assert_eq!(coords[0].len(), 5);
-            assert_eq!(coords[0][0], vec![-122.5, 37.5]);
-            assert_eq!(coords[0][4], vec![-122.5, 37.5]); // Closed ring
+            assert_eq!(coords[0][0], geojson::Position::from([-122.5, 37.5]));
+            assert_eq!(coords[0][4], geojson::Position::from([-122.5, 37.5])); // Closed ring
         }
         _ => panic!("Expected Polygon"),
     }
@@ -353,13 +358,13 @@ fn test_real_world_sentinel2_example() {
         .expect("Failed to parse datetime")
         .with_timezone(&Utc);
 
-    let geometry = geojson::Geometry::new(geojson::Value::Polygon(vec![vec![
+    let geometry = geojson::Geometry::new_polygon(vec![vec![
         vec![-122.5, 37.5],
         vec![-122.0, 37.5],
         vec![-122.0, 38.0],
         vec![-122.5, 38.0],
         vec![-122.5, 37.5],
-    ]]));
+    ]]);
 
     let visual_asset = Asset::new("s3://sentinel-s2-l2a/tiles/10/S/FH/2023/6/15/0/TCI.jp2")
         .with_title("True color image")

@@ -122,19 +122,47 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+// When no_std is active, bring in alloc for heap allocation (Vec, String, etc.)
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+#[cfg(not(feature = "std"))]
+use alloc::format;
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
 pub mod crs;
+#[cfg(feature = "std")]
+pub mod crs_registry;
+pub mod datum_transform;
 pub mod epsg;
 pub mod error;
+#[cfg(feature = "std")]
+pub mod grid_shift;
+#[cfg(feature = "std")]
+pub mod proj_string;
+#[cfg(feature = "std")]
+pub mod projections;
 pub mod transform;
 pub mod wkt;
 
 // Re-export commonly used types
 pub use crs::{Crs, CrsSource};
-pub use epsg::{CrsType, EpsgDefinition, available_epsg_codes, contains_epsg, lookup_epsg};
+pub use epsg::{CrsType, EpsgDefinition};
+#[cfg(feature = "std")]
+pub use epsg::{available_epsg_codes, contains_epsg, lookup_epsg};
 pub use error::{Error, Result};
-pub use transform::{
-    BoundingBox, Coordinate, Coordinate3D, Transformer, transform_coordinate, transform_epsg,
+#[cfg(feature = "std")]
+pub use grid_shift::{
+    DHDN_TO_ETRS89, Helmert7Params, NAD27_TO_NAD83, NTF_TO_RGF93, OSGB36_TO_ETRS89,
+    dhdn_etrs89_helmert, helmert_3d, helmert_7param, nad27_nad83_poly, ostn15_approx, rgf93_approx,
 };
+#[cfg(feature = "std")]
+pub use transform::{
+    AzimuthalEquidistant, CassineSoldner, EckertIV, EckertVI, EquidistantConic, GaussKruger,
+    Gnomonic, LambertAzimuthalEqualArea, LambertConformalConic, Mollweide, Robinson, Sinusoidal,
+    Transformer, TransverseMercator, transform_coordinate, transform_epsg,
+};
+pub use transform::{BoundingBox, Coordinate, Coordinate3D};
 pub use wkt::{WktNode, WktParser, parse_wkt};
 
 /// Library version

@@ -1,11 +1,41 @@
 //! Coordinate transformation operations.
 //!
 //! This module provides coordinate transformation capabilities between different CRS
-//! using the proj4rs library for pure Rust implementations.
+//! using the proj4rs library for pure Rust implementations, as well as native pure-Rust
+//! implementations of many map projections.
+//!
+//! # Module Structure
+//!
+//! - `cylindrical`   — Cylindrical projections (Mercator, Transverse Mercator, Cassini, etc.)
+//! - `pseudocylindrical` — Pseudo-cylindrical projections (Sinusoidal, Mollweide, Robinson, Eckert IV/VI)
+//! - `conic`         — Conic projections (Lambert Conic, Equidistant Conic, Albers)
+//! - `azimuthal`     — Azimuthal projections (Lambert Azimuthal Equal Area, Azimuthal Equidistant, Gnomonic)
 
+#[cfg(feature = "std")]
+pub mod azimuthal;
+#[cfg(feature = "std")]
+pub mod conic;
+#[cfg(feature = "std")]
+pub mod cylindrical;
+#[cfg(feature = "std")]
+pub mod pseudocylindrical;
+
+#[cfg(feature = "std")]
 use crate::crs::Crs;
 use crate::error::{Error, Result};
-use std::fmt;
+#[cfg(not(feature = "std"))]
+use alloc::format;
+use core::fmt;
+
+// Re-export projection types for easy access (std only — require transcendental float math)
+#[cfg(feature = "std")]
+pub use azimuthal::{AzimuthalEquidistant, Gnomonic, LambertAzimuthalEqualArea};
+#[cfg(feature = "std")]
+pub use conic::{EquidistantConic, LambertConformalConic};
+#[cfg(feature = "std")]
+pub use cylindrical::{CassineSoldner, GaussKruger, TransverseMercator};
+#[cfg(feature = "std")]
+pub use pseudocylindrical::{EckertIV, EckertVI, Mollweide, Robinson, Sinusoidal};
 
 /// A 2D coordinate (x, y) or (longitude, latitude).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -190,12 +220,14 @@ impl BoundingBox {
 }
 
 /// Coordinate transformer that handles transformations between CRS.
+#[cfg(feature = "std")]
 pub struct Transformer {
     source_crs: Crs,
     target_crs: Crs,
     proj: Option<proj4rs::Proj>,
 }
 
+#[cfg(feature = "std")]
 impl Transformer {
     /// Creates a new transformer.
     ///
@@ -365,10 +397,10 @@ impl Transformer {
         let source_proj_str = self.source_crs.to_proj_string()?;
         let target_proj_str = self.target_crs.to_proj_string()?;
 
-        let _source_proj = proj4rs::Proj::from_proj_string(&source_proj_str)
+        let source_proj = proj4rs::Proj::from_proj_string(&source_proj_str)
             .map_err(|e| Error::from_proj4rs(format!("{:?}", e)))?;
 
-        let _target_proj = proj4rs::Proj::from_proj_string(&target_proj_str)
+        let target_proj = proj4rs::Proj::from_proj_string(&target_proj_str)
             .map_err(|e| Error::from_proj4rs(format!("{:?}", e)))?;
 
         // Convert to radians if source is geographic
@@ -382,7 +414,7 @@ impl Transformer {
 
         // Perform transformation using a mutable array (proj4rs requires slice)
         let mut points = [(x, y)];
-        proj4rs::transform::transform(&_source_proj, &_target_proj, &mut points[..])
+        proj4rs::transform::transform(&source_proj, &target_proj, &mut points[..])
             .map_err(|e| Error::transformation_error(format!("{:?}", e)))?;
 
         let (mut result_x, mut result_y) = points[0];
@@ -406,6 +438,7 @@ impl Transformer {
 }
 
 /// Transforms a coordinate from one CRS to another (convenience function).
+#[cfg(feature = "std")]
 ///
 /// # Arguments
 ///
@@ -426,6 +459,7 @@ pub fn transform_coordinate(
 }
 
 /// Transforms coordinates from one EPSG code to another (convenience function).
+#[cfg(feature = "std")]
 ///
 /// # Arguments
 ///

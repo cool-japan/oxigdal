@@ -8,7 +8,8 @@ pub mod types;
 pub mod writer;
 
 use crate::error::{Error, Result};
-use scylla::{Session, SessionBuilder};
+use scylla::client::session::Session;
+use scylla::client::session_builder::SessionBuilder;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,15 +105,18 @@ impl CassandraConnector {
             .await
             .map_err(|e| Error::Cassandra(e.to_string()))?;
 
-        if let Some(row) = result.rows.and_then(|r| r.into_iter().next()) {
-            if let Some(Some(scylla::frame::response::result::CqlValue::Text(v))) =
-                row.columns.first()
-            {
-                return Ok(v.clone());
-            }
-        }
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
 
-        Err(Error::Cassandra("Failed to get version".to_string()))
+        let maybe_row = rows_result
+            .maybe_first_row::<(String,)>()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
+        match maybe_row {
+            Some((version,)) => Ok(version),
+            None => Err(Error::Cassandra("Failed to get version".to_string())),
+        }
     }
 
     /// Create keyspace if not exists.
@@ -216,16 +220,19 @@ impl CassandraConnector {
             .await
             .map_err(|e| Error::Cassandra(e.to_string()))?;
 
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
         let mut tables = Vec::new();
 
-        if let Some(rows) = result.rows {
-            for row in rows {
-                if let Some(Some(scylla::frame::response::result::CqlValue::Text(table_name))) =
-                    row.columns.first()
-                {
-                    tables.push(table_name.clone());
-                }
-            }
+        let rows_iter = rows_result
+            .rows::<(String,)>()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
+        for row in rows_iter {
+            let (table_name,) = row.map_err(|e| Error::Cassandra(e.to_string()))?;
+            tables.push(table_name);
         }
 
         Ok(tables)

@@ -21,9 +21,9 @@ oxigdal-proj.workspace = true
 oxigdal-geotiff.workspace = true
 
 # Web framework
-axum = "0.8"
-tower = { version = "0.5", features = ["util", "timeout", "load-shed", "limit"] }
-tower-http = { version = "0.6", features = ["fs", "trace", "cors", "compression-full"] }
+axum.workspace = true
+tower = { workspace = true, features = ["util", "timeout", "load-shed", "limit"] }
+tower-http = { workspace = true, features = ["fs", "trace", "cors", "compression-full"] }
 hyper = { version = "1", features = ["full"] }
 http = "1"
 http-body-util = "0.1"
@@ -36,22 +36,22 @@ async-trait.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-toml = "0.8"
+toml = "1.0"
 
 # Error handling
 thiserror.workspace = true
-anyhow = "1"
+anyhow.workspace = true
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-png = "0.17"
+png = "0.18"
 jpeg-encoder.workspace = true
 
 # Caching
 lru.workspace = true
 
 # CLI and configuration
-clap = { version = "4", features = ["derive", "env", "cargo"] }
+clap = { workspace = true, features = ["derive", "env", "cargo"] }
 
 # Logging
 tracing.workspace = true
@@ -64,7 +64,7 @@ chrono.workspace = true
 url.workspace = true
 
 # XML generation
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.39", features = ["serialize"] }
 
 # Compression
 oxiarc-archive = { workspace = true }
@@ -73,7 +73,7 @@ oxiarc-archive = { workspace = true }
 # Testing
 tempfile.workspace = true
 proptest.workspace = true
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 
 [lints]
 workspace = true

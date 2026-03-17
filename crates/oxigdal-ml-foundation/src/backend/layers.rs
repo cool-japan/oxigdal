@@ -379,11 +379,15 @@ where
 mod tests {
     use super::*;
     use scirs2_core::ndarray::Array4;
-    use scirs2_core::random::Random;
+    use scirs2_core::random::{ChaCha8Rng, SeedableRng};
+
+    fn test_rng() -> ChaCha8Rng {
+        ChaCha8Rng::seed_from_u64(42)
+    }
 
     #[test]
     fn test_conv_block_creation() {
-        let mut rng = Random::seed(42);
+        let mut rng = test_rng();
         let result = ConvBlock::<f64>::new(3, 64, 3, 1, true, ActivationType::ReLU, &mut rng);
         assert!(result.is_ok());
 
@@ -393,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_conv_block_forward() {
-        let mut rng = Random::seed(42);
+        let mut rng = test_rng();
         let mut block = ConvBlock::<f64>::new(3, 64, 3, 1, true, ActivationType::ReLU, &mut rng)
             .expect("ConvBlock creation failed");
 
@@ -431,14 +435,14 @@ mod tests {
 
     #[test]
     fn test_dropout_creation() {
-        let mut rng = Random::seed(42);
+        let mut rng = test_rng();
         let result = DropoutBlock::<f64>::new(0.5, &mut rng);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_dropout_forward_inference() {
-        let mut rng = Random::seed(42);
+        let mut rng = test_rng();
         let mut dropout = DropoutBlock::<f64>::new(0.5, &mut rng).expect("Dropout creation failed");
         dropout.set_training(false); // Inference mode
 
@@ -452,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_layer_norm_creation() {
-        let mut rng = Random::seed(42);
+        let mut rng = test_rng();
         let result = LayerNormBlockF64::new(512, &mut rng);
         assert!(result.is_ok());
     }

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "oxigdal"
-version = "0.1.1"
+version = "0.1.2"
 description = "Pure Rust geospatial data abstraction library - Python bindings"
 authors = [
     { name = "COOLJAPAN OU (Team Kitasan)", email = "contact@cooljapan.tech" }

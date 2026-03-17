@@ -75,107 +75,107 @@ impl ClusterMetrics {
             cluster_nodes_total: meter
                 .i64_up_down_counter("oxigdal.cluster.nodes.total")
                 .with_description("Total number of cluster nodes")
-                .init(),
+                .build(),
             cluster_nodes_healthy: meter
                 .i64_up_down_counter("oxigdal.cluster.nodes.healthy")
                 .with_description("Number of healthy cluster nodes")
-                .init(),
+                .build(),
             cluster_nodes_unhealthy: meter
                 .i64_up_down_counter("oxigdal.cluster.nodes.unhealthy")
                 .with_description("Number of unhealthy cluster nodes")
-                .init(),
+                .build(),
 
             // Node operations
             node_join_count: meter
                 .u64_counter("oxigdal.cluster.node.join")
                 .with_description("Number of node joins")
-                .init(),
+                .build(),
             node_leave_count: meter
                 .u64_counter("oxigdal.cluster.node.leave")
                 .with_description("Number of node leaves")
-                .init(),
+                .build(),
             node_heartbeat_count: meter
                 .u64_counter("oxigdal.cluster.node.heartbeat")
                 .with_description("Number of node heartbeats")
-                .init(),
+                .build(),
             node_heartbeat_duration: meter
                 .f64_histogram("oxigdal.cluster.node.heartbeat.duration")
                 .with_description("Node heartbeat duration in milliseconds")
-                .init(),
+                .build(),
 
             // Data distribution
             data_transfer_count: meter
                 .u64_counter("oxigdal.cluster.data_transfer.count")
                 .with_description("Number of data transfers between nodes")
-                .init(),
+                .build(),
             data_transfer_duration: meter
                 .f64_histogram("oxigdal.cluster.data_transfer.duration")
                 .with_description("Data transfer duration in milliseconds")
-                .init(),
+                .build(),
             data_transfer_bytes: meter
                 .u64_counter("oxigdal.cluster.data_transfer.bytes")
                 .with_description("Bytes transferred between nodes")
-                .init(),
+                .build(),
             data_replication_count: meter
                 .u64_counter("oxigdal.cluster.replication.count")
                 .with_description("Number of data replication operations")
-                .init(),
+                .build(),
             data_rebalance_count: meter
                 .u64_counter("oxigdal.cluster.rebalance.count")
                 .with_description("Number of data rebalance operations")
-                .init(),
+                .build(),
 
             // Leader election
             leader_election_count: meter
                 .u64_counter("oxigdal.cluster.leader_election.count")
                 .with_description("Number of leader elections")
-                .init(),
+                .build(),
             leader_election_duration: meter
                 .f64_histogram("oxigdal.cluster.leader_election.duration")
                 .with_description("Leader election duration in milliseconds")
-                .init(),
+                .build(),
             leader_term: meter
                 .i64_up_down_counter("oxigdal.cluster.leader.term")
                 .with_description("Current leader term")
-                .init(),
+                .build(),
 
             // Consensus
             consensus_proposals: meter
                 .u64_counter("oxigdal.cluster.consensus.proposals")
                 .with_description("Number of consensus proposals")
-                .init(),
+                .build(),
             consensus_commits: meter
                 .u64_counter("oxigdal.cluster.consensus.commits")
                 .with_description("Number of consensus commits")
-                .init(),
+                .build(),
             consensus_rejections: meter
                 .u64_counter("oxigdal.cluster.consensus.rejections")
                 .with_description("Number of consensus rejections")
-                .init(),
+                .build(),
             consensus_duration: meter
                 .f64_histogram("oxigdal.cluster.consensus.duration")
                 .with_description("Consensus duration in milliseconds")
-                .init(),
+                .build(),
 
             // Partition operations
             partition_count: meter
                 .i64_up_down_counter("oxigdal.cluster.partition.count")
                 .with_description("Number of partitions")
-                .init(),
+                .build(),
             partition_reassignments: meter
                 .u64_counter("oxigdal.cluster.partition.reassignments")
                 .with_description("Number of partition reassignments")
-                .init(),
+                .build(),
 
             // Errors
             cluster_errors: meter
                 .u64_counter("oxigdal.cluster.errors")
                 .with_description("Number of cluster errors")
-                .init(),
+                .build(),
             split_brain_detected: meter
                 .u64_counter("oxigdal.cluster.split_brain")
                 .with_description("Number of split-brain detections")
-                .init(),
+                .build(),
         })
     }
 

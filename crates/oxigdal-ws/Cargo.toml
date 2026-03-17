@@ -27,23 +27,23 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 
 # WebSocket dependencies
-axum = { version = "0.8", features = ["ws"] }
-tower = { version = "0.5" }
-tower-http = { version = "0.6", features = ["cors", "compression-full", "trace"] }
+axum = { workspace = true, features = ["ws"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "compression-full", "trace"] }
 tokio-tungstenite = { version = "0.28" }
 
 # Serialization
-rmp-serde = "1.3"  # MessagePack
+rmp-serde.workspace = true  # MessagePack
 
 # Compression
 oxiarc-zstd = { workspace = true }
 
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4"
+tokio-test.workspace = true
 tempfile = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }

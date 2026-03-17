@@ -73,11 +73,11 @@ impl ConsumerMetrics {
 
     /// Get average receive time
     pub fn average_receive_time(&self) -> Duration {
-        if self.messages_received == 0 {
-            Duration::from_secs(0)
-        } else {
-            Duration::from_micros(self.total_receive_time_us / self.messages_received)
-        }
+        Duration::from_micros(
+            self.total_receive_time_us
+                .checked_div(self.messages_received)
+                .unwrap_or(0),
+        )
     }
 
     /// Get success rate

@@ -381,7 +381,7 @@ fn cuda_enumerate_devices_impl() -> Result<Vec<GpuDevice>> {
 
     let lib = lib_names
         .iter()
-        .find_map(|name| unsafe { Library::new(name).ok() })
+        .find_map(|name| unsafe { Library::new(*name).ok() })
         .ok_or_else(|| {
             MlError::Inference(InferenceError::GpuNotAvailable {
                 message: "CUDA library not found".to_string(),
@@ -892,7 +892,7 @@ fn rocm_enumerate_devices_impl() -> Result<Vec<GpuDevice>> {
 
     let lib = lib_names
         .iter()
-        .find_map(|name| unsafe { Library::new(name).ok() })
+        .find_map(|name| unsafe { Library::new(*name).ok() })
         .ok_or_else(|| {
             MlError::Inference(InferenceError::GpuNotAvailable {
                 message: "ROCm HIP library not found".to_string(),

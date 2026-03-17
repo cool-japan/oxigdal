@@ -110,7 +110,7 @@ impl RollbackManager {
             .map(|entry| entry.value().clone())
             .collect();
 
-        points.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        points.sort_by_key(|x| std::cmp::Reverse(x.created_at));
 
         points
     }

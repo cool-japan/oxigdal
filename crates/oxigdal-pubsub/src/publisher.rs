@@ -7,9 +7,7 @@ use crate::error::{PubSubError, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use google_cloud_pubsub::client::{Client, ClientConfig};
-use google_cloud_pubsub::publisher::Publisher as GcpPublisher;
-use google_cloud_pubsub::topic::Topic;
+use google_cloud_pubsub::client::Publisher as GcpPublisher;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -317,13 +315,7 @@ impl MessageBatch {
 pub struct Publisher {
     /// Publisher configuration.
     config: PublisherConfig,
-    /// Pub/Sub client (kept for ownership).
-    #[allow(dead_code)]
-    client: Arc<Client>,
-    /// Topic handle (kept for ownership).
-    #[allow(dead_code)]
-    topic: Arc<Topic>,
-    /// The underlying GCP publisher.
+    /// The underlying GCP publisher (new google-cloud-pubsub 0.33 API).
     publisher: Arc<GcpPublisher>,
     /// Publisher statistics.
     stats: Arc<RwLock<PublisherStats>>,
@@ -343,42 +335,27 @@ impl Publisher {
             config.project_id, config.topic_name
         );
 
-        let mut client_config = ClientConfig {
-            project_id: Some(config.project_id.clone()),
-            ..Default::default()
-        };
+        // Build the fully-qualified topic name
+        let fq_topic = format!(
+            "projects/{}/topics/{}",
+            config.project_id, config.topic_name
+        );
+
+        // Create the publisher using the new google-cloud-pubsub 0.33 builder API
+        let mut builder = GcpPublisher::builder(&fq_topic);
 
         if let Some(endpoint) = &config.endpoint {
-            client_config.endpoint = endpoint.clone();
+            builder = builder.with_endpoint(endpoint);
         }
 
-        // Initialize authentication if not using emulator
-        #[cfg(feature = "auth")]
-        let client_config = client_config.with_auth().await.map_err(|e| {
-            PubSubError::configuration(
-                format!("Failed to initialize authentication: {}", e),
-                "authentication",
-            )
+        let publisher = builder.build().await.map_err(|e| {
+            PubSubError::publish_with_source("Failed to create Pub/Sub publisher", Box::new(e))
         })?;
-
-        let client = Client::new(client_config).await.map_err(|e| {
-            PubSubError::publish_with_source("Failed to create Pub/Sub client", Box::new(e))
-        })?;
-
-        let topic = client.topic(&config.topic_name);
-
-        let publisher_config = google_cloud_pubsub::publisher::PublisherConfig {
-            ..Default::default()
-        };
-
-        let publisher = topic.new_publisher(Some(publisher_config));
 
         let semaphore = Arc::new(Semaphore::new(config.max_outstanding_publishes));
 
         Ok(Self {
             config,
-            client: Arc::new(client),
-            topic: Arc::new(topic),
             publisher: Arc::new(publisher),
             stats: Arc::new(RwLock::new(PublisherStats::default())),
             batches: Arc::new(DashMap::new()),
@@ -452,16 +429,23 @@ impl Publisher {
 
     /// Publishes a message with retry logic.
     async fn publish_with_retry(&self, message: &Message, _attempt: usize) -> Result<String> {
-        let pubsub_message = google_cloud_googleapis::pubsub::v1::PubsubMessage {
-            data: message.data.to_vec(),
-            attributes: message.attributes.clone(),
-            ordering_key: message.ordering_key.clone().unwrap_or_default(),
-            ..Default::default()
-        };
+        let mut pubsub_message = google_cloud_pubsub::model::Message::new()
+            .set_data(message.data.clone())
+            .set_ordering_key(message.ordering_key.clone().unwrap_or_default());
 
-        let awaiter = self.publisher.publish(pubsub_message).await;
+        // Set attributes if non-empty
+        if !message.attributes.is_empty() {
+            pubsub_message = pubsub_message.set_attributes(
+                message
+                    .attributes
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+        }
 
-        let message_id = awaiter.get().await.map_err(|e| {
+        let publish_future = self.publisher.publish(pubsub_message);
+
+        let message_id = publish_future.await.map_err(|e| {
             PubSubError::publish_with_source("Failed to publish message", Box::new(e))
         })?;
 

@@ -4,7 +4,7 @@
 //! and GeoJSON export capabilities.
 
 use geo_types::{Coord, LineString, MultiPolygon, Polygon};
-use geojson::{Feature, FeatureCollection, Geometry, Value};
+use geojson::{Feature, FeatureCollection, Geometry, GeometryValue};
 use oxigdal_core::buffer::RasterBuffer;
 use serde_json::{Map, Value as JsonValue};
 // use std::collections::HashMap;
@@ -262,7 +262,7 @@ fn detection_to_feature(det: &GeoDetection) -> Feature {
 
     Feature {
         bbox: None,
-        geometry: Some(Geometry::new(Value::from(&polygon))),
+        geometry: Some(Geometry::new(GeometryValue::from(&polygon))),
         id: None,
         properties: Some(properties),
         foreign_members: None,
@@ -291,7 +291,7 @@ pub fn export_segmentation_geojson<P: AsRef<Path>>(
 
             Feature {
                 bbox: None,
-                geometry: Some(Geometry::new(Value::from(poly))),
+                geometry: Some(Geometry::new(GeometryValue::from(poly))),
                 id: None,
                 properties: Some(properties),
                 foreign_members: None,

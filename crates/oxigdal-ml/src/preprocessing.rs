@@ -135,7 +135,7 @@ pub fn normalize(buffer: &RasterBuffer, params: &NormalizationParams) -> Result<
                     })?;
 
             // Use first channel params if only one set is provided
-            let channel_idx = 0.min(params.mean.len() - 1);
+            let channel_idx = 0;
             let mean = params.mean[channel_idx];
             let std = params.std[channel_idx];
 

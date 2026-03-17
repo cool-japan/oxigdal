@@ -61,11 +61,11 @@ impl ProducerMetrics {
 
     /// Get average send time
     pub fn average_send_time(&self) -> Duration {
-        if self.messages_sent == 0 {
-            Duration::from_secs(0)
-        } else {
-            Duration::from_micros(self.total_send_time_us / self.messages_sent)
-        }
+        Duration::from_micros(
+            self.total_send_time_us
+                .checked_div(self.messages_sent)
+                .unwrap_or(0),
+        )
     }
 
     /// Get success rate

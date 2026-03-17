@@ -77,14 +77,18 @@ pub use serde_json;
 
 // Core modules
 pub mod aggregation;
+pub mod api;
 pub mod asset;
 pub mod builder;
 pub mod catalog;
+pub mod client;
 pub mod collection;
+pub mod collection_aggregation;
 pub mod cql2;
 pub mod error;
 pub mod extensions;
 pub mod item;
+pub mod transaction;
 
 #[cfg(feature = "reqwest")]
 pub mod pagination;
@@ -96,10 +100,16 @@ pub mod search;
 pub use aggregation::{
     Aggregation, AggregationRequest, AggregationResponse, AggregationResult, Bucket,
 };
+pub use api::{
+    CollectionSummary, CollectionsList, ConformanceDeclaration, FieldsSpec, ItemCollection,
+    LandingPage, SearchContext as ApiSearchContext, SearchRequest as ApiSearchRequest,
+    SortDirection as ApiSortDirection, SortField,
+};
 pub use asset::{Asset, media_types, roles};
 pub use builder::{CatalogBuilder, CollectionBuilder, ItemBuilder};
 pub use catalog::Catalog;
 pub use collection::{Collection, Extent, Provider, SpatialExtent, TemporalExtent};
+pub use collection_aggregation::{CollectionAggregator, CollectionStats, NumericStats};
 pub use cql2::{Cql2Filter, Cql2Operand};
 pub use error::{Result, StacError};
 pub use extensions::{
@@ -107,9 +117,12 @@ pub use extensions::{
     projection::{ProjectionExtension, epsg_codes},
     sar::{FrequencyBand, ObservationDirection, Polarization, SarExtension},
     scientific::{Publication, ScientificExtension},
+    timestamps::TimestampsExtension,
+    version::VersionExtension,
     view::ViewExtension,
 };
 pub use item::{Item, ItemProperties, Link, link_rel};
+pub use transaction::{StacItemStore, TransactionOp, TransactionResult};
 
 #[cfg(feature = "reqwest")]
 pub use pagination::{CursorPagination, PagePagination, Paginator, TokenPagination};
@@ -162,10 +175,10 @@ pub fn bbox(west: f64, south: f64, east: f64, north: f64) -> Vec<f64> {
 /// use oxigdal_stac::point_geometry;
 ///
 /// let geometry = point_geometry(-122.0, 37.0);
-/// assert_eq!(geometry.value, geojson::Value::Point(vec![-122.0, 37.0]));
+/// assert_eq!(geometry.value, geojson::GeometryValue::new_point([-122.0, 37.0]));
 /// ```
 pub fn point_geometry(lon: f64, lat: f64) -> geojson::Geometry {
-    geojson::Geometry::new(geojson::Value::Point(vec![lon, lat]))
+    geojson::Geometry::new_point([lon, lat])
 }
 
 /// Helper function to create a GeoJSON Polygon geometry from a bounding box.
@@ -188,7 +201,7 @@ pub fn point_geometry(lon: f64, lat: f64) -> geojson::Geometry {
 ///
 /// let geometry = bbox_to_polygon(-122.5, 37.5, -122.0, 38.0);
 /// match geometry.value {
-///     geojson::Value::Polygon(_) => (),
+///     geojson::GeometryValue::Polygon { coordinates: _ } => (),
 ///     _ => panic!("Expected Polygon"),
 /// }
 /// ```
@@ -200,7 +213,7 @@ pub fn bbox_to_polygon(west: f64, south: f64, east: f64, north: f64) -> geojson:
         vec![west, north],
         vec![west, south], // Close the ring
     ]];
-    geojson::Geometry::new(geojson::Value::Polygon(polygon))
+    geojson::Geometry::new_polygon(polygon)
 }
 
 #[cfg(test)]
@@ -217,14 +230,19 @@ mod tests {
     #[test]
     fn test_point_geometry() {
         let geometry = point_geometry(-122.0, 37.0);
-        assert_eq!(geometry.value, geojson::Value::Point(vec![-122.0, 37.0]));
+        assert_eq!(
+            geometry.value,
+            geojson::GeometryValue::new_point([-122.0, 37.0])
+        );
     }
 
     #[test]
     fn test_bbox_to_polygon() {
         let geometry = bbox_to_polygon(-122.5, 37.5, -122.0, 38.0);
         match geometry.value {
-            geojson::Value::Polygon(coords) => {
+            geojson::GeometryValue::Polygon {
+                coordinates: coords,
+            } => {
                 assert_eq!(coords.len(), 1);
                 assert_eq!(coords[0].len(), 5); // 4 corners + close
             }

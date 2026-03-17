@@ -79,20 +79,29 @@ fn convert_query(query: &sql_ast::Query) -> Result<SelectStatement> {
 
         // Convert ORDER BY clause
         if let Some(order_by) = &query.order_by {
-            // OrderBy in sqlparser 0.52 contains a list of OrderByExpr
-            for order_expr in &order_by.exprs {
-                stmt.order_by.push(convert_order_by_expr(order_expr)?);
+            if let sql_ast::OrderByKind::Expressions(exprs) = &order_by.kind {
+                for order_expr in exprs {
+                    stmt.order_by.push(convert_order_by_expr(order_expr)?);
+                }
             }
         }
 
-        // Convert LIMIT clause
-        if let Some(limit) = &query.limit {
-            stmt.limit = Some(convert_limit(limit)?);
-        }
-
-        // Convert OFFSET clause
-        if let Some(offset) = &query.offset {
-            stmt.offset = Some(convert_offset(offset)?);
+        // Convert LIMIT and OFFSET clauses
+        if let Some(limit_clause) = &query.limit_clause {
+            match limit_clause {
+                sql_ast::LimitClause::LimitOffset { limit, offset, .. } => {
+                    if let Some(limit_expr) = limit {
+                        stmt.limit = Some(convert_limit(limit_expr)?);
+                    }
+                    if let Some(offset_val) = offset {
+                        stmt.offset = Some(convert_offset(offset_val)?);
+                    }
+                }
+                sql_ast::LimitClause::OffsetCommaLimit { limit, offset } => {
+                    stmt.limit = Some(convert_limit(limit)?);
+                    stmt.offset = Some(convert_limit(offset)?);
+                }
+            }
         }
 
         Ok(stmt)
@@ -131,7 +140,7 @@ fn convert_table_reference(table: &sql_ast::TableWithJoins) -> Result<TableRefer
             | sql_ast::JoinOperator::LeftOuter(constraint)
             | sql_ast::JoinOperator::RightOuter(constraint)
             | sql_ast::JoinOperator::FullOuter(constraint) => convert_join_constraint(constraint)?,
-            sql_ast::JoinOperator::CrossJoin => None,
+            sql_ast::JoinOperator::CrossJoin(_) => None,
             _ => return Err(QueryError::unsupported("Unsupported join type")),
         };
 
@@ -182,7 +191,7 @@ fn convert_join_type(op: &sql_ast::JoinOperator) -> Result<JoinType> {
         sql_ast::JoinOperator::LeftOuter(_) => Ok(JoinType::Left),
         sql_ast::JoinOperator::RightOuter(_) => Ok(JoinType::Right),
         sql_ast::JoinOperator::FullOuter(_) => Ok(JoinType::Full),
-        sql_ast::JoinOperator::CrossJoin => Ok(JoinType::Cross),
+        sql_ast::JoinOperator::CrossJoin(_) => Ok(JoinType::Cross),
         _ => Err(QueryError::unsupported("Unsupported join type")),
     }
 }
@@ -216,7 +225,9 @@ fn convert_expr(expr: &sql_ast::Expr) -> Result<Expr> {
                 Err(QueryError::semantic("Invalid column reference"))
             }
         }
-        sql_ast::Expr::Value(value) => Ok(Expr::Literal(convert_value(value)?)),
+        sql_ast::Expr::Value(value_with_span) => {
+            Ok(Expr::Literal(convert_value(&value_with_span.value)?))
+        }
         sql_ast::Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
             left: Box::new(convert_expr(left)?),
             op: convert_binary_op(op)?,
@@ -278,8 +289,8 @@ fn convert_expr(expr: &sql_ast::Expr) -> Result<Expr> {
         sql_ast::Expr::Case {
             operand,
             conditions,
-            results,
             else_result,
+            ..
         } => {
             let operand = operand
                 .as_ref()
@@ -287,8 +298,11 @@ fn convert_expr(expr: &sql_ast::Expr) -> Result<Expr> {
                 .transpose()?
                 .map(Box::new);
             let mut when_then = Vec::new();
-            for (cond, result) in conditions.iter().zip(results.iter()) {
-                when_then.push((convert_expr(cond)?, convert_expr(result)?));
+            for case_when in conditions.iter() {
+                when_then.push((
+                    convert_expr(&case_when.condition)?,
+                    convert_expr(&case_when.result)?,
+                ));
             }
             let else_result = else_result
                 .as_ref()
@@ -366,7 +380,7 @@ fn convert_expr(expr: &sql_ast::Expr) -> Result<Expr> {
         }
         sql_ast::Expr::Subquery(query) => Ok(Expr::Subquery(Box::new(convert_query(query)?))),
         sql_ast::Expr::Nested(expr) => convert_expr(expr),
-        sql_ast::Expr::Wildcard => Ok(Expr::Wildcard),
+        sql_ast::Expr::Wildcard(_) => Ok(Expr::Wildcard),
         _ => Err(QueryError::unsupported(format!(
             "Unsupported expression: {:?}",
             expr
@@ -426,25 +440,31 @@ fn convert_unary_op(op: &sql_ast::UnaryOperator) -> Result<UnaryOperator> {
 fn convert_order_by_expr(order: &sql_ast::OrderByExpr) -> Result<OrderByExpr> {
     Ok(OrderByExpr {
         expr: convert_expr(&order.expr)?,
-        asc: order.asc.unwrap_or(true),
-        nulls_first: order.nulls_first.unwrap_or(false),
+        asc: order.options.asc.unwrap_or(true),
+        nulls_first: order.options.nulls_first.unwrap_or(false),
     })
 }
 
 fn convert_limit(limit: &sql_ast::Expr) -> Result<usize> {
     match limit {
-        sql_ast::Expr::Value(sql_ast::Value::Number(n, _)) => n
-            .parse::<usize>()
-            .map_err(|_| QueryError::semantic("Invalid LIMIT value")),
+        sql_ast::Expr::Value(value_with_span) => match &value_with_span.value {
+            sql_ast::Value::Number(n, _) => n
+                .parse::<usize>()
+                .map_err(|_| QueryError::semantic("Invalid LIMIT value")),
+            _ => Err(QueryError::semantic("LIMIT must be a number")),
+        },
         _ => Err(QueryError::semantic("LIMIT must be a number")),
     }
 }
 
 fn convert_offset(offset: &sql_ast::Offset) -> Result<usize> {
     match &offset.value {
-        sql_ast::Expr::Value(sql_ast::Value::Number(n, _)) => n
-            .parse::<usize>()
-            .map_err(|_| QueryError::semantic("Invalid OFFSET value")),
+        sql_ast::Expr::Value(value_with_span) => match &value_with_span.value {
+            sql_ast::Value::Number(n, _) => n
+                .parse::<usize>()
+                .map_err(|_| QueryError::semantic("Invalid OFFSET value")),
+            _ => Err(QueryError::semantic("OFFSET must be a number")),
+        },
         _ => Err(QueryError::semantic("OFFSET must be a number")),
     }
 }
@@ -456,14 +476,14 @@ fn convert_data_type(data_type: &sql_ast::DataType) -> Result<DataType> {
         sql_ast::DataType::SmallInt(_) => Ok(DataType::Int16),
         sql_ast::DataType::Int(_) | sql_ast::DataType::Integer(_) => Ok(DataType::Int32),
         sql_ast::DataType::BigInt(_) => Ok(DataType::Int64),
-        sql_ast::DataType::UnsignedTinyInt(_) => Ok(DataType::UInt8),
-        sql_ast::DataType::UnsignedSmallInt(_) => Ok(DataType::UInt16),
-        sql_ast::DataType::UnsignedInt(_) | sql_ast::DataType::UnsignedInteger(_) => {
-            Ok(DataType::UInt32)
-        }
-        sql_ast::DataType::UnsignedBigInt(_) => Ok(DataType::UInt64),
+        sql_ast::DataType::TinyIntUnsigned(_) => Ok(DataType::UInt8),
+        sql_ast::DataType::SmallIntUnsigned(_) => Ok(DataType::UInt16),
+        sql_ast::DataType::IntUnsigned(_)
+        | sql_ast::DataType::IntegerUnsigned(_)
+        | sql_ast::DataType::UnsignedInteger => Ok(DataType::UInt32),
+        sql_ast::DataType::BigIntUnsigned(_) => Ok(DataType::UInt64),
         sql_ast::DataType::Float(_) | sql_ast::DataType::Real => Ok(DataType::Float32),
-        sql_ast::DataType::Double | sql_ast::DataType::DoublePrecision => Ok(DataType::Float64),
+        sql_ast::DataType::Double(_) | sql_ast::DataType::DoublePrecision => Ok(DataType::Float64),
         sql_ast::DataType::Varchar(_)
         | sql_ast::DataType::Char(_)
         | sql_ast::DataType::Text

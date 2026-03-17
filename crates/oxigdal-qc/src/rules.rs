@@ -196,7 +196,7 @@ impl RuleSet {
     #[must_use]
     pub fn get_enabled_rules(&self) -> Vec<&QualityRule> {
         let mut rules: Vec<&QualityRule> = self.rules.iter().filter(|r| r.enabled).collect();
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        rules.sort_by_key(|x| std::cmp::Reverse(x.priority));
         rules
     }
 

@@ -244,8 +244,7 @@ impl OverviewGenerator {
                             }
                         }
 
-                        if count > 0 {
-                            let avg = sum / count;
+                        if let Some(avg) = sum.checked_div(count) {
                             self.write_sample(
                                 &mut dst[dst_offset + sample_idx * self.bytes_per_sample..],
                                 avg,

@@ -253,34 +253,26 @@ impl PixelFunction {
                     )));
                 }
             }
-            Self::Ndvi | Self::Ndwi => {
-                if sources.len() != 2 {
-                    return Err(VrtError::invalid_band(format!(
-                        "{:?} requires exactly 2 sources, got {}",
-                        self,
-                        sources.len()
-                    )));
-                }
+            Self::Ndvi | Self::Ndwi if sources.len() != 2 => {
+                return Err(VrtError::invalid_band(format!(
+                    "{:?} requires exactly 2 sources, got {}",
+                    self,
+                    sources.len()
+                )));
             }
-            Self::Evi => {
-                if sources.len() != 3 {
-                    return Err(VrtError::invalid_band(format!(
-                        "EVI requires exactly 3 sources, got {}",
-                        sources.len()
-                    )));
-                }
+            Self::Evi if sources.len() != 3 => {
+                return Err(VrtError::invalid_band(format!(
+                    "EVI requires exactly 3 sources, got {}",
+                    sources.len()
+                )));
             }
-            Self::BandMath { expression } => {
-                if expression.trim().is_empty() {
-                    return Err(VrtError::invalid_band(
-                        "BandMath expression cannot be empty",
-                    ));
-                }
+            Self::BandMath { expression } if expression.trim().is_empty() => {
+                return Err(VrtError::invalid_band(
+                    "BandMath expression cannot be empty",
+                ));
             }
-            Self::LookupTable { table, .. } => {
-                if table.is_empty() {
-                    return Err(VrtError::invalid_band("LookupTable cannot be empty"));
-                }
+            Self::LookupTable { table, .. } if table.is_empty() => {
+                return Err(VrtError::invalid_band("LookupTable cannot be empty"));
             }
             Self::Conditional {
                 condition,
@@ -296,22 +288,18 @@ impl PixelFunction {
                     return Err(VrtError::invalid_band("Conditional values cannot be empty"));
                 }
             }
-            Self::Divide | Self::Multiply => {
-                if sources.len() < 2 {
-                    return Err(VrtError::invalid_band(format!(
-                        "{:?} requires at least 2 sources, got {}",
-                        self,
-                        sources.len()
-                    )));
-                }
+            Self::Divide | Self::Multiply if sources.len() < 2 => {
+                return Err(VrtError::invalid_band(format!(
+                    "{:?} requires at least 2 sources, got {}",
+                    self,
+                    sources.len()
+                )));
             }
-            Self::SquareRoot | Self::Absolute => {
-                if sources.is_empty() {
-                    return Err(VrtError::invalid_band(format!(
-                        "{:?} requires at least 1 source",
-                        self
-                    )));
-                }
+            Self::SquareRoot | Self::Absolute if sources.is_empty() => {
+                return Err(VrtError::invalid_band(format!(
+                    "{:?} requires at least 1 source",
+                    self
+                )));
             }
             Self::Custom { name } => {
                 return Err(VrtError::InvalidPixelFunction {

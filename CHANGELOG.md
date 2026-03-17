@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-17
+
+### Added
+
+- **Geometry Validation & Operations** (`oxigdal-index`): `validation.rs` with 7 `ValidationIssue` variants (unclosed ring, self-intersection, hole orientation, etc.), `operations.rs` with centroid, area (Shoelace), perimeter, point-in-polygon (ray casting), Douglas-Peucker simplification, Graham scan convex hull, `is_convex`, `distance`, `ring_bbox`, `buffer_bbox`
+- **PMTiles v3 Writer** (`oxigdal-pmtiles`): `PmTilesBuilder` with `add_tile`/`build` API, Hilbert curve tile ID encoding (`hilbert.rs`), LEB128 varint encode/decode (`varint.rs`), content deduplication by FNV-1a hash, PMTiles v3 header/directory serialization
+- **Umbrella Crate Integration** (`oxigdal`): 7 new feature-gated re-exports (`gpkg`, `pmtiles`, `mbtiles`, `copc`, `index`, `noalloc`, `services`), `convert.rs` with `DatasetFormat` detection (12 formats), `ConversionPlan`, `can_convert`, `supported_conversions`
+- **Subcrate READMEs**: Added README.md for oxigdal-copc, oxigdal-geojson, oxigdal-gpkg, oxigdal-index, oxigdal-mbtiles, oxigdal-noalloc, oxigdal-pmtiles
+
+### Changed
+
+- **Refactored `ogc_features.rs`** (`oxigdal-services`): Split 1,981-line monolithic file into 7 focused modules (`error.rs`, `types.rs`, `query.rs`, `crs.rs`, `server.rs`, `cql.rs`, `mod.rs`) per 2,000-line policy; zero breaking changes
+- **Refactored `epsg.rs`** (`oxigdal-proj`): Split 1,873-line file into 5 modules (`types.rs`, `geographic.rs`, `projected.rs`, `utm.rs`, `mod.rs`); zero breaking changes
+- **3 new `DatasetFormat` variants** (`oxigdal`): `PMTiles`, `MBTiles`, `Copc` with format detection support
+- Workspace now has **76 crates** (~565K total SLoC, ~540K Rust)
+
+### Fixed
+
+- **Clippy `should_implement_trait`** (`oxigdal-netcdf`): Renamed `CfVersion::from_str` → `parse_version` and `CellMethodName::from_str` → `parse_method` to avoid confusion with `std::str::FromStr`
+
 ## [0.1.1] - 2026-03-11
 
 ### Added

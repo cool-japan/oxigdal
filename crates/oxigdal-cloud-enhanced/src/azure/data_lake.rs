@@ -1,6 +1,7 @@
 //! Azure Data Lake Storage Gen2 integration.
 
 use crate::error::Result;
+use azure_core::credentials::TokenCredential;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct DataLakeClient {
     account_name: String,
-    credential: Arc<azure_identity::DefaultAzureCredential>,
+    credential: Arc<dyn TokenCredential>,
 }
 
 impl DataLakeClient {
@@ -18,8 +19,8 @@ impl DataLakeClient {
     }
 
     /// Returns a reference to the credential.
-    pub fn credential(&self) -> &azure_identity::DefaultAzureCredential {
-        &self.credential
+    pub fn credential(&self) -> &dyn TokenCredential {
+        &*self.credential
     }
 }
 

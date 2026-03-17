@@ -53,10 +53,11 @@ impl ClickHouseWriter {
             return Ok(());
         }
 
-        let mut inserter = self
+        let mut inserter: clickhouse::insert::Insert<(u64, f64, f64)> = self
             .connector
             .client()
             .insert(&self.table_name)
+            .await
             .map_err(|e| Error::ClickHouse(e.to_string()))?;
 
         for (id, x, y) in points {

@@ -3,7 +3,7 @@
 use crate::cassandra::{CassandraConnector, types::Point};
 use crate::error::{Error, Result};
 use geo_types::Geometry;
-use scylla::frame::response::result::CqlValue;
+use scylla::value::CqlValue;
 use std::collections::HashMap;
 
 /// Feature read from Cassandra.
@@ -50,13 +50,18 @@ impl CassandraReader {
             .await
             .map_err(|e| Error::Cassandra(e.to_string()))?;
 
-        if let Some(rows) = result.rows {
-            if let Some(row) = rows.first() {
-                return Ok(Some(self.row_to_feature(row)?));
-            }
-        }
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
 
-        Ok(None)
+        let maybe_row = rows_result
+            .maybe_first_row::<(uuid::Uuid, CqlValue, CqlValue)>()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
+        match maybe_row {
+            Some(row_tuple) => Ok(Some(self.tuple_to_feature(row_tuple)?)),
+            None => Ok(None),
+        }
     }
 
     /// Scan all features (use with caution - may be expensive).
@@ -70,13 +75,22 @@ impl CassandraReader {
             .await
             .map_err(|e| Error::Cassandra(e.to_string()))?;
 
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
         let mut features = Vec::new();
 
-        if let Some(rows) = result.rows {
-            for row in rows {
-                if let Ok(feature) = self.row_to_feature(&row) {
-                    features.push(feature);
-                }
+        // Deserialize rows as (Uuid, CqlValue) for id + location
+        // Additional columns beyond the first two are not captured in this tuple
+        let rows_iter = rows_result
+            .rows::<(uuid::Uuid, CqlValue)>()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
+        for row in rows_iter {
+            let (id, location_val) = row.map_err(|e| Error::Cassandra(e.to_string()))?;
+            if let Ok(feature) = self.cqlvalue_to_feature(id, &location_val) {
+                features.push(feature);
             }
         }
 
@@ -92,61 +106,62 @@ impl CassandraReader {
             .await
             .map_err(|e| Error::Cassandra(e.to_string()))?;
 
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
         let mut features = Vec::new();
 
-        if let Some(rows) = result.rows {
-            for row in rows {
-                if let Ok(feature) = self.row_to_feature(&row) {
-                    features.push(feature);
-                }
+        let rows_iter = rows_result
+            .rows::<(uuid::Uuid, CqlValue)>()
+            .map_err(|e| Error::Cassandra(e.to_string()))?;
+
+        for row in rows_iter {
+            let (id, location_val) = row.map_err(|e| Error::Cassandra(e.to_string()))?;
+            if let Ok(feature) = self.cqlvalue_to_feature(id, &location_val) {
+                features.push(feature);
             }
         }
 
         Ok(features)
     }
 
-    /// Convert row to feature.
-    fn row_to_feature(
+    /// Convert a 3-element tuple to a feature (for read_by_id with extra column).
+    fn tuple_to_feature(
         &self,
-        row: &scylla::frame::response::result::Row,
+        (id, location_val, _extra): (uuid::Uuid, CqlValue, CqlValue),
     ) -> Result<CassandraFeature> {
-        // Extract id (assuming first column is UUID)
-        let id = if let Some(Some(CqlValue::Uuid(uuid))) = row.columns.first() {
-            *uuid
-        } else {
-            return Err(Error::Cassandra("Missing or invalid id column".to_string()));
-        };
+        self.cqlvalue_to_feature(id, &location_val)
+    }
 
-        // Extract location (assuming second column is UDT point)
-        let location =
-            if let Some(Some(CqlValue::UserDefinedType { fields, .. })) = row.columns.get(1) {
-                let x = if let Some((_, Some(CqlValue::Double(x_val)))) = fields.first() {
-                    *x_val
-                } else {
-                    return Err(Error::Cassandra("Invalid point x coordinate".to_string()));
-                };
-
-                let y = if let Some((_, Some(CqlValue::Double(y_val)))) = fields.get(1) {
-                    *y_val
-                } else {
-                    return Err(Error::Cassandra("Invalid point y coordinate".to_string()));
-                };
-
-                Point::new(x, y)
+    /// Convert CqlValue location to a CassandraFeature.
+    fn cqlvalue_to_feature(
+        &self,
+        id: uuid::Uuid,
+        location_val: &CqlValue,
+    ) -> Result<CassandraFeature> {
+        // Extract location from UDT point
+        let location = if let CqlValue::UserDefinedType { fields, .. } = location_val {
+            let x = if let Some((_, Some(CqlValue::Double(x_val)))) = fields.first() {
+                *x_val
             } else {
-                return Err(Error::Cassandra(
-                    "Missing or invalid location column".to_string(),
-                ));
+                return Err(Error::Cassandra("Invalid point x coordinate".to_string()));
             };
 
-        let mut properties = HashMap::new();
+            let y = if let Some((_, Some(CqlValue::Double(y_val)))) = fields.get(1) {
+                *y_val
+            } else {
+                return Err(Error::Cassandra("Invalid point y coordinate".to_string()));
+            };
 
-        // Collect remaining columns as properties
-        for (i, value) in row.columns.iter().enumerate().skip(2) {
-            if let Some(val) = value {
-                properties.insert(format!("col_{}", i), val.clone());
-            }
-        }
+            Point::new(x, y)
+        } else {
+            return Err(Error::Cassandra(
+                "Missing or invalid location column".to_string(),
+            ));
+        };
+
+        let properties = HashMap::new();
 
         Ok(CassandraFeature {
             id,

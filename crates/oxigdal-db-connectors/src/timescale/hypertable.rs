@@ -104,12 +104,9 @@ impl HypertableManager {
             "$1".to_string(),
             "ST_SetSRID(ST_MakePoint($2, $3), 4326)".to_string(),
         ];
-        let mut param_index = 4;
-
-        for (col_name, _) in properties {
+        for (param_index, (col_name, _)) in (4..).zip(properties.iter()) {
             columns.push(col_name.clone());
             placeholders.push(format!("${}", param_index));
-            param_index += 1;
         }
 
         let sql = format!(

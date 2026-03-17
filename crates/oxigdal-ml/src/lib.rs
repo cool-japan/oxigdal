@@ -295,13 +295,17 @@
 
 pub mod augmentation;
 pub mod batch;
+pub mod batch_predict;
 pub mod classification;
 #[cfg(feature = "cloud-removal")]
 pub mod cloud;
 pub mod detection;
 pub mod error;
 pub mod gpu;
+pub mod hot_reload;
 pub mod inference;
+pub mod inference_cache;
+pub mod model_versioning;
 pub mod models;
 pub mod monitoring;
 pub mod optimization;

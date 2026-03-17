@@ -57,28 +57,28 @@ libsqlite3-sys = { workspace = true, features = ["bundled"], optional = true }
 
 # MongoDB (async by default with tokio)
 mongodb = { version = "3", optional = true }
-bson = { version = "2", optional = true }
+bson = { version = "3", features = ["serde"], optional = true }
 
 # ClickHouse
-clickhouse = { version = "0.12", optional = true }
+clickhouse = { version = "0.14", optional = true }
 
 # Cassandra/ScyllaDB
-scylla = { version = "0.14", features = ["ssl"], optional = true }
+scylla = { version = "1.5", features = ["rustls-023"], optional = true }
 
 # PostgreSQL/TimescaleDB
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"], optional = true }
-deadpool-postgres = { version = "0.14", optional = true }
+tokio-postgres = { workspace = true, features = ["with-chrono-0_4"], optional = true }
+deadpool-postgres = { workspace = true, optional = true }
 
 # Connection pooling
-deadpool = { version = "0.12", features = [] }
-bb8 = "0.8"
+deadpool = { version = "0.13", features = [] }
+bb8 = "0.9"
 
 # WKB/WKT support
-wkt = "0.11"
+wkt = "0.14"
 
 # Additional utilities
-base64 = "0.22"
-uuid = "1.22"
+base64.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

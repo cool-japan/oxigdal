@@ -48,7 +48,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 
 # MQTT client (Pure Rust implementation - COOLJAPAN Policy)
-rumqttc = { version = "0.24", default-features = false, features = ["url"] }
+rumqttc = { version = "0.25", default-features = false, features = ["url"] }
 
 # Persistence (optional)
 # SECURITY NOTE: sled 0.34.7 uses unmaintained dependencies:

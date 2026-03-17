@@ -6,6 +6,8 @@
 //! - **WCS (Web Coverage Service) 2.0**: Raster data access with subsetting and format conversion
 //! - **WPS (Web Processing Service) 2.0**: Geospatial processing with built-in algorithms
 //! - **CSW (Catalog Service for the Web) 2.0.2**: Metadata catalog search and retrieval
+//! - **OGC API - Tiles**: TileMatrixSet, TileSetMetadata, tile coordinate utilities
+//! - **MVT (Mapbox Vector Tile)**: Protobuf encoding for vector tile generation
 //!
 //! # Features
 //!
@@ -15,6 +17,7 @@
 //! - Built-in WPS processes (buffer, clip, union, etc.)
 //! - Async request handling with Axum
 //! - Pure Rust implementation (no C/C++ dependencies)
+//! - Hand-rolled MVT protobuf encoder (no protobuf crate dependency)
 //!
 //! # COOLJAPAN Policies
 //!
@@ -27,8 +30,14 @@
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
 
+pub mod cache_headers;
 pub mod csw;
 pub mod error;
+pub mod mvt;
+pub mod ogc_features;
+pub mod ogc_tiles;
+pub mod style;
+pub mod tile_cache;
 pub mod wcs;
 pub mod wfs;
 pub mod wps;
@@ -36,6 +45,16 @@ pub mod wps;
 // Re-export main types
 pub use csw::{CswState, MetadataRecord};
 pub use error::{ServiceError, ServiceResult};
+pub use mvt::{
+    MvtFeature, MvtGeometryType, MvtLayer, MvtLayerBuilder, MvtTile, MvtValue, close_path,
+    decode_zigzag, delta_encode, encode_varint, encode_zigzag, line_to, linestring_geometry,
+    move_to, point_geometry, polygon_ring_geometry, scale_to_tile,
+};
+pub use ogc_tiles::{
+    ConformanceDeclaration, CornerOfOrigin, GeographicBoundingBox, TileDataType, TileLink,
+    TileMatrix, TileMatrixSet, TileSetMetadata, lonlat_to_tile, tile_children, tile_parent,
+    tile_to_bbox, tile_to_pixel_bounds, tiles_in_bbox, validate_tile_coords,
+};
 pub use wcs::{CoverageInfo, CoverageSource, WcsState};
 pub use wfs::{FeatureSource, FeatureTypeInfo, WfsState};
 pub use wps::{Process, ProcessInputs, ProcessOutputs, WpsState};

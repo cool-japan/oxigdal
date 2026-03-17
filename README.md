@@ -8,22 +8,22 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![COOLJAPAN](https://img.shields.io/badge/COOLJAPAN-Ecosystem-brightgreen.svg)](https://github.com/cool-japan)
 
-OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.1** on 2026-03-11, it delivers ~480,000 Rust SLoC across **69 workspace crates**, covering 11 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.2** on 2026-03-17, it delivers ~540,000 Rust SLoC across **76 workspace crates**, covering 15 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.1.1 (released 2026-03-11) |
-| **Rust SLoC** | ~480,000 across 1,751 `.rs` files |
-| **Total SLoC** | 505,510 (all languages) |
-| **Workspace crates** | 69 |
-| **Tests** | 7,486 passing (45 skipped), 0 failures |
-| **Format drivers** | 11 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT) |
+| **Version** | 0.1.2 (released 2026-03-17) |
+| **Rust SLoC** | ~540,000 across 1,934 `.rs` files |
+| **Total SLoC** | 565,681 (all languages) |
+| **Workspace crates** | 76 |
+| **Tests** | 10,935 passing (45 skipped), 0 failures |
+| **Format drivers** | 15 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles) |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
-| **Estimated dev cost** | $18.6M equivalent (COCOMO) |
+| **Estimated dev cost** | $20.97M equivalent (COCOMO) |
 
 ## Why OxiGDAL?
 
@@ -62,7 +62,7 @@ fn main() -> oxigdal::Result<()> {
 
 ## Architecture
 
-69 workspace crates organized into functional layers:
+76 workspace crates organized into functional layers:
 
 ```
 Core & Algorithms
@@ -70,9 +70,10 @@ Core & Algorithms
   oxigdal-core               Types, traits, async I/O, Arrow buffers, no_std core
   oxigdal-proj               Pure Rust PROJ: 20+ projections, 211+ EPSG, WKT2
   oxigdal-algorithms         SIMD raster/vector algorithms (AVX2, AVX-512, NEON)
+  oxigdal-index              Spatial indexing (R-tree, grid, geometry validation/operations)
   oxigdal-qc                 Data validation, anomaly detection, quality scoring
 
-Format Drivers (11 formats)
+Format Drivers (15 formats)
   geotiff      GeoTIFF/COG   BigTIFF, HTTP range, overviews, DEFLATE/LZW/ZSTD/JPEG
   geojson      GeoJSON       RFC 7946, streaming parser, GeoArrow zero-copy
   geoparquet   GeoParquet    Arrow native, spatial predicate pushdown, 10x faster
@@ -84,6 +85,11 @@ Format Drivers (11 formats)
   grib         GRIB1/2       Meteorological parameter/level tables
   jpeg2000     JPEG2000      Wavelet DWT, full EBCOT tier-1 decoder (MQ coder, 3-pass)
   vrt          VRT           Band math, source mosaicking, on-the-fly processing
+  copc         COPC/LAS      Cloud Optimized Point Cloud (LAS 1.4, octree)
+  gpkg         GeoPackage    SQLite-based, vector features + tiles
+  mbtiles      MBTiles       Tile storage, TMS/XYZ schemes
+  pmtiles      PMTiles v3    Hilbert curve, single-file tile archive
+  geojson-s    GeoJSON (streaming)  Streaming GeoJSON parser/writer/filter
 
 Cloud & Storage
   oxigdal-cloud              S3 / GCS / Azure Blob backends with HTTP range support
@@ -137,6 +143,7 @@ Platform Bindings
   oxigdal-mobile             iOS (Swift FFI) and Android (Kotlin/JNI)
   oxigdal-mobile-enhanced    Battery/network-aware mobile scheduling
   oxigdal-embedded           no_std for microcontrollers (heapless, embedded-hal)
+  oxigdal-noalloc            no_std geospatial primitives (zero heap allocation)
   oxigdal-edge               Edge computing, streaming sensor ingestion, local DB
 
 GPU & ML
@@ -167,6 +174,10 @@ Tooling
 | GRIB1/GRIB2 | yes | — | — | — | Meteorological parameter tables |
 | JPEG2000 | yes | — | — | — | Wavelet DWT, tier-1 |
 | VRT | yes | yes | — | — | Band math, mosaic |
+| COPC/LAS | yes | — | — | — | Point cloud, octree spatial index |
+| GeoPackage | yes | — | — | — | SQLite-based, vector features + tiles |
+| MBTiles | yes | yes | — | — | Tile storage, TMS/XYZ |
+| PMTiles v3 | yes | yes | — | — | Hilbert curve, single-file archive |
 
 ## Feature Flags
 
@@ -175,7 +186,7 @@ Tooling
 | `geotiff` | yes | GeoTIFF / Cloud Optimized GeoTIFF |
 | `geojson` | yes | GeoJSON (RFC 7946) |
 | `shapefile` | yes | ESRI Shapefile |
-| `full` | no | All 11 format drivers |
+| `full` | no | All 15 format drivers |
 | `proj` | no | CRS transformations (20+ projections, 211+ EPSG) |
 | `algorithms` | no | SIMD raster/vector algorithms |
 | `cloud` | no | S3, GCS, Azure Blob storage |
@@ -187,6 +198,12 @@ Tooling
 | `security` | no | AES-256-GCM, TLS 1.3, RBAC |
 | `distributed` | no | Distributed cluster support |
 | `streaming` | no | Real-time stream processing |
+| `gpkg` | no | GeoPackage format support |
+| `pmtiles` | no | PMTiles v3 format support |
+| `mbtiles` | no | MBTiles format support |
+| `copc` | no | COPC/LAS point cloud |
+| `index` | no | Spatial indexing and geometry operations |
+| `services` | no | OGC services (WMS/WFS/WCS/WPS) |
 
 ## Usage Examples
 
@@ -251,7 +268,7 @@ gdf = oxigdal.read_geoparquet("buildings.parquet")  # Arrow-native
 ### WebAssembly
 
 ```javascript
-import init, { WasmCogViewer } from 'oxigdal-wasm';
+import init, { WasmCogViewer } from '@cooljapan/oxigdal';
 await init();
 
 const viewer = new WasmCogViewer();
@@ -355,6 +372,7 @@ oxigdal warp --t_srs EPSG:32654 input.tif output.tif
 |---------|--------|-------|
 | **v0.1.0** | 2026-02-22 (released) | Independence: 68 crates, 11 drivers, ~500K SLoC, full enterprise stack |
 | **v0.1.1** | 2026-03-11 (released) | EBCOT tier-1 decoder, EPSG expansion (211+), floating-point predictor, Pure Rust compression, CLI commands, 69 crates, 7,486 tests |
+| **v0.1.2** | 2026-03-17 (released) | Wave 7: ogc_features/epsg refactoring, PMTiles writer, geometry validation/operations, umbrella crate integration, 76 crates, 10,935 tests |
 | **v0.2.0** | Q2 2026 | 100+ projections, GPU expansion, advanced ML pipelines, JPEG2000 tier-2 |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |

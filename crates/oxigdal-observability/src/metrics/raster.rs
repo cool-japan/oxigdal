@@ -95,145 +95,145 @@ impl RasterMetrics {
             read_count: meter
                 .u64_counter("oxigdal.raster.read.count")
                 .with_description("Number of raster read operations")
-                .init(),
+                .build(),
             read_duration: meter
                 .f64_histogram("oxigdal.raster.read.duration")
                 .with_description("Duration of raster read operations in milliseconds")
-                .init(),
+                .build(),
             read_bytes: meter
                 .u64_counter("oxigdal.raster.read.bytes")
                 .with_description("Bytes read from raster")
-                .init(),
+                .build(),
 
             // Write operations
             write_count: meter
                 .u64_counter("oxigdal.raster.write.count")
                 .with_description("Number of raster write operations")
-                .init(),
+                .build(),
             write_duration: meter
                 .f64_histogram("oxigdal.raster.write.duration")
                 .with_description("Duration of raster write operations in milliseconds")
-                .init(),
+                .build(),
             write_bytes: meter
                 .u64_counter("oxigdal.raster.write.bytes")
                 .with_description("Bytes written to raster")
-                .init(),
+                .build(),
 
             // Processing operations
             reproject_count: meter
                 .u64_counter("oxigdal.raster.reproject.count")
                 .with_description("Number of raster reprojection operations")
-                .init(),
+                .build(),
             reproject_duration: meter
                 .f64_histogram("oxigdal.raster.reproject.duration")
                 .with_description("Duration of raster reprojection in milliseconds")
-                .init(),
+                .build(),
             resample_count: meter
                 .u64_counter("oxigdal.raster.resample.count")
                 .with_description("Number of raster resample operations")
-                .init(),
+                .build(),
             resample_duration: meter
                 .f64_histogram("oxigdal.raster.resample.duration")
                 .with_description("Duration of raster resample in milliseconds")
-                .init(),
+                .build(),
             warp_count: meter
                 .u64_counter("oxigdal.raster.warp.count")
                 .with_description("Number of raster warp operations")
-                .init(),
+                .build(),
             warp_duration: meter
                 .f64_histogram("oxigdal.raster.warp.duration")
                 .with_description("Duration of raster warp in milliseconds")
-                .init(),
+                .build(),
 
             // Compression operations
             compress_count: meter
                 .u64_counter("oxigdal.raster.compress.count")
                 .with_description("Number of raster compression operations")
-                .init(),
+                .build(),
             compress_duration: meter
                 .f64_histogram("oxigdal.raster.compress.duration")
                 .with_description("Duration of raster compression in milliseconds")
-                .init(),
+                .build(),
             compress_ratio: meter
                 .f64_histogram("oxigdal.raster.compress.ratio")
                 .with_description("Compression ratio achieved")
-                .init(),
+                .build(),
             decompress_count: meter
                 .u64_counter("oxigdal.raster.decompress.count")
                 .with_description("Number of raster decompression operations")
-                .init(),
+                .build(),
             decompress_duration: meter
                 .f64_histogram("oxigdal.raster.decompress.duration")
                 .with_description("Duration of raster decompression in milliseconds")
-                .init(),
+                .build(),
 
             // Band operations
             band_read_count: meter
                 .u64_counter("oxigdal.raster.band.read.count")
                 .with_description("Number of band read operations")
-                .init(),
+                .build(),
             band_read_duration: meter
                 .f64_histogram("oxigdal.raster.band.read.duration")
                 .with_description("Duration of band read in milliseconds")
-                .init(),
+                .build(),
             band_write_count: meter
                 .u64_counter("oxigdal.raster.band.write.count")
                 .with_description("Number of band write operations")
-                .init(),
+                .build(),
             band_write_duration: meter
                 .f64_histogram("oxigdal.raster.band.write.duration")
                 .with_description("Duration of band write in milliseconds")
-                .init(),
+                .build(),
 
             // Tile operations
             tile_count: meter
                 .u64_counter("oxigdal.raster.tile.count")
                 .with_description("Number of tiles generated")
-                .init(),
+                .build(),
             tile_generation_duration: meter
                 .f64_histogram("oxigdal.raster.tile.generation.duration")
                 .with_description("Duration of tile generation in milliseconds")
-                .init(),
+                .build(),
             tile_cache_hits: meter
                 .u64_counter("oxigdal.raster.tile.cache.hits")
                 .with_description("Number of tile cache hits")
-                .init(),
+                .build(),
             tile_cache_misses: meter
                 .u64_counter("oxigdal.raster.tile.cache.misses")
                 .with_description("Number of tile cache misses")
-                .init(),
+                .build(),
 
             // Overview operations
             overview_count: meter
                 .u64_counter("oxigdal.raster.overview.count")
                 .with_description("Number of overviews generated")
-                .init(),
+                .build(),
             overview_generation_duration: meter
                 .f64_histogram("oxigdal.raster.overview.generation.duration")
                 .with_description("Duration of overview generation in milliseconds")
-                .init(),
+                .build(),
 
             // Statistics
             active_rasters: meter
                 .i64_up_down_counter("oxigdal.raster.active")
                 .with_description("Number of active raster datasets")
-                .init(),
+                .build(),
             raster_width: meter
                 .f64_histogram("oxigdal.raster.width")
                 .with_description("Raster width in pixels")
-                .init(),
+                .build(),
             raster_height: meter
                 .f64_histogram("oxigdal.raster.height")
                 .with_description("Raster height in pixels")
-                .init(),
+                .build(),
             raster_bands: meter
                 .f64_histogram("oxigdal.raster.bands")
                 .with_description("Number of raster bands")
-                .init(),
+                .build(),
             raster_size_bytes: meter
                 .f64_histogram("oxigdal.raster.size.bytes")
                 .with_description("Raster size in bytes")
-                .init(),
+                .build(),
         })
     }
 

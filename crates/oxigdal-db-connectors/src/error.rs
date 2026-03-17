@@ -113,15 +113,8 @@ impl From<mongodb::error::Error> for Error {
 }
 
 #[cfg(feature = "mongodb")]
-impl From<bson::ser::Error> for Error {
-    fn from(err: bson::ser::Error) -> Self {
-        Error::MongoDB(err.to_string())
-    }
-}
-
-#[cfg(feature = "mongodb")]
-impl From<bson::de::Error> for Error {
-    fn from(err: bson::de::Error) -> Self {
+impl From<bson::error::Error> for Error {
+    fn from(err: bson::error::Error) -> Self {
         Error::MongoDB(err.to_string())
     }
 }
@@ -134,15 +127,15 @@ impl From<clickhouse::error::Error> for Error {
 }
 
 #[cfg(feature = "cassandra")]
-impl From<scylla::transport::errors::NewSessionError> for Error {
-    fn from(err: scylla::transport::errors::NewSessionError) -> Self {
+impl From<scylla::errors::NewSessionError> for Error {
+    fn from(err: scylla::errors::NewSessionError) -> Self {
         Error::Cassandra(err.to_string())
     }
 }
 
 #[cfg(feature = "cassandra")]
-impl From<scylla::transport::errors::QueryError> for Error {
-    fn from(err: scylla::transport::errors::QueryError) -> Self {
+impl From<scylla::errors::ExecutionError> for Error {
+    fn from(err: scylla::errors::ExecutionError) -> Self {
         Error::Cassandra(err.to_string())
     }
 }

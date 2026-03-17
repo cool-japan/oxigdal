@@ -3,7 +3,7 @@
 **Production-ready Node.js bindings for OxiGDAL - Pure Rust geospatial data processing**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![npm version](https://img.shields.io/npm/v/@oxigdal/node.svg)](https://www.npmjs.com/package/@oxigdal/node)
+[![npm version](https://img.shields.io/npm/v/@cooljapan/oxigdal-node.svg)](https://www.npmjs.com/package/@cooljapan/oxigdal-node)
 
 ## Features
 
@@ -18,13 +18,13 @@
 ## Installation
 
 ```bash
-npm install @oxigdal/node
+npm install @cooljapan/oxigdal-node
 ```
 
 Or with yarn:
 
 ```bash
-yarn add @oxigdal/node
+yarn add @cooljapan/oxigdal-node
 ```
 
 ## Quick Start
@@ -32,7 +32,7 @@ yarn add @oxigdal/node
 ### Raster Operations
 
 ```javascript
-const oxigdal = require('@oxigdal/node');
+const oxigdal = require('@cooljapan/oxigdal-node');
 
 // Open a raster file
 const dataset = oxigdal.openRaster('input.tif');
@@ -53,7 +53,7 @@ output.save('output.tif');
 ### Terrain Analysis
 
 ```javascript
-const oxigdal = require('@oxigdal/node');
+const oxigdal = require('@cooljapan/oxigdal-node');
 
 async function analyzeTerrainAsync() {
   // Open DEM
@@ -81,7 +81,7 @@ analyzeTerrainAsync().catch(console.error);
 ### Vector Operations
 
 ```javascript
-const oxigdal = require('@oxigdal/node');
+const oxigdal = require('@cooljapan/oxigdal-node');
 
 // Read GeoJSON
 const collection = oxigdal.readGeojson('features.geojson');
@@ -371,7 +371,7 @@ OxiGDAL Node.js bindings are designed for production use with:
 Full TypeScript support is included:
 
 ```typescript
-import * as oxigdal from '@oxigdal/node';
+import * as oxigdal from '@cooljapan/oxigdal-node';
 
 const dataset: oxigdal.Dataset = oxigdal.openRaster('input.tif');
 const band: oxigdal.BufferWrapper = dataset.readBand(0);

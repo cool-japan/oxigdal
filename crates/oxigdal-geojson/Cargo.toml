@@ -1,0 +1,17 @@
+[package]
+name = "oxigdal-geojson-stream"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure-Rust streaming GeoJSON reader and writer for OxiGDAL"
+keywords = ["geospatial", "geojson", "streaming", "vector"]
+categories = ["science::geo", "parser-implementations"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true

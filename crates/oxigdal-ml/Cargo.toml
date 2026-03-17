@@ -58,7 +58,7 @@ ort = { workspace = true }
 
 # Geometry and GeoJSON
 geojson = { workspace = true }
-geo-types = "0.7"
+geo-types.workspace = true
 
 # Numerical operations — ndarray required directly by ort crate (ONNX Runtime public API uses ndarray types)
 ndarray = { workspace = true }
@@ -85,12 +85,12 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 
 # GPU backend detection (Pure Rust - COOLJAPAN compliant)
-libloading = { version = "0.8", optional = true }  # Dynamic library loading for CUDA/ROCm detection
+libloading = { version = "0.9", optional = true }  # Dynamic library loading for CUDA/ROCm detection
 ash = { version = "0.38", optional = true }        # Vulkan bindings
-opencl3 = { version = "0.9", optional = true }     # OpenCL bindings
+opencl3 = { version = "0.12", optional = true }     # OpenCL bindings
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = { version = "0.30", optional = true }      # Metal framework bindings for macOS
+metal = { version = "0.33", optional = true }      # Metal framework bindings for macOS
 objc = { version = "0.2", optional = true }        # Objective-C runtime for Metal
 
 # TensorFlow Lite support (Safe C bindings - TEMPORARILY DISABLED)

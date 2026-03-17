@@ -11,6 +11,8 @@ pub mod eo;
 pub mod projection;
 pub mod sar;
 pub mod scientific;
+pub mod timestamps;
+pub mod version;
 pub mod view;
 
 use crate::error::{Result, StacError};

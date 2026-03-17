@@ -20,7 +20,7 @@ Advanced geospatial analytics for enterprise workflows — part of the [OxiGDAL]
 
 ```toml
 [dependencies]
-oxigdal-analytics = "0.1"
+oxigdal-analytics = "0.1.2"
 ```
 
 ## Usage

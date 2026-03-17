@@ -4,29 +4,37 @@
 //! including errors from Arrow/Parquet operations, geometry encoding,
 //! and metadata validation.
 
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
 /// Result type for GeoParquet operations
-pub type Result<T> = std::result::Result<T, GeoParquetError>;
+pub type Result<T> = core::result::Result<T, GeoParquetError>;
 
 /// Errors that can occur during GeoParquet operations
 #[derive(Debug, thiserror::Error)]
 pub enum GeoParquetError {
     /// Error from the Arrow library
+    #[cfg(feature = "std")]
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 
     /// Error from the Parquet library
+    #[cfg(feature = "std")]
     #[error("Parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
 
     /// Error from oxigdal-core
+    #[cfg(feature = "std")]
     #[error("OxiGDAL core error: {0}")]
     Core(#[from] oxigdal_core::error::OxiGdalError),
 
     /// I/O error
+    #[cfg(feature = "std")]
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     /// JSON serialization/deserialization error
+    #[cfg(feature = "std")]
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -204,6 +212,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_error_display() {
         let err = GeoParquetError::invalid_metadata("test message");
         let display = format!("{err}");

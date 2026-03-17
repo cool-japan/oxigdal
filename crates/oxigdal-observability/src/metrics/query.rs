@@ -57,75 +57,75 @@ impl QueryMetrics {
             query_count: meter
                 .u64_counter("oxigdal.query.count")
                 .with_description("Number of queries executed")
-                .init(),
+                .build(),
             query_duration: meter
                 .f64_histogram("oxigdal.query.duration")
                 .with_description("Query duration in milliseconds")
-                .init(),
+                .build(),
             query_errors: meter
                 .u64_counter("oxigdal.query.errors")
                 .with_description("Number of query errors")
-                .init(),
+                .build(),
 
             // Query types
             spatial_query_count: meter
                 .u64_counter("oxigdal.query.spatial.count")
                 .with_description("Number of spatial queries")
-                .init(),
+                .build(),
             attribute_query_count: meter
                 .u64_counter("oxigdal.query.attribute.count")
                 .with_description("Number of attribute queries")
-                .init(),
+                .build(),
             temporal_query_count: meter
                 .u64_counter("oxigdal.query.temporal.count")
                 .with_description("Number of temporal queries")
-                .init(),
+                .build(),
             sql_query_count: meter
                 .u64_counter("oxigdal.query.sql.count")
                 .with_description("Number of SQL queries")
-                .init(),
+                .build(),
 
             // Query complexity
             query_complexity_score: meter
                 .f64_histogram("oxigdal.query.complexity")
                 .with_description("Query complexity score")
-                .init(),
+                .build(),
             query_result_count: meter
                 .f64_histogram("oxigdal.query.result.count")
                 .with_description("Number of results returned")
-                .init(),
+                .build(),
             query_result_bytes: meter
                 .f64_histogram("oxigdal.query.result.bytes")
                 .with_description("Size of query results in bytes")
-                .init(),
+                .build(),
 
             // Query optimization
             query_plan_duration: meter
                 .f64_histogram("oxigdal.query.plan.duration")
                 .with_description("Query planning duration in milliseconds")
-                .init(),
+                .build(),
             query_execution_duration: meter
                 .f64_histogram("oxigdal.query.execution.duration")
                 .with_description("Query execution duration in milliseconds")
-                .init(),
+                .build(),
             index_usage_count: meter
                 .u64_counter("oxigdal.query.index_usage")
                 .with_description("Number of times indexes were used")
-                .init(),
+                .build(),
             full_scan_count: meter
                 .u64_counter("oxigdal.query.full_scan")
                 .with_description("Number of full table scans")
-                .init(),
+                .build(),
 
             // Query cache
             query_cache_hits: meter
                 .u64_counter("oxigdal.query.cache.hits")
                 .with_description("Number of query cache hits")
-                .init(),
+                .build(),
             query_cache_misses: meter
                 .u64_counter("oxigdal.query.cache.misses")
                 .with_description("Number of query cache misses")
-                .init(),
+                .build(),
         })
     }
 

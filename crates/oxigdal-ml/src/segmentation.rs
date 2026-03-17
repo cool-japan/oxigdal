@@ -6,7 +6,7 @@ use oxigdal_core::buffer::RasterBuffer;
 use oxigdal_core::types::{GeoTransform, RasterDataType};
 // use rayon::prelude::*;
 use geo_types::{Coord, LineString, Polygon};
-use geojson::{Feature, FeatureCollection, Geometry, Value as GeoJsonValue};
+use geojson::{Feature, FeatureCollection, Geometry};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::debug;
@@ -650,7 +650,7 @@ impl PanopticSegmentation {
 
             // Create GeoJSON geometry
             let coords = polygon_to_geojson_coords(&polygon);
-            let geometry = Geometry::new(GeoJsonValue::Polygon(coords));
+            let geometry = Geometry::new_polygon(coords);
 
             // Create properties
             let mut properties = serde_json::Map::new();

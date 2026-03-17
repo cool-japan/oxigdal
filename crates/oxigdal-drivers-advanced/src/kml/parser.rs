@@ -62,10 +62,8 @@ impl<R: BufRead> KmlParser<R> {
                         _ => {}
                     }
                 }
-                Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"Document" {
-                        in_document = false;
-                    }
+                Ok(Event::End(e)) if e.name().as_ref() == b"Document" => {
+                    in_document = false;
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(Error::kml(format!("XML parse error: {}", e))),
@@ -92,10 +90,8 @@ impl<R: BufRead> KmlParser<R> {
                     b"Polygon" => placemark.geometry = Some(self.parse_polygon()?),
                     _ => {}
                 },
-                Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"Placemark" {
-                        break;
-                    }
+                Ok(Event::End(e)) if e.name().as_ref() == b"Placemark" => {
+                    break;
                 }
                 Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in Placemark")),
                 Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
@@ -139,10 +135,8 @@ impl<R: BufRead> KmlParser<R> {
                     }
                     _ => {}
                 },
-                Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"Polygon" {
-                        break;
-                    }
+                Ok(Event::End(e)) if e.name().as_ref() == b"Polygon" => {
+                    break;
                 }
                 Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in Polygon")),
                 Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),

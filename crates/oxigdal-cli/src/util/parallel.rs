@@ -240,12 +240,13 @@ impl<T: Send + Sync> WorkDistributor<T> {
         // Sort items based on strategy
         match self.strategy {
             DistributionStrategy::PriorityBased => {
-                self.items.sort_by(|a, b| b.priority.cmp(&a.priority));
+                self.items
+                    .sort_by_key(|item| std::cmp::Reverse(item.priority));
             }
             DistributionStrategy::LoadBalanced => {
                 // Sort by estimated cost (largest first for better load balancing)
                 self.items
-                    .sort_by(|a, b| b.estimated_cost.cmp(&a.estimated_cost));
+                    .sort_by_key(|item| std::cmp::Reverse(item.estimated_cost));
             }
             _ => {}
         }
@@ -1376,7 +1377,11 @@ mod tests {
         assert!(count > 0);
         // In containerized environments, physical cores can exceed cgroup-limited logical cores
         // so we only check that the count is positive and reasonable
-        assert!(count <= 1024, "Physical core count seems unreasonable: {}", count);
+        assert!(
+            count <= 1024,
+            "Physical core count seems unreasonable: {}",
+            count
+        );
     }
 
     #[test]

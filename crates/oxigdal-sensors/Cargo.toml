@@ -40,7 +40,7 @@ num-traits = { workspace = true }
 tracing = { workspace = true }
 
 # Scientific computing - Use SciRS2 ecosystem (COOLJAPAN Policy)
-scirs2-core = { version = "0.2.0", features = ["array", "array_stats", "linalg", "random"] }
+scirs2-core = { workspace = true, features = ["array", "array_stats", "linalg", "random"] }
 
 # Parallelization (optional)
 rayon = { workspace = true, optional = true }

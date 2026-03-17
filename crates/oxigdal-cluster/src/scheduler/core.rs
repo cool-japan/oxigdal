@@ -539,7 +539,7 @@ impl Scheduler {
         }
 
         // Sort overloaded workers by task count (descending)
-        overloaded.sort_by(|a, b| b.1.cmp(&a.1));
+        overloaded.sort_by_key(|x| std::cmp::Reverse(x.1));
 
         // Steal tasks from overloaded to underloaded
         for (victim_id, _) in overloaded {

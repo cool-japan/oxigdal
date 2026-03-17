@@ -100,11 +100,10 @@ impl BatchConfig {
         let available_memory = system.available_memory() as usize;
         let usable_memory = (available_memory as f32 * memory_fraction) as usize;
 
-        let batch_size = if sample_size_bytes > 0 {
-            (usable_memory / sample_size_bytes).clamp(1, 256)
-        } else {
-            32
-        };
+        let batch_size = usable_memory
+            .checked_div(sample_size_bytes)
+            .map(|v| v.clamp(1, 256))
+            .unwrap_or(32);
 
         info!(
             "Auto-tuned batch size: {} (available memory: {} MB, sample size: {} MB)",

@@ -101,6 +101,7 @@ pub mod grid;
 pub mod message;
 pub mod parameter;
 pub mod reader;
+pub mod templates;
 
 #[cfg(feature = "grib1")]
 pub mod grib1;

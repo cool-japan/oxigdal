@@ -34,8 +34,8 @@ oxigdal-cloud = { workspace = true, optional = true }
 
 # PyO3 for Python bindings
 # Note: Using 0.24.x for stability. 0.28+ requires significant API migrations.
-pyo3 = { version = "0.24", features = ["abi3-py39", "num-bigint"] }
-numpy = "0.24"
+pyo3 = { version = "0.28", features = ["abi3-py39", "num-bigint"] }
+numpy = "0.28"
 
 # TODO: Add async support when pyo3-asyncio 0.23 is released
 # pyo3-asyncio = { version = "0.23", features = ["tokio-runtime"], optional = true }
@@ -65,7 +65,7 @@ tempfile.workspace = true
 proptest.workspace = true
 
 [build-dependencies]
-pyo3-build-config = "0.24"
+pyo3-build-config = "0.28"
 
 [features]
 default = ["geotiff", "geojson", "algorithms"]

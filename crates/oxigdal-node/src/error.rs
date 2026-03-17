@@ -224,4 +224,162 @@ mod tests {
         };
         assert_eq!(format!("{}", err), "TEST_CODE: test message");
     }
+
+    #[test]
+    fn test_error_from_io_error() {
+        use oxigdal_core::error::{IoError, OxiGdalError};
+        let core_err = OxiGdalError::Io(IoError::NotFound {
+            path: "file_missing.tif".to_string(),
+        });
+        let node_err: NodeError = core_err.into();
+        assert_eq!(node_err.code, "IO_ERROR");
+    }
+
+    #[test]
+    fn test_error_from_crs_error() {
+        use oxigdal_core::error::{CrsError, OxiGdalError};
+        let core_err = OxiGdalError::Crs(CrsError::UnknownCrs {
+            identifier: "EPSG:999999".to_string(),
+        });
+        let node_err: NodeError = core_err.into();
+        assert_eq!(node_err.code, "CRS_ERROR");
+    }
+
+    #[test]
+    fn test_error_from_invalid_parameter() {
+        use oxigdal_core::error::OxiGdalError;
+        let core_err = OxiGdalError::InvalidParameter {
+            parameter: "band_index",
+            message: "out of range".to_string(),
+        };
+        let node_err: NodeError = core_err.into();
+        assert_eq!(node_err.code, "INVALID_PARAMETER");
+        assert!(node_err.message.contains("band_index"));
+    }
+
+    #[test]
+    fn test_error_from_not_supported() {
+        use oxigdal_core::error::OxiGdalError;
+        let core_err = OxiGdalError::NotSupported {
+            operation: "JPEG2000 writing".to_string(),
+        };
+        let node_err: NodeError = core_err.into();
+        assert_eq!(node_err.code, "NOT_SUPPORTED");
+        assert!(node_err.message.contains("JPEG2000"));
+    }
+
+    #[test]
+    fn test_error_from_out_of_bounds() {
+        use oxigdal_core::error::OxiGdalError;
+        let core_err = OxiGdalError::OutOfBounds {
+            message: "pixel (100, 100) outside 50x50 raster".to_string(),
+        };
+        let node_err: NodeError = core_err.into();
+        assert_eq!(node_err.code, "OUT_OF_BOUNDS");
+    }
+
+    #[test]
+    fn test_error_from_internal() {
+        use oxigdal_core::error::OxiGdalError;
+        let core_err = OxiGdalError::Internal {
+            message: "unexpected null pointer".to_string(),
+        };
+        let node_err: NodeError = core_err.into();
+        assert_eq!(node_err.code, "INTERNAL_ERROR");
+    }
+
+    #[test]
+    fn test_to_napi_result_ok() {
+        use oxigdal_core::error::OxiGdalError;
+        let result: std::result::Result<i32, OxiGdalError> = Ok(42);
+        let napi_result = result.to_napi();
+        assert!(napi_result.is_ok());
+        assert_eq!(napi_result.expect("should be ok"), 42);
+    }
+
+    #[test]
+    fn test_to_napi_result_err() {
+        use oxigdal_core::error::OxiGdalError;
+        let err = OxiGdalError::Internal {
+            message: "test".to_string(),
+        };
+        let result: std::result::Result<i32, OxiGdalError> = Err(err);
+        let napi_result = result.to_napi();
+        assert!(napi_result.is_err());
+    }
+
+    #[test]
+    fn test_node_error_is_std_error() {
+        let err = NodeError {
+            message: "std error test".to_string(),
+            code: "STD_ERROR".to_string(),
+        };
+        // Just ensure it implements std::error::Error
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn test_error_from_algorithm_empty_input() {
+        use oxigdal_algorithms::error::AlgorithmError;
+        let alg_err = AlgorithmError::EmptyInput {
+            operation: "hillshade",
+        };
+        let node_err: NodeError = alg_err.into();
+        assert_eq!(node_err.code, "EMPTY_INPUT");
+        assert!(node_err.message.contains("hillshade"));
+    }
+
+    #[test]
+    fn test_error_from_algorithm_invalid_dimensions() {
+        use oxigdal_algorithms::error::AlgorithmError;
+        let alg_err = AlgorithmError::InvalidDimensions {
+            message: "wrong size",
+            actual: 100,
+            expected: 200,
+        };
+        let node_err: NodeError = alg_err.into();
+        assert_eq!(node_err.code, "INVALID_DIMENSIONS");
+    }
+
+    #[test]
+    fn test_error_from_algorithm_geometry_error() {
+        use oxigdal_algorithms::error::AlgorithmError;
+        let alg_err = AlgorithmError::GeometryError {
+            message: "self-intersecting polygon".to_string(),
+        };
+        let node_err: NodeError = alg_err.into();
+        assert_eq!(node_err.code, "GEOMETRY_ERROR");
+    }
+
+    #[test]
+    fn test_error_from_algorithm_unsupported() {
+        use oxigdal_algorithms::error::AlgorithmError;
+        let alg_err = AlgorithmError::UnsupportedOperation {
+            operation: "3D buffering".to_string(),
+        };
+        let node_err: NodeError = alg_err.into();
+        assert_eq!(node_err.code, "UNSUPPORTED_OPERATION");
+        assert!(node_err.message.contains("3D buffering"));
+    }
+
+    #[test]
+    fn test_error_from_algorithm_numerical_error() {
+        use oxigdal_algorithms::error::AlgorithmError;
+        let alg_err = AlgorithmError::NumericalError {
+            operation: "inverse matrix",
+            message: "singular matrix".to_string(),
+        };
+        let node_err: NodeError = alg_err.into();
+        assert_eq!(node_err.code, "NUMERICAL_ERROR");
+    }
+
+    #[test]
+    fn test_error_from_algorithm_allocation_failed() {
+        use oxigdal_algorithms::error::AlgorithmError;
+        let alg_err = AlgorithmError::AllocationFailed {
+            message: "out of memory".to_string(),
+        };
+        let node_err: NodeError = alg_err.into();
+        assert_eq!(node_err.code, "ALLOCATION_FAILED");
+    }
 }

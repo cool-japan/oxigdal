@@ -18,7 +18,7 @@ default = ["geotiff", "geojson", "shapefile"]
 full = [
     "geotiff", "geojson", "shapefile", "geoparquet", "netcdf",
     "hdf5", "zarr", "grib", "stac", "vrt", "flatgeobuf", "jpeg2000",
-    "terrain",
+    "terrain", "gpkg", "pmtiles", "mbtiles", "copc", "index",
 ]
 
 # Individual driver features — user picks what they need
@@ -36,7 +36,20 @@ vrt = ["dep:oxigdal-vrt"]
 flatgeobuf = ["dep:oxigdal-flatgeobuf"]
 jpeg2000 = ["dep:oxigdal-jpeg2000"]
 
+# Tile / database / point-cloud formats
+gpkg = ["dep:oxigdal-gpkg"]
+pmtiles = ["dep:oxigdal-pmtiles"]
+mbtiles = ["dep:oxigdal-mbtiles"]
+copc = ["dep:oxigdal-copc"]
+
+# Spatial indexing
+index = ["dep:oxigdal-index"]
+
+# no_std geometry primitives
+noalloc = ["dep:oxigdal-noalloc"]
+
 # Advanced capabilities
+services = ["dep:oxigdal-services"]
 cloud = ["dep:oxigdal-cloud"]
 proj = ["dep:oxigdal-proj"]
 algorithms = ["dep:oxigdal-algorithms"]
@@ -49,6 +62,7 @@ temporal = ["dep:oxigdal-temporal"]
 
 [dependencies]
 oxigdal-core = { workspace = true }
+serde_json = { workspace = true }
 
 # Drivers (all optional)
 oxigdal-geotiff = { workspace = true, optional = true }
@@ -75,3 +89,18 @@ oxigdal-ml = { workspace = true, optional = true }
 oxigdal-gpu = { workspace = true, optional = true }
 oxigdal-server = { workspace = true, optional = true }
 oxigdal-temporal = { workspace = true, optional = true }
+
+# Tile / database / point-cloud formats (all optional)
+oxigdal-gpkg = { workspace = true, optional = true }
+oxigdal-pmtiles = { workspace = true, optional = true }
+oxigdal-mbtiles = { workspace = true, optional = true }
+oxigdal-copc = { workspace = true, optional = true }
+
+# Spatial indexing (optional)
+oxigdal-index = { workspace = true, optional = true }
+
+# no_std geometry primitives (optional)
+oxigdal-noalloc = { workspace = true, optional = true }
+
+# OGC web services (optional)
+oxigdal-services = { workspace = true, optional = true }

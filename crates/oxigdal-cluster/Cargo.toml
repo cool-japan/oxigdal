@@ -34,7 +34,7 @@ arrow-flight = { workspace = true }
 
 # Concurrency
 dashmap = { workspace = true }
-parking_lot = "0.12"
+parking_lot.workspace = true
 
 # Time
 chrono = { workspace = true }

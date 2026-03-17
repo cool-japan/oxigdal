@@ -43,10 +43,8 @@ impl<R: BufRead> GmlParser<R> {
                         _ => {}
                     }
                 }
-                Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"FeatureCollection" {
-                        in_collection = false;
-                    }
+                Ok(Event::End(e)) if e.name().as_ref() == b"FeatureCollection" => {
+                    in_collection = false;
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(Error::gml(format!("XML parse error: {}", e))),
@@ -179,11 +177,11 @@ impl<R: BufRead> GmlParser<R> {
         let mut buf = Vec::new();
         loop {
             match self.reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"pos" || e.name().as_ref() == b"coordinates" {
-                        let text = self.read_text()?;
-                        return parse_coordinate_text(&text);
-                    }
+                Ok(Event::Start(e))
+                    if e.name().as_ref() == b"pos" || e.name().as_ref() == b"coordinates" =>
+                {
+                    let text = self.read_text()?;
+                    return parse_coordinate_text(&text);
                 }
                 Ok(Event::End(_)) => {}
                 Ok(Event::Eof) => return Err(Error::gml("Unexpected EOF")),

@@ -57,19 +57,19 @@ aws-credential-types = { version = "1", optional = true }
 # Azure Blob Storage - Pure Rust SDK
 azure_storage = { version = "0.21", optional = true }
 azure_storage_blobs = { version = "0.21", optional = true }
-azure_core = { version = "0.21", optional = true }
-azure_identity = { version = "0.21", optional = true }
+azure_core = { version = "0.33", optional = true }
+azure_identity = { version = "0.33", optional = true }
 
 # Google Cloud Storage - Pure Rust SDK
-google-cloud-storage = { version = "0.22", optional = true }
-google-cloud-auth = { version = "0.18", optional = true }
+google-cloud-storage = { version = "1.9", optional = true }
+google-cloud-auth = { version = "1.7", optional = true }
 
 # HTTP
 reqwest = { workspace = true, optional = true, features = ["stream", "json"] }
 
 # Caching
 lru = { workspace = true, optional = true }
-dashmap = { version = "6", optional = true }
+dashmap = { workspace = true, optional = true }
 
 # Crypto for auth
 hmac = { workspace = true, optional = true }

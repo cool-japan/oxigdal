@@ -115,6 +115,27 @@ pub use oxigdal_core::error::OxiGdalError;
 pub use oxigdal_core::error::Result;
 pub use oxigdal_core::types::{BoundingBox, GeoTransform, RasterDataType, RasterMetadata};
 
+// ─── Ergonomic API modules ───────────────────────────────────────────────────
+
+/// Universal dataset opener with automatic format detection.
+pub mod open;
+
+/// Builder patterns for dataset creation and opening.
+pub mod builder;
+
+/// Streaming / iterator API for large datasets.
+pub mod streaming;
+
+/// Format conversion planning and detection utilities.
+pub mod convert;
+
+pub use builder::{
+    CompressionType, CreateOptions, DatasetCreateBuilder, DatasetOpenBuilder, DatasetWriter,
+    OutputFormat,
+};
+pub use open::{CloudScheme, OpenedDataset, open};
+pub use streaming::{FeatureStream, RasterTile, StreamingExt, StreamingFeature, TileStream};
+
 /// Re-export the core crate for advanced usage
 pub use oxigdal_core as core_types;
 
@@ -207,10 +228,10 @@ pub use oxigdal_algorithms as algorithms;
 #[cfg_attr(docsrs, doc(cfg(feature = "analytics")))]
 pub use oxigdal_analytics as analytics;
 
-/// Stream processing for large datasets
+/// Stream processing for large datasets (advanced streaming crate)
 #[cfg(feature = "streaming")]
 #[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
-pub use oxigdal_streaming as streaming;
+pub use oxigdal_streaming as streaming_ext;
 
 /// Machine learning integration
 #[cfg(feature = "ml")]
@@ -231,6 +252,43 @@ pub use oxigdal_server as server;
 #[cfg(feature = "temporal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "temporal")))]
 pub use oxigdal_temporal as temporal;
+
+// ─── Tile / database / point-cloud re-exports (feature-gated) ───────────────
+
+/// GeoPackage (SQLite-based) driver
+#[cfg(feature = "gpkg")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gpkg")))]
+pub use oxigdal_gpkg as gpkg;
+
+/// PMTiles v3 tile archive driver
+#[cfg(feature = "pmtiles")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pmtiles")))]
+pub use oxigdal_pmtiles as pmtiles;
+
+/// MBTiles tile archive driver
+#[cfg(feature = "mbtiles")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mbtiles")))]
+pub use oxigdal_mbtiles as mbtiles;
+
+/// COPC (Cloud Optimized Point Cloud) driver
+#[cfg(feature = "copc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "copc")))]
+pub use oxigdal_copc as copc;
+
+/// Spatial index (R-tree, grid) module
+#[cfg(feature = "index")]
+#[cfg_attr(docsrs, doc(cfg(feature = "index")))]
+pub use oxigdal_index as index;
+
+/// no_std fixed-size geometry primitives
+#[cfg(feature = "noalloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "noalloc")))]
+pub use oxigdal_noalloc as noalloc;
+
+/// OGC Web Services (WFS, WCS, WPS, CSW)
+#[cfg(feature = "services")]
+#[cfg_attr(docsrs, doc(cfg(feature = "services")))]
+pub use oxigdal_services as services;
 
 // ─── Unified Dataset API ────────────────────────────────────────────────────
 
@@ -263,6 +321,14 @@ pub enum DatasetFormat {
     FlatGeobuf,
     /// JPEG2000 (.jp2, .j2k)
     Jpeg2000,
+    /// GeoPackage (.gpkg, SQLite-based)
+    GeoPackage,
+    /// PMTiles v3 single-file tile archive (.pmtiles)
+    PMTiles,
+    /// MBTiles SQLite tile archive (.mbtiles)
+    MBTiles,
+    /// Cloud Optimized Point Cloud (.copc.laz)
+    Copc,
     /// Unknown / user-specified
     Unknown,
 }
@@ -271,7 +337,14 @@ impl DatasetFormat {
     /// Detect format from file extension.
     ///
     /// Returns `DatasetFormat::Unknown` if the extension is not recognized.
+    /// For `.copc.laz` files, the compound extension is checked first.
     pub fn from_extension(path: &str) -> Self {
+        // Check compound extensions first (e.g. .copc.laz)
+        let lower = path.to_lowercase();
+        if lower.ends_with(".copc.laz") {
+            return Self::Copc;
+        }
+
         let ext = std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
@@ -290,6 +363,10 @@ impl DatasetFormat {
             "vrt" => Self::Vrt,
             "fgb" => Self::FlatGeobuf,
             "jp2" | "j2k" => Self::Jpeg2000,
+            "gpkg" => Self::GeoPackage,
+            "pmtiles" => Self::PMTiles,
+            "mbtiles" => Self::MBTiles,
+            "laz" | "las" => Self::Copc,
             _ => Self::Unknown,
         }
     }
@@ -310,6 +387,10 @@ impl DatasetFormat {
             Self::Vrt => "VRT",
             Self::FlatGeobuf => "FlatGeobuf",
             Self::Jpeg2000 => "JPEG2000",
+            Self::GeoPackage => "GPKG",
+            Self::PMTiles => "PMTiles",
+            Self::MBTiles => "MBTiles",
+            Self::Copc => "COPC",
             Self::Unknown => "Unknown",
         }
     }
@@ -426,6 +507,18 @@ impl Dataset {
 
             #[cfg(feature = "vrt")]
             DatasetFormat::Vrt => Self::open_raster_stub(path, DatasetFormat::Vrt),
+
+            #[cfg(feature = "gpkg")]
+            DatasetFormat::GeoPackage => Self::open_vector_stub(path, DatasetFormat::GeoPackage),
+
+            #[cfg(feature = "pmtiles")]
+            DatasetFormat::PMTiles => Self::open_raster_stub(path, DatasetFormat::PMTiles),
+
+            #[cfg(feature = "mbtiles")]
+            DatasetFormat::MBTiles => Self::open_raster_stub(path, DatasetFormat::MBTiles),
+
+            #[cfg(feature = "copc")]
+            DatasetFormat::Copc => Self::open_raster_stub(path, DatasetFormat::Copc),
 
             _ => Err(OxiGdalError::NotSupported {
                 operation: format!(
@@ -599,6 +692,14 @@ pub fn drivers() -> Vec<&'static str> {
     list.push("FlatGeobuf");
     #[cfg(feature = "jpeg2000")]
     list.push("JPEG2000");
+    #[cfg(feature = "gpkg")]
+    list.push("GPKG");
+    #[cfg(feature = "pmtiles")]
+    list.push("PMTiles");
+    #[cfg(feature = "mbtiles")]
+    list.push("MBTiles");
+    #[cfg(feature = "copc")]
+    list.push("COPC");
 
     list
 }

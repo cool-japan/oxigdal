@@ -1,0 +1,27 @@
+[package]
+name = "oxigdal-gpkg"
+description = "Pure Rust GeoPackage (GPKG) reader for OxiGDAL - SQLite format parser without C dependencies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigdal-gpkg"
+readme = "README.md"
+keywords = ["geopackage", "gpkg", "sqlite", "gis", "geospatial"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

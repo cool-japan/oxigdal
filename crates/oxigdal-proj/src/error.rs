@@ -3,8 +3,11 @@
 //! This module provides comprehensive error handling for all projection-related operations,
 //! following the no-unwrap policy.
 
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
 /// Result type for projection operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Comprehensive error type for projection operations.
 #[derive(Debug, thiserror::Error)]
@@ -144,18 +147,22 @@ pub enum Error {
     },
 
     /// JSON serialization/deserialization error
+    #[cfg(feature = "std")]
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
     /// I/O error
+    #[cfg(feature = "std")]
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 
     /// UTF-8 conversion error
+    #[cfg(feature = "std")]
     #[error("UTF-8 conversion error: {0}")]
     Utf8Error(#[from] std::str::Utf8Error),
 
     /// Error from proj4rs library
+    #[cfg(feature = "std")]
     #[error("Proj4rs error: {0}")]
     Proj4rsError(String),
 
@@ -292,6 +299,7 @@ impl Error {
     }
 
     /// Creates an error from proj4rs library.
+    #[cfg(feature = "std")]
     pub fn from_proj4rs<S: Into<String>>(message: S) -> Self {
         Self::Proj4rsError(message.into())
     }
@@ -303,6 +311,7 @@ impl Error {
 }
 
 // Implement conversion from proj4rs errors
+#[cfg(feature = "std")]
 impl From<proj4rs::errors::Error> for Error {
     fn from(err: proj4rs::errors::Error) -> Self {
         Self::from_proj4rs(format!("{:?}", err))

@@ -251,3 +251,173 @@ pub fn buffer_from_bytes(
 ) -> Result<BufferWrapper> {
     BufferWrapper::from_buffer(buffer, width, height, data_type)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxigdal_core::types::RasterDataType;
+
+    #[test]
+    fn test_parse_data_type_uint8() {
+        let result = parse_data_type("uint8");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("uint8"), RasterDataType::UInt8);
+    }
+
+    #[test]
+    fn test_parse_data_type_uint8_alias() {
+        let result = parse_data_type("u8");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("u8"), RasterDataType::UInt8);
+    }
+
+    #[test]
+    fn test_parse_data_type_int16() {
+        let result = parse_data_type("int16");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("int16"), RasterDataType::Int16);
+    }
+
+    #[test]
+    fn test_parse_data_type_int16_alias() {
+        let result = parse_data_type("i16");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("i16"), RasterDataType::Int16);
+    }
+
+    #[test]
+    fn test_parse_data_type_uint16() {
+        let result = parse_data_type("uint16");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("uint16"), RasterDataType::UInt16);
+    }
+
+    #[test]
+    fn test_parse_data_type_int32() {
+        let result = parse_data_type("int32");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("int32"), RasterDataType::Int32);
+    }
+
+    #[test]
+    fn test_parse_data_type_uint32() {
+        let result = parse_data_type("uint32");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("uint32"), RasterDataType::UInt32);
+    }
+
+    #[test]
+    fn test_parse_data_type_float32() {
+        let result = parse_data_type("float32");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("float32"), RasterDataType::Float32);
+    }
+
+    #[test]
+    fn test_parse_data_type_float32_alias() {
+        let result = parse_data_type("f32");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("f32"), RasterDataType::Float32);
+    }
+
+    #[test]
+    fn test_parse_data_type_float64() {
+        let result = parse_data_type("float64");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("float64"), RasterDataType::Float64);
+    }
+
+    #[test]
+    fn test_parse_data_type_float64_alias() {
+        let result = parse_data_type("f64");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("f64"), RasterDataType::Float64);
+    }
+
+    #[test]
+    fn test_parse_data_type_case_insensitive() {
+        let result = parse_data_type("UINT8");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("UINT8 uppercase"), RasterDataType::UInt8);
+    }
+
+    #[test]
+    fn test_parse_data_type_mixed_case() {
+        let result = parse_data_type("Float32");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("Float32 mixed"), RasterDataType::Float32);
+    }
+
+    #[test]
+    fn test_parse_data_type_unknown_returns_error() {
+        let result = parse_data_type("complex128");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_data_type_empty_returns_error() {
+        let result = parse_data_type("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_format_data_type_uint8() {
+        assert_eq!(format_data_type(RasterDataType::UInt8), "uint8");
+    }
+
+    #[test]
+    fn test_format_data_type_int16() {
+        assert_eq!(format_data_type(RasterDataType::Int16), "int16");
+    }
+
+    #[test]
+    fn test_format_data_type_uint16() {
+        assert_eq!(format_data_type(RasterDataType::UInt16), "uint16");
+    }
+
+    #[test]
+    fn test_format_data_type_int32() {
+        assert_eq!(format_data_type(RasterDataType::Int32), "int32");
+    }
+
+    #[test]
+    fn test_format_data_type_uint32() {
+        assert_eq!(format_data_type(RasterDataType::UInt32), "uint32");
+    }
+
+    #[test]
+    fn test_format_data_type_float32() {
+        assert_eq!(format_data_type(RasterDataType::Float32), "float32");
+    }
+
+    #[test]
+    fn test_format_data_type_float64() {
+        assert_eq!(format_data_type(RasterDataType::Float64), "float64");
+    }
+
+    #[test]
+    fn test_parse_data_type_u32_alias() {
+        let result = parse_data_type("u32");
+        assert!(result.is_ok());
+        assert_eq!(result.expect("u32"), RasterDataType::UInt32);
+    }
+
+    #[test]
+    fn test_parse_format_roundtrip_all_types() {
+        let types = [
+            ("uint8", RasterDataType::UInt8),
+            ("int16", RasterDataType::Int16),
+            ("uint16", RasterDataType::UInt16),
+            ("int32", RasterDataType::Int32),
+            ("uint32", RasterDataType::UInt32),
+            ("float32", RasterDataType::Float32),
+            ("float64", RasterDataType::Float64),
+        ];
+        for (name, expected) in &types {
+            let parsed = parse_data_type(name).expect("should parse valid type");
+            assert_eq!(parsed, *expected, "parse failed for {}", name);
+            let formatted = format_data_type(parsed);
+            assert_eq!(&formatted, name, "format failed for {}", name);
+        }
+    }
+}

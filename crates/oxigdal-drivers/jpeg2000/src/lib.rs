@@ -174,6 +174,7 @@ pub mod box_reader;
 pub mod codestream;
 pub mod color;
 pub mod error;
+pub mod jp2_boxes;
 pub mod metadata;
 pub mod reader;
 pub mod tier1;
@@ -182,7 +183,11 @@ pub mod wavelet;
 
 // Re-exports
 pub use error::{Jpeg2000Error, ResilienceMode, Result};
+pub use jp2_boxes::{BoxType as Jp2BoxType, ColorSpace, Jp2Box, Jp2Parser};
 pub use reader::{ImageInfo, Jpeg2000Reader, ProgressiveDecoder};
+pub use tier2::progression::{CodeBlockAddress, ProgressionIterator};
+pub use tier2::rate_control::{QualityLayer, RateController, SlopeEntry};
+pub use tier2::roi::{RoiMap, RoiShift};
 
 /// Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -33,13 +33,13 @@ multi-gpu = []
 
 # Platform-specific defaults
 [target.'cfg(target_os = "macos")'.dependencies]
-wgpu = { version = "28", default-features = false, features = ["wgsl", "metal"] }
+wgpu = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { version = "28", default-features = false, features = ["wgsl", "dx12"] }
+wgpu = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
+wgpu = { workspace = true }
 
 [dependencies]
 # Workspace dependencies
@@ -56,13 +56,13 @@ num-traits = { workspace = true }
 rayon = { workspace = true }
 
 # GPU dependencies (latest versions)
-wgpu = { version = "28", default-features = false, features = ["wgsl"] }
-pollster = "0.4"
-encase = { version = "0.10", features = ["glam"] }
-naga = { version = "28", features = ["wgsl-in", "wgsl-out"] }
+wgpu = { workspace = true }
+pollster.workspace = true
+encase.workspace = true
+naga = { workspace = true }
 
 # Math
-glam = { version = "0.30", features = ["bytemuck"] }
+glam = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

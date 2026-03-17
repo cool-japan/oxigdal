@@ -65,89 +65,89 @@ impl CacheMetrics {
             cache_hits: meter
                 .u64_counter("oxigdal.cache.hits")
                 .with_description("Number of cache hits")
-                .init(),
+                .build(),
             cache_misses: meter
                 .u64_counter("oxigdal.cache.misses")
                 .with_description("Number of cache misses")
-                .init(),
+                .build(),
             cache_hit_ratio: meter
                 .f64_histogram("oxigdal.cache.hit_ratio")
                 .with_description("Cache hit ratio (0.0 to 1.0)")
-                .init(),
+                .build(),
 
             // Cache operations
             cache_get_count: meter
                 .u64_counter("oxigdal.cache.get.count")
                 .with_description("Number of cache get operations")
-                .init(),
+                .build(),
             cache_get_duration: meter
                 .f64_histogram("oxigdal.cache.get.duration")
                 .with_description("Duration of cache get operations in milliseconds")
-                .init(),
+                .build(),
             cache_put_count: meter
                 .u64_counter("oxigdal.cache.put.count")
                 .with_description("Number of cache put operations")
-                .init(),
+                .build(),
             cache_put_duration: meter
                 .f64_histogram("oxigdal.cache.put.duration")
                 .with_description("Duration of cache put operations in milliseconds")
-                .init(),
+                .build(),
             cache_evictions: meter
                 .u64_counter("oxigdal.cache.evictions")
                 .with_description("Number of cache evictions")
-                .init(),
+                .build(),
             cache_invalidations: meter
                 .u64_counter("oxigdal.cache.invalidations")
                 .with_description("Number of cache invalidations")
-                .init(),
+                .build(),
 
             // Cache size
             cache_size_bytes: meter
                 .i64_up_down_counter("oxigdal.cache.size.bytes")
                 .with_description("Current cache size in bytes")
-                .init(),
+                .build(),
             cache_entries: meter
                 .i64_up_down_counter("oxigdal.cache.entries")
                 .with_description("Number of entries in cache")
-                .init(),
+                .build(),
             cache_max_size_bytes: meter
                 .f64_histogram("oxigdal.cache.max_size.bytes")
                 .with_description("Maximum cache size in bytes")
-                .init(),
+                .build(),
 
             // Cache efficiency
             cache_bytes_saved: meter
                 .u64_counter("oxigdal.cache.bytes_saved")
                 .with_description("Bytes saved by cache hits")
-                .init(),
+                .build(),
             cache_time_saved_ms: meter
                 .f64_histogram("oxigdal.cache.time_saved.ms")
                 .with_description("Time saved by cache hits in milliseconds")
-                .init(),
+                .build(),
 
             // Per-layer cache statistics
             layer_cache_hits: meter
                 .u64_counter("oxigdal.cache.layer.hits")
                 .with_description("Number of layer cache hits")
-                .init(),
+                .build(),
             layer_cache_misses: meter
                 .u64_counter("oxigdal.cache.layer.misses")
                 .with_description("Number of layer cache misses")
-                .init(),
+                .build(),
 
             // Prefetch statistics
             prefetch_count: meter
                 .u64_counter("oxigdal.cache.prefetch.count")
                 .with_description("Number of prefetch operations")
-                .init(),
+                .build(),
             prefetch_hit_count: meter
                 .u64_counter("oxigdal.cache.prefetch.hits")
                 .with_description("Number of successful prefetch hits")
-                .init(),
+                .build(),
             prefetch_waste_count: meter
                 .u64_counter("oxigdal.cache.prefetch.waste")
                 .with_description("Number of prefetched items never used")
-                .init(),
+                .build(),
         })
     }
 

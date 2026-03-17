@@ -223,6 +223,22 @@ fn decompress_jpeg(data: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+/// Decompresses a JPEG strip/tile using pre-loaded shared JPEGTables (TIFF tag 347).
+///
+/// Call this variant from the COG reader when the IFD contains a `JPEGTables` tag.
+/// The tables and strip data are merged according to TIFF Technical Note 1 before
+/// decoding.
+///
+/// # Errors
+/// Returns an error if the merge or the JPEG decode fails.
+#[cfg(feature = "jpeg")]
+pub fn decompress_jpeg_with_tables(tables: &[u8], strip_data: &[u8]) -> Result<Vec<u8>> {
+    use crate::jpeg_codec::merge_jpeg_tables;
+
+    let merged = merge_jpeg_tables(tables, strip_data)?;
+    decompress_jpeg(&merged)
+}
+
 #[cfg(feature = "jpeg")]
 fn compress_jpeg(_data: &[u8], _quality: u8) -> Result<Vec<u8>> {
     // Determine image properties from data

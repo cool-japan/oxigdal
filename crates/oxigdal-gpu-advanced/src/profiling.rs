@@ -429,7 +429,7 @@ impl ProfilingReport {
         }
 
         // Sort by total time descending
-        kernel_details.sort_by(|a, b| b.total_time.cmp(&a.total_time));
+        kernel_details.sort_by_key(|x| std::cmp::Reverse(x.total_time));
 
         Self {
             summary: ReportSummary {

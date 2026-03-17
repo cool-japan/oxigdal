@@ -47,9 +47,9 @@ aws-sdk-glue = "1"
 aws-sdk-lambda = "1"
 aws-sdk-sagemaker = "1"
 aws-sdk-sagemakerruntime = "1"
-aws-sdk-cloudwatch = "1"
+aws-sdk-cloudwatch.workspace = true
 aws-sdk-costexplorer = "1"
-aws-smithy-types = "1"
+aws-smithy-types.workspace = true
 
 # Azure SDK
 azure_core = { workspace = true }

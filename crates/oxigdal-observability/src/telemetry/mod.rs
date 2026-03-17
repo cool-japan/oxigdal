@@ -2,7 +2,6 @@
 
 use crate::error::{ObservabilityError, Result};
 use opentelemetry::KeyValue;
-use opentelemetry::global;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use parking_lot::RwLock;
@@ -220,7 +219,9 @@ impl TelemetryProvider {
             attributes.push(KeyValue::new(key.clone(), value.clone()));
         }
 
-        Ok(Resource::new(attributes))
+        Ok(Resource::builder_empty()
+            .with_attributes(attributes)
+            .build())
     }
 
     /// Initialize distributed tracing.
@@ -251,10 +252,8 @@ impl TelemetryProvider {
             return Ok(());
         }
 
-        // Shutdown traces
-        if self.config.enable_traces {
-            global::shutdown_tracer_provider();
-        }
+        // Note: In OpenTelemetry 0.31+, tracer provider shuts down automatically when dropped.
+        // The global tracer provider is managed by the global API and does not expose a shutdown fn.
 
         // Shutdown metrics
         if let Some(ref provider) = self.meter_provider {

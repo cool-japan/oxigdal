@@ -3,6 +3,11 @@
 //! This module defines in-memory representations of all OGC Simple Features
 //! geometry types supported by GeoParquet.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use oxigdal_core::types::GeometryType as CoreGeometryType;
 
 /// A 2D or 3D coordinate

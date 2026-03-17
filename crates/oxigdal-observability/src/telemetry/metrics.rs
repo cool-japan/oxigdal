@@ -38,8 +38,8 @@ pub fn init_metrics(config: &TelemetryConfig, resource: Resource) -> Result<SdkM
 
 /// Create Prometheus provider.
 fn create_prometheus_provider(_endpoint: &str, resource: Resource) -> Result<SdkMeterProvider> {
-    let exporter = opentelemetry_stdout::MetricsExporter::default();
-    let reader = PeriodicReader::builder(exporter, opentelemetry_sdk::runtime::Tokio)
+    let exporter = opentelemetry_stdout::MetricExporter::default();
+    let reader = PeriodicReader::builder(exporter)
         .with_interval(Duration::from_secs(60))
         .build();
 
@@ -55,19 +55,14 @@ fn create_prometheus_provider(_endpoint: &str, resource: Resource) -> Result<Sdk
 #[cfg(feature = "otlp")]
 fn create_otlp_provider(endpoint: &str, resource: Resource) -> Result<SdkMeterProvider> {
     use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry_sdk::metrics::reader::DefaultAggregationSelector;
-    use opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector;
 
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
         .with_endpoint(endpoint)
-        .build_metrics_exporter(
-            Box::new(DefaultAggregationSelector::new()),
-            Box::new(DefaultTemporalitySelector::new()),
-        )
+        .build()
         .map_err(|e| ObservabilityError::MetricsExportFailed(e.to_string()))?;
 
-    let reader = PeriodicReader::builder(exporter, opentelemetry_sdk::runtime::Tokio)
+    let reader = PeriodicReader::builder(exporter)
         .with_interval(Duration::from_secs(60))
         .build();
 
@@ -81,8 +76,8 @@ fn create_otlp_provider(endpoint: &str, resource: Resource) -> Result<SdkMeterPr
 
 /// Create stdout provider for development.
 fn create_stdout_provider(resource: Resource) -> Result<SdkMeterProvider> {
-    let exporter = opentelemetry_stdout::MetricsExporter::default();
-    let reader = PeriodicReader::builder(exporter, opentelemetry_sdk::runtime::Tokio)
+    let exporter = opentelemetry_stdout::MetricExporter::default();
+    let reader = PeriodicReader::builder(exporter)
         .with_interval(Duration::from_secs(60))
         .build();
 
@@ -124,7 +119,7 @@ impl MetricRegistry {
             .meter
             .u64_counter(name_str.clone())
             .with_description(description.into())
-            .init();
+            .build();
 
         self.counters.write().push(name_str);
         Ok(counter)
@@ -140,7 +135,7 @@ impl MetricRegistry {
             .meter
             .i64_up_down_counter(name.into())
             .with_description(description.into())
-            .init();
+            .build();
 
         Ok(counter)
     }
@@ -156,7 +151,7 @@ impl MetricRegistry {
             .meter
             .f64_histogram(name_str.clone())
             .with_description(description.into())
-            .init();
+            .build();
 
         self.histograms.write().push(name_str);
         Ok(histogram)
@@ -178,7 +173,7 @@ impl MetricRegistry {
             .f64_observable_gauge(name_str.clone())
             .with_description(description.into())
             .with_callback(callback)
-            .init();
+            .build();
 
         self.gauges.write().push(name_str);
         Ok(gauge)

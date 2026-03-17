@@ -5,8 +5,7 @@
 
 use crate::error::{PubSubError, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use google_cloud_pubsub::client::{Client, ClientConfig};
-use google_cloud_pubsub::topic::Topic as GcpTopic;
+use google_cloud_pubsub::client::TopicAdmin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -185,10 +184,13 @@ pub struct TopicStats {
 }
 
 /// Topic manager for managing Pub/Sub topics.
+///
+/// Uses the google-cloud-pubsub 0.33 `TopicAdmin` client for topic management
+/// and tracks topics in a local cache.
 pub struct TopicManager {
     project_id: String,
-    client: Arc<Client>,
-    topics: Arc<parking_lot::RwLock<HashMap<String, Arc<GcpTopic>>>>,
+    admin: Arc<TopicAdmin>,
+    topics: Arc<parking_lot::RwLock<HashMap<String, String>>>,
 }
 
 impl TopicManager {
@@ -198,27 +200,13 @@ impl TopicManager {
 
         info!("Creating topic manager for project: {}", project_id);
 
-        let client_config = ClientConfig {
-            project_id: Some(project_id.clone()),
-            ..Default::default()
-        };
-
-        // Initialize authentication if not using emulator
-        #[cfg(feature = "auth")]
-        let client_config = client_config.with_auth().await.map_err(|e| {
-            PubSubError::configuration(
-                format!("Failed to initialize authentication: {}", e),
-                "authentication",
-            )
-        })?;
-
-        let client = Client::new(client_config).await.map_err(|e| {
-            PubSubError::publish_with_source("Failed to create Pub/Sub client", Box::new(e))
+        let admin = TopicAdmin::builder().build().await.map_err(|e| {
+            PubSubError::publish_with_source("Failed to create TopicAdmin client", Box::new(e))
         })?;
 
         Ok(Self {
             project_id,
-            client: Arc::new(client),
+            admin: Arc::new(admin),
             topics: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         })
     }
@@ -229,18 +217,18 @@ impl TopicManager {
 
         info!("Creating topic: {}", config.topic_name);
 
-        let topic = self.client.topic(&config.topic_name);
+        let fq_topic = format!("projects/{}/topics/{}", self.project_id, config.topic_name);
 
-        // Store the topic
+        // Store the topic name in cache
         self.topics
             .write()
-            .insert(config.topic_name.clone(), Arc::new(topic));
+            .insert(config.topic_name.clone(), fq_topic);
 
         Ok(config.topic_name.clone())
     }
 
-    /// Gets a topic by name.
-    pub fn get_topic(&self, topic_name: &str) -> Option<Arc<GcpTopic>> {
+    /// Gets a fully-qualified topic name by short name.
+    pub fn get_topic(&self, topic_name: &str) -> Option<String> {
         self.topics.read().get(topic_name).cloned()
     }
 
@@ -248,16 +236,21 @@ impl TopicManager {
     pub async fn delete_topic(&self, topic_name: &str) -> Result<()> {
         info!("Deleting topic: {}", topic_name);
 
-        let topic = self
+        let fq_topic = self
             .get_topic(topic_name)
             .ok_or_else(|| PubSubError::topic_not_found(topic_name))?;
 
-        topic.delete(None).await.map_err(|e| {
-            PubSubError::publish_with_source(
-                format!("Failed to delete topic: {}", topic_name),
-                Box::new(e),
-            )
-        })?;
+        self.admin
+            .delete_topic()
+            .set_topic(&fq_topic)
+            .send()
+            .await
+            .map_err(|e| {
+                PubSubError::publish_with_source(
+                    format!("Failed to delete topic: {}", topic_name),
+                    Box::new(e),
+                )
+            })?;
 
         self.topics.write().remove(topic_name);
 
@@ -298,7 +291,7 @@ impl TopicManager {
     ) -> Result<()> {
         debug!("Updating labels for topic: {}", topic_name);
 
-        let _topic = self
+        let _fq_topic = self
             .get_topic(topic_name)
             .ok_or_else(|| PubSubError::topic_not_found(topic_name))?;
 
@@ -312,7 +305,7 @@ impl TopicManager {
     pub async fn get_metadata(&self, topic_name: &str) -> Result<TopicMetadata> {
         debug!("Getting metadata for topic: {}", topic_name);
 
-        let _topic = self
+        let _fq_topic = self
             .get_topic(topic_name)
             .ok_or_else(|| PubSubError::topic_not_found(topic_name))?;
 
@@ -331,7 +324,7 @@ impl TopicManager {
     pub async fn get_stats(&self, topic_name: &str) -> Result<TopicStats> {
         debug!("Getting statistics for topic: {}", topic_name);
 
-        let _topic = self
+        let _fq_topic = self
             .get_topic(topic_name)
             .ok_or_else(|| PubSubError::topic_not_found(topic_name))?;
 
@@ -343,19 +336,22 @@ impl TopicManager {
     pub async fn test_publish(&self, topic_name: &str) -> Result<String> {
         info!("Testing publish to topic: {}", topic_name);
 
-        let topic = self
+        let fq_topic = self
             .get_topic(topic_name)
             .ok_or_else(|| PubSubError::topic_not_found(topic_name))?;
 
-        let publisher = topic.new_publisher(None);
-        let message = google_cloud_googleapis::pubsub::v1::PubsubMessage {
-            data: b"test".to_vec(),
-            ..Default::default()
-        };
+        // Create a temporary publisher for the test
+        let publisher = google_cloud_pubsub::client::Publisher::builder(&fq_topic)
+            .build()
+            .await
+            .map_err(|e| {
+                PubSubError::publish_with_source("Failed to create test publisher", Box::new(e))
+            })?;
 
-        let awaiter = publisher.publish(message).await;
-        let message_id = awaiter
-            .get()
+        let message = google_cloud_pubsub::model::Message::new().set_data("test");
+
+        let message_id = publisher
+            .publish(message)
             .await
             .map_err(|e| PubSubError::publish_with_source("Test publish failed", Box::new(e)))?;
 

@@ -945,11 +945,9 @@ impl ProgressiveDecoder {
 
         // Calculate coding passes for this layer
         let total_passes = decoder::total_coding_passes(8);
-        let passes_per_layer = if self.num_layers > 0 {
-            total_passes / self.num_layers
-        } else {
-            total_passes
-        };
+        let passes_per_layer = total_passes
+            .checked_div(self.num_layers)
+            .unwrap_or(total_passes);
         let max_passes = passes_per_layer * (layer_idx + 1);
 
         // Use the real EBCOT decoder with pass truncation

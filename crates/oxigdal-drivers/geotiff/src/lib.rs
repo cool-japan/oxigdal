@@ -48,9 +48,15 @@
 // Allow partial documentation during development
 #![allow(missing_docs)]
 
+pub mod adaptive_tiling;
+pub mod band_algebra;
 pub mod cog;
+pub mod color_space;
 pub mod compression;
 pub mod geokeys;
+pub mod jpeg_codec;
+pub mod lerc_codec;
+pub mod overviews;
 pub mod tiff;
 pub mod writer;
 

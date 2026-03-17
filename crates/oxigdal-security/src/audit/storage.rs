@@ -67,7 +67,7 @@ impl AuditStorage for InMemoryAuditStorage {
             .collect();
 
         // Sort by timestamp (most recent first)
-        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        results.sort_by_key(|x| std::cmp::Reverse(x.timestamp));
 
         // Apply limit
         if let Some(limit) = query.limit {

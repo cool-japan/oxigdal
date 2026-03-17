@@ -358,7 +358,7 @@ pub fn adaptive_threshold_mean(
                 }
             }
 
-            let mean = if count > 0 { sum / count } else { 0 };
+            let mean = sum.checked_div(count).unwrap_or(0);
             let threshold = (mean as i32 - i32::from(c)).max(0) as u8;
 
             let idx = y * width + x;

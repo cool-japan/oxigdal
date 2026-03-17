@@ -1,0 +1,16 @@
+[package]
+name = "oxigdal-noalloc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "no_std, no_alloc fixed-size geometry primitives for OxiGDAL"
+keywords = ["geospatial", "geometry", "no_std", "embedded"]
+categories = ["no-std", "science::geo"]
+
+[features]
+default = []
+std = []
+
+[lints]
+workspace = true

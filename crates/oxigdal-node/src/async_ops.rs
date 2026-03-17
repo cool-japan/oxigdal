@@ -268,7 +268,7 @@ pub async fn batch_process_rasters(
 /// Progress callback for long-running operations
 #[allow(dead_code)]
 #[napi(ts_args_type = "callback: (progress: number) => void")]
-pub fn set_progress_callback(_callback: JsFunction) -> Result<()> {
+pub fn set_progress_callback(_callback: Function<'_, Unknown<'_>>) -> Result<()> {
     // Store callback for use in long-running operations
     // This is a placeholder for actual implementation
     Ok(())

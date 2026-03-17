@@ -45,7 +45,7 @@ async-trait.workspace = true
 rdkafka = { workspace = true, features = ["tokio", "cmake-build"] }
 
 # Serialization
-apache-avro = { version = "0.18", optional = true, default-features = false, features = ["snappy"] }
+apache-avro = { workspace = true, optional = true, features = ["snappy"] }
 
 # Compression
 oxiarc-archive = { workspace = true, optional = true }

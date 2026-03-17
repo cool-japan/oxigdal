@@ -49,7 +49,7 @@ impl AtRestEncryptor {
                 EncryptionAlgorithm::ChaCha20Poly1305 => 32,
             }
         ];
-        getrandom::getrandom(&mut key).expect("getrandom failed");
+        getrandom::fill(&mut key).expect("getrandom failed");
         key
     }
 
@@ -91,7 +91,7 @@ impl AtRestEncryptor {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        getrandom::getrandom(&mut nonce_bytes).expect("getrandom failed");
+        getrandom::fill(&mut nonce_bytes).expect("getrandom failed");
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt with optional AAD
@@ -159,7 +159,7 @@ impl AtRestEncryptor {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        getrandom::getrandom(&mut nonce_bytes).expect("getrandom failed");
+        getrandom::fill(&mut nonce_bytes).expect("getrandom failed");
         let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
         // Encrypt with optional AAD

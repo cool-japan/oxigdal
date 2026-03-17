@@ -1,7 +1,7 @@
 //! Azure Managed Identity integration.
 
 use crate::error::{CloudEnhancedError, Result};
-use azure_identity::{DefaultAzureCredential, TokenCredentialOptions};
+use azure_identity::DeveloperToolsCredential;
 use serde::{Deserialize, Serialize};
 
 /// Managed Identity client.
@@ -30,10 +30,9 @@ impl ManagedIdentityClient {
     pub async fn get_token(&self, resource: &str) -> Result<AccessToken> {
         tracing::info!("Getting access token for resource: {}", resource);
 
-        let _credential = DefaultAzureCredential::create(TokenCredentialOptions::default())
-            .map_err(|e| {
-                CloudEnhancedError::authentication(format!("Failed to create credential: {}", e))
-            })?;
+        let _credential = DeveloperToolsCredential::new(None).map_err(|e| {
+            CloudEnhancedError::authentication(format!("Failed to create credential: {}", e))
+        })?;
 
         // In a real implementation, use credential.get_token()
         // For now, return a placeholder

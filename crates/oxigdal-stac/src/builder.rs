@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn test_item_builder() {
         let now = Utc::now();
-        let geometry = geojson::Geometry::new(geojson::Value::Point(vec![-122.0, 37.0]));
+        let geometry = geojson::Geometry::new_point([-122.0, 37.0]);
 
         let item = ItemBuilder::new("test-item")
             .geometry(geometry)

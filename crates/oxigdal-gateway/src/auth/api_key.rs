@@ -176,10 +176,10 @@ impl Authenticator for ApiKeyAuthenticator {
 }
 
 fn generate_random_bytes(len: usize) -> Result<Vec<u8>> {
-    use getrandom::getrandom;
+    use getrandom::fill;
 
     let mut bytes = vec![0u8; len];
-    getrandom(&mut bytes).map_err(|e| {
+    fill(&mut bytes).map_err(|e| {
         GatewayError::InternalError(format!("Failed to generate random bytes: {}", e))
     })?;
 

@@ -7,8 +7,7 @@
 use crate::error::{PubSubError, Result};
 use crate::subscriber::DeadLetterConfig;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use google_cloud_pubsub::client::{Client, ClientConfig};
-use google_cloud_pubsub::subscription::Subscription as GcpSubscription;
+use google_cloud_pubsub::client::SubscriptionAdmin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -311,10 +310,13 @@ pub struct SubscriptionStats {
 }
 
 /// Subscription manager for managing Pub/Sub subscriptions.
+///
+/// Uses the google-cloud-pubsub 0.33 `SubscriptionAdmin` client for
+/// subscription management and tracks subscriptions in a local cache.
 pub struct SubscriptionManager {
     project_id: String,
-    client: Arc<Client>,
-    subscriptions: Arc<parking_lot::RwLock<HashMap<String, Arc<GcpSubscription>>>>,
+    admin: Arc<SubscriptionAdmin>,
+    subscriptions: Arc<parking_lot::RwLock<HashMap<String, String>>>,
 }
 
 impl SubscriptionManager {
@@ -324,27 +326,16 @@ impl SubscriptionManager {
 
         info!("Creating subscription manager for project: {}", project_id);
 
-        let client_config = ClientConfig {
-            project_id: Some(project_id.clone()),
-            ..Default::default()
-        };
-
-        // Initialize authentication if not using emulator
-        #[cfg(feature = "auth")]
-        let client_config = client_config.with_auth().await.map_err(|e| {
-            PubSubError::configuration(
-                format!("Failed to initialize authentication: {}", e),
-                "authentication",
+        let admin = SubscriptionAdmin::builder().build().await.map_err(|e| {
+            PubSubError::subscription_with_source(
+                "Failed to create SubscriptionAdmin client",
+                Box::new(e),
             )
-        })?;
-
-        let client = Client::new(client_config).await.map_err(|e| {
-            PubSubError::subscription_with_source("Failed to create Pub/Sub client", Box::new(e))
         })?;
 
         Ok(Self {
             project_id,
-            client: Arc::new(client),
+            admin: Arc::new(admin),
             subscriptions: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         })
     }
@@ -355,18 +346,21 @@ impl SubscriptionManager {
 
         info!("Creating subscription: {}", config.subscription_name);
 
-        let subscription = self.client.subscription(&config.subscription_name);
+        let fq_subscription = format!(
+            "projects/{}/subscriptions/{}",
+            self.project_id, config.subscription_name
+        );
 
-        // Store the subscription
+        // Store the subscription in the cache
         self.subscriptions
             .write()
-            .insert(config.subscription_name.clone(), Arc::new(subscription));
+            .insert(config.subscription_name.clone(), fq_subscription);
 
         Ok(config.subscription_name.clone())
     }
 
-    /// Gets a subscription by name.
-    pub fn get_subscription(&self, subscription_name: &str) -> Option<Arc<GcpSubscription>> {
+    /// Gets a fully-qualified subscription name by short name.
+    pub fn get_subscription(&self, subscription_name: &str) -> Option<String> {
         self.subscriptions.read().get(subscription_name).cloned()
     }
 
@@ -374,16 +368,21 @@ impl SubscriptionManager {
     pub async fn delete_subscription(&self, subscription_name: &str) -> Result<()> {
         info!("Deleting subscription: {}", subscription_name);
 
-        let subscription = self
+        let fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 
-        subscription.delete(None).await.map_err(|e| {
-            PubSubError::subscription_with_source(
-                format!("Failed to delete subscription: {}", subscription_name),
-                Box::new(e),
-            )
-        })?;
+        self.admin
+            .delete_subscription()
+            .set_subscription(&fq_subscription)
+            .send()
+            .await
+            .map_err(|e| {
+                PubSubError::subscription_with_source(
+                    format!("Failed to delete subscription: {}", subscription_name),
+                    Box::new(e),
+                )
+            })?;
 
         self.subscriptions.write().remove(subscription_name);
 
@@ -427,7 +426,7 @@ impl SubscriptionManager {
             subscription_name
         );
 
-        let _subscription = self
+        let _fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 
@@ -448,7 +447,7 @@ impl SubscriptionManager {
     ) -> Result<()> {
         debug!("Updating labels for subscription: {}", subscription_name);
 
-        let _subscription = self
+        let _fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 
@@ -462,7 +461,7 @@ impl SubscriptionManager {
     pub async fn get_metadata(&self, subscription_name: &str) -> Result<SubscriptionMetadata> {
         debug!("Getting metadata for subscription: {}", subscription_name);
 
-        let _subscription = self
+        let _fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 
@@ -484,7 +483,7 @@ impl SubscriptionManager {
     pub async fn get_stats(&self, subscription_name: &str) -> Result<SubscriptionStats> {
         debug!("Getting statistics for subscription: {}", subscription_name);
 
-        let _subscription = self
+        let _fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 
@@ -503,7 +502,7 @@ impl SubscriptionManager {
             subscription_name, timestamp
         );
 
-        let _subscription = self
+        let _fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 
@@ -524,7 +523,7 @@ impl SubscriptionManager {
             subscription_name, snapshot_name
         );
 
-        let _subscription = self
+        let _fq_subscription = self
             .get_subscription(subscription_name)
             .ok_or_else(|| PubSubError::subscription_not_found(subscription_name))?;
 

@@ -26,8 +26,8 @@ oxigdal-geojson.workspace = true
 oxigdal-proj.workspace = true
 
 # napi-rs for Node.js bindings
-napi = { version = "2", features = ["async", "tokio_rt", "napi8", "serde-json"] }
-napi-derive = "2"
+napi = { version = "3", features = ["async", "tokio_rt", "napi8", "serde-json"] }
+napi-derive = "3"
 
 # Error handling
 thiserror.workspace = true

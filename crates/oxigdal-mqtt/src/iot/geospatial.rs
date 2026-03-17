@@ -101,9 +101,9 @@ impl GeoMessage {
     /// Convert to GeoJSON Feature
     #[cfg(feature = "geospatial")]
     pub fn to_geojson_feature(&self) -> geojson::Feature {
-        use geojson::{Feature, Geometry, Value};
+        use geojson::{Feature, Geometry};
 
-        let geometry = Geometry::new(Value::Point(self.location.to_geojson_coords()));
+        let geometry = Geometry::new_point(self.location.to_geojson_coords());
 
         let mut properties = serde_json::Map::new();
         properties.insert(
@@ -173,9 +173,9 @@ impl GeoSensorData {
     /// Convert to GeoJSON Feature
     #[cfg(feature = "geospatial")]
     pub fn to_geojson_feature(&self) -> geojson::Feature {
-        use geojson::{Feature, Geometry, Value};
+        use geojson::{Feature, Geometry};
 
-        let geometry = Geometry::new(Value::Point(self.location.to_geojson_coords()));
+        let geometry = Geometry::new_point(self.location.to_geojson_coords());
 
         let mut properties = serde_json::Map::new();
         properties.insert(
@@ -295,7 +295,7 @@ impl MovementTrack {
     /// Convert to GeoJSON LineString
     #[cfg(feature = "geospatial")]
     pub fn to_geojson_feature(&self) -> geojson::Feature {
-        use geojson::{Feature, Geometry, Value};
+        use geojson::{Feature, Geometry};
 
         let coords: Vec<Vec<f64>> = self
             .points
@@ -303,7 +303,7 @@ impl MovementTrack {
             .map(|p| p.location.to_geojson_coords())
             .collect();
 
-        let geometry = Geometry::new(Value::LineString(coords));
+        let geometry = Geometry::new_line_string(coords);
 
         let mut properties = serde_json::Map::new();
         properties.insert(

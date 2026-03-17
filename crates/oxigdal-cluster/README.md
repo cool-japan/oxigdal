@@ -35,7 +35,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-cluster = "0.1.0"
+oxigdal-cluster = "0.1.2"
 ```
 
 ## Quick Start

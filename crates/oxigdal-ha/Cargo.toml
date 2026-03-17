@@ -18,24 +18,24 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
-dashmap = "6"
+dashmap.workspace = true
 bytes = "1"
-oxicode = { version = "0.1.1", features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
+oxicode = { version = "0.2", features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
 crc32fast = "1"
-lz4 = "1"
+lz4.workspace = true
 oxiarc-archive = { workspace = true }
 oxiarc-zstd = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4"
+tokio-test.workspace = true
 criterion = { workspace = true }
-tempfile = "3"
+tempfile.workspace = true
 
 [[bench]]
 name = "ha_bench"

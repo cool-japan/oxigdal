@@ -4,6 +4,15 @@
 //! WKT is a text markup language for representing coordinate reference systems and geometric objects.
 
 use crate::error::{Error, Result};
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeMap as HashMap;
+#[cfg(not(feature = "std"))]
+use alloc::format;
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString};
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+#[cfg(feature = "std")]
 use std::collections::HashMap;
 
 /// WKT parser for coordinate reference systems.
@@ -373,6 +382,252 @@ impl WktNode {
 pub fn parse_wkt<S: Into<String>>(wkt: S) -> Result<WktNode> {
     let mut parser = WktParser::new(wkt);
     parser.parse()
+}
+
+// =============================================================================
+// WKT version and error types
+// =============================================================================
+
+/// WKT format version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WktVersion {
+    /// WKT 1 (uses PROJCS / GEOGCS keywords).
+    Wkt1,
+    /// WKT 2 (ISO 19162:2019, uses PROJCRS / GEOGCRS keywords).
+    Wkt2,
+    /// Version could not be determined.
+    Unknown,
+}
+
+/// Error type for WKT parsing failures.
+#[derive(Debug, Clone)]
+pub struct WktError {
+    /// Human-readable error message.
+    pub message: String,
+    /// Byte offset in the input string where the error was detected, if known.
+    pub position: Option<usize>,
+}
+
+impl WktError {
+    /// Construct a new `WktError`.
+    pub fn new(message: impl Into<String>, position: Option<usize>) -> Self {
+        Self {
+            message: message.into(),
+            position,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for WktError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.position {
+            Some(pos) => write!(f, "WKT parse error at position {}: {}", pos, self.message),
+            None => write!(f, "WKT parse error: {}", self.message),
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl core::fmt::Display for WktError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.position {
+            Some(pos) => write!(f, "WKT parse error at position {}: {}", pos, self.message),
+            None => write!(f, "WKT parse error: {}", self.message),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for WktError {}
+
+// =============================================================================
+// Static / free-function methods on WktParser
+// =============================================================================
+
+impl WktParser {
+    /// Detect the WKT version of the given string.
+    ///
+    /// - Returns `WktVersion::Wkt2` if the string contains WKT 2 keywords
+    ///   (`PROJCRS`, `GEOGCRS`, `GEODCRS`, `ENGCRS`, `VERTCRS`, `COMPOUNDCRS`).
+    /// - Returns `WktVersion::Wkt1` if it contains WKT 1 keywords
+    ///   (`PROJCS`, `GEOGCS`, `GEOCCS`, `VERT_CS`, `COMPD_CS`).
+    /// - Returns `WktVersion::Unknown` otherwise.
+    pub fn detect_version(wkt: &str) -> WktVersion {
+        let upper = wkt.to_uppercase();
+        // WKT2 keywords (longer/newer forms come first to avoid false matches)
+        if upper.contains("PROJCRS")
+            || upper.contains("GEOGCRS")
+            || upper.contains("GEODCRS")
+            || upper.contains("ENGCRS")
+            || upper.contains("VERTCRS")
+            || upper.contains("COMPOUNDCRS")
+        {
+            return WktVersion::Wkt2;
+        }
+        // WKT1 keywords
+        if upper.contains("PROJCS")
+            || upper.contains("GEOGCS")
+            || upper.contains("GEOCCS")
+            || upper.contains("VERT_CS")
+            || upper.contains("COMPD_CS")
+        {
+            return WktVersion::Wkt1;
+        }
+        WktVersion::Unknown
+    }
+
+    /// Extract the top-level name from a WKT string.
+    ///
+    /// For example:
+    /// - `PROJCS["WGS 84 / UTM zone 32N",...]` → `Some("WGS 84 / UTM zone 32N")`
+    /// - `GEOGCS["WGS 84",...]` → `Some("WGS 84")`
+    pub fn extract_name(wkt: &str) -> Option<String> {
+        // Find the first '[' after the leading keyword
+        let bracket_pos = wkt.find('[')?;
+        let after_bracket = &wkt[bracket_pos + 1..];
+
+        // Find the first '"'
+        let quote_start = after_bracket.find('"')?;
+        let after_quote = &after_bracket[quote_start + 1..];
+
+        // Find closing '"'
+        let quote_end = after_quote.find('"')?;
+        Some(after_quote[..quote_end].to_string())
+    }
+
+    /// Extract the EPSG code from a WKT string.
+    ///
+    /// Searches for:
+    /// - `AUTHORITY["EPSG","<code>"]`  (WKT 1)
+    /// - `ID["EPSG",<code>]`           (WKT 2)
+    pub fn extract_epsg(wkt: &str) -> Option<i32> {
+        // Try WKT1 form: AUTHORITY["EPSG","4326"]
+        if let Some(idx) = wkt.find("AUTHORITY[\"EPSG\",\"") {
+            let after = &wkt[idx + "AUTHORITY[\"EPSG\",\"".len()..];
+            let end = after.find('"')?;
+            let code_str = &after[..end];
+            return code_str.parse::<i32>().ok();
+        }
+        // Try WKT2 form: ID["EPSG",4326]
+        if let Some(idx) = wkt.find("ID[\"EPSG\",") {
+            let after = &wkt[idx + "ID[\"EPSG\",".len()..];
+            // code may be quoted or unquoted
+            let after = after.trim_start();
+            let after = after.trim_start_matches('"');
+            let end = after.find(|c: char| !c.is_ascii_digit())?;
+            let code_str = &after[..end];
+            return code_str.parse::<i32>().ok();
+        }
+        None
+    }
+
+    /// Extract the unit name and conversion factor from a WKT string.
+    ///
+    /// Searches for `UNIT["<name>",<factor>]` or `LENGTHUNIT["<name>",<factor>]`.
+    pub fn extract_unit(wkt: &str) -> Option<(String, f64)> {
+        // Try UNIT[ first, then LENGTHUNIT[
+        let search_terms = ["UNIT[\"", "LENGTHUNIT[\"", "ANGLEUNIT[\""];
+        for term in &search_terms {
+            if let Some(idx) = wkt.find(term) {
+                let after = &wkt[idx + term.len()..];
+                let name_end = after.find('"')?;
+                let unit_name = after[..name_end].to_string();
+                // skip past name,"
+                let rest = &after[name_end + 1..];
+                let comma_pos = rest.find(',')?;
+                let rest_after_comma = rest[comma_pos + 1..].trim_start();
+                // extract number up to ']' or ','
+                let num_end = rest_after_comma
+                    .find([']', ','])
+                    .unwrap_or(rest_after_comma.len());
+                let factor_str = rest_after_comma[..num_end].trim();
+                if let Ok(factor) = factor_str.parse::<f64>() {
+                    return Some((unit_name, factor));
+                }
+            }
+        }
+        None
+    }
+
+    /// Parse a WKT string into a `CrsDefinition` (best-effort).
+    ///
+    /// This performs syntactic analysis only; it does not validate geodetic parameters.
+    #[cfg(feature = "std")]
+    pub fn parse_crs(
+        wkt: &str,
+    ) -> core::result::Result<crate::crs_registry::CrsDefinition, WktError> {
+        use crate::crs_registry::{AreaOfUse, CrsDefinition, CrsType, CrsUnit};
+
+        if wkt.trim().is_empty() {
+            return Err(WktError::new("WKT string is empty", Some(0)));
+        }
+
+        let name = match Self::extract_name(wkt) {
+            Some(n) => n,
+            None => return Err(WktError::new("Could not extract CRS name from WKT", None)),
+        };
+
+        let epsg_code = Self::extract_epsg(wkt);
+
+        // Detect CRS type from leading keyword
+        let upper = wkt.trim_start().to_uppercase();
+        let crs_type = if upper.starts_with("PROJCRS") || upper.starts_with("PROJCS") {
+            CrsType::Projected
+        } else if upper.starts_with("GEOGCRS") || upper.starts_with("GEOGCS") {
+            CrsType::Geographic2D
+        } else if upper.starts_with("GEOCCS") || upper.starts_with("GEODCRS") {
+            CrsType::Geocentric
+        } else if upper.starts_with("VERT_CS") || upper.starts_with("VERTCRS") {
+            CrsType::Vertical
+        } else if upper.starts_with("COMPD_CS") || upper.starts_with("COMPOUNDCRS") {
+            CrsType::Compound
+        } else {
+            CrsType::Geographic2D // fallback
+        };
+
+        // Attempt to extract datum name (simple heuristic: value of DATUM node)
+        let datum = extract_datum_name(wkt).unwrap_or_default();
+
+        // Attempt to extract unit
+        let unit = match Self::extract_unit(wkt) {
+            Some((_, factor)) if (factor - 1.0).abs() < f64::EPSILON => CrsUnit::Metre,
+            Some((ref name_str, _)) if name_str.to_lowercase().contains("degree") => {
+                CrsUnit::Degree
+            }
+            Some((ref name_str, _)) if name_str.to_lowercase().contains("foot") => {
+                CrsUnit::FootIntl
+            }
+            _ => match crs_type {
+                CrsType::Projected => CrsUnit::Metre,
+                _ => CrsUnit::Degree,
+            },
+        };
+
+        Ok(CrsDefinition {
+            epsg_code,
+            name: name.clone(),
+            crs_type,
+            datum,
+            unit,
+            proj_string: None,
+            wkt_name: Some(name),
+            area_of_use: None::<AreaOfUse>,
+            deprecated: false,
+        })
+    }
+}
+
+/// Extract the datum name from a WKT string by finding `DATUM["<name>"`.
+fn extract_datum_name(wkt: &str) -> Option<String> {
+    let idx = wkt.find("DATUM[\"").or_else(|| wkt.find("DATUM [\""))?;
+    let after = &wkt[idx..];
+    let bracket_pos = after.find('[')?;
+    let after_bracket = &after[bracket_pos + 1..];
+    let quote_start = after_bracket.find('"')?;
+    let after_quote = &after_bracket[quote_start + 1..];
+    let quote_end = after_quote.find('"')?;
+    Some(after_quote[..quote_end].to_string())
 }
 
 #[cfg(test)]

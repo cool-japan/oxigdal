@@ -65,7 +65,7 @@ approx = { workspace = true }
 
 # Scientific computing - Use SciRS2 ecosystem
 # Note: scirs2-core includes ndarray as required dependency
-scirs2-core = { version = "0.2.0", features = ["array", "array_stats", "linalg", "random"] }
+scirs2-core = { workspace = true, features = ["array", "array_stats", "linalg", "random"] }
 
 # Parallelization
 rayon = { workspace = true, optional = true }

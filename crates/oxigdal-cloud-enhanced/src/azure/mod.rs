@@ -11,7 +11,8 @@ pub mod monitor;
 pub mod synapse;
 
 use crate::error::Result;
-use azure_identity::{DefaultAzureCredential, TokenCredentialOptions};
+use azure_core::credentials::TokenCredential;
+use azure_identity::DeveloperToolsCredential;
 use std::sync::Arc;
 
 /// Azure configuration for enhanced services.
@@ -22,7 +23,7 @@ pub struct AzureConfig {
     /// Resource group
     pub resource_group: Option<String>,
     /// Credential
-    pub(crate) credential: Arc<DefaultAzureCredential>,
+    pub(crate) credential: Arc<dyn TokenCredential>,
 }
 
 impl AzureConfig {
@@ -32,18 +33,17 @@ impl AzureConfig {
     ///
     /// Returns an error if the Azure configuration cannot be created.
     pub fn new(subscription_id: String, resource_group: Option<String>) -> Result<Self> {
-        let credential = DefaultAzureCredential::create(TokenCredentialOptions::default())
-            .map_err(|e| {
-                crate::error::CloudEnhancedError::authentication(format!(
-                    "Failed to create Azure credential: {}",
-                    e
-                ))
-            })?;
+        let credential = DeveloperToolsCredential::new(None).map_err(|e| {
+            crate::error::CloudEnhancedError::authentication(format!(
+                "Failed to create Azure credential: {}",
+                e
+            ))
+        })?;
 
         Ok(Self {
             subscription_id,
             resource_group,
-            credential: Arc::new(credential),
+            credential,
         })
     }
 
@@ -58,8 +58,8 @@ impl AzureConfig {
     }
 
     /// Gets the credential.
-    pub fn credential(&self) -> &DefaultAzureCredential {
-        &self.credential
+    pub fn credential(&self) -> &dyn TokenCredential {
+        &*self.credential
     }
 }
 

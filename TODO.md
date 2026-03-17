@@ -1,10 +1,18 @@
 # OxiGDAL TODO
 
-> Version: 0.1.1 (2026-03-11) | 69 crates | 7,486 tests | ~480K Rust SLoC
+> Version: 0.1.2 (2026-03-17) | 76 crates | 10,935 tests | ~540K Rust SLoC
 
 ---
 
-## v0.1.1 — Current Release (2026-03-11) [COMPLETE]
+## v0.1.2 — Current Release (2026-03-17) [COMPLETE]
+
+- [x] WASM enhancements and optimizations
+- [x] npm publishing workflow for WASM bindings
+- [x] Code growth to 540K SLoC (1,934 .rs files)
+
+---
+
+## v0.1.1 — Previous Release (2026-03-11) [COMPLETE]
 
 ### Core & Algorithms
 - [x] Core geospatial types, traits, async I/O, Arrow buffers, no_std core
@@ -70,7 +78,7 @@
 
 ---
 
-## v0.2.0 — Target: Q2 2026 [PLANNED]
+## v0.2.0 — Target: Q1 2026
 
 ### Projections Expansion (100+ total)
 - [ ] Add 80+ new projections to reach 100+ total
@@ -122,7 +130,7 @@
 
 ---
 
-## v0.3.0 — Target: Q3 2026 [PLANNED]
+## v0.3.0 — Target: Q2 2026
 
 ### Streaming v2
 - [ ] Backpressure-aware stream processing with credit-based flow control
@@ -158,7 +166,7 @@
 
 ---
 
-## v1.0.0 — Target: Q4 2026 [PLANNED]
+## v1.0.0 — Target: Q3 2026
 
 ### Stability & LTS
 - [ ] Semantic versioning guarantee: no breaking changes until 2.0
@@ -200,7 +208,7 @@
 - [ ] Maintain 0 clippy warnings, 0 rustdoc warnings
 - [ ] Maintain 0 unwrap() in production code
 - [ ] Maintain all files < 2,000 lines
-- [ ] Increase test count toward 10,000+ (currently 7,486)
+- [ ] Increase test count toward 10,000+ (currently 10,935)
 - [ ] Property-based testing (proptest) for core algorithms
 - [ ] Fuzzing (cargo-fuzz) for format parsers (GeoTIFF, JPEG2000, GRIB)
 
@@ -212,4 +220,4 @@
 
 ---
 
-*Last updated: 2026-03-11*
+*Last updated: 2026-03-17*

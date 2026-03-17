@@ -27,16 +27,16 @@ oxigdal-shapefile.workspace = true
 oxigdal-geoparquet.workspace = true
 
 # CLI dependencies
-clap = { version = "4", features = ["derive", "cargo", "color", "suggestions", "wrap_help"] }
+clap = { workspace = true, features = ["derive", "cargo", "color", "suggestions", "wrap_help"] }
 clap_complete = "4"
 
 # Progress and UI
-indicatif = "0.17"
-console = "0.15"
+indicatif = { workspace = true }
+console = { workspace = true }
 
 # Error handling
 thiserror.workspace = true
-anyhow = "1"
+anyhow.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -44,8 +44,8 @@ serde_json.workspace = true
 
 # Utilities
 num-traits.workspace = true
-rayon = "1"
-num_cpus = "1"
+rayon.workspace = true
+num_cpus.workspace = true
 
 # Async runtime (for some operations)
 tokio.workspace = true

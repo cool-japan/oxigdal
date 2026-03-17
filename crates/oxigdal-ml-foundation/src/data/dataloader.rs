@@ -150,7 +150,7 @@ fn shuffle_indices(indices: &mut [usize]) {
 /// Helper to get a random usize in range [0, max).
 fn get_random_usize(max: usize) -> Result<usize> {
     let mut buf = [0u8; 8];
-    getrandom::getrandom(&mut buf)
+    getrandom::fill(&mut buf)
         .map_err(|e| Error::Numerical(format!("Failed to generate random number: {}", e)))?;
     let value = u64::from_ne_bytes(buf);
     Ok((value % max as u64) as usize)

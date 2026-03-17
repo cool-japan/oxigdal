@@ -60,10 +60,10 @@ impl MfaAuthenticator {
 
     /// Generates a TOTP secret for a user.
     pub fn generate_totp_secret(&self, user_id: String) -> Result<Vec<u8>> {
-        use getrandom::getrandom;
+        use getrandom::fill;
 
         let mut secret = vec![0u8; 20];
-        getrandom(&mut secret).map_err(|e| {
+        fill(&mut secret).map_err(|e| {
             GatewayError::InternalError(format!("Failed to generate secret: {}", e))
         })?;
 
@@ -140,11 +140,11 @@ impl MfaAuthenticator {
 
     /// Sends an SMS challenge.
     pub fn send_sms_challenge(&self, user_id: String, phone_number: &str) -> Result<String> {
-        use getrandom::getrandom;
+        use getrandom::fill;
 
         // Generate 6-digit code
         let mut code_bytes = [0u8; 4];
-        getrandom(&mut code_bytes)
+        fill(&mut code_bytes)
             .map_err(|e| GatewayError::InternalError(format!("Failed to generate code: {}", e)))?;
         let code_num = u32::from_le_bytes(code_bytes) % 1_000_000;
         let code = format!("{:06}", code_num);
@@ -196,13 +196,13 @@ impl MfaAuthenticator {
 
     /// Generates backup codes for a user.
     pub fn generate_backup_codes(&self, user_id: String, count: usize) -> Result<Vec<String>> {
-        use getrandom::getrandom;
+        use getrandom::fill;
 
         let mut codes = Vec::with_capacity(count);
 
         for _ in 0..count {
             let mut code_bytes = vec![0u8; 8];
-            getrandom(&mut code_bytes).map_err(|e| {
+            fill(&mut code_bytes).map_err(|e| {
                 GatewayError::InternalError(format!("Failed to generate backup code: {}", e))
             })?;
 

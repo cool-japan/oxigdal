@@ -40,7 +40,7 @@ serde_json.workspace = true
 
 # Error handling
 thiserror.workspace = true
-anyhow = "1"
+anyhow.workspace = true
 
 # XML processing
 quick-xml.workspace = true
@@ -72,7 +72,7 @@ oxiarc-archive = { workspace = true }
 # Testing
 tempfile.workspace = true
 proptest.workspace = true
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 
 [lints]
 workspace = true

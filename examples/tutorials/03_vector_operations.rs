@@ -15,7 +15,7 @@
 use geo::geometry::{LineString, MultiPolygon, Point, Polygon};
 use geo::{Area, BoundingRect, Contains, Intersects};
 use geo_types::Coord;
-use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
+use geojson::{Feature, FeatureCollection, GeoJson, Geometry};
 use oxigdal_core::types::BoundingBox;
 use oxigdal_core::vector::{VectorGeometry, VectorLayer};
 use std::env;
@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut features = Vec::new();
 
     // Add point features
-    let point_geom = Geometry::new(Value::Point(vec![point1.x(), point1.y()]));
+    let point_geom = Geometry::new_point(vec![point1.x(), point1.y()]);
     let mut point_feature = Feature {
         bbox: None,
         geometry: Some(point_geom),
@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .coords()
         .map(|c| vec![c.x, c.y])
         .collect();
-    let line_geom = Geometry::new(Value::LineString(line_coords));
+    let line_geom = Geometry::new_line_string(line_coords);
     let mut line_feature = Feature {
         bbox: None,
         geometry: Some(line_geom),
@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut poly_coords = vec![exterior_coords];
     poly_coords.extend(interior_coords);
 
-    let poly_geom = Geometry::new(Value::Polygon(poly_coords));
+    let poly_geom = Geometry::new_polygon(poly_coords);
     let mut poly_feature = Feature {
         bbox: None,
         geometry: Some(poly_geom),

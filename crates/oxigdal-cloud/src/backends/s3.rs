@@ -270,9 +270,13 @@ impl S3Backend {
 
         // Upload parts
         let mut completed_parts = Vec::new();
-        let mut part_number = 1;
 
-        for chunk in data.chunks(self.multipart_chunk_size) {
+        for (idx, chunk) in data.chunks(self.multipart_chunk_size).enumerate() {
+            let part_number = i32::try_from(idx + 1).map_err(|_| {
+                CloudError::S3(S3Error::MultipartUpload {
+                    message: format!("Part number overflow at index {idx}"),
+                })
+            })?;
             let part = client
                 .upload_part()
                 .bucket(&self.bucket)
@@ -296,8 +300,6 @@ impl S3Backend {
                         .build(),
                 );
             }
-
-            part_number += 1;
         }
 
         // Complete multipart upload

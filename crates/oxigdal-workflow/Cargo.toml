@@ -25,7 +25,7 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 
 # DAG and scheduling
-petgraph = { version = "0.6", default-features = false, features = ["serde-1"] }
+petgraph = { workspace = true, features = ["serde-1"] }
 cron = { workspace = true }
 
 # Serialization
@@ -55,7 +55,7 @@ tower-http = { workspace = true, optional = true }
 regex = { workspace = true }
 ahash = { workspace = true }
 bytes = { workspace = true }
-num_cpus = "1"
+num_cpus.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true }

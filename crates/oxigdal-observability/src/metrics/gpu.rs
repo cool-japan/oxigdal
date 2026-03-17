@@ -53,69 +53,69 @@ impl GpuMetrics {
             gpu_utilization_percent: meter
                 .f64_histogram("oxigdal.gpu.utilization.percent")
                 .with_description("GPU utilization percentage")
-                .init(),
+                .build(),
             gpu_memory_used_bytes: meter
                 .f64_histogram("oxigdal.gpu.memory.used.bytes")
                 .with_description("GPU memory used in bytes")
-                .init(),
+                .build(),
             gpu_memory_total_bytes: meter
                 .f64_histogram("oxigdal.gpu.memory.total.bytes")
                 .with_description("Total GPU memory in bytes")
-                .init(),
+                .build(),
             gpu_temperature_celsius: meter
                 .f64_histogram("oxigdal.gpu.temperature.celsius")
                 .with_description("GPU temperature in Celsius")
-                .init(),
+                .build(),
 
             // GPU operations
             gpu_kernel_count: meter
                 .u64_counter("oxigdal.gpu.kernel.count")
                 .with_description("Number of GPU kernels executed")
-                .init(),
+                .build(),
             gpu_kernel_duration: meter
                 .f64_histogram("oxigdal.gpu.kernel.duration")
                 .with_description("GPU kernel execution duration in milliseconds")
-                .init(),
+                .build(),
             gpu_memory_transfer_count: meter
                 .u64_counter("oxigdal.gpu.memory_transfer.count")
                 .with_description("Number of GPU memory transfers")
-                .init(),
+                .build(),
             gpu_memory_transfer_duration: meter
                 .f64_histogram("oxigdal.gpu.memory_transfer.duration")
                 .with_description("GPU memory transfer duration in milliseconds")
-                .init(),
+                .build(),
             gpu_memory_transfer_bytes: meter
                 .u64_counter("oxigdal.gpu.memory_transfer.bytes")
                 .with_description("Bytes transferred to/from GPU")
-                .init(),
+                .build(),
 
             // GPU processing
             gpu_raster_processing_count: meter
                 .u64_counter("oxigdal.gpu.raster_processing.count")
                 .with_description("Number of GPU raster processing operations")
-                .init(),
+                .build(),
             gpu_raster_processing_duration: meter
                 .f64_histogram("oxigdal.gpu.raster_processing.duration")
                 .with_description("GPU raster processing duration in milliseconds")
-                .init(),
+                .build(),
             gpu_ml_inference_count: meter
                 .u64_counter("oxigdal.gpu.ml_inference.count")
                 .with_description("Number of GPU ML inference operations")
-                .init(),
+                .build(),
             gpu_ml_inference_duration: meter
                 .f64_histogram("oxigdal.gpu.ml_inference.duration")
                 .with_description("GPU ML inference duration in milliseconds")
-                .init(),
+                .build(),
 
             // GPU errors
             gpu_errors: meter
                 .u64_counter("oxigdal.gpu.errors")
                 .with_description("Number of GPU errors")
-                .init(),
+                .build(),
             gpu_out_of_memory: meter
                 .u64_counter("oxigdal.gpu.out_of_memory")
                 .with_description("Number of GPU out-of-memory errors")
-                .init(),
+                .build(),
         })
     }
 

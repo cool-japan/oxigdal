@@ -32,7 +32,7 @@ tracing = { workspace = true }
 
 # Scientific computing - Use SciRS2 ecosystem
 # Note: scirs2-core includes ndarray 0.17.1 as required dependency
-scirs2-core = { version = "0.2.0", features = ["array", "array_stats", "linalg"] }
+scirs2-core = { workspace = true, features = ["array", "array_stats", "linalg"] }
 
 # Parallelization
 rayon = { workspace = true, optional = true }

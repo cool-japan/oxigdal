@@ -1,6 +1,6 @@
 {
   "name": "oxigdal-demo",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "OxiGDAL COG Viewer Demo - WebAssembly Browser Application",
   "private": true,
   "scripts": {

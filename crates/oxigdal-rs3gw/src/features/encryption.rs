@@ -149,8 +149,8 @@ impl EncryptionConfig {
 #[cfg(feature = "encryption")]
 pub fn generate_key() -> Result<Vec<u8>, getrandom::Error> {
     let mut key = vec![0u8; 32];
-    // getrandom 0.3 API: getrandom fills a buffer with random bytes
-    getrandom::getrandom(&mut key)?;
+    // getrandom 0.4 API: fill() fills a buffer with random bytes
+    getrandom::fill(&mut key)?;
     Ok(key)
 }
 

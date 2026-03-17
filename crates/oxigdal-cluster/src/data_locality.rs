@@ -429,7 +429,7 @@ impl DataLocalityOptimizer {
             })
             .collect();
 
-        hot_data.sort_by(|a, b| b.1.cmp(&a.1));
+        hot_data.sort_by_key(|x| std::cmp::Reverse(x.1));
         hot_data
     }
 

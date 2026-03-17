@@ -12,7 +12,9 @@ pub mod vector;
 use crate::ffi::types::*;
 
 #[cfg(feature = "android")]
-use jni::JNIEnv;
+use jni::EnvUnowned;
+#[cfg(feature = "android")]
+use jni::Outcome;
 #[cfg(feature = "android")]
 use jni::objects::{JClass, JObject, JString};
 #[cfg(feature = "android")]
@@ -266,7 +268,7 @@ pub extern "C" fn oxigdal_android_on_trim_memory(level: std::os::raw::c_int) -> 
 /// # Returns
 /// 0 on success, non-zero error code on failure.
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeInit(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
 ) -> jint {
     crate::ffi::oxigdal_init() as jint
@@ -279,7 +281,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeInit(
 /// # Returns
 /// A JNI string containing the version information, or null on error.
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetVersion(
-    env: JNIEnv,
+    mut unowned_env: EnvUnowned,
     _class: JClass,
 ) -> jstring {
     let version_ptr = crate::ffi::raster::oxigdal_get_version_string();
@@ -297,9 +299,12 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetVersion(
             }
         };
 
-        let result = match env.new_string(version_str) {
-            Ok(s) => s.into_raw(),
-            Err(_) => std::ptr::null_mut(),
+        let result = match unowned_env
+            .with_env(|env| JString::new(env, version_str))
+            .into_outcome()
+        {
+            Outcome::Ok(s) => s.into_raw(),
+            _ => std::ptr::null_mut(),
         };
 
         crate::ffi::error::oxigdal_string_free(version_ptr);
@@ -314,13 +319,20 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetVersion(
 /// # Returns
 /// A dataset handle (pointer) on success, or 0 on failure.
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeOpenDataset(
-    mut env: JNIEnv,
+    mut unowned_env: EnvUnowned,
     _class: JClass,
     path: JString,
 ) -> jlong {
-    let path_str: String = match env.get_string(&path) {
-        Ok(s) => s.into(),
-        Err(_) => return 0,
+    let path_str: String = match unsafe {
+        unowned_env
+            .with_env(|env| {
+                let chars = path.mutf8_chars(env)?;
+                Ok::<_, jni::errors::Error>(chars.to_string())
+            })
+            .into_outcome()
+    } {
+        Outcome::Ok(s) => s,
+        _ => return 0,
     };
 
     let path_cstr = match std::ffi::CString::new(path_str) {
@@ -348,7 +360,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeOpenDataset(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeCloseDataset(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
 ) {
@@ -365,7 +377,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeCloseDataset(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetWidth(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
 ) -> jint {
@@ -400,7 +412,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetWidth(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetHeight(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
 ) -> jint {
@@ -435,7 +447,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetHeight(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeReadRegion(
-    env: JNIEnv,
+    mut unowned_env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
     x_off: jint,
@@ -476,24 +488,22 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeReadRegion(
 
         let buffer = &*buffer_ptr;
 
-        // Create Java byte array
-        let byte_array = match env.new_byte_array(buffer_size as i32) {
-            Ok(arr) => arr,
-            Err(_) => {
-                crate::ffi::oxigdal_buffer_free(buffer_ptr);
-                return std::ptr::null_mut();
-            }
-        };
-
-        // Copy data to Java array
+        // Create Java byte array and copy data via with_env
         let slice = std::slice::from_raw_parts(buffer.data as *const i8, buffer_size);
-        if env.set_byte_array_region(&byte_array, 0, slice).is_err() {
-            crate::ffi::oxigdal_buffer_free(buffer_ptr);
-            return std::ptr::null_mut();
-        }
+        let array_result = unowned_env
+            .with_env(|env| {
+                let byte_array = jni::objects::JByteArray::new(env, buffer_size)?;
+                byte_array.set_region(env, 0, slice)?;
+                Ok::<_, jni::errors::Error>(byte_array.into_raw())
+            })
+            .into_outcome();
 
         crate::ffi::oxigdal_buffer_free(buffer_ptr);
-        byte_array.into_raw()
+
+        match array_result {
+            Outcome::Ok(raw) => raw,
+            _ => std::ptr::null_mut(),
+        }
     }
 }
 
@@ -501,7 +511,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeReadRegion(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetBandCount(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
 ) -> jint {
@@ -536,7 +546,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetBandCount(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetDataType(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
 ) -> jint {
@@ -571,7 +581,7 @@ pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetDataType(
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_cooljapan_oxigdal_OxiGDAL_nativeGetEpsgCode(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     dataset_ptr: jlong,
 ) -> jint {

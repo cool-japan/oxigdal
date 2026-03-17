@@ -909,7 +909,7 @@ impl UnstructuredPruner {
         let mut result_tensors = Vec::with_capacity(tensors.len());
         let mut result_masks = Vec::with_capacity(tensors.len());
 
-        for (tensor, mask_vec) in tensors.iter().zip(masks.into_iter()) {
+        for (tensor, mask_vec) in tensors.iter().zip(masks) {
             let mask = PruningMask::with_name(mask_vec, tensor.shape.clone(), tensor.name.clone());
             let pruned = mask.apply(tensor)?;
             result_tensors.push(pruned);

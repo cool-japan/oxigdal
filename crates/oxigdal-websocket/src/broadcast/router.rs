@@ -152,7 +152,7 @@ impl MessageRouter {
         let mut rules = self.rules.write();
         rules.push(rule);
         // Sort by priority (highest first)
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        rules.sort_by_key(|x| std::cmp::Reverse(x.priority));
     }
 
     /// Remove a routing rule by name

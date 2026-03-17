@@ -166,7 +166,7 @@ impl<L: RateLimiter> RuleEngine<L> {
     pub fn add_rule(&mut self, rule: RateLimitRule) {
         self.rules.push(rule);
         // Sort by priority (descending)
-        self.rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.rules.sort_by_key(|x| std::cmp::Reverse(x.priority));
     }
 
     /// Finds matching rule for context.

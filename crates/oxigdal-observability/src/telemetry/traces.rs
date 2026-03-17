@@ -4,22 +4,17 @@ use crate::error::{ObservabilityError, Result};
 use crate::telemetry::TelemetryConfig;
 use opentelemetry::global;
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::trace::{Config, RandomIdGenerator, Sampler, TracerProvider};
+use opentelemetry_sdk::trace::{RandomIdGenerator, Sampler, SdkTracerProvider};
 
 /// Initialize distributed tracing based on configuration.
 pub async fn init_tracing(config: &TelemetryConfig, resource: Resource) -> Result<()> {
     let sampler = create_sampler(config.sampling_rate);
 
-    let tracer_config = Config::default()
-        .with_sampler(sampler)
-        .with_id_generator(RandomIdGenerator::default())
-        .with_resource(resource);
-
     // Create tracer provider based on configured exporters
     let tracer_provider = if let Some(ref endpoint) = config.otlp_endpoint {
         #[cfg(feature = "otlp")]
         {
-            create_otlp_tracer_provider(endpoint, tracer_config).await?
+            create_otlp_tracer_provider(endpoint, sampler, resource).await?
         }
         #[cfg(not(feature = "otlp"))]
         {
@@ -30,7 +25,7 @@ pub async fn init_tracing(config: &TelemetryConfig, resource: Resource) -> Resul
     } else if let Some(ref _jaeger_ep) = config.jaeger_endpoint {
         #[cfg(feature = "jaeger")]
         {
-            create_jaeger_tracer_provider(_jaeger_ep, tracer_config)?
+            create_jaeger_tracer_provider(_jaeger_ep, sampler, resource)?
         }
         #[cfg(not(feature = "jaeger"))]
         {
@@ -40,7 +35,7 @@ pub async fn init_tracing(config: &TelemetryConfig, resource: Resource) -> Resul
         }
     } else {
         // Default to stdout exporter for development
-        create_stdout_tracer_provider(tracer_config)?
+        create_stdout_tracer_provider(sampler, resource)?
     };
 
     // Set global tracer provider
@@ -62,18 +57,24 @@ fn create_sampler(sampling_rate: f64) -> Sampler {
 
 /// Create OTLP tracer provider.
 #[cfg(feature = "otlp")]
-async fn create_otlp_tracer_provider(endpoint: &str, config: Config) -> Result<TracerProvider> {
+async fn create_otlp_tracer_provider(
+    endpoint: &str,
+    sampler: Sampler,
+    resource: Resource,
+) -> Result<SdkTracerProvider> {
     use opentelemetry_otlp::WithExportConfig;
 
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
         .with_endpoint(endpoint)
-        .build_span_exporter()
+        .build()
         .map_err(|e| ObservabilityError::TraceExportFailed(e.to_string()))?;
 
-    let provider = TracerProvider::builder()
-        .with_config(config)
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(sampler)
+        .with_id_generator(RandomIdGenerator::default())
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
         .build();
 
     Ok(provider)
@@ -83,7 +84,11 @@ async fn create_otlp_tracer_provider(endpoint: &str, config: Config) -> Result<T
 /// Note: opentelemetry-jaeger crate is deprecated. Using OTLP with Jaeger's native OTLP support
 /// is now recommended. This function provides a fallback using the SDK's simple exporter.
 #[cfg(feature = "jaeger")]
-fn create_jaeger_tracer_provider(endpoint: &str, config: Config) -> Result<TracerProvider> {
+fn create_jaeger_tracer_provider(
+    endpoint: &str,
+    sampler: Sampler,
+    resource: Resource,
+) -> Result<SdkTracerProvider> {
     // The opentelemetry-jaeger crate is deprecated as of 2023-11
     // Modern Jaeger supports OTLP natively, so we recommend using OTLP instead.
     // For backwards compatibility, we create a provider with a stdout exporter
@@ -96,8 +101,10 @@ fn create_jaeger_tracer_provider(endpoint: &str, config: Config) -> Result<Trace
 
     // Fall back to stdout for now - production should use OTLP
     let exporter = opentelemetry_stdout::SpanExporter::default();
-    let provider = TracerProvider::builder()
-        .with_config(config)
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(sampler)
+        .with_id_generator(RandomIdGenerator::default())
+        .with_resource(resource)
         .with_simple_exporter(exporter)
         .build();
 
@@ -105,11 +112,16 @@ fn create_jaeger_tracer_provider(endpoint: &str, config: Config) -> Result<Trace
 }
 
 /// Create stdout tracer provider for development.
-fn create_stdout_tracer_provider(config: Config) -> Result<TracerProvider> {
+fn create_stdout_tracer_provider(
+    sampler: Sampler,
+    resource: Resource,
+) -> Result<SdkTracerProvider> {
     let exporter = opentelemetry_stdout::SpanExporter::default();
 
-    let provider = TracerProvider::builder()
-        .with_config(config)
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(sampler)
+        .with_id_generator(RandomIdGenerator::default())
+        .with_resource(resource)
         .with_simple_exporter(exporter)
         .build();
 

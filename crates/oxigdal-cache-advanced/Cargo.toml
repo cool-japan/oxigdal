@@ -30,7 +30,7 @@ async-trait = { workspace = true }
 # Compression
 lz4 = { workspace = true }
 oxiarc-zstd = { workspace = true }
-snap = "1"
+snap.workspace = true
 
 # Caching
 lru = { workspace = true }

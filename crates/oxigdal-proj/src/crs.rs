@@ -3,10 +3,15 @@
 //! This module provides structures and methods for working with coordinate reference systems,
 //! including EPSG codes, PROJ strings, and WKT representations.
 
-use crate::epsg::{CrsType, EpsgDefinition, lookup_epsg};
+#[cfg(not(feature = "std"))]
+use crate::epsg::CrsType;
+#[cfg(feature = "std")]
+use crate::epsg::{CrsType, lookup_epsg};
 use crate::error::{Error, Result};
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString};
+use core::fmt;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 /// Coordinate Reference System.
 ///
@@ -56,13 +61,24 @@ impl Crs {
     /// # Errors
     ///
     /// Returns an error if the EPSG code is not found in the database.
+    #[cfg(feature = "std")]
     pub fn from_epsg(code: u32) -> Result<Self> {
         let def = lookup_epsg(code)?;
         Ok(Self::from_epsg_definition(def))
     }
 
+    /// Creates a CRS from an EPSG code (no_std version — always returns error).
+    #[cfg(not(feature = "std"))]
+    pub fn from_epsg(code: u32) -> Result<Self> {
+        Err(Error::unsupported_crs(alloc::format!(
+            "EPSG:{} lookup requires std feature",
+            code
+        )))
+    }
+
     /// Creates a CRS from an EPSG definition.
-    fn from_epsg_definition(def: &EpsgDefinition) -> Self {
+    #[cfg(feature = "std")]
+    fn from_epsg_definition(def: &crate::epsg::EpsgDefinition) -> Self {
         Self {
             source: CrsSource::Epsg(def.code),
             name: Some(def.name.clone()),
@@ -213,6 +229,7 @@ impl Crs {
     /// # Errors
     ///
     /// Returns an error if the conversion fails.
+    #[cfg(feature = "std")]
     pub fn to_proj_string(&self) -> Result<String> {
         match &self.source {
             CrsSource::Epsg(code) => {
@@ -227,11 +244,24 @@ impl Crs {
         }
     }
 
+    /// Converts the CRS to a PROJ string (no_std version).
+    #[cfg(not(feature = "std"))]
+    pub fn to_proj_string(&self) -> Result<String> {
+        match &self.source {
+            CrsSource::Proj(proj_string) => Ok(proj_string.clone()),
+            CrsSource::Custom { definition, .. } => Ok(definition.clone()),
+            _ => Err(Error::unsupported_crs(
+                "EPSG/WKT lookup requires std feature",
+            )),
+        }
+    }
+
     /// Converts the CRS to a WKT string.
     ///
     /// # Errors
     ///
     /// Returns an error if the conversion fails.
+    #[cfg(feature = "std")]
     pub fn to_wkt(&self) -> Result<String> {
         match &self.source {
             CrsSource::Epsg(code) => {
@@ -247,6 +277,15 @@ impl Crs {
             CrsSource::Custom { .. } => Err(Error::unsupported_crs(
                 "Custom CRS to WKT conversion not yet implemented",
             )),
+        }
+    }
+
+    /// Converts the CRS to a WKT string (no_std version).
+    #[cfg(not(feature = "std"))]
+    pub fn to_wkt(&self) -> Result<String> {
+        match &self.source {
+            CrsSource::Wkt(wkt) => Ok(wkt.clone()),
+            _ => Err(Error::unsupported_crs("WKT lookup requires std feature")),
         }
     }
 
@@ -270,7 +309,7 @@ impl Crs {
             return code1 == code2;
         }
 
-        // Otherwise, compare PROJ strings
+        // Otherwise, compare PROJ strings if possible
         if let (Ok(proj1), Ok(proj2)) = (self.to_proj_string(), other.to_proj_string()) {
             return proj1 == proj2;
         }

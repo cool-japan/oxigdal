@@ -18,12 +18,12 @@ description = "Enterprise security features for OxiGDAL: encryption, access cont
 ring = "0.17"
 rustls = "0.23"
 argon2 = "0.5"
-sha2 = "0.10"
+sha2.workspace = true
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 
 # UUID and time
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { workspace = true }
 chrono = { workspace = true }
 
 # Serialization
@@ -40,28 +40,28 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Data structures
-dashmap = "6.1"
-petgraph = "0.6"
+dashmap.workspace = true
+petgraph.workspace = true
 
 # Compression
 oxiarc-zstd = { workspace = true }
 
 # Random — use scirs2-core for RNG (SciRS2 Policy: no direct rand/rand_distr)
 scirs2-core = { workspace = true, features = ["random"] }
-getrandom = "0.2"
+getrandom = "0.4"
 
 # Encoding
-base64 = "0.22"
+base64.workspace = true
 
 # Pattern matching
 regex = "1"
 
 # TLS support
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 rustls-pemfile = "2"
 
 # Concurrency
-parking_lot = "0.12"
+parking_lot.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

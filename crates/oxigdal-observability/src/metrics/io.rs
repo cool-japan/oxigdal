@@ -73,107 +73,107 @@ impl IoMetrics {
             file_open_count: meter
                 .u64_counter("oxigdal.io.file.open.count")
                 .with_description("Number of file open operations")
-                .init(),
+                .build(),
             file_open_duration: meter
                 .f64_histogram("oxigdal.io.file.open.duration")
                 .with_description("Duration of file open operations in milliseconds")
-                .init(),
+                .build(),
             file_close_count: meter
                 .u64_counter("oxigdal.io.file.close.count")
                 .with_description("Number of file close operations")
-                .init(),
+                .build(),
             file_read_count: meter
                 .u64_counter("oxigdal.io.file.read.count")
                 .with_description("Number of file read operations")
-                .init(),
+                .build(),
             file_read_duration: meter
                 .f64_histogram("oxigdal.io.file.read.duration")
                 .with_description("Duration of file read operations in milliseconds")
-                .init(),
+                .build(),
             file_read_bytes: meter
                 .u64_counter("oxigdal.io.file.read.bytes")
                 .with_description("Bytes read from files")
-                .init(),
+                .build(),
             file_write_count: meter
                 .u64_counter("oxigdal.io.file.write.count")
                 .with_description("Number of file write operations")
-                .init(),
+                .build(),
             file_write_duration: meter
                 .f64_histogram("oxigdal.io.file.write.duration")
                 .with_description("Duration of file write operations in milliseconds")
-                .init(),
+                .build(),
             file_write_bytes: meter
                 .u64_counter("oxigdal.io.file.write.bytes")
                 .with_description("Bytes written to files")
-                .init(),
+                .build(),
 
             // Network I/O
             network_request_count: meter
                 .u64_counter("oxigdal.io.network.request.count")
                 .with_description("Number of network requests")
-                .init(),
+                .build(),
             network_request_duration: meter
                 .f64_histogram("oxigdal.io.network.request.duration")
                 .with_description("Duration of network requests in milliseconds")
-                .init(),
+                .build(),
             network_bytes_sent: meter
                 .u64_counter("oxigdal.io.network.bytes.sent")
                 .with_description("Bytes sent over network")
-                .init(),
+                .build(),
             network_bytes_received: meter
                 .u64_counter("oxigdal.io.network.bytes.received")
                 .with_description("Bytes received from network")
-                .init(),
+                .build(),
             network_errors: meter
                 .u64_counter("oxigdal.io.network.errors")
                 .with_description("Number of network errors")
-                .init(),
+                .build(),
 
             // Cloud storage I/O
             cloud_get_count: meter
                 .u64_counter("oxigdal.io.cloud.get.count")
                 .with_description("Number of cloud storage GET operations")
-                .init(),
+                .build(),
             cloud_get_duration: meter
                 .f64_histogram("oxigdal.io.cloud.get.duration")
                 .with_description("Duration of cloud storage GET in milliseconds")
-                .init(),
+                .build(),
             cloud_put_count: meter
                 .u64_counter("oxigdal.io.cloud.put.count")
                 .with_description("Number of cloud storage PUT operations")
-                .init(),
+                .build(),
             cloud_put_duration: meter
                 .f64_histogram("oxigdal.io.cloud.put.duration")
                 .with_description("Duration of cloud storage PUT in milliseconds")
-                .init(),
+                .build(),
             cloud_list_count: meter
                 .u64_counter("oxigdal.io.cloud.list.count")
                 .with_description("Number of cloud storage LIST operations")
-                .init(),
+                .build(),
             cloud_list_duration: meter
                 .f64_histogram("oxigdal.io.cloud.list.duration")
                 .with_description("Duration of cloud storage LIST in milliseconds")
-                .init(),
+                .build(),
 
             // Throughput
             read_throughput_mbps: meter
                 .f64_histogram("oxigdal.io.read.throughput.mbps")
                 .with_description("Read throughput in MB/s")
-                .init(),
+                .build(),
             write_throughput_mbps: meter
                 .f64_histogram("oxigdal.io.write.throughput.mbps")
                 .with_description("Write throughput in MB/s")
-                .init(),
+                .build(),
 
             // Latency
             read_latency_ms: meter
                 .f64_histogram("oxigdal.io.read.latency.ms")
                 .with_description("Read latency in milliseconds")
-                .init(),
+                .build(),
             write_latency_ms: meter
                 .f64_histogram("oxigdal.io.write.latency.ms")
                 .with_description("Write latency in milliseconds")
-                .init(),
+                .build(),
         })
     }
 

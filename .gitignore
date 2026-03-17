@@ -25,6 +25,9 @@ Cargo.lock
 
 crates/oxigdal-edge/.oxigdal_cache
 
+# Claude AI config
+**/.claude/
+
 # IDE and editor files
 .idea/
 .vscode/
@@ -42,6 +45,9 @@ crates/oxigdal-edge/.oxigdal_cache
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Rustc ICE dumps
+rustc-ice-*.txt
 
 # Build artifacts
 *.so

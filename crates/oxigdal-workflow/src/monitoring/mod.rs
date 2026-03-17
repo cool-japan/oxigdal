@@ -272,7 +272,7 @@ impl MonitoringService {
             .filter_map(|t| t.duration.map(|d| (t.task_id.clone(), d)))
             .collect();
 
-        slowest_tasks.sort_by(|a, b| b.1.cmp(&a.1));
+        slowest_tasks.sort_by_key(|x| std::cmp::Reverse(x.1));
         slowest_tasks.truncate(5);
 
         let mut high_retry_tasks: Vec<(String, usize)> = history
@@ -282,7 +282,7 @@ impl MonitoringService {
             .map(|t| (t.task_id.clone(), t.retry_count))
             .collect();
 
-        high_retry_tasks.sort_by(|a, b| b.1.cmp(&a.1));
+        high_retry_tasks.sort_by_key(|x| std::cmp::Reverse(x.1));
         high_retry_tasks.truncate(5);
 
         let mut suggestions = Vec::new();

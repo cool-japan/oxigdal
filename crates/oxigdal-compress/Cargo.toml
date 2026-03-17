@@ -32,8 +32,8 @@ lz4 = { workspace = true }
 oxiarc-zstd = { workspace = true }
 oxiarc-deflate = { workspace = true }
 oxiarc-archive = { workspace = true }
-brotli = "7"
-snap = "1"
+brotli = "8"
+snap.workspace = true
 
 # Additional dependencies
 bytemuck = { workspace = true }

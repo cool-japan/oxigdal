@@ -50,7 +50,7 @@ tinytemplate = "1"
 num-traits.workspace = true
 
 # System information
-sysinfo = "0.34"
+sysinfo = "0.38"
 
 # Temporary files
 tempfile.workspace = true

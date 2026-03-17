@@ -296,31 +296,37 @@ fn feature_in_bbox(feature: &geojson::Feature, bbox: &BboxFilter) -> bool {
 
 /// Check if geometry intersects bbox
 fn geometry_intersects_bbox(geometry: &geojson::Geometry, bbox: &BboxFilter) -> bool {
-    use geojson::Value;
+    use geojson::GeometryValue;
 
     match &geometry.value {
-        Value::Point(coords) => {
+        GeometryValue::Point {
+            coordinates: coords,
+        } => {
             coords.len() >= 2
                 && coords[0] >= bbox.min_x
                 && coords[0] <= bbox.max_x
                 && coords[1] >= bbox.min_y
                 && coords[1] <= bbox.max_y
         }
-        Value::MultiPoint(points) => points.iter().any(|coords| {
+        GeometryValue::MultiPoint {
+            coordinates: points,
+        } => points.iter().any(|coords| {
             coords.len() >= 2
                 && coords[0] >= bbox.min_x
                 && coords[0] <= bbox.max_x
                 && coords[1] >= bbox.min_y
                 && coords[1] <= bbox.max_y
         }),
-        Value::LineString(coords) => coords.iter().any(|c| {
+        GeometryValue::LineString {
+            coordinates: coords,
+        } => coords.iter().any(|c| {
             c.len() >= 2
                 && c[0] >= bbox.min_x
                 && c[0] <= bbox.max_x
                 && c[1] >= bbox.min_y
                 && c[1] <= bbox.max_y
         }),
-        Value::MultiLineString(lines) => lines.iter().any(|line| {
+        GeometryValue::MultiLineString { coordinates: lines } => lines.iter().any(|line| {
             line.iter().any(|c| {
                 c.len() >= 2
                     && c[0] >= bbox.min_x
@@ -329,7 +335,7 @@ fn geometry_intersects_bbox(geometry: &geojson::Geometry, bbox: &BboxFilter) -> 
                     && c[1] <= bbox.max_y
             })
         }),
-        Value::Polygon(rings) => rings.iter().any(|ring| {
+        GeometryValue::Polygon { coordinates: rings } => rings.iter().any(|ring| {
             ring.iter().any(|c| {
                 c.len() >= 2
                     && c[0] >= bbox.min_x
@@ -338,7 +344,9 @@ fn geometry_intersects_bbox(geometry: &geojson::Geometry, bbox: &BboxFilter) -> 
                     && c[1] <= bbox.max_y
             })
         }),
-        Value::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+        GeometryValue::MultiPolygon {
+            coordinates: polygons,
+        } => polygons.iter().any(|polygon| {
             polygon.iter().any(|ring| {
                 ring.iter().any(|c| {
                     c.len() >= 2
@@ -349,7 +357,9 @@ fn geometry_intersects_bbox(geometry: &geojson::Geometry, bbox: &BboxFilter) -> 
                 })
             })
         }),
-        Value::GeometryCollection(geoms) => geoms.iter().any(|g| geometry_intersects_bbox(g, bbox)),
+        GeometryValue::GeometryCollection { geometries: geoms } => {
+            geoms.iter().any(|g| geometry_intersects_bbox(g, bbox))
+        }
     }
 }
 

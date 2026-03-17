@@ -242,11 +242,7 @@ impl TaskStats {
 
     /// Get average execution time
     pub fn avg_exec_us(&self) -> u64 {
-        if self.executions == 0 {
-            0
-        } else {
-            self.total_exec_us / self.executions
-        }
+        self.total_exec_us.checked_div(self.executions).unwrap_or(0)
     }
 
     /// Get deadline miss rate
