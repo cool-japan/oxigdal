@@ -192,16 +192,16 @@ parquet = { version = "58", default-features = false }
 
 # Compression - COOLJAPAN Pure Rust Policy (oxiarc ecosystem)
 # Use oxiarc-* crates instead of C-based compression libraries
-oxiarc-archive = "0.2.5"  # ZIP, TAR, GZIP, LZH, XZ archive formats
-oxiarc-core = "0.2.5"     # Core components for OxiArc
-oxiarc-deflate = "0.2.5"  # Pure Rust DEFLATE (replacement for flate2)
-oxiarc-lzw = "0.2.5"      # Pure Rust LZW compression (updated from 0.2.2)
-oxiarc-lz4 = "0.2.5"      # Pure Rust LZ4 compression
-oxiarc-zstd = "0.2.5"     # Pure Rust Zstandard compression
-oxiarc-bzip2 = "0.2.5"    # Pure Rust BZip2 compression
-oxiarc-lzhuf = "0.2.5"    # Pure Rust LZH compression
-oxiarc-snappy = "0.2.5"   # Pure Rust Snappy compression (replacement for snap)
-oxiarc-brotli = "0.2.5"   # Pure Rust Brotli compression (replacement for brotli)
+oxiarc-archive = "0.2.6"  # ZIP, TAR, GZIP, LZH, XZ archive formats
+oxiarc-core = "0.2.6"     # Core components for OxiArc
+oxiarc-deflate = "0.2.6"  # Pure Rust DEFLATE (replacement for flate2)
+oxiarc-lzw = "0.2.6"      # Pure Rust LZW compression (updated from 0.2.2)
+oxiarc-lz4 = "0.2.6"      # Pure Rust LZ4 compression
+oxiarc-zstd = "0.2.6"     # Pure Rust Zstandard compression
+oxiarc-bzip2 = "0.2.6"    # Pure Rust BZip2 compression
+oxiarc-lzhuf = "0.2.6"    # Pure Rust LZH compression
+oxiarc-snappy = "0.2.6"   # Pure Rust Snappy compression (replacement for snap)
+oxiarc-brotli = "0.2.6"   # Pure Rust Brotli compression (replacement for brotli)
 
 jpeg-decoder = "0.3"
 jpeg-encoder = "0.7"
@@ -578,9 +578,6 @@ module_name_repetitions = "allow"  # Common in geospatial APIs
 # Using git master (commit b2c4ed2b) which includes the fix
 [patch.crates-io]
 mysql_async = { git = "https://github.com/blackbeam/mysql_async.git", rev = "b2c4ed2b" }
-# BUGFIX: oxiarc-brotli 0.2.5 has broken window-bits encoder/decoder; local 0.2.6 fixes it
-oxiarc-brotli = { path = "/Users/kitasan/work/oxiarc/oxiarc-brotli" }
-oxiarc-core = { path = "/Users/kitasan/work/oxiarc/oxiarc-core" }
 
 
 [profile.release]
