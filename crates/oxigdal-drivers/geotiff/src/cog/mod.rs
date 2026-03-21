@@ -188,10 +188,9 @@ impl<S: DataSource> CogReader<S> {
         }
 
         // Parse GeoKeys (best-effort: continue without geo keys if parsing fails)
-        let geo_keys =
-            GeoKeyDirectory::from_ifd(&tiff.ifds[0], &source, byte_order, variant)
-                .ok()
-                .flatten();
+        let geo_keys = GeoKeyDirectory::from_ifd(&tiff.ifds[0], &source, byte_order, variant)
+            .ok()
+            .flatten();
 
         Ok(Self {
             source,

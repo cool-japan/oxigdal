@@ -214,29 +214,23 @@ impl ImageInfo {
             PlanarConfiguration::from_u16(planar_raw).unwrap_or(PlanarConfiguration::Chunky);
 
         // Tile dimensions (optional - skip gracefully if unreadable)
-        let tile_width = ifd
-            .get_entry(TiffTag::TileWidth)
-            .and_then(|e| {
-                e.get_u64_from_source(source, byte_order, variant)
-                    .map(|v| v as u32)
-                    .ok()
-            });
-        let tile_height = ifd
-            .get_entry(TiffTag::TileLength)
-            .and_then(|e| {
-                e.get_u64_from_source(source, byte_order, variant)
-                    .map(|v| v as u32)
-                    .ok()
-            });
+        let tile_width = ifd.get_entry(TiffTag::TileWidth).and_then(|e| {
+            e.get_u64_from_source(source, byte_order, variant)
+                .map(|v| v as u32)
+                .ok()
+        });
+        let tile_height = ifd.get_entry(TiffTag::TileLength).and_then(|e| {
+            e.get_u64_from_source(source, byte_order, variant)
+                .map(|v| v as u32)
+                .ok()
+        });
 
         // Rows per strip (for striped images - skip gracefully if unreadable)
-        let rows_per_strip = ifd
-            .get_entry(TiffTag::RowsPerStrip)
-            .and_then(|e| {
-                e.get_u64_from_source(source, byte_order, variant)
-                    .map(|v| v as u32)
-                    .ok()
-            });
+        let rows_per_strip = ifd.get_entry(TiffTag::RowsPerStrip).and_then(|e| {
+            e.get_u64_from_source(source, byte_order, variant)
+                .map(|v| v as u32)
+                .ok()
+        });
 
         // Predictor (default: none)
         let predictor_raw = ifd

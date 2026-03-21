@@ -56,10 +56,7 @@ mod tests {
         assert_eq!(detect_format(Path::new("test.json")), Some("GeoJSON"));
         assert_eq!(detect_format(Path::new("test.shp")), Some("Shapefile"));
         assert_eq!(detect_format(Path::new("test.fgb")), Some("FlatGeobuf"));
-        assert_eq!(
-            detect_format(Path::new("test.parquet")),
-            Some("GeoParquet")
-        );
+        assert_eq!(detect_format(Path::new("test.parquet")), Some("GeoParquet"));
         assert_eq!(detect_format(Path::new("test.zarr")), Some("Zarr"));
         assert_eq!(detect_format(Path::new("test.gpkg")), Some("GeoPackage"));
         assert_eq!(detect_format(Path::new("test.jp2")), Some("JPEG2000"));

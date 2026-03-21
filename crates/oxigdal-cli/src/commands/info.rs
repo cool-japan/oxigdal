@@ -305,10 +305,7 @@ fn read_shapefile_info(args: &InfoArgs) -> Result<VectorInfo> {
 
     // Log field info if metadata requested (displayed in text output)
     if args.metadata && !field_names.is_empty() {
-        println!(
-            "\n{}",
-            console::style("Attribute Fields").bold().cyan()
-        );
+        println!("\n{}", console::style("Attribute Fields").bold().cyan());
         for field in fields {
             println!(
                 "  {} ({:?}, length: {}, decimals: {})",
