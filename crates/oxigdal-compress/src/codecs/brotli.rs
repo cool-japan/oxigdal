@@ -5,7 +5,7 @@
 //! decompression speeds and multiple quality levels.
 
 use crate::error::{CompressionError, Result};
-use brotli::{CompressorWriter, Decompressor, enc::BrotliEncoderParams};
+use oxiarc_brotli::{BrotliCompressor, BrotliDecompressor, BrotliParams};
 use std::io::{Read, Write};
 
 /// Brotli compression quality (0-11, higher = better compression but slower)
@@ -118,17 +118,15 @@ impl BrotliCodec {
         let mut output = Vec::new();
         let params = self.create_encoder_params();
 
-        let mut compressor = CompressorWriter::with_params(&mut output, 4096, &params);
+        let mut compressor = BrotliCompressor::new(&mut output, params);
 
         compressor
             .write_all(input)
             .map_err(|e| CompressionError::BrotliError(e.to_string()))?;
 
         compressor
-            .flush()
+            .finish()
             .map_err(|e| CompressionError::BrotliError(e.to_string()))?;
-
-        drop(compressor);
 
         Ok(output)
     }
@@ -140,7 +138,7 @@ impl BrotliCodec {
         }
 
         let mut output = Vec::new();
-        let mut decompressor = Decompressor::new(input, 4096);
+        let mut decompressor = BrotliDecompressor::new(input);
 
         decompressor
             .read_to_end(&mut output)
@@ -152,12 +150,12 @@ impl BrotliCodec {
     /// Compress data using Brotli stream
     pub fn compress_stream<R: Read, W: Write>(&self, mut reader: R, writer: W) -> Result<usize> {
         let params = self.create_encoder_params();
-        let mut compressor = CompressorWriter::with_params(writer, 4096, &params);
+        let mut compressor = BrotliCompressor::new(writer, params);
 
         let bytes_written = std::io::copy(&mut reader, &mut compressor)?;
 
         compressor
-            .flush()
+            .finish()
             .map_err(|e| CompressionError::BrotliError(e.to_string()))?;
 
         Ok(bytes_written as usize)
@@ -165,7 +163,7 @@ impl BrotliCodec {
 
     /// Decompress Brotli stream
     pub fn decompress_stream<R: Read, W: Write>(&self, reader: R, mut writer: W) -> Result<usize> {
-        let mut decompressor = Decompressor::new(reader, 4096);
+        let mut decompressor = BrotliDecompressor::new(reader);
 
         let bytes_written = std::io::copy(&mut decompressor, &mut writer)?;
 
@@ -173,12 +171,11 @@ impl BrotliCodec {
     }
 
     /// Create encoder parameters
-    fn create_encoder_params(&self) -> BrotliEncoderParams {
-        BrotliEncoderParams {
-            quality: self.config.quality.value() as i32,
-            lgwin: self.config.window_size as i32,
-            lgblock: self.config.block_size as i32,
-            ..Default::default()
+    fn create_encoder_params(&self) -> BrotliParams {
+        BrotliParams {
+            quality: self.config.quality.value(),
+            lgwin: self.config.window_size,
+            lgblock: self.config.block_size,
         }
     }
 

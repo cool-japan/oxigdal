@@ -29,8 +29,8 @@ async-trait = { workspace = true }
 
 # Compression (optimized for edge)
 oxiarc-deflate = { workspace = true }
-lz4 = { workspace = true }
-snap = { workspace = true }
+oxiarc-lz4 = { workspace = true }
+oxiarc-snappy = { workspace = true }
 
 # Time handling
 chrono = { workspace = true }

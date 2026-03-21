@@ -6,11 +6,6 @@
 //! speeds and reasonable compression.
 
 use crate::error::{CompressionError, Result};
-use snap::{
-    raw::{Decoder, Encoder},
-    read::FrameDecoder,
-    write::FrameEncoder,
-};
 use std::io::{Read, Write};
 
 /// Snappy codec configuration (Snappy has no compression levels)
@@ -58,10 +53,7 @@ impl SnappyCodec {
             return Ok(Vec::new());
         }
 
-        let mut encoder = Encoder::new();
-        let compressed = encoder.compress_vec(input)?;
-
-        Ok(compressed)
+        Ok(oxiarc_snappy::compress(input))
     }
 
     /// Decompress Snappy raw format data
@@ -70,20 +62,17 @@ impl SnappyCodec {
             return Ok(Vec::new());
         }
 
-        let mut decoder = Decoder::new();
-        let decompressed = decoder.decompress_vec(input)?;
-
-        Ok(decompressed)
+        oxiarc_snappy::decompress(input).map_err(|e| CompressionError::SnappyError(e.to_string()))
     }
 
     /// Compress data using Snappy framed format (with checksums)
     pub fn compress_framed<R: Read, W: Write>(&self, mut reader: R, writer: W) -> Result<usize> {
-        let mut encoder = FrameEncoder::new(writer);
+        let mut encoder = oxiarc_snappy::FrameEncoder::new(writer);
 
         let bytes_written = std::io::copy(&mut reader, &mut encoder)?;
 
         encoder
-            .flush()
+            .finish()
             .map_err(|e| CompressionError::SnappyError(e.to_string()))?;
 
         Ok(bytes_written as usize)
@@ -91,7 +80,7 @@ impl SnappyCodec {
 
     /// Decompress Snappy framed format data
     pub fn decompress_framed<R: Read, W: Write>(&self, reader: R, mut writer: W) -> Result<usize> {
-        let mut decoder = FrameDecoder::new(reader);
+        let mut decoder = oxiarc_snappy::FrameDecoder::new(reader);
 
         let bytes_written = std::io::copy(&mut decoder, &mut writer)?;
 
@@ -100,7 +89,7 @@ impl SnappyCodec {
 
     /// Get the maximum compressed size for input of given size
     pub fn max_compressed_size(input_size: usize) -> usize {
-        snap::raw::max_compress_len(input_size)
+        oxiarc_snappy::max_compress_len(input_size)
     }
 
     /// Get the decompressed size from compressed data (raw format only)
@@ -109,7 +98,7 @@ impl SnappyCodec {
             return Ok(0);
         }
 
-        let size = snap::raw::decompress_len(input)
+        let size = oxiarc_snappy::decompress_len(input)
             .map_err(|e| CompressionError::SnappyError(e.to_string()))?;
 
         Ok(size)

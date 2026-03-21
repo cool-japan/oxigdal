@@ -7,9 +7,9 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_profiler_creation() {
     // This test requires actual GPU, may not work in CI
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -52,9 +52,9 @@ async fn test_profiler_creation() {
 
 #[tokio::test]
 async fn test_profiling_session() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -111,9 +111,9 @@ fn test_profiling_config() {
 
 #[tokio::test]
 async fn test_bottleneck_detection() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -169,9 +169,9 @@ async fn test_bottleneck_detection() {
 
 #[tokio::test]
 async fn test_profiling_report() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance

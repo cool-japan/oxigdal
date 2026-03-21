@@ -82,9 +82,10 @@ impl PipelineBuilder {
         let mut compute_pipelines = Vec::new();
         for stage in &stages {
             // Recreate necessary context for building pipelines
-            let layout_refs: Vec<&BindGroupLayout> = bind_group_layouts
+            let layout_refs: Vec<Option<&BindGroupLayout>> = bind_group_layouts
                 .iter()
                 .take(stage.bind_group_count)
+                .map(Some)
                 .collect();
 
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -220,10 +221,11 @@ impl PipelineBuilder {
             });
 
         // Create pipeline layout
-        let layout_refs: Vec<&BindGroupLayout> = self
+        let layout_refs: Vec<Option<&BindGroupLayout>> = self
             .bind_group_layouts
             .iter()
             .take(stage.bind_group_count)
+            .map(Some)
             .collect();
 
         let pipeline_layout = self

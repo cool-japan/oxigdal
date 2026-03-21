@@ -17,6 +17,11 @@ pub fn detect_format(path: &Path) -> Option<&'static str> {
             "fgb" => Some("FlatGeobuf"),
             "parquet" | "geoparquet" => Some("GeoParquet"),
             "zarr" => Some("Zarr"),
+            "gpkg" => Some("GeoPackage"),
+            "jp2" => Some("JPEG2000"),
+            "copc" => Some("COPC"),
+            "pmtiles" => Some("PMTiles"),
+            "mbtiles" => Some("MBTiles"),
             _ => None,
         })
 }
@@ -46,8 +51,21 @@ mod tests {
     #[test]
     fn test_detect_format() {
         assert_eq!(detect_format(Path::new("test.tif")), Some("GeoTIFF"));
+        assert_eq!(detect_format(Path::new("test.tiff")), Some("GeoTIFF"));
         assert_eq!(detect_format(Path::new("test.geojson")), Some("GeoJSON"));
+        assert_eq!(detect_format(Path::new("test.json")), Some("GeoJSON"));
         assert_eq!(detect_format(Path::new("test.shp")), Some("Shapefile"));
+        assert_eq!(detect_format(Path::new("test.fgb")), Some("FlatGeobuf"));
+        assert_eq!(
+            detect_format(Path::new("test.parquet")),
+            Some("GeoParquet")
+        );
+        assert_eq!(detect_format(Path::new("test.zarr")), Some("Zarr"));
+        assert_eq!(detect_format(Path::new("test.gpkg")), Some("GeoPackage"));
+        assert_eq!(detect_format(Path::new("test.jp2")), Some("JPEG2000"));
+        assert_eq!(detect_format(Path::new("test.copc")), Some("COPC"));
+        assert_eq!(detect_format(Path::new("test.pmtiles")), Some("PMTiles"));
+        assert_eq!(detect_format(Path::new("test.mbtiles")), Some("MBTiles"));
         assert_eq!(detect_format(Path::new("test.unknown")), None);
     }
 

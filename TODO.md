@@ -1,10 +1,20 @@
 # OxiGDAL TODO
 
-> Version: 0.1.2 (2026-03-17) | 76 crates | 10,935 tests | ~540K Rust SLoC
+> Version: 0.1.3 (2026-03-21) | 76 crates | 10,939 tests | ~540K Rust SLoC
 
 ---
 
-## v0.1.2 — Current Release (2026-03-17) [COMPLETE]
+## v0.1.3 — Current Release (2026-03-21) [COMPLETE]
+
+- [x] Fixed wgpu 29 API breaking changes (Instance::new, bind_group_layouts)
+- [x] Fixed libsqlite3-sys version conflict (rusqlite 0.37, proj-sys compat)
+- [x] Fixed macOS librocksdb-sys DYLD rpath via .cargo/config.toml
+- [x] Fixed 6 critical oxiarc-brotli bugs (patched via [patch.crates-io])
+- [x] Fixed pipeline_builder.rs clippy redundant closure
+
+---
+
+## v0.1.2 — Previous Release (2026-03-17) [COMPLETE]
 
 - [x] WASM enhancements and optimizations
 - [x] npm publishing workflow for WASM bindings
@@ -220,4 +230,4 @@
 
 ---
 
-*Last updated: 2026-03-17*
+*Last updated: 2026-03-21*

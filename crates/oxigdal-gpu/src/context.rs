@@ -204,9 +204,9 @@ impl GpuContext {
         );
 
         // Create WGPU instance
-        let instance = Instance::new(&InstanceDescriptor {
+        let instance = Instance::new(InstanceDescriptor {
             backends: config.backend.to_backends(),
-            ..Default::default()
+            ..InstanceDescriptor::new_without_display_handle()
         });
 
         // Request adapter

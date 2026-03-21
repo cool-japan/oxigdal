@@ -14,7 +14,7 @@ oxigdal-geotiff = "0.1"
 # ML dependencies
 ort = { version = "2.0.0-rc.11", default-features = false, features = ["ndarray"] }
 ndarray = "0.17"
-scirs2-core = "0.1"
+scirs2-core = "0.3.4"
 
 # Error handling
 anyhow = "1"

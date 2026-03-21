@@ -28,12 +28,12 @@ futures = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 
 # Compression libraries
-lz4 = { workspace = true }
+oxiarc-lz4 = { workspace = true }
 oxiarc-zstd = { workspace = true }
 oxiarc-deflate = { workspace = true }
 oxiarc-archive = { workspace = true }
-brotli = "8"
-snap.workspace = true
+oxiarc-brotli = { workspace = true }
+oxiarc-snappy = { workspace = true }
 
 # Additional dependencies
 bytemuck = { workspace = true }

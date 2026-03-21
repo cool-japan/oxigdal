@@ -131,9 +131,9 @@ impl MultiGpuManager {
     pub async fn new(config: MultiGpuConfig) -> GpuResult<Self> {
         info!("Initializing multi-GPU manager");
 
-        let instance = Instance::new(&wgpu::InstanceDescriptor {
+        let instance = Instance::new(wgpu::InstanceDescriptor {
             backends: config.backends,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         // Enumerate all available adapters
@@ -331,9 +331,9 @@ impl MultiGpuManager {
             Backends::DX12,
             Backends::BROWSER_WEBGPU,
         ] {
-            let backend_instance = Instance::new(&wgpu::InstanceDescriptor {
+            let backend_instance = Instance::new(wgpu::InstanceDescriptor {
                 backends: *backend,
-                ..Default::default()
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
 
             if let Ok(adapter) = backend_instance

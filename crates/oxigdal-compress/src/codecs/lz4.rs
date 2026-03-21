@@ -124,14 +124,9 @@ impl Lz4Codec {
             return Ok(Vec::new());
         }
 
-        // Use LZ4 block compression
-        let compressed = lz4::block::compress(
-            input,
-            Some(lz4::block::CompressionMode::HIGHCOMPRESSION(
-                self.config.level.value(),
-            )),
-            false,
-        )?;
+        // Use LZ4 block compression (oxiarc-lz4 Pure Rust)
+        let compressed = oxiarc_lz4::compress_block_hc(input, self.config.level.value())
+            .map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
 
         Ok(compressed)
     }
@@ -143,49 +138,59 @@ impl Lz4Codec {
         }
 
         let size = decompressed_size.unwrap_or(input.len() * 4);
-        let decompressed = lz4::block::decompress(input, Some(size as i32))?;
+        let decompressed = oxiarc_lz4::decompress_block(input, size)
+            .map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
 
         Ok(decompressed)
     }
 
     /// Compress data using LZ4 frame format (with headers)
-    pub fn compress_frame<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<usize> {
-        let mut encoder = lz4::EncoderBuilder::new()
-            .level(self.config.level.value() as u32)
-            .checksum(if self.config.checksum {
-                lz4::ContentChecksum::ChecksumEnabled
-            } else {
-                lz4::ContentChecksum::NoChecksum
-            })
-            .build(writer)
-            .map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
-
-        let bytes_written = std::io::copy(&mut std::io::BufReader::new(reader), &mut encoder)
+    pub fn compress_frame<R: Read, W: Write>(&self, mut reader: R, mut writer: W) -> Result<usize> {
+        let mut input = Vec::new();
+        reader
+            .read_to_end(&mut input)
             .map_err(CompressionError::Io)?;
 
-        let (_writer, result) = encoder.finish();
-        result.map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
+        let desc = oxiarc_lz4::FrameDescriptor::new()
+            .with_content_size(input.len() as u64)
+            .with_content_checksum(self.config.checksum);
 
-        Ok(bytes_written as usize)
+        let compressed = oxiarc_lz4::compress_with_options(&input, desc)
+            .map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
+
+        writer
+            .write_all(&compressed)
+            .map_err(CompressionError::Io)?;
+        Ok(input.len())
     }
 
     /// Decompress LZ4 frame format
-    pub fn decompress_frame<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<usize> {
-        let decoder =
-            lz4::Decoder::new(reader).map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
+    pub fn decompress_frame<R: Read, W: Write>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+    ) -> Result<usize> {
+        let mut input = Vec::new();
+        reader
+            .read_to_end(&mut input)
+            .map_err(CompressionError::Io)?;
 
-        let bytes_written = std::io::copy(
-            &mut std::io::BufReader::new(decoder),
-            &mut std::io::BufWriter::new(writer),
-        )
-        .map_err(CompressionError::Io)?;
+        // Use a generous max output size for frame decompression
+        let max_output = input.len() * 10;
+        let decompressed = oxiarc_lz4::decompress(&input, max_output)
+            .map_err(|e| CompressionError::Lz4Error(e.to_string()))?;
 
-        Ok(bytes_written as usize)
+        let len = decompressed.len();
+        writer
+            .write_all(&decompressed)
+            .map_err(CompressionError::Io)?;
+        Ok(len)
     }
 
     /// Get the maximum compressed size for input of given size
     pub fn max_compressed_size(input_size: usize) -> usize {
-        lz4::block::compress_bound(input_size).unwrap_or(input_size + (input_size / 255) + 16)
+        // LZ4 worst-case bound: input_size + (input_size / 255) + 16
+        input_size + (input_size / 255) + 16
     }
 }
 

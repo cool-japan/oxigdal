@@ -66,23 +66,30 @@ impl Codec for Lz4Codec {
     }
 
     fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // Use prepend_size=true to include the uncompressed size in the output
+        // Compress with oxiarc-lz4 and prepend uncompressed size as 4-byte LE i32
         // This allows decompression without needing to know the size in advance
-        lz4::block::compress(
-            data,
-            Some(lz4::block::CompressionMode::FAST(self.acceleration)),
-            true,
-        )
-        .map_err(|e| {
-            ZarrError::Codec(CodecError::CompressionFailed {
-                message: format!("LZ4 compression failed: {e}"),
-            })
-        })
+        let compressed =
+            oxiarc_lz4::compress_block_with_accel(data, self.acceleration).map_err(|e| {
+                ZarrError::Codec(CodecError::CompressionFailed {
+                    message: format!("LZ4 compression failed: {e}"),
+                })
+            })?;
+        let orig_size = data.len() as i32;
+        let mut result = Vec::with_capacity(4 + compressed.len());
+        result.extend_from_slice(&orig_size.to_le_bytes());
+        result.extend_from_slice(&compressed);
+        Ok(result)
     }
 
     fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // The compressed data includes the uncompressed size prefix (from prepend_size=true)
-        lz4::block::decompress(data, None).map_err(|e| {
+        // The compressed data includes the uncompressed size prefix (4-byte LE i32)
+        if data.len() < 4 {
+            return Err(ZarrError::Codec(CodecError::DecompressionFailed {
+                message: "LZ4 data too short for size prefix".to_string(),
+            }));
+        }
+        let orig_size = i32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        oxiarc_lz4::decompress_block(&data[4..], orig_size).map_err(|e| {
             ZarrError::Codec(CodecError::DecompressionFailed {
                 message: format!("LZ4 decompression failed: {e}"),
             })
@@ -90,8 +97,8 @@ impl Codec for Lz4Codec {
     }
 
     fn max_encoded_size(&self, input_size: usize) -> usize {
-        // LZ4 max compressed size
-        lz4::block::compress_bound(input_size).unwrap_or(input_size + (input_size / 10) + 1024)
+        // LZ4 worst-case bound + 4 bytes for size prefix
+        4 + input_size + (input_size / 255) + 16
     }
 
     fn clone_box(&self) -> Box<dyn Codec> {

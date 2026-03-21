@@ -23,9 +23,9 @@ async fn test_pipeline_stage_creation() {
 
 #[tokio::test]
 async fn test_pipeline_builder() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -77,9 +77,9 @@ async fn test_pipeline_builder() {
 
 #[tokio::test]
 async fn test_pipeline_validation() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -120,9 +120,9 @@ async fn test_pipeline_validation() {
 
 #[tokio::test]
 async fn test_pipeline_with_dependencies() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance

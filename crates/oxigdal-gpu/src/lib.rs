@@ -246,9 +246,9 @@ pub async fn is_gpu_available() -> bool {
 pub async fn get_available_adapters() -> Vec<(String, String)> {
     use wgpu::{Backends, Instance, InstanceDescriptor, RequestAdapterOptions};
 
-    let _instance = Instance::new(&InstanceDescriptor {
+    let _instance = Instance::new(InstanceDescriptor {
         backends: Backends::all(),
-        ..Default::default()
+        ..InstanceDescriptor::new_without_display_handle()
     });
 
     let mut adapters = Vec::new();
@@ -260,9 +260,9 @@ pub async fn get_available_adapters() -> Vec<(String, String)> {
         Backends::DX12,
         Backends::BROWSER_WEBGPU,
     ] {
-        let instance = Instance::new(&InstanceDescriptor {
+        let instance = Instance::new(InstanceDescriptor {
             backends: *backend,
-            ..Default::default()
+            ..InstanceDescriptor::new_without_display_handle()
         });
 
         if let Ok(adapter) = instance

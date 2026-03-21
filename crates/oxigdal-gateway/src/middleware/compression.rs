@@ -51,12 +51,8 @@ impl CompressionMiddleware {
 
     /// Compresses data using brotli.
     fn compress_brotli(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut output = Vec::new();
-        let mut writer = brotli::CompressorWriter::new(&mut output, 4096, 11, 22);
-        std::io::copy(&mut &data[..], &mut writer)
-            .map_err(|e| crate::error::GatewayError::InternalError(e.to_string()))?;
-        drop(writer);
-        Ok(output)
+        oxiarc_brotli::compress(data, 11)
+            .map_err(|e| crate::error::GatewayError::InternalError(e.to_string()))
     }
 }
 

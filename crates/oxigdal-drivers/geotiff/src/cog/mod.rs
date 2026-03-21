@@ -179,15 +179,19 @@ impl<S: DataSource> CogReader<S> {
         // Parse primary image info
         let primary_info = ImageInfo::from_ifd(&tiff.ifds[0], &source, byte_order, variant)?;
 
-        // Parse overview infos
+        // Parse overview infos (best-effort: skip overviews that fail to parse)
         let mut overview_infos = Vec::new();
         for ifd in tiff.ifds.iter().skip(1) {
-            let info = ImageInfo::from_ifd(ifd, &source, byte_order, variant)?;
-            overview_infos.push(info);
+            if let Ok(info) = ImageInfo::from_ifd(ifd, &source, byte_order, variant) {
+                overview_infos.push(info);
+            }
         }
 
-        // Parse GeoKeys
-        let geo_keys = GeoKeyDirectory::from_ifd(&tiff.ifds[0], &source, byte_order, variant)?;
+        // Parse GeoKeys (best-effort: continue without geo keys if parsing fails)
+        let geo_keys =
+            GeoKeyDirectory::from_ifd(&tiff.ifds[0], &source, byte_order, variant)
+                .ok()
+                .flatten();
 
         Ok(Self {
             source,

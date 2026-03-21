@@ -56,25 +56,14 @@ impl MessageCompressor {
 
     /// Compresses using brotli.
     fn compress_brotli(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut output = Vec::new();
-        let mut writer = brotli::CompressorWriter::new(&mut output, 4096, 11, 22);
-
-        std::io::copy(&mut &data[..], &mut writer)
-            .map_err(|e| GatewayError::InternalError(format!("Compression error: {}", e)))?;
-
-        drop(writer);
-        Ok(output)
+        oxiarc_brotli::compress(data, 11)
+            .map_err(|e| GatewayError::InternalError(format!("Compression error: {}", e)))
     }
 
     /// Decompresses using brotli.
     fn decompress_brotli(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut output = Vec::new();
-        let mut reader = brotli::Decompressor::new(data, 4096);
-
-        std::io::copy(&mut reader, &mut output)
-            .map_err(|e| GatewayError::InternalError(format!("Decompression error: {}", e)))?;
-
-        Ok(output)
+        oxiarc_brotli::decompress(data)
+            .map_err(|e| GatewayError::InternalError(format!("Decompression error: {}", e)))
     }
 }
 

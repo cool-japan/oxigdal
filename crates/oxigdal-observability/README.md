@@ -19,7 +19,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-observability = "0.1.2"
+oxigdal-observability = "0.1.3"
 ```
 
 ## Quick Start

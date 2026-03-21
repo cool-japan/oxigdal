@@ -22,8 +22,8 @@ schema-registry = ["dep:apache-avro"]
 transactions = []
 compression-all = ["compression-gzip", "compression-snappy", "compression-lz4", "compression-zstd"]
 compression-gzip = ["dep:oxiarc-archive"]
-compression-snappy = ["snap"]
-compression-lz4 = ["lz4"]
+compression-snappy = ["dep:oxiarc-snappy"]
+compression-lz4 = ["dep:oxiarc-lz4"]
 compression-zstd = ["dep:oxiarc-zstd"]
 all = ["producer", "consumer", "schema-registry", "transactions", "compression-all"]
 
@@ -49,8 +49,8 @@ apache-avro = { workspace = true, optional = true, features = ["snappy"] }
 
 # Compression
 oxiarc-archive = { workspace = true, optional = true }
-snap = { workspace = true, optional = true }
-lz4 = { workspace = true, optional = true }
+oxiarc-snappy = { workspace = true, optional = true }
+oxiarc-lz4 = { workspace = true, optional = true }
 oxiarc-zstd = { workspace = true, optional = true }
 
 # Concurrency

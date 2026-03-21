@@ -245,17 +245,26 @@ impl AdaptiveCompressor {
 
     /// Compress with LZ4
     fn compress_lz4(&self, data: &[u8]) -> Result<Bytes> {
-        // prepend_size=true so that decompress can determine the original size
-        lz4::block::compress(data, None, true)
-            .map(Bytes::from)
-            .map_err(|e| CacheError::Compression(e.to_string()))
+        // Compress with oxiarc-lz4 and prepend original size as 4-byte LE i32
+        let compressed =
+            oxiarc_lz4::compress_block(data).map_err(|e| CacheError::Compression(e.to_string()))?;
+        let orig_size = data.len() as i32;
+        let mut result = Vec::with_capacity(4 + compressed.len());
+        result.extend_from_slice(&orig_size.to_le_bytes());
+        result.extend_from_slice(&compressed);
+        Ok(Bytes::from(result))
     }
 
     /// Decompress with LZ4
     fn decompress_lz4(&self, data: &[u8]) -> Result<Bytes> {
-        lz4::block::decompress(data, None)
-            .map(Bytes::from)
-            .map_err(|e| CacheError::Decompression(e.to_string()))
+        // Data has 4-byte LE i32 size prefix followed by compressed block
+        if data.len() < 4 {
+            return Err(CacheError::Decompression("LZ4 data too short".to_string()));
+        }
+        let orig_size = i32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let decompressed = oxiarc_lz4::decompress_block(&data[4..], orig_size)
+            .map_err(|e| CacheError::Decompression(e.to_string()))?;
+        Ok(Bytes::from(decompressed))
     }
 
     /// Compress with Zstd
@@ -275,18 +284,12 @@ impl AdaptiveCompressor {
 
     /// Compress with Snappy
     fn compress_snappy(&self, data: &[u8]) -> Result<Bytes> {
-        let mut encoder = snap::raw::Encoder::new();
-        encoder
-            .compress_vec(data)
-            .map(Bytes::from)
-            .map_err(|e| CacheError::Compression(e.to_string()))
+        Ok(Bytes::from(oxiarc_snappy::compress(data)))
     }
 
     /// Decompress with Snappy
     fn decompress_snappy(&self, data: &[u8]) -> Result<Bytes> {
-        let mut decoder = snap::raw::Decoder::new();
-        decoder
-            .decompress_vec(data)
+        oxiarc_snappy::decompress(data)
             .map(Bytes::from)
             .map_err(|e| CacheError::Decompression(e.to_string()))
     }

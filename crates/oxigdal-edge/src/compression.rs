@@ -153,38 +153,38 @@ impl EdgeCompressor {
 
     /// Compress with LZ4
     fn compress_lz4(&self, data: &[u8]) -> Result<Bytes> {
-        let compressed = lz4::block::compress(
-            data,
-            Some(lz4::block::CompressionMode::FAST(self.level.lz4_level())),
-            true,
-        )
-        .map_err(|e| EdgeError::compression(e.to_string()))?;
-        Ok(Bytes::from(compressed))
+        // Compress with oxiarc-lz4 and prepend original size as 4-byte LE i32
+        let compressed = oxiarc_lz4::compress_block_with_accel(data, self.level.lz4_level())
+            .map_err(|e| EdgeError::compression(e.to_string()))?;
+        let orig_size = data.len() as i32;
+        let mut result = Vec::with_capacity(4 + compressed.len());
+        result.extend_from_slice(&orig_size.to_le_bytes());
+        result.extend_from_slice(&compressed);
+        Ok(Bytes::from(result))
     }
 
     /// Decompress with LZ4
     fn decompress_lz4(&self, data: &[u8]) -> Result<Bytes> {
-        let decompressed = lz4::block::decompress(data, None)
+        // Data has 4-byte LE i32 size prefix followed by compressed block
+        if data.len() < 4 {
+            return Err(EdgeError::decompression("LZ4 data too short".to_string()));
+        }
+        let orig_size = i32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let decompressed = oxiarc_lz4::decompress_block(&data[4..], orig_size)
             .map_err(|e| EdgeError::decompression(e.to_string()))?;
         Ok(Bytes::from(decompressed))
     }
 
     /// Compress with Snappy
     fn compress_snappy(&self, data: &[u8]) -> Result<Bytes> {
-        let mut encoder = snap::raw::Encoder::new();
-        let compressed = encoder
-            .compress_vec(data)
-            .map_err(|e| EdgeError::compression(e.to_string()))?;
-        Ok(Bytes::from(compressed))
+        Ok(Bytes::from(oxiarc_snappy::compress(data)))
     }
 
     /// Decompress with Snappy
     fn decompress_snappy(&self, data: &[u8]) -> Result<Bytes> {
-        let mut decoder = snap::raw::Decoder::new();
-        let decompressed = decoder
-            .decompress_vec(data)
-            .map_err(|e| EdgeError::decompression(e.to_string()))?;
-        Ok(Bytes::from(decompressed))
+        oxiarc_snappy::decompress(data)
+            .map(Bytes::from)
+            .map_err(|e| EdgeError::decompression(e.to_string()))
     }
 
     /// Compress with Deflate

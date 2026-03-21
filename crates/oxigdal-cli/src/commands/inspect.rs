@@ -12,10 +12,6 @@ pub struct InspectArgs {
     #[arg(value_name = "INPUT")]
     pub input: String,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
-    pub format: String,
-
     /// Show detailed information
     #[arg(long, short = 'd')]
     pub detailed: bool,
@@ -30,8 +26,8 @@ pub fn execute(_args: InspectArgs, _output_format: crate::OutputFormat) -> Resul
     // Placeholder for when oxigdal_dev_tools is available:
     // let inspector = FileInspector::new(&args.input)?;
     //
-    // match args.format.as_str() {
-    //     "json" => {
+    // match output_format {
+    //     crate::OutputFormat::Json => {
     //         let json = inspector.export_json()?;
     //         println!("{}", json);
     //     }

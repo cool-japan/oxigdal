@@ -4,7 +4,7 @@ use super::{ReplicationEvent, VectorClock};
 use crate::error::{HaError, HaResult};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+
 use uuid::Uuid;
 
 /// Replication protocol version.
@@ -262,19 +262,12 @@ pub fn compress_data(data: &[u8], algorithm: CompressionAlgorithm) -> HaResult<V
     match algorithm {
         CompressionAlgorithm::None => Ok(data.to_vec()),
         CompressionAlgorithm::Lz4 => {
-            let mut encoder = lz4::EncoderBuilder::new()
-                .level(4)
-                .build(Vec::new())
-                .map_err(|e| HaError::Compression(e.to_string()))?;
-
-            encoder
-                .write_all(data)
-                .map_err(|e| HaError::Compression(e.to_string()))?;
-
-            let (compressed, result) = encoder.finish();
-            result.map_err(|e| HaError::Compression(e.to_string()))?;
-
-            Ok(compressed)
+            // Use oxiarc-lz4 frame compression (Pure Rust)
+            let desc = oxiarc_lz4::FrameDescriptor::new()
+                .with_content_size(data.len() as u64)
+                .with_content_checksum(true);
+            oxiarc_lz4::compress_with_options(data, desc)
+                .map_err(|e| HaError::Compression(e.to_string()))
         }
         CompressionAlgorithm::Zstd => {
             oxiarc_zstd::encode_all(data, 3).map_err(|e| HaError::Compression(e.to_string()))
@@ -290,16 +283,10 @@ pub fn decompress_data(data: &[u8], algorithm: CompressionAlgorithm) -> HaResult
     match algorithm {
         CompressionAlgorithm::None => Ok(data.to_vec()),
         CompressionAlgorithm::Lz4 => {
-            use std::io::Read;
-            let mut decoder =
-                lz4::Decoder::new(data).map_err(|e| HaError::Decompression(e.to_string()))?;
-
-            let mut decompressed = Vec::new();
-            decoder
-                .read_to_end(&mut decompressed)
-                .map_err(|e| HaError::Decompression(e.to_string()))?;
-
-            Ok(decompressed)
+            // Use oxiarc-lz4 frame decompression (Pure Rust)
+            let max_output = data.len() * 10;
+            oxiarc_lz4::decompress(data, max_output)
+                .map_err(|e| HaError::Decompression(e.to_string()))
         }
         CompressionAlgorithm::Zstd => {
             oxiarc_zstd::decode_all(data).map_err(|e| HaError::Decompression(e.to_string()))

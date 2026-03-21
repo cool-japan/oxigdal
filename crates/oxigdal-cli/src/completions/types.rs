@@ -332,7 +332,7 @@ impl CompletionGenerator {
             subcommands: vec![
                 CommandDef { name : "hillshade", description :
                 "Generate hillshade from DEM", options : { let mut opts = vec![OptionDef
-                { short : Some("-z"), long : Some("--azimuth"), description :
+                { short : Some("-A"), long : Some("--azimuth"), description :
                 "Azimuth of light source (0-360 degrees)", takes_value : true,
                 possible_values : vec![], }, OptionDef { short : Some("-a"), long :
                 Some("--altitude"), description :

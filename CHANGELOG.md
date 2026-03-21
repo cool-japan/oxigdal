@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-21
+
+### Fixed
+- Fixed all wgpu 29 API breaking changes: `Instance::new` now takes `InstanceDescriptor` by value; `InstanceDescriptor` uses `new_without_display_handle()` instead of `Default::default()`; `bind_group_layouts` now `&[Option<&BindGroupLayout>]` — across all GPU and GPU-advanced crates including benchmarks
+- Fixed `libsqlite3-sys` version conflict: downgraded `rusqlite` 0.39→0.37 and `libsqlite3-sys` 0.37→0.35 for `proj-sys` compatibility
+- Fixed macOS `librocksdb-sys` dynamic library loading via `.cargo/config.toml` with `DYLD_LIBRARY_PATH`
+- Fixed 6 critical bugs in `oxiarc-brotli` (local patch via `[patch.crates-io]`):
+  - Encoder `write_window_bits` wrong bit pattern range and encoding
+  - Decoder `read_window_bits` incorrect bit-to-lgwin mapping
+  - Missing ISEMPTY=0 bit in `encode_meta_block` for non-empty last blocks
+  - `BrotliParams::validate()` incorrect lgwin range check
+  - `write_code_length_value` values 1 and 5 swapped
+  - Huffman decoder EOF/single-symbol edge cases causing "no matching code found" errors
+- Fixed `pipeline_builder.rs` clippy: `.map(|l| Some(l))` → `.map(Some)`
+
+### Changed
+- All compression/decompression now uses locally-patched `oxiarc-brotli` (via `[patch.crates-io]`)
+
 ## [0.1.2] - 2026-03-17
 
 ### Added

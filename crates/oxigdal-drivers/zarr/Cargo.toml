@@ -31,7 +31,7 @@ memory = []
 # Compression codecs
 gzip = ["dep:oxiarc-archive"]
 zstd = ["dep:oxiarc-zstd"]
-lz4 = ["dep:lz4"]
+lz4 = ["dep:oxiarc-lz4"]
 blosc = []  # Disabled for now - incompatible versions
 
 # Filters
@@ -61,7 +61,7 @@ once_cell.workspace = true
 # Compression
 oxiarc-archive = { workspace = true, optional = true }
 oxiarc-zstd = { workspace = true, optional = true }
-lz4 = { version = "1", optional = true }
+oxiarc-lz4 = { workspace = true, optional = true }
 
 # Blosc (disabled for now - incompatible versions)
 # blosc-src = { version = "0.3", optional = true }

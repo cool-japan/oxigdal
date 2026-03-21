@@ -130,8 +130,8 @@ pub enum CompressionError {
 // Errors are now returned as strings
 // Users should handle lz4 errors inline where they occur
 
-impl From<snap::Error> for CompressionError {
-    fn from(err: snap::Error) -> Self {
+impl From<oxiarc_snappy::SnappyError> for CompressionError {
+    fn from(err: oxiarc_snappy::SnappyError) -> Self {
         CompressionError::SnappyError(err.to_string())
     }
 }

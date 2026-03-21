@@ -193,7 +193,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     immediate_size: 0,
                     label: Some("Conv2D Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
+                    bind_group_layouts: &[Some(&bind_group_layout)],
                 });
 
         let pipeline =
@@ -323,7 +323,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     immediate_size: 0,
                     label: Some("Activation Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
+                    bind_group_layouts: &[Some(&bind_group_layout)],
                 });
 
         let pipeline =
@@ -617,7 +617,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     immediate_size: 0,
                     label: Some("BatchNorm Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
+                    bind_group_layouts: &[Some(&bind_group_layout)],
                 });
 
         let pipeline =
@@ -849,7 +849,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     immediate_size: 0,
                     label: Some("Pool2D Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
+                    bind_group_layouts: &[Some(&bind_group_layout)],
                 });
 
         let pipeline =
