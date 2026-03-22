@@ -384,7 +384,7 @@ pub fn write(
     let mut nodata_value = oxigdal_core::types::NoDataValue::None;
 
     if let Some(meta) = metadata {
-        if let Ok(dict) = meta.downcast::<PyDict>() {
+        if let Ok(dict) = meta.cast::<PyDict>() {
             // Extract geotransform
             if let Some(gt_list) = dict
                 .get_item("geotransform")

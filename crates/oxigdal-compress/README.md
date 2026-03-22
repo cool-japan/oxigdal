@@ -17,7 +17,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-compress = "0.1.2"
+oxigdal-compress = "0.1.3"
 ```
 
 ## Usage

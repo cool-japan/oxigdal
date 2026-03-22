@@ -28,9 +28,9 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 
 # Compression
-lz4 = { workspace = true }
+oxiarc-lz4 = { workspace = true }
 oxiarc-zstd = { workspace = true }
-snap.workspace = true
+oxiarc-snappy = { workspace = true }
 
 # Caching
 lru = { workspace = true }

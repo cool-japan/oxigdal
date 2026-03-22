@@ -172,7 +172,7 @@ pub fn write_shapefile(
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'features' field"))?;
 
         let features_list = features_obj
-            .downcast::<PyList>()
+            .cast::<PyList>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("'features' must be a list"))?;
 
         if features_list.is_empty() {
@@ -187,7 +187,7 @@ pub fn write_shapefile(
 
         for (idx, feature_item) in features_list.iter().enumerate() {
             let feature_dict = feature_item
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("Feature must be a dict"))?;
 
             let shapefile_feature = geojson_to_shapefile_feature(feature_dict, idx as i32 + 1)?;
@@ -395,7 +395,7 @@ fn geojson_to_shapefile_feature(
     let geometry = if let Some(geom_obj) = feature_dict.get_item("geometry").ok().flatten() {
         if !geom_obj.is_none() {
             let geom_dict = geom_obj
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("Geometry must be a dict"))?;
             Some(geojson_to_geometry(geom_dict)?)
         } else {
@@ -409,7 +409,7 @@ fn geojson_to_shapefile_feature(
     let mut attributes = HashMap::new();
     if let Some(props_obj) = feature_dict.get_item("properties").ok().flatten() {
         if !props_obj.is_none() {
-            let props_dict = props_obj.downcast::<PyDict>().map_err(|_| {
+            let props_dict = props_obj.cast::<PyDict>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("Properties must be a dict")
             })?;
 
@@ -448,7 +448,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
 
     match geom_type.as_str() {
         "Point" => {
-            let coords_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let coords_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("Point coordinates must be a list")
             })?;
             let x: f64 = coords_list.get_item(0)?.extract()?;
@@ -456,7 +456,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             Ok(Geometry::Point(Point::new(x, y)))
         }
         "LineString" => {
-            let coords_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let coords_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("LineString coordinates must be a list")
             })?;
             let coords = extract_coords_from_list(coords_list)?;
@@ -466,7 +466,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             Ok(Geometry::LineString(linestring))
         }
         "Polygon" => {
-            let rings_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let rings_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err(
                     "Polygon coordinates must be a list of rings",
                 )
@@ -481,7 +481,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             // Exterior ring
             let ext_item = rings_list.get_item(0)?;
             let ext_list = ext_item
-                .downcast::<PyList>()
+                .cast::<PyList>()
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list"))?;
             let ext_coords = extract_coords_from_list(ext_list)?;
             let exterior = LineString::new(ext_coords).map_err(|e| {
@@ -493,7 +493,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             for i in 1..rings_list.len() {
                 let int_item = rings_list.get_item(i)?;
                 let int_list = int_item
-                    .downcast::<PyList>()
+                    .cast::<PyList>()
                     .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list"))?;
                 let int_coords = extract_coords_from_list(int_list)?;
                 let interior = LineString::new(int_coords).map_err(|e| {
@@ -508,13 +508,13 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             Ok(Geometry::Polygon(polygon))
         }
         "MultiPoint" => {
-            let points_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let points_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("MultiPoint coordinates must be a list")
             })?;
 
             let mut points = Vec::new();
             for item in points_list.iter() {
-                let coord_list = item.downcast::<PyList>().map_err(|_| {
+                let coord_list = item.cast::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyValueError::new_err("Point coordinate must be a list")
                 })?;
                 let x: f64 = coord_list.get_item(0)?.extract()?;
@@ -525,7 +525,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             Ok(Geometry::MultiPoint(MultiPoint::new(points)))
         }
         "MultiLineString" => {
-            let lines_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let lines_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err(
                     "MultiLineString coordinates must be a list",
                 )
@@ -533,7 +533,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
 
             let mut linestrings = Vec::new();
             for item in lines_list.iter() {
-                let coords_list = item.downcast::<PyList>().map_err(|_| {
+                let coords_list = item.cast::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyValueError::new_err("LineString coordinates must be a list")
                 })?;
                 let coords = extract_coords_from_list(coords_list)?;
@@ -546,13 +546,13 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
             Ok(Geometry::MultiLineString(MultiLineString::new(linestrings)))
         }
         "MultiPolygon" => {
-            let polys_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let polys_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("MultiPolygon coordinates must be a list")
             })?;
 
             let mut polygons = Vec::new();
             for poly_item in polys_list.iter() {
-                let rings_list = poly_item.downcast::<PyList>().map_err(|_| {
+                let rings_list = poly_item.cast::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyValueError::new_err("Polygon rings must be a list")
                 })?;
 
@@ -563,7 +563,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
                 // Exterior ring
                 let ext_item = rings_list.get_item(0)?;
                 let ext_list = ext_item
-                    .downcast::<PyList>()
+                    .cast::<PyList>()
                     .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list"))?;
                 let ext_coords = extract_coords_from_list(ext_list)?;
                 let exterior = LineString::new(ext_coords).map_err(|e| {
@@ -574,7 +574,7 @@ fn geojson_to_geometry(geom_dict: &Bound<'_, PyDict>) -> PyResult<Geometry> {
                 let mut interiors = Vec::new();
                 for i in 1..rings_list.len() {
                     let int_item = rings_list.get_item(i)?;
-                    let int_list = int_item.downcast::<PyList>().map_err(|_| {
+                    let int_list = int_item.cast::<PyList>().map_err(|_| {
                         pyo3::exceptions::PyValueError::new_err("Ring must be a list")
                     })?;
                     let int_coords = extract_coords_from_list(int_list)?;
@@ -612,7 +612,7 @@ fn extract_coords_from_list(
     let mut coords = Vec::new();
     for item in list.iter() {
         let coord_list = item
-            .downcast::<PyList>()
+            .cast::<PyList>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("Coordinate must be a list"))?;
 
         if coord_list.len() < 2 {

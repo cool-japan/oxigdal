@@ -334,14 +334,14 @@ pub fn clip_by_bbox<'py>(
     let max_y = bbox[3];
 
     // Try to interpret as a FeatureCollection dict
-    if let Ok(dict) = geometries.downcast::<PyDict>() {
+    if let Ok(dict) = geometries.cast::<PyDict>() {
         if let Ok(Some(features_obj)) = dict.get_item("features") {
-            if let Ok(features_list) = features_obj.downcast::<PyList>() {
+            if let Ok(features_list) = features_obj.cast::<PyList>() {
                 let result = PyList::empty(py);
                 for feature_item in features_list.iter() {
-                    if let Ok(feature_dict) = feature_item.downcast::<PyDict>() {
+                    if let Ok(feature_dict) = feature_item.cast::<PyDict>() {
                         if let Ok(Some(geom_obj)) = feature_dict.get_item("geometry") {
-                            if let Ok(geom_dict) = geom_obj.downcast::<PyDict>() {
+                            if let Ok(geom_dict) = geom_obj.cast::<PyDict>() {
                                 let geom_bbox = envelope(geom_dict)?;
                                 // Check if geometry bbox intersects with clip bbox
                                 if geom_bbox[2] >= min_x
@@ -361,10 +361,10 @@ pub fn clip_by_bbox<'py>(
     }
 
     // Try as list of geometries
-    if let Ok(list) = geometries.downcast::<PyList>() {
+    if let Ok(list) = geometries.cast::<PyList>() {
         let result = PyList::empty(py);
         for item in list.iter() {
-            if let Ok(geom_dict) = item.downcast::<PyDict>() {
+            if let Ok(geom_dict) = item.cast::<PyDict>() {
                 let geom_bbox = envelope(geom_dict)?;
                 if geom_bbox[2] >= min_x
                     && geom_bbox[0] <= max_x
@@ -400,7 +400,7 @@ pub fn merge_polygons<'py>(
     let mut polys = Vec::new();
     for item in polygons.iter() {
         let dict = item
-            .downcast::<PyDict>()
+            .cast::<PyDict>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("Each polygon must be a dict"))?;
         polys.push(parse_geojson_polygon(dict)?);
     }
@@ -439,7 +439,7 @@ pub fn dissolve<'py>(
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("Missing 'features' field"))?
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'features' field"))?;
     let features_list = features_obj
-        .downcast::<PyList>()
+        .cast::<PyList>()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("'features' must be a list"))?;
 
     // Group features by attribute value
@@ -448,12 +448,12 @@ pub fn dissolve<'py>(
 
     for feature_item in features_list.iter() {
         let feature_dict = feature_item
-            .downcast::<PyDict>()
+            .cast::<PyDict>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("Feature must be a dict"))?;
 
         // Get attribute value from properties
         let attr_val = if let Ok(Some(props_obj)) = feature_dict.get_item("properties") {
-            if let Ok(props_dict) = props_obj.downcast::<PyDict>() {
+            if let Ok(props_dict) = props_obj.cast::<PyDict>() {
                 if let Ok(Some(val_obj)) = props_dict.get_item(attribute) {
                     val_obj.str().map(|s| s.to_string()).unwrap_or_default()
                 } else {
@@ -468,7 +468,7 @@ pub fn dissolve<'py>(
 
         // Parse geometry
         if let Ok(Some(geom_obj)) = feature_dict.get_item("geometry") {
-            if let Ok(geom_dict) = geom_obj.downcast::<PyDict>() {
+            if let Ok(geom_dict) = geom_obj.cast::<PyDict>() {
                 if let Ok(polygon) = parse_geojson_polygon(geom_dict) {
                     groups.entry(attr_val).or_default().push(polygon);
                 }

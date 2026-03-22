@@ -1,0 +1,43 @@
+# cargo-audit configuration for oxigdal
+#
+# This file suppresses known advisories that are transitive dependencies
+# and cannot be fixed by the oxigdal project directly.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0089: `atomic-polyfill` - unsound
+    # Transitive dependency via heapless/proj. Cannot be fixed upstream by us.
+    "RUSTSEC-2023-0089",
+
+    # RUSTSEC-2025-0057: `fxhash` - use-after-free
+    # Transitive dependency via sled/mqtt. Cannot be fixed upstream by us.
+    "RUSTSEC-2025-0057",
+
+    # RUSTSEC-2024-0384: `instant` - unmaintained
+    # Transitive dependency via sled/azure_core. Cannot be fixed upstream by us.
+    "RUSTSEC-2024-0384",
+
+    # RUSTSEC-2022-0081: `json` - unmaintained
+    # Transitive dependency via evcxr/jupyter. Cannot be fixed upstream by us.
+    "RUSTSEC-2022-0081",
+
+    # RUSTSEC-2024-0436: `paste` - unsound
+    # Transitive dependency via nalgebra/scirs2. Cannot be fixed upstream by us.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2025-0134: `rustls-pemfile` - unmaintained
+    # Transitive dependency via tonic/rumqttc. Cannot be fixed upstream by us.
+    "RUSTSEC-2025-0134",
+
+    # RUSTSEC-2026-0044: `aws-lc-sys` - X.509 Name Constraints Bypass
+    # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0044",
+
+    # RUSTSEC-2026-0048: `aws-lc-sys` - CRL Distribution Point Scope Check
+    # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0048",
+
+    # RUSTSEC-2026-0049: `rustls-webpki` - CRLs not authoritative for all name types
+    # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0049",
+]

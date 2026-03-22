@@ -22,8 +22,8 @@ pub struct ConvertArgs {
     output: PathBuf,
 
     /// Output format (auto-detected from extension if not specified)
-    #[arg(short = 'f', long)]
-    format: Option<String>,
+    #[arg(short = 'f', long = "target-format")]
+    target_format: Option<String>,
 
     /// Tile size for COG output
     #[arg(short, long, default_value = "512")]
@@ -105,7 +105,7 @@ pub fn execute(args: ConvertArgs, format: OutputFormat) -> Result<()> {
     // Detect formats
     let input_format = detect_format(&args.input)?;
     let output_format = args
-        .format
+        .target_format
         .as_deref()
         .or_else(|| detect_format(&args.output).ok())
         .ok_or_else(|| anyhow::anyhow!("Cannot detect output format"))?;

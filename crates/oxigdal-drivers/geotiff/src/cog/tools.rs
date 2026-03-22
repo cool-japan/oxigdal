@@ -79,7 +79,7 @@ pub fn analyze_file_for_cog(path: impl AsRef<str>) -> Result<super::optimizer::C
             parameter: "ImageWidth",
             message: "Missing required ImageWidth tag".to_string(),
         })?
-        .get_u64(tiff.byte_order())?;
+        .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
     let height = ifd
         .get_entry(crate::tiff::TiffTag::ImageLength)
@@ -87,7 +87,7 @@ pub fn analyze_file_for_cog(path: impl AsRef<str>) -> Result<super::optimizer::C
             parameter: "ImageLength",
             message: "Missing required ImageLength tag".to_string(),
         })?
-        .get_u64(tiff.byte_order())?;
+        .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
     // Placeholder data for analysis
     let data_type = RasterDataType::UInt8;
@@ -129,7 +129,10 @@ pub fn estimate_storage_cost(
 
     let tile_width = ifd
         .get_entry(crate::tiff::TiffTag::TileWidth)
-        .and_then(|e: &_| e.get_u64(tiff.byte_order()).ok())
+        .and_then(|e: &_| {
+            e.get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)
+                .ok()
+        })
         .unwrap_or(512);
 
     // Estimate compression ratio
@@ -237,7 +240,7 @@ pub fn get_cog_info(path: impl AsRef<str>) -> Result<CogInfo> {
             parameter: "ImageWidth",
             message: "Missing required ImageWidth tag".to_string(),
         })?
-        .get_u64(tiff.byte_order())?;
+        .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
     let height = ifd
         .get_entry(crate::tiff::TiffTag::ImageLength)
@@ -245,16 +248,22 @@ pub fn get_cog_info(path: impl AsRef<str>) -> Result<CogInfo> {
             parameter: "ImageLength",
             message: "Missing required ImageLength tag".to_string(),
         })?
-        .get_u64(tiff.byte_order())?;
+        .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
     let tile_width = ifd
         .get_entry(crate::tiff::TiffTag::TileWidth)
-        .and_then(|e: &_| e.get_u64(tiff.byte_order()).ok())
+        .and_then(|e: &_| {
+            e.get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)
+                .ok()
+        })
         .map(|v| v as u32);
 
     let tile_height = ifd
         .get_entry(crate::tiff::TiffTag::TileLength)
-        .and_then(|e: &_| e.get_u64(tiff.byte_order()).ok())
+        .and_then(|e: &_| {
+            e.get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)
+                .ok()
+        })
         .map(|v| v as u32);
 
     let tile_size = match (tile_width, tile_height) {
@@ -264,7 +273,11 @@ pub fn get_cog_info(path: impl AsRef<str>) -> Result<CogInfo> {
 
     let compression_val: u16 = ifd
         .get_entry(crate::tiff::TiffTag::Compression)
-        .and_then(|e: &crate::tiff::IfdEntry| e.get_u64(tiff.byte_order()).ok().map(|v| v as u16))
+        .and_then(|e: &crate::tiff::IfdEntry| {
+            e.get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)
+                .ok()
+                .map(|v| v as u16)
+        })
         .unwrap_or(1);
 
     let compression = Compression::from_u16(compression_val).unwrap_or(Compression::None);

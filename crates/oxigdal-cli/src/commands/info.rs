@@ -8,6 +8,7 @@ use console::style;
 use oxigdal_core::{io::FileDataSource, types::RasterDataType};
 use oxigdal_geojson::GeoJsonReader;
 use oxigdal_geotiff::GeoTiffReader;
+use oxigdal_shapefile::ShapefileReader;
 use serde::Serialize;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -122,8 +123,21 @@ pub fn execute(args: InfoArgs, format: OutputFormat) -> Result<()> {
                 vector_info: Some(vector_info),
             }
         }
+        "Shapefile" => {
+            let vector_info = read_shapefile_info(&args)?;
+            FileInfo {
+                file_path: args.input.display().to_string(),
+                file_size,
+                format: detected_format.to_string(),
+                raster_info: None,
+                vector_info: Some(vector_info),
+            }
+        }
         _ => {
-            anyhow::bail!("Unsupported format: {}", detected_format);
+            anyhow::bail!(
+                "Format detected but info display not yet implemented for: {}",
+                detected_format
+            );
         }
     };
 
@@ -236,6 +250,69 @@ fn read_geojson_info(args: &InfoArgs) -> Result<VectorInfo> {
         .crs
         .as_ref()
         .map(|crs| format!("{:?}", crs));
+
+    Ok(VectorInfo {
+        layer_count: 1,
+        feature_count,
+        geometry_type,
+        bounds,
+        crs,
+    })
+}
+
+fn read_shapefile_info(args: &InfoArgs) -> Result<VectorInfo> {
+    let reader = ShapefileReader::open(&args.input)
+        .with_context(|| format!("Failed to open Shapefile: {}", args.input.display()))?;
+
+    let header = reader.header();
+
+    // Get geometry type from shapefile header
+    let geometry_type = format!("{:?}", header.shape_type);
+
+    // Get bounding box from header
+    let bbox = &header.bbox;
+    let bounds = Some(Bounds {
+        min_x: bbox.x_min,
+        min_y: bbox.y_min,
+        max_x: bbox.x_max,
+        max_y: bbox.y_max,
+    });
+
+    // Get feature count from index entries or by reading features
+    let feature_count = if let Some(entries) = reader.index_entries() {
+        entries.len()
+    } else {
+        // Fall back to reading features to count them
+        reader
+            .read_features()
+            .map(|f| f.len())
+            .with_context(|| "Failed to read Shapefile features for counting")?
+    };
+
+    // Get field information
+    let fields = reader.field_descriptors();
+    let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+
+    // Check for .prj file for CRS info
+    let prj_path = args.input.with_extension("prj");
+    let crs = if prj_path.exists() {
+        fs::read_to_string(&prj_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    };
+
+    // Log field info if metadata requested (displayed in text output)
+    if args.metadata && !field_names.is_empty() {
+        println!("\n{}", console::style("Attribute Fields").bold().cyan());
+        for field in fields {
+            println!(
+                "  {} ({:?}, length: {}, decimals: {})",
+                field.name, field.field_type, field.length, field.decimal_count
+            );
+        }
+    }
 
     Ok(VectorInfo {
         layer_count: 1,

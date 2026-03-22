@@ -11,9 +11,9 @@ fn benchmark_adaptive_selection(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
     rt.block_on(async {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let adapter = match instance
@@ -85,9 +85,9 @@ fn benchmark_profiling_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
     rt.block_on(async {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let adapter = match instance
@@ -159,9 +159,9 @@ fn benchmark_memory_compaction(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
     rt.block_on(async {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let adapter = match instance

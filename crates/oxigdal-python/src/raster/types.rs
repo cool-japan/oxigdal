@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 /// Metadata for raster datasets exposed to Python
-#[pyclass(name = "RasterMetadata")]
+#[pyclass(name = "RasterMetadata", from_py_object)]
 #[derive(Clone)]
 pub struct RasterMetadataPy {
     /// Width in pixels
@@ -161,7 +161,7 @@ impl RasterMetadataPy {
 }
 
 /// Window specification for reading sub-regions
-#[pyclass(name = "Window")]
+#[pyclass(name = "Window", from_py_object)]
 #[derive(Clone)]
 pub struct WindowPy {
     #[pyo3(get, set)]

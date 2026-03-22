@@ -39,7 +39,7 @@ pub(super) fn extract_ring_from_pylist(list: &Bound<'_, PyList>) -> PyResult<Vec
     let mut coords = Vec::with_capacity(list.len());
     for item in list.iter() {
         let coord_list = item
-            .downcast::<PyList>()
+            .cast::<PyList>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("Expected list of coordinates"))?;
         coords.push(extract_coord_from_pylist(coord_list)?);
     }
@@ -53,7 +53,7 @@ pub(super) fn parse_geojson_point(geometry: &Bound<'_, PyDict>) -> PyResult<Poin
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field"))?
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field"))?;
     let coords_list = coords_obj
-        .downcast::<PyList>()
+        .cast::<PyList>()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list"))?;
     let coord = extract_coord_from_pylist(coords_list)?;
     Ok(Point::from_coord(coord))
@@ -66,7 +66,7 @@ pub(super) fn parse_geojson_linestring(geometry: &Bound<'_, PyDict>) -> PyResult
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field"))?
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field"))?;
     let coords_list = coords_obj
-        .downcast::<PyList>()
+        .cast::<PyList>()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list"))?;
     let coords = extract_ring_from_pylist(coords_list)?;
     LineString::new(coords)
@@ -79,7 +79,7 @@ pub(super) fn parse_geojson_polygon(geometry: &Bound<'_, PyDict>) -> PyResult<Po
         .get_item("coordinates")
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field"))?
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field"))?;
-    let rings_list = coords_obj.downcast::<PyList>().map_err(|_| {
+    let rings_list = coords_obj.cast::<PyList>().map_err(|_| {
         pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list of rings")
     })?;
 
@@ -92,7 +92,7 @@ pub(super) fn parse_geojson_polygon(geometry: &Bound<'_, PyDict>) -> PyResult<Po
     // First ring is exterior
     let ext_list = rings_list
         .get_item(0)?
-        .downcast::<PyList>()
+        .cast::<PyList>()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list of coordinates"))?
         .clone();
     let ext_coords = extract_ring_from_pylist(&ext_list)?;
@@ -105,7 +105,7 @@ pub(super) fn parse_geojson_polygon(geometry: &Bound<'_, PyDict>) -> PyResult<Po
     for i in 1..rings_list.len() {
         let hole_list = rings_list
             .get_item(i)?
-            .downcast::<PyList>()
+            .cast::<PyList>()
             .map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("Ring must be a list of coordinates")
             })?
@@ -136,41 +136,41 @@ pub(super) fn extract_all_coordinates(geometry: &Bound<'_, PyDict>) -> PyResult<
 
     match geom_type.as_str() {
         "Point" => {
-            let list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
             Ok(vec![extract_coord_from_pylist(list)?])
         }
         "MultiPoint" | "LineString" => {
-            let list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
             extract_ring_from_pylist(list)
         }
         "MultiLineString" | "Polygon" => {
-            let rings = coords_obj.downcast::<PyList>().map_err(|_| {
+            let rings = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
             let mut all = Vec::new();
             for ring_item in rings.iter() {
                 let ring = ring_item
-                    .downcast::<PyList>()
+                    .cast::<PyList>()
                     .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list"))?;
                 all.extend(extract_ring_from_pylist(ring)?);
             }
             Ok(all)
         }
         "MultiPolygon" => {
-            let polys = coords_obj.downcast::<PyList>().map_err(|_| {
+            let polys = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
             let mut all = Vec::new();
             for poly_item in polys.iter() {
-                let rings = poly_item.downcast::<PyList>().map_err(|_| {
+                let rings = poly_item.cast::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyValueError::new_err("Polygon rings must be a list")
                 })?;
                 for ring_item in rings.iter() {
-                    let ring = ring_item.downcast::<PyList>().map_err(|_| {
+                    let ring = ring_item.cast::<PyList>().map_err(|_| {
                         pyo3::exceptions::PyValueError::new_err("Ring must be a list")
                     })?;
                     all.extend(extract_ring_from_pylist(ring)?);
@@ -325,7 +325,7 @@ pub(super) fn transform_geojson_coords<'py>(
                 .get_item("coordinates")
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates'"))?
                 .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates'"))?;
-            let rings = coords_obj.downcast::<PyList>().map_err(|_| {
+            let rings = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
 
@@ -333,7 +333,7 @@ pub(super) fn transform_geojson_coords<'py>(
             let mut offset = 0;
             for ring_item in rings.iter() {
                 let ring = ring_item
-                    .downcast::<PyList>()
+                    .cast::<PyList>()
                     .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list"))?;
                 let ring_len = ring.len();
                 let end = (offset + ring_len).min(transformed_coords.len());
@@ -348,19 +348,19 @@ pub(super) fn transform_geojson_coords<'py>(
                 .get_item("coordinates")
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates'"))?
                 .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Missing 'coordinates'"))?;
-            let polys = coords_obj.downcast::<PyList>().map_err(|_| {
+            let polys = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
 
             let polys_result = PyList::empty(py);
             let mut offset = 0;
             for poly_item in polys.iter() {
-                let rings = poly_item.downcast::<PyList>().map_err(|_| {
+                let rings = poly_item.cast::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyValueError::new_err("Polygon rings must be a list")
                 })?;
                 let rings_result = PyList::empty(py);
                 for ring_item in rings.iter() {
-                    let ring = ring_item.downcast::<PyList>().map_err(|_| {
+                    let ring = ring_item.cast::<PyList>().map_err(|_| {
                         pyo3::exceptions::PyValueError::new_err("Ring must be a list")
                     })?;
                     let ring_len = ring.len();
@@ -566,13 +566,13 @@ pub(super) fn python_value_to_json(value: &Bound<'_, PyAny>) -> PyResult<JsonVal
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Invalid float value"))
     } else if let Ok(s) = value.extract::<String>() {
         Ok(JsonValue::String(s))
-    } else if let Ok(list) = value.downcast::<PyList>() {
+    } else if let Ok(list) = value.cast::<PyList>() {
         let mut arr = Vec::new();
         for item in list.iter() {
             arr.push(python_value_to_json(&item)?);
         }
         Ok(JsonValue::Array(arr))
-    } else if let Ok(nested_dict) = value.downcast::<PyDict>() {
+    } else if let Ok(nested_dict) = value.cast::<PyDict>() {
         python_to_json(nested_dict)
     } else {
         Err(pyo3::exceptions::PyValueError::new_err(

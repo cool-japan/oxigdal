@@ -68,7 +68,7 @@ getrandom.workspace = true
 oxiarc-deflate = { workspace = true }
 oxiarc-archive = { workspace = true }
 async-stream.workspace = true
-brotli.workspace = true
+oxiarc-brotli = { workspace = true }
 
 # Logging
 tracing.workspace = true

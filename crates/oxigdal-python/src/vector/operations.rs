@@ -345,7 +345,7 @@ pub fn area(geometry: &Bound<'_, PyDict>, geodesic: bool) -> PyResult<f64> {
                 .ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field")
                 })?;
-            let polys_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let polys_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
 
@@ -421,14 +421,14 @@ pub fn length(geometry: &Bound<'_, PyDict>, geodesic: bool) -> PyResult<f64> {
                 .ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field")
                 })?;
-            let lines_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let lines_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
 
             let mut total_length = 0.0;
             for line_item in lines_list.iter() {
                 let ring_list = line_item
-                    .downcast::<PyList>()
+                    .cast::<PyList>()
                     .map_err(|_| pyo3::exceptions::PyValueError::new_err("Ring must be a list"))?;
                 let coords = extract_ring_from_pylist(ring_list)?;
                 if geodesic {
@@ -465,17 +465,17 @@ pub fn length(geometry: &Bound<'_, PyDict>, geodesic: bool) -> PyResult<f64> {
                 .ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err("Missing 'coordinates' field")
                 })?;
-            let polys_list = coords_obj.downcast::<PyList>().map_err(|_| {
+            let polys_list = coords_obj.cast::<PyList>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err("'coordinates' must be a list")
             })?;
 
             let mut total = 0.0;
             for poly_item in polys_list.iter() {
-                let rings = poly_item.downcast::<PyList>().map_err(|_| {
+                let rings = poly_item.cast::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyValueError::new_err("Polygon rings must be a list")
                 })?;
                 for ring_item in rings.iter() {
-                    let ring = ring_item.downcast::<PyList>().map_err(|_| {
+                    let ring = ring_item.cast::<PyList>().map_err(|_| {
                         pyo3::exceptions::PyValueError::new_err("Ring must be a list")
                     })?;
                     let coords = extract_ring_from_pylist(ring)?;

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use wgpu::BufferUsages;
 
 async fn create_test_device() -> Option<Arc<wgpu::Device>> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = instance

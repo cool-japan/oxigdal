@@ -9,7 +9,7 @@ use pyo3::exceptions::{
 use pyo3::prelude::*;
 
 /// Python exception type for OxiGDAL errors
-#[pyclass(name = "OxiGdalError")]
+#[pyclass(name = "OxiGdalError", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct OxiGdalPyError {
     #[pyo3(get, set)]

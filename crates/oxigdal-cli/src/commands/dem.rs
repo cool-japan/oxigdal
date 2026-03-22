@@ -72,7 +72,7 @@ struct HillshadeArgs {
     output: PathBuf,
 
     /// Azimuth of light source (0-360 degrees)
-    #[arg(short = 'z', long, default_value = "315.0")]
+    #[arg(short = 'A', long, default_value = "315.0")]
     azimuth: f64,
 
     /// Altitude of light source (0-90 degrees)

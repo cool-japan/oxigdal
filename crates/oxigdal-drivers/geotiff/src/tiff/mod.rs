@@ -137,22 +137,21 @@ impl ImageInfo {
             .ok_or(OxiGdalError::Format(FormatError::MissingTag {
                 tag: "ImageWidth",
             }))?
-            .get_u64(byte_order)?;
+            .get_u64_from_source(source, byte_order, variant)?;
 
         let height = ifd
             .get_entry(TiffTag::ImageLength)
             .ok_or(OxiGdalError::Format(FormatError::MissingTag {
                 tag: "ImageLength",
             }))?
-            .get_u64(byte_order)?;
+            .get_u64_from_source(source, byte_order, variant)?;
 
         // BitsPerSample (default: 1)
         let bits_per_sample = if let Some(entry) = ifd.get_entry(TiffTag::BitsPerSample) {
             entry
-                .get_u64_vec(source, byte_order, variant)?
-                .into_iter()
-                .map(|v| v as u16)
-                .collect()
+                .get_u64_vec(source, byte_order, variant)
+                .map(|v| v.into_iter().map(|x| x as u16).collect())
+                .unwrap_or_else(|_| vec![1])
         } else {
             vec![1]
         };
@@ -160,15 +159,21 @@ impl ImageInfo {
         // SamplesPerPixel (default: 1)
         let samples_per_pixel = ifd
             .get_entry(TiffTag::SamplesPerPixel)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u16))
-            .transpose()?
+            .and_then(|e| {
+                e.get_u64_from_source(source, byte_order, variant)
+                    .map(|v| v as u16)
+                    .ok()
+            })
             .unwrap_or(1);
 
         // SampleFormat (default: unsigned integer)
         let sample_format_raw = ifd
             .get_entry(TiffTag::SampleFormat)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u16))
-            .transpose()?
+            .and_then(|e| {
+                e.get_u64_from_source(source, byte_order, variant)
+                    .map(|v| v as u16)
+                    .ok()
+            })
             .unwrap_or(1);
         let sample_format =
             SampleFormat::from_u16(sample_format_raw).unwrap_or(SampleFormat::UnsignedInteger);
@@ -176,16 +181,22 @@ impl ImageInfo {
         // Compression (default: none)
         let compression_raw = ifd
             .get_entry(TiffTag::Compression)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u16))
-            .transpose()?
+            .and_then(|e| {
+                e.get_u64_from_source(source, byte_order, variant)
+                    .map(|v| v as u16)
+                    .ok()
+            })
             .unwrap_or(1);
         let compression = Compression::from_u16(compression_raw).unwrap_or(Compression::None);
 
         // PhotometricInterpretation
         let photometric_raw = ifd
             .get_entry(TiffTag::PhotometricInterpretation)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u16))
-            .transpose()?
+            .and_then(|e| {
+                e.get_u64_from_source(source, byte_order, variant)
+                    .map(|v| v as u16)
+                    .ok()
+            })
             .unwrap_or(1);
         let photometric = PhotometricInterpretation::from_u16(photometric_raw)
             .unwrap_or(PhotometricInterpretation::BlackIsZero);
@@ -193,33 +204,42 @@ impl ImageInfo {
         // PlanarConfiguration (default: chunky)
         let planar_raw = ifd
             .get_entry(TiffTag::PlanarConfiguration)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u16))
-            .transpose()?
+            .and_then(|e| {
+                e.get_u64_from_source(source, byte_order, variant)
+                    .map(|v| v as u16)
+                    .ok()
+            })
             .unwrap_or(1);
         let planar_config =
             PlanarConfiguration::from_u16(planar_raw).unwrap_or(PlanarConfiguration::Chunky);
 
-        // Tile dimensions (optional)
-        let tile_width = ifd
-            .get_entry(TiffTag::TileWidth)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u32))
-            .transpose()?;
-        let tile_height = ifd
-            .get_entry(TiffTag::TileLength)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u32))
-            .transpose()?;
+        // Tile dimensions (optional - skip gracefully if unreadable)
+        let tile_width = ifd.get_entry(TiffTag::TileWidth).and_then(|e| {
+            e.get_u64_from_source(source, byte_order, variant)
+                .map(|v| v as u32)
+                .ok()
+        });
+        let tile_height = ifd.get_entry(TiffTag::TileLength).and_then(|e| {
+            e.get_u64_from_source(source, byte_order, variant)
+                .map(|v| v as u32)
+                .ok()
+        });
 
-        // Rows per strip (for striped images)
-        let rows_per_strip = ifd
-            .get_entry(TiffTag::RowsPerStrip)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u32))
-            .transpose()?;
+        // Rows per strip (for striped images - skip gracefully if unreadable)
+        let rows_per_strip = ifd.get_entry(TiffTag::RowsPerStrip).and_then(|e| {
+            e.get_u64_from_source(source, byte_order, variant)
+                .map(|v| v as u32)
+                .ok()
+        });
 
         // Predictor (default: none)
         let predictor_raw = ifd
             .get_entry(TiffTag::Predictor)
-            .map(|e| e.get_u64(byte_order).map(|v| v as u16))
-            .transpose()?
+            .and_then(|e| {
+                e.get_u64_from_source(source, byte_order, variant)
+                    .map(|v| v as u16)
+                    .ok()
+            })
             .unwrap_or(1);
         let predictor = Predictor::from_u16(predictor_raw).unwrap_or(Predictor::None);
 

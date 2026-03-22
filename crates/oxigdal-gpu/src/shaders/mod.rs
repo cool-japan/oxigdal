@@ -97,7 +97,7 @@ pub struct ComputePipelineBuilder<'a> {
     device: &'a Device,
     shader: &'a ShaderModule,
     entry_point: String,
-    bind_group_layouts: Vec<&'a BindGroupLayout>,
+    bind_group_layouts: Vec<Option<&'a BindGroupLayout>>,
     label: Option<String>,
 }
 
@@ -119,7 +119,7 @@ impl<'a> ComputePipelineBuilder<'a> {
 
     /// Add a bind group layout.
     pub fn bind_group_layout(mut self, layout: &'a BindGroupLayout) -> Self {
-        self.bind_group_layouts.push(layout);
+        self.bind_group_layouts.push(Some(layout));
         self
     }
 

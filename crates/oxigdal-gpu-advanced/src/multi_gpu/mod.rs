@@ -203,9 +203,9 @@ impl MultiGpuManager {
 
     /// Enumerate all available GPU devices
     async fn enumerate_devices() -> Result<Vec<Arc<GpuDevice>>> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let mut devices = Vec::new();

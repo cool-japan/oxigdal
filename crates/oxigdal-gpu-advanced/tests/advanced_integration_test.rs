@@ -45,9 +45,9 @@ async fn test_kernel_registry_integration() {
 
 #[tokio::test]
 async fn test_adaptive_pipeline_integration() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -118,9 +118,9 @@ async fn test_adaptive_pipeline_integration() {
 
 #[tokio::test]
 async fn test_memory_profiling_integration() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -181,9 +181,9 @@ async fn test_memory_profiling_integration() {
 
 #[tokio::test]
 async fn test_pipeline_with_profiling() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance
@@ -281,9 +281,9 @@ async fn test_pipeline_with_profiling() {
 
 #[tokio::test]
 async fn test_multi_stage_pipeline() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = match instance

@@ -74,7 +74,7 @@ pub struct CogValidation {
 }
 
 /// Validates that a TIFF file is COG-compliant
-pub fn validate_cog<S: DataSource>(tiff: &TiffFile, _source: &S) -> CogValidation {
+pub fn validate_cog<S: DataSource>(tiff: &TiffFile, source: &S) -> CogValidation {
     let mut messages = Vec::new();
     let mut is_valid = true;
 
@@ -94,8 +94,8 @@ pub fn validate_cog<S: DataSource>(tiff: &TiffFile, _source: &S) -> CogValidatio
             ifd.get_entry(TiffTag::TileLength),
         ) {
             if let (Ok(tw), Ok(th)) = (
-                tw_entry.get_u64(tiff.byte_order()),
-                th_entry.get_u64(tiff.byte_order()),
+                tw_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
+                th_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
             ) {
                 if !tw.is_power_of_two() {
                     messages.push(format!("Tile width {} is not a power of 2", tw));
@@ -123,11 +123,11 @@ pub fn validate_cog<S: DataSource>(tiff: &TiffFile, _source: &S) -> CogValidatio
         .filter_map(|ifd| {
             let w = ifd
                 .get_entry(TiffTag::ImageWidth)?
-                .get_u64(tiff.byte_order())
+                .get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                 .ok()?;
             let h = ifd
                 .get_entry(TiffTag::ImageLength)?
-                .get_u64(tiff.byte_order())
+                .get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                 .ok()?;
             Some(w * h)
         })
@@ -179,15 +179,18 @@ impl<S: DataSource> CogReader<S> {
         // Parse primary image info
         let primary_info = ImageInfo::from_ifd(&tiff.ifds[0], &source, byte_order, variant)?;
 
-        // Parse overview infos
+        // Parse overview infos (best-effort: skip overviews that fail to parse)
         let mut overview_infos = Vec::new();
         for ifd in tiff.ifds.iter().skip(1) {
-            let info = ImageInfo::from_ifd(ifd, &source, byte_order, variant)?;
-            overview_infos.push(info);
+            if let Ok(info) = ImageInfo::from_ifd(ifd, &source, byte_order, variant) {
+                overview_infos.push(info);
+            }
         }
 
-        // Parse GeoKeys
-        let geo_keys = GeoKeyDirectory::from_ifd(&tiff.ifds[0], &source, byte_order, variant)?;
+        // Parse GeoKeys (best-effort: continue without geo keys if parsing fails)
+        let geo_keys = GeoKeyDirectory::from_ifd(&tiff.ifds[0], &source, byte_order, variant)
+            .ok()
+            .flatten();
 
         Ok(Self {
             source,
