@@ -4,6 +4,7 @@
 //! The database includes approximately 100 of the most commonly used coordinate reference systems,
 //! including WGS84, Web Mercator, UTM zones, and common national grids.
 
+mod extended;
 mod geographic;
 mod projected;
 mod types;
@@ -21,7 +22,7 @@ mod tests {
     fn test_epsg_database_creation() {
         let db = EpsgDatabase::new();
         assert!(!db.is_empty());
-        assert!(db.len() > 100); // Should have at least 100 codes
+        assert!(db.len() > 400); // Should have 500+ codes with extended definitions
     }
 
     #[test]

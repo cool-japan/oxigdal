@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 description = "Pure-Rust streaming GeoJSON reader and writer for OxiGDAL"
 keywords = ["geospatial", "geojson", "streaming", "vector"]
-categories = ["science::geo", "parser-implementations"]
+categories = ["science", "parser-implementations"]
 
 [dependencies]
 thiserror = { workspace = true }

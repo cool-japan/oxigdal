@@ -28,7 +28,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-security = "0.1.3"
+oxigdal-security = "0.1.4"
 ```
 
 ## Quick Start

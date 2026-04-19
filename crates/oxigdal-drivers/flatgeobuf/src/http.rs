@@ -221,10 +221,7 @@ impl HttpReader {
         for column in &self.header.columns {
             let is_null = cursor.read_u8()? != 0;
             if is_null {
-                feature.set_property(
-                    column.name.clone(),
-                    oxigdal_core::vector::PropertyValue::Null,
-                );
+                feature.set_property(column.name.clone(), oxigdal_core::vector::FieldValue::Null);
                 continue;
             }
 
@@ -240,44 +237,44 @@ impl HttpReader {
         &self,
         reader: &mut R,
         column: &crate::header::Column,
-    ) -> Result<oxigdal_core::vector::PropertyValue> {
+    ) -> Result<oxigdal_core::vector::FieldValue> {
         use crate::header::ColumnType;
-        use oxigdal_core::vector::PropertyValue;
+        use oxigdal_core::vector::FieldValue;
 
         match column.column_type {
-            ColumnType::Byte => Ok(PropertyValue::Integer(i64::from(reader.read_i8()?))),
-            ColumnType::UByte => Ok(PropertyValue::UInteger(u64::from(reader.read_u8()?))),
-            ColumnType::Bool => Ok(PropertyValue::Bool(reader.read_u8()? != 0)),
-            ColumnType::Short => Ok(PropertyValue::Integer(i64::from(
+            ColumnType::Byte => Ok(FieldValue::Integer(i64::from(reader.read_i8()?))),
+            ColumnType::UByte => Ok(FieldValue::UInteger(u64::from(reader.read_u8()?))),
+            ColumnType::Bool => Ok(FieldValue::Bool(reader.read_u8()? != 0)),
+            ColumnType::Short => Ok(FieldValue::Integer(i64::from(
                 reader.read_i16::<LittleEndian>()?,
             ))),
-            ColumnType::UShort => Ok(PropertyValue::UInteger(u64::from(
+            ColumnType::UShort => Ok(FieldValue::UInteger(u64::from(
                 reader.read_u16::<LittleEndian>()?,
             ))),
-            ColumnType::Int => Ok(PropertyValue::Integer(i64::from(
+            ColumnType::Int => Ok(FieldValue::Integer(i64::from(
                 reader.read_i32::<LittleEndian>()?,
             ))),
-            ColumnType::UInt => Ok(PropertyValue::UInteger(u64::from(
+            ColumnType::UInt => Ok(FieldValue::UInteger(u64::from(
                 reader.read_u32::<LittleEndian>()?,
             ))),
-            ColumnType::Long => Ok(PropertyValue::Integer(reader.read_i64::<LittleEndian>()?)),
-            ColumnType::ULong => Ok(PropertyValue::UInteger(reader.read_u64::<LittleEndian>()?)),
-            ColumnType::Float => Ok(PropertyValue::Float(f64::from(
+            ColumnType::Long => Ok(FieldValue::Integer(reader.read_i64::<LittleEndian>()?)),
+            ColumnType::ULong => Ok(FieldValue::UInteger(reader.read_u64::<LittleEndian>()?)),
+            ColumnType::Float => Ok(FieldValue::Float(f64::from(
                 reader.read_f32::<LittleEndian>()?,
             ))),
-            ColumnType::Double => Ok(PropertyValue::Float(reader.read_f64::<LittleEndian>()?)),
+            ColumnType::Double => Ok(FieldValue::Float(reader.read_f64::<LittleEndian>()?)),
             ColumnType::String | ColumnType::Json | ColumnType::DateTime => {
                 let len = reader.read_u32::<LittleEndian>()?;
                 let mut bytes = vec![0u8; len as usize];
                 reader.read_exact(&mut bytes)?;
                 let s = String::from_utf8(bytes)?;
-                Ok(PropertyValue::String(s))
+                Ok(FieldValue::String(s))
             }
             ColumnType::Binary => {
                 let len = reader.read_u32::<LittleEndian>()?;
                 let mut bytes = vec![0u8; len as usize];
                 reader.read_exact(&mut bytes)?;
-                Ok(PropertyValue::String(format!("Binary({len} bytes)")))
+                Ok(FieldValue::String(format!("Binary({len} bytes)")))
             }
         }
     }

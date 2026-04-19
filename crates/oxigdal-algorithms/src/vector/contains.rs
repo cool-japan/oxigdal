@@ -339,61 +339,11 @@ impl CrossesPredicate for Point {
 
 // Implement CrossesPredicate for Polygon
 impl CrossesPredicate for Polygon {
-    fn crosses(&self, other: &Self) -> Result<bool> {
-        // For polygons to cross, they must have interior points in common
-        // and exterior points in common. This is similar to overlaps but
-        // typically applies more to lower dimensional geometries crossing
-        // higher dimensional ones (e.g., line crossing polygon).
-        // For polygon-polygon, we define crossing as:
-        // - They intersect
-        // - Neither completely contains the other
-        // - They share boundary segments (edges cross)
-
-        if !self.intersects(other)? {
-            return Ok(false);
-        }
-
-        // If one completely contains the other, they don't cross
-        if self.contains(other)? || other.contains(self)? {
-            return Ok(false);
-        }
-
-        // Check if some but not all vertices of other are inside self
-        let mut other_some_inside = false;
-        let mut other_some_outside = false;
-
-        for coord in &other.exterior.coords {
-            if point_in_polygon_or_boundary(coord, self) {
-                other_some_inside = true;
-            } else {
-                other_some_outside = true;
-            }
-        }
-
-        // Also check if some but not all vertices of self are inside other
-        let mut self_some_inside = false;
-        let mut self_some_outside = false;
-
-        for coord in &self.exterior.coords {
-            if point_in_polygon_or_boundary(coord, other) {
-                self_some_inside = true;
-            } else {
-                self_some_outside = true;
-            }
-        }
-
-        // Crosses if:
-        // 1. Either direction shows partial containment, OR
-        // 2. They intersect but no vertices are contained (edge-only intersection)
-        if (other_some_inside && other_some_outside) || (self_some_inside && self_some_outside) {
-            Ok(true)
-        } else if !other_some_inside && !self_some_inside {
-            // No vertices inside either polygon, but they intersect
-            // This means edges must be crossing
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+    fn crosses(&self, _other: &Self) -> Result<bool> {
+        // Per OGC DE-9IM, "crosses" is undefined for same-dimension geometries
+        // (Polygon/Polygon, both dimension 2). The predicate always returns false.
+        // Use `overlaps()` instead for partial overlap between polygons.
+        Ok(false)
     }
 }
 
@@ -882,7 +832,8 @@ mod tests {
 
     #[test]
     fn test_crosses_polygons() {
-        // Two polygons where one crosses the other
+        // Per OGC DE-9IM, Polygon/Polygon crosses is undefined and must return false.
+        // Use overlaps() for partial polygon intersection instead.
         let poly1 = create_square();
         assert!(poly1.is_ok());
 
@@ -904,7 +855,10 @@ mod tests {
                 let result = crosses(&p1, &p2);
                 assert!(result.is_ok());
                 if let Ok(do_cross) = result {
-                    assert!(do_cross, "Polygon crossing through another should cross");
+                    assert!(
+                        !do_cross,
+                        "Polygon/Polygon crosses is undefined per OGC, must return false"
+                    );
                 }
             }
         }

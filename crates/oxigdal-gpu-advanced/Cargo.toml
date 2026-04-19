@@ -29,16 +29,6 @@ shader-optimization = []
 memory-defrag = []
 ml-inference = []
 
-# Platform-specific defaults
-[target.'cfg(target_os = "macos")'.dependencies]
-wgpu = { workspace = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-wgpu = { workspace = true }
-
 [dependencies]
 # Workspace dependencies
 oxigdal-core = { workspace = true }
@@ -64,8 +54,8 @@ naga = { workspace = true }
 
 # Concurrency and synchronization
 parking_lot.workspace = true
-crossbeam-channel = "0.5"
-crossbeam-utils = "0.8"
+crossbeam-channel.workspace = true
+crossbeam-utils.workspace = true
 
 # Math
 glam = { workspace = true }
@@ -74,7 +64,7 @@ glam = { workspace = true }
 mimalloc = { version = "0.1", default-features = false }
 
 # Hash and crypto for shader caching
-blake3 = "1"
+blake3.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

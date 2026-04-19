@@ -469,6 +469,150 @@ impl<T> Iterator for TileIterator<'_, T> {
     }
 }
 
+// ─── Arena-backed tile iterator ───────────────────────────────────────────────
+
+/// A tile whose pixel data resides in an `Arena`.
+///
+/// The raw bytes live in the arena's memory block; dropping an `ArenaTile` does
+/// not free memory.  The arena reclaims all tiles when it is reset or dropped.
+pub struct ArenaTile<'a> {
+    /// X offset in the parent buffer (pixels)
+    pub x: usize,
+    /// Y offset in the parent buffer (pixels)
+    pub y: usize,
+    /// Width of this tile (pixels)
+    pub width: usize,
+    /// Height of this tile (pixels)
+    pub height: usize,
+    /// Raw bytes copied from the parent buffer
+    pub data: &'a [u8],
+}
+
+/// An arena-backed variant of [`TileIterator`] that allocates each tile's data
+/// from a caller-supplied arena.
+///
+/// # Lifetime
+///
+/// `'a` binds both the source buffer slice and the arena.  All `ArenaTile`
+/// values yielded by this iterator live as long as `'a`.
+pub struct TileIteratorArena<'a> {
+    /// Byte slice of the source buffer (row-major, interleaved or BSQ)
+    src: &'a [u8],
+    /// Row stride in bytes (width * bytes_per_pixel)
+    row_stride: usize,
+    /// Bytes per pixel
+    bytes_per_pixel: usize,
+    /// Full buffer width in pixels
+    width: usize,
+    /// Full buffer height in pixels
+    height: usize,
+    /// Tile width in pixels
+    tile_width: usize,
+    /// Tile height in pixels
+    tile_height: usize,
+    /// Current column (pixel offset)
+    current_x: usize,
+    /// Current row (pixel offset)
+    current_y: usize,
+    /// Arena used to allocate tile data
+    arena: &'a crate::memory::arena::Arena,
+}
+
+impl<'a> TileIteratorArena<'a> {
+    /// Creates a new `TileIteratorArena`.
+    ///
+    /// # Arguments
+    ///
+    /// * `src`             – Byte slice of the source buffer (row-major).
+    /// * `width`           – Buffer width in pixels.
+    /// * `height`          – Buffer height in pixels.
+    /// * `bytes_per_pixel` – Number of bytes per pixel (e.g. 1 for `u8`, 4 for `f32`).
+    /// * `tile_width`      – Requested tile width in pixels.
+    /// * `tile_height`     – Requested tile height in pixels.
+    /// * `arena`           – Bump allocator that owns tile byte slices.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bytes_per_pixel == 0` or `tile_width == 0` or `tile_height == 0`.
+    #[must_use]
+    pub fn new(
+        src: &'a [u8],
+        width: usize,
+        height: usize,
+        bytes_per_pixel: usize,
+        tile_width: usize,
+        tile_height: usize,
+        arena: &'a crate::memory::arena::Arena,
+    ) -> Self {
+        assert!(bytes_per_pixel > 0, "bytes_per_pixel must be > 0");
+        assert!(tile_width > 0, "tile_width must be > 0");
+        assert!(tile_height > 0, "tile_height must be > 0");
+        Self {
+            src,
+            row_stride: width * bytes_per_pixel,
+            bytes_per_pixel,
+            width,
+            height,
+            tile_width,
+            tile_height,
+            current_x: 0,
+            current_y: 0,
+            arena,
+        }
+    }
+}
+
+impl<'a> Iterator for TileIteratorArena<'a> {
+    type Item = crate::error::Result<ArenaTile<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_y >= self.height {
+            return None;
+        }
+
+        let tile_x = self.current_x;
+        let tile_y = self.current_y;
+        let tw = self.tile_width.min(self.width - tile_x);
+        let th = self.tile_height.min(self.height - tile_y);
+        let tile_bytes = tw * th * self.bytes_per_pixel;
+
+        // Allocate space for this tile's data in the arena
+        let dest: &mut [u8] = match self.arena.allocate_slice(tile_bytes) {
+            Ok(s) => s,
+            Err(e) => return Some(Err(e)),
+        };
+
+        // Copy pixels row by row from the source buffer
+        for row in 0..th {
+            let src_row = tile_y + row;
+            let src_start = src_row * self.row_stride + tile_x * self.bytes_per_pixel;
+            let dst_start = row * tw * self.bytes_per_pixel;
+            let copy_len = tw * self.bytes_per_pixel;
+            dest[dst_start..dst_start + copy_len]
+                .copy_from_slice(&self.src[src_start..src_start + copy_len]);
+        }
+
+        // Advance tile cursor
+        self.current_x += self.tile_width;
+        if self.current_x >= self.width {
+            self.current_x = 0;
+            self.current_y += self.tile_height;
+        }
+
+        Some(Ok(ArenaTile {
+            x: tile_x,
+            y: tile_y,
+            width: tw,
+            height: th,
+            // SAFETY: `dest` was just allocated from the arena with lifetime `'a`.
+            // Extending to `'a` is safe because the arena lives for `'a`.
+            data: unsafe { core::slice::from_raw_parts(dest.as_ptr(), dest.len()) },
+        }))
+    }
+}
+
+// ─── end Arena-backed tile iterator ──────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +719,50 @@ mod tests {
     fn test_zero_capacity() {
         let result = AlignedBuffer::<f32>::new(0, 64);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_arena_tile_iterator_yields_arena_tiles() {
+        // 4×4 image, 1 byte per pixel, iterate with 2×2 tiles
+        let src: Vec<u8> = (0..16u8).collect();
+        let arena = crate::memory::arena::Arena::with_capacity(4096).expect("arena creation");
+        let mut it = TileIteratorArena::new(&src, 4, 4, 1, 2, 2, &arena);
+
+        let tile = it.next().expect("first tile").expect("no error");
+        assert_eq!(tile.x, 0);
+        assert_eq!(tile.y, 0);
+        assert_eq!(tile.width, 2);
+        assert_eq!(tile.height, 2);
+        // Row 0: bytes 0,1; row 1: bytes 4,5
+        assert_eq!(tile.data, &[0, 1, 4, 5]);
+
+        let tile2 = it.next().expect("second tile").expect("no error");
+        assert_eq!(tile2.x, 2);
+        assert_eq!(tile2.y, 0);
+        // Row 0: bytes 2,3; row 1: bytes 6,7
+        assert_eq!(tile2.data, &[2, 3, 6, 7]);
+
+        let total = TileIteratorArena::new(&src, 4, 4, 1, 2, 2, &arena).count();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn test_arena_tile_iterator_drops_with_arena() {
+        // Verify that arena is released after iterator is consumed
+        let src: Vec<u8> = vec![0u8; 16];
+        let arena = crate::memory::arena::Arena::with_capacity(8192).expect("arena creation");
+        {
+            let it = TileIteratorArena::new(&src, 4, 4, 1, 2, 2, &arena);
+            let tiles: Vec<_> = it.collect();
+            assert_eq!(tiles.len(), 4);
+            // Tiles borrowed from arena — data still accessible within this scope
+            for t in &tiles {
+                let tile = t.as_ref().expect("no error");
+                assert_eq!(tile.data.len(), 4);
+            }
+        }
+        // Arena outlives the iterator; reset is a no-op but must not panic.
+        arena.reset();
+        assert_eq!(arena.usage(), 0);
     }
 }

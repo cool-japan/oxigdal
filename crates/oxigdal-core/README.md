@@ -23,7 +23,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-core = "0.1.3"
+oxigdal-core = "0.1.4"
 ```
 
 ### Feature Flags
@@ -37,7 +37,7 @@ Example with arrow support:
 
 ```toml
 [dependencies]
-oxigdal-core = { version = "0.1.3", features = ["arrow"] }
+oxigdal-core = { version = "0.1.4", features = ["arrow"] }
 ```
 
 ## Quick Start

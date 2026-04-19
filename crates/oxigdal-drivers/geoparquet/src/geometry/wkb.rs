@@ -241,6 +241,13 @@ impl WkbWriter {
     }
 }
 
+/// Maximum nesting depth for GeometryCollection.
+///
+/// This guard prevents stack exhaustion from maliciously crafted deeply
+/// nested WKB inputs. At depth 64 the reader returns
+/// `GeoParquetError::InvalidWkb` rather than recursing further.
+pub const MAX_COLLECTION_DEPTH: usize = 64;
+
 /// WKB reader for decoding geometries
 pub struct WkbReader<'a> {
     cursor: Cursor<&'a [u8]>,
@@ -256,11 +263,11 @@ impl<'a> WkbReader<'a> {
 
     /// Reads a geometry from WKB format
     pub fn read_geometry(&mut self) -> Result<Geometry> {
-        self.read_geometry_impl()
+        self.read_geometry_depth(0)
     }
 
-    /// Internal implementation of geometry reading
-    fn read_geometry_impl(&mut self) -> Result<Geometry> {
+    /// Internal implementation of geometry reading with depth guard.
+    fn read_geometry_depth(&mut self, depth: usize) -> Result<Geometry> {
         let byte_order = self.read_byte_order()?;
         let (geom_type, has_z, has_m) = self.read_geometry_type(byte_order)?;
 
@@ -278,19 +285,19 @@ impl<'a> WkbReader<'a> {
                 Ok(Geometry::Polygon(poly))
             }
             GeometryType::MultiPoint => {
-                let mp = self.read_multipoint()?;
+                let mp = self.read_multipoint(byte_order)?;
                 Ok(Geometry::MultiPoint(mp))
             }
             GeometryType::MultiLineString => {
-                let mls = self.read_multilinestring()?;
+                let mls = self.read_multilinestring(byte_order)?;
                 Ok(Geometry::MultiLineString(mls))
             }
             GeometryType::MultiPolygon => {
-                let mpoly = self.read_multipolygon()?;
+                let mpoly = self.read_multipolygon(byte_order)?;
                 Ok(Geometry::MultiPolygon(mpoly))
             }
             GeometryType::GeometryCollection => {
-                let gc = self.read_geometrycollection()?;
+                let gc = self.read_geometrycollection(byte_order, depth)?;
                 Ok(Geometry::GeometryCollection(gc))
             }
         }
@@ -354,62 +361,71 @@ impl<'a> WkbReader<'a> {
     }
 
     /// Reads a multipoint
-    fn read_multipoint(&mut self) -> Result<MultiPoint> {
-        let num_points = self.read_u32(WkbByteOrder::LittleEndian)?; // Will be re-read with correct endianness
+    fn read_multipoint(&mut self, byte_order: WkbByteOrder) -> Result<MultiPoint> {
+        let num_points = self.read_u32(byte_order)?;
         let mut points = Vec::with_capacity(num_points as usize);
         for _ in 0..num_points {
-            let byte_order = self.read_byte_order()?;
-            let (geom_type, has_z, has_m) = self.read_geometry_type(byte_order)?;
+            let inner_order = self.read_byte_order()?;
+            let (geom_type, has_z, has_m) = self.read_geometry_type(inner_order)?;
             if geom_type != GeometryType::Point {
                 return Err(GeoParquetError::invalid_wkb(
                     "MultiPoint must contain only Points",
                 ));
             }
-            points.push(self.read_point(byte_order, has_z, has_m)?);
+            points.push(self.read_point(inner_order, has_z, has_m)?);
         }
         Ok(MultiPoint::new(points))
     }
 
     /// Reads a multilinestring
-    fn read_multilinestring(&mut self) -> Result<MultiLineString> {
-        let num_linestrings = self.read_u32(WkbByteOrder::LittleEndian)?;
+    fn read_multilinestring(&mut self, byte_order: WkbByteOrder) -> Result<MultiLineString> {
+        let num_linestrings = self.read_u32(byte_order)?;
         let mut linestrings = Vec::with_capacity(num_linestrings as usize);
         for _ in 0..num_linestrings {
-            let byte_order = self.read_byte_order()?;
-            let (geom_type, has_z, has_m) = self.read_geometry_type(byte_order)?;
+            let inner_order = self.read_byte_order()?;
+            let (geom_type, has_z, has_m) = self.read_geometry_type(inner_order)?;
             if geom_type != GeometryType::LineString {
                 return Err(GeoParquetError::invalid_wkb(
                     "MultiLineString must contain only LineStrings",
                 ));
             }
-            linestrings.push(self.read_linestring(byte_order, has_z, has_m)?);
+            linestrings.push(self.read_linestring(inner_order, has_z, has_m)?);
         }
         Ok(MultiLineString::new(linestrings))
     }
 
     /// Reads a multipolygon
-    fn read_multipolygon(&mut self) -> Result<MultiPolygon> {
-        let num_polygons = self.read_u32(WkbByteOrder::LittleEndian)?;
+    fn read_multipolygon(&mut self, byte_order: WkbByteOrder) -> Result<MultiPolygon> {
+        let num_polygons = self.read_u32(byte_order)?;
         let mut polygons = Vec::with_capacity(num_polygons as usize);
         for _ in 0..num_polygons {
-            let byte_order = self.read_byte_order()?;
-            let (geom_type, has_z, has_m) = self.read_geometry_type(byte_order)?;
+            let inner_order = self.read_byte_order()?;
+            let (geom_type, has_z, has_m) = self.read_geometry_type(inner_order)?;
             if geom_type != GeometryType::Polygon {
                 return Err(GeoParquetError::invalid_wkb(
                     "MultiPolygon must contain only Polygons",
                 ));
             }
-            polygons.push(self.read_polygon(byte_order, has_z, has_m)?);
+            polygons.push(self.read_polygon(inner_order, has_z, has_m)?);
         }
         Ok(MultiPolygon::new(polygons))
     }
 
-    /// Reads a geometry collection
-    fn read_geometrycollection(&mut self) -> Result<GeometryCollection> {
-        let num_geometries = self.read_u32(WkbByteOrder::LittleEndian)?;
+    /// Reads a geometry collection, enforcing the maximum nesting depth.
+    fn read_geometrycollection(
+        &mut self,
+        byte_order: WkbByteOrder,
+        depth: usize,
+    ) -> Result<GeometryCollection> {
+        if depth >= MAX_COLLECTION_DEPTH {
+            return Err(GeoParquetError::invalid_wkb(format!(
+                "geometry collection nesting exceeds maximum depth of {MAX_COLLECTION_DEPTH}"
+            )));
+        }
+        let num_geometries = self.read_u32(byte_order)?;
         let mut geometries = Vec::with_capacity(num_geometries as usize);
         for _ in 0..num_geometries {
-            geometries.push(self.read_geometry_impl()?);
+            geometries.push(self.read_geometry_depth(depth + 1)?);
         }
         Ok(GeometryCollection::new(geometries))
     }
@@ -580,6 +596,208 @@ mod tests {
         let decoded_be = reader_be.read_geometry()?;
         assert_eq!(geom, decoded_be);
 
+        Ok(())
+    }
+
+    // ── Z/M/ZM variant tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_wkb_point_z_decoded() -> Result<()> {
+        // WKB: 0x01 (LE) + type 1001 (PointZ) + x + y + z
+        let mut buf = vec![0x01u8];
+        buf.extend_from_slice(&1001u32.to_le_bytes());
+        buf.extend_from_slice(&1.0f64.to_le_bytes());
+        buf.extend_from_slice(&2.0f64.to_le_bytes());
+        buf.extend_from_slice(&3.0f64.to_le_bytes());
+
+        let mut reader = WkbReader::new(&buf);
+        let geom = reader.read_geometry()?;
+
+        assert!(geom.has_z(), "PointZ must report has_z = true");
+        assert!(!geom.has_m(), "PointZ must report has_m = false");
+
+        assert!(
+            matches!(&geom, Geometry::Point(_)),
+            "Expected Geometry::Point, got {:?}",
+            geom
+        );
+        if let Geometry::Point(p) = &geom {
+            assert!((p.coord.x - 1.0).abs() < f64::EPSILON);
+            assert!((p.coord.y - 2.0).abs() < f64::EPSILON);
+            assert!((p.coord.z.expect("z must be present") - 3.0).abs() < f64::EPSILON);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_wkb_point_zm_decoded() -> Result<()> {
+        // WKB: 0x01 (LE) + type 3001 (PointZM) + x + y + z + m
+        let mut buf = vec![0x01u8];
+        buf.extend_from_slice(&3001u32.to_le_bytes());
+        for v in [1.0f64, 2.0, 3.0, 4.0] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let mut reader = WkbReader::new(&buf);
+        let geom = reader.read_geometry()?;
+
+        assert!(geom.has_z(), "PointZM must report has_z = true");
+        assert!(geom.has_m(), "PointZM must report has_m = true");
+
+        assert!(
+            matches!(&geom, Geometry::Point(_)),
+            "Expected Geometry::Point, got {:?}",
+            geom
+        );
+        if let Geometry::Point(p) = &geom {
+            assert!((p.coord.x - 1.0).abs() < f64::EPSILON);
+            assert!((p.coord.y - 2.0).abs() < f64::EPSILON);
+            assert!((p.coord.z.expect("z") - 3.0).abs() < f64::EPSILON);
+            assert!((p.coord.m.expect("m") - 4.0).abs() < f64::EPSILON);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_wkb_geometry_collection_flat() -> Result<()> {
+        // GeometryCollection with 3 2D points
+        let mut buf = vec![0x01u8];
+        buf.extend_from_slice(&7u32.to_le_bytes()); // GeometryCollection
+        buf.extend_from_slice(&3u32.to_le_bytes()); // count = 3
+        for (x, y) in [(1.0f64, 2.0f64), (3.0, 4.0), (5.0, 6.0)] {
+            buf.push(0x01); // LE
+            buf.extend_from_slice(&1u32.to_le_bytes()); // Point
+            buf.extend_from_slice(&x.to_le_bytes());
+            buf.extend_from_slice(&y.to_le_bytes());
+        }
+
+        let mut reader = WkbReader::new(&buf);
+        let geom = reader.read_geometry()?;
+
+        assert!(
+            matches!(&geom, Geometry::GeometryCollection(_)),
+            "Expected GeometryCollection, got {:?}",
+            geom
+        );
+        if let Geometry::GeometryCollection(gc) = geom {
+            assert_eq!(gc.len(), 3, "collection should have 3 members");
+            for (i, child) in gc.geometries.iter().enumerate() {
+                assert!(
+                    matches!(child, Geometry::Point(_)),
+                    "child {i} should be a Point"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_wkb_geometry_collection_recursive() -> Result<()> {
+        // Outer collection (type 7, count=1) wrapping inner collection (type 7, count=1) wrapping a Point
+        fn encode_point_le(x: f64, y: f64) -> Vec<u8> {
+            let mut b = vec![0x01u8];
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&x.to_le_bytes());
+            b.extend_from_slice(&y.to_le_bytes());
+            b
+        }
+        fn encode_collection_le(inner: Vec<u8>) -> Vec<u8> {
+            let mut b = vec![0x01u8];
+            b.extend_from_slice(&7u32.to_le_bytes());
+            b.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+            b.extend_from_slice(&inner);
+            b
+        }
+
+        let point_wkb = encode_point_le(7.0, 8.0);
+        let inner_coll = encode_collection_le(point_wkb);
+        let outer_coll = encode_collection_le(inner_coll);
+
+        let mut reader = WkbReader::new(&outer_coll);
+        let geom = reader.read_geometry()?;
+
+        assert!(
+            matches!(&geom, Geometry::GeometryCollection(_)),
+            "Expected outer GeometryCollection, got {:?}",
+            geom
+        );
+        if let Geometry::GeometryCollection(outer) = geom {
+            assert_eq!(outer.len(), 1);
+            assert!(
+                matches!(&outer.geometries[0], Geometry::GeometryCollection(_)),
+                "Expected inner GeometryCollection, got {:?}",
+                outer.geometries[0]
+            );
+            if let Geometry::GeometryCollection(inner) = &outer.geometries[0] {
+                assert_eq!(inner.len(), 1);
+                assert!(matches!(&inner.geometries[0], Geometry::Point(_)));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_wkb_nested_collection_depth_guard() {
+        /// Builds a chain of nested GeometryCollections, terminating with a Point.
+        fn make_nested(depth: usize) -> Vec<u8> {
+            if depth == 0 {
+                // Leaf: a single 2D Point
+                let mut b = vec![0x01u8];
+                b.extend_from_slice(&1u32.to_le_bytes());
+                b.extend_from_slice(&0.0f64.to_le_bytes());
+                b.extend_from_slice(&0.0f64.to_le_bytes());
+                return b;
+            }
+            let inner = make_nested(depth - 1);
+            let mut b = vec![0x01u8];
+            b.extend_from_slice(&7u32.to_le_bytes()); // GeometryCollection
+            b.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+            b.extend_from_slice(&inner);
+            b
+        }
+
+        // 100 levels of nesting exceeds MAX_COLLECTION_DEPTH (64)
+        let data = make_nested(100);
+        let mut reader = WkbReader::new(&data);
+        let result = reader.read_geometry();
+        assert!(
+            result.is_err(),
+            "reading a 100-deep nested collection must return Err (depth guard)"
+        );
+    }
+
+    #[test]
+    fn test_wkb_multi_polygon_zm_decoded() -> Result<()> {
+        // MultiPolygonZM (type 3006): 1 polygon, 1 ring, 4 XYZM points
+        let mut buf = vec![0x01u8];
+        buf.extend_from_slice(&3006u32.to_le_bytes()); // MultiPolygonZM
+
+        // Outer count: 1 polygon sub-geometry
+        buf.extend_from_slice(&1u32.to_le_bytes());
+
+        // Sub-geometry: PolygonZM (type 3003)
+        buf.push(0x01); // LE
+        buf.extend_from_slice(&3003u32.to_le_bytes()); // PolygonZM
+        buf.extend_from_slice(&1u32.to_le_bytes()); // 1 ring
+        buf.extend_from_slice(&4u32.to_le_bytes()); // 4 points (closed ring)
+        for _ in 0..4 {
+            for v in [1.0f64, 2.0, 5.0, 0.0] {
+                // x, y, z, m
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        let mut reader = WkbReader::new(&buf);
+        let result = reader.read_geometry();
+        assert!(
+            result.is_ok(),
+            "MultiPolygonZM must decode without error: {:?}",
+            result.err()
+        );
+
+        let geom = result?;
+        assert!(geom.has_z(), "MultiPolygonZM must report has_z = true");
+        assert!(geom.has_m(), "MultiPolygonZM must report has_m = true");
         Ok(())
     }
 }

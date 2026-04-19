@@ -201,6 +201,11 @@ impl PointZ {
         }
     }
 
+    /// Creates a new 3D point with an optional M value
+    pub fn new_with_m_opt(x: f64, y: f64, z: f64, m: Option<f64>) -> Self {
+        Self { x, y, z, m }
+    }
+
     /// Reads a PointZ from a reader
     pub fn read<R: Read>(reader: &mut R) -> Result<Self> {
         let x = reader
@@ -788,6 +793,338 @@ impl MultiPartShapeM {
         // M data: m_range(16) + m_values
         let m_bytes = 16 + (self.base.num_points * 8);
         (base_bytes + m_bytes) / 2
+    }
+}
+
+/// Part type codes for MultiPatch records (ESRI Shapefile spec §3.6)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum PartType {
+    /// Triangle strip — strips of triangles where each subsequent triangle
+    /// shares an edge with the previous triangle.
+    TriangleStrip = 0,
+    /// Triangle fan — fans of triangles where each subsequent triangle shares
+    /// an edge with the first triangle.
+    TriangleFan = 1,
+    /// Outer ring of a polygon.
+    OuterRing = 2,
+    /// Inner ring of a polygon (hole).
+    InnerRing = 3,
+    /// First ring of a polygon (with unspecified orientation).
+    FirstRing = 4,
+    /// Ring with unspecified orientation.
+    Ring = 5,
+}
+
+impl PartType {
+    /// Converts an integer code to a `PartType`.
+    pub fn from_code(code: i32) -> Result<Self> {
+        match code {
+            0 => Ok(Self::TriangleStrip),
+            1 => Ok(Self::TriangleFan),
+            2 => Ok(Self::OuterRing),
+            3 => Ok(Self::InnerRing),
+            4 => Ok(Self::FirstRing),
+            5 => Ok(Self::Ring),
+            _ => Err(ShapefileError::InvalidGeometry {
+                message: format!("unknown part type code: {code}"),
+                record: None,
+            }),
+        }
+    }
+
+    /// Converts a `PartType` to its integer code.
+    pub fn to_code(self) -> i32 {
+        self as i32
+    }
+}
+
+/// A MultiPatch shape (shape type 31).
+///
+/// MultiPatch is used for 3D surfaces made up of triangulated faces or
+/// polygon ring patches.  Each part has an associated `PartType` that
+/// describes how its vertices form triangles or rings.
+///
+/// Binary layout (after shape type code):
+/// - Box2D (32 bytes: x_min, y_min, x_max, y_max)
+/// - num_parts (4 bytes, i32 LE)
+/// - num_points (4 bytes, i32 LE)
+/// - parts array          (num_parts × 4 bytes, i32 LE) — start vertex index per part
+/// - part_types array     (num_parts × 4 bytes, i32 LE) — PartType per part
+/// - points array         (num_points × 16 bytes: x, y as f64 LE pairs)
+/// - z_range              (16 bytes: z_min, z_max as f64 LE)
+/// - z_values array       (num_points × 8 bytes, f64 LE)
+/// - m_range (optional)   (16 bytes: m_min, m_max as f64 LE)
+/// - m_values (optional)  (num_points × 8 bytes, f64 LE)
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiPatchShape {
+    /// Base 2D shape data (bbox, parts, points)
+    pub base: MultiPartShape,
+    /// Part type for each part
+    pub part_types: Vec<PartType>,
+    /// Z coordinate range (min, max)
+    pub z_range: (f64, f64),
+    /// Z coordinate values for each point
+    pub z_values: Vec<f64>,
+    /// M value range (min, max), optional
+    pub m_range: Option<(f64, f64)>,
+    /// M values for each point, optional
+    pub m_values: Option<Vec<f64>>,
+}
+
+impl MultiPatchShape {
+    /// Creates a new `MultiPatchShape`.
+    ///
+    /// `parts` contains the start vertex index for each part.
+    /// `part_types` must have the same length as `parts`.
+    /// `z_values` must have the same length as `points`.
+    /// `m_values` (when `Some`) must have the same length as `points`.
+    pub fn new(
+        parts: Vec<i32>,
+        part_types: Vec<PartType>,
+        points: Vec<Point>,
+        z_values: Vec<f64>,
+        m_values: Option<Vec<f64>>,
+    ) -> Result<Self> {
+        if part_types.len() != parts.len() {
+            return Err(ShapefileError::invalid_geometry(format!(
+                "part_types length ({}) must match parts length ({})",
+                part_types.len(),
+                parts.len()
+            )));
+        }
+        if z_values.len() != points.len() {
+            return Err(ShapefileError::invalid_geometry(format!(
+                "z_values length ({}) must match points length ({})",
+                z_values.len(),
+                points.len()
+            )));
+        }
+        if let Some(ref mv) = m_values {
+            if mv.len() != points.len() {
+                return Err(ShapefileError::invalid_geometry(format!(
+                    "m_values length ({}) must match points length ({})",
+                    mv.len(),
+                    points.len()
+                )));
+            }
+        }
+
+        let base = MultiPartShape::new(parts, points)?;
+
+        let z_min = z_values.iter().copied().fold(f64::INFINITY, f64::min);
+        let z_max = z_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+        let m_range = m_values.as_ref().map(|mv| {
+            let m_min = mv.iter().copied().fold(f64::INFINITY, f64::min);
+            let m_max = mv.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            (m_min, m_max)
+        });
+
+        Ok(Self {
+            base,
+            part_types,
+            z_range: (z_min, z_max),
+            z_values,
+            m_range,
+            m_values,
+        })
+    }
+
+    /// Reads a `MultiPatchShape` from a reader (does **not** read the shape type code).
+    pub fn read<R: Read>(reader: &mut R) -> Result<Self> {
+        // Base 2D data (bbox, num_parts, num_points, parts array, points array)
+        // NOTE: MultiPatch inserts part_types between parts and points; we
+        // cannot use MultiPartShape::read directly since that reads points
+        // immediately after parts.  We replicate the parsing here.
+        let bbox = Box2D::read(reader)?;
+
+        let num_parts = reader
+            .read_i32::<LittleEndian>()
+            .map_err(|_| ShapefileError::unexpected_eof("reading multipatch num_parts"))?;
+        let num_points = reader
+            .read_i32::<LittleEndian>()
+            .map_err(|_| ShapefileError::unexpected_eof("reading multipatch num_points"))?;
+
+        if !(0..=1_000_000).contains(&num_parts) {
+            return Err(ShapefileError::limit_exceeded(
+                "multipatch num_parts out of range",
+                1_000_000,
+                num_parts as usize,
+            ));
+        }
+        if !(0..=100_000_000).contains(&num_points) {
+            return Err(ShapefileError::limit_exceeded(
+                "multipatch num_points out of range",
+                100_000_000,
+                num_points as usize,
+            ));
+        }
+
+        // Parts array
+        let mut parts = Vec::with_capacity(num_parts as usize);
+        for _ in 0..num_parts {
+            let part = reader
+                .read_i32::<LittleEndian>()
+                .map_err(|_| ShapefileError::unexpected_eof("reading multipatch part index"))?;
+            parts.push(part);
+        }
+
+        // Part types array (unique to MultiPatch)
+        let mut part_types = Vec::with_capacity(num_parts as usize);
+        for _ in 0..num_parts {
+            let code = reader
+                .read_i32::<LittleEndian>()
+                .map_err(|_| ShapefileError::unexpected_eof("reading multipatch part type"))?;
+            part_types.push(PartType::from_code(code)?);
+        }
+
+        // Points array
+        let mut points = Vec::with_capacity(num_points as usize);
+        for _ in 0..num_points {
+            points.push(Point::read(reader)?);
+        }
+
+        // Rebuild bbox from points (cross-check not strictly required)
+        let base = {
+            let computed_bbox = if points.is_empty() {
+                bbox.clone()
+            } else {
+                Box2D::from_points(&points).unwrap_or(bbox.clone())
+            };
+            MultiPartShape {
+                bbox: computed_bbox,
+                num_parts,
+                num_points,
+                parts,
+                points,
+            }
+        };
+
+        // Z range
+        let z_min = reader
+            .read_f64::<LittleEndian>()
+            .map_err(|_| ShapefileError::unexpected_eof("reading multipatch z_min"))?;
+        let z_max = reader
+            .read_f64::<LittleEndian>()
+            .map_err(|_| ShapefileError::unexpected_eof("reading multipatch z_max"))?;
+
+        // Z values
+        let np = num_points as usize;
+        let mut z_values = Vec::with_capacity(np);
+        for _ in 0..np {
+            let z = reader
+                .read_f64::<LittleEndian>()
+                .map_err(|_| ShapefileError::unexpected_eof("reading multipatch z value"))?;
+            z_values.push(z);
+        }
+
+        // Optional M range and values
+        let (m_range, m_values) = match reader.read_f64::<LittleEndian>() {
+            Ok(m_min) if m_min > -1e38 => {
+                let m_max = reader
+                    .read_f64::<LittleEndian>()
+                    .map_err(|_| ShapefileError::unexpected_eof("reading multipatch m_max"))?;
+                let mut mv = Vec::with_capacity(np);
+                for _ in 0..np {
+                    let m = reader.read_f64::<LittleEndian>().map_err(|_| {
+                        ShapefileError::unexpected_eof("reading multipatch m value")
+                    })?;
+                    mv.push(m);
+                }
+                (Some((m_min, m_max)), Some(mv))
+            }
+            _ => (None, None),
+        };
+
+        Ok(Self {
+            base,
+            part_types,
+            z_range: (z_min, z_max),
+            z_values,
+            m_range,
+            m_values,
+        })
+    }
+
+    /// Writes a `MultiPatchShape` to a writer (does **not** write the shape type code).
+    pub fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
+        // Bbox
+        self.base.bbox.write(writer)?;
+
+        // num_parts, num_points
+        writer
+            .write_i32::<LittleEndian>(self.base.num_parts)
+            .map_err(ShapefileError::Io)?;
+        writer
+            .write_i32::<LittleEndian>(self.base.num_points)
+            .map_err(ShapefileError::Io)?;
+
+        // Parts array
+        for part in &self.base.parts {
+            writer
+                .write_i32::<LittleEndian>(*part)
+                .map_err(ShapefileError::Io)?;
+        }
+
+        // Part types array (unique to MultiPatch)
+        for pt in &self.part_types {
+            writer
+                .write_i32::<LittleEndian>(pt.to_code())
+                .map_err(ShapefileError::Io)?;
+        }
+
+        // Points
+        for point in &self.base.points {
+            point.write(writer)?;
+        }
+
+        // Z range
+        writer
+            .write_f64::<LittleEndian>(self.z_range.0)
+            .map_err(ShapefileError::Io)?;
+        writer
+            .write_f64::<LittleEndian>(self.z_range.1)
+            .map_err(ShapefileError::Io)?;
+
+        // Z values
+        for z in &self.z_values {
+            writer
+                .write_f64::<LittleEndian>(*z)
+                .map_err(ShapefileError::Io)?;
+        }
+
+        // Optional M data
+        if let (Some((m_min, m_max)), Some(mv)) = (self.m_range, &self.m_values) {
+            writer
+                .write_f64::<LittleEndian>(m_min)
+                .map_err(ShapefileError::Io)?;
+            writer
+                .write_f64::<LittleEndian>(m_max)
+                .map_err(ShapefileError::Io)?;
+            for m in mv {
+                writer
+                    .write_f64::<LittleEndian>(*m)
+                    .map_err(ShapefileError::Io)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns the content length in 16-bit words (excluding shape type).
+    pub fn content_length_words(&self) -> i32 {
+        // bbox(32) + num_parts(4) + num_points(4) + parts(np*4) + part_types(np*4) + points(np*16)
+        let np = self.base.num_parts;
+        let nv = self.base.num_points;
+        let base_bytes = 32 + 4 + 4 + (np * 4) + (np * 4) + (nv * 16);
+        let z_bytes = 16 + (nv * 8);
+        let m_bytes = if self.m_values.is_some() {
+            16 + (nv * 8)
+        } else {
+            0
+        };
+        (base_bytes + z_bytes + m_bytes) / 2
     }
 }
 

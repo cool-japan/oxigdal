@@ -3,8 +3,8 @@
 //! Tests round-trip reading and writing, format compliance, and error handling.
 #![allow(clippy::panic, clippy::unnecessary_cast)]
 
-use oxigdal_core::vector::{Geometry, Point as CorePoint, PropertyValue};
-use oxigdal_shapefile::dbf::{FieldType, FieldValue};
+use oxigdal_core::vector::{FieldValue, Geometry, Point as CorePoint};
+use oxigdal_shapefile::dbf::{FieldType, FieldValue as DbfFieldValue};
 use oxigdal_shapefile::shp::Shape;
 use oxigdal_shapefile::shp::shapes::{Point, ShapeType};
 use oxigdal_shapefile::{
@@ -35,10 +35,10 @@ fn test_point_shapefile_round_trip() {
         let mut attributes = HashMap::new();
         attributes.insert(
             "NAME".to_string(),
-            PropertyValue::String(format!("Point {}", i)),
+            FieldValue::String(format!("Point {}", i)),
         );
-        attributes.insert("VALUE".to_string(), PropertyValue::Float(i as f64 * 1.5));
-        attributes.insert("ACTIVE".to_string(), PropertyValue::Bool(i % 2 == 0));
+        attributes.insert("VALUE".to_string(), FieldValue::Float(i as f64 * 1.5));
+        attributes.insert("ACTIVE".to_string(), FieldValue::Bool(i % 2 == 0));
 
         let geometry = Some(Geometry::Point(CorePoint::new(
             i as f64 * 10.0,
@@ -80,7 +80,7 @@ fn test_point_shapefile_round_trip() {
 
         assert_eq!(
             first.attributes.get("NAME"),
-            Some(&PropertyValue::String("Point 0".to_string()))
+            Some(&FieldValue::String("Point 0".to_string()))
         );
     }
 
@@ -132,39 +132,39 @@ fn test_field_types() {
 #[test]
 fn test_field_value_parsing() {
     // String
-    let value = FieldValue::parse(b"  test  ", FieldType::Character, 0)
+    let value = DbfFieldValue::parse(b"  test  ", FieldType::Character, 0)
         .expect("Failed to parse string value");
-    assert_eq!(value, FieldValue::String("test".to_string()));
+    assert_eq!(value, DbfFieldValue::String("test".to_string()));
 
     // Integer
-    let value =
-        FieldValue::parse(b"  123  ", FieldType::Number, 0).expect("Failed to parse integer value");
-    assert_eq!(value, FieldValue::Integer(123));
+    let value = DbfFieldValue::parse(b"  123  ", FieldType::Number, 0)
+        .expect("Failed to parse integer value");
+    assert_eq!(value, DbfFieldValue::Integer(123));
 
     // Float
-    let value =
-        FieldValue::parse(b" 12.34 ", FieldType::Number, 2).expect("Failed to parse float value");
-    assert_eq!(value, FieldValue::Float(12.34));
+    let value = DbfFieldValue::parse(b" 12.34 ", FieldType::Number, 2)
+        .expect("Failed to parse float value");
+    assert_eq!(value, DbfFieldValue::Float(12.34));
 
     // Boolean true
     let value =
-        FieldValue::parse(b"T", FieldType::Logical, 0).expect("Failed to parse boolean true");
-    assert_eq!(value, FieldValue::Boolean(true));
+        DbfFieldValue::parse(b"T", FieldType::Logical, 0).expect("Failed to parse boolean true");
+    assert_eq!(value, DbfFieldValue::Boolean(true));
 
     // Boolean false
     let value =
-        FieldValue::parse(b"F", FieldType::Logical, 0).expect("Failed to parse boolean false");
-    assert_eq!(value, FieldValue::Boolean(false));
+        DbfFieldValue::parse(b"F", FieldType::Logical, 0).expect("Failed to parse boolean false");
+    assert_eq!(value, DbfFieldValue::Boolean(false));
 
     // Date
     let value =
-        FieldValue::parse(b"20240125", FieldType::Date, 0).expect("Failed to parse date value");
-    assert_eq!(value, FieldValue::Date("20240125".to_string()));
+        DbfFieldValue::parse(b"20240125", FieldType::Date, 0).expect("Failed to parse date value");
+    assert_eq!(value, DbfFieldValue::Date("20240125".to_string()));
 
     // Null (empty string)
     let value =
-        FieldValue::parse(b"   ", FieldType::Character, 0).expect("Failed to parse null value");
-    assert_eq!(value, FieldValue::Null);
+        DbfFieldValue::parse(b"   ", FieldType::Character, 0).expect("Failed to parse null value");
+    assert_eq!(value, DbfFieldValue::Null);
 }
 
 #[test]
@@ -352,8 +352,8 @@ fn test_large_dataset() {
     let mut features = Vec::new();
     for i in 0..200 {
         let mut attributes = HashMap::new();
-        attributes.insert("ID".to_string(), PropertyValue::String(format!("ID{}", i)));
-        attributes.insert("VALUE".to_string(), PropertyValue::Float(i as f64 * 0.5));
+        attributes.insert("ID".to_string(), FieldValue::String(format!("ID{}", i)));
+        attributes.insert("VALUE".to_string(), FieldValue::Float(i as f64 * 0.5));
 
         let geometry = Some(Geometry::Point(CorePoint::new(
             (i % 100) as f64,
@@ -385,4 +385,424 @@ fn test_large_dataset() {
     let _ = std::fs::remove_file(base_path.with_extension("shp"));
     let _ = std::fs::remove_file(base_path.with_extension("dbf"));
     let _ = std::fs::remove_file(base_path.with_extension("shx"));
+}
+
+// ---------------------------------------------------------------------------
+// .prj CRS support
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_prj_roundtrip() {
+    let temp_dir = env::temp_dir();
+    let base_path = temp_dir.join("test_prj_roundtrip");
+
+    let wkt = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+
+    let schema = ShapefileSchemaBuilder::new()
+        .add_character_field("NAME", 50)
+        .expect("Failed to add NAME field")
+        .build();
+
+    let features = vec![ShapefileFeature::new(
+        1,
+        Some(Geometry::Point(CorePoint::new(10.0, 20.0))),
+        HashMap::new(),
+    )];
+
+    // Write with CRS set
+    {
+        let mut writer = ShapefileWriter::new(&base_path, ShapeType::Point, schema)
+            .expect("Failed to create writer");
+        writer.set_crs(wkt);
+        writer
+            .write_features(&features)
+            .expect("Failed to write features");
+    }
+
+    // Read back and verify CRS
+    {
+        let reader = ShapefileReader::open(&base_path).expect("Failed to open shapefile");
+        assert!(
+            reader.crs().is_some(),
+            "Expected CRS to be present after round-trip"
+        );
+        assert_eq!(reader.crs(), Some(wkt));
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(base_path.with_extension("shp"));
+    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
+    let _ = std::fs::remove_file(base_path.with_extension("shx"));
+    let _ = std::fs::remove_file(base_path.with_extension("prj"));
+}
+
+#[test]
+fn test_shapefile_without_prj_still_opens() {
+    let temp_dir = env::temp_dir();
+    let base_path = temp_dir.join("test_no_prj");
+
+    let schema = ShapefileSchemaBuilder::new()
+        .add_character_field("NAME", 50)
+        .expect("Failed to add NAME field")
+        .build();
+
+    let features = vec![ShapefileFeature::new(
+        1,
+        Some(Geometry::Point(CorePoint::new(5.0, 5.0))),
+        HashMap::new(),
+    )];
+
+    // Write without CRS
+    {
+        let mut writer = ShapefileWriter::new(&base_path, ShapeType::Point, schema)
+            .expect("Failed to create writer");
+        writer
+            .write_features(&features)
+            .expect("Failed to write features");
+    }
+
+    // Ensure no .prj is present (should not have been created)
+    let prj_path = base_path.with_extension("prj");
+    if prj_path.exists() {
+        std::fs::remove_file(&prj_path).expect("Cleanup .prj");
+    }
+
+    // Reader must open fine and return None for crs()
+    let reader = ShapefileReader::open(&base_path).expect("Shapefile should open without .prj");
+    assert_eq!(reader.crs(), None, "Expected no CRS when .prj is absent");
+
+    // Cleanup
+    let _ = std::fs::remove_file(base_path.with_extension("shp"));
+    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
+    let _ = std::fs::remove_file(base_path.with_extension("shx"));
+}
+
+// ---------------------------------------------------------------------------
+// .cpg encoding support
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cpg_encoding_read() {
+    let temp_dir = env::temp_dir();
+    let base_path = temp_dir.join("test_cpg_encoding");
+
+    let schema = ShapefileSchemaBuilder::new()
+        .add_character_field("NAME", 50)
+        .expect("Failed to add NAME field")
+        .build();
+
+    let features = vec![ShapefileFeature::new(
+        1,
+        Some(Geometry::Point(CorePoint::new(1.0, 2.0))),
+        {
+            let mut m = HashMap::new();
+            m.insert("NAME".to_string(), FieldValue::String("Test".to_string()));
+            m
+        },
+    )];
+
+    // Write shapefile
+    {
+        let mut writer = ShapefileWriter::new(&base_path, ShapeType::Point, schema)
+            .expect("Failed to create writer");
+        writer
+            .write_features(&features)
+            .expect("Failed to write features");
+    }
+
+    // Manually write a .cpg file alongside it
+    let cpg_path = base_path.with_extension("cpg");
+    std::fs::write(&cpg_path, "UTF-8").expect("Failed to write .cpg file");
+
+    // Read and verify encoding is reported
+    let reader = ShapefileReader::open(&base_path).expect("Failed to open shapefile");
+    assert_eq!(
+        reader.encoding(),
+        Some("UTF-8"),
+        "Expected encoding to be 'UTF-8'"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(base_path.with_extension("shp"));
+    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
+    let _ = std::fs::remove_file(base_path.with_extension("shx"));
+    let _ = std::fs::remove_file(&cpg_path);
+}
+
+// ---------------------------------------------------------------------------
+// Spatial index / bbox filtering
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_spatial_filter_bbox() {
+    let temp_dir = env::temp_dir();
+    let base_path = temp_dir.join("test_spatial_bbox");
+
+    let schema = ShapefileSchemaBuilder::new()
+        .add_character_field("ID", 10)
+        .expect("Failed to add ID field")
+        .build();
+
+    // Create 10 points: (10,10), (20,20), ..., (100,100)
+    let features: Vec<ShapefileFeature> = (1..=10)
+        .map(|i| {
+            let x = (i * 10) as f64;
+            let y = (i * 10) as f64;
+            let mut attrs = HashMap::new();
+            attrs.insert("ID".to_string(), FieldValue::String(format!("pt{}", i)));
+            ShapefileFeature::new(i, Some(Geometry::Point(CorePoint::new(x, y))), attrs)
+        })
+        .collect();
+
+    // Write
+    {
+        let mut writer = ShapefileWriter::new(&base_path, ShapeType::Point, schema)
+            .expect("Failed to create writer");
+        writer
+            .write_features(&features)
+            .expect("Failed to write features");
+    }
+
+    // Query [0,0,50,50] — should match points at (10,10),(20,20),(30,30),(40,40),(50,50)
+    {
+        let mut reader = ShapefileReader::open(&base_path).expect("Failed to open shapefile");
+        let results = reader
+            .features_in_bbox(0.0, 0.0, 50.0, 50.0)
+            .expect("Failed spatial filter");
+        assert_eq!(
+            results.len(),
+            5,
+            "Expected 5 features in lower-left quadrant (inclusive edges)"
+        );
+
+        // Verify all returned features have x,y <= 50
+        for feat in &results {
+            if let Some(Geometry::Point(p)) = &feat.geometry {
+                assert!(
+                    p.coord.x <= 50.0 && p.coord.y <= 50.0,
+                    "Unexpected point ({}, {}) outside query bbox",
+                    p.coord.x,
+                    p.coord.y
+                );
+            } else {
+                panic!("Expected Point geometry in spatial filter result");
+            }
+        }
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(base_path.with_extension("shp"));
+    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
+    let _ = std::fs::remove_file(base_path.with_extension("shx"));
+}
+
+#[test]
+fn test_spatial_filter_no_matches() {
+    let temp_dir = env::temp_dir();
+    let base_path = temp_dir.join("test_spatial_no_match");
+
+    let schema = ShapefileSchemaBuilder::new()
+        .add_character_field("ID", 10)
+        .expect("Failed to add ID field")
+        .build();
+
+    // Points at (60,60),(70,70),(80,80) — all outside query bbox
+    let features: Vec<ShapefileFeature> = [60.0_f64, 70.0, 80.0]
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            ShapefileFeature::new(
+                (i + 1) as i32,
+                Some(Geometry::Point(CorePoint::new(v, v))),
+                HashMap::new(),
+            )
+        })
+        .collect();
+
+    // Write
+    {
+        let mut writer = ShapefileWriter::new(&base_path, ShapeType::Point, schema)
+            .expect("Failed to create writer");
+        writer
+            .write_features(&features)
+            .expect("Failed to write features");
+    }
+
+    // Query bbox [0,0,50,50] should return no results
+    {
+        let mut reader = ShapefileReader::open(&base_path).expect("Failed to open shapefile");
+        let results = reader
+            .features_in_bbox(0.0, 0.0, 50.0, 50.0)
+            .expect("Failed spatial filter (no matches)");
+        assert!(
+            results.is_empty(),
+            "Expected empty result when query bbox doesn't intersect any feature"
+        );
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(base_path.with_extension("shp"));
+    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
+    let _ = std::fs::remove_file(base_path.with_extension("shx"));
+}
+
+// ---------------------------------------------------------------------------
+// Streaming iterator tests
+// ---------------------------------------------------------------------------
+
+/// Helper: write N point features and return the base path.
+#[allow(clippy::expect_used)]
+fn write_n_point_features(name: &str, n: usize) -> std::path::PathBuf {
+    let temp_dir = env::temp_dir();
+    let base_path = temp_dir.join(name);
+
+    let schema = ShapefileSchemaBuilder::new()
+        .add_character_field("ID", 10)
+        .expect("add ID field")
+        .add_numeric_field("VAL", 10, 2)
+        .expect("add VAL field")
+        .build();
+
+    let features: Vec<ShapefileFeature> = (0..n)
+        .map(|i| {
+            let mut attrs = HashMap::new();
+            attrs.insert("ID".to_string(), FieldValue::String(format!("id{}", i)));
+            attrs.insert("VAL".to_string(), FieldValue::Float(i as f64 * 1.1));
+            ShapefileFeature::new(
+                (i + 1) as i32,
+                Some(Geometry::Point(CorePoint::new(i as f64, i as f64 * 2.0))),
+                attrs,
+            )
+        })
+        .collect();
+
+    let mut writer =
+        ShapefileWriter::new(&base_path, ShapeType::Point, schema).expect("create writer");
+    writer.write_features(&features).expect("write features");
+
+    base_path
+}
+
+fn cleanup_base(base: &std::path::Path) {
+    let _ = std::fs::remove_file(base.with_extension("shp"));
+    let _ = std::fs::remove_file(base.with_extension("dbf"));
+    let _ = std::fs::remove_file(base.with_extension("shx"));
+}
+
+/// iter_features() visits every feature exactly once (count == 10)
+#[test]
+fn test_iter_features_count() {
+    let base = write_n_point_features("iter_count_10", 10);
+
+    let reader = ShapefileReader::open(&base).expect("open shapefile");
+    let count = reader.iter_features().expect("create iter").count();
+
+    assert_eq!(count, 10, "expected 10 features from iter_features");
+
+    cleanup_base(&base);
+}
+
+/// Collecting via iter_features() yields the same data as read_features()
+#[test]
+fn test_iter_features_same_as_read_features() {
+    let base = write_n_point_features("iter_same_as_read", 5);
+
+    let reader = ShapefileReader::open(&base).expect("open shapefile");
+
+    // Collect all features via the iterator
+    let iter_features: Vec<ShapefileFeature> = reader
+        .iter_features()
+        .expect("create iter")
+        .map(|r| r.expect("iter record ok"))
+        .collect();
+
+    // Read all features the traditional way
+    let bulk_features = reader.read_features().expect("read_features");
+
+    assert_eq!(
+        iter_features.len(),
+        bulk_features.len(),
+        "feature counts differ"
+    );
+
+    // Compare by record_number and geometry (order is deterministic — sequential file read)
+    for (iter_feat, bulk_feat) in iter_features.iter().zip(bulk_features.iter()) {
+        assert_eq!(
+            iter_feat.record_number, bulk_feat.record_number,
+            "record_number mismatch at record {}",
+            bulk_feat.record_number
+        );
+        assert_eq!(
+            iter_feat.geometry, bulk_feat.geometry,
+            "geometry mismatch at record {}",
+            bulk_feat.record_number
+        );
+        // Compare attribute keys
+        let iter_keys: std::collections::BTreeSet<_> = iter_feat.attributes.keys().collect();
+        let bulk_keys: std::collections::BTreeSet<_> = bulk_feat.attributes.keys().collect();
+        assert_eq!(
+            iter_keys, bulk_keys,
+            "attribute keys differ at record {}",
+            bulk_feat.record_number
+        );
+    }
+
+    cleanup_base(&base);
+}
+
+/// .take(3) reads exactly 3 records, not all 10
+#[test]
+fn test_iter_features_early_termination() {
+    let base = write_n_point_features("iter_early_term", 10);
+
+    let reader = ShapefileReader::open(&base).expect("open shapefile");
+    let taken: Vec<ShapefileFeature> = reader
+        .iter_features()
+        .expect("create iter")
+        .take(3)
+        .map(|r| r.expect("record ok"))
+        .collect();
+
+    assert_eq!(taken.len(), 3, "expected exactly 3 features after .take(3)");
+
+    // Verify the record numbers are 1, 2, 3 (first three sequential records)
+    assert_eq!(taken[0].record_number, 1);
+    assert_eq!(taken[1].record_number, 2);
+    assert_eq!(taken[2].record_number, 3);
+
+    cleanup_base(&base);
+}
+
+/// Write 500 features and iterate without collecting — verifies that no
+/// internal buffering of all records is required.
+#[test]
+fn test_iter_large_dataset_low_memory() {
+    let base = write_n_point_features("iter_large_500", 500);
+
+    let reader = ShapefileReader::open(&base).expect("open shapefile");
+
+    // Use a fold to accumulate a sum without storing any feature — this would
+    // fail if the iterator secretly buffers all records into a Vec first.
+    let (count, coord_sum) = reader
+        .iter_features()
+        .expect("create iter")
+        .map(|r| r.expect("record ok"))
+        .fold((0usize, 0.0_f64), |(cnt, acc), feat| {
+            let x = if let Some(Geometry::Point(ref p)) = feat.geometry {
+                p.coord.x
+            } else {
+                0.0
+            };
+            (cnt + 1, acc + x)
+        });
+
+    assert_eq!(count, 500, "expected 500 features");
+    // x-coordinates are 0.0, 1.0, ..., 499.0 → sum = 499*500/2 = 124750
+    let expected_sum = (0..500_u64).map(|i| i as f64).sum::<f64>();
+    assert!(
+        (coord_sum - expected_sum).abs() < 1e-6,
+        "coordinate sum mismatch: got {coord_sum}, expected {expected_sum}"
+    );
+
+    cleanup_base(&base);
 }

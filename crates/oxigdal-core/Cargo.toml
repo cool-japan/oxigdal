@@ -15,7 +15,7 @@ categories = ["science", "data-structures", "no-std"]
 
 [features]
 default = ["std"]
-std = ["thiserror/std", "serde/std"]
+std = ["thiserror/std", "serde/std", "dep:memmap2"]
 alloc = []
 arrow = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema", "std"]
 async = ["dep:async-trait", "dep:futures", "std"]
@@ -26,6 +26,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 byteorder = { workspace = true }
 bytes = { workspace = true, optional = true }
+time = { workspace = true }
+base64 = { workspace = true, optional = true }
+
+# Memory-mapped I/O (std-only)
+memmap2 = { workspace = true, optional = true }
 
 # Memory optimization dependencies
 libc = { workspace = true }

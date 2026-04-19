@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn test_distance_points() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let g1 = PyDict::new(py);
             g1.set_item("type", "Point").ok();
             if let Ok(cl) = PyList::new(py, [0.0, 0.0]) {

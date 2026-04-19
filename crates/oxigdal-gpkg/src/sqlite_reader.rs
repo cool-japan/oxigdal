@@ -150,4 +150,12 @@ impl SqliteReader {
     pub fn is_valid(&self) -> bool {
         self.data.len() >= self.header.page_size as usize
     }
+
+    /// Return a reference to the raw underlying file bytes.
+    ///
+    /// This is useful for B-tree traversal and other low-level operations
+    /// that need access to the entire file buffer.
+    pub fn raw_data(&self) -> &[u8] {
+        &self.data
+    }
 }

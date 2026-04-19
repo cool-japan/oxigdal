@@ -25,10 +25,13 @@ oxigdal-zarr.workspace = true
 oxigdal-flatgeobuf.workspace = true
 oxigdal-shapefile.workspace = true
 oxigdal-geoparquet.workspace = true
+oxigdal-rs3gw.workspace = true
 
 # CLI dependencies
 clap = { workspace = true, features = ["derive", "cargo", "color", "suggestions", "wrap_help"] }
-clap_complete = "4"
+clap_complete.workspace = true
+clap_mangen.workspace = true
+clap_complete_nushell.workspace = true
 
 # Progress and UI
 indicatif = { workspace = true }
@@ -56,6 +59,10 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[lib]
+name = "oxigdal_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "oxigdal"

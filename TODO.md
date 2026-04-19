@@ -1,10 +1,23 @@
 # OxiGDAL TODO
 
-> Version: 0.1.3 (2026-03-21) | 76 crates | 10,939 tests | ~540K Rust SLoC
+> Version: 0.1.4 (2026-04-19) | 76 crates | 12,064 tests | ~580K Rust SLoC
 
 ---
 
-## v0.1.3 — Current Release (2026-03-21) [COMPLETE]
+## v0.1.4 — Current Release (2026-04-19) [COMPLETE]
+
+- [x] Wave 1: Weiler-Atherton polygon clipping, Karney geodesic area, DE-9IM topology, marching squares contour extraction
+- [x] Wave 1: ML migration ort → oxionnx (Pure Rust ONNX runtime)
+- [x] Wave 2: R-tree enhancements (deletion, STR bulk load, k-NN priority queue, serialization)
+- [x] Wave 2: SIMD resampling (AVX2+NEON), raster polygonization, topology-preserving simplification
+- [x] Wave 2: NoAlloc geometry types (FixedLineString, FixedRing, BBox3D, Mercator, geohash neighbours)
+- [x] Wave 2: PMTiles reader completion (tile retrieval, OxiARC decompression, FNV-1a dedup)
+- [x] Wave 2: COPC reader, GeoPackage B-tree + 3D WKB
+- [x] Fixes: pyo3 0.28 migration in oxigdal-python, geojson-stream test clippy cleanup
+
+---
+
+## v0.1.3 — Previous Release (2026-03-21) [COMPLETE]
 
 - [x] Fixed wgpu 29 API breaking changes (Instance::new, bind_group_layouts)
 - [x] Fixed libsqlite3-sys version conflict (rusqlite 0.37, proj-sys compat)
@@ -94,7 +107,7 @@
 - [ ] Add 80+ new projections to reach 100+ total
 - [ ] Equidistant Conic, Sinusoidal, Mollweide, Robinson, Eckert IV/VI
 - [ ] Cassini-Soldner, Gauss-Kruger extended zones
-- [ ] EPSG expansion to 500+ definitions
+- [x] EPSG expansion to 500+ definitions (added 300+ extended definitions in oxigdal-proj/src/epsg/extended.rs)
 - [ ] Grid shift files: OSTN15 (UK), RGF93 (France), DHDN/ETRS89 (Germany)
 
 ### JPEG2000 Tier-2

@@ -1,9 +1,7 @@
 //! Super-resolution model implementation
 
 use ndarray::{Array2, Array3, Array4, Axis, s};
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::Value;
+use oxionnx::{GraphOptimizationLevel, Session, SessionBuilder, Tensor};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -110,16 +108,11 @@ impl SuperResolution {
             .into());
         }
 
-        let session = Session::builder()
-            .map_err(|e: ort::Error| ModelError::InitializationFailed {
-                reason: e.to_string(),
-            })?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e: ort::Error| ModelError::InitializationFailed {
-                reason: e.to_string(),
-            })?
+        // SessionBuilder methods return Self (no Result until commit_from_file)
+        let session = SessionBuilder::new()
+            .with_optimization_level(GraphOptimizationLevel::All)
             .commit_from_file(path)
-            .map_err(|e: ort::Error| ModelError::LoadFailed {
+            .map_err(|e: oxionnx::OnnxError| ModelError::LoadFailed {
                 reason: e.to_string(),
             })?;
 
@@ -197,41 +190,34 @@ impl SuperResolution {
         .map_err(Into::into)
     }
 
-    /// Extract tiles from input raster with overlap
+    /// Extract tiles from input raster with overlap.
+    ///
+    /// Delegates tile layout to [`crate::tiling::compute_tile_grid`].
     fn extract_tiles(&self, input: &RasterBuffer) -> Result<Vec<TileInfo>> {
         let width = input.width() as usize;
         let height = input.height() as usize;
         let tile_size = self.config.tile_size;
         let overlap = self.config.overlap;
-        let stride = tile_size - overlap;
 
-        let mut tiles = Vec::new();
+        // Compute tile positions via the shared tiling module
+        let specs = crate::tiling::compute_tile_grid(width, height, tile_size, tile_size, overlap)?;
 
-        let mut y = 0;
-        while y < height {
-            let mut x = 0;
-            while x < width {
-                let tile_w = (tile_size).min(width - x);
-                let tile_h = (tile_size).min(height - y);
+        let mut tiles = Vec::with_capacity(specs.len());
 
-                tiles.push(TileInfo {
-                    x,
-                    y,
-                    width: tile_w,
-                    height: tile_h,
-                    data: self.extract_tile_data(input, x, y, tile_w, tile_h)?,
-                });
-
-                if x + tile_w >= width {
-                    break;
-                }
-                x += stride;
-            }
-
-            if y + tile_size >= height {
-                break;
-            }
-            y += stride;
+        for spec in &specs {
+            tiles.push(TileInfo {
+                x: spec.x_offset,
+                y: spec.y_offset,
+                width: spec.width,
+                height: spec.height,
+                data: self.extract_tile_data(
+                    input,
+                    spec.x_offset,
+                    spec.y_offset,
+                    spec.width,
+                    spec.height,
+                )?,
+            });
         }
 
         debug!(
@@ -281,38 +267,62 @@ impl SuperResolution {
     fn process_batch(&mut self, tiles: &[TileInfo]) -> Result<Vec<ProcessedTile>> {
         let mut processed = Vec::with_capacity(tiles.len());
 
-        for tile in tiles {
-            // Create input tensor
-            let input_tensor = tile.data.clone().insert_axis(Axis(0));
+        // Get input/output names from session metadata
+        let input_name = self
+            .session
+            .input_info()
+            .first()
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| "input".to_string());
 
-            // Create ONNX value from array
-            let input_value =
-                Value::from_array(input_tensor.clone()).map_err(|e: ort::Error| {
-                    InferenceError::Failed {
-                        reason: format!("Failed to create input tensor: {}", e),
-                    }
+        let output_name = self
+            .session
+            .output_info()
+            .first()
+            .map(|o| o.name.clone())
+            .unwrap_or_else(|| "output".to_string());
+
+        for tile in tiles {
+            // Create input tensor with batch dimension inserted
+            let input_tensor_arr = tile.data.clone().insert_axis(Axis(0));
+
+            // Create Tensor from ndarray (Tensor::from_ndarray returns Tensor directly)
+            let input_value = Tensor::from_ndarray(input_tensor_arr);
+
+            // Build inputs map using oxionnx::inputs! macro
+            let inputs_map = oxionnx::inputs![input_name.as_str() => input_value].map_err(
+                |e: oxionnx::OnnxError| InferenceError::Failed {
+                    reason: format!("Failed to build inputs map: {}", e),
+                },
+            )?;
+
+            // Run inference — session.run takes &HashMap<&str, Tensor>
+            let outputs = self
+                .session
+                .run(&inputs_map)
+                .map_err(|e: oxionnx::OnnxError| InferenceError::Failed {
+                    reason: e.to_string(),
                 })?;
 
-            // Run inference
-            let outputs =
-                self.session
-                    .run(ort::inputs![input_value])
-                    .map_err(|e: ort::Error| InferenceError::Failed {
-                        reason: e.to_string(),
-                    })?;
+            // Extract output tensor from HashMap<String, Tensor>
+            let output_value = outputs.get(output_name.as_str()).ok_or_else(|| {
+                InferenceError::OutputParsingFailed {
+                    reason: format!("Output tensor '{}' not found", output_name),
+                }
+            })?;
 
-            // Extract output (first output)
-            let output_value = &outputs[0];
-            let output_tensor =
+            // try_extract_tensor returns (&[usize], &[f32]) — shape elements are usize
+            let (shape, data) =
                 output_value
                     .try_extract_tensor::<f32>()
-                    .map_err(|e: ort::Error| InferenceError::OutputParsingFailed {
-                        reason: e.to_string(),
-                    })?;
+                    .map_err(
+                        |e: oxionnx::OnnxError| InferenceError::OutputParsingFailed {
+                            reason: e.to_string(),
+                        },
+                    )?;
 
-            // Get shape and data
-            let (shape, data) = output_tensor;
-            let shape_vec: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+            // shape elements are already usize — no cast needed
+            let shape_vec: Vec<usize> = shape.to_vec();
 
             // Convert to ndarray
             let output: Array4<f32> = Array4::from_shape_vec(
@@ -379,7 +389,12 @@ impl SuperResolution {
         Ok(output)
     }
 
-    /// Create blend weights for smooth tile merging
+    /// Create blend weights for smooth tile merging.
+    ///
+    /// Note: this uses a slightly different formula from the shared
+    /// [`crate::tiling::compute_blend_weight`]: on the right and bottom
+    /// edges it uses `(width - x)` rather than `(width - x - 1)`, which
+    /// gives a non-zero weight on the very last pixel row/column.
     fn create_blend_weights(&self, width: usize, height: usize, overlap: usize) -> Array2<f32> {
         let mut weights = Array2::<f32>::ones((height, width));
 
@@ -450,15 +465,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Requires ONNX Runtime to be installed"]
+    #[ignore = "Requires ONNX model to be installed"]
     fn test_blend_weights() {
         let _config = SuperResConfig::default();
-        let session = Session::builder().ok();
-
-        if session.is_none() {
-            // Skip if ONNX Runtime not available
-        }
-
         // We can't easily test this without a full model
         // Just verify the method signature compiles
     }

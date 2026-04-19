@@ -2,6 +2,7 @@
 //!
 //! This module provides writers for creating GeoTIFF and Cloud Optimized GeoTIFF files.
 
+mod bigtiff;
 mod cog_writer;
 mod geokeys_writer;
 mod geotiff_writer;
@@ -9,6 +10,10 @@ mod ifd_writer;
 mod overviews;
 mod tiles;
 
+pub use bigtiff::{
+    BIGTIFF_HEADER_SIZE, BIGTIFF_IFD_ENTRY_SIZE, BigTiffHeader, BigTiffIfdEntry, BigTiffMode,
+    CLASSIC_TIFF_LIMIT, needs_bigtiff, project_file_size,
+};
 pub use cog_writer::{CogWriter, CogWriterOptions};
 pub use geotiff_writer::{GeoTiffWriter, GeoTiffWriterOptions};
 pub use overviews::{OverviewGenerator, OverviewResampling};

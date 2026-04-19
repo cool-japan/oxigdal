@@ -83,7 +83,7 @@ reqwest = { workspace = true, optional = true, features = ["stream"] }
 rayon = { workspace = true, optional = true }
 
 # Caching
-lru = { version = "0.16", optional = true }
+lru = { version = "0.17", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

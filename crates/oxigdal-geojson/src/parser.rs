@@ -184,6 +184,7 @@ impl GeoJsonParser {
         }
 
         let bbox = parse_bbox(value.get("bbox"));
+        let bbox_3d = parse_bbox_3d(value.get("bbox"));
         let crs = parse_crs(value.get("crs"));
         let name = value
             .get("name")
@@ -193,6 +194,7 @@ impl GeoJsonParser {
         Ok(FeatureCollection {
             features,
             bbox,
+            bbox_3d,
             crs,
             name,
         })
@@ -245,9 +247,20 @@ impl GeoJsonParser {
                 if arr.is_empty() {
                     return Err(GeoJsonError::EmptyCoordinates);
                 }
-                let pts: Result<Vec<[f64; 2]>, GeoJsonError> =
-                    arr.iter().map(parse_coord_2d).collect();
-                Ok(GeoJsonGeometry::MultiPoint(pts?))
+                let has_z = arr
+                    .first()
+                    .and_then(|c| c.as_array())
+                    .map(|c| c.len() >= 3)
+                    .unwrap_or(false);
+                if has_z {
+                    let pts: Result<Vec<[f64; 3]>, GeoJsonError> =
+                        arr.iter().map(parse_coord_3d).collect();
+                    Ok(GeoJsonGeometry::MultiPointZ(pts?))
+                } else {
+                    let pts: Result<Vec<[f64; 2]>, GeoJsonError> =
+                        arr.iter().map(parse_coord_2d).collect();
+                    Ok(GeoJsonGeometry::MultiPoint(pts?))
+                }
             }
             "MultiLineString" => {
                 let coords = value
@@ -256,16 +269,36 @@ impl GeoJsonParser {
                 let arr = coords
                     .as_array()
                     .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-                let lines: Result<Vec<Vec<[f64; 2]>>, GeoJsonError> = arr
-                    .iter()
-                    .map(|line| {
-                        let pts_arr = line.as_array().ok_or_else(|| {
-                            GeoJsonError::InvalidCoordinates("expected array".into())
-                        })?;
-                        pts_arr.iter().map(parse_coord_2d).collect()
-                    })
-                    .collect();
-                Ok(GeoJsonGeometry::MultiLineString(lines?))
+                let has_z = arr
+                    .first()
+                    .and_then(|l| l.as_array())
+                    .and_then(|l| l.first())
+                    .and_then(|c| c.as_array())
+                    .map(|c| c.len() >= 3)
+                    .unwrap_or(false);
+                if has_z {
+                    let lines: Result<Vec<Vec<[f64; 3]>>, GeoJsonError> = arr
+                        .iter()
+                        .map(|line| {
+                            let pts_arr = line.as_array().ok_or_else(|| {
+                                GeoJsonError::InvalidCoordinates("expected array".into())
+                            })?;
+                            pts_arr.iter().map(parse_coord_3d).collect()
+                        })
+                        .collect();
+                    Ok(GeoJsonGeometry::MultiLineStringZ(lines?))
+                } else {
+                    let lines: Result<Vec<Vec<[f64; 2]>>, GeoJsonError> = arr
+                        .iter()
+                        .map(|line| {
+                            let pts_arr = line.as_array().ok_or_else(|| {
+                                GeoJsonError::InvalidCoordinates("expected array".into())
+                            })?;
+                            pts_arr.iter().map(parse_coord_2d).collect()
+                        })
+                        .collect();
+                    Ok(GeoJsonGeometry::MultiLineString(lines?))
+                }
             }
             "MultiPolygon" => {
                 let coords = value
@@ -274,24 +307,54 @@ impl GeoJsonParser {
                 let arr = coords
                     .as_array()
                     .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-                let polys: Result<Vec<Vec<Vec<[f64; 2]>>>, GeoJsonError> = arr
-                    .iter()
-                    .map(|poly| {
-                        let rings = poly.as_array().ok_or_else(|| {
-                            GeoJsonError::InvalidCoordinates("expected array".into())
-                        })?;
-                        rings
-                            .iter()
-                            .map(|ring| {
-                                let ring_arr = ring.as_array().ok_or_else(|| {
-                                    GeoJsonError::InvalidCoordinates("expected array".into())
-                                })?;
-                                ring_arr.iter().map(parse_coord_2d).collect()
-                            })
-                            .collect()
-                    })
-                    .collect();
-                Ok(GeoJsonGeometry::MultiPolygon(polys?))
+                let has_z = arr
+                    .first()
+                    .and_then(|p| p.as_array())
+                    .and_then(|p| p.first())
+                    .and_then(|r| r.as_array())
+                    .and_then(|r| r.first())
+                    .and_then(|c| c.as_array())
+                    .map(|c| c.len() >= 3)
+                    .unwrap_or(false);
+                if has_z {
+                    let polys: Result<Vec<Vec<Vec<[f64; 3]>>>, GeoJsonError> = arr
+                        .iter()
+                        .map(|poly| {
+                            let rings = poly.as_array().ok_or_else(|| {
+                                GeoJsonError::InvalidCoordinates("expected array".into())
+                            })?;
+                            rings
+                                .iter()
+                                .map(|ring| {
+                                    let ring_arr = ring.as_array().ok_or_else(|| {
+                                        GeoJsonError::InvalidCoordinates("expected array".into())
+                                    })?;
+                                    ring_arr.iter().map(parse_coord_3d).collect()
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    Ok(GeoJsonGeometry::MultiPolygonZ(polys?))
+                } else {
+                    let polys: Result<Vec<Vec<Vec<[f64; 2]>>>, GeoJsonError> = arr
+                        .iter()
+                        .map(|poly| {
+                            let rings = poly.as_array().ok_or_else(|| {
+                                GeoJsonError::InvalidCoordinates("expected array".into())
+                            })?;
+                            rings
+                                .iter()
+                                .map(|ring| {
+                                    let ring_arr = ring.as_array().ok_or_else(|| {
+                                        GeoJsonError::InvalidCoordinates("expected array".into())
+                                    })?;
+                                    ring_arr.iter().map(parse_coord_2d).collect()
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    Ok(GeoJsonGeometry::MultiPolygon(polys?))
+                }
             }
             "GeometryCollection" => {
                 let geometries = value
@@ -353,8 +416,12 @@ impl GeoJsonDocument {
 pub struct FeatureCollection {
     /// The features in this collection.
     pub features: Vec<GeoJsonFeature>,
-    /// Optional bounding box from the JSON.
+    /// Optional 2-D bounding box from the JSON (`[minx, miny, maxx, maxy]`).
     pub bbox: Option<[f64; 4]>,
+    /// Optional 3-D (6-element) bounding box from the JSON
+    /// (`[minx, miny, minz, maxx, maxy, maxz]`).  Populated only when the
+    /// source JSON contained a 6-element bbox array.
+    pub bbox_3d: Option<[f64; 6]>,
     /// Optional CRS (legacy, pre-RFC 7946).
     pub crs: Option<GeoJsonCrs>,
     /// Optional `name` property (common convention).
@@ -379,6 +446,14 @@ impl FeatureCollection {
     pub fn compute_bbox(&self) -> Option<[f64; 4]> {
         let bboxes: Vec<[f64; 4]> = self.features.iter().filter_map(|f| f.bbox()).collect();
         crate::types::union_bboxes(&bboxes)
+    }
+
+    /// Compute the union 3-D bounding box of all feature geometries that
+    /// carry Z coordinates.  Returns `None` if no 3-D geometries exist.
+    #[must_use]
+    pub fn compute_bbox_3d(&self) -> Option<[f64; 6]> {
+        let bboxes: Vec<[f64; 6]> = self.features.iter().filter_map(|f| f.bbox_3d()).collect();
+        crate::types::union_bboxes_3d(&bboxes)
     }
 
     /// Return the unique geometry type strings present in this collection.
@@ -573,6 +648,22 @@ fn parse_bbox(value: Option<&serde_json::Value>) -> Option<[f64; 4]> {
     let maxx = arr[2].as_f64()?;
     let maxy = arr[3].as_f64()?;
     Some([minx, miny, maxx, maxy])
+}
+
+/// Parse a 6-element bbox array `[minx, miny, minz, maxx, maxy, maxz]`.
+/// Returns `None` if the array has fewer than 6 elements.
+fn parse_bbox_3d(value: Option<&serde_json::Value>) -> Option<[f64; 6]> {
+    let arr = value?.as_array()?;
+    if arr.len() < 6 {
+        return None;
+    }
+    let a = arr[0].as_f64()?;
+    let b = arr[1].as_f64()?;
+    let c = arr[2].as_f64()?;
+    let d = arr[3].as_f64()?;
+    let e = arr[4].as_f64()?;
+    let f = arr[5].as_f64()?;
+    Some([a, b, c, d, e, f])
 }
 
 fn parse_crs(value: Option<&serde_json::Value>) -> Option<GeoJsonCrs> {

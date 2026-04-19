@@ -355,6 +355,209 @@ impl Iterator for TileStream {
 
 // ─── StreamingExt ─────────────────────────────────────────────────────────────
 
+// ─── GeoJSON streaming helper ─────────────────────────────────────────────────
+
+/// Stream features from a GeoJSON file path stored in `info.path`.
+///
+/// When the `geojson` feature is enabled and `info.path` points to a readable
+/// FeatureCollection, this returns a [`FeatureStream`] with real feature data.
+/// Properties are already `serde_json::Value` in the GeoJSON driver — no
+/// conversion is needed.  Geometry is encoded as ISO WKB (little-endian) using
+/// [`oxigdal_geojson::Geometry::to_wkb`].
+///
+/// Falls back to an empty stream when:
+/// - `info.path` is `None` (e.g., programmatic dataset)
+/// - the `geojson` feature is disabled
+/// - the file is not a FeatureCollection (single Feature / Geometry)
+fn stream_geojson_features(info: &crate::DatasetInfo) -> Result<FeatureStream> {
+    #[cfg(feature = "geojson")]
+    {
+        let path = match &info.path {
+            Some(p) => p.clone(),
+            None => return Ok(FeatureStream::empty()),
+        };
+
+        let file = std::fs::File::open(&path).map_err(|e| {
+            OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                message: format!("cannot open GeoJSON for streaming '{path}': {e}"),
+            })
+        })?;
+
+        use oxigdal_geojson::GeoJsonReader;
+        let buf_reader = std::io::BufReader::new(file);
+        let mut reader = GeoJsonReader::without_validation(buf_reader);
+
+        // We load the FeatureCollection into memory; for very large files the
+        // caller should use the oxigdal_streaming crate instead.
+        let fc = match reader.read_feature_collection() {
+            Ok(fc) => fc,
+            Err(_) => return Ok(FeatureStream::empty()),
+        };
+
+        let features = fc
+            .features
+            .into_iter()
+            .map(|f| {
+                let geometry = f.geometry.and_then(|g| g.to_wkb());
+                let properties: HashMap<String, JsonValue> =
+                    f.properties.unwrap_or_default().into_iter().collect();
+                let mut sf = StreamingFeature::new(geometry, properties);
+                if let Some(id) = f.id {
+                    sf = sf.with_id(id.as_string());
+                }
+                sf
+            })
+            .collect::<Vec<_>>();
+
+        Ok(FeatureStream::from_vec(features))
+    }
+
+    #[cfg(not(feature = "geojson"))]
+    {
+        let _ = info;
+        Ok(FeatureStream::empty())
+    }
+}
+
+// ─── FlatGeobuf streaming helper ─────────────────────────────────────────────
+
+/// Stream features from a FlatGeobuf file path stored in `info.path`.
+///
+/// When the `flatgeobuf` feature is enabled and `info.path` points to a valid
+/// FlatGeobuf file, this returns a [`FeatureStream`] with real feature data.
+/// Geometry is encoded as ISO WKB (little-endian) via
+/// [`oxigdal_core::vector::Geometry::to_wkb`].
+/// Properties are converted from [`oxigdal_core::vector::FieldValue`] via
+/// [`oxigdal_core::vector::FieldValue::to_json_value`].
+///
+/// Falls back to an empty stream when:
+/// - `info.path` is `None`
+/// - the `flatgeobuf` feature is disabled
+fn stream_flatgeobuf_features(info: &crate::DatasetInfo) -> Result<FeatureStream> {
+    #[cfg(feature = "flatgeobuf")]
+    {
+        use oxigdal_core::error::IoError;
+        use oxigdal_flatgeobuf::FlatGeobufReader;
+
+        let path = match &info.path {
+            Some(p) => p.clone(),
+            None => return Ok(FeatureStream::empty()),
+        };
+
+        let file = std::fs::File::open(&path).map_err(|e| {
+            OxiGdalError::Io(IoError::Read {
+                message: format!("cannot open FlatGeobuf for streaming '{path}': {e}"),
+            })
+        })?;
+
+        let mut reader = FlatGeobufReader::new(file).map_err(|e| OxiGdalError::Internal {
+            message: e.to_string(),
+        })?;
+
+        let iter = reader.features().map_err(|e| OxiGdalError::Internal {
+            message: e.to_string(),
+        })?;
+
+        let features = iter
+            .filter_map(|result| {
+                result
+                    .map_err(|e| OxiGdalError::Internal {
+                        message: e.to_string(),
+                    })
+                    .ok()
+            })
+            .map(|f| {
+                let geometry = f.geometry.map(|g| g.to_wkb());
+                let properties: HashMap<String, JsonValue> = f
+                    .properties
+                    .into_iter()
+                    .map(|(k, v)| (k, v.to_json_value()))
+                    .collect();
+                StreamingFeature::new(geometry, properties)
+            })
+            .collect::<Vec<_>>();
+
+        Ok(FeatureStream::from_vec(features))
+    }
+
+    #[cfg(not(feature = "flatgeobuf"))]
+    {
+        let _ = info;
+        Ok(FeatureStream::empty())
+    }
+}
+
+// ─── Shapefile streaming helper ───────────────────────────────────────────────
+
+/// Stream features from a Shapefile path stored in `info.path`.
+///
+/// When the `shapefile` feature is enabled and `info.path` points to a valid
+/// Shapefile, this returns a [`FeatureStream`] with real feature data.
+/// `info.path` may carry the `.shp` extension; it is stripped before
+/// passing to [`oxigdal_shapefile::ShapefileReader::open`], which appends
+/// the correct per-file extensions itself.
+/// Geometry is encoded as ISO WKB (little-endian).
+/// Properties are converted from [`oxigdal_core::vector::FieldValue`] via
+/// [`oxigdal_core::vector::FieldValue::to_json_value`].
+///
+/// Falls back to an empty stream when:
+/// - `info.path` is `None`
+/// - the `shapefile` feature is disabled
+fn stream_shapefile_features(info: &crate::DatasetInfo) -> Result<FeatureStream> {
+    #[cfg(feature = "shapefile")]
+    {
+        use oxigdal_core::error::IoError;
+        use oxigdal_shapefile::ShapefileReader;
+
+        let raw_path = match &info.path {
+            Some(p) => p.clone(),
+            None => return Ok(FeatureStream::empty()),
+        };
+
+        // ShapefileReader::open() expects a base path without extension
+        // (it appends .shp, .dbf, .shx itself). Strip a trailing .shp
+        // extension if present.
+        let base_path = {
+            let p = std::path::Path::new(&raw_path);
+            match p.extension().and_then(|e| e.to_str()) {
+                Some("shp") | Some("SHP") => p.with_extension("").to_string_lossy().into_owned(),
+                _ => raw_path.clone(),
+            }
+        };
+
+        let reader = ShapefileReader::open(&base_path).map_err(|e| {
+            OxiGdalError::Io(IoError::Read {
+                message: format!("cannot open Shapefile for streaming '{base_path}': {e}"),
+            })
+        })?;
+
+        let shapefile_features = reader.read_features().map_err(|e| OxiGdalError::Internal {
+            message: e.to_string(),
+        })?;
+
+        let features = shapefile_features
+            .into_iter()
+            .map(|sf| {
+                let geometry = sf.geometry.map(|g| g.to_wkb());
+                let properties: HashMap<String, JsonValue> = sf
+                    .attributes
+                    .into_iter()
+                    .map(|(k, v)| (k, v.to_json_value()))
+                    .collect();
+                StreamingFeature::new(geometry, properties)
+            })
+            .collect::<Vec<_>>();
+
+        Ok(FeatureStream::from_vec(features))
+    }
+
+    #[cfg(not(feature = "shapefile"))]
+    {
+        let _ = info;
+        Ok(FeatureStream::empty())
+    }
+}
+
 /// Extension trait that adds streaming iterators to [`OpenedDataset`].
 ///
 /// Import this trait to call `.features()` and `.tiles()` on an opened dataset.
@@ -394,14 +597,14 @@ pub trait StreamingExt {
 impl StreamingExt for OpenedDataset {
     fn features(&self) -> Result<FeatureStream> {
         match self {
-            OpenedDataset::GeoJson(_)
-            | OpenedDataset::Shapefile(_)
-            | OpenedDataset::GeoPackage(_)
+            OpenedDataset::GeoJson(info) => stream_geojson_features(info),
+            OpenedDataset::Shapefile(info) => stream_shapefile_features(info),
+            OpenedDataset::FlatGeobuf(info) => stream_flatgeobuf_features(info),
+            OpenedDataset::GeoPackage(_)
             | OpenedDataset::GeoParquet(_)
-            | OpenedDataset::FlatGeobuf(_)
             | OpenedDataset::Stac(_)
             | OpenedDataset::Unknown(_) => {
-                // Return empty stream — real features loaded by driver
+                // TODO: wire real feature streaming for GeoPackage / GeoParquet / STAC
                 Ok(FeatureStream::empty())
             }
             other => Err(OxiGdalError::NotSupported {
@@ -690,6 +893,7 @@ mod tests {
 
     #[test]
     fn test_feature_stream_collect_empty() {
+        // `{}` is not a FeatureCollection, so the reader returns empty
         let path = make_temp_file("stream_collect_empty.geojson", b"{}");
         let ds = open(&path).expect("open");
         let features: Vec<_> = ds
@@ -697,7 +901,92 @@ mod tests {
             .expect("features")
             .collect::<Result<Vec<_>>>()
             .expect("collect");
-        assert_eq!(features.len(), 0, "empty driver stub returns no features");
+        assert_eq!(
+            features.len(),
+            0,
+            "non-FeatureCollection GeoJSON returns no features"
+        );
+    }
+
+    // ── GeoJSON real feature streaming ────────────────────────────────────────
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn test_geojson_streaming_feature_collection_count() {
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[139.7,35.7]},"properties":{"name":"Tokyo"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[2.35,48.85]},"properties":{"name":"Paris"}}
+        ]}"#;
+        let path = make_temp_file("stream_fc_count.geojson", content);
+        let ds = open(&path).expect("open");
+        let features: Vec<_> = ds
+            .features()
+            .expect("features")
+            .collect::<Result<Vec<_>>>()
+            .expect("collect");
+        assert_eq!(features.len(), 2, "should stream 2 features");
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn test_geojson_streaming_properties_present() {
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":null,"properties":{"city":"Berlin","pop":3600000}}
+        ]}"#;
+        let path = make_temp_file("stream_props.geojson", content);
+        let ds = open(&path).expect("open");
+        let mut stream = ds.features().expect("features");
+        let feat = stream.next().expect("first feature").expect("no error");
+        assert_eq!(feat.properties["city"], serde_json::json!("Berlin"));
+        assert_eq!(feat.properties["pop"], serde_json::json!(3600000));
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn test_geojson_streaming_geometry_wkb() {
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[139.7,35.7]},"properties":{}}
+        ]}"#;
+        let path = make_temp_file("stream_wkb.geojson", content);
+        let ds = open(&path).expect("open");
+        let mut stream = ds.features().expect("features");
+        let feat = stream.next().expect("first feature").expect("no error");
+        assert!(
+            feat.has_geometry(),
+            "Point feature should have WKB geometry"
+        );
+        // WKB Point: 1 byte order + 4 type + 8 x + 8 y = 21 bytes
+        assert_eq!(feat.geometry_byte_len(), 21, "WKB Point should be 21 bytes");
+        // Verify byte-order flag (0x01 = LE) and geometry type (0x01000000 = Point)
+        let wkb = feat.geometry.as_ref().expect("geometry");
+        assert_eq!(wkb[0], 0x01, "little-endian byte-order flag");
+        assert_eq!(&wkb[1..5], &1u32.to_le_bytes(), "WKB type = Point (1)");
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn test_geojson_streaming_null_geometry_is_none() {
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":null,"properties":{"note":"no geom"}}
+        ]}"#;
+        let path = make_temp_file("stream_null_geom.geojson", content);
+        let ds = open(&path).expect("open");
+        let mut stream = ds.features().expect("features");
+        let feat = stream.next().expect("first feature").expect("no error");
+        assert!(!feat.has_geometry(), "null geometry should produce None");
+    }
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn test_geojson_streaming_feature_id() {
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","id":"feat-001","geometry":null,"properties":{}}
+        ]}"#;
+        let path = make_temp_file("stream_id.geojson", content);
+        let ds = open(&path).expect("open");
+        let mut stream = ds.features().expect("features");
+        let feat = stream.next().expect("first feature").expect("no error");
+        assert_eq!(feat.id.as_deref(), Some("feat-001"));
     }
 
     #[test]

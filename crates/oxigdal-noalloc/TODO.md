@@ -1,12 +1,12 @@
 # TODO: oxigdal-noalloc
 
 ## High Priority
-- [ ] Add FixedLineString<N> type: fixed-capacity polyline with length, bbox, and simplification support
-- [ ] Implement FixedRing<N> type: closed ring with area, orientation, and winding-number containment test
-- [ ] Add BBox3D type: 3D axis-aligned bounding box with containment, intersection, and volume
+- [x] Add FixedLineString<N> type (completed 2026-04-19, part of N1)
+- [x] Implement FixedRing<N> type (completed 2026-04-19, part of N1)
+- [x] Add BBox3D type (completed 2026-04-19, part of N1)
 - [ ] Implement fixed-capacity spatial index (FixedGridIndex<N, M>) for no_alloc spatial queries
-- [ ] Add Mercator projection (lon/lat to metres) as a no_std CoordTransform factory
-- [ ] Implement geohash neighbour computation (8-connected adjacency from a GeoHashFixed)
+- [x] Add Mercator projection (completed 2026-04-19, part of N1)
+- [x] Implement geohash neighbour computation (completed 2026-04-19, part of N1)
 
 ## Medium Priority
 - [ ] Add great-circle distance (Haversine formula) for Point2D interpreted as (lon, lat)

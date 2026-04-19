@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         ),
         weight_sharing: true,
         operator_fusion: true,
+        graph_opt_config: None,
     };
 
     println!("\nOptimization Configuration:");

@@ -746,8 +746,8 @@ mod tests {
 
     #[test]
     fn test_buffer_validation() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let geom = PyDict::new(py);
             geom.set_item("type", "Point").ok();
 
@@ -759,8 +759,8 @@ mod tests {
 
     #[test]
     fn test_simplify_validation() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let geom = PyDict::new(py);
             geom.set_item("type", "LineString").ok();
 
@@ -770,8 +770,8 @@ mod tests {
 
     #[test]
     fn test_area_validation() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let geom = PyDict::new(py);
             geom.set_item("type", "Point").ok();
 
@@ -782,8 +782,8 @@ mod tests {
 
     #[test]
     fn test_area_polygon() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let geom = PyDict::new(py);
             geom.set_item("type", "Polygon").ok();
             let outer = PyList::empty(py);
@@ -813,8 +813,8 @@ mod tests {
 
     #[test]
     fn test_envelope_point() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let geom = PyDict::new(py);
             geom.set_item("type", "Point").ok();
             let coords = PyList::new(py, [5.0, 10.0]).ok();

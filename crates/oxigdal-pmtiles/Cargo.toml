@@ -16,10 +16,16 @@ categories = ["science", "parser-implementations", "encoding"]
 [features]
 default = ["std"]
 std = ["thiserror/std"]
+# Enable transparent tile/directory decompression via the OxiARC ecosystem
+# (COOLJAPAN Pure Rust Policy — no flate2 / brotli-rs / zstd C bindings).
+compression = ["dep:oxiarc-archive"]
 
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Pure-Rust compression/decompression (feature-gated): powers
+# gzip / brotli / zstd decoding of PMTiles tile payloads and directories.
+oxiarc-archive = { workspace = true, optional = true }
 
 [dev-dependencies]
 

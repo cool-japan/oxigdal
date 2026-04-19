@@ -4,6 +4,7 @@
 //! preserving essential geospatial information.
 
 use oxigdal_core::error::Result;
+use oxigdal_core::io::DataSource;
 
 use crate::tiff::{TiffFile, TiffTag};
 
@@ -240,7 +241,7 @@ pub struct GeoKeyOptimization {
 }
 
 /// Removes redundant TIFF tags
-pub fn find_redundant_tags(tiff: &TiffFile) -> Vec<u16> {
+pub fn find_redundant_tags<S: DataSource>(tiff: &TiffFile, source: &S) -> Vec<u16> {
     let mut redundant = Vec::new();
 
     if let Some(ifd) = tiff.ifds.first() {
@@ -262,7 +263,9 @@ pub fn find_redundant_tags(tiff: &TiffFile) -> Vec<u16> {
 
         // Check for default values that don't need to be stored
         if let Some(entry) = ifd.get_entry(TiffTag::PlanarConfiguration) {
-            if let Ok(value) = entry.get_u64(tiff.byte_order()) {
+            if let Ok(value) =
+                entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+            {
                 if value == 1 {
                     // Default is Chunky
                     redundant.push(TiffTag::PlanarConfiguration as u16);
@@ -271,7 +274,9 @@ pub fn find_redundant_tags(tiff: &TiffFile) -> Vec<u16> {
         }
 
         if let Some(entry) = ifd.get_entry(TiffTag::ResolutionUnit) {
-            if let Ok(value) = entry.get_u64(tiff.byte_order()) {
+            if let Ok(value) =
+                entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+            {
                 if value == 2 {
                     // Default is inches
                     redundant.push(TiffTag::ResolutionUnit as u16);

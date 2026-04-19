@@ -113,6 +113,7 @@ impl VrtReader {
                 tile_height,
             },
             driver_metadata: Vec::new(),
+            statistics: None,
         }
     }
 

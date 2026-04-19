@@ -16,4 +16,12 @@ pub enum PmTilesError {
     /// An I/O error occurred.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Decompression failed.
+    #[error("Decompression error: {0}")]
+    Decompression(String),
+
+    /// The requested tile was not found in the archive.
+    #[error("Tile not found: z={0}, x={1}, y={2}")]
+    TileNotFound(u8, u32, u32),
 }

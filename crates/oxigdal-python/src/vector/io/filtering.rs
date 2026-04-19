@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use serde_json::Value as JsonValue;
 
 #[cfg(feature = "shapefile")]
-use oxigdal_core::vector::PropertyValue;
+use oxigdal_core::vector::FieldValue;
 
 /// Filters GeoJSON by layer name (for multi-layer GeoJSON files)
 pub(super) fn filter_geojson_by_layer(json: &JsonValue, layer_name: &str) -> PyResult<JsonValue> {
@@ -348,18 +348,18 @@ pub(super) fn apply_where_filter(
 
         if let Some(prop_value) = feature.attributes.get(field) {
             match prop_value {
-                PropertyValue::String(s) => return s == value,
-                PropertyValue::Integer(i) => {
+                FieldValue::String(s) => return s == value,
+                FieldValue::Integer(i) => {
                     if let Ok(val) = value.parse::<i64>() {
                         return *i == val;
                     }
                 }
-                PropertyValue::Float(f) => {
+                FieldValue::Float(f) => {
                     if let Ok(val) = value.parse::<f64>() {
                         return (*f - val).abs() < f64::EPSILON;
                     }
                 }
-                PropertyValue::Bool(b) => {
+                FieldValue::Bool(b) => {
                     if let Ok(val) = value.parse::<bool>() {
                         return *b == val;
                     }

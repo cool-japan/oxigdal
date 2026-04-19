@@ -112,8 +112,16 @@ fn encode_varint(v: u64) -> Vec<u8> {
     out
 }
 
-/// Build a PMTiles directory with the given entries, using a trivial encoding
-/// (no delta compression for simplicity — all offsets are absolute and deltas > 0).
+/// Build a PMTiles v3 directory with the given entries.
+///
+/// The wire format (per `decode_directory`):
+/// - `num_entries` varint
+/// - `num_entries` tile_id deltas (cumulative)
+/// - `num_entries` run_lengths
+/// - `num_entries` lengths
+/// - `num_entries` offsets, each encoded as either:
+///     - `0` → clustered shorthand (this tile immediately follows the previous one)
+///     - `offset + 1` → absolute offset (the `+1` reserves 0 for the shorthand)
 fn build_directory(entries: &[(u64, u32, u32, u32)]) -> Vec<u8> {
     // entries: (tile_id, run_length, length, offset)
     let n = entries.len() as u64;
@@ -137,23 +145,10 @@ fn build_directory(entries: &[(u64, u32, u32, u32)]) -> Vec<u8> {
         out.extend(encode_varint(len as u64));
     }
 
-    // offsets — first is absolute, subsequent are delta (use absolute value encoded as delta from last)
-    let mut last_off = 0u64;
-    for (i, &(_, _, prev_len, off)) in entries.iter().enumerate() {
-        if i == 0 {
-            out.extend(encode_varint(off as u64));
-            last_off = off as u64;
-        } else {
-            let delta = (off as u64).saturating_sub(last_off);
-            if delta == 0 {
-                // Use 0 delta means clustered (prev_offset + prev_length)
-                out.extend(encode_varint(0));
-                last_off += prev_len as u64;
-            } else {
-                out.extend(encode_varint(delta));
-                last_off += delta;
-            }
-        }
+    // offsets — always use absolute encoding (`offset + 1`) so the decoder
+    // yields exactly the requested absolute offsets.
+    for &(_, _, _, off) in entries {
+        out.extend(encode_varint(u64::from(off) + 1));
     }
 
     out

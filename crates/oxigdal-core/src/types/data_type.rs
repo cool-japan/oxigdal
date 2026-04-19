@@ -208,6 +208,57 @@ impl fmt::Display for RasterDataType {
     }
 }
 
+impl fmt::Display for ColorInterpretation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Undefined => "Undefined",
+            Self::Gray => "Gray",
+            Self::PaletteIndex => "PaletteIndex",
+            Self::Red => "Red",
+            Self::Green => "Green",
+            Self::Blue => "Blue",
+            Self::Alpha => "Alpha",
+            Self::Hue => "Hue",
+            Self::Saturation => "Saturation",
+            Self::Lightness => "Lightness",
+            Self::Cyan => "Cyan",
+            Self::Magenta => "Magenta",
+            Self::Yellow => "Yellow",
+            Self::Black => "Black",
+            Self::YCbCrY => "YCbCrY",
+            Self::YCbCrCb => "YCbCrCb",
+            Self::YCbCrCr => "YCbCrCr",
+        };
+        f.write_str(s)
+    }
+}
+
+impl fmt::Display for PixelLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BandSequential => f.write_str("BSQ"),
+            Self::BandInterleavedByLine => f.write_str("BIL"),
+            Self::BandInterleavedByPixel => f.write_str("BIP"),
+            Self::Tiled {
+                tile_width,
+                tile_height,
+            } => {
+                write!(f, "Tiled({tile_width}x{tile_height})")
+            }
+        }
+    }
+}
+
+impl fmt::Display for NoDataValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("NoData(None)"),
+            Self::Integer(v) => write!(f, "NoData({v})"),
+            Self::Float(v) => write!(f, "NoData({v})"),
+        }
+    }
+}
+
 /// Sample interpretation for raster data
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -396,5 +447,36 @@ mod tests {
     fn test_data_type_display() {
         assert_eq!(RasterDataType::UInt8.to_string(), "UInt8");
         assert_eq!(RasterDataType::Float64.to_string(), "Float64");
+    }
+
+    #[test]
+    fn test_display_colorinterpretation() {
+        assert_eq!(ColorInterpretation::Undefined.to_string(), "Undefined");
+        assert_eq!(ColorInterpretation::Gray.to_string(), "Gray");
+        assert_eq!(ColorInterpretation::Red.to_string(), "Red");
+        assert_eq!(ColorInterpretation::Alpha.to_string(), "Alpha");
+        assert_eq!(ColorInterpretation::YCbCrY.to_string(), "YCbCrY");
+    }
+
+    #[test]
+    fn test_display_pixellayout() {
+        assert_eq!(PixelLayout::BandSequential.to_string(), "BSQ");
+        assert_eq!(PixelLayout::BandInterleavedByLine.to_string(), "BIL");
+        assert_eq!(PixelLayout::BandInterleavedByPixel.to_string(), "BIP");
+        assert_eq!(
+            PixelLayout::Tiled {
+                tile_width: 256,
+                tile_height: 256
+            }
+            .to_string(),
+            "Tiled(256x256)"
+        );
+    }
+
+    #[test]
+    fn test_display_nodata_value() {
+        assert_eq!(NoDataValue::None.to_string(), "NoData(None)");
+        assert_eq!(NoDataValue::Integer(-9999).to_string(), "NoData(-9999)");
+        assert_eq!(NoDataValue::Float(0.0).to_string(), "NoData(0)");
     }
 }

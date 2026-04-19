@@ -14,7 +14,7 @@ categories = ["development-tools::profiling", "network-programming", "science"]
 
 [dependencies]
 # OpenTelemetry core
-opentelemetry = "0.31"
+opentelemetry.workspace = true
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-stdout = { version = "0.31", features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.31", optional = true, features = ["metrics", "trace", "grpc-tonic"] }
@@ -25,10 +25,10 @@ opentelemetry-otlp = { version = "0.31", optional = true, features = ["metrics",
 # Tracing integration
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry.workspace = true
 
 # Metrics
-prometheus = "0.14"
+prometheus.workspace = true
 
 # Async runtime
 tokio = { workspace = true }
@@ -47,7 +47,7 @@ chrono = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 
 # Statistics for anomaly detection
-statrs = "0.18"
+statrs.workspace = true
 
 # Parking lot for better synchronization
 parking_lot = { workspace = true }

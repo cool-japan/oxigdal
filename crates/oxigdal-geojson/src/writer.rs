@@ -120,6 +120,47 @@ impl GeoJsonWriter {
         }
     }
 
+    /// Write a `FeatureCollection` with a 6-element 3-D bounding box
+    /// `[minx, miny, minz, maxx, maxy, maxz]` (RFC 7946 §5).
+    ///
+    /// Use this for collections containing 3-D geometries.
+    #[must_use]
+    pub fn write_features_iter_3d<'a, I>(&self, features: I, bbox: Option<[f64; 6]>) -> String
+    where
+        I: Iterator<Item = &'a GeoJsonFeature>,
+    {
+        let mut out = String::from(r#"{"type":"FeatureCollection""#);
+
+        if let Some(bb) = bbox {
+            out.push_str(&format!(
+                r#","bbox":[{},{},{},{},{},{}]"#,
+                self.format_coord(bb[0]),
+                self.format_coord(bb[1]),
+                self.format_coord(bb[2]),
+                self.format_coord(bb[3]),
+                self.format_coord(bb[4]),
+                self.format_coord(bb[5])
+            ));
+        }
+
+        out.push_str(r#","features":["#);
+        let mut first = true;
+        for feat in features {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&self.serialize_feature(feat));
+        }
+        out.push_str("]}");
+
+        if let Some(spaces) = self.indent {
+            pretty_print(&out, spaces)
+        } else {
+            out
+        }
+    }
+
     /// Serialise a [`GeoJsonDocument`].
     #[must_use]
     pub fn write_document(&self, doc: &GeoJsonDocument) -> String {
@@ -225,9 +266,23 @@ impl GeoJsonWriter {
                     self.serialize_ring_2d(pts)
                 )
             }
+            GeoJsonGeometry::MultiPointZ(pts) => {
+                format!(
+                    r#"{{"type":"MultiPoint","coordinates":{}}}"#,
+                    self.serialize_ring_3d(pts)
+                )
+            }
             GeoJsonGeometry::MultiLineString(lines) => {
                 let lines_s: Vec<String> =
                     lines.iter().map(|l| self.serialize_ring_2d(l)).collect();
+                format!(
+                    r#"{{"type":"MultiLineString","coordinates":[{}]}}"#,
+                    lines_s.join(",")
+                )
+            }
+            GeoJsonGeometry::MultiLineStringZ(lines) => {
+                let lines_s: Vec<String> =
+                    lines.iter().map(|l| self.serialize_ring_3d(l)).collect();
                 format!(
                     r#"{{"type":"MultiLineString","coordinates":[{}]}}"#,
                     lines_s.join(",")
@@ -239,6 +294,20 @@ impl GeoJsonWriter {
                     .map(|poly| {
                         let rings_s: Vec<String> =
                             poly.iter().map(|r| self.serialize_ring_2d(r)).collect();
+                        format!("[{}]", rings_s.join(","))
+                    })
+                    .collect();
+                format!(
+                    r#"{{"type":"MultiPolygon","coordinates":[{}]}}"#,
+                    polys_s.join(",")
+                )
+            }
+            GeoJsonGeometry::MultiPolygonZ(polys) => {
+                let polys_s: Vec<String> = polys
+                    .iter()
+                    .map(|poly| {
+                        let rings_s: Vec<String> =
+                            poly.iter().map(|r| self.serialize_ring_3d(r)).collect();
                         format!("[{}]", rings_s.join(","))
                     })
                     .collect();
@@ -407,6 +476,13 @@ fn validate_geometry_inner(
             }
         }
 
+        GeoJsonGeometry::MultiPointZ(pts) => {
+            for [x, y, z] in pts {
+                check_finite_3(*x, *y, *z, path, issues);
+                check_lon_lat(*x, *y, path, issues);
+            }
+        }
+
         GeoJsonGeometry::MultiLineString(lines) => {
             for line in lines {
                 if line.len() < 2 {
@@ -423,9 +499,31 @@ fn validate_geometry_inner(
             }
         }
 
+        GeoJsonGeometry::MultiLineStringZ(lines) => {
+            for line in lines {
+                if line.len() < 2 {
+                    issues.push(ValidationIssue {
+                        severity: IssueSeverity::Error,
+                        message: "LineString in MultiLineString must have ≥2 positions".into(),
+                        path: path_owned.clone(),
+                    });
+                }
+                for [x, y, z] in line {
+                    check_finite_3(*x, *y, *z, path, issues);
+                    check_lon_lat(*x, *y, path, issues);
+                }
+            }
+        }
+
         GeoJsonGeometry::MultiPolygon(polys) => {
             for rings in polys {
                 validate_polygon_rings_2d(rings, path, path_owned.clone(), issues);
+            }
+        }
+
+        GeoJsonGeometry::MultiPolygonZ(polys) => {
+            for rings in polys {
+                validate_polygon_rings_3d(rings, path, path_owned.clone(), issues);
             }
         }
 

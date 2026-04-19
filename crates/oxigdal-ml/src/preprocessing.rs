@@ -152,66 +152,48 @@ pub fn normalize(buffer: &RasterBuffer, params: &NormalizationParams) -> Result<
     Ok(result)
 }
 
-/// Tiles a raster buffer into smaller tiles
+/// Tiles a raster buffer into smaller tiles.
+///
+/// This delegates to [`crate::tiling::compute_tile_grid`] for the tile
+/// layout, then extracts pixel data for each tile.
 ///
 /// # Errors
 /// Returns an error if tiling fails
 pub fn tile_raster(buffer: &RasterBuffer, config: &TileConfig) -> Result<Vec<Tile>> {
-    if config.tile_width == 0 || config.tile_height == 0 {
-        return Err(PreprocessingError::InvalidTileSize {
-            width: config.tile_width,
-            height: config.tile_height,
-        }
-        .into());
-    }
-
-    let width = buffer.width();
-    let height = buffer.height();
+    let width = buffer.width() as usize;
+    let height = buffer.height() as usize;
 
     debug!(
         "Tiling {}x{} raster into {}x{} tiles with {} overlap",
         width, height, config.tile_width, config.tile_height, config.overlap
     );
 
-    let mut tiles = Vec::new();
+    // Compute tile layout via the shared tiling module
+    let specs = crate::tiling::compute_tile_grid(
+        width,
+        height,
+        config.tile_width,
+        config.tile_height,
+        config.overlap,
+    )?;
 
-    let stride_x = config.tile_width.saturating_sub(config.overlap);
-    let stride_y = config.tile_height.saturating_sub(config.overlap);
+    let mut tiles = Vec::with_capacity(specs.len());
 
-    if stride_x == 0 || stride_y == 0 {
-        return Err(PreprocessingError::TilingFailed {
-            reason: "Overlap is too large for the tile size".to_string(),
-        }
-        .into());
-    }
+    for spec in &specs {
+        let x = spec.x_offset as u64;
+        let y = spec.y_offset as u64;
+        let tw = spec.width as u64;
+        let th = spec.height as u64;
 
-    let mut y = 0u64;
-    while y < height {
-        let mut x = 0u64;
-        while x < width {
-            let tile_width = (width - x).min(config.tile_width as u64);
-            let tile_height = (height - y).min(config.tile_height as u64);
+        let tile_buffer = extract_tile(buffer, x, y, tw, th, config)?;
 
-            let tile_buffer = extract_tile(buffer, x, y, tile_width, tile_height, config)?;
-
-            tiles.push(Tile {
-                buffer: tile_buffer,
-                x_offset: x,
-                y_offset: y,
-                original_width: width,
-                original_height: height,
-            });
-
-            x = x.saturating_add(stride_x as u64);
-            if x >= width {
-                break;
-            }
-        }
-
-        y = y.saturating_add(stride_y as u64);
-        if y >= height {
-            break;
-        }
+        tiles.push(Tile {
+            buffer: tile_buffer,
+            x_offset: x,
+            y_offset: y,
+            original_width: buffer.width(),
+            original_height: buffer.height(),
+        });
     }
 
     debug!("Created {} tiles", tiles.len());

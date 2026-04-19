@@ -13,7 +13,7 @@ use crate::component::types::ComponentBbox;
 /// The variants are kept intentionally small; rich types (e.g. timestamps,
 /// GeoJSON geometries) should be serialised as strings or bytes.
 #[derive(Debug, Clone)]
-pub enum PropertyValue {
+pub enum FieldValue {
     /// SQL-NULL / JSON-null sentinel.
     Null,
     /// Boolean value.
@@ -28,7 +28,7 @@ pub enum PropertyValue {
     Bytes(Vec<u8>),
 }
 
-impl PropertyValue {
+impl FieldValue {
     /// Convert to `f64` if the variant is numeric.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
@@ -53,7 +53,7 @@ impl PropertyValue {
     }
 }
 
-impl PartialEq for PropertyValue {
+impl PartialEq for FieldValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Null, Self::Null) => true,
@@ -76,7 +76,7 @@ pub struct ComponentFeature {
     /// Geometry encoded as ISO WKB (little-endian preferred).
     pub geometry_wkb: Option<Vec<u8>>,
     /// Attribute map.
-    pub properties: HashMap<String, PropertyValue>,
+    pub properties: HashMap<String, FieldValue>,
     /// Pre-computed bounding box (may be absent if geometry is missing).
     pub bbox: Option<ComponentBbox>,
 }
@@ -111,12 +111,12 @@ impl ComponentFeature {
     }
 
     /// Insert or replace a property.
-    pub fn set_property(&mut self, key: impl Into<String>, value: PropertyValue) {
+    pub fn set_property(&mut self, key: impl Into<String>, value: FieldValue) {
         self.properties.insert(key.into(), value);
     }
 
     /// Look up a property by name.
-    pub fn get_property(&self, key: &str) -> Option<&PropertyValue> {
+    pub fn get_property(&self, key: &str) -> Option<&FieldValue> {
         self.properties.get(key)
     }
 
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn feature_set_get_property() {
         let mut f = ComponentFeature::new();
-        f.set_property("name", PropertyValue::String("hello".into()));
+        f.set_property("name", FieldValue::String("hello".into()));
         assert_eq!(
             f.get_property("name").and_then(|v| v.as_str()),
             Some("hello")
@@ -280,15 +280,15 @@ mod tests {
 
     #[test]
     fn property_value_as_f64() {
-        assert_eq!(PropertyValue::Int(42).as_f64(), Some(42.0));
-        assert_eq!(PropertyValue::Float(1.234).as_f64(), Some(1.234));
-        assert!(PropertyValue::Null.as_f64().is_none());
+        assert_eq!(FieldValue::Int(42).as_f64(), Some(42.0));
+        assert_eq!(FieldValue::Float(1.234).as_f64(), Some(1.234));
+        assert!(FieldValue::Null.as_f64().is_none());
     }
 
     #[test]
     fn property_value_is_null() {
-        assert!(PropertyValue::Null.is_null());
-        assert!(!PropertyValue::Bool(true).is_null());
+        assert!(FieldValue::Null.is_null());
+        assert!(!FieldValue::Bool(true).is_null());
     }
 
     #[test]

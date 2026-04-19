@@ -98,6 +98,7 @@ impl Dataset {
             color_interpretation: vec![ColorInterpretation::Undefined; band_count as usize],
             layout: PixelLayout::BandSequential,
             driver_metadata: Vec::new(),
+            statistics: None,
         };
 
         let mut bands = Vec::with_capacity(band_count as usize);

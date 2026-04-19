@@ -51,7 +51,7 @@ oxigdal-core = { workspace = true }
 oxigdal-geotiff = { workspace = true }
 oxigdal-algorithms = { workspace = true }
 oxigdal-proj = { workspace = true }
-oxigdal-stac = { workspace = true }
+oxigdal-stac = { workspace = true, features = ["std", "reqwest"] }
 oxigdal-geojson = { workspace = true }
 oxigdal-geoparquet = { workspace = true }
 oxigdal-zarr = { workspace = true }

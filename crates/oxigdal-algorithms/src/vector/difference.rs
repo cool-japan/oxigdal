@@ -45,7 +45,6 @@
 //! ```
 
 use crate::error::{AlgorithmError, Result};
-use crate::vector::intersection::{intersect_linestrings, point_in_polygon};
 use crate::vector::pool::{PoolGuard, get_pooled_polygon};
 use oxigdal_core::vector::{Coordinate, LineString, Polygon};
 
@@ -87,7 +86,7 @@ const EPSILON: f64 = 1e-10;
 pub fn difference_polygon(poly1: &Polygon, poly2: &Polygon) -> Result<Vec<Polygon>> {
     use oxigdal_core::OxiGdalError;
 
-    // Check validity
+    // Check validity -- preserve the detailed OxiGdalError builder for backward compat
     if poly1.exterior.coords.len() < 4 {
         return Err(OxiGdalError::invalid_parameter_builder(
             "poly1",
@@ -114,232 +113,24 @@ pub fn difference_polygon(poly1: &Polygon, poly2: &Polygon) -> Result<Vec<Polygo
         .into());
     }
 
-    // Compute bounding boxes for quick rejection
-    let bounds1 = poly1.bounds();
-    let bounds2 = poly2.bounds();
-
-    if let (Some((min_x1, min_y1, max_x1, max_y1)), Some((min_x2, min_y2, max_x2, max_y2))) =
-        (bounds1, bounds2)
-    {
-        // Check if bounding boxes don't overlap
-        if max_x1 < min_x2 || max_x2 < min_x1 || max_y1 < min_y2 || max_y2 < min_y1 {
-            // Disjoint - return poly1 unchanged
-            return Ok(vec![poly1.clone()]);
-        }
-    }
-
-    // Find all intersection points between boundaries
-    let intersection_points = intersect_linestrings(&poly1.exterior, &poly2.exterior)?;
-
-    if intersection_points.is_empty() {
-        // Either one contains the other, or they're disjoint
-
-        // Check if poly1 is completely inside poly2
-        if point_in_polygon(&poly1.exterior.coords[0], poly2)? {
-            // poly1 is completely inside poly2
-            // However, if poly1 is inside a hole of poly2, poly1 is not actually inside
-            let in_hole = is_point_in_any_hole(&poly1.exterior.coords[0], poly2)?;
-            if !in_hole {
-                // poly1 is truly inside poly2 (not in a hole) - result is empty
-                return Ok(vec![]);
-            }
-            // poly1 is inside a hole of poly2 - return poly1 unchanged
-            return Ok(vec![poly1.clone()]);
-        }
-
-        // Check if poly2 is completely inside poly1
-        if point_in_polygon(&poly2.exterior.coords[0], poly1)? {
-            // poly2 is completely inside poly1
-            // Check if poly2 is inside a hole of poly1
-            let in_hole = is_point_in_any_hole(&poly2.exterior.coords[0], poly1)?;
-            if in_hole {
-                // poly2 is inside a hole of poly1 - return poly1 unchanged
-                return Ok(vec![poly1.clone()]);
-            }
-
-            // poly2 is truly inside poly1 - add poly2 as a hole
-            // Also preserve existing holes from poly1 that are not affected by poly2
-            let mut interiors = filter_unaffected_holes(&poly1.interiors, poly2)?;
-
-            // Add poly2's exterior as a new hole
-            interiors.push(poly2.exterior.clone());
-
-            // If poly2 has holes, those holes represent areas that should be
-            // added back (since subtracting a hole means keeping that area)
-            // This creates additional polygon regions
-            let mut result_polygons = Vec::new();
-
-            // Create the main result polygon with the new hole
-            let result =
-                Polygon::new(poly1.exterior.clone(), interiors).map_err(AlgorithmError::Core)?;
-            result_polygons.push(result);
-
-            // For each hole in poly2, create a new polygon that fills that hole
-            // (since we're subtracting poly2, its holes become filled regions)
-            for hole in &poly2.interiors {
-                if hole.coords.len() >= 4 {
-                    // Check if this hole is inside poly1 (which it should be)
-                    if !hole.coords.is_empty()
-                        && point_in_polygon(&hole.coords[0], poly1)?
-                        && !is_point_in_any_hole(&hole.coords[0], poly1)?
-                    {
-                        let hole_poly =
-                            Polygon::new(hole.clone(), vec![]).map_err(AlgorithmError::Core)?;
-                        result_polygons.push(hole_poly);
-                    }
-                }
-            }
-
-            return Ok(result_polygons);
-        }
-
-        // Disjoint - return poly1 unchanged
-        return Ok(vec![poly1.clone()]);
-    }
-
-    // Polygons overlap - compute difference using enhanced algorithm
-    compute_overlapping_difference(poly1, poly2, &intersection_points)
+    // Delegate to the Weiler-Atherton clipping engine
+    crate::vector::clipping::clip_polygons(
+        poly1,
+        poly2,
+        crate::vector::clipping::ClipOperation::Difference,
+    )
 }
 
-/// Checks if a point is inside any hole of a polygon
-fn is_point_in_any_hole(point: &Coordinate, polygon: &Polygon) -> Result<bool> {
-    for hole in &polygon.interiors {
-        if point_in_ring(point, &hole.coords) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Filters holes that are not affected by the subtracted polygon
-fn filter_unaffected_holes(holes: &[LineString], subtract: &Polygon) -> Result<Vec<LineString>> {
-    let mut result = Vec::new();
-
-    for hole in holes {
-        if hole.coords.is_empty() {
-            continue;
-        }
-
-        // Check if this hole intersects with the subtracted polygon
-        let intersections = intersect_linestrings(hole, &subtract.exterior)?;
-
-        if intersections.is_empty() {
-            // Check if hole is completely inside or outside subtract
-            if point_in_ring(&hole.coords[0], &subtract.exterior.coords) {
-                // Hole is inside the subtracted region - it will be removed
-                continue;
-            }
-            // Hole is outside the subtracted region - keep it
-            result.push(hole.clone());
-        } else {
-            // Hole intersects with subtract boundary
-            // For now, keep the hole if its center is outside the subtracted region
-            // A more sophisticated approach would clip the hole
-            let center = compute_ring_centroid(&hole.coords);
-            if !point_in_ring(&center, &subtract.exterior.coords) {
-                result.push(hole.clone());
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-/// Computes the difference for overlapping polygons
-fn compute_overlapping_difference(
-    poly1: &Polygon,
-    poly2: &Polygon,
-    _intersection_points: &[Coordinate],
-) -> Result<Vec<Polygon>> {
-    // For overlapping polygons, we need to implement a proper polygon clipping algorithm
-    // This is a simplified implementation that handles common cases
-
-    // Strategy: Walk along poly1's boundary, tracking when we're inside/outside poly2
-    // Collect the portions that are outside poly2
-
-    let mut result_coords = Vec::new();
-    let coords1 = &poly1.exterior.coords;
-
-    // For each vertex of poly1, check if it's inside poly2
-    for coord in coords1 {
-        if !point_in_ring(coord, &poly2.exterior.coords) {
-            // Point is outside poly2 - include it
-            result_coords.push(*coord);
-        } else if is_point_in_any_hole(coord, poly2).unwrap_or(false) {
-            // Point is inside a hole of poly2 - include it
-            result_coords.push(*coord);
-        }
-    }
-
-    // If we have enough points, create a result polygon
-    if result_coords.len() >= 4 {
-        // Ensure the ring is closed
-        if let (Some(first), Some(last)) = (result_coords.first(), result_coords.last()) {
-            if (first.x - last.x).abs() > EPSILON || (first.y - last.y).abs() > EPSILON {
-                result_coords.push(*first);
-            }
-        }
-
-        // Preserve holes from poly1 that are not affected
-        let interiors = filter_unaffected_holes(&poly1.interiors, poly2)?;
-
-        if result_coords.len() >= 4 {
-            let exterior = LineString::new(result_coords).map_err(AlgorithmError::Core)?;
-            let result = Polygon::new(exterior, interiors).map_err(AlgorithmError::Core)?;
-            return Ok(vec![result]);
-        }
-    }
-
-    // If the simplified approach fails, return poly1 unchanged for now
-    // A full Weiler-Atherton implementation would be needed for complex cases
-    Ok(vec![poly1.clone()])
-}
-
-/// Computes the centroid of a ring
-fn compute_ring_centroid(coords: &[Coordinate]) -> Coordinate {
-    if coords.is_empty() {
-        return Coordinate::new_2d(0.0, 0.0);
-    }
-
-    let mut sum_x = 0.0;
-    let mut sum_y = 0.0;
-    let n = coords.len();
-
-    for coord in coords {
-        sum_x += coord.x;
-        sum_y += coord.y;
-    }
-
-    Coordinate::new_2d(sum_x / n as f64, sum_y / n as f64)
-}
-
-/// Checks if a point is inside a ring using ray casting
+/// Checks if a point is inside a ring using ray casting.
+///
+/// Kept for use by local helpers (topology validation, hole merging, etc.).
 fn point_in_ring(point: &Coordinate, ring: &[Coordinate]) -> bool {
-    let mut inside = false;
-    let n = ring.len();
+    crate::vector::clipping::point_in_ring(point, ring)
+}
 
-    if n < 3 {
-        return false;
-    }
-
-    let mut j = n - 1;
-    for i in 0..n {
-        let xi = ring[i].x;
-        let yi = ring[i].y;
-        let xj = ring[j].x;
-        let yj = ring[j].y;
-
-        let intersect = ((yi > point.y) != (yj > point.y))
-            && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
-
-        if intersect {
-            inside = !inside;
-        }
-
-        j = i;
-    }
-
-    inside
+/// Computes the centroid of a ring.
+fn compute_ring_centroid(coords: &[Coordinate]) -> Coordinate {
+    crate::vector::clipping::compute_ring_centroid(coords)
 }
 
 /// Computes the difference of multiple polygons

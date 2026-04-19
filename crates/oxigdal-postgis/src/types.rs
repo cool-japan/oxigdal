@@ -5,7 +5,7 @@
 use crate::error::Result;
 use crate::wkb::{WkbDecoder, WkbEncoder};
 use bytes::BytesMut;
-use oxigdal_core::vector::feature::{Feature, FeatureId, PropertyValue};
+use oxigdal_core::vector::feature::{Feature, FeatureId, FieldValue};
 use oxigdal_core::vector::geometry::Geometry;
 use postgres_types::{FromSql, IsNull, ToSql, Type};
 use std::error::Error;
@@ -104,14 +104,14 @@ impl<'a> FromSql<'a> for PostGisGeometry {
     }
 }
 
-/// Converts PropertyValue to PostgreSQL-compatible JSON value
-pub fn property_to_sql(value: &PropertyValue) -> serde_json::Value {
+/// Converts FieldValue to PostgreSQL-compatible JSON value
+pub fn property_to_sql(value: &FieldValue) -> serde_json::Value {
     value.to_json()
 }
 
-/// Converts PostgreSQL column value to PropertyValue
-pub fn property_from_sql(value: &serde_json::Value) -> PropertyValue {
-    PropertyValue::from_json(value)
+/// Converts PostgreSQL column value to FieldValue
+pub fn property_from_sql(value: &serde_json::Value) -> FieldValue {
+    FieldValue::from_json(value)
 }
 
 /// Converts a row to a Feature
@@ -196,23 +196,23 @@ impl FeatureBuilder {
 
             // Try to extract value as different types
             let value = if let Ok(Some(v)) = row.try_get::<_, Option<bool>>(idx) {
-                PropertyValue::Bool(v)
+                FieldValue::Bool(v)
             } else if let Ok(Some(v)) = row.try_get::<_, Option<i16>>(idx) {
-                PropertyValue::Integer(i64::from(v))
+                FieldValue::Integer(i64::from(v))
             } else if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(idx) {
-                PropertyValue::Integer(i64::from(v))
+                FieldValue::Integer(i64::from(v))
             } else if let Ok(Some(v)) = row.try_get::<_, Option<i64>>(idx) {
-                PropertyValue::Integer(v)
+                FieldValue::Integer(v)
             } else if let Ok(Some(v)) = row.try_get::<_, Option<f32>>(idx) {
-                PropertyValue::Float(f64::from(v))
+                FieldValue::Float(f64::from(v))
             } else if let Ok(Some(v)) = row.try_get::<_, Option<f64>>(idx) {
-                PropertyValue::Float(v)
+                FieldValue::Float(v)
             } else if let Ok(Some(v)) = row.try_get::<_, Option<String>>(idx) {
-                PropertyValue::String(v)
+                FieldValue::String(v)
             } else if let Ok(Some(v)) = row.try_get::<_, Option<serde_json::Value>>(idx) {
                 property_from_sql(&v)
             } else {
-                PropertyValue::Null
+                FieldValue::Null
             };
 
             self.feature.set_property(col_name, value);
@@ -257,29 +257,29 @@ pub fn from_postgis(postgis_geom: PostGisGeometry) -> (Geometry, Option<i32>) {
     (postgis_geom.geometry, postgis_geom.srid)
 }
 
-/// PropertyValue conversion helpers (standalone functions)
-/// Converts PropertyValue to PostgreSQL boolean
-pub fn property_to_sql_bool(value: &PropertyValue) -> Option<bool> {
+/// FieldValue conversion helpers (standalone functions)
+/// Converts FieldValue to PostgreSQL boolean
+pub fn property_to_sql_bool(value: &FieldValue) -> Option<bool> {
     value.as_bool()
 }
 
-/// Converts PropertyValue to PostgreSQL integer
-pub fn property_to_sql_int(value: &PropertyValue) -> Option<i64> {
+/// Converts FieldValue to PostgreSQL integer
+pub fn property_to_sql_int(value: &FieldValue) -> Option<i64> {
     value.as_i64()
 }
 
-/// Converts PropertyValue to PostgreSQL float
-pub fn property_to_sql_float(value: &PropertyValue) -> Option<f64> {
+/// Converts FieldValue to PostgreSQL float
+pub fn property_to_sql_float(value: &FieldValue) -> Option<f64> {
     value.as_f64()
 }
 
-/// Converts PropertyValue to PostgreSQL text
-pub fn property_to_sql_text(value: &PropertyValue) -> Option<String> {
+/// Converts FieldValue to PostgreSQL text
+pub fn property_to_sql_text(value: &FieldValue) -> Option<String> {
     match value {
-        PropertyValue::String(s) => Some(s.clone()),
-        PropertyValue::Integer(i) => Some(i.to_string()),
-        PropertyValue::Float(f) => Some(f.to_string()),
-        PropertyValue::Bool(b) => Some(b.to_string()),
+        FieldValue::String(s) => Some(s.clone()),
+        FieldValue::Integer(i) => Some(i.to_string()),
+        FieldValue::Float(f) => Some(f.to_string()),
+        FieldValue::Bool(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -310,21 +310,21 @@ mod tests {
 
     #[test]
     fn test_property_value_conversions() {
-        let pv = PropertyValue::Bool(true);
-        assert!(matches!(pv, PropertyValue::Bool(true)));
+        let pv = FieldValue::Bool(true);
+        assert!(matches!(pv, FieldValue::Bool(true)));
 
-        let pv = PropertyValue::Integer(42);
-        assert!(matches!(pv, PropertyValue::Integer(42)));
+        let pv = FieldValue::Integer(42);
+        assert!(matches!(pv, FieldValue::Integer(42)));
 
-        let pv = PropertyValue::Float(3.14);
-        if let PropertyValue::Float(f) = pv {
+        let pv = FieldValue::Float(3.14);
+        if let FieldValue::Float(f) = pv {
             assert!((f - 3.14).abs() < f64::EPSILON);
         } else {
             panic!("Expected Float variant");
         }
 
-        let pv = PropertyValue::String("test".to_string());
-        assert!(matches!(pv, PropertyValue::String(ref s) if s == "test"));
+        let pv = FieldValue::String("test".to_string());
+        assert!(matches!(pv, FieldValue::String(ref s) if s == "test"));
     }
 
     #[test]

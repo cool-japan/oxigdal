@@ -129,6 +129,32 @@ pub mod streaming;
 /// Format conversion planning and detection utilities.
 pub mod convert;
 
+/// Magic-byte signatures for binary format detection.
+pub(crate) mod magic;
+
+/// Cloud URI detection and transparent dispatch for `Dataset::open`.
+pub mod cloud_detect;
+pub use cloud_detect::is_cloud_uri;
+
+/// Virtual Raster construction from multiple source datasets.
+pub mod vrt_builder;
+
+/// Dataset format detection enum and helpers.
+mod format;
+pub use format::DatasetFormat;
+
+/// Spatial operations on `Dataset`: clip and reproject.
+mod dataset_ops;
+
+/// Format-conversion implementation for `Dataset::convert`.
+mod convert_ops;
+
+/// GDAL C API compatibility shim.
+#[cfg(feature = "gdal-compat")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gdal-compat")))]
+#[doc(hidden)]
+pub mod gdal_compat;
+
 pub use builder::{
     CompressionType, CreateOptions, DatasetCreateBuilder, DatasetOpenBuilder, DatasetWriter,
     OutputFormat,
@@ -292,121 +318,15 @@ pub use oxigdal_services as services;
 
 // ─── Unified Dataset API ────────────────────────────────────────────────────
 
-/// Detected format of a geospatial dataset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DatasetFormat {
-    /// GeoTIFF / Cloud-Optimized GeoTIFF (.tif, .tiff)
-    GeoTiff,
-    /// GeoJSON (.geojson, .json)
-    GeoJson,
-    /// ESRI Shapefile (.shp)
-    Shapefile,
-    /// GeoParquet (.parquet, .geoparquet)
-    GeoParquet,
-    /// NetCDF (.nc, .nc4)
-    NetCdf,
-    /// HDF5 (.h5, .hdf5, .he5)
-    Hdf5,
-    /// Zarr (.zarr directory)
-    Zarr,
-    /// GRIB/GRIB2 (.grib, .grib2, .grb, .grb2)
-    Grib,
-    /// STAC catalog (.json with STAC metadata)
-    Stac,
-    /// Terrain formats
-    Terrain,
-    /// Virtual Raster Tiles (.vrt)
-    Vrt,
-    /// FlatGeobuf (.fgb)
-    FlatGeobuf,
-    /// JPEG2000 (.jp2, .j2k)
-    Jpeg2000,
-    /// GeoPackage (.gpkg, SQLite-based)
-    GeoPackage,
-    /// PMTiles v3 single-file tile archive (.pmtiles)
-    PMTiles,
-    /// MBTiles SQLite tile archive (.mbtiles)
-    MBTiles,
-    /// Cloud Optimized Point Cloud (.copc.laz)
-    Copc,
-    /// Unknown / user-specified
-    Unknown,
-}
-
-impl DatasetFormat {
-    /// Detect format from file extension.
-    ///
-    /// Returns `DatasetFormat::Unknown` if the extension is not recognized.
-    /// For `.copc.laz` files, the compound extension is checked first.
-    pub fn from_extension(path: &str) -> Self {
-        // Check compound extensions first (e.g. .copc.laz)
-        let lower = path.to_lowercase();
-        if lower.ends_with(".copc.laz") {
-            return Self::Copc;
-        }
-
-        let ext = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-            .unwrap_or_default();
-
-        match ext.as_str() {
-            "tif" | "tiff" => Self::GeoTiff,
-            "geojson" => Self::GeoJson,
-            "shp" => Self::Shapefile,
-            "parquet" | "geoparquet" => Self::GeoParquet,
-            "nc" | "nc4" => Self::NetCdf,
-            "h5" | "hdf5" | "he5" => Self::Hdf5,
-            "zarr" => Self::Zarr,
-            "grib" | "grib2" | "grb" | "grb2" => Self::Grib,
-            "vrt" => Self::Vrt,
-            "fgb" => Self::FlatGeobuf,
-            "jp2" | "j2k" => Self::Jpeg2000,
-            "gpkg" => Self::GeoPackage,
-            "pmtiles" => Self::PMTiles,
-            "mbtiles" => Self::MBTiles,
-            "laz" | "las" => Self::Copc,
-            _ => Self::Unknown,
-        }
-    }
-
-    /// Human-readable driver name (matches GDAL naming convention).
-    pub fn driver_name(&self) -> &'static str {
-        match self {
-            Self::GeoTiff => "GTiff",
-            Self::GeoJson => "GeoJSON",
-            Self::Shapefile => "ESRI Shapefile",
-            Self::GeoParquet => "GeoParquet",
-            Self::NetCdf => "netCDF",
-            Self::Hdf5 => "HDF5",
-            Self::Zarr => "Zarr",
-            Self::Grib => "GRIB",
-            Self::Stac => "STAC",
-            Self::Terrain => "Terrain",
-            Self::Vrt => "VRT",
-            Self::FlatGeobuf => "FlatGeobuf",
-            Self::Jpeg2000 => "JPEG2000",
-            Self::GeoPackage => "GPKG",
-            Self::PMTiles => "PMTiles",
-            Self::MBTiles => "MBTiles",
-            Self::Copc => "COPC",
-            Self::Unknown => "Unknown",
-        }
-    }
-}
-
-impl core::fmt::Display for DatasetFormat {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.driver_name())
-    }
-}
-
 /// Basic dataset metadata — analogous to `GDALDataset` info.
 #[derive(Debug, Clone)]
 pub struct DatasetInfo {
     /// Detected format
     pub format: DatasetFormat,
+    /// Filesystem path this dataset was opened from, if known.
+    ///
+    /// `None` for cloud/remote datasets and programmatically-created datasets.
+    pub path: Option<String>,
     /// Width in pixels (raster) or `None` (vector-only)
     pub width: Option<u32>,
     /// Height in pixels (raster) or `None` (vector-only)
@@ -419,6 +339,15 @@ pub struct DatasetInfo {
     pub crs: Option<String>,
     /// Geotransform: `[origin_x, pixel_width, rotation_x, origin_y, rotation_y, pixel_height]`
     pub geotransform: Option<GeoTransform>,
+    /// Number of features in the primary vector layer.
+    ///
+    /// `None` when the format does not support cheap feature counting (e.g. streaming formats).
+    pub feature_count: Option<u64>,
+    /// Spatial extent of the dataset in the dataset's native CRS.
+    ///
+    /// Computed from the geotransform for raster datasets, or from the GeoJSON `bbox`
+    /// field for vector datasets.  `None` when extent information is unavailable.
+    pub bounds: Option<BoundingBox>,
 }
 
 /// Unified dataset handle — the central abstraction (analogous to `GDALDataset`).
@@ -461,7 +390,18 @@ impl Dataset {
     ///
     /// Returns [`OxiGdalError::Io`] if the file cannot be read.
     pub fn open(path: &str) -> Result<Self> {
-        let format = DatasetFormat::from_extension(path);
+        // Cloud URIs bypass the local file-detection path.
+        if crate::cloud_detect::is_cloud_uri(path) {
+            return crate::cloud_detect::open_cloud_dataset(path);
+        }
+
+        // Try magic-byte detection first for local files, fall back to extension.
+        let p = std::path::Path::new(path);
+        let format = if p.exists() {
+            DatasetFormat::detect(p).unwrap_or_else(|_| DatasetFormat::from_extension(path))
+        } else {
+            DatasetFormat::from_extension(path)
+        };
         Self::open_with_format(path, format)
     }
 
@@ -476,49 +416,49 @@ impl Dataset {
     pub fn open_with_format(path: &str, format: DatasetFormat) -> Result<Self> {
         match format {
             #[cfg(feature = "geotiff")]
-            DatasetFormat::GeoTiff => Self::open_raster_stub(path, DatasetFormat::GeoTiff),
+            DatasetFormat::GeoTiff => Self::open_raster(path, DatasetFormat::GeoTiff),
 
             #[cfg(feature = "geojson")]
-            DatasetFormat::GeoJson => Self::open_vector_stub(path, DatasetFormat::GeoJson),
+            DatasetFormat::GeoJson => Self::open_vector(path, DatasetFormat::GeoJson),
 
             #[cfg(feature = "shapefile")]
-            DatasetFormat::Shapefile => Self::open_vector_stub(path, DatasetFormat::Shapefile),
+            DatasetFormat::Shapefile => Self::open_vector(path, DatasetFormat::Shapefile),
 
             #[cfg(feature = "geoparquet")]
-            DatasetFormat::GeoParquet => Self::open_vector_stub(path, DatasetFormat::GeoParquet),
+            DatasetFormat::GeoParquet => Self::open_vector(path, DatasetFormat::GeoParquet),
 
             #[cfg(feature = "netcdf")]
-            DatasetFormat::NetCdf => Self::open_raster_stub(path, DatasetFormat::NetCdf),
+            DatasetFormat::NetCdf => Self::open_raster(path, DatasetFormat::NetCdf),
 
             #[cfg(feature = "hdf5")]
-            DatasetFormat::Hdf5 => Self::open_raster_stub(path, DatasetFormat::Hdf5),
+            DatasetFormat::Hdf5 => Self::open_raster(path, DatasetFormat::Hdf5),
 
             #[cfg(feature = "zarr")]
-            DatasetFormat::Zarr => Self::open_raster_stub(path, DatasetFormat::Zarr),
+            DatasetFormat::Zarr => Self::open_raster(path, DatasetFormat::Zarr),
 
             #[cfg(feature = "grib")]
-            DatasetFormat::Grib => Self::open_raster_stub(path, DatasetFormat::Grib),
+            DatasetFormat::Grib => Self::open_raster(path, DatasetFormat::Grib),
 
             #[cfg(feature = "flatgeobuf")]
-            DatasetFormat::FlatGeobuf => Self::open_vector_stub(path, DatasetFormat::FlatGeobuf),
+            DatasetFormat::FlatGeobuf => Self::open_vector(path, DatasetFormat::FlatGeobuf),
 
             #[cfg(feature = "jpeg2000")]
-            DatasetFormat::Jpeg2000 => Self::open_raster_stub(path, DatasetFormat::Jpeg2000),
+            DatasetFormat::Jpeg2000 => Self::open_raster(path, DatasetFormat::Jpeg2000),
 
             #[cfg(feature = "vrt")]
-            DatasetFormat::Vrt => Self::open_raster_stub(path, DatasetFormat::Vrt),
+            DatasetFormat::Vrt => Self::open_raster(path, DatasetFormat::Vrt),
 
             #[cfg(feature = "gpkg")]
-            DatasetFormat::GeoPackage => Self::open_vector_stub(path, DatasetFormat::GeoPackage),
+            DatasetFormat::GeoPackage => Self::open_vector(path, DatasetFormat::GeoPackage),
 
             #[cfg(feature = "pmtiles")]
-            DatasetFormat::PMTiles => Self::open_raster_stub(path, DatasetFormat::PMTiles),
+            DatasetFormat::PMTiles => Self::open_raster(path, DatasetFormat::PMTiles),
 
             #[cfg(feature = "mbtiles")]
-            DatasetFormat::MBTiles => Self::open_raster_stub(path, DatasetFormat::MBTiles),
+            DatasetFormat::MBTiles => Self::open_raster(path, DatasetFormat::MBTiles),
 
             #[cfg(feature = "copc")]
-            DatasetFormat::Copc => Self::open_raster_stub(path, DatasetFormat::Copc),
+            DatasetFormat::Copc => Self::open_raster(path, DatasetFormat::Copc),
 
             _ => Err(OxiGdalError::NotSupported {
                 operation: format!(
@@ -530,49 +470,113 @@ impl Dataset {
         }
     }
 
-    // -- Stub openers (delegate to driver crates in the future) ---------------
+    // -- Real openers: delegate header parsing to open.rs helpers -------------
 
-    fn open_raster_stub(path: &str, format: DatasetFormat) -> Result<Self> {
-        // Verify file exists
-        if !std::path::Path::new(path).exists() {
+    fn open_raster(path: &str, format: DatasetFormat) -> Result<Self> {
+        let p = std::path::Path::new(path);
+        if !p.exists() {
             return Err(OxiGdalError::Io(oxigdal_core::error::IoError::NotFound {
                 path: path.to_string(),
             }));
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            info: DatasetInfo {
+        // For GeoTIFF, parse the IFD header for width / height / band_count /
+        // geotransform.  Other raster formats fall back to empty metadata.
+        let mut info = match format {
+            DatasetFormat::GeoTiff => {
+                crate::open::extract_tiff_info(p).unwrap_or_else(|| DatasetInfo {
+                    format,
+                    path: Some(path.to_string()),
+                    width: None,
+                    height: None,
+                    band_count: 0,
+                    layer_count: 0,
+                    crs: None,
+                    geotransform: None,
+                    feature_count: None,
+                    bounds: None,
+                })
+            }
+            _ => DatasetInfo {
                 format,
+                path: Some(path.to_string()),
                 width: None,
                 height: None,
                 band_count: 0,
                 layer_count: 0,
                 crs: None,
                 geotransform: None,
+                feature_count: None,
+                bounds: None,
             },
+        };
+
+        // Ensure path is populated even when extracted from helper
+        info.path = Some(path.to_string());
+
+        Ok(Self {
+            path: path.to_string(),
+            info,
         })
     }
 
-    fn open_vector_stub(path: &str, format: DatasetFormat) -> Result<Self> {
-        if !std::path::Path::new(path).exists() {
+    fn open_vector(path: &str, format: DatasetFormat) -> Result<Self> {
+        let p = std::path::Path::new(path);
+        if !p.exists() {
             return Err(OxiGdalError::Io(oxigdal_core::error::IoError::NotFound {
                 path: path.to_string(),
             }));
         }
 
+        let empty_info = || DatasetInfo {
+            format,
+            path: Some(path.to_string()),
+            width: None,
+            height: None,
+            band_count: 0,
+            layer_count: 0,
+            crs: None,
+            geotransform: None,
+            feature_count: None,
+            bounds: None,
+        };
+
+        let mut info = match format {
+            DatasetFormat::GeoJson => {
+                crate::open::extract_geojson_info(p).unwrap_or_else(empty_info)
+            }
+            #[cfg(feature = "shapefile")]
+            DatasetFormat::Shapefile => {
+                crate::open::extract_shapefile_info(p).unwrap_or_else(empty_info)
+            }
+            #[cfg(feature = "flatgeobuf")]
+            DatasetFormat::FlatGeobuf => {
+                crate::open::extract_flatgeobuf_info(p).unwrap_or_else(empty_info)
+            }
+            #[cfg(feature = "geoparquet")]
+            DatasetFormat::GeoParquet => {
+                crate::open::extract_geoparquet_info(p).unwrap_or_else(empty_info)
+            }
+            _ => empty_info(),
+        };
+
+        // Ensure path is populated even when extracted from helper
+        info.path = Some(path.to_string());
+
         Ok(Self {
             path: path.to_string(),
-            info: DatasetInfo {
-                format,
-                width: None,
-                height: None,
-                band_count: 0,
-                layer_count: 0,
-                crs: None,
-                geotransform: None,
-            },
+            info,
         })
+    }
+
+    // -- Constructors from pre-built info ------------------------------------------
+
+    /// Construct a `Dataset` directly from a path and a pre-parsed [`DatasetInfo`].
+    ///
+    /// Used internally by the cloud-detect module and by tests that need to
+    /// create a `Dataset` without a file on disk.
+    pub(crate) fn from_info(path: String, info: DatasetInfo) -> Self {
+        Self { path, info }
     }
 
     // -- Accessors (GDAL-like API) ------------------------------------------
@@ -623,6 +627,370 @@ impl Dataset {
     pub fn geotransform(&self) -> Option<&GeoTransform> {
         self.info.geotransform.as_ref()
     }
+
+    /// Number of features in the primary vector layer.
+    ///
+    /// Returns `None` when the format does not support cheap feature counting
+    /// or the count was not available at open time.
+    pub fn feature_count(&self) -> Option<u64> {
+        self.info.feature_count
+    }
+
+    /// Spatial bounding box of the dataset in its native CRS.
+    ///
+    /// Returns `None` when extent information is unavailable.
+    pub fn bounds(&self) -> Option<&BoundingBox> {
+        self.info.bounds.as_ref()
+    }
+
+    // ── Convenience methods ───────────────────────────────────────────────────
+
+    /// Read a single raster band by 0-based index and return its pixel data as
+    /// a `RasterBuffer`.
+    ///
+    /// Requires the `geotiff` feature for GeoTIFF datasets.  Other formats
+    /// return [`OxiGdalError::NotSupported`].
+    ///
+    /// `band` is **0-based**: band 0 is the first raster band.
+    ///
+    /// # Errors
+    ///
+    /// - [`OxiGdalError::NotSupported`] — format is not supported.
+    /// - [`OxiGdalError::InvalidParameter`] — `band` index is out of range.
+    /// - [`OxiGdalError::Io`] / [`OxiGdalError::Format`] — underlying read failure.
+    pub fn read_band(&self, band: u32) -> Result<oxigdal_core::buffer::RasterBuffer> {
+        self.read_band_impl(band)
+    }
+
+    /// Return a lazy iterator over all raster bands.
+    ///
+    /// Each call to `Iterator::next()` reads the next band from the underlying
+    /// file.  For multi-band GeoTIFF datasets this avoids loading all bands
+    /// into memory simultaneously.
+    ///
+    /// The iterator yields `Result<RasterBuffer>` so that per-band read errors
+    /// are propagated without aborting the iteration.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use oxigdal::Dataset;
+    ///
+    /// # fn main() -> oxigdal::Result<()> {
+    /// let ds = Dataset::open("elevation.tif")?;
+    /// for band_result in ds.bands() {
+    ///     let buf = band_result?;
+    ///     println!("band pixels: {}", buf.pixel_count());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn bands(&self) -> BandIter<'_> {
+        BandIter {
+            dataset: self,
+            next_band: 0,
+            band_count: self.info.band_count,
+        }
+    }
+
+    /// Inner implementation for [`Self::read_band`].
+    fn read_band_impl(&self, band: u32) -> Result<oxigdal_core::buffer::RasterBuffer> {
+        if self.info.band_count > 0 && band >= self.info.band_count {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "band",
+                message: format!(
+                    "band index {} is out of range (dataset has {} bands)",
+                    band, self.info.band_count
+                ),
+            });
+        }
+
+        #[cfg(feature = "geotiff")]
+        if matches!(self.info.format, DatasetFormat::GeoTiff) {
+            return self.read_band_geotiff(band);
+        }
+
+        Err(OxiGdalError::NotSupported {
+            operation: format!(
+                "read_band() is not supported for format '{}' (enable the 'geotiff' feature for GeoTIFF support)",
+                self.info.format.driver_name()
+            ),
+        })
+    }
+
+    /// GeoTIFF-specific band reader.
+    #[cfg(feature = "geotiff")]
+    fn read_band_geotiff(&self, band: u32) -> Result<oxigdal_core::buffer::RasterBuffer> {
+        use oxigdal_core::buffer::RasterBuffer;
+        use oxigdal_core::io::FileDataSource;
+        use oxigdal_core::types::NoDataValue;
+        use oxigdal_geotiff::GeoTiffReader;
+
+        let source = FileDataSource::open(&self.path).map_err(|e| {
+            OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                message: format!("failed to open '{}': {e}", self.path),
+            })
+        })?;
+        let reader = GeoTiffReader::open(source)?;
+
+        let width = reader.width();
+        let height = reader.height();
+
+        let raw_bytes = reader.read_band(0, band as usize)?;
+
+        let data_type = reader
+            .data_type()
+            .unwrap_or(oxigdal_core::types::RasterDataType::UInt8);
+
+        RasterBuffer::new(raw_bytes, width, height, data_type, NoDataValue::None).map_err(|e| {
+            OxiGdalError::Internal {
+                message: format!("failed to create RasterBuffer: {e}"),
+            }
+        })
+    }
+
+    /// Compute per-band raster statistics (min / max / mean / std_dev / valid_count).
+    ///
+    /// Currently supported for GeoTIFF datasets (requires the `geotiff` feature).
+    /// For all other formats or when the feature flag is absent the method returns
+    /// [`OxiGdalError::NotSupported`].
+    ///
+    /// `band` is **0-based**: band 0 is the first raster band.
+    ///
+    /// # Errors
+    ///
+    /// - [`OxiGdalError::NotSupported`] — format is not a supported raster type or
+    ///   the required feature flag is disabled.
+    /// - [`OxiGdalError::InvalidParameter`] — `band` index is out of range.
+    /// - [`OxiGdalError::Io`] / [`OxiGdalError::Format`] — underlying read failure.
+    pub fn statistics(&self, band: u32) -> Result<BandStatistics> {
+        self.compute_band_statistics(band)
+    }
+
+    /// Return a logical clip of this dataset cropped to the given bounding box.
+    ///
+    /// For **raster** datasets the method converts `bbox` from world coordinates
+    /// to pixel coordinates using the stored [`GeoTransform`], clamps the window
+    /// to the dataset extent, and returns a new `Dataset` whose `width`, `height`,
+    /// and geo-transform origin reflect the cropped region.  No pixels are read or
+    /// written — the result is a lightweight metadata view.
+    ///
+    /// For **vector** datasets (no geo-transform) the same bounding-box is stored
+    /// and the returned `Dataset` records the reduced spatial extent without
+    /// materialising any filtered features.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OxiGdalError::InvalidParameter`] if the bounding box does not
+    /// intersect the dataset extent, or if the dataset has no geotransform and no
+    /// raster dimensions.
+    pub fn clip(&self, bbox: BoundingBox) -> Result<Dataset> {
+        self.clip_to_bbox(bbox)
+    }
+
+    /// Reproject this dataset to the given target EPSG code.
+    ///
+    /// Requires the `proj` feature flag.  Without it the method always returns
+    /// [`OxiGdalError::NotSupported`].
+    ///
+    /// When `proj` is enabled the dataset's bounding box is transformed from its
+    /// current CRS (parsed as an EPSG code from the stored CRS string, defaulting
+    /// to **EPSG:4326** if none is present) to `target_epsg`.  The result is a new
+    /// `Dataset` whose geo-transform and CRS string reflect the target projection.
+    ///
+    /// The output dimensions are preserved (same pixel count); only the
+    /// geo-referencing metadata changes.
+    ///
+    /// # Errors
+    ///
+    /// - [`OxiGdalError::NotSupported`] — `proj` feature is not enabled.
+    /// - [`OxiGdalError::InvalidParameter`] — `target_epsg` is unknown, or the
+    ///   dataset has no raster dimensions / geo-transform to reproject.
+    /// - [`OxiGdalError::Crs`] — transformation fails (singular matrix, etc.).
+    pub fn reproject(&self, target_epsg: u32) -> Result<Dataset> {
+        self.reproject_to_epsg(target_epsg)
+    }
+
+    // ── Private implementation helpers ────────────────────────────────────────
+
+    /// Inner implementation for [`Self::statistics`].
+    fn compute_band_statistics(&self, band: u32) -> Result<BandStatistics> {
+        // Validate band range against known band count (only when we have metadata)
+        if self.info.band_count > 0 && band >= self.info.band_count {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "band",
+                message: format!(
+                    "band index {} is out of range (dataset has {} bands)",
+                    band, self.info.band_count
+                ),
+            });
+        }
+
+        // Dispatch to the GeoTIFF reader path when the feature is compiled in.
+        #[cfg(feature = "geotiff")]
+        if matches!(self.info.format, DatasetFormat::GeoTiff) {
+            return self.statistics_geotiff(band);
+        }
+
+        Err(OxiGdalError::NotSupported {
+            operation: format!(
+                "statistics() is not supported for format '{}' (enable the 'geotiff' feature for GeoTIFF support)",
+                self.info.format.driver_name()
+            ),
+        })
+    }
+
+    /// GeoTIFF-specific statistics reader.
+    #[cfg(feature = "geotiff")]
+    fn statistics_geotiff(&self, band: u32) -> Result<BandStatistics> {
+        use oxigdal_core::buffer::RasterBuffer;
+        use oxigdal_core::io::FileDataSource;
+        use oxigdal_core::types::NoDataValue;
+        use oxigdal_geotiff::GeoTiffReader;
+
+        let source = FileDataSource::open(&self.path).map_err(|e| {
+            OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                message: format!("failed to open '{}': {e}", self.path),
+            })
+        })?;
+        let reader = GeoTiffReader::open(source)?;
+
+        let width = reader.width();
+        let height = reader.height();
+
+        // read_band takes (level, band_index) — level 0 is full resolution
+        let raw_bytes = reader.read_band(0, band as usize)?;
+
+        let data_type = reader
+            .data_type()
+            .unwrap_or(oxigdal_core::types::RasterDataType::UInt8);
+
+        let buf = RasterBuffer::new(raw_bytes, width, height, data_type, NoDataValue::None)
+            .map_err(|e| OxiGdalError::Internal {
+                message: format!("failed to create RasterBuffer: {e}"),
+            })?;
+
+        let buf_stats = buf.compute_statistics()?;
+
+        Ok(BandStatistics {
+            band,
+            min: buf_stats.min,
+            max: buf_stats.max,
+            mean: buf_stats.mean,
+            std_dev: buf_stats.std_dev,
+            valid_count: buf_stats.valid_count,
+        })
+    }
+}
+
+/// Statistics for a single raster band.
+///
+/// Returned by [`Dataset::statistics`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandStatistics {
+    /// 0-based band index.
+    pub band: u32,
+    /// Minimum valid pixel value (non-nodata, finite).
+    pub min: f64,
+    /// Maximum valid pixel value (non-nodata, finite).
+    pub max: f64,
+    /// Arithmetic mean of valid pixels.
+    pub mean: f64,
+    /// Population standard deviation of valid pixels.
+    pub std_dev: f64,
+    /// Count of valid (non-nodata, finite) pixels.
+    pub valid_count: u64,
+}
+
+/// Lazy iterator over raster bands of a [`Dataset`].
+///
+/// Created by [`Dataset::bands`].  Each call to [`Iterator::next`] reads the
+/// next band from the underlying file and returns `Ok(RasterBuffer)` on
+/// success or an `Err` on I/O or format failure.
+pub struct BandIter<'a> {
+    /// Reference to the dataset being iterated.
+    pub(crate) dataset: &'a Dataset,
+    /// Index of the next band to yield.
+    pub(crate) next_band: u32,
+    /// Total number of bands (cached to avoid repeated accessors).
+    pub(crate) band_count: u32,
+}
+
+impl<'a> Iterator for BandIter<'a> {
+    type Item = Result<oxigdal_core::buffer::RasterBuffer>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next_band >= self.band_count {
+            return None;
+        }
+        let band = self.next_band;
+        self.next_band += 1;
+        Some(self.dataset.read_band(band))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.band_count.saturating_sub(self.next_band)) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a> core::iter::ExactSizeIterator for BandIter<'a> {}
+
+// ─── ConversionOptions ───────────────────────────────────────────────────────
+
+/// Output compression codec for [`Dataset::convert`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Compression {
+    /// No compression (default).
+    #[default]
+    None,
+    /// DEFLATE / zlib compression.
+    Deflate,
+    /// LZW compression.
+    Lzw,
+    /// PackBits run-length encoding.
+    PackBits,
+    /// ZSTD compression (not universally supported).
+    Zstd,
+}
+
+/// Options controlling [`Dataset::convert`].
+///
+/// All fields are optional — `ConversionOptions::default()` produces
+/// a lossless identity conversion.
+#[derive(Debug, Clone, Default)]
+pub struct ConversionOptions {
+    /// Output compression codec.  Defaults to [`Compression::None`].
+    pub compression: Option<Compression>,
+    /// Compression level 0–9 (format-specific meaning).
+    pub compression_level: Option<u8>,
+    /// Write as Cloud-Optimized GeoTIFF (COG) when `true`.
+    pub cog: bool,
+    /// Overview decimation factors to embed (e.g. `[2, 4, 8, 16]`).
+    pub overviews: Vec<u32>,
+    /// Output tile size in pixels (square); uses strip layout when `None`.
+    pub tile_size: Option<u32>,
+    /// Arbitrary driver creation options (e.g. `("PHOTOMETRIC", "RGB")`).
+    pub creation_options: Vec<(String, String)>,
+}
+
+/// Extract an EPSG code integer from a CRS identification string.
+///
+/// Recognises the following patterns (case-insensitive):
+/// - `"EPSG:4326"` — standard authority:code form
+/// - `"epsg:4326"` — lowercase variant
+///
+/// Returns `None` when no pattern matches.
+pub(crate) fn extract_epsg_from_crs_string(crs: &str) -> Option<u32> {
+    let upper = crs.to_uppercase();
+    let pos = upper.find("EPSG:")?;
+    let after_colon = &crs[pos + 5..];
+    // Collect leading ASCII digits
+    let digits: String = after_colon
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
 }
 
 impl core::fmt::Debug for Dataset {
@@ -794,5 +1162,240 @@ mod tests {
         // Opening with explicit format for a nonexistent file should give IoError
         let result = Dataset::open_with_format("/no/such/file.tif", DatasetFormat::GeoTiff);
         assert!(result.is_err());
+    }
+
+    // ─── detect_from_magic_bytes ─────────────────────────────────────────────
+
+    #[test]
+    fn test_magic_bytes_tiff_le() {
+        let bytes = [0x49u8, 0x49, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::GeoTiff)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_tiff_be() {
+        let bytes = [0x4Du8, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::GeoTiff)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_jp2() {
+        let bytes: [u8; 12] = [
+            0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A,
+        ];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::Jpeg2000)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_hdf5() {
+        let bytes: [u8; 8] = [0x89, 0x48, 0x44, 0x46, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::Hdf5)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_netcdf() {
+        let bytes = [0x43u8, 0x44, 0x46, 0x01];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::NetCdf)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_flatgeobuf() {
+        let bytes: [u8; 8] = [0x66, 0x67, 0x62, 0x03, 0x66, 0x67, 0x62, 0x00];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::FlatGeobuf)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_pmtiles() {
+        let bytes = b"PMTiles\x03";
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(bytes),
+            Some(DatasetFormat::PMTiles)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_las() {
+        let bytes = b"LASF";
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(bytes),
+            Some(DatasetFormat::Copc)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_grib() {
+        let bytes = b"GRIB";
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(bytes),
+            Some(DatasetFormat::Grib)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_geoparquet() {
+        let bytes = b"PAR1";
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(bytes),
+            Some(DatasetFormat::GeoParquet)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_sqlite() {
+        let bytes: [u8; 16] = [
+            0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20,
+            0x33, 0x00,
+        ];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::GeoPackage)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_zip() {
+        let bytes: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
+        assert_eq!(
+            DatasetFormat::detect_from_magic_bytes(&bytes),
+            Some(DatasetFormat::GeoPackage)
+        );
+    }
+
+    #[test]
+    fn test_magic_bytes_empty_returns_none() {
+        assert_eq!(DatasetFormat::detect_from_magic_bytes(&[]), None);
+    }
+
+    #[test]
+    fn test_magic_bytes_unknown_returns_none() {
+        let bytes = b"UNKNOWNFORMAT";
+        assert_eq!(DatasetFormat::detect_from_magic_bytes(bytes), None);
+    }
+
+    // ─── DatasetFormat::detect (file I/O) ────────────────────────────────────
+
+    #[test]
+    fn test_detect_file_tiff() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_detect_tiff.tif");
+        let bytes: [u8; 8] = [0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&bytes))
+            .expect("write tiff");
+        let fmt = DatasetFormat::detect(&path).expect("detect");
+        assert_eq!(fmt, DatasetFormat::GeoTiff);
+    }
+
+    #[test]
+    fn test_detect_file_las_as_copc() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_detect_las.las");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"LASF");
+        bytes.extend_from_slice(&[0u8; 64]);
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&bytes))
+            .expect("write las");
+        let fmt = DatasetFormat::detect(&path).expect("detect");
+        assert_eq!(fmt, DatasetFormat::Copc);
+    }
+
+    #[test]
+    fn test_detect_fallback_to_extension() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_detect_ext_fallback.geojson");
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(b"{}"))
+            .expect("write");
+        let fmt = DatasetFormat::detect(&path).expect("detect");
+        assert_eq!(fmt, DatasetFormat::GeoJson);
+    }
+
+    // ─── Dataset::open() wired metadata ──────────────────────────────────────
+
+    #[cfg(feature = "geojson")]
+    #[test]
+    fn test_open_geojson_layer_count() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_open_layer_count.geojson");
+        let content = br#"{"type":"FeatureCollection","features":[]}"#;
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(content))
+            .expect("write");
+        let ds = Dataset::open(path.to_str().expect("path str")).expect("open");
+        assert_eq!(ds.format(), DatasetFormat::GeoJson);
+        assert_eq!(
+            ds.layer_count(),
+            1,
+            "FeatureCollection should have layer_count=1"
+        );
+        assert_eq!(
+            ds.info().path,
+            Some(path.to_str().expect("path str").to_string())
+        );
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_open_tiff_wires_metadata() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_open_tiff_meta.tif");
+        // Minimal TIFF LE header with 3 IFD entries: width=64, height=32, spp=1
+        let mut buf: Vec<u8> = vec![0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+        buf.extend_from_slice(&3u16.to_le_bytes()); // 3 entries
+        // ImageWidth=64 (LONG)
+        buf.extend_from_slice(&256u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&64u32.to_le_bytes());
+        // ImageLength=32 (LONG)
+        buf.extend_from_slice(&257u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&32u32.to_le_bytes());
+        // SamplesPerPixel=4 (SHORT)
+        buf.extend_from_slice(&277u16.to_le_bytes());
+        buf.extend_from_slice(&3u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&[0x00, 0x00]);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // next IFD=0
+
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&buf))
+            .expect("write tiff");
+
+        let ds = Dataset::open(path.to_str().expect("path str")).expect("open");
+        assert_eq!(ds.format(), DatasetFormat::GeoTiff);
+        assert_eq!(ds.width(), 64);
+        assert_eq!(ds.height(), 32);
+        assert_eq!(ds.band_count(), 4);
+        assert_eq!(
+            ds.info().path,
+            Some(path.to_str().expect("path str").to_string())
+        );
     }
 }

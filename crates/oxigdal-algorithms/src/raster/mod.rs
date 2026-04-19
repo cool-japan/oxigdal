@@ -13,15 +13,19 @@
 //! - Focal operations (filters, convolution, neighborhood statistics)
 //! - Viewshed analysis (R1/R2/R3 algorithms, earth curvature, Fresnel zone)
 //! - Cost-distance analysis (isotropic, anisotropic, A*, corridor)
+//! - Contour generation (marching squares iso-contour extraction)
+//! - Polygonization (raster-to-polygon via CCL + boundary tracing)
 
 mod calculator;
 mod classify;
+pub mod contour;
 mod cost_distance;
 mod filters;
 mod focal;
 mod hillshade;
 pub mod hydrology;
 mod morphology;
+pub mod polygonize;
 mod reclassify;
 mod slope_aspect;
 mod statistics;
@@ -35,6 +39,9 @@ pub use calculator::{RasterCalculator, RasterExpression};
 
 // Classification
 pub use classify::{ClassificationMethod, ClassificationRule, classify, reclassify, threshold};
+
+// Contour generation
+pub use contour::{ContourConfig, ContourLine, ContourPoint, generate_contours};
 
 // Filters
 pub use filters::{
@@ -110,6 +117,12 @@ pub use cost_distance::{
 
 // Zonal stats (legacy)
 pub use zonal_stats::{ZonalStatistics, compute_zonal_stats};
+
+// Polygonization (raster-to-polygon)
+pub use polygonize::{
+    BoundaryMethod, Connectivity, PolygonFeature, PolygonizeOptions, PolygonizeResult, polygonize,
+    polygonize_raster,
+};
 
 use crate::error::Result;
 use oxigdal_core::buffer::RasterBuffer;

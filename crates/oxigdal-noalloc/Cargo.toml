@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 description = "no_std, no_alloc fixed-size geometry primitives for OxiGDAL"
 keywords = ["geospatial", "geometry", "no_std", "embedded"]
-categories = ["no-std", "science::geo"]
+categories = ["no-std", "science"]
 
 [features]
 default = []

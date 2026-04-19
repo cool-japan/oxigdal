@@ -76,6 +76,20 @@ use core::fmt;
 use crate::error::{OxiGdalError, Result};
 use crate::types::{NoDataValue, RasterDataType};
 
+mod band_iterator;
+pub use band_iterator::{BandIterator, BandRef, MultiBandBuffer};
+
+mod raster_window;
+pub use raster_window::RasterWindow;
+
+pub mod mask;
+pub use mask::Mask;
+
+pub use crate::simd_buffer::{ArenaTile, TileIteratorArena};
+
+#[cfg(feature = "arrow")]
+pub mod arrow_convert;
+
 /// A typed buffer for raster data
 #[derive(Clone)]
 pub struct RasterBuffer {
@@ -561,6 +575,289 @@ impl RasterBuffer {
         Ok(())
     }
 
+    // ─── Typed Pixel Accessors ────────────────────────────────────────────
+
+    /// Gets a pixel value as `u8`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `UInt8`.
+    pub fn get_u8(&self, x: u64, y: u64) -> Result<u8> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::UInt8)?;
+        let offset = (y * self.width + x) as usize;
+        Ok(self.data[offset])
+    }
+
+    /// Gets a pixel value as `i8`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Int8`.
+    pub fn get_i8(&self, x: u64, y: u64) -> Result<i8> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Int8)?;
+        let offset = (y * self.width + x) as usize;
+        Ok(self.data[offset] as i8)
+    }
+
+    /// Gets a pixel value as `u16`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `UInt16`.
+    pub fn get_u16(&self, x: u64, y: u64) -> Result<u16> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::UInt16)?;
+        let offset = (y * self.width + x) as usize * 2;
+        let bytes: [u8; 2] =
+            self.data[offset..offset + 2]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(u16::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `i16`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Int16`.
+    pub fn get_i16(&self, x: u64, y: u64) -> Result<i16> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Int16)?;
+        let offset = (y * self.width + x) as usize * 2;
+        let bytes: [u8; 2] =
+            self.data[offset..offset + 2]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(i16::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `u32`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `UInt32`.
+    pub fn get_u32(&self, x: u64, y: u64) -> Result<u32> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::UInt32)?;
+        let offset = (y * self.width + x) as usize * 4;
+        let bytes: [u8; 4] =
+            self.data[offset..offset + 4]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(u32::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `i32`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Int32`.
+    pub fn get_i32(&self, x: u64, y: u64) -> Result<i32> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Int32)?;
+        let offset = (y * self.width + x) as usize * 4;
+        let bytes: [u8; 4] =
+            self.data[offset..offset + 4]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(i32::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `u64`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `UInt64`.
+    pub fn get_u64(&self, x: u64, y: u64) -> Result<u64> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::UInt64)?;
+        let offset = (y * self.width + x) as usize * 8;
+        let bytes: [u8; 8] =
+            self.data[offset..offset + 8]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(u64::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `i64`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Int64`.
+    pub fn get_i64(&self, x: u64, y: u64) -> Result<i64> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Int64)?;
+        let offset = (y * self.width + x) as usize * 8;
+        let bytes: [u8; 8] =
+            self.data[offset..offset + 8]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(i64::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `f32`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Float32`.
+    pub fn get_f32(&self, x: u64, y: u64) -> Result<f32> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Float32)?;
+        let offset = (y * self.width + x) as usize * 4;
+        let bytes: [u8; 4] =
+            self.data[offset..offset + 4]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(f32::from_ne_bytes(bytes))
+    }
+
+    /// Gets a pixel value as `f64`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Float64`.
+    pub fn get_f64(&self, x: u64, y: u64) -> Result<f64> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Float64)?;
+        let offset = (y * self.width + x) as usize * 8;
+        let bytes: [u8; 8] =
+            self.data[offset..offset + 8]
+                .try_into()
+                .map_err(|_| OxiGdalError::Internal {
+                    message: "Invalid slice length".to_string(),
+                })?;
+        Ok(f64::from_ne_bytes(bytes))
+    }
+
+    // ─── Typed Pixel Setters ─────────────────────────────────────────────
+
+    /// Sets a pixel value from `u8`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `UInt8`.
+    pub fn set_u8(&mut self, x: u64, y: u64, value: u8) -> Result<()> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::UInt8)?;
+        let offset = (y * self.width + x) as usize;
+        self.data[offset] = value;
+        Ok(())
+    }
+
+    /// Sets a pixel value from `f32`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Float32`.
+    pub fn set_f32(&mut self, x: u64, y: u64, value: f32) -> Result<()> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Float32)?;
+        let offset = (y * self.width + x) as usize * 4;
+        self.data[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        Ok(())
+    }
+
+    /// Sets a pixel value from `f64`.
+    ///
+    /// # Errors
+    /// Returns an error if coordinates are out of bounds or the buffer type is not `Float64`.
+    pub fn set_f64(&mut self, x: u64, y: u64, value: f64) -> Result<()> {
+        self.check_bounds(x, y)?;
+        self.check_type(RasterDataType::Float64)?;
+        let offset = (y * self.width + x) as usize * 8;
+        self.data[offset..offset + 8].copy_from_slice(&value.to_ne_bytes());
+        Ok(())
+    }
+
+    // ─── Row & Window Access ─────────────────────────────────────────────
+
+    /// Returns a row of pixel data as a typed slice.
+    ///
+    /// # Errors
+    /// Returns an error if `y` is out of bounds or type size mismatches.
+    pub fn row_slice<T: Copy + 'static>(&self, y: u64) -> Result<&[T]> {
+        if y >= self.height {
+            return Err(OxiGdalError::OutOfBounds {
+                message: format!("Row {} out of bounds for height {}", y, self.height),
+            });
+        }
+        let type_size = core::mem::size_of::<T>();
+        let expected_size = self.data_type.size_bytes();
+        if type_size != expected_size {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "T",
+                message: format!(
+                    "Type size {} doesn't match {:?} size {}",
+                    type_size, self.data_type, expected_size
+                ),
+            });
+        }
+        let row_start = (y * self.width) as usize * expected_size;
+        let row_end = row_start + self.width as usize * expected_size;
+        // SAFETY: type size verified above, row bounds verified
+        let slice = unsafe {
+            core::slice::from_raw_parts(
+                self.data[row_start..row_end].as_ptr() as *const T,
+                self.width as usize,
+            )
+        };
+        Ok(slice)
+    }
+
+    /// Returns a rectangular window of pixel data as a new `RasterBuffer`.
+    ///
+    /// # Errors
+    /// Returns an error if the window extends outside buffer bounds.
+    pub fn window(&self, x: u64, y: u64, width: u64, height: u64) -> Result<Self> {
+        if x + width > self.width || y + height > self.height {
+            return Err(OxiGdalError::OutOfBounds {
+                message: format!(
+                    "Window ({},{}) {}x{} exceeds buffer {}x{}",
+                    x, y, width, height, self.width, self.height
+                ),
+            });
+        }
+        let pixel_size = self.data_type.size_bytes();
+        let row_bytes = width as usize * pixel_size;
+        let mut data = Vec::with_capacity(height as usize * row_bytes);
+        for row in y..y + height {
+            let src_start = (row * self.width + x) as usize * pixel_size;
+            data.extend_from_slice(&self.data[src_start..src_start + row_bytes]);
+        }
+        Self::new(data, width, height, self.data_type, self.nodata)
+    }
+
+    // ─── Private Helpers ─────────────────────────────────────────────────
+
+    fn check_bounds(&self, x: u64, y: u64) -> Result<()> {
+        if x >= self.width || y >= self.height {
+            return Err(OxiGdalError::OutOfBounds {
+                message: format!(
+                    "Pixel ({}, {}) out of bounds for {}x{} buffer",
+                    x, y, self.width, self.height
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn check_type(&self, expected: RasterDataType) -> Result<()> {
+        if self.data_type != expected {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "data_type",
+                message: format!(
+                    "Buffer contains {:?} data, requested {:?}",
+                    self.data_type, expected
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Returns true if the given value equals the nodata value
     #[must_use]
     pub fn is_nodata(&self, value: f64) -> bool {
@@ -626,6 +923,7 @@ impl RasterBuffer {
                 mean: f64::NAN,
                 std_dev: f64::NAN,
                 valid_count: 0,
+                histogram: None,
             });
         }
 
@@ -639,6 +937,102 @@ impl RasterBuffer {
             mean,
             std_dev,
             valid_count,
+            histogram: None,
+        })
+    }
+
+    /// Computes statistics and an optional histogram in one pass.
+    ///
+    /// The returned [`BufferStatistics`] contains a `histogram` of `bin_count` bins
+    /// with uniform spacing covering the range `[min, max]`. Each bin holds the count
+    /// of valid pixels whose value falls within that bin's interval.
+    ///
+    /// # Arguments
+    ///
+    /// * `bin_count` — Number of histogram bins. Must be ≥ 1.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::OxiGdalError::InvalidParameter`] if `bin_count` is 0.
+    /// Returns errors from pixel access on corrupt buffers.
+    ///
+    /// # Notes
+    ///
+    /// - NaN and infinite values are excluded (same as [`RasterBuffer::compute_statistics`]).
+    /// - When all valid values are identical (`min == max`), all counts go into bin 0.
+    /// - When no valid pixels exist, `histogram` is `Some(vec![0; bin_count])`.
+    pub fn compute_statistics_with_histogram(&self, bin_count: usize) -> Result<BufferStatistics> {
+        if bin_count == 0 {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "bin_count",
+                message: "bin_count must be at least 1".to_string(),
+            });
+        }
+
+        // First pass: collect min/max/sum/sum_sq and all valid values for histogram.
+        let mut min = f64::MAX;
+        let mut max = f64::MIN;
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        let mut valid_count = 0u64;
+        // Collect valid values so histogram binning can reuse them without a re-read.
+        let total_pixels = (self.width * self.height) as usize;
+        let mut valid_values: Vec<f64> = Vec::with_capacity(total_pixels);
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let value = self.get_pixel(x, y)?;
+                if !self.is_nodata(value) && value.is_finite() {
+                    min = min.min(value);
+                    max = max.max(value);
+                    sum += value;
+                    sum_sq += value * value;
+                    valid_count += 1;
+                    valid_values.push(value);
+                }
+            }
+        }
+
+        // Build histogram bins (all-zero when there are no valid pixels).
+        let mut bins = vec![0u64; bin_count];
+
+        if valid_count > 0 {
+            let range = max - min;
+            if range == 0.0 {
+                // All valid values are identical: everything goes into bin 0.
+                bins[0] = valid_count;
+            } else {
+                for v in &valid_values {
+                    let bin_idx = (((v - min) / range) * bin_count as f64).floor() as usize;
+                    // Clamp to [0, bin_count-1] (handles the max edge case exactly).
+                    let bin_idx = bin_idx.min(bin_count - 1);
+                    bins[bin_idx] += 1;
+                }
+            }
+        }
+
+        if valid_count == 0 {
+            return Ok(BufferStatistics {
+                min: f64::NAN,
+                max: f64::NAN,
+                mean: f64::NAN,
+                std_dev: f64::NAN,
+                valid_count: 0,
+                histogram: Some(bins),
+            });
+        }
+
+        let mean = sum / valid_count as f64;
+        let variance = (sum_sq / valid_count as f64) - (mean * mean);
+        let std_dev = variance.max(0.0).sqrt();
+
+        Ok(BufferStatistics {
+            min,
+            max,
+            mean,
+            std_dev,
+            valid_count,
+            histogram: Some(bins),
         })
     }
 }
@@ -656,7 +1050,10 @@ impl fmt::Debug for RasterBuffer {
 }
 
 /// Statistics computed from a buffer
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Note: `Copy` is intentionally not derived because the optional histogram
+/// contains a `Vec`, making bitwise copy semantics inappropriate.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BufferStatistics {
     /// Minimum value
     pub min: f64,
@@ -668,6 +1065,11 @@ pub struct BufferStatistics {
     pub std_dev: f64,
     /// Number of valid (non-nodata) pixels
     pub valid_count: u64,
+    /// Optional histogram bin counts (uniform spacing from `min` to `max`)
+    ///
+    /// `None` when computed via [`RasterBuffer::compute_statistics`].
+    /// `Some(bins)` when computed via [`RasterBuffer::compute_statistics_with_histogram`].
+    pub histogram: Option<Vec<u64>>,
 }
 
 #[cfg(feature = "arrow")]
@@ -785,5 +1187,151 @@ mod tests {
             NoDataValue::None,
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_typed_get_u8() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt8);
+        buffer.set_pixel(3, 4, 200.0).expect("set should work");
+        assert_eq!(buffer.get_u8(3, 4).expect("get_u8"), 200);
+        // Wrong type should error
+        assert!(buffer.get_f32(3, 4).is_err());
+    }
+
+    #[test]
+    fn test_typed_get_i8() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::Int8);
+        buffer.set_pixel(0, 0, -42.0).expect("set should work");
+        assert_eq!(buffer.get_i8(0, 0).expect("get_i8"), -42);
+    }
+
+    #[test]
+    fn test_typed_get_u16() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt16);
+        buffer.set_pixel(5, 5, 60000.0).expect("set should work");
+        assert_eq!(buffer.get_u16(5, 5).expect("get_u16"), 60000);
+    }
+
+    #[test]
+    fn test_typed_get_i16() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::Int16);
+        buffer.set_pixel(2, 3, -1234.0).expect("set should work");
+        assert_eq!(buffer.get_i16(2, 3).expect("get_i16"), -1234);
+    }
+
+    #[test]
+    fn test_typed_get_u32() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt32);
+        buffer.set_pixel(0, 0, 100_000.0).expect("set should work");
+        assert_eq!(buffer.get_u32(0, 0).expect("get_u32"), 100_000);
+    }
+
+    #[test]
+    fn test_typed_get_i32() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::Int32);
+        buffer.set_pixel(1, 1, -50_000.0).expect("set should work");
+        assert_eq!(buffer.get_i32(1, 1).expect("get_i32"), -50_000);
+    }
+
+    #[test]
+    fn test_typed_get_u64() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt64);
+        buffer
+            .set_pixel(0, 0, 1_000_000.0)
+            .expect("set should work");
+        assert_eq!(buffer.get_u64(0, 0).expect("get_u64"), 1_000_000);
+    }
+
+    #[test]
+    fn test_typed_get_i64() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::Int64);
+        buffer.set_pixel(0, 0, -999_999.0).expect("set should work");
+        assert_eq!(buffer.get_i64(0, 0).expect("get_i64"), -999_999);
+    }
+
+    #[test]
+    fn test_typed_get_f32() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::Float32);
+        buffer
+            .set_f32(7, 8, core::f32::consts::PI)
+            .expect("set_f32 should work");
+        let val = buffer.get_f32(7, 8).expect("get_f32");
+        assert!((val - core::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_typed_get_f64() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::Float64);
+        buffer
+            .set_f64(9, 9, core::f64::consts::E)
+            .expect("set_f64 should work");
+        let val = buffer.get_f64(9, 9).expect("get_f64");
+        assert!((val - core::f64::consts::E).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_typed_set_u8() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt8);
+        buffer.set_u8(0, 0, 255).expect("set_u8 should work");
+        assert_eq!(buffer.get_u8(0, 0).expect("get_u8"), 255);
+    }
+
+    #[test]
+    fn test_typed_out_of_bounds() {
+        let buffer = RasterBuffer::zeros(10, 10, RasterDataType::Float32);
+        assert!(buffer.get_f32(10, 0).is_err());
+        assert!(buffer.get_f32(0, 10).is_err());
+    }
+
+    #[test]
+    fn test_typed_wrong_type() {
+        let buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt8);
+        assert!(buffer.get_f32(0, 0).is_err());
+        assert!(buffer.get_u16(0, 0).is_err());
+        assert!(buffer.get_i32(0, 0).is_err());
+        assert!(buffer.get_f64(0, 0).is_err());
+    }
+
+    #[test]
+    fn test_row_slice() {
+        let mut buffer = RasterBuffer::zeros(5, 3, RasterDataType::Float32);
+        for x in 0..5 {
+            buffer
+                .set_pixel(x, 1, (x + 10) as f64)
+                .expect("set should work");
+        }
+        let row: &[f32] = buffer.row_slice(1).expect("row_slice should work");
+        assert_eq!(row.len(), 5);
+        assert!((row[0] - 10.0).abs() < 1e-5);
+        assert!((row[4] - 14.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_row_slice_out_of_bounds() {
+        let buffer = RasterBuffer::zeros(5, 3, RasterDataType::Float32);
+        assert!(buffer.row_slice::<f32>(3).is_err());
+    }
+
+    #[test]
+    fn test_window() {
+        let mut buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt8);
+        buffer.set_pixel(5, 5, 42.0).expect("set should work");
+        buffer.set_pixel(6, 6, 99.0).expect("set should work");
+
+        let win = buffer.window(4, 4, 4, 4).expect("window should work");
+        assert_eq!(win.width(), 4);
+        assert_eq!(win.height(), 4);
+        // (5,5) in original -> (1,1) in window
+        let val = win.get_pixel(1, 1).expect("get should work");
+        assert!((val - 42.0).abs() < f64::EPSILON);
+        // (6,6) in original -> (2,2) in window
+        let val = win.get_pixel(2, 2).expect("get should work");
+        assert!((val - 99.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_window_out_of_bounds() {
+        let buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt8);
+        assert!(buffer.window(8, 8, 4, 4).is_err());
     }
 }

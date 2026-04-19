@@ -14,7 +14,7 @@ keywords = ["geoparquet", "parquet", "arrow", "vector", "gdal"]
 categories = ["science", "parser-implementations", "encoding"]
 
 [features]
-default = ["std", "snappy", "zstd"]
+default = ["std"]
 std = [
     "oxigdal-core/std",
     "thiserror/std",

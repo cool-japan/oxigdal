@@ -8,9 +8,9 @@ use crate::error::{Result, ShapefileError};
 use crate::shp::{Shape, ShapefileHeader, ShpReader};
 use crate::shx::{IndexEntry, ShxReader};
 use oxigdal_core::vector::{
-    Coordinate, Feature, Geometry, LineString as CoreLineString,
+    Coordinate, Feature, FieldValue, Geometry, LineString as CoreLineString,
     MultiLineString as CoreMultiLineString, MultiPoint as CoreMultiPoint, Point as CorePoint,
-    Polygon as CorePolygon, PropertyValue,
+    Polygon as CorePolygon,
 };
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,7 +25,7 @@ pub struct ShapefileFeature {
     /// Geometry
     pub geometry: Option<Geometry>,
     /// Attributes (field name -> value)
-    pub attributes: HashMap<String, PropertyValue>,
+    pub attributes: HashMap<String, FieldValue>,
 }
 
 impl ShapefileFeature {
@@ -33,7 +33,7 @@ impl ShapefileFeature {
     pub fn new(
         record_number: i32,
         geometry: Option<Geometry>,
-        attributes: HashMap<String, PropertyValue>,
+        attributes: HashMap<String, FieldValue>,
     ) -> Self {
         Self {
             record_number,
@@ -70,12 +70,16 @@ pub struct ShapefileReader {
     field_descriptors: Vec<FieldDescriptor>,
     /// Index entries from .shx (if available)
     index_entries: Option<Vec<IndexEntry>>,
+    /// CRS as WKT string from .prj file (if present)
+    pub crs: Option<String>,
+    /// Character encoding from .cpg file (if present)
+    pub encoding: Option<String>,
 }
 
 impl ShapefileReader {
     /// Opens a Shapefile from a base path (without extension)
     ///
-    /// Reads the .shp, .dbf, and optionally .shx files.
+    /// Reads the .shp, .dbf, and optionally .shx, .prj, and .cpg files.
     pub fn open<P: AsRef<Path>>(base_path: P) -> Result<Self> {
         let base_path = base_path.as_ref();
 
@@ -83,6 +87,8 @@ impl ShapefileReader {
         let shp_path = Self::with_extension(base_path, "shp");
         let dbf_path = Self::with_extension(base_path, "dbf");
         let shx_path = Self::with_extension(base_path, "shx");
+        let prj_path = Self::with_extension(base_path, "prj");
+        let cpg_path = Self::with_extension(base_path, "cpg");
 
         // Open .shp file
         let shp_file = File::open(&shp_path).map_err(|_| ShapefileError::MissingFile {
@@ -114,11 +120,36 @@ impl ShapefileReader {
             None
         };
 
+        // Read .prj file (optional) — contains CRS as WKT string
+        let crs = if prj_path.exists() {
+            std::fs::read_to_string(&prj_path)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        };
+
+        // Read .cpg file (optional) — contains character encoding name
+        // NOTE: Encoding information is stored but DBF string fields currently use
+        // String::from_utf8_lossy as a fallback for non-UTF-8 data. Full encoding
+        // transcoding via encoding_rs is a follow-up item.
+        let encoding = if cpg_path.exists() {
+            std::fs::read_to_string(&cpg_path)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        };
+
         Ok(Self {
             base_path: base_path.to_path_buf(),
             header,
             field_descriptors,
             index_entries,
+            crs,
+            encoding,
         })
     }
 
@@ -135,6 +166,136 @@ impl ShapefileReader {
     /// Returns the index entries (if .shx was loaded)
     pub fn index_entries(&self) -> Option<&[IndexEntry]> {
         self.index_entries.as_deref()
+    }
+
+    /// Returns the CRS as a WKT string, if a .prj file was present
+    pub fn crs(&self) -> Option<&str> {
+        self.crs.as_deref()
+    }
+
+    /// Returns the character encoding name from the .cpg file, if present
+    ///
+    /// Common values: `"UTF-8"`, `"CP1252"`, `"ISO-8859-1"`.
+    /// NOTE: Non-UTF-8 encodings are not yet transcoded; DBF fields use
+    /// `String::from_utf8_lossy` as a fallback.
+    pub fn encoding(&self) -> Option<&str> {
+        self.encoding.as_deref()
+    }
+
+    /// Returns features whose bounding box intersects the given query bbox.
+    ///
+    /// Reads all shape records from `.shp` and `.dbf`, then filters to those
+    /// whose bounding box overlaps `[min_x, min_y, max_x, max_y]` (inclusive).
+    /// Point shapes use the point coordinate as a degenerate bbox.
+    /// Null shapes are excluded.
+    ///
+    /// For large shapefiles this reads all geometry upfront; a full R-tree
+    /// spatial index backed by lazy `.shx` seeks is a follow-up item.
+    pub fn features_in_bbox(
+        &mut self,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> Result<Vec<ShapefileFeature>> {
+        let all_features = self.read_features()?;
+
+        let filtered = all_features
+            .into_iter()
+            .filter(|feature| {
+                let Some(ref geom) = feature.geometry else {
+                    return false;
+                };
+                if let Some((fx_min, fy_min, fx_max, fy_max)) = Self::geometry_bbox(geom) {
+                    // Standard AABB intersection test (inclusive on edges)
+                    !(fx_max < min_x || fx_min > max_x || fy_max < min_y || fy_min > max_y)
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
+    /// Extracts a 2-D bounding box `(x_min, y_min, x_max, y_max)` from a geometry.
+    ///
+    /// Delegates to the `Geometry::bounds()` method defined in `oxigdal-core`,
+    /// which returns `None` for degenerate or empty geometries.
+    fn geometry_bbox(geom: &Geometry) -> Option<(f64, f64, f64, f64)> {
+        geom.bounds()
+    }
+
+    /// Returns a streaming iterator over the Shapefile's features.
+    ///
+    /// Unlike [`read_features`], which loads everything into memory, this opens
+    /// fresh buffered readers and reads one SHP record + one DBF record per
+    /// [`Iterator::next`] call.  Memory usage is therefore O(1) with respect
+    /// to the number of features.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `.shp` or `.dbf` files cannot be opened, or if
+    /// the header/field-descriptor section cannot be read.  Individual record
+    /// errors are surfaced as `Err` items from the iterator.
+    ///
+    /// [`read_features`]: ShapefileReader::read_features
+    pub fn iter_features(&self) -> Result<FeatureIter<'_>> {
+        let shp_path = Self::with_extension(&self.base_path, "shp");
+        let dbf_path = Self::with_extension(&self.base_path, "dbf");
+
+        let shp_file = File::open(&shp_path)?;
+        let shp_reader = BufReader::new(shp_file);
+        let shp_reader = ShpReader::new(shp_reader)?;
+
+        let dbf_file = File::open(&dbf_path)?;
+        let dbf_reader = BufReader::new(dbf_file);
+        let dbf_reader = DbfReader::new(dbf_reader)?;
+
+        Ok(FeatureIter {
+            shp_reader,
+            dbf_reader,
+            field_descriptors: &self.field_descriptors,
+            done: false,
+        })
+    }
+
+    /// Reads features that satisfy an arbitrary predicate closure.
+    ///
+    /// This is a convenience wrapper over [`ShapefileReader::read_features`] that filters the
+    /// result set in-place without a second allocation.  The predicate receives
+    /// a shared reference to each [`ShapefileFeature`] and returns `true` for
+    /// features that should be included in the output.
+    ///
+    /// For structured attribute comparisons prefer
+    /// [`read_features_filtered`](ShapefileReader::read_features_filtered),
+    /// which accepts a [`crate::filter::FieldFilter`] directly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O or parse errors from the underlying read.
+    pub fn read_features_where<F>(&self, predicate: F) -> Result<Vec<ShapefileFeature>>
+    where
+        F: Fn(&ShapefileFeature) -> bool,
+    {
+        let all = self.read_features()?;
+        Ok(all.into_iter().filter(|f| predicate(f)).collect())
+    }
+
+    /// Reads features that match a structured [`crate::filter::FieldFilter`].
+    ///
+    /// This is a thin convenience method over
+    /// [`read_features_where`](ShapefileReader::read_features_where) that
+    /// accepts a [`crate::filter::FieldFilter`] directly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O or parse errors from the underlying read.
+    pub fn read_features_filtered(
+        &self,
+        filter: &crate::filter::FieldFilter,
+    ) -> Result<Vec<ShapefileFeature>> {
+        self.read_features_where(|f| filter.matches(f))
     }
 
     /// Reads all features from the Shapefile
@@ -192,13 +353,18 @@ impl ShapefileReader {
                 Ok(Some(Geometry::Point(oxigdal_point)))
             }
             Shape::PointZ(point) => {
-                // For now, just use X/Y (could extend OxiGDAL to support Z)
-                let oxigdal_point = CorePoint::new(point.x, point.y);
-                Ok(Some(Geometry::Point(oxigdal_point)))
+                use oxigdal_core::vector::Coordinate;
+                let coord = if let Some(m) = point.m {
+                    Coordinate::new_3dm(point.x, point.y, point.z, m)
+                } else {
+                    Coordinate::new_3d(point.x, point.y, point.z)
+                };
+                Ok(Some(Geometry::Point(CorePoint::from_coord(coord))))
             }
             Shape::PointM(point) => {
-                let oxigdal_point = CorePoint::new(point.x, point.y);
-                Ok(Some(Geometry::Point(oxigdal_point)))
+                use oxigdal_core::vector::Coordinate;
+                let coord = Coordinate::new_2dm(point.x, point.y, point.m);
+                Ok(Some(Geometry::Point(CorePoint::from_coord(coord))))
             }
             Shape::PolyLine(multi_part) => {
                 if multi_part.parts.len() == 1 {
@@ -318,52 +484,378 @@ impl ShapefileReader {
                     Ok(Some(Geometry::MultiPoint(CoreMultiPoint::new(points))))
                 }
             }
-            // Z variants: use the base 2D shape data (Z values are not
-            // directly representable in the current OxiGDAL Geometry model)
-            Shape::PolyLineZ(shape_z) => {
-                Self::shape_to_geometry(&Shape::PolyLine(shape_z.base.clone()))
-            }
-            Shape::PolygonZ(shape_z) => {
-                Self::shape_to_geometry(&Shape::Polygon(shape_z.base.clone()))
-            }
-            Shape::MultiPointZ(shape_z) => {
-                Self::shape_to_geometry(&Shape::MultiPoint(shape_z.base.clone()))
-            }
-            // M variants: use the base 2D shape data (M values are not
-            // directly representable in the current OxiGDAL Geometry model)
+            // Z variants: reconstruct with Z (and optionally M) coordinates
+            Shape::PolyLineZ(shape_z) => Self::multipart_z_to_linestring_geometry(
+                &shape_z.base,
+                &shape_z.z_values,
+                shape_z.m_values.as_deref(),
+            ),
+            Shape::PolygonZ(shape_z) => Self::multipart_z_to_polygon_geometry(
+                &shape_z.base,
+                &shape_z.z_values,
+                shape_z.m_values.as_deref(),
+            ),
+            Shape::MultiPointZ(shape_z) => Self::multipart_z_to_multipoint_geometry(
+                &shape_z.base,
+                &shape_z.z_values,
+                shape_z.m_values.as_deref(),
+            ),
+            // M variants: reconstruct with M coordinates
             Shape::PolyLineM(shape_m) => {
-                Self::shape_to_geometry(&Shape::PolyLine(shape_m.base.clone()))
+                Self::multipart_m_to_linestring_geometry(&shape_m.base, &shape_m.m_values)
             }
             Shape::PolygonM(shape_m) => {
-                Self::shape_to_geometry(&Shape::Polygon(shape_m.base.clone()))
+                Self::multipart_m_to_polygon_geometry(&shape_m.base, &shape_m.m_values)
             }
             Shape::MultiPointM(shape_m) => {
-                Self::shape_to_geometry(&Shape::MultiPoint(shape_m.base.clone()))
+                Self::multipart_m_to_multipoint_geometry(&shape_m.base, &shape_m.m_values)
+            }
+            // MultiPatch: expose as a MultiPolygon using ring parts (outer/inner ring types)
+            // or fall back to a point collection of the vertices.
+            Shape::MultiPatch(mp_shape) => {
+                // Represent patch vertices as a MultiPoint carrying Z coordinates.
+                use oxigdal_core::vector::Coordinate;
+                let points: Vec<CorePoint> = mp_shape
+                    .base
+                    .points
+                    .iter()
+                    .zip(mp_shape.z_values.iter())
+                    .map(|(p, z)| CorePoint::from_coord(Coordinate::new_3d(p.x, p.y, *z)))
+                    .collect();
+
+                if points.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(Geometry::MultiPoint(CoreMultiPoint::new(points))))
+                }
             }
         }
     }
 
-    /// Converts a DBF record to PropertyValue attributes
+    /// Converts a multi-part Z shape into a LineString or MultiLineString Geometry
+    /// with Z (and optionally M) coordinates preserved.
+    fn multipart_z_to_linestring_geometry(
+        base: &crate::shp::MultiPartShape,
+        z_values: &[f64],
+        m_values: Option<&[f64]>,
+    ) -> Result<Option<Geometry>> {
+        use oxigdal_core::vector::Coordinate;
+
+        let make_coord = |i: usize, p: &crate::shp::shapes::Point| -> Coordinate {
+            let z = z_values.get(i).copied().unwrap_or(0.0);
+            if let Some(mv) = m_values {
+                Coordinate::new_3dm(p.x, p.y, z, mv.get(i).copied().unwrap_or(0.0))
+            } else {
+                Coordinate::new_3d(p.x, p.y, z)
+            }
+        };
+
+        if base.parts.len() == 1 {
+            let coords: Vec<Coordinate> = base
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, p)| make_coord(i, p))
+                .collect();
+            if coords.len() < 2 {
+                return Ok(None);
+            }
+            let linestring = CoreLineString::new(coords).map_err(|e| {
+                ShapefileError::invalid_geometry(format!("Invalid LineString: {}", e))
+            })?;
+            Ok(Some(Geometry::LineString(linestring)))
+        } else {
+            let mut linestrings = Vec::new();
+            for i in 0..base.parts.len() {
+                let start = base.parts[i] as usize;
+                let end = if i + 1 < base.parts.len() {
+                    base.parts[i + 1] as usize
+                } else {
+                    base.points.len()
+                };
+                let coords: Vec<Coordinate> = base.points[start..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, p)| make_coord(start + j, p))
+                    .collect();
+                if coords.len() >= 2 {
+                    if let Ok(ls) = CoreLineString::new(coords) {
+                        linestrings.push(ls);
+                    }
+                }
+            }
+            if linestrings.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(Geometry::MultiLineString(CoreMultiLineString::new(
+                    linestrings,
+                ))))
+            }
+        }
+    }
+
+    /// Converts a multi-part Z shape into a Polygon Geometry with Z coordinates.
+    fn multipart_z_to_polygon_geometry(
+        base: &crate::shp::MultiPartShape,
+        z_values: &[f64],
+        m_values: Option<&[f64]>,
+    ) -> Result<Option<Geometry>> {
+        use oxigdal_core::vector::Coordinate;
+
+        if base.parts.is_empty() {
+            return Ok(None);
+        }
+
+        let make_coord = |i: usize, p: &crate::shp::shapes::Point| -> Coordinate {
+            let z = z_values.get(i).copied().unwrap_or(0.0);
+            if let Some(mv) = m_values {
+                Coordinate::new_3dm(p.x, p.y, z, mv.get(i).copied().unwrap_or(0.0))
+            } else {
+                Coordinate::new_3d(p.x, p.y, z)
+            }
+        };
+
+        let ext_start = base.parts[0] as usize;
+        let ext_end = if base.parts.len() > 1 {
+            base.parts[1] as usize
+        } else {
+            base.points.len()
+        };
+        let ext_coords: Vec<Coordinate> = base.points[ext_start..ext_end]
+            .iter()
+            .enumerate()
+            .map(|(j, p)| make_coord(ext_start + j, p))
+            .collect();
+        if ext_coords.len() < 4 {
+            return Ok(None);
+        }
+        let exterior = CoreLineString::new(ext_coords).map_err(|e| {
+            ShapefileError::invalid_geometry(format!("Invalid exterior Z ring: {}", e))
+        })?;
+
+        let mut interiors = Vec::new();
+        for i in 1..base.parts.len() {
+            let start = base.parts[i] as usize;
+            let end = if i + 1 < base.parts.len() {
+                base.parts[i + 1] as usize
+            } else {
+                base.points.len()
+            };
+            let coords: Vec<Coordinate> = base.points[start..end]
+                .iter()
+                .enumerate()
+                .map(|(j, p)| make_coord(start + j, p))
+                .collect();
+            if coords.len() >= 4 {
+                if let Ok(ring) = CoreLineString::new(coords) {
+                    interiors.push(ring);
+                }
+            }
+        }
+        let polygon = CorePolygon::new(exterior, interiors)
+            .map_err(|e| ShapefileError::invalid_geometry(format!("Invalid polygon Z: {}", e)))?;
+        Ok(Some(Geometry::Polygon(polygon)))
+    }
+
+    /// Converts a multi-part Z shape into a MultiPoint Geometry with Z coordinates.
+    fn multipart_z_to_multipoint_geometry(
+        base: &crate::shp::MultiPartShape,
+        z_values: &[f64],
+        m_values: Option<&[f64]>,
+    ) -> Result<Option<Geometry>> {
+        use oxigdal_core::vector::Coordinate;
+        let points: Vec<CorePoint> = base
+            .points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let z = z_values.get(i).copied().unwrap_or(0.0);
+                let coord = if let Some(mv) = m_values {
+                    Coordinate::new_3dm(p.x, p.y, z, mv.get(i).copied().unwrap_or(0.0))
+                } else {
+                    Coordinate::new_3d(p.x, p.y, z)
+                };
+                CorePoint::from_coord(coord)
+            })
+            .collect();
+        if points.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Geometry::MultiPoint(CoreMultiPoint::new(points))))
+        }
+    }
+
+    /// Converts a multi-part M shape into a LineString/MultiLineString with M.
+    fn multipart_m_to_linestring_geometry(
+        base: &crate::shp::MultiPartShape,
+        m_values: &[f64],
+    ) -> Result<Option<Geometry>> {
+        use oxigdal_core::vector::Coordinate;
+
+        let make_coord = |i: usize, p: &crate::shp::shapes::Point| -> Coordinate {
+            Coordinate::new_2dm(p.x, p.y, m_values.get(i).copied().unwrap_or(0.0))
+        };
+
+        if base.parts.len() == 1 {
+            let coords: Vec<Coordinate> = base
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, p)| make_coord(i, p))
+                .collect();
+            if coords.len() < 2 {
+                return Ok(None);
+            }
+            let linestring = CoreLineString::new(coords).map_err(|e| {
+                ShapefileError::invalid_geometry(format!("Invalid LineStringM: {}", e))
+            })?;
+            Ok(Some(Geometry::LineString(linestring)))
+        } else {
+            let mut linestrings = Vec::new();
+            for i in 0..base.parts.len() {
+                let start = base.parts[i] as usize;
+                let end = if i + 1 < base.parts.len() {
+                    base.parts[i + 1] as usize
+                } else {
+                    base.points.len()
+                };
+                let coords: Vec<Coordinate> = base.points[start..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, p)| make_coord(start + j, p))
+                    .collect();
+                if coords.len() >= 2 {
+                    if let Ok(ls) = CoreLineString::new(coords) {
+                        linestrings.push(ls);
+                    }
+                }
+            }
+            if linestrings.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(Geometry::MultiLineString(CoreMultiLineString::new(
+                    linestrings,
+                ))))
+            }
+        }
+    }
+
+    /// Converts a multi-part M shape into a Polygon with M.
+    fn multipart_m_to_polygon_geometry(
+        base: &crate::shp::MultiPartShape,
+        m_values: &[f64],
+    ) -> Result<Option<Geometry>> {
+        use oxigdal_core::vector::Coordinate;
+
+        if base.parts.is_empty() {
+            return Ok(None);
+        }
+
+        let make_coord = |i: usize, p: &crate::shp::shapes::Point| -> Coordinate {
+            Coordinate::new_2dm(p.x, p.y, m_values.get(i).copied().unwrap_or(0.0))
+        };
+
+        let ext_start = base.parts[0] as usize;
+        let ext_end = if base.parts.len() > 1 {
+            base.parts[1] as usize
+        } else {
+            base.points.len()
+        };
+        let ext_coords: Vec<Coordinate> = base.points[ext_start..ext_end]
+            .iter()
+            .enumerate()
+            .map(|(j, p)| make_coord(ext_start + j, p))
+            .collect();
+        if ext_coords.len() < 4 {
+            return Ok(None);
+        }
+        let exterior = CoreLineString::new(ext_coords).map_err(|e| {
+            ShapefileError::invalid_geometry(format!("Invalid exterior M ring: {}", e))
+        })?;
+
+        let mut interiors = Vec::new();
+        for i in 1..base.parts.len() {
+            let start = base.parts[i] as usize;
+            let end = if i + 1 < base.parts.len() {
+                base.parts[i + 1] as usize
+            } else {
+                base.points.len()
+            };
+            let coords: Vec<Coordinate> = base.points[start..end]
+                .iter()
+                .enumerate()
+                .map(|(j, p)| make_coord(start + j, p))
+                .collect();
+            if coords.len() >= 4 {
+                if let Ok(ring) = CoreLineString::new(coords) {
+                    interiors.push(ring);
+                }
+            }
+        }
+        let polygon = CorePolygon::new(exterior, interiors)
+            .map_err(|e| ShapefileError::invalid_geometry(format!("Invalid polygon M: {}", e)))?;
+        Ok(Some(Geometry::Polygon(polygon)))
+    }
+
+    /// Converts a multi-part M shape into a MultiPoint with M.
+    fn multipart_m_to_multipoint_geometry(
+        base: &crate::shp::MultiPartShape,
+        m_values: &[f64],
+    ) -> Result<Option<Geometry>> {
+        use oxigdal_core::vector::Coordinate;
+        let points: Vec<CorePoint> = base
+            .points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                CorePoint::from_coord(Coordinate::new_2dm(
+                    p.x,
+                    p.y,
+                    m_values.get(i).copied().unwrap_or(0.0),
+                ))
+            })
+            .collect();
+        if points.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Geometry::MultiPoint(CoreMultiPoint::new(points))))
+        }
+    }
+
+    /// Converts a DBF record to FieldValue attributes
     fn dbf_to_attributes(
         dbf_record: &crate::dbf::DbfRecord,
         field_descriptors: &[FieldDescriptor],
-    ) -> HashMap<String, PropertyValue> {
+    ) -> HashMap<String, FieldValue> {
         let mut attributes = HashMap::new();
 
         for (field, value) in field_descriptors.iter().zip(&dbf_record.values) {
             let property_value = match value {
-                crate::dbf::FieldValue::String(s) => PropertyValue::String(s.clone()),
-                crate::dbf::FieldValue::Integer(i) => PropertyValue::Integer(*i),
-                crate::dbf::FieldValue::Float(f) => PropertyValue::Float(*f),
-                crate::dbf::FieldValue::Boolean(b) => PropertyValue::Bool(*b),
-                crate::dbf::FieldValue::Date(d) => PropertyValue::String(d.clone()),
-                crate::dbf::FieldValue::Null => PropertyValue::Null,
+                crate::dbf::FieldValue::String(s) => FieldValue::String(s.clone()),
+                crate::dbf::FieldValue::Integer(i) => FieldValue::Integer(*i),
+                crate::dbf::FieldValue::Float(f) => FieldValue::Float(*f),
+                crate::dbf::FieldValue::Boolean(b) => FieldValue::Bool(*b),
+                crate::dbf::FieldValue::Date(d) => FieldValue::String(d.clone()),
+                crate::dbf::FieldValue::Null => FieldValue::Null,
             };
 
             attributes.insert(field.name.clone(), property_value);
         }
 
         attributes
+    }
+
+    /// Converts a DBF record to FieldValue attributes (static version for FeatureIter)
+    pub(crate) fn dbf_to_attributes_pub(
+        dbf_record: &crate::dbf::DbfRecord,
+        field_descriptors: &[FieldDescriptor],
+    ) -> HashMap<String, FieldValue> {
+        Self::dbf_to_attributes(dbf_record, field_descriptors)
+    }
+
+    /// Converts a Shape to an OxiGDAL Geometry (public version for FeatureIter)
+    pub(crate) fn shape_to_geometry_pub(shape: &Shape) -> Result<Option<Geometry>> {
+        Self::shape_to_geometry(shape)
     }
 
     /// Helper to add extension to base path
@@ -382,33 +874,104 @@ impl ShapefileReader {
     }
 }
 
+// ─── Streaming feature iterator ──────────────────────────────────────────────
+
+/// A lazy, streaming iterator over the features in a Shapefile.
+///
+/// Created by [`ShapefileReader::iter_features`].  Reads one SHP record and one
+/// DBF record per call to [`Iterator::next`], keeping memory usage at O(1) with
+/// respect to the number of features.
+///
+/// The iterator is exhausted as soon as either the `.shp` or the `.dbf` reader
+/// returns `None`, or a record-level I/O error occurs (which is surfaced as an
+/// `Err` item).
+pub struct FeatureIter<'a> {
+    shp_reader: ShpReader<BufReader<File>>,
+    dbf_reader: DbfReader<BufReader<File>>,
+    /// Reference to the field descriptors owned by the parent `ShapefileReader`.
+    field_descriptors: &'a [FieldDescriptor],
+    /// Set to `true` after the first `None` or error to make the iterator fused.
+    done: bool,
+}
+
+impl<'a> Iterator for FeatureIter<'a> {
+    type Item = Result<ShapefileFeature>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        // Read one SHP record
+        let shp_record = match self.shp_reader.read_record() {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                self.done = true;
+                return None;
+            }
+            Err(e) => {
+                self.done = true;
+                return Some(Err(e));
+            }
+        };
+
+        // Read one DBF record
+        let dbf_record = match self.dbf_reader.read_record() {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                self.done = true;
+                return None;
+            }
+            Err(e) => {
+                self.done = true;
+                return Some(Err(e));
+            }
+        };
+
+        // Convert shape to geometry
+        let geometry = match ShapefileReader::shape_to_geometry_pub(&shp_record.shape) {
+            Ok(g) => g,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(e));
+            }
+        };
+
+        // Convert DBF record to attributes
+        let attributes =
+            ShapefileReader::dbf_to_attributes_pub(&dbf_record, self.field_descriptors);
+
+        Some(Ok(ShapefileFeature::new(
+            shp_record.record_number,
+            geometry,
+            attributes,
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_path_extension_helper() {
-        let base = PathBuf::from("/tmp/test");
-        assert_eq!(
-            ShapefileReader::with_extension(&base, "shp"),
-            PathBuf::from("/tmp/test.shp")
-        );
+        let base = std::env::temp_dir().join("oxigdal_shapefile_test");
+        let expected_shp = std::env::temp_dir().join("oxigdal_shapefile_test.shp");
+        assert_eq!(ShapefileReader::with_extension(&base, "shp"), expected_shp);
 
-        let base = PathBuf::from("/tmp/test.shp");
+        let base_shp = std::env::temp_dir().join("oxigdal_shapefile_test.shp");
+        let expected_dbf = std::env::temp_dir().join("oxigdal_shapefile_test.dbf");
         assert_eq!(
-            ShapefileReader::with_extension(&base, "dbf"),
-            PathBuf::from("/tmp/test.dbf")
+            ShapefileReader::with_extension(&base_shp, "dbf"),
+            expected_dbf
         );
     }
 
     #[test]
     fn test_shapefile_feature_creation() {
         let mut attributes = HashMap::new();
-        attributes.insert(
-            "name".to_string(),
-            PropertyValue::String("Test".to_string()),
-        );
-        attributes.insert("value".to_string(), PropertyValue::Integer(42));
+        attributes.insert("name".to_string(), FieldValue::String("Test".to_string()));
+        attributes.insert("value".to_string(), FieldValue::Integer(42));
 
         let geometry = Some(Geometry::Point(CorePoint::new(10.0, 20.0)));
 

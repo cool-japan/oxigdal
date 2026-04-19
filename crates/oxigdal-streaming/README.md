@@ -41,14 +41,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-streaming = "0.1.3"
+oxigdal-streaming = "0.1.4"
 ```
 
 For RocksDB backend support:
 
 ```toml
 [dependencies]
-oxigdal-streaming = { version = "0.1.3", features = ["rocksdb-backend"] }
+oxigdal-streaming = { version = "0.1.4", features = ["rocksdb-backend"] }
 ```
 
 ## Usage

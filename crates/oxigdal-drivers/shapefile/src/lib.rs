@@ -160,6 +160,7 @@ extern crate std;
 
 pub mod dbf;
 pub mod error;
+pub mod filter;
 pub mod reader;
 pub mod shp;
 pub mod shx;
@@ -167,11 +168,14 @@ pub mod writer;
 
 // Re-export commonly used types
 pub use error::{Result, ShapefileError};
-pub use reader::{ShapefileFeature, ShapefileReader};
+pub use filter::{FieldFilter, FieldFilterOp, FilterValue};
+pub use reader::{FeatureIter, ShapefileFeature, ShapefileReader};
 pub use writer::{ShapefileSchemaBuilder, ShapefileWriter};
 
 // Re-export shape types
-pub use shp::shapes::{MultiPartShapeM, MultiPartShapeZ, Point, PointM, PointZ, ShapeType};
+pub use shp::shapes::{
+    MultiPartShapeM, MultiPartShapeZ, MultiPatchShape, PartType, Point, PointM, PointZ, ShapeType,
+};
 pub use shp::{Shape, ShapeRecord};
 
 // Re-export DBF types

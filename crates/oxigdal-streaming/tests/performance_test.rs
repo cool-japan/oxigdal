@@ -238,7 +238,8 @@ fn write_temp_file(content: &[u8]) -> tempfile::NamedTempFile {
 
 #[test]
 fn mapped_file_open_nonexistent_returns_error() {
-    let result = MappedFile::open("/tmp/oxigdal_nonexistent_xyz_12345.bin");
+    let path = std::env::temp_dir().join("oxigdal_nonexistent_xyz_bx9f.bin");
+    let result = MappedFile::open(&path);
     assert!(result.is_err());
 }
 

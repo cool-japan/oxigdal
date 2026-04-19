@@ -1,14 +1,19 @@
 //! GeoJSON writer implementation
 //!
 //! This module provides efficient writing and serialization of GeoJSON objects
-//! with support for pretty-printing and streaming.
+//! with support for pretty-printing, streaming, and newline-delimited GeoJSON
+//! (GeoJSONL / GeoJSON-seq).
 
 use std::io::Write;
+use std::path::Path;
 
 use serde_json::ser::{CompactFormatter, PrettyFormatter, Serializer};
 
 use crate::error::Result;
-use crate::types::{Feature, FeatureCollection, Geometry};
+use crate::types::{
+    Feature, FeatureCollection, Geometry, GeometryCollection, LineString, MultiLineString,
+    MultiPoint, MultiPolygon, Point, Polygon,
+};
 
 /// Writer configuration
 #[derive(Debug, Clone)]
@@ -77,6 +82,102 @@ impl WriterConfig {
     }
 }
 
+// ─── Coordinate precision helpers ────────────────────────────────────────────
+
+/// Rounds every element of a position vector to `precision` decimal places.
+fn round_position(pos: &[f64], precision: usize) -> Vec<f64> {
+    let factor = 10_f64.powi(precision as i32);
+    pos.iter().map(|&v| (v * factor).round() / factor).collect()
+}
+
+/// Returns a new `Geometry` with all coordinate values rounded to `precision`
+/// decimal places. `bbox` fields are dropped (caller re-computes or removes
+/// them as needed).
+fn apply_precision_to_geometry(geom: &Geometry, precision: usize) -> Geometry {
+    match geom {
+        Geometry::Point(p) => Geometry::Point(Point {
+            coordinates: round_position(&p.coordinates, precision),
+            bbox: None,
+        }),
+        Geometry::LineString(ls) => Geometry::LineString(LineString {
+            coordinates: ls
+                .coordinates
+                .iter()
+                .map(|pos| round_position(pos, precision))
+                .collect(),
+            bbox: None,
+        }),
+        Geometry::Polygon(poly) => Geometry::Polygon(Polygon {
+            coordinates: poly
+                .coordinates
+                .iter()
+                .map(|ring| {
+                    ring.iter()
+                        .map(|pos| round_position(pos, precision))
+                        .collect()
+                })
+                .collect(),
+            bbox: None,
+        }),
+        Geometry::MultiPoint(mp) => Geometry::MultiPoint(MultiPoint {
+            coordinates: mp
+                .coordinates
+                .iter()
+                .map(|pos| round_position(pos, precision))
+                .collect(),
+            bbox: None,
+        }),
+        Geometry::MultiLineString(mls) => Geometry::MultiLineString(MultiLineString {
+            coordinates: mls
+                .coordinates
+                .iter()
+                .map(|line| {
+                    line.iter()
+                        .map(|pos| round_position(pos, precision))
+                        .collect()
+                })
+                .collect(),
+            bbox: None,
+        }),
+        Geometry::MultiPolygon(mpoly) => Geometry::MultiPolygon(MultiPolygon {
+            coordinates: mpoly
+                .coordinates
+                .iter()
+                .map(|rings| {
+                    rings
+                        .iter()
+                        .map(|ring| {
+                            ring.iter()
+                                .map(|pos| round_position(pos, precision))
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+            bbox: None,
+        }),
+        Geometry::GeometryCollection(gc) => Geometry::GeometryCollection(GeometryCollection {
+            geometries: gc
+                .geometries
+                .iter()
+                .map(|g| apply_precision_to_geometry(g, precision))
+                .collect(),
+            bbox: None,
+        }),
+    }
+}
+
+/// Apply coordinate precision to a `Feature`'s geometry (if any).
+fn apply_precision_to_feature(feature: Feature, precision: usize) -> Feature {
+    let geometry = feature
+        .geometry
+        .map(|g| apply_precision_to_geometry(&g, precision));
+    Feature {
+        geometry,
+        ..feature
+    }
+}
+
 /// GeoJSON writer
 ///
 /// Provides methods to write GeoJSON objects to various outputs.
@@ -119,6 +220,15 @@ impl<W: Write> GeoJsonWriter<W> {
     pub fn write_feature_collection(&mut self, fc: &FeatureCollection) -> Result<()> {
         let mut fc = fc.clone();
 
+        // Apply coordinate precision before any other processing
+        if let Some(precision) = self.config.coordinate_precision {
+            for feature in &mut fc.features {
+                if let Some(geom) = feature.geometry.take() {
+                    feature.geometry = Some(apply_precision_to_geometry(&geom, precision));
+                }
+            }
+        }
+
         // Compute bounding box if requested
         if self.config.compute_bbox && fc.bbox.is_none() {
             fc.compute_bbox();
@@ -142,6 +252,11 @@ impl<W: Write> GeoJsonWriter<W> {
     pub fn write_feature(&mut self, feature: &Feature) -> Result<()> {
         let mut feature = feature.clone();
 
+        // Apply coordinate precision before any other processing
+        if let Some(precision) = self.config.coordinate_precision {
+            feature = apply_precision_to_feature(feature, precision);
+        }
+
         // Compute bounding box if requested
         if self.config.compute_bbox && feature.bbox.is_none() {
             feature.compute_bbox();
@@ -164,6 +279,11 @@ impl<W: Write> GeoJsonWriter<W> {
     /// Writes a Geometry
     pub fn write_geometry(&mut self, geometry: &Geometry) -> Result<()> {
         let mut geometry = geometry.clone();
+
+        // Apply coordinate precision before any other processing
+        if let Some(precision) = self.config.coordinate_precision {
+            geometry = apply_precision_to_geometry(&geometry, precision);
+        }
 
         // Compute bounding box if requested
         if self.config.compute_bbox {
@@ -312,6 +432,46 @@ pub fn geometry_to_string(geometry: &Geometry) -> Result<String> {
 pub fn geometry_to_string_pretty(geometry: &Geometry) -> Result<String> {
     let json = serde_json::to_string_pretty(geometry)?;
     Ok(json)
+}
+
+// ─── GeoJSONL / newline-delimited GeoJSON ─────────────────────────────────────
+
+/// Write an iterator of features to a writer in GeoJSONL format.
+///
+/// Each feature is serialised as a compact JSON object followed by a newline
+/// (`\n`).  No wrapping `FeatureCollection` is emitted.
+///
+/// # Errors
+///
+/// Returns the first serialisation or I/O error encountered.
+pub fn write_geojsonl<W, I>(mut writer: W, features: I) -> Result<()>
+where
+    W: Write,
+    I: IntoIterator<Item = Feature>,
+{
+    for feature in features {
+        let line = serde_json::to_string(&feature)?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+/// Write features to a file path in GeoJSONL format (one feature per line).
+///
+/// The file is created (or truncated) at `path`.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be created or when serialisation fails.
+pub fn write_geojsonl_to_file<P, I>(path: P, features: I) -> Result<()>
+where
+    P: AsRef<Path>,
+    I: IntoIterator<Item = Feature>,
+{
+    let file = std::fs::File::create(path.as_ref())?;
+    let writer = std::io::BufWriter::new(file);
+    write_geojsonl(writer, features)
 }
 
 /// GeoJSON formatting utilities

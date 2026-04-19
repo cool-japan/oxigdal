@@ -8,7 +8,8 @@ pub mod shapes;
 
 pub use header::{BoundingBox, HEADER_SIZE, ShapefileHeader};
 pub use shapes::{
-    Box2D, MultiPartShape, MultiPartShapeM, MultiPartShapeZ, Point, PointM, PointZ, ShapeType,
+    Box2D, MultiPartShape, MultiPartShapeM, MultiPartShapeZ, MultiPatchShape, PartType, Point,
+    PointM, PointZ, ShapeType,
 };
 
 use crate::error::{Result, ShapefileError};
@@ -56,6 +57,8 @@ pub enum Shape {
     PolygonM(MultiPartShapeM),
     /// MultiPoint with M values
     MultiPointM(MultiPartShapeM),
+    /// MultiPatch (3D surface, shape type 31)
+    MultiPatch(MultiPatchShape),
 }
 
 impl Shape {
@@ -75,6 +78,7 @@ impl Shape {
             Self::PolyLineM(_) => ShapeType::PolyLineM,
             Self::PolygonM(_) => ShapeType::PolygonM,
             Self::MultiPointM(_) => ShapeType::MultiPointM,
+            Self::MultiPatch(_) => ShapeType::MultiPatch,
         }
     }
 
@@ -136,9 +140,10 @@ impl Shape {
                 let shape = MultiPartShapeM::read(reader)?;
                 Ok(Self::MultiPointM(shape))
             }
-            _ => Err(ShapefileError::UnsupportedShapeType {
-                shape_type: shape_type_code,
-            }),
+            ShapeType::MultiPatch => {
+                let shape = MultiPatchShape::read(reader)?;
+                Ok(Self::MultiPatch(shape))
+            }
         }
     }
 
@@ -163,6 +168,7 @@ impl Shape {
             Self::PolyLineM(shape) | Self::PolygonM(shape) | Self::MultiPointM(shape) => {
                 shape.write(writer)
             }
+            Self::MultiPatch(shape) => shape.write(writer),
         }
     }
 
@@ -192,6 +198,8 @@ impl Shape {
             Self::PolyLineM(shape) | Self::PolygonM(shape) | Self::MultiPointM(shape) => {
                 shape.content_length_words()
             }
+            // MultiPatch: base + part_types + z + optional m
+            Self::MultiPatch(shape) => shape.content_length_words(),
         }
     }
 }

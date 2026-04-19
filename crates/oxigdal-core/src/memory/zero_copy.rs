@@ -113,7 +113,7 @@ impl SharedBuffer {
             Self::allocate_pinned(layout)?
         } else {
             unsafe {
-                let raw_ptr = std::alloc::alloc(layout);
+                let raw_ptr = std::alloc::alloc_zeroed(layout);
                 if raw_ptr.is_null() {
                     return Err(OxiGdalError::allocation_error(
                         "Failed to allocate buffer".to_string(),
@@ -264,7 +264,7 @@ impl SharedBuffer {
             Self::allocate_pinned(layout)?
         } else {
             unsafe {
-                let raw_ptr = std::alloc::alloc(layout);
+                let raw_ptr = std::alloc::alloc_zeroed(layout);
                 if raw_ptr.is_null() {
                     return Err(OxiGdalError::allocation_error(
                         "Failed to allocate buffer for COW".to_string(),

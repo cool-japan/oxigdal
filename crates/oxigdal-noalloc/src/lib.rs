@@ -10,20 +10,36 @@
 //! - [`Point2D`] — 2D point with distance and midpoint operations
 //! - [`Point3D`] — 3D point
 //! - [`BBox2D`] — 2D axis-aligned bounding box
+//! - [`BBox3D`] — 3D axis-aligned bounding box
 //! - [`LineSegment2D`] — 2D line segment with intersection support
 //! - [`Triangle2D`] — 2D triangle with area, containment, and centroid
 //! - [`FixedPolygon`] — Fixed-capacity polygon backed by an inline array
+//! - [`FixedLineString`] — Fixed-capacity polyline backed by an inline array
+//! - [`FixedRing`] — Fixed-capacity closed ring with area and containment
 //! - [`CoordTransform`] — 2D affine transform (2×3 matrix)
 //! - [`GeoHashFixed`] — Geohash encoding stored as `[u8; 12]`
 //! - [`NoAllocError`] — Error enum for no-alloc operations
+//!
+//! ## Projections
+//!
+//! - [`mercator_forward`] — Web Mercator (EPSG:3857) forward projection
+//! - [`mercator_inverse`] — Web Mercator (EPSG:3857) inverse projection
 
 #![no_std]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod bbox3d;
 pub mod geohash;
+pub mod linestring;
+pub mod mercator;
+pub mod ring;
 
+pub use bbox3d::BBox3D;
 pub use geohash::GeoHashFixed;
+pub use linestring::FixedLineString;
+pub use mercator::{mercator_forward, mercator_inverse};
+pub use ring::FixedRing;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -598,7 +614,7 @@ impl CoordTransform {
 /// of 2^(e/2), which is a good starting point for sqrt.
 /// Five iterations are sufficient for full f64 precision.
 #[inline(always)]
-fn libm_sqrt(x: f64) -> f64 {
+pub(crate) fn libm_sqrt(x: f64) -> f64 {
     if x <= 0.0 {
         return if x == 0.0 { 0.0 } else { f64::NAN };
     }
@@ -628,7 +644,7 @@ fn libm_sqrt(x: f64) -> f64 {
 ///
 /// Uses quadrant-based reduction for maximum accuracy across the full range.
 #[inline(always)]
-fn libm_sin(x: f64) -> f64 {
+pub(crate) fn libm_sin(x: f64) -> f64 {
     let (s, c) = sin_cos_core(x);
     let _ = c;
     s
@@ -636,7 +652,7 @@ fn libm_sin(x: f64) -> f64 {
 
 /// Portable f64 cos using Taylor series with argument reduction to [-π/4, π/4].
 #[inline(always)]
-fn libm_cos(x: f64) -> f64 {
+pub(crate) fn libm_cos(x: f64) -> f64 {
     let (s, c) = sin_cos_core(x);
     let _ = s;
     c
@@ -646,8 +662,9 @@ fn libm_cos(x: f64) -> f64 {
 ///
 /// Reduces `x` to `[-π/4, π/4]` using `k = round(x / (π/2))` and then
 /// routes between sin-series and cos-series based on the quadrant parity.
+#[rustfmt::skip]
 #[inline(always)]
-fn sin_cos_core(x: f64) -> (f64, f64) {
+pub(crate) fn sin_cos_core(x: f64) -> (f64, f64) {
     let pi = core::f64::consts::PI;
     let two_pi = 2.0 * pi;
     let half_pi = pi * 0.5;
@@ -712,12 +729,196 @@ fn sin_cos_core(x: f64) -> (f64, f64) {
 
 /// f64 min without std.
 #[inline(always)]
-fn f64_min(a: f64, b: f64) -> f64 {
+pub(crate) fn f64_min(a: f64, b: f64) -> f64 {
     if a < b { a } else { b }
 }
 
 /// f64 max without std.
 #[inline(always)]
-fn f64_max(a: f64, b: f64) -> f64 {
+pub(crate) fn f64_max(a: f64, b: f64) -> f64 {
     if a > b { a } else { b }
+}
+
+/// f64 abs without std.
+#[inline(always)]
+pub(crate) fn f64_abs(x: f64) -> f64 {
+    if x < 0.0 { -x } else { x }
+}
+
+/// f64 floor without std — truncate toward negative infinity.
+#[inline(always)]
+pub(crate) fn f64_floor(x: f64) -> f64 {
+    let t = x as i64 as f64;
+    if t > x { t - 1.0 } else { t }
+}
+
+/// Portable natural logarithm (ln) using IEEE-754 exponent extraction
+/// and a Padé approximant on the mantissa range [1, 2).
+///
+/// Returns `NAN` for `x < 0`, `NEG_INFINITY` for `x == 0`, `0.0` for `x == 1`.
+#[rustfmt::skip]
+#[inline(always)]
+pub(crate) fn libm_ln(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN; // NaN input
+    }
+    if x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+
+    // Extract IEEE-754 components
+    let bits = x.to_bits();
+    let biased_exp = ((bits >> 52) & 0x7FF) as i64;
+    let mantissa_bits = bits & 0x000F_FFFF_FFFF_FFFF;
+
+    // Reconstruct mantissa in [1.0, 2.0): set exponent to 1023 (bias)
+    let m = f64::from_bits((1023_u64 << 52) | mantissa_bits);
+    let e = biased_exp - 1023; // true exponent
+
+    // Compute ln(m) for m in [1, 2) using the substitution t = (m-1)/(m+1)
+    // ln(m) = 2 * (t + t^3/3 + t^5/5 + ... + t^(2k+1)/(2k+1))
+    // For m in [1,2), |t| < 1/3, so the series converges rapidly.
+    // 12 terms (up to t^23) give full f64 precision.
+    let t = (m - 1.0) / (m + 1.0);
+    let t2 = t * t;
+    let ln_m = 2.0
+        * t
+        * (1.0
+            + t2 * (1.0 / 3.0
+                + t2 * (1.0 / 5.0
+                    + t2 * (1.0 / 7.0
+                        + t2 * (1.0 / 9.0
+                            + t2 * (1.0 / 11.0
+                                + t2 * (1.0 / 13.0
+                                    + t2 * (1.0 / 15.0
+                                        + t2 * (1.0 / 17.0
+                                            + t2 * (1.0 / 19.0
+                                                + t2 * (1.0 / 21.0 + t2 * (1.0 / 23.0))))))))))));
+
+    // ln(x) = e * ln(2) + ln(m)
+    e as f64 * core::f64::consts::LN_2 + ln_m
+}
+
+/// Portable exp(x) using range reduction via ln(2) and Taylor series.
+///
+/// Decomposes `x = n * ln(2) + r` where `|r| <= ln(2)/2`,
+/// then `exp(x) = 2^n * exp(r)` with Taylor series for `exp(r)`.
+#[rustfmt::skip]
+#[inline(always)]
+pub(crate) fn libm_exp(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    if x == f64::NEG_INFINITY {
+        return 0.0;
+    }
+
+    // Range reduction: n = round(x / ln(2))
+    let n_f = f64_floor(x * core::f64::consts::LOG2_E + 0.5);
+    let n = n_f as i64;
+    let r = x - n_f * core::f64::consts::LN_2;
+
+    // Taylor series for exp(r), 13 terms for full f64 precision on |r| <= ln(2)/2
+    let r2 = r * r;
+    let exp_r = 1.0
+        + r * (1.0
+            + r * (1.0 / 2.0
+                + r * (1.0 / 6.0
+                    + r * (1.0 / 24.0
+                        + r * (1.0 / 120.0
+                            + r * (1.0 / 720.0
+                                + r * (1.0 / 5_040.0
+                                    + r * (1.0 / 40_320.0
+                                        + r * (1.0 / 362_880.0
+                                            + r * (1.0 / 3_628_800.0
+                                                + r * (1.0 / 39_916_800.0
+                                                    + r * (1.0 / 479_001_600.0))))))))))));
+    let _ = r2; // used conceptually for series convergence analysis
+
+    // Reconstruct 2^n * exp(r) via IEEE-754 exponent manipulation
+    // Clamp n to avoid overflow/underflow in the bit representation
+    if n > 1023 {
+        return f64::INFINITY;
+    }
+    if n < -1074 {
+        return 0.0;
+    }
+
+    // For large |n|, split the multiplication to avoid subnormal intermediate
+    if n >= -1022 {
+        let pow2 = f64::from_bits(((n + 1023) as u64) << 52);
+        exp_r * pow2
+    } else {
+        // Subnormal range: split into two multiplications
+        let pow2a = f64::from_bits(1_u64 << 52); // 2^(-1022)
+        let pow2b = f64::from_bits(((n + 1023 + 1022) as u64) << 52);
+        exp_r * pow2a * pow2b
+    }
+}
+
+/// Portable atan(x) using argument reduction and polynomial approximation.
+///
+/// Reduces `|x| > 1` via `atan(x) = pi/2 - atan(1/x)`.
+/// Further reduces `|x| > tan(pi/12)` via
+/// `atan(x) = pi/6 + atan((x - 1/sqrt(3)) / (1 + x/sqrt(3)))`.
+/// Uses a degree-13 minimax polynomial on `[0, tan(pi/12)]`.
+#[rustfmt::skip]
+#[inline(always)]
+pub(crate) fn libm_atan(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+
+    let neg = x < 0.0;
+    let mut a = f64_abs(x);
+    let mut hi = 0.0_f64;
+
+    // Reduce range: if a > 1, use atan(a) = pi/2 - atan(1/a)
+    let reciprocal = a > 1.0;
+    if reciprocal {
+        a = 1.0 / a;
+        hi = core::f64::consts::FRAC_PI_2;
+    }
+
+    // Further reduce: if a > tan(pi/12) ≈ 0.2679, use
+    // atan(a) = pi/6 + atan((a - 1/sqrt(3)) / (1 + a/sqrt(3)))
+    const TAN_PI_12: f64 = 0.267_949_192_431_122_7; // tan(pi/12)
+    const INV_SQRT3: f64 = 0.577_350_269_189_625_8; // 1/sqrt(3)
+    if a > TAN_PI_12 {
+        let a_new = (a - INV_SQRT3) / (1.0 + a * INV_SQRT3);
+        if reciprocal {
+            hi -= core::f64::consts::FRAC_PI_6;
+        } else {
+            hi += core::f64::consts::FRAC_PI_6;
+        }
+        a = a_new;
+    }
+
+    // Polynomial approximation: atan(a) ≈ a - a^3/3 + a^5/5 - a^7/7 + ...
+    // for |a| <= tan(pi/12) ≈ 0.268
+    // 10 terms (up to a^19) give full f64 precision on this reduced range.
+    let a2 = a * a;
+    let result = a
+        * (1.0
+            + a2 * (-1.0 / 3.0
+                + a2 * (1.0 / 5.0
+                    + a2 * (-1.0 / 7.0
+                        + a2 * (1.0 / 9.0
+                            + a2 * (-1.0 / 11.0
+                                + a2 * (1.0 / 13.0
+                                    + a2 * (-1.0 / 15.0
+                                        + a2 * (1.0 / 17.0 + a2 * (-1.0 / 19.0))))))))));
+
+    let val = if reciprocal { hi - result } else { hi + result };
+
+    if neg { -val } else { val }
 }

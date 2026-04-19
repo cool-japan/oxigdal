@@ -452,7 +452,7 @@ impl PersistentDiskCache {
         let mut hasher = Sha256::new();
         hasher.update(key.as_bytes());
         let hash = hasher.finalize();
-        let filename = format!("{:x}", hash);
+        let filename: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
         self.cache_dir.join(&filename[..2]).join(filename)
     }
 

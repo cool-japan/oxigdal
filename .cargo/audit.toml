@@ -40,4 +40,20 @@ ignore = [
     # RUSTSEC-2026-0049: `rustls-webpki` - CRLs not authoritative for all name types
     # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0049",
+
+    # RUSTSEC-2023-0071: `rsa` - Marvin Attack timing side-channel
+    # No fixed version exists. Transitive dependency, cannot be fixed upstream by us.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0097: `rand` 0.7.3 - unsound with custom logger
+    # Transitive dependency via azure_core/http-types. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0097",
+
+    # RUSTSEC-2026-0098: `rustls-webpki` - name constraints for URI names not checked
+    # Transitive dependency via AWS SDK. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0098",
+
+    # RUSTSEC-2026-0099: `rustls-webpki` - wildcard cert name constraints bypass
+    # Transitive dependency via AWS SDK. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0099",
 ]

@@ -2,6 +2,7 @@
 
 use crate::error::{GatewayError, Result};
 use dashmap::DashMap;
+use hmac::KeyInit;
 use std::sync::Arc;
 
 /// MFA method.

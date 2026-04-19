@@ -511,6 +511,7 @@ impl<S: DataSource> GeoTiffReader<S> {
                 tile_height: info.tile_height.unwrap_or(256),
             },
             driver_metadata: Vec::new(),
+            statistics: None,
         }
     }
 

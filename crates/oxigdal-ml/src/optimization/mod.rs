@@ -28,6 +28,7 @@
 //! ```
 
 pub mod distillation;
+pub mod graph_opt;
 pub mod pruning;
 pub mod quantization;
 
@@ -60,6 +61,10 @@ pub use distillation::{
     soft_targets,
     softmax,
     train_student_model,
+};
+pub use graph_opt::{
+    GraphOptConfig, OptimizationBenchmark, apply_graph_optimization,
+    apply_graph_optimization_from_bytes, benchmark_optimization,
 };
 pub use pruning::{
     // Unstructured pruning types
@@ -187,6 +192,33 @@ pub struct OptimizationPipeline {
     pub weight_sharing: bool,
     /// Whether to apply operator fusion
     pub operator_fusion: bool,
+    /// Fine-grained graph optimization configuration.
+    /// When `None`, derives from `operator_fusion` (all passes if true, none if false).
+    pub graph_opt_config: Option<GraphOptConfig>,
+}
+
+impl OptimizationPipeline {
+    /// Returns the effective [`GraphOptConfig`] for this pipeline.
+    ///
+    /// If `graph_opt_config` is set, returns it. Otherwise, derives from
+    /// the `operator_fusion` flag.
+    #[must_use]
+    pub fn effective_graph_opt_config(&self) -> GraphOptConfig {
+        if let Some(ref config) = self.graph_opt_config {
+            config.clone()
+        } else if self.operator_fusion {
+            GraphOptConfig::default()
+        } else {
+            GraphOptConfig::none()
+        }
+    }
+
+    /// Returns the [`oxionnx::OptLevel`] that should be used when loading
+    /// models in this pipeline (for benchmarking and inference).
+    #[must_use]
+    pub fn opt_level(&self) -> oxionnx::OptLevel {
+        self.effective_graph_opt_config().to_opt_level()
+    }
 }
 
 impl OptimizationPipeline {
@@ -203,6 +235,7 @@ impl OptimizationPipeline {
                 pruning: None,
                 weight_sharing: false,
                 operator_fusion: true,
+                graph_opt_config: Some(GraphOptConfig::default()),
             },
             OptimizationProfile::Balanced => Self {
                 quantization: Some(
@@ -219,6 +252,7 @@ impl OptimizationPipeline {
                 ),
                 weight_sharing: true,
                 operator_fusion: true,
+                graph_opt_config: Some(GraphOptConfig::default()),
             },
             OptimizationProfile::Speed => Self {
                 quantization: Some(
@@ -235,6 +269,12 @@ impl OptimizationPipeline {
                 ),
                 weight_sharing: true,
                 operator_fusion: true,
+                graph_opt_config: Some(GraphOptConfig {
+                    constant_folding: true,
+                    dead_node_elimination: true,
+                    common_subexpression_elimination: true,
+                    operator_fusion: true,
+                }),
             },
             OptimizationProfile::Size => Self {
                 quantization: Some(
@@ -251,6 +291,7 @@ impl OptimizationPipeline {
                 ),
                 weight_sharing: true,
                 operator_fusion: true,
+                graph_opt_config: Some(GraphOptConfig::default()),
             },
         }
     }
@@ -302,7 +343,8 @@ impl OptimizationPipeline {
             .unwrap_or(0);
 
         // Measure actual speedup by benchmarking both models
-        let speedup = Self::measure_speedup(input, output)?;
+        let opt_level = self.opt_level();
+        let speedup = Self::measure_speedup(input, output, opt_level)?;
 
         // Accuracy measurement would require test dataset
         // For now, use conservative estimate based on optimization level
@@ -316,10 +358,15 @@ impl OptimizationPipeline {
         ))
     }
 
-    /// Measures inference speedup between original and optimized model
-    fn measure_speedup(original_path: &Path, optimized_path: &Path) -> Result<f32> {
-        use std::time::Instant;
-
+    /// Measures inference speedup between original and optimized model.
+    ///
+    /// The `opt_level` parameter controls which graph optimization passes are
+    /// applied when loading the optimized model for benchmarking.
+    fn measure_speedup(
+        original_path: &Path,
+        optimized_path: &Path,
+        opt_level: oxionnx::OptLevel,
+    ) -> Result<f32> {
         // Number of warmup and benchmark iterations
         const WARMUP_ITERS: usize = 5;
         const BENCH_ITERS: usize = 20;
@@ -335,13 +382,14 @@ impl OptimizationPipeline {
         let dummy_input = vec![0.0f32; 224 * 224 * 3]; // Typical image size
         let input_shape = vec![1, 3, 224, 224];
 
-        // Benchmark original model
+        // Benchmark original model (no optimization for baseline)
         let original_time = match Self::benchmark_model(
             original_path,
             &dummy_input,
             &input_shape,
             WARMUP_ITERS,
             BENCH_ITERS,
+            oxionnx::OptLevel::None,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -350,13 +398,14 @@ impl OptimizationPipeline {
             }
         };
 
-        // Benchmark optimized model
+        // Benchmark optimized model with the pipeline's optimization level
         let optimized_time = match Self::benchmark_model(
             optimized_path,
             &dummy_input,
             &input_shape,
             WARMUP_ITERS,
             BENCH_ITERS,
+            opt_level,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -379,38 +428,36 @@ impl OptimizationPipeline {
         }
     }
 
-    /// Benchmarks a single model
+    /// Benchmarks a single model with the specified optimization level.
     fn benchmark_model(
         model_path: &Path,
         input: &[f32],
         input_shape: &[usize],
         warmup_iters: usize,
         bench_iters: usize,
+        opt_level: oxionnx::OptLevel,
     ) -> Result<f64> {
         use ndarray::{Array, IxDyn};
-        use ort::session::Session;
-        use ort::value::TensorRef;
+        use oxionnx::{SessionBuilder, Tensor};
         use std::time::Instant;
 
-        // Load ONNX model
-        let mut session = Session::builder()
-            .map_err(|e| crate::error::ModelError::LoadFailed {
-                reason: format!("Failed to create session builder: {}", e),
-            })?
+        // Load ONNX model with the specified optimization level
+        let session = SessionBuilder::new()
+            .with_optimization_level(opt_level)
             .commit_from_file(model_path)
             .map_err(|e| crate::error::ModelError::LoadFailed {
                 reason: format!("Failed to load model for benchmarking: {}", e),
             })?;
 
-        // Get input name
-        let inputs = session.inputs();
-        let input_name = inputs
+        // Get input name — TensorInfo has .name field access
+        let input_name = session
+            .input_info()
             .first()
             .ok_or_else(|| crate::error::ModelError::LoadFailed {
                 reason: "No input tensors found in model".to_string(),
             })?
-            .name()
-            .to_string();
+            .name
+            .clone();
 
         // Create input array from data and shape
         let array_shape: Vec<usize> = input_shape.to_vec();
@@ -435,14 +482,17 @@ impl OptimizationPipeline {
 
         // Run warmup iterations
         for _ in 0..warmup_iters {
-            let input_tensor = TensorRef::from_array_view(input_array.view()).map_err(|e| {
-                crate::error::InferenceError::Failed {
-                    reason: format!("Failed to create input tensor: {}", e),
-                }
-            })?;
+            // Tensor::from_ndarray_view returns Tensor directly (no Result)
+            let input_tensor = Tensor::from_ndarray_view(input_array.view());
+            let inputs_map =
+                oxionnx::inputs![input_name.as_str() => input_tensor].map_err(|e| {
+                    crate::error::InferenceError::Failed {
+                        reason: format!("Failed to build inputs map: {}", e),
+                    }
+                })?;
 
             let _ = session
-                .run(ort::inputs![input_name.as_str() => input_tensor])
+                .run(&inputs_map)
                 .map_err(|e| crate::error::InferenceError::Failed {
                     reason: format!("Warmup inference failed: {}", e),
                 })?;
@@ -451,14 +501,16 @@ impl OptimizationPipeline {
         // Run benchmark iterations with timing
         let start = Instant::now();
         for _ in 0..bench_iters {
-            let input_tensor = TensorRef::from_array_view(input_array.view()).map_err(|e| {
-                crate::error::InferenceError::Failed {
-                    reason: format!("Failed to create input tensor: {}", e),
-                }
-            })?;
+            let input_tensor = Tensor::from_ndarray_view(input_array.view());
+            let inputs_map =
+                oxionnx::inputs![input_name.as_str() => input_tensor].map_err(|e| {
+                    crate::error::InferenceError::Failed {
+                        reason: format!("Failed to build inputs map: {}", e),
+                    }
+                })?;
 
             let _ = session
-                .run(ort::inputs![input_name.as_str() => input_tensor])
+                .run(&inputs_map)
                 .map_err(|e| crate::error::InferenceError::Failed {
                     reason: format!("Benchmark inference failed: {}", e),
                 })?;
@@ -519,6 +571,8 @@ mod tests {
         assert!(pipeline.quantization.is_some());
         assert!(pipeline.pruning.is_none());
         assert!(pipeline.operator_fusion);
+        assert!(pipeline.graph_opt_config.is_some());
+        assert_eq!(pipeline.opt_level(), oxionnx::OptLevel::All);
     }
 
     #[test]
@@ -527,6 +581,8 @@ mod tests {
         assert!(pipeline.quantization.is_some());
         assert!(pipeline.pruning.is_some());
         assert!(pipeline.weight_sharing);
+        assert!(pipeline.operator_fusion);
+        assert_eq!(pipeline.opt_level(), oxionnx::OptLevel::All);
     }
 
     #[test]
@@ -539,5 +595,56 @@ mod tests {
             // Size profile should have high sparsity
             assert!(pruning.sparsity_target >= 0.6);
         }
+        assert_eq!(pipeline.opt_level(), oxionnx::OptLevel::All);
+    }
+
+    #[test]
+    fn test_effective_graph_opt_config_from_fusion_flag() {
+        // When graph_opt_config is None, derive from operator_fusion
+        let pipeline = OptimizationPipeline {
+            quantization: None,
+            pruning: None,
+            weight_sharing: false,
+            operator_fusion: true,
+            graph_opt_config: None,
+        };
+        let config = pipeline.effective_graph_opt_config();
+        assert!(config.any_enabled());
+        assert_eq!(pipeline.opt_level(), oxionnx::OptLevel::All);
+
+        // operator_fusion = false => no optimization
+        let pipeline_no_fusion = OptimizationPipeline {
+            quantization: None,
+            pruning: None,
+            weight_sharing: false,
+            operator_fusion: false,
+            graph_opt_config: None,
+        };
+        let config_none = pipeline_no_fusion.effective_graph_opt_config();
+        assert!(!config_none.any_enabled());
+        assert_eq!(pipeline_no_fusion.opt_level(), oxionnx::OptLevel::None);
+    }
+
+    #[test]
+    fn test_effective_graph_opt_config_explicit_override() {
+        // Explicit graph_opt_config overrides operator_fusion flag
+        let custom_config = GraphOptConfig {
+            constant_folding: true,
+            dead_node_elimination: false,
+            common_subexpression_elimination: false,
+            operator_fusion: false,
+        };
+        let pipeline = OptimizationPipeline {
+            quantization: None,
+            pruning: None,
+            weight_sharing: false,
+            operator_fusion: false, // false, but graph_opt_config has cf=true
+            graph_opt_config: Some(custom_config),
+        };
+        let config = pipeline.effective_graph_opt_config();
+        assert!(config.constant_folding);
+        assert!(!config.operator_fusion);
+        // Any enabled => OptLevel::All
+        assert_eq!(pipeline.opt_level(), oxionnx::OptLevel::All);
     }
 }

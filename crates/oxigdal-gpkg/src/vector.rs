@@ -188,6 +188,7 @@ pub struct FieldDefinition {
 ///
 /// Coordinates are always (x, y) pairs — typically (longitude, latitude) for
 /// geographic SRSs or (easting, northing) for projected ones.
+/// Z variants carry an additional elevation / height coordinate per vertex.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GpkgGeometry {
     /// A single point.
@@ -224,12 +225,48 @@ pub enum GpkgGeometry {
     },
     /// A heterogeneous collection of geometries.
     GeometryCollection(Vec<GpkgGeometry>),
+    /// A single 3D point with Z coordinate.
+    PointZ {
+        /// X coordinate (longitude / easting).
+        x: f64,
+        /// Y coordinate (latitude / northing).
+        y: f64,
+        /// Z coordinate (elevation / height).
+        z: f64,
+    },
+    /// An ordered sequence of 3D points forming a line.
+    LineStringZ {
+        /// (x, y, z) coordinate triples along the line.
+        coords: Vec<(f64, f64, f64)>,
+    },
+    /// A 3D polygon defined by one exterior ring and zero or more interior rings.
+    PolygonZ {
+        /// Rings of (x, y, z) triples; index 0 is the exterior ring.
+        rings: Vec<Vec<(f64, f64, f64)>>,
+    },
+    /// A collection of 3D points.
+    MultiPointZ {
+        /// Individual (x, y, z) point coordinates.
+        points: Vec<(f64, f64, f64)>,
+    },
+    /// A collection of 3D line strings.
+    MultiLineStringZ {
+        /// Individual line strings, each as a (x, y, z) sequence.
+        lines: Vec<Vec<(f64, f64, f64)>>,
+    },
+    /// A collection of 3D polygons.
+    MultiPolygonZ {
+        /// Individual 3D polygons, each as a list of (x, y, z) rings.
+        polygons: Vec<Vec<Vec<(f64, f64, f64)>>>,
+    },
+    /// A heterogeneous collection of geometries (may include Z variants).
+    GeometryCollectionZ(Vec<GpkgGeometry>),
     /// An explicitly empty geometry (GeoPackage envelope-indicator = 0, empty flag set).
     Empty,
 }
 
 impl GpkgGeometry {
-    /// Return the OGC geometry-type name (uppercase).
+    /// Return the OGC geometry-type name.
     pub fn geometry_type(&self) -> &'static str {
         match self {
             Self::Point { .. } => "Point",
@@ -239,6 +276,13 @@ impl GpkgGeometry {
             Self::MultiLineString { .. } => "MultiLineString",
             Self::MultiPolygon { .. } => "MultiPolygon",
             Self::GeometryCollection(_) => "GeometryCollection",
+            Self::PointZ { .. } => "PointZ",
+            Self::LineStringZ { .. } => "LineStringZ",
+            Self::PolygonZ { .. } => "PolygonZ",
+            Self::MultiPointZ { .. } => "MultiPointZ",
+            Self::MultiLineStringZ { .. } => "MultiLineStringZ",
+            Self::MultiPolygonZ { .. } => "MultiPolygonZ",
+            Self::GeometryCollectionZ(_) => "GeometryCollectionZ",
             Self::Empty => "Empty",
         }
     }
@@ -246,17 +290,28 @@ impl GpkgGeometry {
     /// Return the total number of coordinate points in this geometry.
     pub fn point_count(&self) -> usize {
         match self {
-            Self::Point { .. } => 1,
+            Self::Point { .. } | Self::PointZ { .. } => 1,
             Self::LineString { coords } => coords.len(),
+            Self::LineStringZ { coords } => coords.len(),
             Self::Polygon { rings } => rings.iter().map(|r| r.len()).sum(),
+            Self::PolygonZ { rings } => rings.iter().map(|r| r.len()).sum(),
             Self::MultiPoint { points } => points.len(),
+            Self::MultiPointZ { points } => points.len(),
             Self::MultiLineString { lines } => lines.iter().map(|l| l.len()).sum(),
+            Self::MultiLineStringZ { lines } => lines.iter().map(|l| l.len()).sum(),
             Self::MultiPolygon { polygons } => polygons
                 .iter()
                 .flat_map(|poly| poly.iter())
                 .map(|ring| ring.len())
                 .sum(),
-            Self::GeometryCollection(geoms) => geoms.iter().map(|g| g.point_count()).sum(),
+            Self::MultiPolygonZ { polygons } => polygons
+                .iter()
+                .flat_map(|poly| poly.iter())
+                .map(|ring| ring.len())
+                .sum(),
+            Self::GeometryCollection(geoms) | Self::GeometryCollectionZ(geoms) => {
+                geoms.iter().map(|g| g.point_count()).sum()
+            }
             Self::Empty => 0,
         }
     }
@@ -293,20 +348,32 @@ impl GpkgGeometry {
         }
     }
 
-    /// Collect all coordinate pairs depth-first.
+    /// Collect all coordinate pairs depth-first (Z variants project to 2D).
     fn collect_coords(&self) -> Vec<(f64, f64)> {
         match self {
             Self::Point { x, y } => vec![(*x, *y)],
+            Self::PointZ { x, y, .. } => vec![(*x, *y)],
             Self::LineString { coords } => coords.clone(),
+            Self::LineStringZ { coords } => coords.iter().map(|(x, y, _)| (*x, *y)).collect(),
             Self::Polygon { rings } => rings.iter().flatten().copied().collect(),
+            Self::PolygonZ { rings } => rings.iter().flatten().map(|(x, y, _)| (*x, *y)).collect(),
             Self::MultiPoint { points } => points.clone(),
+            Self::MultiPointZ { points } => points.iter().map(|(x, y, _)| (*x, *y)).collect(),
             Self::MultiLineString { lines } => lines.iter().flatten().copied().collect(),
+            Self::MultiLineStringZ { lines } => {
+                lines.iter().flatten().map(|(x, y, _)| (*x, *y)).collect()
+            }
             Self::MultiPolygon { polygons } => polygons
                 .iter()
                 .flat_map(|poly| poly.iter().flatten())
                 .copied()
                 .collect(),
-            Self::GeometryCollection(geoms) => {
+            Self::MultiPolygonZ { polygons } => polygons
+                .iter()
+                .flat_map(|poly| poly.iter().flatten())
+                .map(|(x, y, _)| (*x, *y))
+                .collect(),
+            Self::GeometryCollection(geoms) | Self::GeometryCollectionZ(geoms) => {
                 geoms.iter().flat_map(|g| g.collect_coords()).collect()
             }
             Self::Empty => vec![],
@@ -314,13 +381,22 @@ impl GpkgGeometry {
     }
 
     /// Serialise this geometry as a GeoJSON geometry object string.
+    ///
+    /// Z variants emit `[x,y,z]` coordinate arrays per RFC 7946.
     pub(crate) fn to_geojson_geometry(&self) -> String {
         match self {
             Self::Point { x, y } => {
                 format!(r#"{{"type":"Point","coordinates":[{x},{y}]}}"#)
             }
+            Self::PointZ { x, y, z } => {
+                format!(r#"{{"type":"Point","coordinates":[{x},{y},{z}]}}"#)
+            }
             Self::LineString { coords } => {
                 let pts = coords_to_json_array(coords);
+                format!(r#"{{"type":"LineString","coordinates":{pts}}}"#)
+            }
+            Self::LineStringZ { coords } => {
+                let pts = coords_z_to_json_array(coords);
                 format!(r#"{{"type":"LineString","coordinates":{pts}}}"#)
             }
             Self::Polygon { rings } => {
@@ -331,14 +407,34 @@ impl GpkgGeometry {
                     .join(",");
                 format!(r#"{{"type":"Polygon","coordinates":[{rings_json}]}}"#)
             }
+            Self::PolygonZ { rings } => {
+                let rings_json = rings
+                    .iter()
+                    .map(|r| coords_z_to_json_array(r))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"{{"type":"Polygon","coordinates":[{rings_json}]}}"#)
+            }
             Self::MultiPoint { points } => {
                 let pts = coords_to_json_array(points);
+                format!(r#"{{"type":"MultiPoint","coordinates":{pts}}}"#)
+            }
+            Self::MultiPointZ { points } => {
+                let pts = coords_z_to_json_array(points);
                 format!(r#"{{"type":"MultiPoint","coordinates":{pts}}}"#)
             }
             Self::MultiLineString { lines } => {
                 let lines_json = lines
                     .iter()
                     .map(|l| coords_to_json_array(l))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"{{"type":"MultiLineString","coordinates":[{lines_json}]}}"#)
+            }
+            Self::MultiLineStringZ { lines } => {
+                let lines_json = lines
+                    .iter()
+                    .map(|l| coords_z_to_json_array(l))
                     .collect::<Vec<_>>()
                     .join(",");
                 format!(r#"{{"type":"MultiLineString","coordinates":[{lines_json}]}}"#)
@@ -358,7 +454,22 @@ impl GpkgGeometry {
                     .join(",");
                 format!(r#"{{"type":"MultiPolygon","coordinates":[{polys_json}]}}"#)
             }
-            Self::GeometryCollection(geoms) => {
+            Self::MultiPolygonZ { polygons } => {
+                let polys_json = polygons
+                    .iter()
+                    .map(|poly| {
+                        let rings_json = poly
+                            .iter()
+                            .map(|r| coords_z_to_json_array(r))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!("[{rings_json}]")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"{{"type":"MultiPolygon","coordinates":[{polys_json}]}}"#)
+            }
+            Self::GeometryCollection(geoms) | Self::GeometryCollectionZ(geoms) => {
                 let geom_json = geoms
                     .iter()
                     .map(|g| g.to_geojson_geometry())
@@ -498,7 +609,7 @@ impl GpkgBinaryParser {
 // WKB internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// WKB type constants.
+/// WKB type constants (2D, OGC simple).
 const WKB_POINT: u32 = 1;
 const WKB_LINESTRING: u32 = 2;
 const WKB_POLYGON: u32 = 3;
@@ -507,8 +618,32 @@ const WKB_MULTILINESTRING: u32 = 5;
 const WKB_MULTIPOLYGON: u32 = 6;
 const WKB_GEOMETRYCOLLECTION: u32 = 7;
 
+/// WKB type constants — 3D / Z variants (ISO SQL-MM / OGC extended).
+///
+/// Two encodings exist in the wild:
+///
+/// 1. ISO "integer" convention: `1000 + base_type`  (1001..=1007)
+/// 2. ISO "high-bit" convention: `0x8000_0000 | base_type` (0x80000001..=0x80000007)
+///
+/// Both conventions are accepted when reading; writing uses the `1000 + base` form.
+const WKB_POINT_Z: u32 = 1001;
+const WKB_LINESTRING_Z: u32 = 1002;
+const WKB_POLYGON_Z: u32 = 1003;
+const WKB_MULTIPOINT_Z: u32 = 1004;
+const WKB_MULTILINESTRING_Z: u32 = 1005;
+const WKB_MULTIPOLYGON_Z: u32 = 1006;
+const WKB_GEOMETRYCOLLECTION_Z: u32 = 1007;
+
+/// The ISO high-bit flag that, when set, also denotes a Z geometry.
+const WKB_ISO_Z_HIGHBIT: u32 = 0x8000_0000;
+
 /// Parse one WKB geometry starting at `data[offset]`.
 /// Returns `(geometry, new_offset)`.
+///
+/// Accepts both 2D (OGC simple) type codes (1..=7) and 3D/Z type codes in both
+/// ISO conventions: `1000 + base` (1001..=1007) and `0x8000_0000 | base`
+/// (0x80000001..=0x80000007). ISO high-bit codes are normalised to the
+/// `1000 + base` form internally.
 fn parse_wkb_inner(data: &[u8], offset: usize) -> Result<(GpkgGeometry, usize), GpkgError> {
     if data.len() < offset + 5 {
         return Err(GpkgError::InsufficientData {
@@ -520,8 +655,21 @@ fn parse_wkb_inner(data: &[u8], offset: usize) -> Result<(GpkgGeometry, usize), 
     let le = byte_order == 1;
     let mut pos = offset + 1;
 
-    let wkb_type = read_u32(data, pos, le)?;
+    let raw_type = read_u32(data, pos, le)?;
     pos += 4;
+
+    // Normalise the ISO high-bit convention to the `1000 + base` form.
+    // 0x80000001 → 1001, 0x80000007 → 1007, etc.
+    let wkb_type = if raw_type & WKB_ISO_Z_HIGHBIT != 0 {
+        let base = raw_type & !WKB_ISO_Z_HIGHBIT;
+        if (1..=7).contains(&base) {
+            1000 + base
+        } else {
+            return Err(GpkgError::UnknownWkbType(raw_type));
+        }
+    } else {
+        raw_type
+    };
 
     match wkb_type {
         WKB_POINT => {
@@ -540,11 +688,12 @@ fn parse_wkb_inner(data: &[u8], offset: usize) -> Result<(GpkgGeometry, usize), 
             let (n, mut pos2) = read_u32_pos(data, pos, le)?;
             let mut points = Vec::with_capacity(n as usize);
             for _ in 0..n {
-                // Each sub-geometry is a complete WKB Point
+                // Each sub-geometry is a complete WKB Point (2D or Z — accept both).
                 let (sub, new_pos) = parse_wkb_inner(data, pos2)?;
                 pos2 = new_pos;
                 match sub {
                     GpkgGeometry::Point { x, y } => points.push((x, y)),
+                    GpkgGeometry::PointZ { x, y, .. } => points.push((x, y)),
                     other => {
                         return Err(GpkgError::WkbParseError(format!(
                             "Expected Point in MultiPoint, got {}",
@@ -563,6 +712,9 @@ fn parse_wkb_inner(data: &[u8], offset: usize) -> Result<(GpkgGeometry, usize), 
                 pos2 = new_pos;
                 match sub {
                     GpkgGeometry::LineString { coords } => lines.push(coords),
+                    GpkgGeometry::LineStringZ { coords } => {
+                        lines.push(coords.into_iter().map(|(x, y, _)| (x, y)).collect())
+                    }
                     other => {
                         return Err(GpkgError::WkbParseError(format!(
                             "Expected LineString in MultiLineString, got {}",
@@ -581,6 +733,12 @@ fn parse_wkb_inner(data: &[u8], offset: usize) -> Result<(GpkgGeometry, usize), 
                 pos2 = new_pos;
                 match sub {
                     GpkgGeometry::Polygon { rings } => polygons.push(rings),
+                    GpkgGeometry::PolygonZ { rings } => polygons.push(
+                        rings
+                            .into_iter()
+                            .map(|ring| ring.into_iter().map(|(x, y, _)| (x, y)).collect())
+                            .collect(),
+                    ),
                     other => {
                         return Err(GpkgError::WkbParseError(format!(
                             "Expected Polygon in MultiPolygon, got {}",
@@ -601,7 +759,95 @@ fn parse_wkb_inner(data: &[u8], offset: usize) -> Result<(GpkgGeometry, usize), 
             }
             Ok((GpkgGeometry::GeometryCollection(geoms), pos2))
         }
-        other => Err(GpkgError::UnknownWkbType(other)),
+        // ── 3D / Z variants ────────────────────────────────────────────────
+        WKB_POINT_Z => {
+            let (x, y, z, new_pos) = read_point_z_coords(data, pos, le)?;
+            Ok((GpkgGeometry::PointZ { x, y, z }, new_pos))
+        }
+        WKB_LINESTRING_Z => {
+            let (coords, new_pos) = read_coord_z_sequence(data, pos, le)?;
+            Ok((GpkgGeometry::LineStringZ { coords }, new_pos))
+        }
+        WKB_POLYGON_Z => {
+            let (rings, new_pos) = read_rings_z(data, pos, le)?;
+            Ok((GpkgGeometry::PolygonZ { rings }, new_pos))
+        }
+        WKB_MULTIPOINT_Z => {
+            let (n, mut pos2) = read_u32_pos(data, pos, le)?;
+            let mut points = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                // Accept either a PointZ (1001) or a plain Point (1) sub-WKB.
+                let (sub, new_pos) = parse_wkb_inner(data, pos2)?;
+                pos2 = new_pos;
+                match sub {
+                    GpkgGeometry::PointZ { x, y, z } => points.push((x, y, z)),
+                    GpkgGeometry::Point { x, y } => points.push((x, y, 0.0)),
+                    other => {
+                        return Err(GpkgError::WkbParseError(format!(
+                            "Expected PointZ in MultiPointZ, got {}",
+                            other.geometry_type()
+                        )));
+                    }
+                }
+            }
+            Ok((GpkgGeometry::MultiPointZ { points }, pos2))
+        }
+        WKB_MULTILINESTRING_Z => {
+            let (n, mut pos2) = read_u32_pos(data, pos, le)?;
+            let mut lines = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let (sub, new_pos) = parse_wkb_inner(data, pos2)?;
+                pos2 = new_pos;
+                match sub {
+                    GpkgGeometry::LineStringZ { coords } => lines.push(coords),
+                    GpkgGeometry::LineString { coords } => {
+                        lines.push(coords.into_iter().map(|(x, y)| (x, y, 0.0)).collect())
+                    }
+                    other => {
+                        return Err(GpkgError::WkbParseError(format!(
+                            "Expected LineStringZ in MultiLineStringZ, got {}",
+                            other.geometry_type()
+                        )));
+                    }
+                }
+            }
+            Ok((GpkgGeometry::MultiLineStringZ { lines }, pos2))
+        }
+        WKB_MULTIPOLYGON_Z => {
+            let (n, mut pos2) = read_u32_pos(data, pos, le)?;
+            let mut polygons = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let (sub, new_pos) = parse_wkb_inner(data, pos2)?;
+                pos2 = new_pos;
+                match sub {
+                    GpkgGeometry::PolygonZ { rings } => polygons.push(rings),
+                    GpkgGeometry::Polygon { rings } => polygons.push(
+                        rings
+                            .into_iter()
+                            .map(|ring| ring.into_iter().map(|(x, y)| (x, y, 0.0)).collect())
+                            .collect(),
+                    ),
+                    other => {
+                        return Err(GpkgError::WkbParseError(format!(
+                            "Expected PolygonZ in MultiPolygonZ, got {}",
+                            other.geometry_type()
+                        )));
+                    }
+                }
+            }
+            Ok((GpkgGeometry::MultiPolygonZ { polygons }, pos2))
+        }
+        WKB_GEOMETRYCOLLECTION_Z => {
+            let (n, mut pos2) = read_u32_pos(data, pos, le)?;
+            let mut geoms = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let (sub, new_pos) = parse_wkb_inner(data, pos2)?;
+                pos2 = new_pos;
+                geoms.push(sub);
+            }
+            Ok((GpkgGeometry::GeometryCollectionZ(geoms), pos2))
+        }
+        _ => Err(GpkgError::UnknownWkbType(raw_type)),
     }
 }
 
@@ -683,7 +929,54 @@ fn read_rings(data: &[u8], pos: usize, le: bool) -> RingsResult {
     Ok((rings, cur))
 }
 
+// ── Z-coordinate (3D) readers ────────────────────────────────────────────────
+
+/// Read a single 3D point (24 bytes: x, y, z as f64 big/little-endian).
+/// Returns `(x, y, z, pos + 24)`.
+fn read_point_z_coords(
+    data: &[u8],
+    pos: usize,
+    le: bool,
+) -> Result<(f64, f64, f64, usize), GpkgError> {
+    let x = read_f64(data, pos, le)?;
+    let y = read_f64(data, pos + 8, le)?;
+    let z = read_f64(data, pos + 16, le)?;
+    Ok((x, y, z, pos + 24))
+}
+
+type CoordZSequenceResult = Result<(Vec<(f64, f64, f64)>, usize), GpkgError>;
+
+/// Read a 3D coordinate sequence: `count(u32) + count × (x, y, z)` triples.
+/// Returns `(coords, new_pos)`.
+fn read_coord_z_sequence(data: &[u8], pos: usize, le: bool) -> CoordZSequenceResult {
+    let (n, mut cur) = read_u32_pos(data, pos, le)?;
+    let mut coords = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let (x, y, z, new_cur) = read_point_z_coords(data, cur, le)?;
+        cur = new_cur;
+        coords.push((x, y, z));
+    }
+    Ok((coords, cur))
+}
+
+type RingsZResult = Result<(Vec<Vec<(f64, f64, f64)>>, usize), GpkgError>;
+
+/// Read a 3D polygon's rings: `n_rings(u32) + n_rings × (count(u32) + triples)`.
+fn read_rings_z(data: &[u8], pos: usize, le: bool) -> RingsZResult {
+    let (n_rings, mut cur) = read_u32_pos(data, pos, le)?;
+    let mut rings = Vec::with_capacity(n_rings as usize);
+    for _ in 0..n_rings {
+        let (coords, new_cur) = read_coord_z_sequence(data, cur, le)?;
+        cur = new_cur;
+        rings.push(coords);
+    }
+    Ok((rings, cur))
+}
+
 /// Write a little-endian WKB representation of `geom` into `buf`.
+///
+/// 3D / Z variants are emitted using the ISO `1000 + base` type codes
+/// (1001..=1007).
 fn write_wkb(geom: &GpkgGeometry, buf: &mut Vec<u8>) {
     buf.push(1); // LE
     match geom {
@@ -744,6 +1037,79 @@ fn write_wkb(geom: &GpkgGeometry, buf: &mut Vec<u8>) {
         }
         GpkgGeometry::GeometryCollection(geoms) => {
             buf.extend_from_slice(&WKB_GEOMETRYCOLLECTION.to_le_bytes());
+            buf.extend_from_slice(&(geoms.len() as u32).to_le_bytes());
+            for g in geoms {
+                write_wkb(g, buf);
+            }
+        }
+        // ── 3D / Z variants ────────────────────────────────────────────────
+        GpkgGeometry::PointZ { x, y, z } => {
+            buf.extend_from_slice(&WKB_POINT_Z.to_le_bytes());
+            buf.extend_from_slice(&x.to_le_bytes());
+            buf.extend_from_slice(&y.to_le_bytes());
+            buf.extend_from_slice(&z.to_le_bytes());
+        }
+        GpkgGeometry::LineStringZ { coords } => {
+            buf.extend_from_slice(&WKB_LINESTRING_Z.to_le_bytes());
+            buf.extend_from_slice(&(coords.len() as u32).to_le_bytes());
+            for (x, y, z) in coords {
+                buf.extend_from_slice(&x.to_le_bytes());
+                buf.extend_from_slice(&y.to_le_bytes());
+                buf.extend_from_slice(&z.to_le_bytes());
+            }
+        }
+        GpkgGeometry::PolygonZ { rings } => {
+            buf.extend_from_slice(&WKB_POLYGON_Z.to_le_bytes());
+            buf.extend_from_slice(&(rings.len() as u32).to_le_bytes());
+            for ring in rings {
+                buf.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+                for (x, y, z) in ring {
+                    buf.extend_from_slice(&x.to_le_bytes());
+                    buf.extend_from_slice(&y.to_le_bytes());
+                    buf.extend_from_slice(&z.to_le_bytes());
+                }
+            }
+        }
+        GpkgGeometry::MultiPointZ { points } => {
+            buf.extend_from_slice(&WKB_MULTIPOINT_Z.to_le_bytes());
+            buf.extend_from_slice(&(points.len() as u32).to_le_bytes());
+            for (x, y, z) in points {
+                write_wkb(
+                    &GpkgGeometry::PointZ {
+                        x: *x,
+                        y: *y,
+                        z: *z,
+                    },
+                    buf,
+                );
+            }
+        }
+        GpkgGeometry::MultiLineStringZ { lines } => {
+            buf.extend_from_slice(&WKB_MULTILINESTRING_Z.to_le_bytes());
+            buf.extend_from_slice(&(lines.len() as u32).to_le_bytes());
+            for line in lines {
+                write_wkb(
+                    &GpkgGeometry::LineStringZ {
+                        coords: line.clone(),
+                    },
+                    buf,
+                );
+            }
+        }
+        GpkgGeometry::MultiPolygonZ { polygons } => {
+            buf.extend_from_slice(&WKB_MULTIPOLYGON_Z.to_le_bytes());
+            buf.extend_from_slice(&(polygons.len() as u32).to_le_bytes());
+            for poly in polygons {
+                write_wkb(
+                    &GpkgGeometry::PolygonZ {
+                        rings: poly.clone(),
+                    },
+                    buf,
+                );
+            }
+        }
+        GpkgGeometry::GeometryCollectionZ(geoms) => {
+            buf.extend_from_slice(&WKB_GEOMETRYCOLLECTION_Z.to_le_bytes());
             buf.extend_from_slice(&(geoms.len() as u32).to_le_bytes());
             for g in geoms {
                 write_wkb(g, buf);
@@ -1052,6 +1418,16 @@ fn coords_to_json_array(coords: &[(f64, f64)]) -> String {
     let inner: String = coords
         .iter()
         .map(|(x, y)| format!("[{x},{y}]"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{inner}]")
+}
+
+/// Render a 3D coordinate sequence as a JSON array of `[x,y,z]` arrays.
+fn coords_z_to_json_array(coords: &[(f64, f64, f64)]) -> String {
+    let inner: String = coords
+        .iter()
+        .map(|(x, y, z)| format!("[{x},{y},{z}]"))
         .collect::<Vec<_>>()
         .join(",");
     format!("[{inner}]")

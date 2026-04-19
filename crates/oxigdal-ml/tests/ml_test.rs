@@ -156,6 +156,7 @@ fn test_detection_nms() {
         iou_threshold: 0.5,
         confidence_threshold: 0.7,
         max_detections: Some(10),
+        ..NmsConfig::default()
     };
 
     let result = non_maximum_suppression(&detections, &config);

@@ -130,6 +130,7 @@ use alloc::format;
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
 
+pub mod area_of_use;
 pub mod crs;
 #[cfg(feature = "std")]
 pub mod crs_registry;
@@ -146,6 +147,7 @@ pub mod transform;
 pub mod wkt;
 
 // Re-export commonly used types
+pub use area_of_use::{AreaOfUse, area_of_use_for_epsg};
 pub use crs::{Crs, CrsSource};
 pub use epsg::{CrsType, EpsgDefinition};
 #[cfg(feature = "std")]

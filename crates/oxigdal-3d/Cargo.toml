@@ -33,20 +33,20 @@ tracing.workspace = true
 oxigdal-core.workspace = true
 
 # Point cloud dependencies
-las = "0.9"
+las.workspace = true
 laz = { version = "0.12", default-features = false }
 
 # Mesh and 3D formats
 gltf = { version = "1", features = ["import"] }
-gltf-json = "1"
+gltf-json.workspace = true
 
 # Geometry and triangulation
-delaunator = "1"
-geo = "0.32"
+delaunator.workspace = true
+geo.workspace = true
 geo-types.workspace = true
 
 # Spatial indexing
-rstar = "0.12"
+rstar.workspace = true
 
 # Compression (for COPC, EPT)
 oxiarc-archive = { workspace = true }

@@ -25,8 +25,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-query = "0.1.3"
-oxigdal-core = "0.1.3"
+oxigdal-query = "0.1.4"
+oxigdal-core = "0.1.4"
 tokio = { version = "1", features = ["full"] }
 ```
 

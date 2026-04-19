@@ -933,28 +933,30 @@ mod tests {
 
     #[test]
     fn test_dataset_creation() {
+        let test_path = std::env::temp_dir().join("oxigdal_test.tif");
         let ds = Dataset {
-            path: PathBuf::from("/tmp/test.tif"),
+            path: test_path.clone(),
             metadata: None,
             mode: "r".to_string(),
             pending_bands: Vec::new(),
             writer_config: None,
         };
-        assert_eq!(ds.path, PathBuf::from("/tmp/test.tif"));
+        assert_eq!(ds.path, test_path);
         assert_eq!(ds.mode, "r");
     }
 
     #[test]
     fn test_dataset_repr() {
+        let test_path = std::env::temp_dir().join("oxigdal_test.tif");
         let ds = Dataset {
-            path: PathBuf::from("/tmp/test.tif"),
+            path: test_path,
             metadata: None,
             mode: "r".to_string(),
             pending_bands: Vec::new(),
             writer_config: None,
         };
         let repr = ds.__repr__();
-        assert!(repr.contains("test.tif"));
+        assert!(repr.contains("oxigdal_test.tif"));
         assert!(repr.contains("mode='r'"));
     }
 

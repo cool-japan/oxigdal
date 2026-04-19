@@ -193,6 +193,148 @@ impl Geometry {
             Self::GeometryCollection(gc) => gc.geometries.is_empty(),
         }
     }
+
+    /// Encode this geometry as ISO WKB (Well-Known Binary), little-endian.
+    ///
+    /// The encoding follows the OGC WKB specification:
+    /// - byte order flag (0x01 = little-endian)
+    /// - 4-byte geometry type
+    /// - geometry coordinates
+    ///
+    /// Supported types (WKB type codes):
+    /// - Point (1), LineString (2), Polygon (3)
+    /// - MultiPoint (4), MultiLineString (5), MultiPolygon (6)
+    /// - GeometryCollection (7)
+    ///
+    /// Returns `None` only when a position vector has fewer than 2 elements
+    /// (malformed coordinate).
+    #[must_use]
+    pub fn to_wkb(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::with_capacity(64);
+        wkb_write_geometry(self, &mut buf)?;
+        Some(buf)
+    }
+}
+
+// ─── WKB encoding helpers ─────────────────────────────────────────────────────
+
+/// Little-endian WKB byte-order marker.
+const WKB_LE: u8 = 0x01;
+
+/// WKB geometry type codes (2D, little-endian).
+mod wkb_type {
+    pub(super) const POINT: u32 = 1;
+    pub(super) const LINESTRING: u32 = 2;
+    pub(super) const POLYGON: u32 = 3;
+    pub(super) const MULTIPOINT: u32 = 4;
+    pub(super) const MULTILINESTRING: u32 = 5;
+    pub(super) const MULTIPOLYGON: u32 = 6;
+    pub(super) const GEOMETRYCOLLECTION: u32 = 7;
+}
+
+/// Write a single f64 coordinate into `buf` (little-endian).
+#[inline]
+fn wkb_push_f64(buf: &mut Vec<u8>, v: f64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Write a u32 into `buf` (little-endian).
+#[inline]
+fn wkb_push_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Write the WKB header: byte-order flag (LE) + geometry type.
+#[inline]
+fn wkb_write_header(buf: &mut Vec<u8>, geom_type: u32) {
+    buf.push(WKB_LE);
+    wkb_push_u32(buf, geom_type);
+}
+
+/// Write a single position `[x, y, ...]` as two f64 values.
+/// Returns `None` when the position has fewer than 2 elements.
+fn wkb_write_position(buf: &mut Vec<u8>, pos: &[f64]) -> Option<()> {
+    if pos.len() < 2 {
+        return None;
+    }
+    wkb_push_f64(buf, pos[0]);
+    wkb_push_f64(buf, pos[1]);
+    Some(())
+}
+
+/// Write a ring (sequence of positions) as `count + coords`.
+fn wkb_write_ring(buf: &mut Vec<u8>, ring: &[Vec<f64>]) -> Option<()> {
+    wkb_push_u32(buf, ring.len() as u32);
+    for pos in ring {
+        wkb_write_position(buf, pos)?;
+    }
+    Some(())
+}
+
+/// Recursively encode a [`Geometry`] into WKB bytes.
+fn wkb_write_geometry(geom: &Geometry, buf: &mut Vec<u8>) -> Option<()> {
+    match geom {
+        Geometry::Point(p) => {
+            wkb_write_header(buf, wkb_type::POINT);
+            wkb_write_position(buf, &p.coordinates)?;
+        }
+        Geometry::LineString(ls) => {
+            wkb_write_header(buf, wkb_type::LINESTRING);
+            wkb_push_u32(buf, ls.coordinates.len() as u32);
+            for pos in &ls.coordinates {
+                wkb_write_position(buf, pos)?;
+            }
+        }
+        Geometry::Polygon(p) => {
+            wkb_write_header(buf, wkb_type::POLYGON);
+            wkb_push_u32(buf, p.coordinates.len() as u32);
+            for ring in &p.coordinates {
+                wkb_write_ring(buf, ring)?;
+            }
+        }
+        Geometry::MultiPoint(mp) => {
+            wkb_write_header(buf, wkb_type::MULTIPOINT);
+            wkb_push_u32(buf, mp.coordinates.len() as u32);
+            for pos in &mp.coordinates {
+                // Each sub-geometry is its own Point WKB
+                let sub = Geometry::Point(Point {
+                    coordinates: pos.clone(),
+                    bbox: None,
+                });
+                wkb_write_geometry(&sub, buf)?;
+            }
+        }
+        Geometry::MultiLineString(mls) => {
+            wkb_write_header(buf, wkb_type::MULTILINESTRING);
+            wkb_push_u32(buf, mls.coordinates.len() as u32);
+            for line in &mls.coordinates {
+                let sub = Geometry::LineString(LineString {
+                    coordinates: line.clone(),
+                    bbox: None,
+                });
+                wkb_write_geometry(&sub, buf)?;
+            }
+        }
+        Geometry::MultiPolygon(mp) => {
+            wkb_write_header(buf, wkb_type::MULTIPOLYGON);
+            wkb_push_u32(buf, mp.coordinates.len() as u32);
+            for rings in &mp.coordinates {
+                let sub = Geometry::Polygon(Polygon {
+                    coordinates: rings.clone(),
+                    bbox: None,
+                });
+                wkb_write_geometry(&sub, buf)?;
+            }
+        }
+        Geometry::GeometryCollection(gc) => {
+            wkb_write_header(buf, wkb_type::GEOMETRYCOLLECTION);
+            wkb_push_u32(buf, gc.geometries.len() as u32);
+            for sub in &gc.geometries {
+                wkb_write_geometry(sub, buf)?;
+            }
+        }
+    }
+    Some(())
 }
 
 impl<'de> serde::Deserialize<'de> for Geometry {
@@ -1062,5 +1204,92 @@ mod tests {
         let collection = gc.expect("valid collection");
         assert_eq!(collection.len(), 2);
         assert!(collection.validate().is_ok());
+    }
+
+    // ── to_wkb ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_wkb_point_size() {
+        // WKB Point: 1 (byte order) + 4 (type) + 8 (x) + 8 (y) = 21 bytes
+        let geom = Geometry::Point(Point::new_2d(139.7, 35.7).expect("point"));
+        let wkb = geom.to_wkb().expect("wkb");
+        assert_eq!(wkb.len(), 21, "WKB Point must be 21 bytes");
+        assert_eq!(wkb[0], 0x01, "little-endian flag");
+        assert_eq!(&wkb[1..5], &1u32.to_le_bytes(), "WKB type = 1 (Point)");
+    }
+
+    #[test]
+    fn test_wkb_point_coordinates() {
+        let x = 139.691711f64;
+        let y = 35.689487f64;
+        let geom = Geometry::Point(Point::new_2d(x, y).expect("point"));
+        let wkb = geom.to_wkb().expect("wkb");
+        let decoded_x = f64::from_le_bytes(wkb[5..13].try_into().expect("slice"));
+        let decoded_y = f64::from_le_bytes(wkb[13..21].try_into().expect("slice"));
+        assert!((decoded_x - x).abs() < 1e-10, "x mismatch: {decoded_x}");
+        assert!((decoded_y - y).abs() < 1e-10, "y mismatch: {decoded_y}");
+    }
+
+    #[test]
+    fn test_wkb_linestring() {
+        let coords = vec![vec![0.0, 0.0], vec![1.0, 1.0], vec![2.0, 0.0]];
+        let geom = Geometry::LineString(LineString::new(coords).expect("ls"));
+        let wkb = geom.to_wkb().expect("wkb");
+        // 1 + 4 + 4 (count) + 3 * 16 = 57 bytes
+        assert_eq!(wkb.len(), 57);
+        assert_eq!(&wkb[1..5], &2u32.to_le_bytes(), "WKB type = 2 (LineString)");
+        let count = u32::from_le_bytes(wkb[5..9].try_into().expect("slice"));
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_wkb_polygon() {
+        // Simple square ring
+        let ring = vec![
+            vec![0.0, 0.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![0.0, 1.0],
+            vec![0.0, 0.0],
+        ];
+        let geom = Geometry::Polygon(Polygon::from_exterior(ring).expect("polygon"));
+        let wkb = geom.to_wkb().expect("wkb");
+        // 1 + 4 + 4 (ring count) + 4 (point count per ring) + 5*16 = 93 bytes
+        assert_eq!(wkb.len(), 93);
+        assert_eq!(&wkb[1..5], &3u32.to_le_bytes(), "WKB type = 3 (Polygon)");
+    }
+
+    #[test]
+    fn test_wkb_multipoint() {
+        let coords = vec![vec![0.0, 0.0], vec![1.0, 1.0]];
+        let geom = Geometry::MultiPoint(MultiPoint::new(coords).expect("mp"));
+        let wkb = geom.to_wkb().expect("wkb");
+        assert_eq!(&wkb[1..5], &4u32.to_le_bytes(), "WKB type = 4 (MultiPoint)");
+        // 1 + 4 + 4 (count) + 2 * (1 + 4 + 16) = 51 bytes
+        assert_eq!(wkb.len(), 51);
+    }
+
+    #[test]
+    fn test_wkb_geometry_collection_empty() {
+        let geom = Geometry::GeometryCollection(GeometryCollection::new(vec![]).expect("gc"));
+        let wkb = geom.to_wkb().expect("wkb");
+        // 1 + 4 + 4 (count=0) = 9 bytes
+        assert_eq!(wkb.len(), 9);
+        assert_eq!(
+            &wkb[1..5],
+            &7u32.to_le_bytes(),
+            "WKB type = 7 (GeometryCollection)"
+        );
+    }
+
+    #[test]
+    fn test_wkb_point_invalid_coordinates_returns_none() {
+        // Build a Geometry::Point with empty coordinates (invalid) directly
+        let geom = Geometry::Point(Point {
+            coordinates: vec![],
+            bbox: None,
+        });
+        let result = geom.to_wkb();
+        assert!(result.is_none(), "malformed point should return None");
     }
 }

@@ -165,13 +165,13 @@ mod tests {
     #[test]
     fn test_error_conversion() {
         // Initialize Python interpreter so pyo3 APIs are available in tests.
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let err = OxiGdalError::InvalidParameter {
             parameter: "width",
             message: "must be positive".to_string(),
         };
         let py_err: PyErr = oxigdal_error_to_py_err(err);
-        pyo3::Python::with_gil(|_py| {
+        pyo3::Python::attach(|_py| {
             assert!(py_err.to_string().contains("width"));
         });
     }

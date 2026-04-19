@@ -77,6 +77,10 @@ pub struct TranslateArgs {
     /// Show progress bar
     #[arg(long, default_value = "true")]
     progress: bool,
+
+    /// Creation options (KEY=VALUE, GDAL-compatible)
+    #[arg(long = "co", value_parser = crate::util::creation_options::parse_key_value)]
+    pub creation_options: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -123,6 +127,28 @@ struct TranslateResult {
 }
 
 pub fn execute(args: TranslateArgs, format: OutputFormat) -> Result<()> {
+    let _co = crate::util::creation_options::map_creation_options(&args.creation_options);
+
+    // Reject cloud output URIs early
+    let output_str = args.output.to_str().unwrap_or_default();
+    if crate::util::cloud::is_cloud_uri(output_str) {
+        return Err(crate::util::cloud::error_for_cloud_write(output_str));
+    }
+
+    // For cloud input URIs, attempt to open the datasource as a connectivity check
+    let input_str = args.input.to_str().unwrap_or_default();
+    if crate::util::cloud::is_cloud_uri(input_str) {
+        // open_datasource validates connectivity; full raster read via
+        // GeoTiffReader<DataSource> is pending future wiring
+        let _ds = crate::util::cloud::open_datasource(input_str)
+            .with_context(|| format!("Failed to open cloud datasource: {}", input_str))?;
+        anyhow::bail!(
+            "cloud URI reading for raster translate requires GeoTiffReader<DataSource>; \
+             use a local file path for now (got: {})",
+            input_str
+        );
+    }
+
     // Check if input exists
     if !args.input.exists() {
         anyhow::bail!("Input file not found: {}", args.input.display());

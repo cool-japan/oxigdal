@@ -4,7 +4,7 @@
 #![allow(clippy::panic, clippy::while_let_on_iterator)]
 
 use oxigdal_core::vector::{
-    Coordinate, Feature, Geometry, LineString, MultiPoint, Point, Polygon, PropertyValue,
+    Coordinate, Feature, FieldValue, Geometry, LineString, MultiPoint, Point, Polygon,
 };
 use oxigdal_flatgeobuf::{
     Column, ColumnType, CrsInfo, FlatGeobufReader, FlatGeobufWriter, FlatGeobufWriterBuilder,
@@ -71,9 +71,9 @@ fn test_roundtrip_points_with_properties() {
     for i in 0..5 {
         let point = Point::new(i as f64, i as f64);
         let mut feature = Feature::new(Geometry::Point(point));
-        feature.set_property("name", PropertyValue::String(format!("Point {i}")));
-        feature.set_property("value", PropertyValue::Integer(i));
-        feature.set_property("score", PropertyValue::Float(i as f64 * 1.5));
+        feature.set_property("name", FieldValue::String(format!("Point {i}")));
+        feature.set_property("value", FieldValue::Integer(i));
+        feature.set_property("score", FieldValue::Float(i as f64 * 1.5));
         writer.add_feature(&feature).expect("Failed to add feature");
     }
 
@@ -326,8 +326,8 @@ fn test_roundtrip_null_properties() {
     // Add feature with null property
     let point = Point::new(0.0, 0.0);
     let mut feature = Feature::new(Geometry::Point(point));
-    feature.set_property("nullable_field", PropertyValue::Null);
-    feature.set_property("required_field", PropertyValue::Integer(42));
+    feature.set_property("nullable_field", FieldValue::Null);
+    feature.set_property("required_field", FieldValue::Integer(42));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish writing");
@@ -385,19 +385,16 @@ fn test_roundtrip_mixed_property_types() {
 
     let point = Point::new(0.0, 0.0);
     let mut feature = Feature::new(Geometry::Point(point));
-    feature.set_property("byte_field", PropertyValue::Integer(127));
-    feature.set_property("bool_field", PropertyValue::Bool(true));
-    feature.set_property("short_field", PropertyValue::Integer(32000));
-    feature.set_property("int_field", PropertyValue::Integer(2_000_000_000));
-    feature.set_property(
-        "long_field",
-        PropertyValue::Integer(9_000_000_000_000_000_000),
-    );
-    feature.set_property("float_field", PropertyValue::Float(std::f64::consts::PI));
-    feature.set_property("double_field", PropertyValue::Float(std::f64::consts::E));
+    feature.set_property("byte_field", FieldValue::Integer(127));
+    feature.set_property("bool_field", FieldValue::Bool(true));
+    feature.set_property("short_field", FieldValue::Integer(32000));
+    feature.set_property("int_field", FieldValue::Integer(2_000_000_000));
+    feature.set_property("long_field", FieldValue::Integer(9_000_000_000_000_000_000));
+    feature.set_property("float_field", FieldValue::Float(std::f64::consts::PI));
+    feature.set_property("double_field", FieldValue::Float(std::f64::consts::E));
     feature.set_property(
         "string_field",
-        PropertyValue::String("Hello, FlatGeobuf!".to_string()),
+        FieldValue::String("Hello, FlatGeobuf!".to_string()),
     );
 
     writer.add_feature(&feature).expect("Failed to add feature");
@@ -443,7 +440,7 @@ fn test_builder_api() {
 
     let point = Point::new_3d(1.0, 2.0, 3.0);
     let mut feature = Feature::new(Geometry::Point(point));
-    feature.set_property("name", PropertyValue::String("Test".to_string()));
+    feature.set_property("name", FieldValue::String("Test".to_string()));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish writing");

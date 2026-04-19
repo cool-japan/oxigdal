@@ -38,7 +38,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-drivers-advanced = "0.1.3"
+oxigdal-drivers-advanced = "0.1.4"
 ```
 
 ### JPEG2000

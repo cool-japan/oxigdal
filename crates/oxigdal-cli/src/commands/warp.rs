@@ -39,51 +39,55 @@ use std::path::PathBuf;
 pub struct WarpArgs {
     /// Input file path
     #[arg(value_name = "INPUT")]
-    input: PathBuf,
+    pub input: PathBuf,
 
     /// Output file path
     #[arg(value_name = "OUTPUT")]
-    output: PathBuf,
+    pub output: PathBuf,
 
     /// Source coordinate reference system (EPSG code or WKT)
     #[arg(short = 's', long)]
-    s_srs: Option<String>,
+    pub s_srs: Option<String>,
 
     /// Target coordinate reference system (EPSG code or WKT)
     #[arg(short = 't', long)]
-    t_srs: String,
+    pub t_srs: String,
 
     /// Output width in pixels
     #[arg(long)]
-    ts_x: Option<usize>,
+    pub ts_x: Option<usize>,
 
     /// Output height in pixels
     #[arg(long)]
-    ts_y: Option<usize>,
+    pub ts_y: Option<usize>,
 
     /// Output resolution in target units
     #[arg(long)]
-    tr: Option<f64>,
+    pub tr: Option<f64>,
 
     /// Resampling method (nearest, bilinear, bicubic, lanczos)
     #[arg(short, long, default_value = "bilinear")]
-    resampling: ResamplingMethodArg,
+    pub resampling: ResamplingMethodArg,
 
     /// Output bounds in target SRS (minx miny maxx maxy)
     #[arg(long, num_args = 4, value_names = ["MINX", "MINY", "MAXX", "MAXY"])]
-    te: Option<Vec<f64>>,
+    pub te: Option<Vec<f64>>,
 
     /// Set NoData value for output
     #[arg(long)]
-    no_data: Option<f64>,
+    pub no_data: Option<f64>,
 
     /// Overwrite existing output file
     #[arg(long)]
-    overwrite: bool,
+    pub overwrite: bool,
 
     /// Show progress bar
     #[arg(long, default_value = "true")]
-    progress: bool,
+    pub progress: bool,
+
+    /// Creation options (KEY=VALUE, GDAL-compatible)
+    #[arg(long = "co", value_parser = crate::util::creation_options::parse_key_value)]
+    pub creation_options: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +136,8 @@ struct WarpResult {
 }
 
 pub fn execute(args: WarpArgs, format: OutputFormat) -> Result<()> {
+    let _co = crate::util::creation_options::map_creation_options(&args.creation_options);
+
     // Check if input exists
     if !args.input.exists() {
         anyhow::bail!("Input file not found: {}", args.input.display());

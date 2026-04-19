@@ -273,6 +273,88 @@ impl GeoTransform {
         self.rotation_radians().to_degrees()
     }
 
+    /// Transforms a batch of pixel coordinates to world coordinates.
+    ///
+    /// Applies [`pixel_to_world`](Self::pixel_to_world) to every element in `pixels` and
+    /// collects the results. The inverse transform is **not** needed here, so this never
+    /// fails.
+    #[inline]
+    pub fn pixel_to_world_many(&self, pixels: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        pixels
+            .iter()
+            .map(|&(col, row)| self.pixel_to_world(col, row))
+            .collect()
+    }
+
+    /// Transforms a batch of world coordinates to pixel coordinates.
+    ///
+    /// Computes the inverse transform once, then applies it to every element of `world`.
+    ///
+    /// # Errors
+    /// Returns an error if the transform is singular (same condition as [`inverse`](Self::inverse)).
+    pub fn world_to_pixel_many(&self, world: &[(f64, f64)]) -> Result<Vec<(f64, f64)>> {
+        let inv = self.inverse()?;
+        Ok(world
+            .iter()
+            .map(|&(x, y)| inv.pixel_to_world(x, y))
+            .collect())
+    }
+
+    /// Transforms pixel coordinates to world coordinates in-place (no extra allocation).
+    ///
+    /// `out` must have exactly the same length as `pixels`.
+    ///
+    /// # Errors
+    /// Returns an error if `out.len() != pixels.len()`.
+    pub fn pixel_to_world_many_into(
+        &self,
+        pixels: &[(f64, f64)],
+        out: &mut [(f64, f64)],
+    ) -> Result<()> {
+        if pixels.len() != out.len() {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "out",
+                message: format!(
+                    "output slice length {} != input length {}",
+                    out.len(),
+                    pixels.len()
+                ),
+            });
+        }
+        for (i, &(col, row)) in pixels.iter().enumerate() {
+            out[i] = self.pixel_to_world(col, row);
+        }
+        Ok(())
+    }
+
+    /// Transforms world coordinates to pixel coordinates in-place (no extra allocation).
+    ///
+    /// `out` must have exactly the same length as `world`.
+    ///
+    /// # Errors
+    /// Returns an error if `out.len() != world.len()`, or if the transform is singular.
+    pub fn world_to_pixel_many_into(
+        &self,
+        world: &[(f64, f64)],
+        out: &mut [(f64, f64)],
+    ) -> Result<()> {
+        if world.len() != out.len() {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "out",
+                message: format!(
+                    "output slice length {} != input length {}",
+                    out.len(),
+                    world.len()
+                ),
+            });
+        }
+        let inv = self.inverse()?;
+        for (i, &(x, y)) in world.iter().enumerate() {
+            out[i] = inv.pixel_to_world(x, y);
+        }
+        Ok(())
+    }
+
     /// Creates the inverse transform
     ///
     /// # Errors
@@ -523,6 +605,59 @@ mod tests {
         let recovered = GeoTransform::from_gdal_array(array);
 
         assert_eq!(original, recovered);
+    }
+
+    #[test]
+    fn test_pixel_to_world_many_roundtrip() {
+        // Simple north-up transform: origin (0,0), 1-degree pixels
+        let gt = GeoTransform::new(0.0, 1.0, 0.0, 0.0, 0.0, -1.0);
+        let pixels: Vec<(f64, f64)> = (0..10).map(|i| (i as f64, i as f64)).collect();
+        let world = gt.pixel_to_world_many(&pixels);
+        let back = gt.world_to_pixel_many(&world).expect("inverse should work");
+        for (orig, recovered) in pixels.iter().zip(back.iter()) {
+            assert!((orig.0 - recovered.0).abs() < 1e-9);
+            assert!((orig.1 - recovered.1).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_world_to_pixel_many_matches_singleton() {
+        let gt = GeoTransform::new(10.0, 0.5, 0.0, 50.0, 0.0, -0.5);
+        let world: Vec<(f64, f64)> = (0..20)
+            .map(|i| (10.0 + i as f64 * 0.5, 50.0 - i as f64 * 0.5))
+            .collect();
+        let batch = gt.world_to_pixel_many(&world).expect("should succeed");
+        for (w, b) in world.iter().zip(batch.iter()) {
+            let single = gt.world_to_pixel(w.0, w.1).expect("singleton should work");
+            assert!(
+                (b.0 - single.0).abs() < 1e-12,
+                "col mismatch at ({}, {})",
+                b.0,
+                single.0
+            );
+            assert!(
+                (b.1 - single.1).abs() < 1e-12,
+                "row mismatch at ({}, {})",
+                b.1,
+                single.1
+            );
+        }
+    }
+
+    #[test]
+    fn test_batch_singular_returns_err() {
+        // Zero pixel size → inverse() should fail
+        let gt = GeoTransform::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let world = vec![(1.0, 2.0)];
+        assert!(gt.world_to_pixel_many(&world).is_err());
+    }
+
+    #[test]
+    fn test_batch_into_length_mismatch_errs() {
+        let gt = GeoTransform::new(0.0, 1.0, 0.0, 0.0, 0.0, -1.0);
+        let pixels = vec![(0.0_f64, 0.0_f64), (1.0, 1.0)];
+        let mut out = vec![(0.0_f64, 0.0_f64)]; // wrong length
+        assert!(gt.pixel_to_world_many_into(&pixels, &mut out).is_err());
     }
 
     #[test]

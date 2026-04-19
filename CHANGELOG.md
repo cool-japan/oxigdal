@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-04-19
+
+### Added
+
+- **Wave 1 Algorithms Depth** (`oxigdal-algorithms`): Weiler-Atherton polygon clipping (general polygon-polygon clipping with hole support), Karney's geodesic area formula (sub-meter accuracy on WGS84 ellipsoid), DE-9IM (Dimensionally Extended 9-Intersection Model) topological predicates, marching squares contour extraction for raster isolines
+- **Wave 1 ML Migration** (`oxigdal-ml`): Migrated from `ort` to `oxionnx` — Pure Rust ONNX inference runtime aligned with COOLJAPAN Pure Rust Policy; cloud detection, super-resolution, and ONNX model loading now use `oxionnx`
+- **Wave 2 R-tree Enhancements** (`oxigdal-index`): Node deletion with tree rebalancing, STR (Sort-Tile-Recursive) bulk loading for O(n log n) construction, k-nearest neighbor search with priority queue, R-tree serialization/deserialization
+- **Wave 2 SIMD Resampling** (`oxigdal-algorithms`): AVX2 and NEON intrinsics for bilinear and bicubic resampling kernels; auto-detects CPU features at runtime
+- **Wave 2 Raster Polygonization** (`oxigdal-algorithms`): Vector polygon extraction from labeled raster regions with boundary tracing and hole detection
+- **Wave 2 Topology-Preserving Simplification** (`oxigdal-algorithms`): Visvalingam-Whyatt and Douglas-Peucker variants that preserve shared boundaries across adjacent polygons
+- **Wave 2 NoAlloc Geometry Types** (`oxigdal-noalloc`): `FixedLineString<N>`, `FixedRing<N>`, `BBox3D`, `Mercator` projection helpers, `geohash` neighbour enumeration — all zero-allocation, const-generic capacity
+- **Wave 2 PMTiles Reader Completion** (`oxigdal-pmtiles`): Full tile retrieval pipeline with OxiARC decompression (gzip/brotli/zstd), FNV-1a content deduplication on reads, directory navigation for root + leaf directories
+- **Wave 2 COPC Reader** (`oxigdal-copc`): Cloud Optimized Point Cloud reader with EPT hierarchy traversal, octree-based spatial queries, and HTTP range request support
+- **Wave 2 GeoPackage B-tree + 3D WKB** (`oxigdal-gpkg`): B-tree index support for attribute queries, Well-Known Binary 3D geometry parsing (PointZ, LineStringZ, PolygonZ, etc.)
+
+### Fixed
+
+- **pyo3 0.28 Migration** (`oxigdal-python`): Full migration from pyo3 0.24 to 0.28 — updated `Bound<'py, T>` lifetime parameters, new `IntoPyObject` trait usage, migrated GIL handling APIs
+- **Clippy Cleanup** (`oxigdal-drivers/geojson`): Streaming test suite clippy cleanup — removed unused imports, fixed `.collect()` redundancies, corrected error propagation patterns
+- **GeoTIFF Metadata Optimizer** (`oxigdal-geotiff`): Improvements to COG metadata optimizer and validator for tile ordering and overview consistency
+- **ML Error Types** (`oxigdal-ml`): Refined error taxonomy and `OnnxModel` API for the oxionnx migration
+
+### Changed
+
+- All ONNX inference now routes through `oxionnx` (Pure Rust) — no C++ ONNX Runtime dependency
+- Doc examples and subcrate READMEs updated to reference v0.1.4
+
 ## [0.1.3] - 2026-03-21
 
 ### Fixed
@@ -487,6 +514,9 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigdal>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigdal/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/cool-japan/oxigdal/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/cool-japan/oxigdal/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/cool-japan/oxigdal/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cool-japan/oxigdal/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.0

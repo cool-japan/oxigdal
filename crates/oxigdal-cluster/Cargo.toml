@@ -51,7 +51,7 @@ oxiarc-zstd = { workspace = true }
 sysinfo = { workspace = true }
 
 # Hashing
-ahash = "0.8"
+ahash.workspace = true
 
 # System
 num_cpus = { workspace = true }

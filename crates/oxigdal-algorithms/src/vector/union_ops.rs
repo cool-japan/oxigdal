@@ -108,19 +108,12 @@ pub fn union_polygon(poly1: &Polygon, poly2: &Polygon) -> Result<Vec<Polygon>> {
         return Ok(vec![poly1.clone(), poly2.clone()]);
     }
 
-    // Polygons overlap - compute union
-    // Simplified implementation: use convex hull or return larger polygon
-    // Full implementation would use Weiler-Atherton algorithm
-
-    // For now, return the polygon with larger area
-    let area1 = compute_polygon_area(poly1);
-    let area2 = compute_polygon_area(poly2);
-
-    if area1 >= area2 {
-        Ok(vec![poly1.clone()])
-    } else {
-        Ok(vec![poly2.clone()])
-    }
+    // Delegate to Weiler-Atherton clipping engine for the overlapping case
+    crate::vector::clipping::clip_polygons(
+        poly1,
+        poly2,
+        crate::vector::clipping::ClipOperation::Union,
+    )
 }
 
 /// Computes union of multiple polygons (alias for clarity)

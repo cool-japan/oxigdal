@@ -2,10 +2,11 @@
 
 use crate::arrow_ext::extract_geoparquet_metadata;
 use crate::error::{GeoParquetError, Result};
-use crate::geometry::{Geometry, WkbReader};
+use crate::filter::{AttributePredicates, filter_batch_by_mask};
+use crate::geometry::{Geometry, WkbReader, wkb_bbox};
 use crate::metadata::GeoParquetMetadata;
 use crate::spatial::{RowGroupBounds, SpatialFilter, SpatialIndex};
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{Array, BinaryArray, RecordBatch};
 use arrow_schema::SchemaRef;
 use oxigdal_core::types::BoundingBox;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
@@ -208,6 +209,159 @@ impl GeoParquetReader {
     /// Returns the primary geometry column name
     pub fn geometry_column_name(&self) -> &str {
         &self.geometry_column
+    }
+
+    // ── Row-level spatial filtering ────────────────────────────────────────────
+
+    /// Reads all rows whose geometry intersects `bbox` at the **row level**.
+    ///
+    /// Unlike `read_filtered`, which only coarsely prunes row groups using
+    /// metadata, this method:
+    ///
+    /// 1. Calls [`build_spatial_index`] (or uses the existing index) to
+    ///    identify candidate row groups that intersect `bbox`.
+    /// 2. Reads each candidate row group into a [`RecordBatch`].
+    /// 3. For every row, decodes the WKB geometry from the geometry column and
+    ///    checks whether its bounding box intersects `bbox`.
+    /// 4. Collects matching rows into a filtered [`RecordBatch`] and returns
+    ///    all non-empty batches as a `Vec`.
+    ///
+    /// Rows whose geometry cannot be decoded or whose bounding box cannot be
+    /// computed are silently excluded.
+    ///
+    /// # Errors
+    ///
+    /// Propagates Parquet, Arrow, and I/O errors.
+    ///
+    /// [`build_spatial_index`]: GeoParquetReader::build_spatial_index
+    pub fn read_filtered_exact(&mut self, bbox: BoundingBox) -> Result<Vec<RecordBatch>> {
+        // Ensure we have a spatial index so the row-group pruning is effective.
+        if self.spatial_index.is_none() {
+            self.build_spatial_index()?;
+        }
+
+        let filter = SpatialFilter::BoundingBox(bbox);
+        let mut batch_reader = self.read_filtered(filter)?;
+        let mut results = Vec::new();
+
+        while let Some(batch) = batch_reader.next_batch()? {
+            let row_mask = self.spatial_row_mask(&batch, &bbox)?;
+            if row_mask.iter().any(|&b| b) {
+                let filtered = crate::filter::filter_batch_by_mask(&batch, &row_mask)?;
+                if filtered.num_rows() > 0 {
+                    results.push(filtered);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Reads rows applying an optional bounding-box filter **and** an optional
+    /// attribute filter.
+    ///
+    /// The two filters are combined with intersection semantics (both must
+    /// hold).  Pass `None` to skip a filter entirely.
+    ///
+    /// When a `bbox` is supplied, row-group pruning is applied first via
+    /// [`read_filtered_exact`] logic, then per-row geometry checks are
+    /// performed.  When `attribute_filter` is also supplied, only rows
+    /// satisfying both the spatial and attribute predicates are returned.
+    ///
+    /// # Errors
+    ///
+    /// Propagates Parquet, Arrow, and I/O errors.
+    ///
+    /// [`read_filtered_exact`]: GeoParquetReader::read_filtered_exact
+    pub fn read_with_filter(
+        &mut self,
+        bbox: Option<BoundingBox>,
+        attribute_filter: Option<AttributePredicates>,
+    ) -> Result<Vec<RecordBatch>> {
+        // Ensure spatial index is built if we'll need it.
+        if bbox.is_some() && self.spatial_index.is_none() {
+            self.build_spatial_index()?;
+        }
+
+        // Choose the spatial filter for row-group pruning.
+        let spatial_filter = match &bbox {
+            Some(b) => SpatialFilter::BoundingBox(*b),
+            None => SpatialFilter::All,
+        };
+
+        let mut batch_reader = self.read_filtered(spatial_filter)?;
+        let mut results = Vec::new();
+
+        while let Some(batch) = batch_reader.next_batch()? {
+            // 1. Spatial row mask (per-geometry bbox check).
+            let spatial_mask = if let Some(ref b) = bbox {
+                self.spatial_row_mask(&batch, b)?
+            } else {
+                vec![true; batch.num_rows()]
+            };
+
+            // 2. Attribute mask.
+            let attr_mask = if let Some(ref preds) = attribute_filter {
+                preds.row_mask(&batch)?
+            } else {
+                vec![true; batch.num_rows()]
+            };
+
+            // 3. Combine: a row matches iff both masks are true.
+            let combined: Vec<bool> = spatial_mask
+                .iter()
+                .zip(attr_mask.iter())
+                .map(|(s, a)| *s && *a)
+                .collect();
+
+            if combined.iter().any(|&b| b) {
+                let filtered = filter_batch_by_mask(&batch, &combined)?;
+                if filtered.num_rows() > 0 {
+                    results.push(filtered);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
+
+    /// Builds a boolean row mask for `batch` where each `true` entry means the
+    /// row's geometry intersects `bbox`.
+    ///
+    /// Rows with null or unparseable geometry are excluded (`false`).
+    fn spatial_row_mask(&self, batch: &RecordBatch, bbox: &BoundingBox) -> Result<Vec<bool>> {
+        let geom_col = batch
+            .column_by_name(&self.geometry_column)
+            .ok_or_else(|| GeoParquetError::missing_field(&self.geometry_column))?;
+
+        let binary = geom_col
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| {
+                GeoParquetError::type_mismatch("BinaryArray", format!("{:?}", geom_col.data_type()))
+            })?;
+
+        let mut mask = vec![false; binary.len()];
+        for (i, m) in mask.iter_mut().enumerate() {
+            if binary.is_null(i) {
+                continue;
+            }
+            let wkb = binary.value(i);
+            if let Some((min_x, min_y, max_x, max_y)) = wkb_bbox(wkb) {
+                // Check AABB intersection (inclusive on edges).
+                if max_x >= bbox.min_x
+                    && min_x <= bbox.max_x
+                    && max_y >= bbox.min_y
+                    && min_y <= bbox.max_y
+                {
+                    *m = true;
+                }
+            }
+        }
+
+        Ok(mask)
     }
 }
 

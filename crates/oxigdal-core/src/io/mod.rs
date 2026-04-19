@@ -9,8 +9,12 @@
 //! - `AsyncDataSource` - Asynchronous data source trait (requires `async` feature)
 //! - [`ByteRange`] - Byte range specification for partial reads
 //! - [`RasterRead`] / [`RasterWrite`] - Raster-specific I/O traits
+//! - [`Dataset`] / [`RasterDataset`] / [`VectorDataset`] - High-level dataset traits
 
+pub mod dataset;
 mod traits;
+
+pub use dataset::{Dataset, FieldType, RasterDataset, VectorDataset};
 
 pub use traits::{
     ByteRange, CogSupport, DataSink, DataSource, OverviewSupport, RasterRead, RasterWrite,
@@ -18,6 +22,12 @@ pub use traits::{
 
 #[cfg(feature = "async")]
 pub use traits::{AsyncDataSource, AsyncRasterRead};
+
+#[cfg(feature = "std")]
+pub mod mmap;
+
+#[cfg(feature = "std")]
+pub use mmap::{MmapDataSource, MmapDataSourceRw};
 
 #[cfg(feature = "std")]
 mod file {

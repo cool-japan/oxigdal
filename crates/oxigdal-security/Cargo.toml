@@ -15,12 +15,12 @@ description = "Enterprise security features for OxiGDAL: encryption, access cont
 
 [dependencies]
 # Crypto primitives
-ring = "0.17"
-rustls = "0.23"
-argon2 = "0.5"
+ring.workspace = true
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+argon2.workspace = true
 sha2.workspace = true
-aes-gcm = "0.10"
-chacha20poly1305 = "0.10"
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
 
 # UUID and time
 uuid = { workspace = true }
@@ -48,17 +48,17 @@ oxiarc-zstd = { workspace = true }
 
 # Random — use scirs2-core for RNG (SciRS2 Policy: no direct rand/rand_distr)
 scirs2-core = { workspace = true, features = ["random"] }
-getrandom = "0.4"
+getrandom.workspace = true
 
 # Encoding
 base64.workspace = true
 
 # Pattern matching
-regex = "1"
+regex.workspace = true
 
 # TLS support
-webpki-roots = "1.0"
-rustls-pemfile = "2"
+webpki-roots.workspace = true
+rustls-pemfile.workspace = true
 
 # Concurrency
 parking_lot.workspace = true

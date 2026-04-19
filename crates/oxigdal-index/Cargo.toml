@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 description = "Pure-Rust spatial index (R-tree) for OxiGDAL vector data"
 keywords = ["geospatial", "spatial-index", "rtree", "vector"]
-categories = ["science::geo", "data-structures"]
+categories = ["science", "data-structures"]
 
 [features]
 default = ["std"]

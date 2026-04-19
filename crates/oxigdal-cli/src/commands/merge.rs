@@ -43,6 +43,10 @@ pub struct MergeArgs {
     /// Show progress bar
     #[arg(long, default_value = "true")]
     progress: bool,
+
+    /// Creation options (KEY=VALUE, GDAL-compatible)
+    #[arg(long = "co", value_parser = crate::util::creation_options::parse_key_value)]
+    pub creation_options: Vec<(String, String)>,
 }
 
 #[derive(Serialize)]
@@ -55,6 +59,8 @@ struct MergeResult {
 }
 
 pub fn execute(args: MergeArgs, format: OutputFormat) -> Result<()> {
+    let _co = crate::util::creation_options::map_creation_options(&args.creation_options);
+
     if args.output.exists() && !args.overwrite {
         anyhow::bail!(
             "Output file already exists: {}. Use --overwrite to replace.",

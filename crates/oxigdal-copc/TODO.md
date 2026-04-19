@@ -1,11 +1,11 @@
 # TODO: oxigdal-copc
 
 ## High Priority
-- [ ] Implement actual COPC file reader: parse LAS header + VLR chain + hierarchy pages from byte stream to populate the Octree
+- [x] Implement actual COPC file reader (completed 2026-04-19, part of C1)
 - [ ] Add LAZ (compressed LAS) decompression support (pure Rust, no laszip C dependency)
 - [ ] Support LAS point data record formats 6-10 (extended fields: NIR, waveform, scan angle as i16)
-- [ ] Implement COPC hierarchy page traversal for level-of-detail streaming (read only the octree nodes needed for a spatial query)
-- [ ] Add point record binary deserialization from raw LAS bytes using scale/offset from the header
+- [x] Implement COPC hierarchy page traversal (completed 2026-04-19, part of C1)
+- [x] Add point record binary deserialization (completed 2026-04-19, part of C1)
 - [ ] Implement COPC writer: serialize Octree back to LAS 1.4 + COPC VLR format
 
 ## Medium Priority

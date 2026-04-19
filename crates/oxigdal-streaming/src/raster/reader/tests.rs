@@ -696,8 +696,9 @@ fn test_format_detection_empty_file_magic() {
 
 #[test]
 fn test_format_detection_nonexistent_file_magic() {
-    let test_path = Path::new("/tmp/this_file_does_not_exist_format_test.bin");
-    assert_eq!(detect_format_from_magic(test_path), None);
+    let test_path = std::env::temp_dir()
+        .join("oxigdal_nonexistent_format_test_bx9f.bin");
+    assert_eq!(detect_format_from_magic(&test_path), None);
 }
 
 // ======================================================================
@@ -1326,6 +1327,7 @@ async fn test_streaming_writer_roundtrip_with_metadata() {
         color_interpretation: Vec::new(),
         layout: oxigdal_core::types::PixelLayout::default(),
         driver_metadata: Vec::new(),
+        statistics: None,
     };
 
     let config = RasterStreamConfig::default().with_chunk_size(64, 64);

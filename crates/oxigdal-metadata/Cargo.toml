@@ -17,6 +17,7 @@ categories = ["science", "data-structures", "parser-implementations"]
 default = ["std"]
 std = ["thiserror/std", "serde/std"]
 xml = ["dep:quick-xml"]
+stac = ["dep:oxigdal-stac"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -30,6 +31,7 @@ quick-xml = { workspace = true, optional = true, features = ["serialize"] }
 
 # Internal crates
 oxigdal-core = { workspace = true }
+oxigdal-stac = { workspace = true, default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

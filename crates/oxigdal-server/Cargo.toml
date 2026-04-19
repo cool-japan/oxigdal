@@ -25,8 +25,8 @@ axum.workspace = true
 tower = { workspace = true, features = ["util", "timeout", "load-shed", "limit"] }
 tower-http = { workspace = true, features = ["fs", "trace", "cors", "compression-full"] }
 hyper = { version = "1", features = ["full"] }
-http = "1"
-http-body-util = "0.1"
+http.workspace = true
+http-body-util.workspace = true
 
 # Async runtime
 tokio.workspace = true
@@ -36,7 +36,7 @@ async-trait.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-toml = "1.0"
+toml.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -44,7 +44,7 @@ anyhow.workspace = true
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-png = "0.18"
+png.workspace = true
 jpeg-encoder.workspace = true
 
 # Caching

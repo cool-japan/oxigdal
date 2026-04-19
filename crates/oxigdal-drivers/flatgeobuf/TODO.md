@@ -1,6 +1,11 @@
 # TODO: oxigdal-flatgeobuf
 
 ## High Priority
+- [x] FlatGeobuf writer with Packed Hilbert R-tree index (planned 2026-04-18)
+  - **Goal:** Writer produces valid `.fgb` files: 8-byte magic, header, optional Packed Hilbert R-tree index, feature FlatBuffers in bbox-sorted order.
+  - **Design:** Two-pass: collect bboxes → sort on Hilbert curve over global bbox → write header+index+features.
+  - **Files:** writer.rs (enhanced), index.rs (Hilbert sort fix)
+  - **Tests:** 6 tests covering magic, empty file, Hilbert sorted features, R-tree node size, roundtrip with index seek, Z flag
 - [ ] Implement R-tree spatial index querying for bbox-filtered reads
 - [ ] Add async HTTP range-request reading for cloud-hosted FlatGeobuf files
 - [ ] Implement feature-level random access using spatial index offsets

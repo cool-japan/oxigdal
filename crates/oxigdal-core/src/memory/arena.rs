@@ -341,6 +341,22 @@ impl ArenaPool {
     pub fn clear(&self) {
         self.available.lock().clear();
     }
+
+    /// Alias for [`acquire`](Self::acquire) — check out an arena for exclusive use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a new arena cannot be allocated (out of memory).
+    #[inline]
+    pub fn checkout(&self) -> Result<Arena> {
+        self.acquire()
+    }
+
+    /// Alias for [`release`](Self::release) — return a previously checked-out arena.
+    #[inline]
+    pub fn return_arena(&self, arena: Arena) {
+        self.release(arena);
+    }
 }
 
 impl Default for ArenaPool {
@@ -404,6 +420,134 @@ impl Drop for ArenaGuard<'_> {
         self.arena
             .offset
             .store(self.saved_offset, Ordering::Relaxed);
+    }
+}
+
+/// A growable, arena-backed vector that borrows storage from an [`Arena`].
+///
+/// `ArenaVec<'a, T>` accumulates elements via [`push`](Self::push) into a
+/// pre-allocated contiguous slab of memory.  When the slab is exhausted the
+/// vector tries to allocate a fresh slab that is twice the current capacity.
+///
+/// Dropping an `ArenaVec` does **not** free memory — the arena reclaims
+/// everything when it is reset or dropped.
+///
+/// # Lifetimes
+///
+/// `'a` is the borrow lifetime of the arena.  `ArenaVec<'a, T>` cannot
+/// outlive the arena it was created from.
+pub struct ArenaVec<'a, T> {
+    /// Pointer into the arena's memory block (may be null when capacity == 0)
+    ptr: *mut T,
+    /// Number of elements pushed so far
+    len: usize,
+    /// Number of elements the current slab can hold
+    capacity: usize,
+    /// Reference to the arena used for reallocation
+    arena: &'a Arena,
+}
+
+// SAFETY: ArenaVec borrows an Arena which is Send + Sync, and the contained
+// slice `[T]` is Send when T: Send.
+unsafe impl<T: Send> Send for ArenaVec<'_, T> {}
+// SAFETY: `ArenaVec` only exposes immutable references through `as_slice`, so
+// sharing between threads is safe when T: Sync.
+unsafe impl<T: Sync> Sync for ArenaVec<'_, T> {}
+
+impl<'a, T: Copy> ArenaVec<'a, T> {
+    /// Creates a new `ArenaVec` with the given initial capacity allocated from `arena`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the arena cannot satisfy the initial allocation.
+    pub fn with_capacity_in(arena: &'a Arena, capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Ok(Self {
+                ptr: core::ptr::null_mut(),
+                len: 0,
+                capacity: 0,
+                arena,
+            });
+        }
+        let slice: &mut [T] = arena.allocate_slice(capacity)?;
+        Ok(Self {
+            ptr: slice.as_mut_ptr(),
+            len: 0,
+            capacity,
+            arena,
+        })
+    }
+
+    /// Appends an element to the end of the vector.
+    ///
+    /// If the current slab is full the method attempts to grow the capacity by
+    /// allocating a new, larger slab from the arena and copying existing data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the arena cannot satisfy a growth allocation.
+    pub fn push(&mut self, value: T) -> Result<()> {
+        if self.len == self.capacity {
+            self.grow()?;
+        }
+        // SAFETY: len < capacity, so the slot at `ptr.add(len)` is within the
+        // arena-allocated slab and not yet initialised.
+        unsafe {
+            core::ptr::write(self.ptr.add(self.len), value);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Returns the number of elements currently held.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if no elements have been pushed.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns a slice over the initialised elements.
+    #[must_use]
+    pub fn as_slice(&self) -> &[T] {
+        if self.len == 0 {
+            return &[];
+        }
+        // SAFETY: The first `len` elements were written via `push`.
+        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    // ----------------------------------------------------------------
+
+    /// Doubles (or sets to 4) the slab capacity by allocating a fresh slab.
+    fn grow(&mut self) -> Result<()> {
+        let new_cap = if self.capacity == 0 {
+            4
+        } else {
+            self.capacity * 2
+        };
+        let new_slab: &mut [T] = self.arena.allocate_slice(new_cap)?;
+        if self.len > 0 {
+            // SAFETY: Both slabs have at least `self.len` valid slots of the
+            // same type and are non-overlapping (bump allocator guarantees
+            // sequential allocation).
+            unsafe {
+                core::ptr::copy_nonoverlapping(self.ptr, new_slab.as_mut_ptr(), self.len);
+            }
+        }
+        self.ptr = new_slab.as_mut_ptr();
+        self.capacity = new_cap;
+        Ok(())
+    }
+}
+
+impl<T: core::fmt::Debug + Copy> core::fmt::Debug for ArenaVec<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.as_slice().iter()).finish()
     }
 }
 
@@ -525,5 +669,57 @@ mod tests {
 
         // Guard dropped, arena reset to state before guard
         assert_eq!(arena.usage(), 100);
+    }
+
+    #[test]
+    fn test_arena_pool_checkout_return_reuse() {
+        let pool = ArenaPool::new(1024, 4);
+
+        let a1 = pool.checkout().expect("checkout first arena");
+        assert_eq!(pool.pool_size(), 0);
+        pool.return_arena(a1);
+        assert_eq!(pool.pool_size(), 1);
+
+        // Second checkout reuses the returned arena
+        let a2 = pool.checkout().expect("checkout second arena from pool");
+        assert_eq!(pool.pool_size(), 0);
+        pool.return_arena(a2);
+    }
+
+    #[test]
+    fn test_arena_vec_push_and_slice() {
+        let arena = Arena::with_capacity(4096).expect("arena for ArenaVec test");
+        let mut v = ArenaVec::<u32>::with_capacity_in(&arena, 4).expect("ArenaVec creation");
+
+        assert!(v.is_empty());
+        v.push(10).expect("push 10");
+        v.push(20).expect("push 20");
+        v.push(30).expect("push 30");
+
+        assert_eq!(v.len(), 3);
+        assert_eq!(v.as_slice(), &[10, 20, 30]);
+    }
+
+    #[test]
+    fn test_arena_vec_grows_beyond_initial_capacity() {
+        let arena = Arena::with_capacity(65536).expect("arena large enough to grow");
+        let mut v = ArenaVec::<u8>::with_capacity_in(&arena, 2).expect("ArenaVec small cap");
+
+        // Push more than the initial capacity of 2
+        for i in 0u8..8 {
+            v.push(i).expect("push should succeed");
+        }
+        assert_eq!(v.len(), 8);
+        assert_eq!(v.as_slice(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn test_arena_vec_zero_initial_capacity() {
+        let arena = Arena::with_capacity(4096).expect("arena");
+        let mut v = ArenaVec::<i32>::with_capacity_in(&arena, 0).expect("zero-cap ArenaVec");
+        assert!(v.is_empty());
+        v.push(42)
+            .expect("push into zero-cap ArenaVec triggers grow");
+        assert_eq!(v.as_slice(), &[42]);
     }
 }

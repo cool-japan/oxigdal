@@ -260,8 +260,8 @@ pub enum PostprocessingError {
     },
 }
 
-impl From<ort::Error> for MlError {
-    fn from(err: ort::Error) -> Self {
+impl From<oxionnx::OnnxError> for MlError {
+    fn from(err: oxionnx::OnnxError) -> Self {
         MlError::Ort(err.to_string())
     }
 }

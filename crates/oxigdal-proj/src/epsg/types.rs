@@ -103,6 +103,7 @@ impl EpsgDatabase {
         super::geographic::register_geographic_crs(self);
         super::utm::register_utm_zones(self);
         super::projected::register_projected_crs(self);
+        super::extended::register_extended_crs(self);
     }
 }
 

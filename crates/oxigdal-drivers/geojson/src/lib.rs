@@ -115,6 +115,12 @@ pub use types::{
 pub use validation::Validator;
 pub use writer::GeoJsonWriter;
 
+// Re-export GeoJSONL helpers
+pub use reader::{
+    feature_bbox_intersects, features_in_bbox, geometry_bbox, open, open_geojsonl, read_geojsonl,
+};
+pub use writer::{write_geojsonl, write_geojsonl_to_file};
+
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

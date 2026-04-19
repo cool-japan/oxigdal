@@ -89,13 +89,16 @@
 mod area;
 mod buffer;
 mod centroid;
+pub mod clipping;
 pub mod clustering;
 mod contains;
+pub mod de9im;
 pub mod delaunay;
 mod difference;
 mod distance;
 mod douglas_peucker;
 mod envelope;
+pub mod geodesic;
 mod intersection;
 mod length;
 pub mod network;
@@ -104,6 +107,7 @@ mod repair;
 mod simplify;
 pub mod spatial_join;
 pub mod topology;
+mod topology_simplify;
 mod transform;
 mod union_ops;
 mod valid;
@@ -134,6 +138,12 @@ pub use contains::{
     ContainsPredicate, CrossesPredicate, IntersectsPredicate, OverlapsPredicate, TouchesPredicate,
     contains, crosses, disjoint, intersects, overlaps, point_in_polygon_or_boundary,
     point_on_polygon_boundary, point_strictly_inside_polygon, touches, within,
+};
+
+// Re-export DE-9IM types and predicates
+pub use de9im::{
+    CoveredByPredicate, CoversPredicate, De9im, Dimension, EqualsPredicate, relate,
+    relate_line_polygon, relate_point_polygon, relate_polygons,
 };
 
 // Re-export difference operations
@@ -173,6 +183,11 @@ pub use length::{
 // Re-export simplification operations
 pub use simplify::{SimplifyMethod, simplify_linestring, simplify_polygon};
 
+// Re-export topology-preserving simplification
+pub use topology_simplify::{
+    TopologySimplifyOptions, simplify_topology, simplify_topology_with_options,
+};
+
 // Re-export union operations
 pub use union_ops::{
     cascaded_union, cascaded_union_pooled, convex_hull, convex_hull_pooled, merge_polygons,
@@ -196,6 +211,9 @@ pub use repair::{
     remove_duplicate_vertices, remove_spikes, repair_linestring, repair_linestring_with_options,
     repair_polygon, repair_polygon_with_options, reverse_ring,
 };
+
+// Re-export clipping operations
+pub use clipping::{ClipOperation, clip_multi, clip_polygons};
 
 // Re-export coordinate transformations
 pub use transform::{

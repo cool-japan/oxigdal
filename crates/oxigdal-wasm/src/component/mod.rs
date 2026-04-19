@@ -21,7 +21,7 @@
 //! |--------|----------|
 //! | [`types`] | Shared primitive types: [`ComponentBbox`], [`ComponentDataType`], [`ComponentError`], [`ImageDimensions`] |
 //! | [`raster`] | [`ComponentRaster`] + [`ComponentRasterOps`] (clip, resample) |
-//! | [`vector`] | [`ComponentFeature`], [`ComponentFeatureCollection`], [`PropertyValue`] |
+//! | [`vector`] | [`ComponentFeature`], [`ComponentFeatureCollection`], [`FieldValue`] |
 //! | [`projection`] | [`ComponentProjection`], [`ComponentCoord`], [`ComponentTransform`] |
 
 pub mod projection;
@@ -37,4 +37,4 @@ pub use types::{
     ComponentBbox, ComponentDataType, ComponentError, ComponentResult, ErrorCategory,
     ImageDimensions, PixelCoord,
 };
-pub use vector::{ComponentFeature, ComponentFeatureCollection, PropertyValue};
+pub use vector::{ComponentFeature, ComponentFeatureCollection, FieldValue};

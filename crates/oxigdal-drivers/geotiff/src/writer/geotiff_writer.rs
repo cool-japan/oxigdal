@@ -11,6 +11,7 @@ use oxigdal_core::types::NoDataValue;
 
 use crate::tiff::{ByteOrderType, PlanarConfiguration, TiffHeader, TiffTag, TiffVariant};
 use crate::writer::WriterConfig;
+use crate::writer::bigtiff::{BigTiffMode, needs_bigtiff};
 use crate::writer::geokeys_writer::{GeoKeysBuilder, add_geo_transform};
 use crate::writer::ifd_writer::IfdBuilder;
 use crate::writer::overviews::OverviewGenerator;
@@ -21,12 +22,22 @@ use crate::writer::tiles::TileProcessor;
 pub struct GeoTiffWriterOptions {
     /// Byte order (default: little-endian)
     pub byte_order: ByteOrderType,
+    /// BigTIFF mode — controls when BigTIFF format is used (default: [`BigTiffMode::Auto`])
+    ///
+    /// - `Auto`: use BigTIFF only when the projected file size exceeds 4 GiB.
+    /// - `Force`: always produce BigTIFF, regardless of file size.
+    /// - `Disable`: never produce BigTIFF; return an error if the file would be too large.
+    ///
+    /// When `WriterConfig::use_bigtiff` is `true`, BigTIFF is always used regardless
+    /// of this field (the config flag takes precedence for backward compatibility).
+    pub bigtiff_mode: BigTiffMode,
 }
 
 impl Default for GeoTiffWriterOptions {
     fn default() -> Self {
         Self {
             byte_order: ByteOrderType::LittleEndian,
+            bigtiff_mode: BigTiffMode::Auto,
         }
     }
 }
@@ -59,7 +70,22 @@ impl GeoTiffWriter {
 
         let file = File::create(path).map_err(|e| OxiGdalError::Io(e.into()))?;
 
-        let variant = if config.use_bigtiff {
+        // Decide BigTIFF: explicit `use_bigtiff` flag takes precedence for backward
+        // compatibility, otherwise delegate to the mode from options.
+        let use_big = if config.use_bigtiff {
+            true
+        } else {
+            let bps = config.bytes_per_sample() as u64;
+            needs_bigtiff(
+                config.width,
+                config.height,
+                u64::from(config.band_count),
+                bps,
+                options.bigtiff_mode,
+            )?
+        };
+
+        let variant = if use_big {
             TiffVariant::BigTiff
         } else {
             TiffVariant::Classic
@@ -553,42 +579,6 @@ impl GeoTiffWriter {
         combined.extend_from_slice(&data_bytes);
 
         Ok(combined)
-    }
-
-    /// Updates the next_ifd_offset field in IFD bytes
-    fn update_next_ifd_offset(&self, ifd_data: &mut [u8], next_offset: u64) {
-        // The next_ifd_offset is at the end of the IFD
-        // For Classic TIFF: after entry_count (2 bytes) + entries (12 bytes each)
-        // For BigTIFF: after entry_count (8 bytes) + entries (20 bytes each)
-
-        let entry_size = self.variant.ifd_entry_size();
-        let count_size = match self.variant {
-            TiffVariant::Classic => 2,
-            TiffVariant::BigTiff => 8,
-        };
-
-        // Read entry count
-        let entry_count = match self.variant {
-            TiffVariant::Classic => self.options.byte_order.read_u16(&ifd_data[0..2]) as usize,
-            TiffVariant::BigTiff => self.options.byte_order.read_u64(&ifd_data[0..8]) as usize,
-        };
-
-        let offset_pos = count_size + entry_count * entry_size;
-
-        // Write next_ifd_offset
-        match self.variant {
-            TiffVariant::Classic => {
-                self.options.byte_order.write_u32(
-                    &mut ifd_data[offset_pos..offset_pos + 4],
-                    next_offset as u32,
-                );
-            }
-            TiffVariant::BigTiff => {
-                self.options
-                    .byte_order
-                    .write_u64(&mut ifd_data[offset_pos..offset_pos + 8], next_offset);
-            }
-        }
     }
 
     /// Adds strip-related tags

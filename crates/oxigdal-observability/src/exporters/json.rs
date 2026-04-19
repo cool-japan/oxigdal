@@ -697,7 +697,8 @@ mod tests {
 
     #[test]
     fn test_config_builder() {
-        let config = JsonExporterConfig::new("/tmp/metrics")
+        let metrics_dir = std::env::temp_dir().join("oxigdal_metrics_config_test");
+        let config = JsonExporterConfig::new(metrics_dir.clone())
             .with_prefix("app_metrics")
             .with_pretty_print(true)
             .with_max_file_size(50 * 1024 * 1024)
@@ -705,7 +706,7 @@ mod tests {
             .with_json_lines(false)
             .with_metadata(true);
 
-        assert_eq!(config.output_dir, PathBuf::from("/tmp/metrics"));
+        assert_eq!(config.output_dir, metrics_dir);
         assert_eq!(config.file_prefix, "app_metrics");
         assert!(config.pretty_print);
         assert_eq!(config.max_file_size, 50 * 1024 * 1024);

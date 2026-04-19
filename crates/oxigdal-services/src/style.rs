@@ -402,7 +402,7 @@ pub enum Expression {
 /// Either a literal value or a data-driven [`Expression`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum PropertyValue<T: Clone> {
+pub enum FieldValue<T: Clone> {
     /// A constant value.
     Literal(T),
     /// A data-driven expression.
@@ -523,62 +523,62 @@ impl Color {
 pub struct Paint(pub HashMap<String, serde_json::Value>);
 
 impl Paint {
-    /// Helper: attempt to deserialise a key as `PropertyValue<T>`.
-    fn get_pv<T>(&self, key: &str) -> Option<PropertyValue<T>>
+    /// Helper: attempt to deserialise a key as `FieldValue<T>`.
+    fn get_pv<T>(&self, key: &str) -> Option<FieldValue<T>>
     where
         T: Clone + for<'de> Deserialize<'de>,
     {
         let v = self.0.get(key)?;
-        serde_json::from_value::<PropertyValue<T>>(v.clone()).ok()
+        serde_json::from_value::<FieldValue<T>>(v.clone()).ok()
     }
 
     /// `fill-color` paint property.
-    pub fn fill_color(&self) -> Option<PropertyValue<Color>> {
+    pub fn fill_color(&self) -> Option<FieldValue<Color>> {
         self.get_pv("fill-color")
     }
 
     /// `fill-opacity` paint property.
-    pub fn fill_opacity(&self) -> Option<PropertyValue<f64>> {
+    pub fn fill_opacity(&self) -> Option<FieldValue<f64>> {
         self.get_pv("fill-opacity")
     }
 
     /// `line-color` paint property.
-    pub fn line_color(&self) -> Option<PropertyValue<Color>> {
+    pub fn line_color(&self) -> Option<FieldValue<Color>> {
         self.get_pv("line-color")
     }
 
     /// `line-width` paint property.
-    pub fn line_width(&self) -> Option<PropertyValue<f64>> {
+    pub fn line_width(&self) -> Option<FieldValue<f64>> {
         self.get_pv("line-width")
     }
 
     /// `line-opacity` paint property.
-    pub fn line_opacity(&self) -> Option<PropertyValue<f64>> {
+    pub fn line_opacity(&self) -> Option<FieldValue<f64>> {
         self.get_pv("line-opacity")
     }
 
     /// `circle-color` paint property.
-    pub fn circle_color(&self) -> Option<PropertyValue<Color>> {
+    pub fn circle_color(&self) -> Option<FieldValue<Color>> {
         self.get_pv("circle-color")
     }
 
     /// `circle-radius` paint property.
-    pub fn circle_radius(&self) -> Option<PropertyValue<f64>> {
+    pub fn circle_radius(&self) -> Option<FieldValue<f64>> {
         self.get_pv("circle-radius")
     }
 
     /// `raster-opacity` paint property.
-    pub fn raster_opacity(&self) -> Option<PropertyValue<f64>> {
+    pub fn raster_opacity(&self) -> Option<FieldValue<f64>> {
         self.get_pv("raster-opacity")
     }
 
     /// `raster-hue-rotate` paint property.
-    pub fn raster_hue_rotate(&self) -> Option<PropertyValue<f64>> {
+    pub fn raster_hue_rotate(&self) -> Option<FieldValue<f64>> {
         self.get_pv("raster-hue-rotate")
     }
 
     /// `background-color` paint property.
-    pub fn background_color(&self) -> Option<PropertyValue<Color>> {
+    pub fn background_color(&self) -> Option<FieldValue<Color>> {
         self.get_pv("background-color")
     }
 }
@@ -596,12 +596,12 @@ impl Layout {
         self.0.get(key)?.as_str()
     }
 
-    fn get_pv<T>(&self, key: &str) -> Option<PropertyValue<T>>
+    fn get_pv<T>(&self, key: &str) -> Option<FieldValue<T>>
     where
         T: Clone + for<'de> Deserialize<'de>,
     {
         let v = self.0.get(key)?;
-        serde_json::from_value::<PropertyValue<T>>(v.clone()).ok()
+        serde_json::from_value::<FieldValue<T>>(v.clone()).ok()
     }
 
     /// Layer visibility.
@@ -640,17 +640,17 @@ impl Layout {
     }
 
     /// `text-field` layout property.
-    pub fn text_field(&self) -> Option<PropertyValue<String>> {
+    pub fn text_field(&self) -> Option<FieldValue<String>> {
         self.get_pv("text-field")
     }
 
     /// `text-size` layout property.
-    pub fn text_size(&self) -> Option<PropertyValue<f64>> {
+    pub fn text_size(&self) -> Option<FieldValue<f64>> {
         self.get_pv("text-size")
     }
 
     /// `icon-image` layout property.
-    pub fn icon_image(&self) -> Option<PropertyValue<String>> {
+    pub fn icon_image(&self) -> Option<FieldValue<String>> {
         self.get_pv("icon-image")
     }
 }
@@ -860,15 +860,15 @@ impl StyleValidator {
 pub struct StyleRenderer;
 
 impl StyleRenderer {
-    /// Evaluate a `PropertyValue<Color>` at a given zoom level.
+    /// Evaluate a `FieldValue<Color>` at a given zoom level.
     ///
     /// Returns the literal color or the result of evaluating an interpolation
     /// expression; falls back to opaque black for complex expressions not yet
     /// handled by this evaluator.
-    pub fn eval_zoom_color(value: &PropertyValue<Color>, zoom: f64) -> Color {
+    pub fn eval_zoom_color(value: &FieldValue<Color>, zoom: f64) -> Color {
         match value {
-            PropertyValue::Literal(c) => c.clone(),
-            PropertyValue::Expression(expr) => Self::eval_expr_color(expr, zoom).unwrap_or(Color {
+            FieldValue::Literal(c) => c.clone(),
+            FieldValue::Expression(expr) => Self::eval_expr_color(expr, zoom).unwrap_or(Color {
                 r: 0,
                 g: 0,
                 b: 0,
@@ -929,15 +929,15 @@ impl StyleRenderer {
         None
     }
 
-    /// Evaluate a `PropertyValue<f64>` at a given zoom level.
+    /// Evaluate a `FieldValue<f64>` at a given zoom level.
     ///
     /// Supports `Literal`, `Expression::Zoom`, and `Expression::Interpolate`
     /// with `Linear` and `Exponential` interpolation. Returns `0.0` for
     /// unrecognised expressions.
-    pub fn eval_zoom_f64(value: &PropertyValue<f64>, zoom: f64) -> f64 {
+    pub fn eval_zoom_f64(value: &FieldValue<f64>, zoom: f64) -> f64 {
         match value {
-            PropertyValue::Literal(v) => *v,
-            PropertyValue::Expression(expr) => Self::eval_expr_f64(expr, zoom).unwrap_or(0.0),
+            FieldValue::Literal(v) => *v,
+            FieldValue::Expression(expr) => Self::eval_expr_f64(expr, zoom).unwrap_or(0.0),
         }
     }
 

@@ -51,28 +51,31 @@ fn main() -> oxigdal_core::Result<()> {
     for (ifd_idx, ifd) in tiff.ifds.iter().enumerate() {
         println!("\n  IFD #{} ({} entries):", ifd_idx, ifd.entries.len());
 
-        // Get essential tags
+        // Get essential tags — use get_u64_from_source so that externally-stored
+        // tag values (e.g. BitsPerSample for multi-band images) are read correctly.
+        let bo = tiff.byte_order();
+        let variant = tiff.header.variant;
         let width = ifd
             .get_entry(TiffTag::ImageWidth)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
         let height = ifd
             .get_entry(TiffTag::ImageLength)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
         let compression = ifd
             .get_entry(TiffTag::Compression)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
         let tile_width = ifd
             .get_entry(TiffTag::TileWidth)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
         let tile_height = ifd
             .get_entry(TiffTag::TileLength)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
         let bits_per_sample = ifd
             .get_entry(TiffTag::BitsPerSample)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
         let samples_per_pixel = ifd
             .get_entry(TiffTag::SamplesPerPixel)
-            .and_then(|e| e.get_u64(tiff.byte_order()).ok());
+            .and_then(|e| e.get_u64_from_source(&source, bo, variant).ok());
 
         if let (Some(w), Some(h)) = (width, height) {
             println!("    Dimensions: {}x{} pixels", w, h);

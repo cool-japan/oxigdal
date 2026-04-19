@@ -22,10 +22,16 @@ pub enum GeoJsonGeometry {
     PolygonZ(Vec<Vec<[f64; 3]>>),
     /// 2-D multi-point
     MultiPoint(Vec<[f64; 2]>),
+    /// 3-D multi-point
+    MultiPointZ(Vec<[f64; 3]>),
     /// 2-D multi-line-string
     MultiLineString(Vec<Vec<[f64; 2]>>),
+    /// 3-D multi-line-string
+    MultiLineStringZ(Vec<Vec<[f64; 3]>>),
     /// 2-D multi-polygon
     MultiPolygon(Vec<Vec<Vec<[f64; 2]>>>),
+    /// 3-D multi-polygon
+    MultiPolygonZ(Vec<Vec<Vec<[f64; 3]>>>),
     /// Heterogeneous geometry collection
     GeometryCollection(Vec<GeoJsonGeometry>),
     /// Null / absent geometry
@@ -40,9 +46,9 @@ impl GeoJsonGeometry {
             Self::Point(_) | Self::PointZ(_) => "Point",
             Self::LineString(_) | Self::LineStringZ(_) => "LineString",
             Self::Polygon(_) | Self::PolygonZ(_) => "Polygon",
-            Self::MultiPoint(_) => "MultiPoint",
-            Self::MultiLineString(_) => "MultiLineString",
-            Self::MultiPolygon(_) => "MultiPolygon",
+            Self::MultiPoint(_) | Self::MultiPointZ(_) => "MultiPoint",
+            Self::MultiLineString(_) | Self::MultiLineStringZ(_) => "MultiLineString",
+            Self::MultiPolygon(_) | Self::MultiPolygonZ(_) => "MultiPolygon",
             Self::GeometryCollection(_) => "GeometryCollection",
             Self::Null => "null",
         }
@@ -59,8 +65,13 @@ impl GeoJsonGeometry {
             Self::Polygon(rings) => rings.iter().map(|r| r.len()).sum(),
             Self::PolygonZ(rings) => rings.iter().map(|r| r.len()).sum(),
             Self::MultiPoint(pts) => pts.len(),
+            Self::MultiPointZ(pts) => pts.len(),
             Self::MultiLineString(lines) => lines.iter().map(|l| l.len()).sum(),
+            Self::MultiLineStringZ(lines) => lines.iter().map(|l| l.len()).sum(),
             Self::MultiPolygon(polys) => polys.iter().flat_map(|p| p.iter()).map(|r| r.len()).sum(),
+            Self::MultiPolygonZ(polys) => {
+                polys.iter().flat_map(|p| p.iter()).map(|r| r.len()).sum()
+            }
             Self::GeometryCollection(geoms) => geoms.iter().map(|g| g.point_count()).sum(),
         }
     }
@@ -88,9 +99,14 @@ impl GeoJsonGeometry {
                 bbox_3d_as_2d(&rings[0])
             }
             Self::MultiPoint(pts) => bbox_2d(pts),
+            Self::MultiPointZ(pts) => bbox_3d_as_2d(pts),
             Self::MultiLineString(lines) => {
                 let all: Vec<[f64; 2]> = lines.iter().flatten().copied().collect();
                 bbox_2d(&all)
+            }
+            Self::MultiLineStringZ(lines) => {
+                let all: Vec<[f64; 3]> = lines.iter().flatten().copied().collect();
+                bbox_3d_as_2d(&all)
             }
             Self::MultiPolygon(polys) => {
                 let all: Vec<[f64; 2]> = polys
@@ -99,6 +115,14 @@ impl GeoJsonGeometry {
                     .copied()
                     .collect();
                 bbox_2d(&all)
+            }
+            Self::MultiPolygonZ(polys) => {
+                let all: Vec<[f64; 3]> = polys
+                    .iter()
+                    .flat_map(|p| p.first().map(|r| r.as_slice()).unwrap_or(&[]))
+                    .copied()
+                    .collect();
+                bbox_3d_as_2d(&all)
             }
             Self::GeometryCollection(geoms) => {
                 let bboxes: Vec<[f64; 4]> = geoms.iter().filter_map(|g| g.bbox()).collect();
@@ -113,6 +137,43 @@ impl GeoJsonGeometry {
         self.point_count() == 0
     }
 
+    /// Compute the 3-D (6-element) bounding box
+    /// `[minx, miny, minz, maxx, maxy, maxz]` (RFC 7946 §5).
+    ///
+    /// Returns `Some` only when the geometry actually carries Z coordinates.
+    /// For 2-D geometries returns `None` — use [`bbox()`](Self::bbox) instead.
+    #[must_use]
+    pub fn bbox_3d(&self) -> Option<[f64; 6]> {
+        match self {
+            Self::PointZ([x, y, z]) => Some([*x, *y, *z, *x, *y, *z]),
+            Self::LineStringZ(pts) => bbox_3d_full(pts),
+            Self::PolygonZ(rings) => {
+                if rings.is_empty() {
+                    return None;
+                }
+                bbox_3d_full(&rings[0])
+            }
+            Self::MultiPointZ(pts) => bbox_3d_full(pts),
+            Self::MultiLineStringZ(lines) => {
+                let all: Vec<[f64; 3]> = lines.iter().flatten().copied().collect();
+                bbox_3d_full(&all)
+            }
+            Self::MultiPolygonZ(polys) => {
+                let all: Vec<[f64; 3]> = polys
+                    .iter()
+                    .flat_map(|p| p.first().map(|r| r.as_slice()).unwrap_or(&[]))
+                    .copied()
+                    .collect();
+                bbox_3d_full(&all)
+            }
+            Self::GeometryCollection(geoms) => {
+                let bboxes: Vec<[f64; 6]> = geoms.iter().filter_map(|g| g.bbox_3d()).collect();
+                union_bboxes_3d(&bboxes)
+            }
+            _ => None, // 2-D geometries have no Z
+        }
+    }
+
     /// Drop the Z coordinate, returning a 2-D geometry.
     #[must_use]
     pub fn to_2d(&self) -> Self {
@@ -125,6 +186,25 @@ impl GeoJsonGeometry {
                 rings
                     .iter()
                     .map(|r| r.iter().map(|[x, y, _]| [*x, *y]).collect())
+                    .collect(),
+            ),
+            Self::MultiPointZ(pts) => {
+                Self::MultiPoint(pts.iter().map(|[x, y, _]| [*x, *y]).collect())
+            }
+            Self::MultiLineStringZ(lines) => Self::MultiLineString(
+                lines
+                    .iter()
+                    .map(|l| l.iter().map(|[x, y, _]| [*x, *y]).collect())
+                    .collect(),
+            ),
+            Self::MultiPolygonZ(polys) => Self::MultiPolygon(
+                polys
+                    .iter()
+                    .map(|p| {
+                        p.iter()
+                            .map(|r| r.iter().map(|[x, y, _]| [*x, *y]).collect())
+                            .collect()
+                    })
                     .collect(),
             ),
             Self::GeometryCollection(geoms) => {
@@ -176,6 +256,14 @@ impl GeoJsonFeature {
     #[must_use]
     pub fn bbox(&self) -> Option<[f64; 4]> {
         self.geometry.as_ref()?.bbox()
+    }
+
+    /// Returns the 3-D (6-element) bounding box of the feature's geometry.
+    ///
+    /// Returns `None` if the geometry is absent or 2-D only.
+    #[must_use]
+    pub fn bbox_3d(&self) -> Option<[f64; 6]> {
+        self.geometry.as_ref()?.bbox_3d()
     }
 }
 
@@ -272,6 +360,69 @@ fn bbox_3d_as_2d(pts: &[[f64; 3]]) -> Option<[f64; 4]> {
     bbox_2d(&pts2)
 }
 
+/// Compute full 3-D bounding box `[minx, miny, minz, maxx, maxy, maxz]`.
+fn bbox_3d_full(pts: &[[f64; 3]]) -> Option<[f64; 6]> {
+    if pts.is_empty() {
+        return None;
+    }
+    let mut minx = pts[0][0];
+    let mut miny = pts[0][1];
+    let mut minz = pts[0][2];
+    let mut maxx = pts[0][0];
+    let mut maxy = pts[0][1];
+    let mut maxz = pts[0][2];
+    for [x, y, z] in pts.iter().skip(1) {
+        if *x < minx {
+            minx = *x;
+        }
+        if *y < miny {
+            miny = *y;
+        }
+        if *z < minz {
+            minz = *z;
+        }
+        if *x > maxx {
+            maxx = *x;
+        }
+        if *y > maxy {
+            maxy = *y;
+        }
+        if *z > maxz {
+            maxz = *z;
+        }
+    }
+    Some([minx, miny, minz, maxx, maxy, maxz])
+}
+
+/// Union of multiple 3-D bounding boxes.
+pub fn union_bboxes_3d(bboxes: &[[f64; 6]]) -> Option<[f64; 6]> {
+    if bboxes.is_empty() {
+        return None;
+    }
+    let mut result = bboxes[0];
+    for bb in bboxes.iter().skip(1) {
+        if bb[0] < result[0] {
+            result[0] = bb[0];
+        }
+        if bb[1] < result[1] {
+            result[1] = bb[1];
+        }
+        if bb[2] < result[2] {
+            result[2] = bb[2];
+        }
+        if bb[3] > result[3] {
+            result[3] = bb[3];
+        }
+        if bb[4] > result[4] {
+            result[4] = bb[4];
+        }
+        if bb[5] > result[5] {
+            result[5] = bb[5];
+        }
+    }
+    Some(result)
+}
+
 /// Union of multiple bounding boxes.
 pub fn union_bboxes(bboxes: &[[f64; 4]]) -> Option<[f64; 4]> {
     if bboxes.is_empty() {
@@ -328,5 +479,82 @@ mod tests {
     fn test_to_2d_drops_z() {
         let g = GeoJsonGeometry::PointZ([1.0, 2.0, 3.0]);
         assert_eq!(g.to_2d(), GeoJsonGeometry::Point([1.0, 2.0]));
+    }
+
+    // ── 6D bbox (3D) tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_bbox_3d_point_z() {
+        let g = GeoJsonGeometry::PointZ([10.0, 20.0, 100.0]);
+        assert_eq!(g.bbox_3d(), Some([10.0, 20.0, 100.0, 10.0, 20.0, 100.0]));
+    }
+
+    #[test]
+    fn test_bbox_3d_linestring_z() {
+        let g = GeoJsonGeometry::LineStringZ(vec![
+            [0.0, 0.0, 10.0],
+            [10.0, 5.0, 50.0],
+            [5.0, 8.0, 20.0],
+        ]);
+        assert_eq!(g.bbox_3d(), Some([0.0, 0.0, 10.0, 10.0, 8.0, 50.0]));
+    }
+
+    #[test]
+    fn test_bbox_3d_polygon_z() {
+        let g = GeoJsonGeometry::PolygonZ(vec![vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 100.0],
+            [10.0, 10.0, 200.0],
+            [0.0, 10.0, 50.0],
+            [0.0, 0.0, 0.0],
+        ]]);
+        let bb = g.bbox_3d().expect("should have 3d bbox");
+        assert_eq!(bb, [0.0, 0.0, 0.0, 10.0, 10.0, 200.0]);
+    }
+
+    #[test]
+    fn test_bbox_3d_returns_none_for_2d() {
+        let g = GeoJsonGeometry::Point([1.0, 2.0]);
+        assert_eq!(g.bbox_3d(), None);
+        let g2 = GeoJsonGeometry::LineString(vec![[0.0, 0.0], [1.0, 1.0]]);
+        assert_eq!(g2.bbox_3d(), None);
+    }
+
+    #[test]
+    fn test_bbox_3d_multi_point_z() {
+        let g =
+            GeoJsonGeometry::MultiPointZ(vec![[1.0, 2.0, 10.0], [3.0, 4.0, 20.0], [0.5, 1.5, 5.0]]);
+        assert_eq!(g.bbox_3d(), Some([0.5, 1.5, 5.0, 3.0, 4.0, 20.0]));
+    }
+
+    #[test]
+    fn test_bbox_3d_feature() {
+        let f = GeoJsonFeature {
+            id: None,
+            geometry: Some(GeoJsonGeometry::PointZ([5.0, 10.0, 50.0])),
+            properties: None,
+        };
+        assert_eq!(f.bbox_3d(), Some([5.0, 10.0, 50.0, 5.0, 10.0, 50.0]));
+    }
+
+    #[test]
+    fn test_bbox_3d_geometry_collection() {
+        let g = GeoJsonGeometry::GeometryCollection(vec![
+            GeoJsonGeometry::PointZ([1.0, 2.0, 10.0]),
+            GeoJsonGeometry::PointZ([5.0, 6.0, 50.0]),
+        ]);
+        assert_eq!(g.bbox_3d(), Some([1.0, 2.0, 10.0, 5.0, 6.0, 50.0]));
+    }
+
+    #[test]
+    fn test_union_bboxes_3d() {
+        let bboxes = vec![
+            [0.0, 0.0, 0.0, 10.0, 10.0, 100.0],
+            [5.0, -5.0, 50.0, 15.0, 5.0, 200.0],
+        ];
+        assert_eq!(
+            union_bboxes_3d(&bboxes),
+            Some([0.0, -5.0, 0.0, 15.0, 10.0, 200.0])
+        );
     }
 }

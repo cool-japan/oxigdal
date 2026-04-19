@@ -48,6 +48,9 @@ index = ["dep:oxigdal-index"]
 # no_std geometry primitives
 noalloc = ["dep:oxigdal-noalloc"]
 
+# GDAL C API compatibility shim (function-name aliases)
+gdal-compat = []
+
 # Advanced capabilities
 services = ["dep:oxigdal-services"]
 cloud = ["dep:oxigdal-cloud"]
@@ -73,7 +76,7 @@ oxigdal-netcdf = { workspace = true, optional = true }
 oxigdal-hdf5 = { workspace = true, optional = true }
 oxigdal-zarr = { workspace = true, optional = true }
 oxigdal-grib = { workspace = true, optional = true }
-oxigdal-stac = { workspace = true, optional = true }
+oxigdal-stac = { workspace = true, optional = true, features = ["std", "reqwest"] }
 oxigdal-terrain = { workspace = true, optional = true }
 oxigdal-vrt = { workspace = true, optional = true }
 oxigdal-flatgeobuf = { workspace = true, optional = true }
@@ -104,3 +107,10 @@ oxigdal-noalloc = { workspace = true, optional = true }
 
 # OGC web services (optional)
 oxigdal-services = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+# Build docs with all features so every feature-gated item is documented.
+features = ["full", "cloud", "proj", "algorithms", "analytics", "streaming",
+            "ml", "gpu", "server", "temporal", "gdal-compat", "services",
+            "noalloc", "index"]
+rustdoc-args = ["--cfg", "docsrs"]

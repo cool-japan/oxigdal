@@ -446,9 +446,11 @@ mod tests {
 
     #[test]
     fn test_add_path_stores_path() {
+        let path = std::env::temp_dir().join("oxigdal_test_shader_bx9f.wgsl");
+        let path_str = path.to_string_lossy().into_owned();
         let mut w = ShaderWatcher::new(100);
-        w.add_path("/tmp/test_shader.wgsl");
-        assert_eq!(w.watch_paths, vec!["/tmp/test_shader.wgsl".to_owned()]);
+        w.add_path(path_str.clone());
+        assert_eq!(w.watch_paths, vec![path_str]);
     }
 
     #[test]

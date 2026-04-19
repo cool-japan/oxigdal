@@ -351,10 +351,12 @@ pub fn intersect_polygons(poly1: &Polygon, poly2: &Polygon) -> Result<Vec<Polygo
         return Ok(vec![]);
     }
 
-    // Simplified implementation: return empty for complex cases
-    // Full implementation would use Weiler-Atherton clipping algorithm
-    // This requires maintaining entry/exit points and traversing both polygons
-    Ok(vec![])
+    // Delegate to Weiler-Atherton clipping engine for the overlapping case
+    crate::vector::clipping::clip_polygons(
+        poly1,
+        poly2,
+        crate::vector::clipping::ClipOperation::Intersection,
+    )
 }
 
 /// Checks if a point is inside a polygon using ray casting algorithm

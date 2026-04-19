@@ -24,7 +24,7 @@
 //! ```
 //! use oxigdal_core::vector::{
 //!     geometry::{Point, Coordinate, Geometry},
-//!     feature::{Feature, PropertyValue},
+//!     feature::{Feature, FieldValue},
 //! };
 //!
 //! // Create a point geometry
@@ -34,15 +34,15 @@
 //! let mut feature = Feature::new(Geometry::Point(point));
 //!
 //! // Add properties
-//! feature.set_property("name", PropertyValue::String("My Point".to_string()));
-//! feature.set_property("value", PropertyValue::Integer(42));
+//! feature.set_property("name", FieldValue::String("My Point".to_string()));
+//! feature.set_property("value", FieldValue::Integer(42));
 //! ```
 
 pub mod feature;
 pub mod geometry;
 
 // Re-export commonly used types
-pub use feature::{Feature, FeatureCollection, FeatureId, PropertyValue};
+pub use feature::{Feature, FeatureCollection, FeatureId, FieldValue};
 pub use geometry::{
     Coordinate, Geometry, GeometryCollection, LineString, MultiLineString, MultiPoint,
     MultiPolygon, Point, Polygon,

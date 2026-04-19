@@ -42,13 +42,13 @@ parquet = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 aws-credential-types = { workspace = true }
-aws-sdk-athena = "1"
-aws-sdk-glue = "1"
-aws-sdk-lambda = "1"
-aws-sdk-sagemaker = "1"
-aws-sdk-sagemakerruntime = "1"
+aws-sdk-athena.workspace = true
+aws-sdk-glue.workspace = true
+aws-sdk-lambda.workspace = true
+aws-sdk-sagemaker.workspace = true
+aws-sdk-sagemakerruntime.workspace = true
 aws-sdk-cloudwatch.workspace = true
-aws-sdk-costexplorer = "1"
+aws-sdk-costexplorer.workspace = true
 aws-smithy-types.workspace = true
 
 # Azure SDK
@@ -56,7 +56,7 @@ azure_core = { workspace = true }
 azure_identity = { workspace = true }
 azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
-azure_storage_datalake = "0.21"
+azure_storage_datalake.workspace = true
 
 # GCP SDK
 google-cloud-storage = { workspace = true }

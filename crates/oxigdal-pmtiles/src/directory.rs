@@ -108,16 +108,14 @@ pub fn decode_directory(data: &[u8]) -> Result<Vec<DirectoryEntry>, PmTilesError
     let mut offsets = Vec::with_capacity(n);
     let mut last_offset: u64 = 0;
     for i in 0..n {
-        let (delta, c) = decode_varint(&data[pos..])?;
+        let (raw_val, c) = decode_varint(&data[pos..])?;
         pos += c;
-        if i == 0 {
-            // First offset is always absolute.
-            last_offset = delta;
-        } else if delta == 0 {
-            // delta == 0 means "immediately follows the previous tile" (clustered).
-            last_offset = last_offset.saturating_add(u64::from(lengths[i - 1]));
+        if raw_val == 0 {
+            // Clustered shorthand: this tile immediately follows the previous one.
+            last_offset = last_offset.saturating_add(u64::from(lengths[i.saturating_sub(1)]));
         } else {
-            last_offset = last_offset.saturating_add(delta);
+            // Absolute offset encoded as `offset + 1` (so 0 is reserved for clustered).
+            last_offset = raw_val.saturating_sub(1);
         }
         offsets.push(last_offset);
     }

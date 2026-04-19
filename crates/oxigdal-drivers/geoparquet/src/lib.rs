@@ -60,6 +60,8 @@ extern crate alloc;
 #[cfg(feature = "std")]
 pub mod arrow_ext;
 pub mod error;
+#[cfg(feature = "std")]
+pub mod filter;
 pub mod geometry;
 #[cfg(feature = "std")]
 pub mod metadata;
@@ -78,6 +80,8 @@ mod writer;
 #[cfg(feature = "std")]
 pub use compression::CompressionType;
 pub use error::{GeoParquetError, Result};
+#[cfg(feature = "std")]
+pub use filter::{AttributePredicates, ColumnCondition, CompareOp, LogicOp};
 #[cfg(feature = "std")]
 pub use metadata::{Crs, GeoParquetMetadata, GeometryColumnMetadata};
 #[cfg(feature = "std")]

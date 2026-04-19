@@ -132,16 +132,16 @@ pub fn validate_cog_detailed<S: DataSource>(
     let mut is_valid = true;
 
     // Check IFD structure
-    validate_ifd_structure(tiff, &mut messages, &mut is_valid);
+    validate_ifd_structure(tiff, source, &mut messages, &mut is_valid);
 
     // Check tiling
-    validate_tiling(tiff, &mut messages, &mut is_valid);
+    validate_tiling(tiff, source, &mut messages, &mut is_valid);
 
     // Check overviews
-    validate_overviews(tiff, &mut messages);
+    validate_overviews(tiff, source, &mut messages);
 
     // Check compression
-    validate_compression(tiff, &mut messages);
+    validate_compression(tiff, source, &mut messages);
 
     // Check metadata
     validate_metadata(tiff, &mut messages);
@@ -153,7 +153,7 @@ pub fn validate_cog_detailed<S: DataSource>(
     let performance = calculate_performance_metrics(tiff, source)?;
 
     // Validate HTTP efficiency
-    validate_http_efficiency(tiff, &performance, &mut messages);
+    validate_http_efficiency(tiff, source, &performance, &mut messages);
 
     // Calculate compliance score
     let compliance_score = calculate_compliance_score(&messages, &performance);
@@ -171,8 +171,9 @@ pub fn validate_cog_detailed<S: DataSource>(
 }
 
 /// Validates IFD structure
-fn validate_ifd_structure(
+fn validate_ifd_structure<S: DataSource>(
     tiff: &TiffFile,
+    source: &S,
     messages: &mut Vec<ValidationMessage>,
     is_valid: &mut bool,
 ) {
@@ -192,11 +193,11 @@ fn validate_ifd_structure(
         .filter_map(|ifd| {
             let w = ifd
                 .get_entry(TiffTag::ImageWidth)?
-                .get_u64(tiff.byte_order())
+                .get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                 .ok()?;
             let h = ifd
                 .get_entry(TiffTag::ImageLength)?
-                .get_u64(tiff.byte_order())
+                .get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                 .ok()?;
             Some(w * h)
         })
@@ -220,7 +221,12 @@ fn validate_ifd_structure(
 }
 
 /// Validates tiling configuration
-fn validate_tiling(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>, is_valid: &mut bool) {
+fn validate_tiling<S: DataSource>(
+    tiff: &TiffFile,
+    source: &S,
+    messages: &mut Vec<ValidationMessage>,
+    is_valid: &mut bool,
+) {
     if let Some(ifd) = tiff.ifds.first() {
         let has_tiles = ifd.get_entry(TiffTag::TileWidth).is_some()
             && ifd.get_entry(TiffTag::TileLength).is_some();
@@ -242,8 +248,8 @@ fn validate_tiling(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>, is_va
             ifd.get_entry(TiffTag::TileLength),
         ) {
             if let (Ok(tw), Ok(th)) = (
-                tw_entry.get_u64(tiff.byte_order()),
-                th_entry.get_u64(tiff.byte_order()),
+                tw_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
+                th_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
             ) {
                 // Check power of 2
                 if !tw.is_power_of_two() || !th.is_power_of_two() {
@@ -282,7 +288,11 @@ fn validate_tiling(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>, is_va
 }
 
 /// Validates overview configuration
-fn validate_overviews(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>) {
+fn validate_overviews<S: DataSource>(
+    tiff: &TiffFile,
+    source: &S,
+    messages: &mut Vec<ValidationMessage>,
+) {
     if tiff.ifds.len() == 1 {
         messages.push(ValidationMessage::with_suggestion(
             ValidationSeverity::Warning,
@@ -296,19 +306,25 @@ fn validate_overviews(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>) {
     // Check overview downsampling factors
     if let Some(base_ifd) = tiff.ifds.first() {
         if let (Some(base_width), Some(base_height)) = (
-            base_ifd
-                .get_entry(TiffTag::ImageWidth)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
-            base_ifd
-                .get_entry(TiffTag::ImageLength)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
+            base_ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
+            base_ifd.get_entry(TiffTag::ImageLength).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
         ) {
             for (idx, ifd) in tiff.ifds.iter().skip(1).enumerate() {
                 if let (Some(ov_width), Some(ov_height)) = (
-                    ifd.get_entry(TiffTag::ImageWidth)
-                        .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
-                    ifd.get_entry(TiffTag::ImageLength)
-                        .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
+                    ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
+                        e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                            .ok()
+                    }),
+                    ifd.get_entry(TiffTag::ImageLength).and_then(|e| {
+                        e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                            .ok()
+                    }),
                 ) {
                     let width_factor = base_width as f64 / ov_width as f64;
                     let height_factor = base_height as f64 / ov_height as f64;
@@ -333,10 +349,16 @@ fn validate_overviews(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>) {
 }
 
 /// Validates compression settings
-fn validate_compression(tiff: &TiffFile, messages: &mut Vec<ValidationMessage>) {
+fn validate_compression<S: DataSource>(
+    tiff: &TiffFile,
+    source: &S,
+    messages: &mut Vec<ValidationMessage>,
+) {
     if let Some(ifd) = tiff.ifds.first() {
         if let Some(comp_entry) = ifd.get_entry(TiffTag::Compression) {
-            if let Ok(comp_value) = comp_entry.get_u64(tiff.byte_order()) {
+            if let Ok(comp_value) =
+                comp_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+            {
                 if let Some(compression) = Compression::from_u16(comp_value as u16) {
                     match compression {
                         Compression::None => {
@@ -483,8 +505,9 @@ fn calculate_performance_metrics<S: DataSource>(
 }
 
 /// Validates HTTP efficiency
-fn validate_http_efficiency(
+fn validate_http_efficiency<S: DataSource>(
     tiff: &TiffFile,
+    source: &S,
     performance: &PerformanceMetrics,
     messages: &mut Vec<ValidationMessage>,
 ) {
@@ -511,10 +534,14 @@ fn validate_http_efficiency(
     // Check if file is small enough to benefit from COG
     if let Some(ifd) = tiff.ifds.first() {
         if let (Some(w), Some(h)) = (
-            ifd.get_entry(TiffTag::ImageWidth)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
-            ifd.get_entry(TiffTag::ImageLength)
-                .and_then(|e| e.get_u64(tiff.byte_order()).ok()),
+            ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
+            ifd.get_entry(TiffTag::ImageLength).and_then(|e| {
+                e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                    .ok()
+            }),
         ) {
             let total_pixels = w * h;
             if total_pixels < 1_000_000 {

@@ -311,6 +311,48 @@ impl Geometry {
         }
     }
 
+    /// Returns `true` if any coordinate in this geometry has a Z component.
+    pub fn has_z(&self) -> bool {
+        match self {
+            Self::Point(p) => p.coord.has_z(),
+            Self::LineString(ls) => ls.coords.iter().any(|c| c.has_z()),
+            Self::Polygon(poly) => poly.exterior.coords.iter().any(|c| c.has_z()),
+            Self::MultiPoint(mp) => mp.points.iter().any(|p| p.coord.has_z()),
+            Self::MultiLineString(mls) => mls
+                .linestrings
+                .iter()
+                .flat_map(|ls| &ls.coords)
+                .any(|c| c.has_z()),
+            Self::MultiPolygon(mpoly) => mpoly
+                .polygons
+                .iter()
+                .flat_map(|p| &p.exterior.coords)
+                .any(|c| c.has_z()),
+            Self::GeometryCollection(gc) => gc.geometries.iter().any(|g| g.has_z()),
+        }
+    }
+
+    /// Returns `true` if any coordinate in this geometry has an M component.
+    pub fn has_m(&self) -> bool {
+        match self {
+            Self::Point(p) => p.coord.has_m(),
+            Self::LineString(ls) => ls.coords.iter().any(|c| c.has_m()),
+            Self::Polygon(poly) => poly.exterior.coords.iter().any(|c| c.has_m()),
+            Self::MultiPoint(mp) => mp.points.iter().any(|p| p.coord.has_m()),
+            Self::MultiLineString(mls) => mls
+                .linestrings
+                .iter()
+                .flat_map(|ls| &ls.coords)
+                .any(|c| c.has_m()),
+            Self::MultiPolygon(mpoly) => mpoly
+                .polygons
+                .iter()
+                .flat_map(|p| &p.exterior.coords)
+                .any(|c| c.has_m()),
+            Self::GeometryCollection(gc) => gc.geometries.iter().any(|g| g.has_m()),
+        }
+    }
+
     /// Computes the bounding box of this geometry
     pub fn bbox(&self) -> Option<Vec<f64>> {
         match self {

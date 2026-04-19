@@ -171,11 +171,9 @@ mod tests {
 
     #[test]
     fn test_construction() {
-        let watcher = default_watcher("/tmp/nonexistent_test_model.onnx");
-        assert_eq!(
-            watcher.path(),
-            Path::new("/tmp/nonexistent_test_model.onnx")
-        );
+        let path = std::env::temp_dir().join("oxigdal_nonexistent_test_model_bx9f.onnx");
+        let watcher = default_watcher(&path);
+        assert_eq!(watcher.path(), path.as_path());
     }
 
     #[test]
@@ -188,7 +186,9 @@ mod tests {
 
     #[test]
     fn test_check_nonexistent_file() {
-        let watcher = default_watcher("/tmp/this_file_absolutely_does_not_exist_oxigdal.onnx");
+        let path =
+            std::env::temp_dir().join("oxigdal_nonexistent_absolutely_does_not_exist_bx9f.onnx");
+        let watcher = default_watcher(&path);
         let result = watcher.check_for_update();
         assert!(result.is_ok());
         assert!(result.expect("should be ok").is_none());
@@ -226,7 +226,8 @@ mod tests {
 
     #[test]
     fn test_mark_reloaded_increments_version() {
-        let watcher = default_watcher("/tmp/dummy.onnx");
+        let path = std::env::temp_dir().join("oxigdal_dummy_bx9f.onnx");
+        let watcher = default_watcher(&path);
         assert_eq!(watcher.current_version().expect("v"), 0);
 
         let v1 = watcher.mark_reloaded().expect("reload 1");
@@ -240,7 +241,8 @@ mod tests {
 
     #[test]
     fn test_reload_count_tracking() {
-        let watcher = default_watcher("/tmp/dummy.onnx");
+        let path = std::env::temp_dir().join("oxigdal_dummy_bx9f.onnx");
+        let watcher = default_watcher(&path);
         assert_eq!(watcher.reload_count().expect("rc"), 0);
 
         watcher.mark_reloaded().expect("r1");
@@ -252,21 +254,23 @@ mod tests {
 
     #[test]
     fn test_poll_interval_accessor() {
+        let path = std::env::temp_dir().join("oxigdal_dummy_bx9f.onnx");
         let config = HotReloadConfig {
             poll_interval: Duration::from_millis(500),
             ..Default::default()
         };
-        let watcher = ModelWatcher::new("/tmp/dummy.onnx", config);
+        let watcher = ModelWatcher::new(&path, config);
         assert_eq!(watcher.config().poll_interval, Duration::from_millis(500));
     }
 
     #[test]
     fn test_reload_timeout_accessor() {
+        let path = std::env::temp_dir().join("oxigdal_dummy_bx9f.onnx");
         let config = HotReloadConfig {
             reload_timeout: Duration::from_secs(60),
             ..Default::default()
         };
-        let watcher = ModelWatcher::new("/tmp/dummy.onnx", config);
+        let watcher = ModelWatcher::new(&path, config);
         assert_eq!(watcher.config().reload_timeout, Duration::from_secs(60));
     }
 
@@ -278,20 +282,22 @@ mod tests {
 
     #[test]
     fn test_version_starts_at_zero() {
-        let watcher = default_watcher("/tmp/dummy.onnx");
+        let path = std::env::temp_dir().join("oxigdal_dummy_bx9f.onnx");
+        let watcher = default_watcher(&path);
         assert_eq!(watcher.current_version().expect("v"), 0);
     }
 
     #[test]
     fn test_reload_event_fields() {
+        let model_path = std::env::temp_dir().join("oxigdal_model_bx9f.onnx");
         let now = SystemTime::now();
         let event = ReloadEvent {
-            path: PathBuf::from("/tmp/model.onnx"),
+            path: model_path.clone(),
             timestamp: now,
             version: 3,
         };
         assert_eq!(event.version, 3);
-        assert_eq!(event.path, PathBuf::from("/tmp/model.onnx"));
+        assert_eq!(event.path, model_path);
         assert_eq!(event.timestamp, now);
     }
 }

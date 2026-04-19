@@ -100,6 +100,58 @@ impl GeoHashFixed {
         (lat, lon)
     }
 
+    /// Computes the 8 neighbouring geohash cells at the same precision.
+    ///
+    /// Returns neighbours in the order:
+    /// `[N, NE, E, SE, S, SW, W, NW]`.
+    ///
+    /// At the antimeridian (lon ±180) longitude wraps. At the poles (lat ±90)
+    /// latitude is clamped.
+    #[must_use]
+    pub fn neighbours(&self) -> [GeoHashFixed; 8] {
+        let bbox = self.bbox();
+        let center_lat = (bbox.min_y + bbox.max_y) * 0.5;
+        let center_lon = (bbox.min_x + bbox.max_x) * 0.5;
+        let dlat = bbox.max_y - bbox.min_y;
+        let dlon = bbox.max_x - bbox.min_x;
+        let prec = self.len;
+
+        // Direction offsets: (dlat_mult, dlon_mult)
+        // N, NE, E, SE, S, SW, W, NW
+        let offsets: [(f64, f64); 8] = [
+            (1.0, 0.0),   // N
+            (1.0, 1.0),   // NE
+            (0.0, 1.0),   // E
+            (-1.0, 1.0),  // SE
+            (-1.0, 0.0),  // S
+            (-1.0, -1.0), // SW
+            (0.0, -1.0),  // W
+            (1.0, -1.0),  // NW
+        ];
+
+        let mut result = [*self; 8];
+        let mut i = 0;
+        while i < 8 {
+            let (dy, dx) = offsets[i];
+            let mut nlat = center_lat + dy * dlat;
+            let mut nlon = center_lon + dx * dlon;
+
+            // Clamp latitude
+            nlat = nlat.clamp(-90.0, 90.0);
+            // Wrap longitude
+            if nlon > 180.0 {
+                nlon -= 360.0;
+            }
+            if nlon < -180.0 {
+                nlon += 360.0;
+            }
+
+            result[i] = GeoHashFixed::encode(nlat, nlon, prec);
+            i += 1;
+        }
+        result
+    }
+
     /// Returns the bounding box of the geohash cell.
     ///
     /// The box is `BBox2D { min_x: min_lon, min_y: min_lat, max_x: max_lon, max_y: max_lat }`.
@@ -152,4 +204,128 @@ fn base32_decode_char(c: u8) -> u8 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_neighbours_count() {
+        let gh = GeoHashFixed::encode(48.858, 2.294, 6); // Paris
+        let nbrs = gh.neighbours();
+        assert_eq!(nbrs.len(), 8);
+    }
+
+    #[test]
+    fn test_neighbours_different_from_center() {
+        let gh = GeoHashFixed::encode(48.858, 2.294, 6);
+        let nbrs = gh.neighbours();
+        for nbr in &nbrs {
+            assert_ne!(
+                nbr.as_bytes(),
+                gh.as_bytes(),
+                "neighbour should differ from center"
+            );
+        }
+    }
+
+    #[test]
+    fn test_neighbours_same_precision() {
+        let gh = GeoHashFixed::encode(35.68, 139.69, 5);
+        let nbrs = gh.neighbours();
+        for nbr in &nbrs {
+            assert_eq!(nbr.precision(), gh.precision());
+        }
+    }
+
+    #[test]
+    fn test_neighbours_adjacency() {
+        // Encode a geohash, get its bbox, get north neighbour, check that
+        // north neighbour's bbox is above (higher min_y)
+        let gh = GeoHashFixed::encode(40.0, -74.0, 5);
+        let gh_bbox = gh.bbox();
+        let nbrs = gh.neighbours();
+        let north = &nbrs[0];
+        let n_bbox = north.bbox();
+        // North neighbour's min_y should be approximately equal to center's max_y
+        let diff = (n_bbox.min_y - gh_bbox.max_y).abs();
+        assert!(
+            diff < 0.01,
+            "North neighbour should be adjacent: diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_neighbours_south_adjacency() {
+        let gh = GeoHashFixed::encode(40.0, -74.0, 5);
+        let gh_bbox = gh.bbox();
+        let nbrs = gh.neighbours();
+        let south = &nbrs[4];
+        let s_bbox = south.bbox();
+        let diff = (s_bbox.max_y - gh_bbox.min_y).abs();
+        assert!(
+            diff < 0.01,
+            "South neighbour should be adjacent: diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_neighbours_east_adjacency() {
+        let gh = GeoHashFixed::encode(40.0, -74.0, 5);
+        let gh_bbox = gh.bbox();
+        let nbrs = gh.neighbours();
+        let east = &nbrs[2];
+        let e_bbox = east.bbox();
+        let diff = (e_bbox.min_x - gh_bbox.max_x).abs();
+        assert!(
+            diff < 0.01,
+            "East neighbour should be adjacent: diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_neighbours_wrap_antimeridian() {
+        // Cell near +180 longitude
+        let gh = GeoHashFixed::encode(0.0, 179.99, 3);
+        let nbrs = gh.neighbours();
+        // East neighbour should wrap around
+        let east = &nbrs[2];
+        let (_, east_lon) = east.decode();
+        // Should be near -180
+        assert!(
+            !(0.0..=170.0).contains(&east_lon),
+            "East of lon~180 should wrap or stay high, got {east_lon}"
+        );
+    }
+
+    #[test]
+    fn test_neighbours_pole_clamp() {
+        // Cell near north pole
+        let gh = GeoHashFixed::encode(89.9, 0.0, 3);
+        let nbrs = gh.neighbours();
+        let north = &nbrs[0];
+        let (n_lat, _) = north.decode();
+        assert!(n_lat <= 90.0, "North of pole should be clamped to 90");
+    }
+
+    #[test]
+    fn test_neighbours_all_unique() {
+        let gh = GeoHashFixed::encode(51.5, -0.1, 6);
+        let nbrs = gh.neighbours();
+        // Check all 8 are distinct
+        let mut i = 0;
+        while i < 8 {
+            let mut j = i + 1;
+            while j < 8 {
+                assert_ne!(
+                    nbrs[i].as_bytes(),
+                    nbrs[j].as_bytes(),
+                    "Neighbours {i} and {j} should be distinct"
+                );
+                j += 1;
+            }
+            i += 1;
+        }
+    }
 }

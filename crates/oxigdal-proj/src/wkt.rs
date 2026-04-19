@@ -34,6 +34,49 @@ pub struct WktNode {
     pub parameters: HashMap<String, String>,
 }
 
+/// Direction of a coordinate axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisDirection {
+    /// North
+    North,
+    /// South
+    South,
+    /// East
+    East,
+    /// West
+    West,
+    /// Up
+    Up,
+    /// Down
+    Down,
+    /// Other / unrecognised direction
+    Other,
+}
+
+impl AxisDirection {
+    /// Parse a direction keyword (case-insensitive).
+    pub fn from_keyword(s: &str) -> Self {
+        match s.to_uppercase().as_str() {
+            "NORTH" => Self::North,
+            "SOUTH" => Self::South,
+            "EAST" => Self::East,
+            "WEST" => Self::West,
+            "UP" => Self::Up,
+            "DOWN" => Self::Down,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Information about a single coordinate axis extracted from a WKT `AXIS` node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AxisInfo {
+    /// Axis name (e.g. "Latitude", "Easting").
+    pub name: String,
+    /// Axis direction.
+    pub direction: AxisDirection,
+}
+
 impl WktParser {
     /// Creates a new WKT parser.
     pub fn new<S: Into<String>>(input: S) -> Self {
@@ -334,6 +377,15 @@ impl WktNode {
         self.parameters.get(key).map(|s| s.as_str())
     }
 
+    /// Finds a child node matching any of the given type names.
+    ///
+    /// This is useful for WKT1/WKT2 aliases (e.g. `SPHEROID` vs `ELLIPSOID`).
+    pub fn find_child_any(&self, node_types: &[&str]) -> Option<&WktNode> {
+        self.children
+            .iter()
+            .find(|child| node_types.iter().any(|t| child.node_type == *t))
+    }
+
     /// Converts the WKT node to a string representation.
     pub fn to_string_repr(&self) -> String {
         let mut result = self.node_type.clone();
@@ -550,6 +602,63 @@ impl WktParser {
         None
     }
 
+    /// Extract axis information from a WKT string.
+    ///
+    /// Finds all `AXIS["<name>",<direction>]` nodes in the raw WKT text and returns
+    /// an ordered list of [`AxisInfo`].
+    pub fn extract_axes(wkt: &str) -> Vec<AxisInfo> {
+        let mut axes = Vec::new();
+        let mut search_from = 0;
+
+        while let Some(idx) = wkt[search_from..].find("AXIS[\"") {
+            let abs_idx = search_from + idx;
+            let after = &wkt[abs_idx + "AXIS[\"".len()..];
+
+            // Extract axis name up to the closing quote
+            let name_end = match after.find('"') {
+                Some(e) => e,
+                None => break,
+            };
+            let axis_name = after[..name_end].to_string();
+
+            // After the name there should be a comma and then the direction keyword
+            let rest = &after[name_end + 1..];
+            let comma_pos = match rest.find(',') {
+                Some(p) => p,
+                None => break,
+            };
+            let after_comma = rest[comma_pos + 1..].trim_start();
+            // direction ends at ']' or ','
+            let dir_end = after_comma.find([']', ',']).unwrap_or(after_comma.len());
+            let direction_str = after_comma[..dir_end].trim();
+            let direction = AxisDirection::from_keyword(direction_str);
+
+            axes.push(AxisInfo {
+                name: axis_name,
+                direction,
+            });
+
+            // Move past this AXIS node
+            search_from = abs_idx + "AXIS[\"".len() + name_end + 1;
+        }
+
+        axes
+    }
+
+    /// Extract the ellipsoid name from a WKT string.
+    ///
+    /// Supports both WKT1 `SPHEROID["<name>"...]` and WKT2 `ELLIPSOID["<name>"...]`.
+    pub fn extract_ellipsoid_name(wkt: &str) -> Option<String> {
+        for keyword in &["ELLIPSOID[\"", "SPHEROID[\""] {
+            if let Some(idx) = wkt.find(keyword) {
+                let after = &wkt[idx + keyword.len()..];
+                let end = after.find('"')?;
+                return Some(after[..end].to_string());
+            }
+        }
+        None
+    }
+
     /// Parse a WKT string into a `CrsDefinition` (best-effort).
     ///
     /// This performs syntactic analysis only; it does not validate geodetic parameters.
@@ -732,5 +841,133 @@ mod tests {
         // Should contain the essential components
         assert!(result.contains("SPHEROID"));
         assert!(result.contains("WGS 84"));
+    }
+
+    // =========================================================================
+    // WKT2:2019 parsing tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_wkt2_geogcrs() {
+        let wkt = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],ID["EPSG",4326]]"#;
+        let node = parse_wkt(wkt).expect("should parse WKT2 GEOGCRS");
+        assert_eq!(node.node_type, "GEOGCRS");
+        assert_eq!(node.value, Some("WGS 84".to_string()));
+        assert!(node.find_child("DATUM").is_some());
+        assert!(node.find_child("ID").is_some());
+
+        // ELLIPSOID should be parsed as a child of DATUM
+        let datum = node.find_child("DATUM").expect("should have DATUM");
+        let ellipsoid = datum.find_child("ELLIPSOID");
+        assert!(ellipsoid.is_some());
+        let ellipsoid = ellipsoid.expect("should have ELLIPSOID");
+        assert_eq!(ellipsoid.value, Some("WGS 84".to_string()));
+    }
+
+    #[test]
+    fn test_parse_wkt2_projcrs() {
+        let wkt = r#"PROJCRS["WGS 84 / UTM zone 33N",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],ID["EPSG",32633]]"#;
+        let node = parse_wkt(wkt).expect("should parse WKT2 PROJCRS");
+        assert_eq!(node.node_type, "PROJCRS");
+        assert_eq!(node.value, Some("WGS 84 / UTM zone 33N".to_string()));
+        assert!(node.find_child("BASEGEOGCRS").is_some());
+    }
+
+    #[test]
+    fn test_ellipsoid_keyword_parsed() {
+        // WKT2 uses ELLIPSOID instead of SPHEROID
+        let wkt = r#"ELLIPSOID["WGS 84",6378137,298.257223563]"#;
+        let node = parse_wkt(wkt).expect("should parse ELLIPSOID node");
+        assert_eq!(node.node_type, "ELLIPSOID");
+        assert_eq!(node.value, Some("WGS 84".to_string()));
+    }
+
+    #[test]
+    fn test_find_child_any_spheroid_or_ellipsoid() {
+        // WKT1 with SPHEROID
+        let wkt1 = r#"DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]]"#;
+        let node1 = parse_wkt(wkt1).expect("parse wkt1");
+        let found1 = node1.find_child_any(&["SPHEROID", "ELLIPSOID"]);
+        assert!(found1.is_some());
+        assert_eq!(found1.expect("found").node_type, "SPHEROID");
+
+        // WKT2 with ELLIPSOID
+        let wkt2 =
+            r#"DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]"#;
+        let node2 = parse_wkt(wkt2).expect("parse wkt2");
+        let found2 = node2.find_child_any(&["SPHEROID", "ELLIPSOID"]);
+        assert!(found2.is_some());
+        assert_eq!(found2.expect("found").node_type, "ELLIPSOID");
+    }
+
+    #[test]
+    fn test_extract_ellipsoid_name_wkt1() {
+        let wkt = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]]]"#;
+        let name = WktParser::extract_ellipsoid_name(wkt);
+        assert_eq!(name, Some("WGS 84".to_string()));
+    }
+
+    #[test]
+    fn test_extract_ellipsoid_name_wkt2() {
+        let wkt =
+            r#"GEOGCRS["WGS 84",DATUM["WGS 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]]"#;
+        let name = WktParser::extract_ellipsoid_name(wkt);
+        assert_eq!(name, Some("WGS 84".to_string()));
+    }
+
+    #[test]
+    fn test_extract_axes() {
+        let wkt = r#"GEOGCRS["WGS 84",AXIS["Latitude",NORTH],AXIS["Longitude",EAST]]"#;
+        let axes = WktParser::extract_axes(wkt);
+        assert_eq!(axes.len(), 2);
+
+        assert_eq!(axes[0].name, "Latitude");
+        assert_eq!(axes[0].direction, AxisDirection::North);
+        assert_eq!(axes[1].name, "Longitude");
+        assert_eq!(axes[1].direction, AxisDirection::East);
+    }
+
+    #[test]
+    fn test_extract_axes_projected() {
+        let wkt = r#"PROJCRS["UTM 33N",AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
+        let axes = WktParser::extract_axes(wkt);
+        assert_eq!(axes.len(), 2);
+
+        assert_eq!(axes[0].name, "Easting");
+        assert_eq!(axes[0].direction, AxisDirection::East);
+        assert_eq!(axes[1].name, "Northing");
+        assert_eq!(axes[1].direction, AxisDirection::North);
+    }
+
+    #[test]
+    fn test_extract_axes_with_up() {
+        let wkt = r#"VERTCRS["Height",AXIS["Height",UP]]"#;
+        let axes = WktParser::extract_axes(wkt);
+        assert_eq!(axes.len(), 1);
+        assert_eq!(axes[0].name, "Height");
+        assert_eq!(axes[0].direction, AxisDirection::Up);
+    }
+
+    #[test]
+    fn test_extract_axes_empty() {
+        let wkt = r#"GEOGCS["WGS 84",DATUM["WGS_1984"]]"#;
+        let axes = WktParser::extract_axes(wkt);
+        assert!(axes.is_empty());
+    }
+
+    #[test]
+    fn test_detect_version_wkt2() {
+        let wkt = r#"GEOGCRS["WGS 84",DATUM["WGS 1984"]]"#;
+        assert_eq!(WktParser::detect_version(wkt), WktVersion::Wkt2);
+
+        let wkt2 = r#"PROJCRS["UTM",BASEGEOGCRS["WGS 84"]]"#;
+        assert_eq!(WktParser::detect_version(wkt2), WktVersion::Wkt2);
+    }
+
+    #[test]
+    fn test_extract_epsg_wkt2() {
+        let wkt = r#"GEOGCRS["WGS 84",DATUM["WGS 1984"],ID["EPSG",4326]]"#;
+        let epsg = WktParser::extract_epsg(wkt);
+        assert_eq!(epsg, Some(4326));
     }
 }

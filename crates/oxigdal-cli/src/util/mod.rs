@@ -1,8 +1,11 @@
 //! Utility modules for CLI operations
 
+pub mod cloud;
+pub mod creation_options;
 pub mod parallel;
 pub mod progress;
 pub mod raster;
+pub mod vector;
 
 use std::path::Path;
 

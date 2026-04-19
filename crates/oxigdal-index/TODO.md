@@ -1,12 +1,12 @@
 # TODO: oxigdal-index
 
 ## High Priority
-- [ ] Implement entry deletion from RTree (remove by bbox + value, with node underflow handling and reinsertion)
-- [ ] Add bulk loading (Sort-Tile-Recursive / STR) for RTree to achieve better query performance on static datasets
+- [x] Implement entry deletion from RTree (completed 2026-04-19, part of I1 R-tree enhancements)
+- [x] Add bulk loading (Sort-Tile-Recursive / STR) for RTree (completed 2026-04-19, part of I1 R-tree enhancements)
 - [ ] Implement R*-tree insertion with forced reinsert strategy (current implementation uses basic linear split only)
 - [ ] Add 3D R-tree variant (Bbox3D + 3D spatial queries) for point cloud and volumetric data
-- [ ] Implement proper priority-queue k-NN search on RTree instead of collecting all entries and sorting
-- [ ] Add serialization/deserialization for RTree (save/load index to/from bytes)
+- [x] Implement proper priority-queue k-NN search on RTree (completed 2026-04-19, part of I1 R-tree enhancements)
+- [x] Add serialization/deserialization for RTree (completed 2026-04-19, part of I1 R-tree enhancements)
 
 ## Medium Priority
 - [ ] Implement search_dedup for GridIndex (currently documents duplicates but provides no built-in dedup)

@@ -2,9 +2,9 @@
 
 ## High Priority
 - [ ] Implement GeoPackage writer: create new .gpkg files with proper SQLite page layout, system tables, and feature insertion
-- [ ] Add 3D geometry support (PointZ, LineStringZ, PolygonZ) in WKB parser and GpkgGeometry enum
+- [x] Add 3D geometry support (PointZ, LineStringZ, PolygonZ) (completed 2026-04-19: full Z-variant enum, WKB parse/encode for ISO `1000 + base` and `0x8000_0000 | base` conventions, GeoJSON `[x,y,z]` output)
 - [ ] Implement tile pyramid reader: extract raster tiles from GeoPackage tile tables using TileMatrix metadata
-- [ ] Add full SQLite B-tree page traversal for reading feature tables (currently only header/schema parsing)
+- [x] Add full SQLite B-tree page traversal (completed 2026-04-19: `btree` module with leaf/interior page parsing, varint encode/decode, record serial-type dispatch, `scan_sqlite_master`, `scan_table`, `scan_table_by_name`, `load_contents` on `GeoPackage`)
 - [ ] Implement GeoPackage extensions registry parsing (gpkg_extensions table)
 - [ ] Add WAL (Write-Ahead Logging) mode support for concurrent read access
 

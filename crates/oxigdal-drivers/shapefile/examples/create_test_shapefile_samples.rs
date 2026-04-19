@@ -65,15 +65,15 @@ fn create_golden_triangle() -> Result<(), Box<dyn std::error::Error>> {
     let mut attributes = HashMap::new();
     attributes.insert(
         "NAME".to_string(),
-        oxigdal_core::vector::PropertyValue::String("Golden Triangle".to_string()),
+        oxigdal_core::vector::FieldValue::String("Golden Triangle".to_string()),
     );
     attributes.insert(
         "TYPE".to_string(),
-        oxigdal_core::vector::PropertyValue::String("Geographic Region".to_string()),
+        oxigdal_core::vector::FieldValue::String("Geographic Region".to_string()),
     );
     attributes.insert(
         "AREA_KM2".to_string(),
-        oxigdal_core::vector::PropertyValue::Float(12500.0),
+        oxigdal_core::vector::FieldValue::Float(12500.0),
     );
 
     let feature = ShapefileFeature::new(1, Some(Geometry::Polygon(polygon_geom)), attributes);
@@ -137,19 +137,19 @@ fn create_iron_belt() -> Result<(), Box<dyn std::error::Error>> {
         let mut attributes = HashMap::new();
         attributes.insert(
             "NAME".to_string(),
-            oxigdal_core::vector::PropertyValue::String(name.to_string()),
+            oxigdal_core::vector::FieldValue::String(name.to_string()),
         );
         attributes.insert(
             "TYPE".to_string(),
-            oxigdal_core::vector::PropertyValue::String("Mining Zone".to_string()),
+            oxigdal_core::vector::FieldValue::String("Mining Zone".to_string()),
         );
         attributes.insert(
             "MINE_TYPE".to_string(),
-            oxigdal_core::vector::PropertyValue::String("Iron".to_string()),
+            oxigdal_core::vector::FieldValue::String("Iron".to_string()),
         );
         attributes.insert(
             "YIELD_MT".to_string(),
-            oxigdal_core::vector::PropertyValue::Float(*yield_mt),
+            oxigdal_core::vector::FieldValue::Float(*yield_mt),
         );
 
         let feature = ShapefileFeature::new(

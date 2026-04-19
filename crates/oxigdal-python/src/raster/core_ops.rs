@@ -414,9 +414,11 @@ mod tests {
 
     #[test]
     fn test_create_raster_validation() {
+        let test_path = std::env::temp_dir().join("oxigdal_create_raster_test.tif");
+        let test_path_str = test_path.to_string_lossy();
         assert!(
             create_raster(
-                "/tmp/test.tif",
+                test_path_str.as_ref(),
                 0,
                 100,
                 1,
@@ -431,7 +433,7 @@ mod tests {
         );
         assert!(
             create_raster(
-                "/tmp/test.tif",
+                test_path_str.as_ref(),
                 100,
                 0,
                 1,
@@ -446,7 +448,7 @@ mod tests {
         );
         assert!(
             create_raster(
-                "/tmp/test.tif",
+                test_path_str.as_ref(),
                 100,
                 100,
                 0,

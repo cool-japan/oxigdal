@@ -1,13 +1,13 @@
 # TODO: oxigdal-geojson
 
 ## High Priority
-- [ ] Implement streaming writer for FeatureCollection (write features one-at-a-time)
-- [ ] Add GeoJSON-seq (newline-delimited GeoJSON / GeoJSONL) support
-- [ ] Implement spatial filtering during streaming read (bbox predicate pushdown)
+- [x] Implement streaming writer for FeatureCollection (write features one-at-a-time) — `GeoJsonWriter::write_features`, `start_feature_collection`, `write_feature_streaming`, `finish_feature_collection`
+- [x] Add GeoJSON-seq (newline-delimited GeoJSON / GeoJSONL) support — `read_geojsonl`, `write_geojsonl`, `open`, `open_geojsonl`, `write_geojsonl_to_file`
+- [x] Implement spatial filtering during streaming read (bbox predicate pushdown) — `features_in_bbox`, `geometry_bbox`, `feature_bbox_intersects`
 - [ ] Add TopoJSON reading support (shared arc topology)
-- [ ] Implement foreign member preservation during read-modify-write round-trip
-- [ ] Add coordinate precision control in writer (configurable decimal places)
-- [ ] Implement bounding box calculation and injection during write
+- [ ] Implement foreign member preservation during read-modify-write round-trip (struct fields already present; needs round-trip test suite)
+- [x] Add coordinate precision control in writer (configurable decimal places) — `WriterConfig.coordinate_precision` is now fully wired: `apply_precision_to_geometry` rounds all `Position` values before serialization in `write_geometry`, `write_feature`, and `write_feature_collection`
+- [x] Implement bounding box calculation and injection during write — `WriterConfig.write_bbox` / `compute_bbox`
 
 ## Medium Priority
 - [ ] Add property type inference and schema extraction from FeatureCollection

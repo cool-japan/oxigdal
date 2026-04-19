@@ -27,7 +27,7 @@ oxigdal-proj.workspace = true
 
 # napi-rs for Node.js bindings
 napi = { version = "3", features = ["async", "tokio_rt", "napi8", "serde-json"] }
-napi-derive = "3"
+napi-derive.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -44,7 +44,7 @@ bytes.workspace = true
 num-traits.workspace = true
 
 [build-dependencies]
-napi-build = "2"
+napi-build.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

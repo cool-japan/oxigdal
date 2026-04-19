@@ -29,10 +29,6 @@ fn pt_with_props(lon: f64, lat: f64, props: serde_json::Value) -> GeoJsonFeature
     }
 }
 
-fn simple_ring() -> Vec<[f64; 2]> {
-    vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]
-}
-
 fn closed_ring() -> Vec<[f64; 2]> {
     vec![
         [0.0, 0.0],
@@ -474,6 +470,7 @@ fn feature_collection_compute_bbox_union() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     assert_eq!(fc.compute_bbox(), Some([-10.0, -5.0, 10.0, 5.0]));
 }
@@ -485,6 +482,7 @@ fn feature_collection_compute_bbox_single_point() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     assert_eq!(fc.compute_bbox(), Some([1.0, 2.0, 1.0, 2.0]));
 }
@@ -510,6 +508,7 @@ fn feature_collection_geometry_types_unique() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let types = fc.geometry_types();
     assert_eq!(types.len(), 2);
@@ -524,6 +523,7 @@ fn feature_collection_len_matches() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     assert_eq!(fc.len(), 3);
     assert!(!fc.is_empty());
@@ -548,6 +548,7 @@ fn writer_compact_feature_collection() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let s = GeoJsonWriter::compact().write_feature_collection(&fc);
     assert!(s.contains("\"FeatureCollection\""));
@@ -572,6 +573,7 @@ fn writer_pretty_indented() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let s = GeoJsonWriter::pretty(4).write_feature_collection(&fc);
     assert!(s.contains("    "));
@@ -662,31 +664,36 @@ fn write_null_geometry() {
 //  13. Writer → Parser round-trip
 // ═══════════════════════════════════════════════════════════════════
 
-fn round_trip_geometry(geom: GeoJsonGeometry) -> GeoJsonGeometry {
+fn round_trip_geometry(
+    geom: GeoJsonGeometry,
+) -> Result<GeoJsonGeometry, Box<dyn std::error::Error>> {
     let s = GeoJsonWriter::compact().write_geometry(&geom);
-    let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
-    GeoJsonParser::new().parse_geometry(&v).expect("valid geom")
+    let v: serde_json::Value = serde_json::from_str(&s)?;
+    Ok(GeoJsonParser::new().parse_geometry(&v)?)
 }
 
 #[test]
-fn roundtrip_point() {
+fn roundtrip_point() -> Result<(), Box<dyn std::error::Error>> {
     let g = GeoJsonGeometry::Point([13.4050, 52.5200]);
-    let result = round_trip_geometry(g.clone());
+    let result = round_trip_geometry(g.clone())?;
     assert_eq!(g, result);
+    Ok(())
 }
 
 #[test]
-fn roundtrip_linestring() {
+fn roundtrip_linestring() -> Result<(), Box<dyn std::error::Error>> {
     let g = GeoJsonGeometry::LineString(vec![[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]);
-    let result = round_trip_geometry(g.clone());
+    let result = round_trip_geometry(g.clone())?;
     assert_eq!(g, result);
+    Ok(())
 }
 
 #[test]
-fn roundtrip_polygon() {
+fn roundtrip_polygon() -> Result<(), Box<dyn std::error::Error>> {
     let g = GeoJsonGeometry::Polygon(vec![closed_ring()]);
-    let result = round_trip_geometry(g.clone());
+    let result = round_trip_geometry(g.clone())?;
     assert_eq!(g, result);
+    Ok(())
 }
 
 #[test]
@@ -696,6 +703,7 @@ fn roundtrip_feature_collection() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let w = GeoJsonWriter::compact();
     let s = w.write_feature_collection(&fc);
@@ -710,7 +718,7 @@ fn roundtrip_feature_collection() {
 
 #[test]
 fn write_features_iter_produces_collection() {
-    let features = vec![pt(0.0, 0.0), pt(1.0, 1.0)];
+    let features = [pt(0.0, 0.0), pt(1.0, 1.0)];
     let s = GeoJsonWriter::compact().write_features_iter(features.iter(), None);
     assert!(s.starts_with('{'));
     assert!(s.contains("\"FeatureCollection\""));
@@ -719,7 +727,7 @@ fn write_features_iter_produces_collection() {
 
 #[test]
 fn write_features_iter_with_bbox() {
-    let features = vec![pt(0.0, 0.0)];
+    let features = [pt(0.0, 0.0)];
     let bbox = Some([0.0_f64, 0.0_f64, 1.0_f64, 1.0_f64]);
     let s = GeoJsonWriter::compact().write_features_iter(features.iter(), bbox);
     assert!(s.contains("\"bbox\""));
@@ -818,6 +826,7 @@ fn validator_feature_collection_collects_all_issues() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let issues = GeoJsonValidator::validate_feature_collection(&fc);
     assert!(issues.len() >= 2);
@@ -846,6 +855,7 @@ fn streaming_reader_iterates_all() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let reader = StreamingFeatureReader::from_collection(&fc);
     let collected: Vec<_> = reader.collect();
@@ -859,6 +869,7 @@ fn streaming_reader_count_matches_collection() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let count = StreamingFeatureReader::from_collection(&fc).count();
     assert_eq!(count, fc.len());
@@ -878,6 +889,7 @@ fn streaming_reader_borrows_features() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let mut reader = StreamingFeatureReader::from_collection(&fc);
     let f = reader.next().expect("has feature");
@@ -955,6 +967,7 @@ fn filter_apply_returns_filtered_collection() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let filter = FeatureFilter::new().where_eq("keep", true);
     let result = filter.apply(&fc);
@@ -968,6 +981,7 @@ fn filter_apply_empty_result() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let filter = FeatureFilter::new().where_eq("v", 999);
     let result = filter.apply(&fc);
@@ -988,6 +1002,7 @@ fn filter_geometry_type_filter() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let filter = FeatureFilter::new().by_geometry_type(vec!["Point".into()]);
     let result = filter.apply(&fc);
@@ -1196,6 +1211,7 @@ fn writer_with_bbox_includes_bbox_field() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let s = GeoJsonWriter::compact()
         .with_bbox()
@@ -1210,6 +1226,7 @@ fn writer_without_bbox_no_bbox_field() {
         bbox: None,
         crs: None,
         name: None,
+        bbox_3d: None,
     };
     let s = GeoJsonWriter::compact().write_feature_collection(&fc);
     assert!(!s.contains("\"bbox\""));

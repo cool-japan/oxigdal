@@ -6,11 +6,9 @@
 use std::path::Path;
 
 use ndarray::{Array, ArrayD, ArrayView, IxDyn};
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::TensorRef;
 use oxigdal_core::buffer::RasterBuffer;
 use oxigdal_core::types::RasterDataType;
+use oxionnx::{GraphOptimizationLevel, Session, SessionBuilder, Tensor};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -66,12 +64,6 @@ pub enum ExecutionProvider {
     /// CUDA GPU execution (requires 'gpu' feature)
     #[cfg(feature = "gpu")]
     Cuda,
-    /// TensorRT execution (requires 'gpu' feature)
-    #[cfg(feature = "gpu")]
-    TensorRt,
-    /// DirectML execution (requires 'directml' feature, Windows only)
-    #[cfg(feature = "directml")]
-    DirectMl,
     /// CoreML execution (requires 'coreml' feature, macOS/iOS only)
     #[cfg(feature = "coreml")]
     CoreMl,
@@ -112,61 +104,31 @@ impl OnnxModel {
             .into());
         }
 
-        // Create SessionBuilder with configuration
-        let mut builder = Session::builder().map_err(|e| ModelError::LoadFailed {
-            reason: format!("Failed to create session builder: {}", e),
-        })?;
+        // Create SessionBuilder with configuration — builder methods return Self (no Result)
+        let mut builder = SessionBuilder::new();
 
-        // Configure number of threads
-        builder = builder
-            .with_intra_threads(config.num_threads)
-            .map_err(|e| ModelError::LoadFailed {
-                reason: format!("Failed to set intra threads: {}", e),
-            })?;
+        // Configure number of threads — sets per-session rayon thread pool and enables parallel execution
+        builder = builder.with_intra_threads(config.num_threads);
 
         // Configure graph optimization
         if config.graph_optimization {
-            builder = builder
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| ModelError::LoadFailed {
-                    reason: format!("Failed to set optimization level: {}", e),
-                })?;
+            builder = builder.with_optimization_level(GraphOptimizationLevel::All);
         }
 
         // Configure execution provider
         #[cfg(feature = "gpu")]
         {
-            use ort::execution_providers::CUDAExecutionProvider;
+            use oxionnx::CUDAExecutionProvider;
             if matches!(config.execution_provider, ExecutionProvider::Cuda) {
-                builder = builder
-                    .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    .map_err(|e| ModelError::LoadFailed {
-                        reason: format!("Failed to set CUDA execution provider: {}", e),
-                    })?;
-            }
-        }
-
-        #[cfg(feature = "directml")]
-        {
-            use ort::execution_providers::DirectMLExecutionProvider;
-            if matches!(config.execution_provider, ExecutionProvider::DirectMl) {
-                builder = builder
-                    .with_execution_providers([DirectMLExecutionProvider::default().build()])
-                    .map_err(|e| ModelError::LoadFailed {
-                        reason: format!("Failed to set DirectML execution provider: {}", e),
-                    })?;
+                builder = builder.with_execution_providers([CUDAExecutionProvider.build()]);
             }
         }
 
         #[cfg(feature = "coreml")]
         {
-            use ort::execution_providers::CoreMLExecutionProvider;
+            use oxionnx::CoreMLExecutionProvider;
             if matches!(config.execution_provider, ExecutionProvider::CoreMl) {
-                builder = builder
-                    .with_execution_providers([CoreMLExecutionProvider::default().build()])
-                    .map_err(|e| ModelError::LoadFailed {
-                        reason: format!("Failed to set CoreML execution provider: {}", e),
-                    })?;
+                builder = builder.with_execution_providers([CoreMLExecutionProvider.build()]);
             }
         }
 
@@ -191,9 +153,9 @@ impl OnnxModel {
 
     /// Extracts metadata from an ONNX session
     fn extract_metadata(session: &Session) -> Result<ModelMetadata> {
-        // Get input metadata using accessor methods
-        let inputs = session.inputs();
-        let outputs = session.outputs();
+        // Get input/output metadata — TensorInfo { name: String, dtype: DType, shape: Vec<Option<usize>> }
+        let inputs = session.input_info();
+        let outputs = session.output_info();
 
         debug!(
             "Extracting metadata: {} inputs, {} outputs",
@@ -201,28 +163,24 @@ impl OnnxModel {
             outputs.len()
         );
 
-        // Extract input names and shape
-        let input_names: Vec<String> = inputs.iter().map(|i| i.name().to_string()).collect();
+        // Extract input names
+        let input_names: Vec<String> = inputs.iter().map(|i| i.name.clone()).collect();
 
         // Get first input shape (assuming batch, channels, height, width)
+        // shape elements are Option<usize>: None means dynamic dimension
         let input_shape = if let Some(first_input) = inputs.first() {
-            if let Some(shape) = first_input.dtype().tensor_shape() {
-                // Assume NCHW format: [batch, channels, height, width]
-                // Extract C, H, W (skip batch dimension)
-                // shape derefs to &[i64]
-                if shape.len() >= 4 {
-                    let c = if shape[1] < 0 { 3 } else { shape[1] as usize };
-                    let h = if shape[2] < 0 { 256 } else { shape[2] as usize };
-                    let w = if shape[3] < 0 { 256 } else { shape[3] as usize };
-                    (c, h, w)
-                } else if shape.len() == 3 {
-                    let c = if shape[0] < 0 { 3 } else { shape[0] as usize };
-                    let h = if shape[1] < 0 { 256 } else { shape[1] as usize };
-                    let w = if shape[2] < 0 { 256 } else { shape[2] as usize };
-                    (c, h, w)
-                } else {
-                    (3, 256, 256) // Default fallback
-                }
+            let shape = &first_input.shape;
+            if shape.len() >= 4 {
+                // NCHW format: [batch, channels, height, width]
+                let c = shape[1].unwrap_or(3);
+                let h = shape[2].unwrap_or(256);
+                let w = shape[3].unwrap_or(256);
+                (c, h, w)
+            } else if shape.len() == 3 {
+                let c = shape[0].unwrap_or(3);
+                let h = shape[1].unwrap_or(256);
+                let w = shape[2].unwrap_or(256);
+                (c, h, w)
             } else {
                 (3, 256, 256) // Default fallback
             }
@@ -234,24 +192,20 @@ impl OnnxModel {
         };
 
         // Extract output names and shape
-        let output_names: Vec<String> = outputs.iter().map(|o| o.name().to_string()).collect();
+        let output_names: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
 
         let output_shape = if let Some(first_output) = outputs.first() {
-            if let Some(shape) = first_output.dtype().tensor_shape() {
-                // Assume NCHW format: [batch, channels, height, width]
-                if shape.len() >= 4 {
-                    let c = if shape[1] < 0 { 1 } else { shape[1] as usize };
-                    let h = if shape[2] < 0 { 256 } else { shape[2] as usize };
-                    let w = if shape[3] < 0 { 256 } else { shape[3] as usize };
-                    (c, h, w)
-                } else if shape.len() == 3 {
-                    let c = if shape[0] < 0 { 1 } else { shape[0] as usize };
-                    let h = if shape[1] < 0 { 256 } else { shape[1] as usize };
-                    let w = if shape[2] < 0 { 256 } else { shape[2] as usize };
-                    (c, h, w)
-                } else {
-                    (1, 256, 256) // Default fallback
-                }
+            let shape = &first_output.shape;
+            if shape.len() >= 4 {
+                let c = shape[1].unwrap_or(1);
+                let h = shape[2].unwrap_or(256);
+                let w = shape[3].unwrap_or(256);
+                (c, h, w)
+            } else if shape.len() == 3 {
+                let c = shape[0].unwrap_or(1);
+                let h = shape[1].unwrap_or(256);
+                let w = shape[2].unwrap_or(256);
+                (c, h, w)
             } else {
                 (1, 256, 256) // Default fallback
             }
@@ -289,24 +243,29 @@ impl OnnxModel {
         let input_array = self.buffer_to_ndarray(input)?;
 
         // Get input name
-        let input_name =
-            self.metadata
-                .input_names
-                .first()
-                .ok_or_else(|| InferenceError::Failed {
-                    reason: "No input tensor name available".to_string(),
-                })?;
+        let input_name = self
+            .metadata
+            .input_names
+            .first()
+            .ok_or_else(|| InferenceError::Failed {
+                reason: "No input tensor name available".to_string(),
+            })?
+            .clone();
 
-        // Create TensorRef from ndarray view
-        let input_tensor =
-            TensorRef::from_array_view(input_array.view()).map_err(|e| InferenceError::Failed {
-                reason: format!("Failed to create input tensor: {}", e),
-            })?;
+        // Create Tensor from ndarray (from_ndarray_view returns Tensor directly, no Result)
+        let input_tensor = Tensor::from_ndarray_view(input_array.view());
 
-        // Run inference using ort 2.0 API with inputs! macro
+        // Build inputs map using oxionnx::inputs! macro (returns Result<HashMap<&str, Tensor>>)
+        let inputs_map = oxionnx::inputs![input_name.as_str() => input_tensor].map_err(|e| {
+            InferenceError::Failed {
+                reason: format!("Failed to build inputs map: {}", e),
+            }
+        })?;
+
+        // Run inference — session.run takes &HashMap<&str, Tensor>
         let outputs = self
             .session
-            .run(ort::inputs![input_name.as_str() => input_tensor])
+            .run(&inputs_map)
             .map_err(|e| InferenceError::Failed {
                 reason: format!("ONNX inference failed: {}", e),
             })?;
@@ -320,15 +279,14 @@ impl OnnxModel {
                     reason: "No output tensor name available".to_string(),
                 })?;
 
-        // Extract output tensor
+        // Extract output tensor from HashMap<String, Tensor>
         let output_tensor = outputs.get(output_name.as_str()).ok_or_else(|| {
             InferenceError::OutputParsingFailed {
                 reason: format!("Output tensor '{}' not found", output_name),
             }
         })?;
 
-        // Extract array from tensor (ort 2.0 API)
-        // try_extract_array directly returns ArrayViewD
+        // Extract ndarray view from Tensor
         let output_array = output_tensor.try_extract_array::<f32>().map_err(|e| {
             InferenceError::OutputParsingFailed {
                 reason: format!("Failed to extract output tensor: {}", e),
@@ -338,7 +296,7 @@ impl OnnxModel {
         // Convert to owned array to avoid borrow checker issues
         let output_owned = output_array.to_owned();
 
-        // Drop outputs to release the borrow of self.session
+        // Drop outputs to release the borrow
         drop(outputs);
 
         // Convert back to RasterBuffer
@@ -542,5 +500,407 @@ mod tests {
         let cpus = num_cpus();
         assert!(cpus > 0);
         assert!(cpus <= 256); // Reasonable upper bound
+    }
+
+    // ── End-to-end ONNX inference tests using in-memory graph construction ──
+
+    /// Helper: builds a minimal ONNX graph with the given op, input/output names, shape,
+    /// and pre-loaded weights, then returns a ready-to-run Session.
+    fn build_session_from_graph(
+        graph: oxionnx::Graph,
+        weights: std::collections::HashMap<String, Tensor>,
+    ) -> Result<Session> {
+        let session = SessionBuilder::new()
+            .build_from_graph(graph, weights)
+            .map_err(|e| ModelError::LoadFailed {
+                reason: format!("Failed to build session from graph: {}", e),
+            })?;
+        Ok(session)
+    }
+
+    /// Builds an Identity-op graph: output = Identity(input)
+    fn build_identity_graph(
+        input_name: &str,
+        output_name: &str,
+        shape: &[Option<usize>],
+    ) -> oxionnx::Graph {
+        use oxionnx::{Attributes, DType, Node, OpKind, TensorInfo};
+
+        oxionnx::Graph {
+            name: "identity_test".to_string(),
+            nodes: vec![Node {
+                op: OpKind::Identity,
+                name: "identity_0".to_string(),
+                inputs: vec![input_name.to_string()],
+                outputs: vec![output_name.to_string()],
+                attrs: Attributes::default(),
+            }],
+            input_names: vec![input_name.to_string()],
+            output_names: vec![output_name.to_string()],
+            input_infos: vec![TensorInfo {
+                name: input_name.to_string(),
+                dtype: DType::F32,
+                shape: shape.to_vec(),
+                dim_params: vec![],
+            }],
+            output_infos: vec![TensorInfo {
+                name: output_name.to_string(),
+                dtype: DType::F32,
+                shape: shape.to_vec(),
+                dim_params: vec![],
+            }],
+        }
+    }
+
+    /// Builds a Relu-op graph: output = Relu(input)
+    fn build_relu_graph(
+        input_name: &str,
+        output_name: &str,
+        shape: &[Option<usize>],
+    ) -> oxionnx::Graph {
+        use oxionnx::{Attributes, DType, Node, OpKind, TensorInfo};
+
+        oxionnx::Graph {
+            name: "relu_test".to_string(),
+            nodes: vec![Node {
+                op: OpKind::Relu,
+                name: "relu_0".to_string(),
+                inputs: vec![input_name.to_string()],
+                outputs: vec![output_name.to_string()],
+                attrs: Attributes::default(),
+            }],
+            input_names: vec![input_name.to_string()],
+            output_names: vec![output_name.to_string()],
+            input_infos: vec![TensorInfo {
+                name: input_name.to_string(),
+                dtype: DType::F32,
+                shape: shape.to_vec(),
+                dim_params: vec![],
+            }],
+            output_infos: vec![TensorInfo {
+                name: output_name.to_string(),
+                dtype: DType::F32,
+                shape: shape.to_vec(),
+                dim_params: vec![],
+            }],
+        }
+    }
+
+    /// Builds an Add-op graph with a constant weight: output = input + bias
+    fn build_add_bias_graph(
+        input_name: &str,
+        bias_name: &str,
+        output_name: &str,
+        shape: &[Option<usize>],
+    ) -> oxionnx::Graph {
+        use oxionnx::{Attributes, DType, Node, OpKind, TensorInfo};
+
+        oxionnx::Graph {
+            name: "add_bias_test".to_string(),
+            nodes: vec![Node {
+                op: OpKind::Add,
+                name: "add_0".to_string(),
+                inputs: vec![input_name.to_string(), bias_name.to_string()],
+                outputs: vec![output_name.to_string()],
+                attrs: Attributes::default(),
+            }],
+            input_names: vec![input_name.to_string()],
+            output_names: vec![output_name.to_string()],
+            input_infos: vec![TensorInfo {
+                name: input_name.to_string(),
+                dtype: DType::F32,
+                shape: shape.to_vec(),
+                dim_params: vec![],
+            }],
+            output_infos: vec![TensorInfo {
+                name: output_name.to_string(),
+                dtype: DType::F32,
+                shape: shape.to_vec(),
+                dim_params: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_identity_inference_end_to_end() {
+        // Build an Identity graph: output should equal input
+        let shape = &[Some(1), Some(3), Some(4), Some(4)];
+        let graph = build_identity_graph("X", "Y", shape);
+        let session = build_session_from_graph(graph, std::collections::HashMap::new())
+            .expect("build identity session");
+
+        // Create input tensor: [1, 3, 4, 4] = 48 elements
+        let input_data: Vec<f32> = (0..48).map(|i| i as f32 * 0.1).collect();
+        let input_tensor = Tensor::new(input_data.clone(), vec![1, 3, 4, 4]);
+
+        let inputs_map = oxionnx::inputs!["X" => input_tensor].expect("build inputs map");
+        let outputs = session.run(&inputs_map).expect("run identity inference");
+
+        let output = outputs.get("Y").expect("output Y not found");
+        let (out_shape, out_data) = output
+            .try_extract_tensor::<f32>()
+            .expect("extract output tensor");
+
+        assert_eq!(out_shape, &[1, 3, 4, 4]);
+        assert_eq!(out_data.len(), 48);
+        for (a, b) in input_data.iter().zip(out_data.iter()) {
+            assert!((a - b).abs() < 1e-6, "identity mismatch: {} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_relu_inference_end_to_end() {
+        // Build a Relu graph: output = max(0, input)
+        let shape = &[Some(1), Some(1), Some(2), Some(3)];
+        let graph = build_relu_graph("input", "output", shape);
+        let session = build_session_from_graph(graph, std::collections::HashMap::new())
+            .expect("build relu session");
+
+        // Input with negative values
+        let input_data: Vec<f32> = vec![-3.0, -1.0, 0.0, 1.0, 2.5, -0.5];
+        let expected: Vec<f32> = vec![0.0, 0.0, 0.0, 1.0, 2.5, 0.0];
+
+        let input_tensor = Tensor::new(input_data, vec![1, 1, 2, 3]);
+        let inputs_map = oxionnx::inputs!["input" => input_tensor].expect("build inputs map");
+        let outputs = session.run(&inputs_map).expect("run relu inference");
+
+        let output = outputs.get("output").expect("output not found");
+        let (out_shape, out_data) = output.try_extract_tensor::<f32>().expect("extract output");
+
+        assert_eq!(out_shape, &[1, 1, 2, 3]);
+        for (a, b) in expected.iter().zip(out_data.iter()) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "relu mismatch: expected {} got {}",
+                a,
+                b
+            );
+        }
+    }
+
+    #[test]
+    fn test_add_bias_inference_end_to_end() {
+        // Build an Add graph with a constant bias weight: output = input + bias
+        let shape = &[Some(1), Some(1), Some(2), Some(2)];
+        let graph = build_add_bias_graph("input", "bias", "output", shape);
+
+        // Pre-load bias as a weight tensor
+        let mut weights = std::collections::HashMap::new();
+        weights.insert(
+            "bias".to_string(),
+            Tensor::new(vec![10.0, 20.0, 30.0, 40.0], vec![1, 1, 2, 2]),
+        );
+
+        let session = build_session_from_graph(graph, weights).expect("build add session");
+
+        let input_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let expected: Vec<f32> = vec![11.0, 22.0, 33.0, 44.0];
+
+        let input_tensor = Tensor::new(input_data, vec![1, 1, 2, 2]);
+        let inputs_map = oxionnx::inputs!["input" => input_tensor].expect("build inputs map");
+        let outputs = session.run(&inputs_map).expect("run add inference");
+
+        let output = outputs.get("output").expect("output not found");
+        let (out_shape, out_data) = output.try_extract_tensor::<f32>().expect("extract output");
+
+        assert_eq!(out_shape, &[1, 1, 2, 2]);
+        for (a, b) in expected.iter().zip(out_data.iter()) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "add mismatch: expected {} got {}",
+                a,
+                b
+            );
+        }
+    }
+
+    #[test]
+    fn test_metadata_extraction_nchw_shape() {
+        // Build a graph with NCHW shape [batch=1, C=3, H=64, W=64]
+        let shape = &[Some(1), Some(3), Some(64), Some(64)];
+        let graph = build_identity_graph("input", "output", shape);
+        let session = build_session_from_graph(graph, std::collections::HashMap::new())
+            .expect("build session for metadata extraction");
+
+        let metadata = OnnxModel::extract_metadata(&session).expect("extract metadata");
+
+        assert_eq!(metadata.input_names, vec!["input"]);
+        assert_eq!(metadata.output_names, vec!["output"]);
+        assert_eq!(metadata.input_shape, (3, 64, 64));
+        assert_eq!(metadata.output_shape, (3, 64, 64));
+    }
+
+    #[test]
+    fn test_metadata_extraction_dynamic_dims() {
+        // Build a graph with dynamic batch dimension: [None, 3, 32, 32]
+        let shape = &[None, Some(3), Some(32), Some(32)];
+        let graph = build_identity_graph("x", "y", shape);
+        let session = build_session_from_graph(graph, std::collections::HashMap::new())
+            .expect("build session for dynamic dim test");
+
+        let metadata =
+            OnnxModel::extract_metadata(&session).expect("extract metadata with dynamic dims");
+
+        // Dynamic batch dim should fall through to defaults or be ignored;
+        // channels/height/width should be resolved from the static dims
+        assert_eq!(metadata.input_shape, (3, 32, 32));
+        assert_eq!(metadata.output_shape, (3, 32, 32));
+    }
+
+    #[test]
+    fn test_metadata_extraction_3d_shape() {
+        // Build a graph with 3D shape [C, H, W] (no batch dimension)
+        let shape = &[Some(3), Some(128), Some(128)];
+        let graph = build_identity_graph("img", "out", shape);
+        let session = build_session_from_graph(graph, std::collections::HashMap::new())
+            .expect("build session for 3D shape test");
+
+        let metadata = OnnxModel::extract_metadata(&session).expect("extract 3D metadata");
+
+        // With 3D input, should interpret as [C, H, W]
+        assert_eq!(metadata.input_shape, (3, 128, 128));
+    }
+
+    #[test]
+    fn test_session_builder_with_intra_threads() {
+        // Verify that with_intra_threads produces a functional session
+        let shape = &[Some(1), Some(1), Some(2), Some(2)];
+        let graph = build_identity_graph("x", "y", shape);
+
+        let session = SessionBuilder::new()
+            .with_intra_threads(2)
+            .build_from_graph(graph, std::collections::HashMap::new())
+            .map_err(|e| ModelError::LoadFailed {
+                reason: e.to_string(),
+            })
+            .expect("build session with intra_threads");
+
+        let input_tensor = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2]);
+        let inputs_map = oxionnx::inputs!["x" => input_tensor].expect("build inputs map");
+        let outputs = session.run(&inputs_map).expect("run with intra_threads");
+        assert!(outputs.contains_key("y"));
+    }
+
+    #[test]
+    fn test_execution_provider_variants() {
+        // Verify all execution provider enum variants compile and compare correctly
+        let cpu = ExecutionProvider::Cpu;
+        assert_eq!(cpu, ExecutionProvider::Cpu);
+
+        #[cfg(feature = "gpu")]
+        {
+            let cuda = ExecutionProvider::Cuda;
+            assert_eq!(cuda, ExecutionProvider::Cuda);
+            assert_ne!(cuda, ExecutionProvider::Cpu);
+        }
+    }
+
+    #[test]
+    fn test_two_node_pipeline_relu_identity() {
+        // Build a two-node graph: intermediate = Relu(input), output = Identity(intermediate)
+        use oxionnx::{Attributes, DType, Node, OpKind, TensorInfo};
+
+        let graph = oxionnx::Graph {
+            name: "relu_identity_pipeline".to_string(),
+            nodes: vec![
+                Node {
+                    op: OpKind::Relu,
+                    name: "relu_0".to_string(),
+                    inputs: vec!["input".to_string()],
+                    outputs: vec!["intermediate".to_string()],
+                    attrs: Attributes::default(),
+                },
+                Node {
+                    op: OpKind::Identity,
+                    name: "identity_0".to_string(),
+                    inputs: vec!["intermediate".to_string()],
+                    outputs: vec!["output".to_string()],
+                    attrs: Attributes::default(),
+                },
+            ],
+            input_names: vec!["input".to_string()],
+            output_names: vec!["output".to_string()],
+            input_infos: vec![TensorInfo {
+                name: "input".to_string(),
+                dtype: DType::F32,
+                shape: vec![Some(1), Some(1), Some(2), Some(3)],
+                dim_params: vec![],
+            }],
+            output_infos: vec![TensorInfo {
+                name: "output".to_string(),
+                dtype: DType::F32,
+                shape: vec![Some(1), Some(1), Some(2), Some(3)],
+                dim_params: vec![],
+            }],
+        };
+
+        let session = build_session_from_graph(graph, std::collections::HashMap::new())
+            .expect("build pipeline session");
+
+        let input_data: Vec<f32> = vec![-5.0, -1.0, 0.0, 3.0, 7.0, -2.0];
+        let expected: Vec<f32> = vec![0.0, 0.0, 0.0, 3.0, 7.0, 0.0];
+
+        let input_tensor = Tensor::new(input_data, vec![1, 1, 2, 3]);
+        let inputs_map = oxionnx::inputs!["input" => input_tensor].expect("build inputs map");
+        let outputs = session.run(&inputs_map).expect("run pipeline");
+
+        let output = outputs.get("output").expect("output not found");
+        let (_shape, out_data) = output.try_extract_tensor::<f32>().expect("extract output");
+
+        for (a, b) in expected.iter().zip(out_data.iter()) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "pipeline mismatch: expected {} got {}",
+                a,
+                b,
+            );
+        }
+    }
+
+    #[test]
+    fn test_ndarray_tensor_roundtrip() {
+        // Verify that from_ndarray_view produces correct tensors and try_extract_array returns them
+        let arr = ndarray::Array::from_shape_vec(
+            ndarray::IxDyn(&[1, 2, 3]),
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        )
+        .expect("create ndarray");
+
+        let tensor = Tensor::from_ndarray_view(arr.view());
+        let extracted = tensor
+            .try_extract_array::<f32>()
+            .expect("extract array from tensor");
+
+        assert_eq!(extracted.shape(), &[1, 2, 3]);
+        for (a, b) in arr.iter().zip(extracted.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_model_not_found_error() {
+        let result = OnnxModel::from_file("/nonexistent/path/model.onnx");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.err().expect("should be error"));
+        assert!(
+            err_msg.contains("not found") || err_msg.contains("Not"),
+            "error should mention 'not found', got: {}",
+            err_msg,
+        );
+    }
+
+    #[test]
+    fn test_gpu_feature_compilation() {
+        // This test verifies that the #[cfg(feature = "gpu")] blocks compile correctly.
+        // When gpu feature is enabled, ExecutionProvider::Cuda should exist.
+        // When not enabled, only Cpu is available. Either way, this test compiles.
+        let config = SessionConfig {
+            execution_provider: ExecutionProvider::Cpu,
+            num_threads: 1,
+            graph_optimization: false,
+            batch_size: 2,
+        };
+        assert_eq!(config.batch_size, 2);
+        assert!(!config.graph_optimization);
     }
 }

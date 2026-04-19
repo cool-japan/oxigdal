@@ -64,7 +64,16 @@ pub mod tutorials;
 
 // Re-export commonly used items
 pub use error::{OxiGdalError, Result};
-pub use types::{BoundingBox, GeoTransform, RasterDataType, RasterMetadata};
+pub use io::{Dataset, FieldType, RasterDataset, VectorDataset};
+pub use types::{
+    BoundingBox, ColorEntry, ColorTable, ColorTableKind, CrsFormat, GeoTransform, Histogram,
+    RasterDataType, RasterMetadata, SpatialReference, Statistics,
+};
+pub use vector::FieldValue;
+
+pub use buffer::Mask;
+#[cfg(feature = "std")]
+pub use io::{MmapDataSource, MmapDataSourceRw};
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

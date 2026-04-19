@@ -46,7 +46,7 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]
-cbindgen = "0.29"
+cbindgen.workspace = true
 
 # Mobile-specific lints (FFI requires different rules)
 [lints.rust]

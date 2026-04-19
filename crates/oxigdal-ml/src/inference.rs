@@ -226,26 +226,20 @@ fn merge_tiles(
     Ok(output)
 }
 
-/// Computes weight for a pixel in a tile based on distance from edges
+/// Computes weight for a pixel in a tile based on distance from edges.
+///
+/// Delegates to [`crate::tiling::compute_blend_weight`] and applies a
+/// minimum floor of 0.1 to prevent zero-weight contributions.
 fn compute_tile_weight(x: u64, y: u64, width: u64, height: u64, overlap: u64) -> f32 {
-    if overlap == 0 {
-        return 1.0;
-    }
-
-    // Distance from edges
-    let dist_left = x;
-    let dist_right = width.saturating_sub(x + 1);
-    let dist_top = y;
-    let dist_bottom = height.saturating_sub(y + 1);
-
-    let min_dist = dist_left.min(dist_right).min(dist_top).min(dist_bottom);
-
-    // Weight increases linearly from edge to center
-    if min_dist >= overlap {
-        1.0
-    } else {
-        (min_dist as f32 / overlap as f32).max(0.1)
-    }
+    let w = crate::tiling::compute_blend_weight(
+        x as usize,
+        y as usize,
+        width as usize,
+        height as usize,
+        overlap as usize,
+    );
+    // Apply minimum floor to preserve original behavior
+    w.max(0.1)
 }
 
 #[cfg(test)]

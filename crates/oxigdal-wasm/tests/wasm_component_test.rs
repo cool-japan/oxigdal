@@ -18,7 +18,7 @@
 use oxigdal_wasm::component::{
     ComponentBbox, ComponentDataType, ComponentError, ComponentFeature, ComponentFeatureCollection,
     ComponentProjection, ComponentRaster, ComponentRasterOps, ComponentTransform, ErrorCategory,
-    ImageDimensions, PropertyValue,
+    FieldValue, ImageDimensions,
 };
 use oxigdal_wasm::wasm_memory::WasmBumpAllocator;
 
@@ -460,7 +460,7 @@ fn feature_with_geometry_sets_wkb() {
 #[test]
 fn feature_set_get_property_string() {
     let mut f = ComponentFeature::new();
-    f.set_property("name", PropertyValue::String("river".into()));
+    f.set_property("name", FieldValue::String("river".into()));
     let val = f.get_property("name").expect("property exists");
     assert_eq!(val.as_str(), Some("river"));
 }
@@ -468,7 +468,7 @@ fn feature_set_get_property_string() {
 #[test]
 fn feature_set_get_property_int() {
     let mut f = ComponentFeature::new();
-    f.set_property("pop", PropertyValue::Int(1_000_000));
+    f.set_property("pop", FieldValue::Int(1_000_000));
     let val = f.get_property("pop").expect("property exists");
     assert_eq!(val.as_f64(), Some(1_000_000.0));
 }
@@ -487,16 +487,16 @@ fn feature_has_geometry_false_when_missing() {
 
 #[test]
 fn property_value_as_str_non_string_returns_none() {
-    assert!(PropertyValue::Int(1).as_str().is_none());
-    assert!(PropertyValue::Float(1.0).as_str().is_none());
-    assert!(PropertyValue::Null.as_str().is_none());
+    assert!(FieldValue::Int(1).as_str().is_none());
+    assert!(FieldValue::Float(1.0).as_str().is_none());
+    assert!(FieldValue::Null.as_str().is_none());
 }
 
 #[test]
 fn property_value_is_null_only_for_null() {
-    assert!(PropertyValue::Null.is_null());
-    assert!(!PropertyValue::Bool(false).is_null());
-    assert!(!PropertyValue::Bytes(vec![]).is_null());
+    assert!(FieldValue::Null.is_null());
+    assert!(!FieldValue::Bool(false).is_null());
+    assert!(!FieldValue::Bytes(vec![]).is_null());
 }
 
 // ---------------------------------------------------------------------------

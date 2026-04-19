@@ -368,8 +368,11 @@ pub fn wkb_bbox(wkb: &[u8]) -> Option<(f64, f64, f64, f64)> {
     let type_code = read_le_u32(wkb, 1)?;
     // Normalise to base type (strip Z/M 1000/2000/3000 prefix).
     let base_type = type_code % 1000;
-    let has_z = (type_code / 1000) == 1 || (type_code / 1000) == 3;
-    let coord_stride = if has_z { 24usize } else { 16usize }; // bytes per 2D or 3D coord
+    let qualifier = type_code / 1000;
+    let has_z = qualifier == 1 || qualifier == 3;
+    let has_m = qualifier == 2 || qualifier == 3;
+    // Coordinate stride: XY=16, XYZ=24, XYM=24, XYZM=32 bytes
+    let coord_stride = 16usize + if has_z { 8 } else { 0 } + if has_m { 8 } else { 0 };
 
     match base_type {
         1 => {

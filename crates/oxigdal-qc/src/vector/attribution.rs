@@ -4,7 +4,7 @@
 //! including required fields, domain validation, and data type validation.
 
 use crate::error::{QcIssue, QcResult, Severity};
-use oxigdal_core::vector::{FeatureCollection, FeatureId, PropertyValue};
+use oxigdal_core::vector::{FeatureCollection, FeatureId, FieldValue};
 use std::collections::HashSet;
 
 /// Helper function to convert FeatureId to String
@@ -148,7 +148,7 @@ pub struct FieldDefinition {
     pub domain: Option<ValueDomain>,
 
     /// Default value (if any).
-    pub default_value: Option<PropertyValue>,
+    pub default_value: Option<FieldValue>,
 }
 
 /// Expected field type.
@@ -424,35 +424,34 @@ impl AttributionChecker {
     /// Checks data type of a property value.
     fn check_type(
         &self,
-        value: &PropertyValue,
+        value: &FieldValue,
         field_def: &FieldDefinition,
         feature_id: &Option<String>,
     ) -> QcResult<Option<TypeViolation>> {
         let actual_type = match value {
-            PropertyValue::Null => "Null",
-            PropertyValue::Bool(_) => "Boolean",
-            PropertyValue::Integer(_) => "Integer",
-            PropertyValue::UInteger(_) => "Integer",
-            PropertyValue::Float(_) => "Float",
-            PropertyValue::String(_) => "String",
-            PropertyValue::Array(_) => "Array",
-            PropertyValue::Object(_) => "Object",
+            FieldValue::Null => "Null",
+            FieldValue::Bool(_) => "Boolean",
+            FieldValue::Integer(_) => "Integer",
+            FieldValue::UInteger(_) => "Integer",
+            FieldValue::Float(_) => "Float",
+            FieldValue::Date(_) => "Date",
+            FieldValue::Blob(_) => "Blob",
+            FieldValue::String(_) => "String",
+            FieldValue::Array(_) => "Array",
+            FieldValue::Object(_) => "Object",
         };
 
         let matches = match field_def.expected_type {
-            FieldType::Boolean => matches!(value, PropertyValue::Bool(_)),
+            FieldType::Boolean => matches!(value, FieldValue::Bool(_)),
             FieldType::Integer => {
-                matches!(
-                    value,
-                    PropertyValue::Integer(_) | PropertyValue::UInteger(_)
-                )
+                matches!(value, FieldValue::Integer(_) | FieldValue::UInteger(_))
             }
             FieldType::Float => matches!(
                 value,
-                PropertyValue::Float(_) | PropertyValue::Integer(_) | PropertyValue::UInteger(_)
+                FieldValue::Float(_) | FieldValue::Integer(_) | FieldValue::UInteger(_)
             ),
-            FieldType::String => matches!(value, PropertyValue::String(_)),
-            FieldType::Date | FieldType::DateTime => matches!(value, PropertyValue::String(_)),
+            FieldType::String => matches!(value, FieldValue::String(_)),
+            FieldType::Date | FieldType::DateTime => matches!(value, FieldValue::String(_)),
             FieldType::Any => true,
         };
 
@@ -472,7 +471,7 @@ impl AttributionChecker {
     /// Checks domain constraints.
     fn check_domain(
         &self,
-        value: &PropertyValue,
+        value: &FieldValue,
         domain: &ValueDomain,
         field_name: &str,
         feature_id: &Option<String>,
@@ -480,9 +479,9 @@ impl AttributionChecker {
         match domain {
             ValueDomain::NumericRange { min, max } => {
                 let num_value = match value {
-                    PropertyValue::Integer(i) => Some(*i as f64),
-                    PropertyValue::UInteger(u) => Some(*u as f64),
-                    PropertyValue::Float(f) => Some(*f),
+                    FieldValue::Integer(i) => Some(*i as f64),
+                    FieldValue::UInteger(u) => Some(*u as f64),
+                    FieldValue::Float(f) => Some(*f),
                     _ => None,
                 };
 
@@ -499,7 +498,7 @@ impl AttributionChecker {
                 }
             }
             ValueDomain::Enumeration(allowed_values) => {
-                if let PropertyValue::String(s) = value {
+                if let FieldValue::String(s) = value {
                     if !allowed_values.contains(s) {
                         return Ok(Some(DomainViolation {
                             feature_id: feature_id.clone(),
@@ -512,7 +511,7 @@ impl AttributionChecker {
                 }
             }
             ValueDomain::StringLength { min, max } => {
-                if let PropertyValue::String(s) = value {
+                if let FieldValue::String(s) = value {
                     if s.len() < *min || s.len() > *max {
                         return Ok(Some(DomainViolation {
                             feature_id: feature_id.clone(),
@@ -536,11 +535,11 @@ impl AttributionChecker {
     /// Checks referential integrity.
     fn check_referential_integrity(
         &self,
-        value: &PropertyValue,
+        value: &FieldValue,
         constraint: &ReferentialConstraint,
         feature_id: &Option<String>,
     ) -> QcResult<Option<ReferentialViolation>> {
-        if let PropertyValue::String(s) = value {
+        if let FieldValue::String(s) = value {
             if !constraint.valid_values.contains(s) {
                 return Ok(Some(ReferentialViolation {
                     feature_id: feature_id.clone(),

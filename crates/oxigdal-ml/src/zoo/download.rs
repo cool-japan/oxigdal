@@ -164,7 +164,11 @@ impl ModelDownloader {
 
         // Verify checksum if provided
         if let Some(ref expected_checksum) = model.checksum {
-            let computed_checksum = format!("{:x}", hasher.finalize());
+            let computed_checksum: String = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect();
             if &computed_checksum != expected_checksum {
                 std::fs::remove_file(&temp_file).ok();
                 return Err(MlError::Model(ModelError::LoadFailed {
@@ -232,7 +236,11 @@ impl ModelDownloader {
             hasher.update(&buffer[..bytes_read]);
         }
 
-        Ok(format!("{:x}", hasher.finalize()))
+        Ok(hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect())
     }
 }
 

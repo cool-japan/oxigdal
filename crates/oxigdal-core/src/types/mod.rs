@@ -10,16 +10,23 @@
 //! - [`ColorInterpretation`] - Band color meanings
 //! - [`PixelLayout`] - Memory organization of raster data
 //! - [`NoDataValue`] - Representation of missing data
+//! - [`Statistics`] / [`Histogram`] - Band-level statistics with optional histogram
 
 mod bbox;
+pub mod color_table;
 mod data_type;
 mod geo_transform;
+pub mod spatial_reference;
+pub mod statistics;
 
 pub use bbox::{BoundingBox, BoundingBox3D, PixelExtent};
+pub use color_table::{ColorEntry, ColorTable, ColorTableKind};
 pub use data_type::{
     ColorInterpretation, NoDataValue, PixelLayout, RasterDataType, SampleInterpretation,
 };
 pub use geo_transform::GeoTransform;
+pub use spatial_reference::{CrsFormat, SpatialReference};
+pub use statistics::{Histogram, Statistics};
 
 /// Coordinate pair (X, Y)
 pub type Coordinate = (f64, f64);
@@ -100,6 +107,11 @@ pub struct RasterMetadata {
     pub layout: PixelLayout,
     /// Driver-specific metadata
     pub driver_metadata: Vec<(String, String)>,
+    /// Per-band statistics, lazily populated.
+    ///
+    /// One [`Statistics`] entry per band (index 0 = band 1).  `None` until
+    /// explicitly computed and attached by a driver or caller.
+    pub statistics: Option<Vec<Statistics>>,
 }
 
 impl RasterMetadata {

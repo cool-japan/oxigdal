@@ -6,18 +6,28 @@ use oxigdal_core::{
     io::FileDataSource,
     types::{GeoTransform, NoDataValue, RasterDataType},
 };
-use oxigdal_geotiff::{GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
+use oxigdal_geotiff::{
+    CogWriter, CogWriterOptions, Compression, GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions,
+    WriterConfig,
+};
 use std::path::Path;
 
 /// Raster metadata extracted from a file
 #[derive(Debug, Clone)]
 pub struct RasterInfo {
+    /// Image width in pixels
     pub width: u64,
+    /// Image height in pixels
     pub height: u64,
+    /// Number of bands (samples per pixel)
     pub bands: u32,
+    /// Data type of raster samples
     pub data_type: RasterDataType,
+    /// Geographic transform (origin, pixel size, rotation)
     pub geo_transform: Option<GeoTransform>,
+    /// EPSG CRS code, if any
     pub epsg_code: Option<u32>,
+    /// NoData value, if any
     pub no_data_value: Option<f64>,
 }
 
@@ -448,6 +458,167 @@ pub fn write_multi_band(
         .with_context(|| format!("Failed to write bands to {}", path.display()))?;
 
     Ok(())
+}
+
+/// Options for writing a Cloud-Optimized GeoTIFF.
+#[derive(Debug, Clone)]
+pub struct CogWriteOptions {
+    /// Geographic transform (origin, pixel size, rotation)
+    pub geo_transform: Option<GeoTransform>,
+    /// EPSG CRS code
+    pub epsg_code: Option<u32>,
+    /// NoData fill value
+    pub no_data_value: Option<f64>,
+    /// Overview downsampling factors (e.g., `[2, 4, 8, 16]`).
+    /// An empty `Vec` means no overviews.
+    pub overview_levels: Vec<u32>,
+    /// COG tile size in pixels (must be a power of 2)
+    pub tile_size: u32,
+    /// Compression scheme
+    pub compression: Compression,
+}
+
+impl Default for CogWriteOptions {
+    fn default() -> Self {
+        Self {
+            geo_transform: None,
+            epsg_code: None,
+            no_data_value: None,
+            overview_levels: vec![2, 4, 8, 16],
+            tile_size: 256,
+            compression: Compression::Lzw,
+        }
+    }
+}
+
+/// Writes raster bands to a Cloud-Optimized GeoTIFF (COG).
+///
+/// `options.overview_levels` is a list of downsampling factors (e.g., `[2, 4, 8, 16]`).
+/// An empty `Vec` means "no overviews".
+pub fn write_raster_cog(
+    path: &Path,
+    buffers: &[RasterBuffer],
+    options: CogWriteOptions,
+) -> Result<()> {
+    let CogWriteOptions {
+        geo_transform,
+        epsg_code,
+        no_data_value,
+        overview_levels,
+        tile_size,
+        compression,
+    } = options;
+    if buffers.is_empty() {
+        anyhow::bail!("No bands provided for COG write");
+    }
+
+    let first_width = buffers[0].width();
+    let first_height = buffers[0].height();
+    let first_data_type = buffers[0].data_type();
+
+    for (i, buffer) in buffers.iter().enumerate().skip(1) {
+        if buffer.width() != first_width || buffer.height() != first_height {
+            anyhow::bail!(
+                "Band {} has different dimensions than the first band ({} x {} vs {} x {})",
+                i,
+                buffer.width(),
+                buffer.height(),
+                first_width,
+                first_height
+            );
+        }
+        if buffer.data_type() != first_data_type {
+            anyhow::bail!(
+                "Band {} has different data type ({:?}) than first band ({:?})",
+                i,
+                buffer.data_type(),
+                first_data_type
+            );
+        }
+    }
+
+    // Interleave band data exactly as write_multi_band does
+    let bytes_per_pixel = first_data_type.size_bytes() as u64;
+    let pixel_count = first_width * first_height;
+    let total_bytes = (pixel_count * bytes_per_pixel * buffers.len() as u64) as usize;
+    let mut interleaved_data = vec![0u8; total_bytes];
+
+    for pixel_idx in 0..pixel_count {
+        for (band_idx, buffer) in buffers.iter().enumerate() {
+            let src_offset = (pixel_idx * bytes_per_pixel) as usize;
+            let dst_offset = ((pixel_idx * bytes_per_pixel) * buffers.len() as u64
+                + band_idx as u64 * bytes_per_pixel) as usize;
+            let src_end = src_offset + bytes_per_pixel as usize;
+            let dst_end = dst_offset + bytes_per_pixel as usize;
+            interleaved_data[dst_offset..dst_end]
+                .copy_from_slice(&buffer.as_bytes()[src_offset..src_end]);
+        }
+    }
+
+    let generate_overviews = !overview_levels.is_empty();
+
+    let mut config = WriterConfig::new(
+        first_width,
+        first_height,
+        buffers.len() as u16,
+        first_data_type,
+    )
+    .with_compression(compression)
+    .with_tile_size(tile_size, tile_size);
+
+    if let Some(gt) = geo_transform {
+        config = config.with_geo_transform(gt);
+    }
+    if let Some(epsg) = epsg_code {
+        config = config.with_epsg_code(epsg);
+    }
+    if let Some(no_data) = no_data_value {
+        let nodata_val = match first_data_type {
+            RasterDataType::Int8
+            | RasterDataType::Int16
+            | RasterDataType::Int32
+            | RasterDataType::Int64
+            | RasterDataType::UInt8
+            | RasterDataType::UInt16
+            | RasterDataType::UInt32
+            | RasterDataType::UInt64 => NoDataValue::Integer(no_data as i64),
+            _ => NoDataValue::Float(no_data),
+        };
+        config = config.with_nodata(nodata_val);
+    }
+
+    use oxigdal_geotiff::OverviewResampling;
+    config = config.with_overviews(generate_overviews, OverviewResampling::Average);
+    if generate_overviews {
+        config = config.with_overview_levels(overview_levels);
+    }
+
+    let mut writer = CogWriter::create(path, config, CogWriterOptions::default())
+        .with_context(|| format!("Failed to create COG: {}", path.display()))?;
+
+    writer
+        .write(&interleaved_data)
+        .with_context(|| format!("Failed to write COG data to {}", path.display()))?;
+
+    Ok(())
+}
+
+/// Reads raster info from a URI or bare file path.
+///
+/// Cloud URIs (`s3://`, `gs://`, `az://`) and `file://` URIs give a clear error
+/// directing the user to use local paths until GeoTiffReader is wired to accept
+/// arbitrary DataSource objects.
+pub fn read_raster_info_uri(uri: &str) -> Result<RasterInfo> {
+    if crate::util::cloud::is_cloud_uri(uri) || uri.starts_with("file://") {
+        // Opening via the cloud/URI datasource path is not yet wired to
+        // GeoTiffReader<T: DataSource> in this crate. Give a helpful error.
+        anyhow::bail!(
+            "cloud URI reading for raster requires GeoTiffReader<DataSource>; \
+             use a local file path for now (got: {})",
+            uri
+        );
+    }
+    read_raster_info(Path::new(uri))
 }
 
 /// Calculate output geotransform for a subset operation

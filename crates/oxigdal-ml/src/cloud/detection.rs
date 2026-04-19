@@ -3,11 +3,9 @@
 use std::path::Path;
 
 use ndarray::{Array3, Array4, s};
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::TensorRef;
 use oxigdal_core::buffer::RasterBuffer;
 use oxigdal_core::types::RasterDataType;
+use oxionnx::{GraphOptimizationLevel, Session, SessionBuilder, Tensor};
 use rayon::prelude::*;
 use tracing::{debug, instrument};
 
@@ -99,15 +97,9 @@ impl CloudDetector {
             .into());
         }
 
-        // Load ONNX model using ONNX Runtime 2.0 API
-        let session = Session::builder()
-            .map_err(|e| ModelError::LoadFailed {
-                reason: format!("Failed to create session builder: {}", e),
-            })?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e| ModelError::LoadFailed {
-                reason: format!("Failed to set optimization level: {}", e),
-            })?
+        // Load ONNX model — SessionBuilder methods return Self (no Result until commit_from_file)
+        let session = SessionBuilder::new()
+            .with_optimization_level(GraphOptimizationLevel::All)
             .commit_from_file(path)
             .map_err(|e| ModelError::LoadFailed {
                 reason: format!("Failed to load cloud detection model: {}", e),
@@ -144,11 +136,12 @@ impl CloudDetector {
         let normalized = self.preprocess(image)?;
 
         // Use ONNX model if available, otherwise fall back to rule-based detection
+        // session.run is &self in oxionnx, so we only need a shared lock
         let (mask, confidence) = if let Some(ref session_mutex) = self.session {
-            let mut session = session_mutex.lock().map_err(|e| {
+            let session = session_mutex.lock().map_err(|e| {
                 crate::error::MlError::InvalidConfig(format!("Failed to lock session: {}", e))
             })?;
-            self.detect_onnx(&mut session, &normalized, image.width(), image.height())?
+            self.detect_onnx(&session, &normalized, image.width(), image.height())?
         } else {
             debug!("No ONNX session available, using rule-based detection");
             self.detect_rule_based(&normalized, image.width(), image.height())?
@@ -212,54 +205,57 @@ impl CloudDetector {
     /// ONNX-based cloud detection using trained model
     fn detect_onnx(
         &self,
-        session: &mut Session,
+        session: &Session,
         normalized: &Array4<f32>,
         width: u64,
         height: u64,
     ) -> Result<(RasterBuffer, RasterBuffer)> {
         debug!("Running ONNX inference for cloud detection");
 
-        // Get input and output names from session metadata
+        // Get input and output names from session metadata (TensorInfo has .name field)
         let input_name = session
-            .inputs()
+            .input_info()
             .first()
             .ok_or_else(|| InferenceError::Failed {
                 reason: "No input tensor found in model".to_string(),
             })?
-            .name()
-            .to_string();
+            .name
+            .clone();
 
         let output_name = session
-            .outputs()
+            .output_info()
             .first()
             .ok_or_else(|| InferenceError::Failed {
                 reason: "No output tensor found in model".to_string(),
             })?
-            .name()
-            .to_string();
+            .name
+            .clone();
 
-        // Create TensorRef from ndarray view
-        let input_tensor =
-            TensorRef::from_array_view(normalized.view()).map_err(|e| InferenceError::Failed {
-                reason: format!("Failed to create input tensor: {}", e),
-            })?;
+        // Create Tensor from ndarray view (returns Tensor directly, no Result)
+        let input_tensor = Tensor::from_ndarray_view(normalized.view());
 
-        // Run inference using ort 2.0 API
+        // Build inputs map using oxionnx::inputs! macro
+        let inputs_map = oxionnx::inputs![input_name.as_str() => input_tensor].map_err(|e| {
+            InferenceError::Failed {
+                reason: format!("Failed to build inputs map: {}", e),
+            }
+        })?;
+
+        // Run inference — session.run takes &HashMap<&str, Tensor>
         let outputs = session
-            .run(ort::inputs![input_name.as_str() => input_tensor])
+            .run(&inputs_map)
             .map_err(|e| InferenceError::Failed {
                 reason: format!("Cloud detection inference failed: {}", e),
             })?;
 
-        // Extract output tensor
+        // Extract output tensor from HashMap<String, Tensor>
         let output_tensor = outputs.get(output_name.as_str()).ok_or_else(|| {
             InferenceError::OutputParsingFailed {
                 reason: format!("Output tensor '{}' not found", output_name),
             }
         })?;
 
-        // Extract array from tensor (ort 2.0 API)
-        // try_extract_array directly returns ArrayViewD
+        // Extract ndarray view from Tensor
         let output_array = output_tensor.try_extract_array::<f32>().map_err(|e| {
             InferenceError::OutputParsingFailed {
                 reason: format!("Failed to extract output tensor: {}", e),
@@ -269,7 +265,7 @@ impl CloudDetector {
         // Convert to owned array to avoid borrow checker issues
         let output_owned = output_array.to_owned();
 
-        // Drop outputs to release the borrow of session
+        // Drop outputs to release the borrow
         drop(outputs);
 
         let h = height as usize;

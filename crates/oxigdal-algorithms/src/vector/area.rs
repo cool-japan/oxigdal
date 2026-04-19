@@ -53,10 +53,20 @@ const WGS84_F: f64 = (WGS84_A - WGS84_B) / WGS84_A;
 pub enum AreaMethod {
     /// Planar area using Cartesian coordinates (fast, for projected data)
     Planar,
-    /// Geodetic area on WGS84 ellipsoid (accurate for lat/lon coordinates)
+    /// Geodetic area on WGS84 ellipsoid using spherical trapezoid rule
+    /// (good approximation for lat/lon coordinates)
     Geodetic,
     /// Signed planar area (preserves orientation)
     SignedPlanar,
+    /// Karney's geodesic area on WGS84 ellipsoid (highest accuracy)
+    ///
+    /// Uses 6th-order Taylor expansion in the third flattening with the
+    /// full inverse geodesic solver. Sub-millimeter accuracy for any polygon
+    /// size including antimeridian-crossing and polar-enclosing geometries.
+    ///
+    /// Reference: Karney, C.F.F. (2013) "Algorithms for geodesics",
+    /// Journal of Geodesy 87(1), pp. 43-55.
+    KarneyGeodesic,
 }
 
 /// Computes the area of a geometry
@@ -109,6 +119,7 @@ pub fn area_polygon(polygon: &Polygon, method: AreaMethod) -> Result<f64> {
         AreaMethod::Planar => Ok(area_polygon_planar(polygon)),
         AreaMethod::Geodetic => area_polygon_geodetic(polygon),
         AreaMethod::SignedPlanar => Ok(area_polygon_signed(polygon)),
+        AreaMethod::KarneyGeodesic => super::geodesic::area_polygon_karney(polygon),
     }
 }
 

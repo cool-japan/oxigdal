@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{DatasetFormat, Result, open::OpenedDataset, open::open};
 use oxigdal_core::error::OxiGdalError;
+use oxigdal_core::types::{GeoTransform, RasterDataType};
 
 // ─── Output / Compression enums ──────────────────────────────────────────────
 
@@ -503,7 +504,17 @@ impl DatasetCreateBuilder {
         self.validate()?;
         let path = self.path.clone();
         let options = self.options.clone();
-        Ok(DatasetWriter { path, options })
+        Ok(DatasetWriter {
+            path,
+            options,
+            width: None,
+            height: None,
+            band_count: None,
+            data_type: None,
+            geo_transform: None,
+            bands: Vec::new(),
+            finalized: false,
+        })
     }
 }
 
@@ -511,12 +522,30 @@ impl DatasetCreateBuilder {
 
 /// Handle returned by [`DatasetCreateBuilder::create`].
 ///
-/// Carries the validated path and creation options.  Actual writing is
-/// delegated to the format driver crates in later implementation stages.
-#[derive(Debug, Clone)]
+/// Carries the validated path and creation options.  Raster dimensions,
+/// data type, and geo-transform are configured after construction; then
+/// bands are written via [`write_band`] or [`write_all_bands`], and the
+/// output is finalised with [`finalize`].
+///
+/// [`write_band`]: DatasetWriter::write_band
+/// [`write_all_bands`]: DatasetWriter::write_all_bands
+/// [`finalize`]: DatasetWriter::finalize
+#[derive(Debug)]
 pub struct DatasetWriter {
     path: PathBuf,
     options: CreateOptions,
+    /// Raster dimensions (set via `set_dimensions`).
+    width: Option<u32>,
+    height: Option<u32>,
+    band_count: Option<u32>,
+    /// Pixel data type.
+    data_type: Option<RasterDataType>,
+    /// Spatial positioning.
+    geo_transform: Option<GeoTransform>,
+    /// Per-band byte buffers (band index 1-based, stored 0-based).
+    bands: Vec<Vec<u8>>,
+    /// Whether `finalize()` has been called.
+    finalized: bool,
 }
 
 impl DatasetWriter {
@@ -553,6 +582,239 @@ impl DatasetWriter {
     /// Decimal precision for vector coordinates, if configured.
     pub fn decimal_precision(&self) -> Option<u8> {
         self.options.decimal_precision
+    }
+
+    // ── raster configuration ──────────────────────────────────────────────────
+
+    /// Set the raster dimensions and number of bands.
+    ///
+    /// Must be called before `write_band` or `write_all_bands`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any dimension is zero.
+    pub fn set_dimensions(&mut self, width: u32, height: u32, band_count: u32) -> Result<()> {
+        if width == 0 || height == 0 || band_count == 0 {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "dimensions",
+                message: format!(
+                    "all dimensions must be non-zero, got ({width} x {height} x {band_count})"
+                ),
+            });
+        }
+        self.width = Some(width);
+        self.height = Some(height);
+        self.band_count = Some(band_count);
+        Ok(())
+    }
+
+    /// Set the pixel data type.
+    pub fn set_data_type(&mut self, data_type: RasterDataType) {
+        self.data_type = Some(data_type);
+    }
+
+    /// Set the geo-transform (spatial positioning).
+    pub fn set_geo_transform(&mut self, gt: GeoTransform) {
+        self.geo_transform = Some(gt);
+    }
+
+    /// Configured raster width (pixels), if set.
+    pub fn width(&self) -> Option<u32> {
+        self.width
+    }
+
+    /// Configured raster height (pixels), if set.
+    pub fn height(&self) -> Option<u32> {
+        self.height
+    }
+
+    /// Configured number of bands, if set.
+    pub fn band_count(&self) -> Option<u32> {
+        self.band_count
+    }
+
+    /// Configured data type, if set.
+    pub fn data_type(&self) -> Option<RasterDataType> {
+        self.data_type
+    }
+
+    /// Configured geo-transform, if set.
+    pub fn geo_transform(&self) -> Option<&GeoTransform> {
+        self.geo_transform.as_ref()
+    }
+
+    // ── write operations ──────────────────────────────────────────────────────
+
+    /// Write raw bytes for a single band.
+    ///
+    /// `band` is **1-based** (as in GDAL convention).  The data length must
+    /// equal `width × height × data_type.size_bytes()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dimensions/data-type are not yet configured, the
+    /// band index is out of range, or the data length is wrong.
+    pub fn write_band(&mut self, band: u32, data: &[u8]) -> Result<()> {
+        if self.finalized {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "finalized",
+                message: "cannot write after finalize".to_string(),
+            });
+        }
+        let (w, h, bc, dt) = self.require_raster_config()?;
+        if band == 0 || band > bc {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "band",
+                message: format!("band index {band} out of range [1, {bc}]"),
+            });
+        }
+        let expected = w as usize * h as usize * dt.size_bytes();
+        if data.len() != expected {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "data",
+                message: format!(
+                    "data length {} does not match expected {} ({w}×{h}×{})",
+                    data.len(),
+                    expected,
+                    dt.size_bytes()
+                ),
+            });
+        }
+
+        // Ensure band vector is large enough
+        let idx = (band - 1) as usize;
+        if self.bands.len() <= idx {
+            self.bands.resize_with(idx + 1, Vec::new);
+        }
+        self.bands[idx] = data.to_vec();
+        Ok(())
+    }
+
+    /// Write all bands at once from a contiguous BSQ (band-sequential) buffer.
+    ///
+    /// The data length must equal `width × height × band_count × data_type.size_bytes()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dimensions/data-type are not yet configured or the
+    /// data length is wrong.
+    pub fn write_all_bands(&mut self, data: &[u8]) -> Result<()> {
+        if self.finalized {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "finalized",
+                message: "cannot write after finalize".to_string(),
+            });
+        }
+        let (w, h, bc, dt) = self.require_raster_config()?;
+        let band_bytes = w as usize * h as usize * dt.size_bytes();
+        let total = band_bytes * bc as usize;
+        if data.len() != total {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "data",
+                message: format!(
+                    "data length {} does not match expected {} ({w}×{h}×{bc}×{})",
+                    data.len(),
+                    total,
+                    dt.size_bytes()
+                ),
+            });
+        }
+        self.bands.clear();
+        for i in 0..bc as usize {
+            let start = i * band_bytes;
+            self.bands.push(data[start..start + band_bytes].to_vec());
+        }
+        Ok(())
+    }
+
+    /// Finalise the dataset, writing to disk.
+    ///
+    /// Currently supports GeoJSON (empty feature collection) and stores raw
+    /// raster bytes for other formats.  Future versions will dispatch to
+    /// format-specific driver crates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be created.
+    pub fn finalize(&mut self) -> Result<()> {
+        if self.finalized {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "finalized",
+                message: "already finalized".to_string(),
+            });
+        }
+        self.finalized = true;
+
+        match self.options.format {
+            OutputFormat::GeoJson => {
+                // Write a minimal GeoJSON FeatureCollection
+                let precision = self.options.decimal_precision.unwrap_or(6);
+                let content = format!(
+                    "{{\"type\":\"FeatureCollection\",\"features\":[],\"metadata\":{{\"crs\":{crs},\"precision\":{precision}}}}}",
+                    crs = match &self.options.crs {
+                        Some(c) => format!("\"{c}\""),
+                        None => "null".to_string(),
+                    },
+                );
+                std::fs::write(&self.path, content.as_bytes())
+                    .map_err(|e| OxiGdalError::io_error(e.to_string()))?;
+            }
+            _ => {
+                // For raster formats: write a simple binary format (header + bands)
+                // This is a placeholder; real drivers will produce GeoTIFF/etc.
+                if !self.bands.is_empty() {
+                    let mut buf = Vec::new();
+                    // Simple header: magic + dimensions
+                    buf.extend_from_slice(b"OXIG"); // magic
+                    let w = self.width.unwrap_or(0);
+                    let h = self.height.unwrap_or(0);
+                    let bc = self.band_count.unwrap_or(0);
+                    let dt = self.data_type.unwrap_or_default() as u8;
+                    buf.extend_from_slice(&w.to_le_bytes());
+                    buf.extend_from_slice(&h.to_le_bytes());
+                    buf.extend_from_slice(&bc.to_le_bytes());
+                    buf.push(dt);
+                    // Band data
+                    for band in &self.bands {
+                        buf.extend_from_slice(band);
+                    }
+                    std::fs::write(&self.path, &buf)
+                        .map_err(|e| OxiGdalError::io_error(e.to_string()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this writer has been finalized.
+    pub fn is_finalized(&self) -> bool {
+        self.finalized
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn require_raster_config(&self) -> Result<(u32, u32, u32, RasterDataType)> {
+        let w = self.width.ok_or_else(|| OxiGdalError::InvalidParameter {
+            parameter: "width",
+            message: "dimensions not set; call set_dimensions() first".to_string(),
+        })?;
+        let h = self.height.ok_or_else(|| OxiGdalError::InvalidParameter {
+            parameter: "height",
+            message: "dimensions not set; call set_dimensions() first".to_string(),
+        })?;
+        let bc = self
+            .band_count
+            .ok_or_else(|| OxiGdalError::InvalidParameter {
+                parameter: "band_count",
+                message: "dimensions not set; call set_dimensions() first".to_string(),
+            })?;
+        let dt = self
+            .data_type
+            .ok_or_else(|| OxiGdalError::InvalidParameter {
+                parameter: "data_type",
+                message: "data type not set; call set_data_type() first".to_string(),
+            })?;
+        Ok((w, h, bc, dt))
     }
 }
 
@@ -651,41 +913,46 @@ mod tests {
 
     #[test]
     fn test_create_builder_stores_format() {
-        let builder = DatasetCreateBuilder::new("/tmp/out.tif", OutputFormat::GeoTiff);
+        let path = std::env::temp_dir().join("oxigdal_out_test.tif");
+        let builder = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff);
         assert_eq!(builder.format(), OutputFormat::GeoTiff);
     }
 
     #[test]
     fn test_create_builder_stores_crs() {
-        let builder =
-            DatasetCreateBuilder::new("/tmp/out.tif", OutputFormat::GeoTiff).with_crs("EPSG:4326");
+        let path = std::env::temp_dir().join("oxigdal_out_test.tif");
+        let builder = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff).with_crs("EPSG:4326");
         assert_eq!(builder.options().crs.as_deref(), Some("EPSG:4326"));
     }
 
     #[test]
     fn test_create_builder_stores_compression() {
-        let builder = DatasetCreateBuilder::new("/tmp/out.tif", OutputFormat::GeoTiff)
+        let path = std::env::temp_dir().join("oxigdal_out_test.tif");
+        let builder = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_compression(CompressionType::Zstd);
         assert_eq!(builder.options().compression, CompressionType::Zstd);
     }
 
     #[test]
     fn test_create_builder_stores_tile_size() {
-        let builder = DatasetCreateBuilder::new("/tmp/out.tif", OutputFormat::GeoTiff)
-            .with_tile_size(512, 512);
+        let path = std::env::temp_dir().join("oxigdal_out_test.tif");
+        let builder =
+            DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff).with_tile_size(512, 512);
         assert_eq!(builder.options().tile_size, Some((512, 512)));
     }
 
     #[test]
     fn test_create_builder_stores_decimal_precision() {
-        let builder = DatasetCreateBuilder::new("/tmp/out.geojson", OutputFormat::GeoJson)
-            .with_decimal_precision(7);
+        let path = std::env::temp_dir().join("oxigdal_out_test.geojson");
+        let builder =
+            DatasetCreateBuilder::new(&path, OutputFormat::GeoJson).with_decimal_precision(7);
         assert_eq!(builder.options().decimal_precision, Some(7));
     }
 
     #[test]
     fn test_create_builder_zero_tile_size_error() {
-        let result = DatasetCreateBuilder::new("/tmp/out.tif", OutputFormat::GeoTiff)
+        let path = std::env::temp_dir().join("oxigdal_out_test.tif");
+        let result = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_tile_size(0, 256)
             .create();
         assert!(result.is_err(), "zero tile width should fail validation");
@@ -693,7 +960,8 @@ mod tests {
 
     #[test]
     fn test_create_builder_invalid_predictor_error() {
-        let result = DatasetCreateBuilder::new("/tmp/out.tif", OutputFormat::GeoTiff)
+        let path = std::env::temp_dir().join("oxigdal_out_test.tif");
+        let result = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_predictor(5)
             .create();
         assert!(result.is_err(), "predictor 5 is invalid");
@@ -701,7 +969,8 @@ mod tests {
 
     #[test]
     fn test_create_builder_jpeg_non_geotiff_error() {
-        let result = DatasetCreateBuilder::new("/tmp/out.geojson", OutputFormat::GeoJson)
+        let path = std::env::temp_dir().join("oxigdal_out_test.geojson");
+        let result = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
             .with_compression(CompressionType::Jpeg)
             .create();
         assert!(result.is_err(), "JPEG compression on GeoJSON should fail");
@@ -709,7 +978,8 @@ mod tests {
 
     #[test]
     fn test_create_builder_valid_create() {
-        let writer = DatasetCreateBuilder::new("/tmp/valid_out.tif", OutputFormat::GeoTiff)
+        let path = std::env::temp_dir().join("oxigdal_valid_out_test.tif");
+        let writer = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_crs("EPSG:4326")
             .with_compression(CompressionType::Deflate)
             .with_tile_size(256, 256)
@@ -748,12 +1018,167 @@ mod tests {
 
     #[test]
     fn test_dataset_writer_display() {
-        let writer = DatasetCreateBuilder::new("/tmp/disp.tif", OutputFormat::GeoTiff)
+        let path = std::env::temp_dir().join("oxigdal_disp_test.tif");
+        let writer = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_compression(CompressionType::Lzw)
             .create()
             .expect("create");
         let s = writer.to_string();
         assert!(s.contains("GTiff"), "display should contain format: {s}");
         assert!(s.contains("LZW"), "display should contain compression: {s}");
+    }
+
+    // ── DatasetWriter write operations ────────────────────────────────────────
+
+    #[test]
+    fn test_writer_set_dimensions() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        w.set_dimensions(256, 256, 3).expect("set dims");
+        assert_eq!(w.width(), Some(256));
+        assert_eq!(w.height(), Some(256));
+        assert_eq!(w.band_count(), Some(3));
+    }
+
+    #[test]
+    fn test_writer_zero_dimensions_error() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        assert!(w.set_dimensions(0, 256, 1).is_err());
+        assert!(w.set_dimensions(256, 0, 1).is_err());
+        assert!(w.set_dimensions(256, 256, 0).is_err());
+    }
+
+    #[test]
+    fn test_writer_write_band_requires_config() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        let data = vec![0u8; 4];
+        assert!(w.write_band(1, &data).is_err(), "no dimensions set");
+    }
+
+    #[test]
+    fn test_writer_write_band_validates_size() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        w.set_dimensions(2, 2, 1).expect("dims");
+        w.set_data_type(RasterDataType::UInt8);
+        // Correct size = 2*2*1 = 4
+        assert!(w.write_band(1, &[0u8; 3]).is_err(), "wrong size");
+        assert!(w.write_band(1, &[0u8; 4]).is_ok(), "correct size");
+    }
+
+    #[test]
+    fn test_writer_write_band_validates_index() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        w.set_dimensions(2, 2, 2).expect("dims");
+        w.set_data_type(RasterDataType::UInt8);
+        assert!(w.write_band(0, &[0u8; 4]).is_err(), "band 0 invalid");
+        assert!(w.write_band(3, &[0u8; 4]).is_err(), "band 3 out of range");
+        assert!(w.write_band(1, &[0u8; 4]).is_ok());
+        assert!(w.write_band(2, &[0u8; 4]).is_ok());
+    }
+
+    #[test]
+    fn test_writer_write_all_bands() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        w.set_dimensions(2, 2, 3).expect("dims");
+        w.set_data_type(RasterDataType::UInt8);
+        // 2*2*3 = 12 bytes
+        assert!(w.write_all_bands(&[0u8; 12]).is_ok());
+        assert!(w.write_all_bands(&[0u8; 11]).is_err(), "wrong size");
+    }
+
+    #[test]
+    fn test_writer_finalize_geojson() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("writer_finalize_test.geojson");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
+            .with_crs("EPSG:4326")
+            .with_decimal_precision(6)
+            .create()
+            .expect("create");
+        w.finalize().expect("finalize");
+        assert!(w.is_finalized());
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert!(content.contains("FeatureCollection"));
+        assert!(content.contains("EPSG:4326"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_finalize_raster() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("writer_finalize_raster_test.bin");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        w.set_dimensions(2, 2, 1).expect("dims");
+        w.set_data_type(RasterDataType::UInt8);
+        w.write_band(1, &[10, 20, 30, 40]).expect("write band");
+        w.finalize().expect("finalize");
+        assert!(w.is_finalized());
+
+        let bytes = std::fs::read(&path).expect("read");
+        // Header: OXIG (4) + width (4) + height (4) + band_count (4) + dt (1) = 17
+        assert!(bytes.len() >= 17 + 4);
+        assert_eq!(&bytes[0..4], b"OXIG");
+        // Band data starts at offset 17
+        assert_eq!(&bytes[17..21], &[10, 20, 30, 40]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_double_finalize_error() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("writer_double_finalize.geojson");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
+            .create()
+            .expect("create");
+        w.finalize().expect("finalize");
+        assert!(w.finalize().is_err(), "double finalize should error");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_write_after_finalize_error() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("writer_write_after_fin.geojson");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
+            .create()
+            .expect("create");
+        w.set_dimensions(2, 2, 1).expect("dims");
+        w.set_data_type(RasterDataType::UInt8);
+        w.finalize().expect("finalize");
+        assert!(
+            w.write_band(1, &[0u8; 4]).is_err(),
+            "write after finalize should error"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_geo_transform() {
+        let path = std::env::temp_dir().join("oxigdal_w_test.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        let gt = GeoTransform::north_up(100.0, 50.0, 0.001, 0.001);
+        w.set_geo_transform(gt);
+        assert!(w.geo_transform().is_some());
     }
 }

@@ -59,7 +59,7 @@ aws-config = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
 # Optional: Scheduler support
-cron = { version = "0.15", optional = true }
+cron = { version = "0.16", optional = true }
 
 # Utilities
 chrono.workspace = true

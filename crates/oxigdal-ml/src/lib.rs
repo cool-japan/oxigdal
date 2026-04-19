@@ -316,6 +316,7 @@ pub mod serving;
 pub mod superres;
 #[cfg(feature = "temporal")]
 pub mod temporal;
+pub mod tiling;
 pub mod zoo;
 
 // Re-export commonly used items

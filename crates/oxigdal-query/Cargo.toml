@@ -27,7 +27,7 @@ futures.workspace = true
 async-trait.workspace = true
 
 # Query parsing
-sqlparser = "0.61"
+sqlparser.workspace = true
 
 # Concurrency
 dashmap.workspace = true

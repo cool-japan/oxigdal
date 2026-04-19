@@ -32,6 +32,7 @@
 pub mod error;
 pub mod filter;
 pub mod parser;
+pub mod seq;
 pub mod types;
 pub mod writer;
 
@@ -48,4 +49,6 @@ pub use parser::{
 
 pub use writer::{GeoJsonValidator, GeoJsonWriter, IssueSeverity, ValidationIssue};
 
-pub use filter::{FeatureFilter, FilterOp, PropertyFilter};
+pub use filter::{FeatureFilter, FilterExpr, FilterOp, PropertyFilter};
+
+pub use seq::{SeqReader, SeqWriter};

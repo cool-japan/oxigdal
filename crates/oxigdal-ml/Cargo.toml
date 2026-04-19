@@ -18,10 +18,10 @@ default = ["std"]
 std = ["thiserror/std", "serde/std", "oxigdal-core/std"]
 
 # Inference backends
-gpu = ["ort/cuda", "ort/tensorrt"]  # GPU acceleration via CUDA/TensorRT
+gpu = ["oxionnx/cuda"]  # GPU acceleration via CUDA (TensorRT not supported in oxionnx)
 cuda = ["dep:libloading"]  # CUDA backend with dynamic detection
 rocm = ["dep:libloading"]  # AMD ROCm backend with dynamic detection
-directml = ["ort/directml"]  # DirectML support for Windows
+# directml = []  # DirectML not supported in oxionnx (oxionnx uses compile-time feature flags)
 vulkan = ["dep:ash"]  # Vulkan compute backend
 metal = ["dep:metal", "dep:objc"]  # Apple Metal backend
 opencl = ["dep:opencl3"]  # OpenCL backend
@@ -53,8 +53,8 @@ serde_json = { workspace = true }
 # OxiGDAL ecosystem
 oxigdal-core = { workspace = true }
 
-# ONNX Runtime - Pure Rust interface
-ort = { workspace = true }
+# ONNX Runtime - Pure Rust interface (oxionnx replaces ort)
+oxionnx = { workspace = true }
 
 # Geometry and GeoJSON
 geojson = { workspace = true }

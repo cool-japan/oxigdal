@@ -3,8 +3,12 @@
 //! Provides typed representations of the core GeoPackage tables defined by the
 //! OGC GeoPackage Encoding Standard v1.3.1.
 
+use crate::btree::{self, CellValue, MasterEntry};
 use crate::error::GpkgError;
 use crate::sqlite_reader::SqliteReader;
+
+/// A full-table scan result: one `(rowid, column_values)` tuple per row.
+pub type TableScanRows = Vec<(i64, Vec<CellValue>)>;
 
 /// The content type stored in a GeoPackage table.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,5 +146,160 @@ impl GeoPackage {
     /// Return `true` if the `application_id` field equals the GeoPackage magic.
     pub fn has_gpkg_application_id(&self) -> bool {
         self.reader.header.application_id == 0x4750_4B47
+    }
+
+    // ── B-tree / SQLite master scans ────────────────────────────────────────
+
+    /// Scan the `sqlite_master` system table (always rooted at page 1) and
+    /// return every entry — tables, indices, views, and triggers.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying SQLite B-tree pages are malformed or
+    /// truncated.
+    pub fn scan_sqlite_master(&self) -> Result<Vec<MasterEntry>, GpkgError> {
+        btree::scan_sqlite_master(
+            self.reader.raw_data(),
+            self.reader.header.page_size as usize,
+        )
+    }
+
+    /// Perform a full scan of a table B-tree starting at `root_page`.
+    ///
+    /// Returns `(rowid, column_values)` for every row, traversing any number of
+    /// interior pages to reach leaf pages.
+    ///
+    /// # Errors
+    /// Returns an error if `root_page` is out of range or any B-tree page is
+    /// malformed.
+    pub fn scan_table(&self, root_page: u32) -> Result<TableScanRows, GpkgError> {
+        btree::scan_table(
+            self.reader.raw_data(),
+            root_page,
+            self.reader.header.page_size as usize,
+        )
+    }
+
+    /// Look up a user table's root page number by name, then scan it.
+    ///
+    /// Returns `Ok(None)` when no `sqlite_master` entry matches `table_name`.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the subsequent table
+    /// scan fails.
+    pub fn scan_table_by_name(&self, table_name: &str) -> Result<Option<TableScanRows>, GpkgError> {
+        let master = self.scan_sqlite_master()?;
+        for entry in master {
+            if entry.entry_type == "table" && entry.name == table_name {
+                if entry.rootpage == 0 {
+                    return Ok(Some(Vec::new()));
+                }
+                return Ok(Some(self.scan_table(entry.rootpage)?));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Populate `self.contents` by scanning the `gpkg_contents` system table.
+    ///
+    /// The canonical column layout of `gpkg_contents` is:
+    ///
+    /// | # | column         | type      |
+    /// |---|----------------|-----------|
+    /// | 0 | `table_name`   | TEXT      |
+    /// | 1 | `data_type`    | TEXT      |
+    /// | 2 | `identifier`   | TEXT      |
+    /// | 3 | `description`  | TEXT      |
+    /// | 4 | `last_change`  | DATETIME  |
+    /// | 5 | `min_x`        | REAL      |
+    /// | 6 | `min_y`        | REAL      |
+    /// | 7 | `max_x`        | REAL      |
+    /// | 8 | `max_y`        | REAL      |
+    /// | 9 | `srs_id`       | INTEGER   |
+    ///
+    /// Returns the number of rows loaded.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan fails or the
+    /// `gpkg_contents` table is not present and cannot be scanned.
+    pub fn load_contents(&mut self) -> Result<usize, GpkgError> {
+        let rows = self
+            .scan_table_by_name("gpkg_contents")?
+            .unwrap_or_default();
+
+        let mut contents = Vec::with_capacity(rows.len());
+        for (_rowid, values) in rows {
+            if values.len() < 10 {
+                continue; // skip malformed row
+            }
+            let table_name = cell_to_string(&values[0]);
+            let data_type = GpkgDataType::parse_type(&cell_to_string(&values[1]));
+            let identifier = cell_to_optional_string(&values[2]);
+            let description = cell_to_optional_string(&values[3]);
+            // values[4] is last_change (TEXT/datetime) — skipped
+            let min_x = cell_to_f64(&values[5]);
+            let min_y = cell_to_f64(&values[6]);
+            let max_x = cell_to_f64(&values[7]);
+            let max_y = cell_to_f64(&values[8]);
+            let srs_id = cell_to_i32(&values[9]);
+
+            contents.push(GpkgContents {
+                table_name,
+                data_type,
+                identifier,
+                description,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+                srs_id,
+            });
+        }
+
+        let count = contents.len();
+        self.contents = contents;
+        Ok(count)
+    }
+}
+
+// ── Cell-value coercion helpers ─────────────────────────────────────────────
+
+fn cell_to_string(v: &CellValue) -> String {
+    match v {
+        CellValue::Text(s) => s.clone(),
+        CellValue::Integer(i) => i.to_string(),
+        CellValue::Float(f) => f.to_string(),
+        CellValue::Blob(b) => String::from_utf8_lossy(b).into_owned(),
+        CellValue::Null => String::new(),
+    }
+}
+
+fn cell_to_optional_string(v: &CellValue) -> Option<String> {
+    match v {
+        CellValue::Null => None,
+        CellValue::Text(s) if s.is_empty() => None,
+        other => Some(cell_to_string(other)),
+    }
+}
+
+fn cell_to_f64(v: &CellValue) -> f64 {
+    match v {
+        CellValue::Float(f) => *f,
+        CellValue::Integer(i) => *i as f64,
+        _ => 0.0,
+    }
+}
+
+fn cell_to_i32(v: &CellValue) -> i32 {
+    match v {
+        CellValue::Integer(i) => {
+            if *i > i32::MAX as i64 {
+                i32::MAX
+            } else if *i < i32::MIN as i64 {
+                i32::MIN
+            } else {
+                *i as i32
+            }
+        }
+        _ => 0,
     }
 }

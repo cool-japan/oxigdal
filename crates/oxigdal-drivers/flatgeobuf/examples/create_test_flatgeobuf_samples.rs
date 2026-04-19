@@ -9,9 +9,7 @@
 //!     demo/cog-viewer/golden-triangle.fgb
 //!     demo/cog-viewer/iron-belt.fgb
 
-use oxigdal_core::vector::{
-    Coordinate, Feature, Geometry, LineString, Point, Polygon, PropertyValue,
-};
+use oxigdal_core::vector::{Coordinate, Feature, FieldValue, Geometry, LineString, Point, Polygon};
 use oxigdal_flatgeobuf::header::{Column, ColumnType, CrsInfo, GeometryType};
 use oxigdal_flatgeobuf::writer::FlatGeobufWriterBuilder;
 use std::fs::{File, create_dir_all};
@@ -65,11 +63,11 @@ fn create_golden_triangle_fgb() -> Result<(), Box<dyn std::error::Error>> {
     let mut thailand_feature = Feature::new(Geometry::Polygon(thailand_polygon));
     thailand_feature.set_property(
         "name",
-        PropertyValue::String("Golden Triangle - Thailand".to_string()),
+        FieldValue::String("Golden Triangle - Thailand".to_string()),
     );
-    thailand_feature.set_property("country", PropertyValue::String("Thailand".to_string()));
-    thailand_feature.set_property("area_km2", PropertyValue::Float(15000.0));
-    thailand_feature.set_property("population", PropertyValue::Integer(500000));
+    thailand_feature.set_property("country", FieldValue::String("Thailand".to_string()));
+    thailand_feature.set_property("area_km2", FieldValue::Float(15000.0));
+    thailand_feature.set_property("population", FieldValue::Integer(500000));
     writer.add_feature(&thailand_feature)?;
 
     // Myanmar region
@@ -83,11 +81,11 @@ fn create_golden_triangle_fgb() -> Result<(), Box<dyn std::error::Error>> {
     let mut myanmar_feature = Feature::new(Geometry::Polygon(myanmar_polygon));
     myanmar_feature.set_property(
         "name",
-        PropertyValue::String("Golden Triangle - Myanmar".to_string()),
+        FieldValue::String("Golden Triangle - Myanmar".to_string()),
     );
-    myanmar_feature.set_property("country", PropertyValue::String("Myanmar".to_string()));
-    myanmar_feature.set_property("area_km2", PropertyValue::Float(12000.0));
-    myanmar_feature.set_property("population", PropertyValue::Integer(300000));
+    myanmar_feature.set_property("country", FieldValue::String("Myanmar".to_string()));
+    myanmar_feature.set_property("area_km2", FieldValue::Float(12000.0));
+    myanmar_feature.set_property("population", FieldValue::Integer(300000));
     writer.add_feature(&myanmar_feature)?;
 
     // Laos region
@@ -101,11 +99,11 @@ fn create_golden_triangle_fgb() -> Result<(), Box<dyn std::error::Error>> {
     let mut laos_feature = Feature::new(Geometry::Polygon(laos_polygon));
     laos_feature.set_property(
         "name",
-        PropertyValue::String("Golden Triangle - Laos".to_string()),
+        FieldValue::String("Golden Triangle - Laos".to_string()),
     );
-    laos_feature.set_property("country", PropertyValue::String("Laos".to_string()));
-    laos_feature.set_property("area_km2", PropertyValue::Float(8000.0));
-    laos_feature.set_property("population", PropertyValue::Integer(200000));
+    laos_feature.set_property("country", FieldValue::String("Laos".to_string()));
+    laos_feature.set_property("area_km2", FieldValue::Float(8000.0));
+    laos_feature.set_property("population", FieldValue::Integer(200000));
     writer.add_feature(&laos_feature)?;
 
     // Add some point features for major cities
@@ -173,13 +171,10 @@ fn create_iron_belt_fgb() -> Result<(), Box<dyn std::error::Error>> {
     );
     let spain_polygon = create_polygon(spain_coords)?;
     let mut spain_feature = Feature::new(Geometry::Polygon(spain_polygon));
-    spain_feature.set_property(
-        "name",
-        PropertyValue::String("Basque Iron Belt".to_string()),
-    );
-    spain_feature.set_property("country", PropertyValue::String("Spain".to_string()));
-    spain_feature.set_property("iron_production_mt", PropertyValue::Float(800000.0));
-    spain_feature.set_property("mining_sites", PropertyValue::Integer(15));
+    spain_feature.set_property("name", FieldValue::String("Basque Iron Belt".to_string()));
+    spain_feature.set_property("country", FieldValue::String("Spain".to_string()));
+    spain_feature.set_property("iron_production_mt", FieldValue::Float(800000.0));
+    spain_feature.set_property("mining_sites", FieldValue::Integer(15));
     writer.add_feature(&spain_feature)?;
 
     // French Pyrenees (Ariège)
@@ -193,11 +188,11 @@ fn create_iron_belt_fgb() -> Result<(), Box<dyn std::error::Error>> {
     let mut drc_feature = Feature::new(Geometry::Polygon(drc_polygon));
     drc_feature.set_property(
         "name",
-        PropertyValue::String("Ariège Mining Region".to_string()),
+        FieldValue::String("Ariège Mining Region".to_string()),
     );
-    drc_feature.set_property("country", PropertyValue::String("France".to_string()));
-    drc_feature.set_property("iron_production_mt", PropertyValue::Float(1200000.0));
-    drc_feature.set_property("mining_sites", PropertyValue::Integer(25));
+    drc_feature.set_property("country", FieldValue::String("France".to_string()));
+    drc_feature.set_property("iron_production_mt", FieldValue::Float(1200000.0));
+    drc_feature.set_property("mining_sites", FieldValue::Integer(25));
     writer.add_feature(&drc_feature)?;
 
     // Add major mining cities
@@ -281,10 +276,10 @@ fn add_city_point(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let point = Point::new(lon, lat);
     let mut feature = Feature::new(Geometry::Point(point));
-    feature.set_property("name", PropertyValue::String(name.to_string()));
-    feature.set_property("country", PropertyValue::String(country.to_string()));
-    feature.set_property("area_km2", PropertyValue::Float(0.0));
-    feature.set_property("population", PropertyValue::Integer(population));
+    feature.set_property("name", FieldValue::String(name.to_string()));
+    feature.set_property("country", FieldValue::String(country.to_string()));
+    feature.set_property("area_km2", FieldValue::Float(0.0));
+    feature.set_property("population", FieldValue::Integer(population));
     writer.add_feature(&feature)?;
     Ok(())
 }
@@ -301,10 +296,10 @@ fn add_mining_city(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let point = Point::new(lon, lat);
     let mut feature = Feature::new(Geometry::Point(point));
-    feature.set_property("name", PropertyValue::String(name.to_string()));
-    feature.set_property("country", PropertyValue::String(country.to_string()));
-    feature.set_property("iron_production_mt", PropertyValue::Float(0.0));
-    feature.set_property("mining_sites", PropertyValue::Integer(i64::from(mines)));
+    feature.set_property("name", FieldValue::String(name.to_string()));
+    feature.set_property("country", FieldValue::String(country.to_string()));
+    feature.set_property("iron_production_mt", FieldValue::Float(0.0));
+    feature.set_property("mining_sites", FieldValue::Integer(i64::from(mines)));
     writer.add_feature(&feature)?;
     Ok(())
 }

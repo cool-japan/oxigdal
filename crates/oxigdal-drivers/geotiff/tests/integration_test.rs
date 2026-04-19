@@ -496,6 +496,93 @@ fn test_geotiff_writer_multiband() {
     let _ = std::fs::remove_file(path);
 }
 
+/// Regression test for issue #2: "Expected inline TIFF tag value" error
+///
+/// `validate_cog_detailed` (and the inner validator helpers) previously called
+/// `IfdEntry::get_u64()` which only works for values stored inline in the IFD
+/// offset field. Any TIFF where a tag value is stored externally (e.g. because
+/// count > 1, or the data type's size > 4 bytes in Classic TIFF) would cause a
+/// hard error.  The fix replaces all those calls with `get_u64_from_source()`,
+/// which falls back to reading the value from the file when it is stored
+/// externally.
+///
+/// This test:
+/// 1. Writes a valid COG TIFF with multiple IFDs.
+/// 2. Calls `validate_cog_detailed` on it — this must not return an
+///    "Expected inline TIFF tag value" error.
+/// 3. Repeats with a plain tiled TIFF (no overviews).
+#[test]
+#[cfg(feature = "lzw")]
+fn test_issue_2_geotiff_inline_tag_error() {
+    use oxigdal_core::io::FileDataSource;
+    use oxigdal_geotiff::TiffFile;
+    use oxigdal_geotiff::cog::validate_cog_detailed;
+    use oxigdal_geotiff::writer::{
+        CogWriter, CogWriterOptions, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling,
+        WriterConfig,
+    };
+
+    // ── Part 1: COG with overviews ────────────────────────────────────────────
+    let cog_path = temp_test_file("issue2_cog.tif");
+    {
+        let config = WriterConfig::new(256, 256, 1, RasterDataType::UInt8)
+            .with_compression(oxigdal_geotiff::Compression::Lzw)
+            .with_tile_size(256, 256)
+            .with_overviews(true, OverviewResampling::Nearest)
+            .with_overview_levels(vec![2]);
+        let mut writer = CogWriter::create(&cog_path, config, CogWriterOptions::default())
+            .expect("Should create COG writer for issue-2 regression");
+        let data = vec![42u8; 256 * 256];
+        writer
+            .write(&data)
+            .expect("Should write COG data for issue-2 regression");
+    }
+    {
+        let source =
+            FileDataSource::open(&cog_path).expect("Should open COG file for issue-2 regression");
+        let tiff = TiffFile::parse(&source).expect("Should parse COG TIFF for issue-2 regression");
+        // Before the fix this call would fail with "Expected inline TIFF tag value".
+        let validation = validate_cog_detailed(&tiff, &source)
+            .expect("validate_cog_detailed must not return 'Expected inline TIFF tag value'");
+        // A properly-written COG with overviews should not have IFD-ordering errors.
+        assert!(
+            !validation
+                .messages
+                .iter()
+                .any(|m| m.message.contains("Expected inline TIFF tag value")),
+            "Validation must not surface 'Expected inline TIFF tag value' error"
+        );
+    }
+    let _ = std::fs::remove_file(&cog_path);
+
+    // ── Part 2: plain tiled TIFF (no overviews) ───────────────────────────────
+    let tiled_path = temp_test_file("issue2_tiled.tif");
+    {
+        let config = WriterConfig::new(128, 128, 3, RasterDataType::UInt16)
+            .with_compression(oxigdal_geotiff::Compression::Lzw)
+            .with_tile_size(64, 64);
+        let mut writer =
+            GeoTiffWriter::create(&tiled_path, config, GeoTiffWriterOptions::default())
+                .expect("Should create tiled writer for issue-2 regression");
+        // 3-band UInt16: 128*128*3*2 bytes
+        let data = vec![0u8; 128 * 128 * 3 * 2];
+        writer
+            .write(&data)
+            .expect("Should write tiled TIFF data for issue-2 regression");
+    }
+    {
+        let source = FileDataSource::open(&tiled_path)
+            .expect("Should open tiled TIFF for issue-2 regression");
+        let tiff =
+            TiffFile::parse(&source).expect("Should parse tiled TIFF for issue-2 regression");
+        // Before the fix, get_u64() on externally-stored tags (e.g. BitsPerSample
+        // for multi-band, where count=3 → external on Classic TIFF) would panic.
+        let _validation = validate_cog_detailed(&tiff, &source)
+            .expect("validate_cog_detailed on multi-band tiled TIFF must not error");
+    }
+    let _ = std::fs::remove_file(&tiled_path);
+}
+
 /// Test BigTIFF writing
 #[test]
 #[cfg(feature = "lzw")]

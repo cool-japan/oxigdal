@@ -1,10 +1,12 @@
 //! GeoJSON reader implementation
 //!
 //! This module provides efficient reading and parsing of GeoJSON files
-//! with support for streaming large files.
+//! with support for streaming large files, GeoJSONL (newline-delimited GeoJSON),
+//! and spatial filtering via bounding-box predicates.
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::marker::PhantomData;
+use std::path::Path;
 
 use crate::error::{GeoJsonError, Result};
 use crate::types::{Feature, FeatureCollection, Geometry};
@@ -309,6 +311,153 @@ pub fn feature_from_str(s: &str) -> Result<Feature> {
 pub fn geometry_from_str(s: &str) -> Result<Geometry> {
     let g: Geometry = serde_json::from_str(s)?;
     Ok(g)
+}
+
+// ─── GeoJSONL / newline-delimited GeoJSON ─────────────────────────────────────
+
+/// Read all features from a GeoJSON-seq / newline-delimited GeoJSON stream.
+///
+/// Each non-empty line must be a valid GeoJSON `Feature` object.
+/// Blank lines and lines starting with `//` are skipped (comment lines).
+///
+/// # Errors
+///
+/// Returns the first I/O error or the first JSON-parse error encountered,
+/// including the 1-based line number in the error message.
+pub fn read_geojsonl<R: BufRead>(reader: R) -> Result<Vec<Feature>> {
+    let mut features = Vec::new();
+    for (idx, line_result) in reader.lines().enumerate() {
+        let line = line_result.map_err(|e| {
+            GeoJsonError::Io(std::io::Error::new(
+                e.kind(),
+                format!("I/O error at line {}: {e}", idx + 1),
+            ))
+        })?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        let feature: Feature =
+            serde_json::from_str(trimmed).map_err(|e| GeoJsonError::JsonParse {
+                message: format!("line {}: {e}", idx + 1),
+                line: Some(idx + 1),
+                column: Some(e.column()),
+            })?;
+        features.push(feature);
+    }
+    Ok(features)
+}
+
+/// Open a GeoJSON file by path.
+///
+/// If the path has a `.geojsonl`, `.ndjson`, or `.jsonl` extension the file is
+/// read as newline-delimited GeoJSON and wrapped in a synthetic
+/// `FeatureCollection`.  Otherwise the whole file is parsed as standard GeoJSON
+/// and returned as a [`GeoJsonDocument`].
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened or the content is invalid.
+pub fn open<P: AsRef<Path>>(path: P) -> Result<GeoJsonDocument> {
+    let path = path.as_ref();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+
+    let is_nd = matches!(
+        ext.as_deref(),
+        Some("geojsonl") | Some("ndjson") | Some("jsonl")
+    );
+
+    if is_nd {
+        let features = open_geojsonl(path)?;
+        Ok(GeoJsonDocument::FeatureCollection(FeatureCollection::new(
+            features,
+        )))
+    } else {
+        let file = std::fs::File::open(path)?;
+        let buf_reader = std::io::BufReader::new(file);
+        let mut reader = GeoJsonReader::new(buf_reader);
+        reader.read()
+    }
+}
+
+/// Open a GeoJSON-seq / newline-delimited GeoJSON file by path.
+///
+/// Each non-empty, non-comment line is parsed as a standalone GeoJSON `Feature`.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened or any line contains invalid
+/// GeoJSON.
+pub fn open_geojsonl<P: AsRef<Path>>(path: P) -> Result<Vec<Feature>> {
+    let file = std::fs::File::open(path.as_ref())?;
+    let buf_reader = std::io::BufReader::new(file);
+    read_geojsonl(buf_reader)
+}
+
+// ─── Spatial filtering ────────────────────────────────────────────────────────
+
+/// Compute the tight axis-aligned bounding box of a geometry.
+///
+/// Returns `(min_x, min_y, max_x, max_y)` or `None` for empty geometries.
+pub fn geometry_bbox(geom: &Geometry) -> Option<(f64, f64, f64, f64)> {
+    let bbox_vec = geom.compute_bbox()?;
+    if bbox_vec.len() >= 4 {
+        Some((bbox_vec[0], bbox_vec[1], bbox_vec[2], bbox_vec[3]))
+    } else {
+        None
+    }
+}
+
+/// Test whether a geometry's bounding box intersects the query rectangle.
+///
+/// Returns `false` when the geometry has no computable bounding box.
+pub fn feature_bbox_intersects(
+    geom: &Geometry,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> bool {
+    match geometry_bbox(geom) {
+        None => false,
+        Some((gmin_x, gmin_y, gmax_x, gmax_y)) => {
+            // Axis-aligned rectangle overlap test: NOT (one is entirely to the
+            // side / above / below the other).
+            !(gmax_x < min_x || gmin_x > max_x || gmax_y < min_y || gmin_y > max_y)
+        }
+    }
+}
+
+/// Read a `FeatureCollection` from the reader and return only those features
+/// whose geometry bounding box intersects the supplied query rectangle.
+///
+/// This is a full-scan filter (no spatial index).  Features without geometry
+/// are excluded.
+///
+/// # Errors
+///
+/// Returns any error produced while reading the underlying GeoJSON document.
+pub fn features_in_bbox<R: Read>(
+    reader: &mut GeoJsonReader<R>,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> Result<Vec<Feature>> {
+    let fc = reader.read_feature_collection()?;
+    let filtered = fc
+        .features
+        .into_iter()
+        .filter(|f| {
+            f.geometry
+                .as_ref()
+                .is_some_and(|g| feature_bbox_intersects(g, min_x, min_y, max_x, max_y))
+        })
+        .collect();
+    Ok(filtered)
 }
 
 #[cfg(test)]

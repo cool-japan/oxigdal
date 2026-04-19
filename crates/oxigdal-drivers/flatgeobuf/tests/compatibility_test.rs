@@ -10,8 +10,8 @@
 #![allow(clippy::panic, clippy::while_let_on_iterator)]
 
 use oxigdal_core::vector::{
-    Coordinate, Feature, Geometry, GeometryCollection, LineString, MultiLineString, MultiPolygon,
-    Point, Polygon, PropertyValue,
+    Coordinate, Feature, FieldValue, Geometry, GeometryCollection, LineString, MultiLineString,
+    MultiPolygon, Point, Polygon,
 };
 use oxigdal_flatgeobuf::{
     Column, ColumnType, CrsInfo, FlatGeobufError, FlatGeobufReader, FlatGeobufWriter,
@@ -492,7 +492,7 @@ fn test_column_type_byte() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("byte_val", PropertyValue::Integer(-128));
+    feature.set_property("byte_val", FieldValue::Integer(-128));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -520,7 +520,7 @@ fn test_column_type_ubyte() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("ubyte_val", PropertyValue::UInteger(255));
+    feature.set_property("ubyte_val", FieldValue::UInteger(255));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -549,8 +549,8 @@ fn test_column_type_bool() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("bool_true", PropertyValue::Bool(true));
-    feature.set_property("bool_false", PropertyValue::Bool(false));
+    feature.set_property("bool_true", FieldValue::Bool(true));
+    feature.set_property("bool_false", FieldValue::Bool(false));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -580,7 +580,7 @@ fn test_column_type_short() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("short_val", PropertyValue::Integer(-32768));
+    feature.set_property("short_val", FieldValue::Integer(-32768));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -608,7 +608,7 @@ fn test_column_type_ushort() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("ushort_val", PropertyValue::UInteger(65535));
+    feature.set_property("ushort_val", FieldValue::UInteger(65535));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -636,7 +636,7 @@ fn test_column_type_int() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("int_val", PropertyValue::Integer(-2_147_483_648));
+    feature.set_property("int_val", FieldValue::Integer(-2_147_483_648));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -664,7 +664,7 @@ fn test_column_type_uint() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("uint_val", PropertyValue::UInteger(4_294_967_295));
+    feature.set_property("uint_val", FieldValue::UInteger(4_294_967_295));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -692,10 +692,7 @@ fn test_column_type_long() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property(
-        "long_val",
-        PropertyValue::Integer(-9_223_372_036_854_775_808),
-    );
+    feature.set_property("long_val", FieldValue::Integer(-9_223_372_036_854_775_808));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -723,7 +720,7 @@ fn test_column_type_ulong() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("ulong_val", PropertyValue::UInteger(u64::MAX));
+    feature.set_property("ulong_val", FieldValue::UInteger(u64::MAX));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -751,7 +748,7 @@ fn test_column_type_float() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("float_val", PropertyValue::Float(std::f64::consts::PI));
+    feature.set_property("float_val", FieldValue::Float(std::f64::consts::PI));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -780,7 +777,7 @@ fn test_column_type_double() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("double_val", PropertyValue::Float(std::f64::consts::PI));
+    feature.set_property("double_val", FieldValue::Float(std::f64::consts::PI));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -810,7 +807,7 @@ fn test_column_type_string_unicode() {
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
     feature.set_property(
         "unicode_val",
-        PropertyValue::String("Hello, World! Emoji: 🌍🌏🌎".to_string()),
+        FieldValue::String("Hello, World! Emoji: 🌍🌏🌎".to_string()),
     );
     writer.add_feature(&feature).expect("Failed to add feature");
 
@@ -842,7 +839,7 @@ fn test_column_type_json() {
 
     let json_string = r#"{"key":"value","number":42,"array":[1,2,3]}"#;
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("json_val", PropertyValue::String(json_string.to_string()));
+    feature.set_property("json_val", FieldValue::String(json_string.to_string()));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -870,10 +867,7 @@ fn test_column_type_datetime() {
 
     let datetime_str = "2024-01-15T10:30:00Z";
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property(
-        "datetime_val",
-        PropertyValue::String(datetime_str.to_string()),
-    );
+    feature.set_property("datetime_val", FieldValue::String(datetime_str.to_string()));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -903,7 +897,7 @@ fn test_null_property_values() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("nullable", PropertyValue::Null);
+    feature.set_property("nullable", FieldValue::Null);
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -1129,7 +1123,7 @@ fn test_many_columns() {
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
     for i in 0..COLUMN_COUNT {
-        feature.set_property(format!("col_{i}"), PropertyValue::Integer(i as i64));
+        feature.set_property(format!("col_{i}"), FieldValue::Integer(i as i64));
     }
     writer.add_feature(&feature).expect("Failed to add feature");
 
@@ -1341,7 +1335,7 @@ fn test_empty_string_property() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("empty_str", PropertyValue::String(String::new()));
+    feature.set_property("empty_str", FieldValue::String(String::new()));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -1372,7 +1366,7 @@ fn test_long_string_property() {
 
     let long_string = "A".repeat(10_000);
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("long_str", PropertyValue::String(long_string.clone()));
+    feature.set_property("long_str", FieldValue::String(long_string.clone()));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -1402,9 +1396,9 @@ fn test_special_characters_in_column_name() {
     let mut writer = FlatGeobufWriter::new(cursor, header).expect("Failed to create writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
-    feature.set_property("column with spaces", PropertyValue::Integer(1));
-    feature.set_property("column_with_underscore", PropertyValue::Integer(2));
-    feature.set_property("column-with-dash", PropertyValue::Integer(3));
+    feature.set_property("column with spaces", FieldValue::Integer(1));
+    feature.set_property("column_with_underscore", FieldValue::Integer(2));
+    feature.set_property("column-with-dash", FieldValue::Integer(3));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");
@@ -1554,8 +1548,8 @@ fn test_writer_builder_full_options() {
         .expect("Failed to build writer");
 
     let mut feature = Feature::new(Geometry::Point(Point::new_3d(1.0, 2.0, 3.0)));
-    feature.set_property("name", PropertyValue::String("test".to_string()));
-    feature.set_property("value", PropertyValue::Float(42.5));
+    feature.set_property("name", FieldValue::String("test".to_string()));
+    feature.set_property("value", FieldValue::Float(42.5));
     writer.add_feature(&feature).expect("Failed to add feature");
 
     let cursor = writer.finish().expect("Failed to finish");

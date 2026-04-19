@@ -87,26 +87,55 @@ struct Bounds {
 }
 
 pub fn execute(args: InfoArgs, format: OutputFormat) -> Result<()> {
+    // If the caller supplied a cloud URI as a PathBuf it won't have a filesystem
+    // presence — detect and reject early with a helpful message.
+    let input_str = args.input.to_str().unwrap_or_default();
+    if crate::util::cloud::is_cloud_uri(input_str) {
+        eprintln!("Note: cloud URI support is experimental; full metadata may not be available");
+        anyhow::bail!(
+            "cloud URI reading for raster info requires GeoTiffReader<DataSource>; \
+             use a local file path for now (got: {})",
+            input_str
+        );
+    }
+
+    // Allow file:// URIs to be passed; strip the prefix for filesystem operations.
+    let resolved_path = if let Some(stripped) = input_str.strip_prefix("file://") {
+        std::path::PathBuf::from(stripped)
+    } else {
+        args.input.clone()
+    };
+
     // Check if file exists
-    if !args.input.exists() {
-        anyhow::bail!("File not found: {}", args.input.display());
+    if !resolved_path.exists() {
+        anyhow::bail!("File not found: {}", resolved_path.display());
     }
 
     // Get file size
-    let metadata = fs::metadata(&args.input)
-        .with_context(|| format!("Failed to read file metadata: {}", args.input.display()))?;
+    let metadata = fs::metadata(&resolved_path)
+        .with_context(|| format!("Failed to read file metadata: {}", resolved_path.display()))?;
     let file_size = util::format_size(metadata.len());
 
     // Detect format
-    let detected_format =
-        util::detect_format(&args.input).ok_or_else(|| anyhow::anyhow!("Unknown file format"))?;
+    let detected_format = util::detect_format(&resolved_path)
+        .ok_or_else(|| anyhow::anyhow!("Unknown file format"))?;
+
+    // Build a resolved InfoArgs so sub-functions get the stripped path
+    let resolved_args = InfoArgs {
+        input: resolved_path.clone(),
+        stats: args.stats,
+        compute_minmax: args.compute_minmax,
+        metadata: args.metadata,
+        crs: args.crs,
+        bands: args.bands,
+    };
 
     // Try to read as raster or vector
     let file_info = match detected_format {
         "GeoTIFF" => {
-            let raster_info = read_geotiff_info(&args)?;
+            let raster_info = read_geotiff_info(&resolved_args)?;
             FileInfo {
-                file_path: args.input.display().to_string(),
+                file_path: resolved_path.display().to_string(),
                 file_size,
                 format: detected_format.to_string(),
                 raster_info: Some(raster_info),
@@ -114,9 +143,9 @@ pub fn execute(args: InfoArgs, format: OutputFormat) -> Result<()> {
             }
         }
         "GeoJSON" => {
-            let vector_info = read_geojson_info(&args)?;
+            let vector_info = read_geojson_info(&resolved_args)?;
             FileInfo {
-                file_path: args.input.display().to_string(),
+                file_path: resolved_path.display().to_string(),
                 file_size,
                 format: detected_format.to_string(),
                 raster_info: None,
@@ -124,9 +153,9 @@ pub fn execute(args: InfoArgs, format: OutputFormat) -> Result<()> {
             }
         }
         "Shapefile" => {
-            let vector_info = read_shapefile_info(&args)?;
+            let vector_info = read_shapefile_info(&resolved_args)?;
             FileInfo {
-                file_path: args.input.display().to_string(),
+                file_path: resolved_path.display().to_string(),
                 file_size,
                 format: detected_format.to_string(),
                 raster_info: None,

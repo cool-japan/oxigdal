@@ -25,14 +25,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-qc = "0.1.3"
+oxigdal-qc = "0.1.4"
 ```
 
 ### With Optional Features
 
 ```toml
 [dependencies]
-oxigdal-qc = { version = "0.1.3", features = ["html"] }
+oxigdal-qc = { version = "0.1.4", features = ["html"] }
 ```
 
 **Available Features:**

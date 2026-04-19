@@ -10,7 +10,7 @@ use super::super::helpers::coords_to_pylist;
 use super::filtering::apply_where_filter;
 
 #[cfg(feature = "shapefile")]
-use oxigdal_core::vector::{Geometry, PropertyValue};
+use oxigdal_core::vector::{FieldValue, Geometry};
 #[cfg(feature = "shapefile")]
 use oxigdal_shapefile::{
     FieldType, ShapeType, ShapefileReader, ShapefileSchemaBuilder, ShapefileWriter,
@@ -342,43 +342,56 @@ fn geometry_to_geojson<'py>(py: Python<'py>, geometry: &Geometry) -> PyResult<Bo
 }
 
 #[cfg(feature = "shapefile")]
-/// Converts a PropertyValue to a Python object
+/// Converts a FieldValue to a Python object
 fn property_value_to_python<'py>(
     py: Python<'py>,
-    value: &PropertyValue,
+    value: &FieldValue,
 ) -> PyResult<Bound<'py, PyAny>> {
     match value {
-        PropertyValue::Null => Ok(py.None().into_bound(py)),
-        PropertyValue::Bool(b) => Ok(b
+        FieldValue::Null => Ok(py.None().into_bound(py)),
+        FieldValue::Bool(b) => Ok(b
             .into_pyobject(py)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("Bool conversion: {}", e))
             })?
             .to_owned()
             .into_any()),
-        PropertyValue::Integer(i) => Ok(i
+        FieldValue::Integer(i) => Ok(i
             .into_pyobject(py)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Int conversion: {}", e)))?
             .into_any()),
-        PropertyValue::UInteger(u) => Ok(u
+        FieldValue::UInteger(u) => Ok(u
             .into_pyobject(py)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("UInt conversion: {}", e))
             })?
             .into_any()),
-        PropertyValue::Float(f) => Ok(f
+        FieldValue::Float(f) => Ok(f
             .into_pyobject(py)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("Float conversion: {}", e))
             })?
             .into_any()),
-        PropertyValue::String(s) => Ok(s
+        FieldValue::String(s) => Ok(s
             .into_pyobject(py)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("String conversion: {}", e))
             })?
             .into_any()),
-        PropertyValue::Array(_) | PropertyValue::Object(_) => {
+        FieldValue::Date(d) => Ok(format!("{d}")
+            .into_pyobject(py)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Date conversion: {}", e))
+            })?
+            .into_any()),
+        FieldValue::Blob(bytes) => Ok(bytes
+            .as_slice()
+            .into_pyobject(py)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Blob conversion: {}", e))
+            })?
+            .into_any()),
+        FieldValue::Array(_) | FieldValue::Object(_) => {
             // These are not directly supported in Shapefile, return null
             Ok(py.None().into_bound(py))
         }
@@ -636,23 +649,23 @@ fn extract_coords_from_list(
 }
 
 #[cfg(feature = "shapefile")]
-/// Converts a Python value to a PropertyValue
-fn python_to_property_value(value: &Bound<'_, PyAny>) -> PyResult<PropertyValue> {
+/// Converts a Python value to a FieldValue
+fn python_to_property_value(value: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
     if value.is_none() {
-        Ok(PropertyValue::Null)
+        Ok(FieldValue::Null)
     } else if let Ok(b) = value.extract::<bool>() {
-        Ok(PropertyValue::Bool(b))
+        Ok(FieldValue::Bool(b))
     } else if let Ok(i) = value.extract::<i64>() {
-        Ok(PropertyValue::Integer(i))
+        Ok(FieldValue::Integer(i))
     } else if let Ok(u) = value.extract::<u64>() {
-        Ok(PropertyValue::UInteger(u))
+        Ok(FieldValue::UInteger(u))
     } else if let Ok(f) = value.extract::<f64>() {
-        Ok(PropertyValue::Float(f))
+        Ok(FieldValue::Float(f))
     } else if let Ok(s) = value.extract::<String>() {
-        Ok(PropertyValue::String(s))
+        Ok(FieldValue::String(s))
     } else {
         // For unsupported types, store as null
-        Ok(PropertyValue::Null)
+        Ok(FieldValue::Null)
     }
 }
 
@@ -697,22 +710,22 @@ fn build_schema_from_features(
         for feature in features {
             if let Some(value) = feature.attributes.get(&field_name) {
                 match value {
-                    PropertyValue::Integer(_) => {
+                    FieldValue::Integer(_) => {
                         field_type = FieldType::Number;
                         max_length = 18;
                         break;
                     }
-                    PropertyValue::Float(_) => {
+                    FieldValue::Float(_) => {
                         field_type = FieldType::Float;
                         max_length = 18;
                         break;
                     }
-                    PropertyValue::Bool(_) => {
+                    FieldValue::Bool(_) => {
                         field_type = FieldType::Logical;
                         max_length = 1;
                         break;
                     }
-                    PropertyValue::String(s) => {
+                    FieldValue::String(s) => {
                         max_length = max_length.max(s.len().min(254) as u8);
                     }
                     _ => {}

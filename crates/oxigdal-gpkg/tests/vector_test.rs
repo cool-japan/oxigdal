@@ -1001,3 +1001,202 @@ fn feature_table_to_geojson_null_geometry() {
         "null geometry should appear as null in JSON"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Z-coordinate WKB (ISO SQL-MM) tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a little-endian WKB PointZ using the `1000 + base` type code (1001).
+fn wkb_point_z_iso(x: f64, y: f64, z: f64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(29);
+    buf.push(1); // LE
+    buf.extend_from_slice(&1001u32.to_le_bytes());
+    buf.extend_from_slice(&x.to_le_bytes());
+    buf.extend_from_slice(&y.to_le_bytes());
+    buf.extend_from_slice(&z.to_le_bytes());
+    buf
+}
+
+/// Build a little-endian WKB PointZ using the `0x8000_0000 | base` code (0x80000001).
+fn wkb_point_z_highbit(x: f64, y: f64, z: f64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(29);
+    buf.push(1); // LE
+    buf.extend_from_slice(&0x8000_0001u32.to_le_bytes());
+    buf.extend_from_slice(&x.to_le_bytes());
+    buf.extend_from_slice(&y.to_le_bytes());
+    buf.extend_from_slice(&z.to_le_bytes());
+    buf
+}
+
+#[test]
+fn wkb_point_z_iso_convention_parse() {
+    let bytes = wkb_point_z_iso(1.0, 2.0, 3.5);
+    let g = GpkgBinaryParser::parse_wkb(&bytes).expect("parse ISO PointZ");
+    assert_eq!(
+        g,
+        GpkgGeometry::PointZ {
+            x: 1.0,
+            y: 2.0,
+            z: 3.5
+        }
+    );
+}
+
+#[test]
+fn wkb_point_z_highbit_convention_parse() {
+    let bytes = wkb_point_z_highbit(-10.25, 40.0, 100.0);
+    let g = GpkgBinaryParser::parse_wkb(&bytes).expect("parse high-bit PointZ");
+    assert_eq!(
+        g,
+        GpkgGeometry::PointZ {
+            x: -10.25,
+            y: 40.0,
+            z: 100.0,
+        }
+    );
+}
+
+#[test]
+fn wkb_point_z_roundtrip() {
+    let g = GpkgGeometry::PointZ {
+        x: 3.5,
+        y: -2.25,
+        z: 42.0,
+    };
+    let wkb = GpkgBinaryParser::to_wkb(&g);
+    let back = GpkgBinaryParser::parse_wkb(&wkb).expect("parse roundtrip");
+    assert_eq!(back, g);
+}
+
+#[test]
+fn wkb_linestring_z_roundtrip() {
+    let g = GpkgGeometry::LineStringZ {
+        coords: vec![(0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (2.0, 2.0, 4.0)],
+    };
+    let wkb = GpkgBinaryParser::to_wkb(&g);
+    let back = GpkgBinaryParser::parse_wkb(&wkb).expect("parse LineStringZ");
+    assert_eq!(back, g);
+}
+
+#[test]
+fn wkb_polygon_z_with_holes_roundtrip() {
+    // Exterior ring: unit square at z=0; one interior hole at z=1.
+    let exterior = vec![
+        (0.0, 0.0, 0.0),
+        (10.0, 0.0, 0.0),
+        (10.0, 10.0, 0.0),
+        (0.0, 10.0, 0.0),
+        (0.0, 0.0, 0.0),
+    ];
+    let hole = vec![
+        (3.0, 3.0, 1.0),
+        (7.0, 3.0, 1.0),
+        (7.0, 7.0, 1.0),
+        (3.0, 7.0, 1.0),
+        (3.0, 3.0, 1.0),
+    ];
+    let original = GpkgGeometry::PolygonZ {
+        rings: vec![exterior, hole],
+    };
+
+    let wkb = GpkgBinaryParser::to_wkb(&original);
+    // Sanity: first byte 1 = LE, next 4 bytes = 1003 (LE) for POLYGON_Z
+    assert_eq!(wkb[0], 1);
+    assert_eq!(&wkb[1..5], &1003u32.to_le_bytes());
+
+    let back = GpkgBinaryParser::parse_wkb(&wkb).expect("parse PolygonZ");
+    assert_eq!(back, original);
+
+    // Also roundtrip through a GeoPackageBinary envelope.
+    let gpb = GpkgBinaryParser::to_gpb(&original, 4326);
+    let back_gpb = GpkgBinaryParser::parse(&gpb).expect("parse GPB PolygonZ");
+    assert_eq!(back_gpb, original);
+}
+
+#[test]
+fn wkb_multipoint_z_roundtrip() {
+    let g = GpkgGeometry::MultiPointZ {
+        points: vec![(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)],
+    };
+    let wkb = GpkgBinaryParser::to_wkb(&g);
+    let back = GpkgBinaryParser::parse_wkb(&wkb).expect("parse MultiPointZ");
+    assert_eq!(back, g);
+}
+
+#[test]
+fn wkb_multipolygon_z_roundtrip() {
+    let g = GpkgGeometry::MultiPolygonZ {
+        polygons: vec![
+            vec![vec![
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 0.0, 0.0),
+            ]],
+            vec![vec![
+                (10.0, 10.0, 5.0),
+                (20.0, 10.0, 5.0),
+                (20.0, 20.0, 5.0),
+                (10.0, 10.0, 5.0),
+            ]],
+        ],
+    };
+    let wkb = GpkgBinaryParser::to_wkb(&g);
+    let back = GpkgBinaryParser::parse_wkb(&wkb).expect("parse MultiPolygonZ");
+    assert_eq!(back, g);
+}
+
+#[test]
+fn wkb_geometrycollection_z_roundtrip() {
+    let g = GpkgGeometry::GeometryCollectionZ(vec![
+        GpkgGeometry::PointZ {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        GpkgGeometry::LineStringZ {
+            coords: vec![(1.0, 1.0, 1.0), (2.0, 2.0, 2.0)],
+        },
+    ]);
+    let wkb = GpkgBinaryParser::to_wkb(&g);
+    let back = GpkgBinaryParser::parse_wkb(&wkb).expect("parse GeometryCollectionZ");
+    assert_eq!(back, g);
+}
+
+#[test]
+fn gpkg_geometry_z_type_names() {
+    assert_eq!(
+        GpkgGeometry::PointZ {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0
+        }
+        .geometry_type(),
+        "PointZ"
+    );
+    assert_eq!(
+        GpkgGeometry::PolygonZ { rings: vec![] }.geometry_type(),
+        "PolygonZ"
+    );
+}
+
+#[test]
+fn gpkg_geometry_pointz_geojson_has_three_coords() {
+    let g = GpkgGeometry::PointZ {
+        x: 1.5,
+        y: 2.5,
+        z: 3.5,
+    };
+    // Encode via FeatureTable to exercise to_geojson_geometry indirectly.
+    let mut t = FeatureTable::new("t", "geom");
+    t.add_feature(FeatureRow {
+        fid: 1,
+        geometry: Some(g),
+        fields: HashMap::new(),
+    });
+    let json = t.to_geojson();
+    assert!(
+        json.contains("[1.5,2.5,3.5]"),
+        "PointZ GeoJSON should carry three coordinate values; got: {json}"
+    );
+}

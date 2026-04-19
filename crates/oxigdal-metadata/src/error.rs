@@ -42,6 +42,10 @@ pub enum MetadataError {
     #[error("Transformation error: {0}")]
     TransformError(String),
 
+    /// Extraction error
+    #[error("Extraction error: {0}")]
+    ExtractionError(String),
+
     /// Unsupported operation
     #[error("Unsupported operation: {0}")]
     Unsupported(String),

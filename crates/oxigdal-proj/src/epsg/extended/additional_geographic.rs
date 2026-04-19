@@ -1,0 +1,228 @@
+//! Additional geographic CRS registrations (modern realizations such as ITRF, JGD2011, GDA2020).
+
+use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+
+pub(super) fn register_additional_geographic(db: &mut EpsgDatabase) {
+    let geographic_crs: &[(u32, &str, &str, &str, &str)] = &[
+        // Modern datums
+        (
+            4167,
+            "NZGD2000",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "New Zealand",
+            "NZGD2000",
+        ),
+        (
+            4171,
+            "RGF93 v1",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "France",
+            "RGF93",
+        ),
+        (
+            4178,
+            "Pulkovo 1942(83)",
+            "+proj=longlat +ellps=krass +no_defs",
+            "Eastern Europe",
+            "Pulkovo 1942(83)",
+        ),
+        (
+            4258,
+            "ETRS89",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Europe",
+            "ETRS89",
+        ),
+        (
+            4269,
+            "NAD83",
+            "+proj=longlat +datum=NAD83 +no_defs",
+            "North America",
+            "NAD83",
+        ),
+        (
+            4272,
+            "NZGD49",
+            "+proj=longlat +datum=nzgd49 +no_defs",
+            "New Zealand (historic)",
+            "NZGD49",
+        ),
+        (
+            4275,
+            "NTF",
+            "+proj=longlat +a=6378249.2 +b=6356515 +no_defs",
+            "France (historic)",
+            "NTF",
+        ),
+        (
+            4284,
+            "Pulkovo 1942",
+            "+proj=longlat +ellps=krass +no_defs",
+            "Russia / FSU",
+            "Pulkovo 1942",
+        ),
+        (
+            4314,
+            "DHDN",
+            "+proj=longlat +ellps=bessel +datum=potsdam +no_defs",
+            "Germany (historic)",
+            "DHDN",
+        ),
+        (
+            4326,
+            "WGS 84",
+            "+proj=longlat +datum=WGS84 +no_defs",
+            "World",
+            "WGS84",
+        ),
+        (
+            4490,
+            "CGCS2000",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "China",
+            "CGCS2000",
+        ),
+        (
+            4555,
+            "New Beijing",
+            "+proj=longlat +ellps=krass +no_defs",
+            "China (historic)",
+            "New Beijing",
+        ),
+        (
+            4612,
+            "JGD2000",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Japan",
+            "JGD2000",
+        ),
+        (
+            4618,
+            "SAD69",
+            "+proj=longlat +ellps=aust_SA +no_defs",
+            "South America",
+            "SAD69",
+        ),
+        (
+            4674,
+            "SIRGAS 2000",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "South America",
+            "SIRGAS 2000",
+        ),
+        (
+            4737,
+            "Korea 2000",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "South Korea",
+            "Korea 2000",
+        ),
+        (
+            4745,
+            "RD/83",
+            "+proj=longlat +ellps=bessel +no_defs",
+            "Germany Saxony (historic)",
+            "RD/83",
+        ),
+        (
+            4818,
+            "S-JTSK (Ferro)",
+            "+proj=longlat +ellps=bessel +pm=ferro +no_defs",
+            "Czech Republic (historic)",
+            "S-JTSK",
+        ),
+        (
+            4979,
+            "WGS 84 (3D)",
+            "+proj=longlat +datum=WGS84 +no_defs",
+            "World (3D geographic)",
+            "WGS84",
+        ),
+        (
+            5013,
+            "PTRA08",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Azores / Madeira",
+            "PTRA08",
+        ),
+        (
+            5323,
+            "ISN2004",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Iceland",
+            "ISN2004",
+        ),
+        (
+            5324,
+            "ISN2016",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Iceland",
+            "ISN2016",
+        ),
+        (
+            6318,
+            "NAD83(2011)",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "North America",
+            "NAD83(2011)",
+        ),
+        (
+            6668,
+            "JGD2011",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Japan",
+            "JGD2011",
+        ),
+        (
+            7789,
+            "ITRF2014",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "World (kinematic)",
+            "ITRF2014",
+        ),
+        (
+            7844,
+            "GDA2020",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Australia",
+            "GDA2020",
+        ),
+        (
+            8232,
+            "NAD83(CSRS)v7",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "Canada",
+            "NAD83(CSRS)v7",
+        ),
+        (
+            9000,
+            "ITRF2020",
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            "World (latest kinematic)",
+            "ITRF2020",
+        ),
+        (
+            9755,
+            "WGS 84 (G2296)",
+            "+proj=longlat +datum=WGS84 +no_defs",
+            "World (latest realization)",
+            "WGS 84 (G2296)",
+        ),
+    ];
+
+    for &(code, name, proj_string, area, datum) in geographic_crs {
+        // Only add if not already in the database (avoid duplicate WGS84 etc.)
+        if !db.contains(code) {
+            db.add_definition(EpsgDefinition {
+                code,
+                name: name.to_string(),
+                proj_string: proj_string.to_string(),
+                wkt: None,
+                crs_type: CrsType::Geographic,
+                area_of_use: area.to_string(),
+                unit: "degree".to_string(),
+                datum: datum.to_string(),
+            });
+        }
+    }
+}

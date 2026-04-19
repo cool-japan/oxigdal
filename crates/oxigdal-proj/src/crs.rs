@@ -8,6 +8,7 @@ use crate::epsg::CrsType;
 #[cfg(feature = "std")]
 use crate::epsg::{CrsType, lookup_epsg};
 use crate::error::{Error, Result};
+use crate::wkt::WktParser;
 #[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
 use core::fmt;
@@ -142,28 +143,80 @@ impl Crs {
             return Err(Error::invalid_wkt("WKT string is empty"));
         }
 
-        // WKT should start with a CRS type keyword
+        // WKT should start with a CRS type keyword (WKT1 or WKT2)
         let trimmed = wkt.trim();
-        let valid_start = trimmed.starts_with("GEOGCS[")
-            || trimmed.starts_with("PROJCS[")
-            || trimmed.starts_with("GEOCCS[")
-            || trimmed.starts_with("VERT_CS[")
-            || trimmed.starts_with("COMPD_CS[");
+        let upper = trimmed.to_uppercase();
+        let valid_start =
+            // WKT1 keywords
+            upper.starts_with("GEOGCS[") ||
+            upper.starts_with("PROJCS[") ||
+            upper.starts_with("GEOCCS[") ||
+            upper.starts_with("VERT_CS[") ||
+            upper.starts_with("COMPD_CS[") ||
+            // WKT2:2019 keywords
+            upper.starts_with("GEOGCRS[") ||
+            upper.starts_with("PROJCRS[") ||
+            upper.starts_with("GEODCRS[") ||
+            upper.starts_with("VERTCRS[") ||
+            upper.starts_with("ENGCRS[") ||
+            upper.starts_with("COMPOUNDCRS[") ||
+            upper.starts_with("BOUNDCRS[");
 
         if !valid_start {
             return Err(Error::invalid_wkt(
-                "WKT must start with GEOGCS, PROJCS, GEOCCS, VERT_CS, or COMPD_CS",
+                "WKT must start with a CRS keyword (GEOGCS, PROJCS, GEOGCRS, PROJCRS, etc.)",
             ));
         }
 
+        // Extract metadata from the WKT string
+        let name = WktParser::extract_name(&wkt);
+        let crs_type = Self::crs_type_from_wkt_keyword(&upper);
+        let unit = WktParser::extract_unit(&wkt).map(|(u, _)| u);
+        let datum = Self::extract_datum_from_wkt(&wkt);
+        let epsg = WktParser::extract_epsg(&wkt);
+        let authority = epsg.map(|_| "EPSG".to_string());
+
         Ok(Self {
             source: CrsSource::Wkt(wkt),
-            name: None,
-            crs_type: None,
-            unit: None,
-            datum: None,
-            authority: None,
+            name,
+            crs_type,
+            unit,
+            datum,
+            authority,
         })
+    }
+
+    /// Determines the `CrsType` from the leading WKT keyword.
+    fn crs_type_from_wkt_keyword(upper: &str) -> Option<CrsType> {
+        if upper.starts_with("PROJCRS[") || upper.starts_with("PROJCS[") {
+            Some(CrsType::Projected)
+        } else if upper.starts_with("GEOGCRS[") || upper.starts_with("GEOGCS[") {
+            Some(CrsType::Geographic)
+        } else if upper.starts_with("GEODCRS[") || upper.starts_with("GEOCCS[") {
+            Some(CrsType::Geocentric)
+        } else if upper.starts_with("VERTCRS[") || upper.starts_with("VERT_CS[") {
+            Some(CrsType::Vertical)
+        } else if upper.starts_with("COMPOUNDCRS[") || upper.starts_with("COMPD_CS[") {
+            Some(CrsType::Compound)
+        } else if upper.starts_with("ENGCRS[") {
+            Some(CrsType::Engineering)
+        } else {
+            None
+        }
+    }
+
+    /// Extract datum name from a WKT string (supports both WKT1 and WKT2).
+    fn extract_datum_from_wkt(wkt: &str) -> Option<String> {
+        // WKT1: DATUM["name" ...]
+        // WKT2: DATUM["name" ...] (same keyword)
+        for keyword in &["DATUM[\"", "DATUM [\""] {
+            if let Some(idx) = wkt.find(keyword) {
+                let after = &wkt[idx + keyword.len()..];
+                let end = after.find('"')?;
+                return Some(after[..end].to_string());
+            }
+        }
+        None
     }
 
     /// Creates a custom CRS.
@@ -535,5 +588,95 @@ mod tests {
         let (crs_type, unit) = Crs::parse_proj_string("+proj=merc +units=m +no_defs");
         assert_eq!(crs_type, Some(CrsType::Projected));
         assert_eq!(unit, Some("metre".to_string()));
+    }
+
+    // =========================================================================
+    // WKT2:2019 acceptance tests
+    // =========================================================================
+
+    #[test]
+    fn test_from_wkt2_geogcrs() {
+        let wkt = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],ID["EPSG",4326]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept GEOGCRS");
+        assert_eq!(crs.name(), Some("WGS 84"));
+        assert_eq!(crs.crs_type(), Some(CrsType::Geographic));
+        assert_eq!(crs.datum(), Some("World Geodetic System 1984"));
+        assert!(crs.is_geographic());
+        assert!(!crs.is_projected());
+    }
+
+    #[test]
+    fn test_from_wkt2_projcrs() {
+        let wkt = r#"PROJCRS["WGS 84 / UTM zone 33N",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],LENGTHUNIT["metre",1],ID["EPSG",32633]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept PROJCRS");
+        assert_eq!(crs.name(), Some("WGS 84 / UTM zone 33N"));
+        assert_eq!(crs.crs_type(), Some(CrsType::Projected));
+        assert!(crs.is_projected());
+        assert_eq!(crs.unit(), Some("metre"));
+    }
+
+    #[test]
+    fn test_from_wkt2_geodcrs() {
+        let wkt = r#"GEODCRS["WGS 84",DATUM["WGS 1984"]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept GEODCRS");
+        assert_eq!(crs.crs_type(), Some(CrsType::Geocentric));
+    }
+
+    #[test]
+    fn test_from_wkt2_vertcrs() {
+        let wkt = r#"VERTCRS["EGM96 height",UNIT["metre",1]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept VERTCRS");
+        assert_eq!(crs.crs_type(), Some(CrsType::Vertical));
+        assert_eq!(crs.name(), Some("EGM96 height"));
+    }
+
+    #[test]
+    fn test_from_wkt2_engcrs() {
+        let wkt = r#"ENGCRS["Local Engineering"]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept ENGCRS");
+        assert_eq!(crs.crs_type(), Some(CrsType::Engineering));
+    }
+
+    #[test]
+    fn test_from_wkt2_compoundcrs() {
+        let wkt =
+            r#"COMPOUNDCRS["WGS 84 + EGM96 height",GEOGCRS["WGS 84"],VERTCRS["EGM96 height"]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept COMPOUNDCRS");
+        assert_eq!(crs.crs_type(), Some(CrsType::Compound));
+    }
+
+    #[test]
+    fn test_from_wkt2_boundcrs() {
+        let wkt = r#"BOUNDCRS["Bound WGS 84",GEOGCRS["WGS 84"]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept BOUNDCRS");
+        // BOUNDCRS has no specific CrsType mapping — crs_type is None
+        assert!(crs.name().is_some());
+    }
+
+    #[test]
+    fn test_from_wkt2_invalid_keyword() {
+        let result = Crs::from_wkt("FOOBAR[\"test\"]");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_wkt_extracts_metadata_wkt1() {
+        let wkt = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should accept WKT1");
+        assert_eq!(crs.name(), Some("WGS 84"));
+        assert_eq!(crs.crs_type(), Some(CrsType::Geographic));
+        assert_eq!(crs.datum(), Some("WGS_1984"));
+        assert_eq!(crs.unit(), Some("degree"));
+    }
+
+    #[test]
+    fn test_wkt2_roundtrip_name_epsg() {
+        // Create from WKT2, get name and verify WKT is stored
+        let wkt = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],ID["EPSG",4326]]"#;
+        let crs = Crs::from_wkt(wkt).expect("should parse");
+        assert_eq!(crs.name(), Some("WGS 84"));
+        // WKT roundtrip: to_wkt should return the original WKT
+        let wkt_out = crs.to_wkt().expect("should return WKT");
+        assert_eq!(wkt_out, wkt);
     }
 }

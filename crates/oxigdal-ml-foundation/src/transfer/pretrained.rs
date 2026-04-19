@@ -55,8 +55,9 @@ mod tests {
 
     #[test]
     fn test_pretrained_loader() {
-        // Placeholder test
-        let result = PretrainedLoader::load("/tmp/model.pth");
+        // Placeholder test — path intentionally does not exist
+        let nonexistent = std::env::temp_dir().join("nonexistent_oxigdal_model.pth");
+        let result = PretrainedLoader::load(nonexistent.to_string_lossy().as_ref());
         assert!(result.is_err());
     }
 }

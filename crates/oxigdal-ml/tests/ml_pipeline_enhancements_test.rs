@@ -51,8 +51,9 @@ fn meta(name: &str, version: ModelVersion) -> ModelMetadata {
 
 #[test]
 fn hot_reload_watcher_construction() {
-    let watcher = ModelWatcher::new("/tmp/test.onnx", HotReloadConfig::default());
-    assert_eq!(watcher.path(), std::path::Path::new("/tmp/test.onnx"));
+    let path = tmp_path("test.onnx");
+    let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
+    assert_eq!(watcher.path(), path.as_path());
 }
 
 #[test]
@@ -97,7 +98,8 @@ fn hot_reload_unchanged_file_returns_none_on_second_check() {
 
 #[test]
 fn hot_reload_mark_reloaded_increments_version() {
-    let watcher = ModelWatcher::new("/tmp/dummy.onnx", HotReloadConfig::default());
+    let path = tmp_path("dummy.onnx");
+    let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
     assert_eq!(watcher.current_version().expect("v"), 0);
 
     let v1 = watcher.mark_reloaded().expect("r1");
@@ -109,7 +111,8 @@ fn hot_reload_mark_reloaded_increments_version() {
 
 #[test]
 fn hot_reload_reload_count_tracks_mark_calls() {
-    let watcher = ModelWatcher::new("/tmp/dummy.onnx", HotReloadConfig::default());
+    let path = tmp_path("dummy.onnx");
+    let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
     assert_eq!(watcher.reload_count().expect("rc0"), 0);
 
     watcher.mark_reloaded().expect("r1");
@@ -133,7 +136,8 @@ fn hot_reload_poll_interval_custom() {
         poll_interval: Duration::from_millis(250),
         ..Default::default()
     };
-    let watcher = ModelWatcher::new("/tmp/dummy.onnx", cfg);
+    let path = tmp_path("dummy.onnx");
+    let watcher = ModelWatcher::new(&path, cfg);
     assert_eq!(watcher.config().poll_interval, Duration::from_millis(250));
 }
 
@@ -143,13 +147,15 @@ fn hot_reload_reload_timeout_custom() {
         reload_timeout: Duration::from_secs(120),
         ..Default::default()
     };
-    let watcher = ModelWatcher::new("/tmp/dummy.onnx", cfg);
+    let path = tmp_path("dummy.onnx");
+    let watcher = ModelWatcher::new(&path, cfg);
     assert_eq!(watcher.config().reload_timeout, Duration::from_secs(120));
 }
 
 #[test]
 fn hot_reload_version_starts_at_zero() {
-    let watcher = ModelWatcher::new("/tmp/any.onnx", HotReloadConfig::default());
+    let path = tmp_path("any.onnx");
+    let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
     assert_eq!(watcher.current_version().expect("v"), 0);
 }
 

@@ -11,8 +11,9 @@
 #![allow(clippy::panic, clippy::unnecessary_cast)]
 
 use oxigdal_core::vector::{
-    Coordinate, Geometry, LineString as CoreLineString, MultiLineString as CoreMultiLineString,
-    MultiPoint as CoreMultiPoint, Point as CorePoint, Polygon as CorePolygon, PropertyValue,
+    Coordinate, FieldValue, Geometry, LineString as CoreLineString,
+    MultiLineString as CoreMultiLineString, MultiPoint as CoreMultiPoint, Point as CorePoint,
+    Polygon as CorePolygon,
 };
 use oxigdal_shapefile::shp::shapes::ShapeType;
 use oxigdal_shapefile::{
@@ -50,10 +51,7 @@ fn test_cov_point_geometry_roundtrip() {
     let mut features = Vec::new();
     for i in 0..5 {
         let mut attributes = HashMap::new();
-        attributes.insert(
-            "NAME".to_string(),
-            PropertyValue::String(format!("Pt{}", i)),
-        );
+        attributes.insert("NAME".to_string(), FieldValue::String(format!("Pt{}", i)));
         let geometry = Some(Geometry::Point(CorePoint::new(
             i as f64 * 10.0 + 0.5,
             i as f64 * 5.0 + 0.25,
@@ -120,7 +118,7 @@ fn test_cov_linestring_geometry_roundtrip() {
     let mut attributes = HashMap::new();
     attributes.insert(
         "NAME".to_string(),
-        PropertyValue::String("TestLine".to_string()),
+        FieldValue::String("TestLine".to_string()),
     );
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
 
@@ -184,7 +182,7 @@ fn test_cov_polygon_geometry_roundtrip() {
     let mut attributes = HashMap::new();
     attributes.insert(
         "NAME".to_string(),
-        PropertyValue::String("TestPoly".to_string()),
+        FieldValue::String("TestPoly".to_string()),
     );
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
 
@@ -235,10 +233,7 @@ fn test_cov_multipoint_geometry_roundtrip() {
     let geometry = Some(Geometry::MultiPoint(multipoint));
 
     let mut attributes = HashMap::new();
-    attributes.insert(
-        "NAME".to_string(),
-        PropertyValue::String("TestMP".to_string()),
-    );
+    attributes.insert("NAME".to_string(), FieldValue::String("TestMP".to_string()));
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
 
     {
@@ -295,7 +290,7 @@ fn test_cov_multilinestring_geometry_roundtrip() {
     let mut attributes = HashMap::new();
     attributes.insert(
         "NAME".to_string(),
-        PropertyValue::String("TestMLS".to_string()),
+        FieldValue::String("TestMLS".to_string()),
     );
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
 
@@ -373,7 +368,7 @@ fn test_cov_polygon_with_hole_roundtrip() {
     let mut attributes = HashMap::new();
     attributes.insert(
         "NAME".to_string(),
-        PropertyValue::String("WithHole".to_string()),
+        FieldValue::String("WithHole".to_string()),
     );
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
 
@@ -435,16 +430,16 @@ fn test_cov_dbf_field_types_roundtrip() {
     let mut attributes = HashMap::new();
     attributes.insert(
         "CHARFLD".to_string(),
-        PropertyValue::String("Hello World".to_string()),
+        FieldValue::String("Hello World".to_string()),
     );
-    attributes.insert("INTFLD".to_string(), PropertyValue::Integer(42));
+    attributes.insert("INTFLD".to_string(), FieldValue::Integer(42));
     #[allow(clippy::approx_constant)]
     let flt_val = 3.141_593f64;
-    attributes.insert("FLTFLD".to_string(), PropertyValue::Float(flt_val));
-    attributes.insert("BOOLFLD".to_string(), PropertyValue::Bool(true));
+    attributes.insert("FLTFLD".to_string(), FieldValue::Float(flt_val));
+    attributes.insert("BOOLFLD".to_string(), FieldValue::Bool(true));
     attributes.insert(
         "DATEFLD".to_string(),
-        PropertyValue::String("20260310".to_string()),
+        FieldValue::String("20260310".to_string()),
     );
 
     let geometry = Some(Geometry::Point(CorePoint::new(1.0, 2.0)));
@@ -473,15 +468,15 @@ fn test_cov_dbf_field_types_roundtrip() {
         let attrs = &read_features[0].attributes;
         assert_eq!(
             attrs.get("CHARFLD"),
-            Some(&PropertyValue::String("Hello World".to_string())),
+            Some(&FieldValue::String("Hello World".to_string())),
             "CHARFLD should match"
         );
-        if let Some(PropertyValue::Integer(val)) = attrs.get("INTFLD") {
+        if let Some(FieldValue::Integer(val)) = attrs.get("INTFLD") {
             assert_eq!(*val, 42, "INTFLD should be 42");
         } else {
             panic!("INTFLD should be Integer");
         }
-        if let Some(PropertyValue::Float(val)) = attrs.get("FLTFLD") {
+        if let Some(FieldValue::Float(val)) = attrs.get("FLTFLD") {
             #[allow(clippy::approx_constant)]
             let expected_flt = 3.141_593f64;
             assert!(
@@ -493,7 +488,7 @@ fn test_cov_dbf_field_types_roundtrip() {
         }
         assert_eq!(
             attrs.get("BOOLFLD"),
-            Some(&PropertyValue::Bool(true)),
+            Some(&FieldValue::Bool(true)),
             "BOOLFLD should be true"
         );
     }
@@ -511,7 +506,7 @@ fn test_cov_numeric_precision() {
         .build();
 
     let mut attributes = HashMap::new();
-    attributes.insert("PRECISE".to_string(), PropertyValue::Float(123456.78901234));
+    attributes.insert("PRECISE".to_string(), FieldValue::Float(123456.78901234));
 
     let geometry = Some(Geometry::Point(CorePoint::new(0.0, 0.0)));
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
@@ -531,7 +526,7 @@ fn test_cov_numeric_precision() {
             .read_features()
             .expect("Failed to read numeric precision features");
 
-        if let Some(PropertyValue::Float(val)) = read_features[0].attributes.get("PRECISE") {
+        if let Some(FieldValue::Float(val)) = read_features[0].attributes.get("PRECISE") {
             assert!(
                 (*val - 123456.78901234).abs() < 0.01,
                 "Precise numeric value should be approximately correct"
@@ -567,7 +562,7 @@ fn test_cov_special_characters_in_attributes() {
     let mut features = Vec::new();
     for (i, text) in test_strings.iter().enumerate() {
         let mut attributes = HashMap::new();
-        attributes.insert("TEXT".to_string(), PropertyValue::String(text.to_string()));
+        attributes.insert("TEXT".to_string(), FieldValue::String(text.to_string()));
         let geometry = Some(Geometry::Point(CorePoint::new(i as f64, 0.0)));
         features.push(ShapefileFeature::new((i + 1) as i32, geometry, attributes));
     }
@@ -593,7 +588,7 @@ fn test_cov_special_characters_in_attributes() {
         );
 
         // Verify first feature text is preserved
-        if let Some(PropertyValue::String(val)) = read_features[0].attributes.get("TEXT") {
+        if let Some(FieldValue::String(val)) = read_features[0].attributes.get("TEXT") {
             assert_eq!(val.trim(), "Hello, World!", "First text should match");
         }
     }
@@ -613,8 +608,8 @@ fn test_cov_null_attributes() {
         .build();
 
     let mut attributes = HashMap::new();
-    attributes.insert("NAME".to_string(), PropertyValue::Null);
-    attributes.insert("VALUE".to_string(), PropertyValue::Null);
+    attributes.insert("NAME".to_string(), FieldValue::Null);
+    attributes.insert("VALUE".to_string(), FieldValue::Null);
 
     let geometry = Some(Geometry::Point(CorePoint::new(0.0, 0.0)));
     let features = vec![ShapefileFeature::new(1, geometry, attributes)];
@@ -637,8 +632,8 @@ fn test_cov_null_attributes() {
         // Null values should come back as Null
         let name_val = read_features[0].attributes.get("NAME");
         assert!(
-            name_val == Some(&PropertyValue::Null)
-                || matches!(name_val, Some(PropertyValue::String(s)) if s.trim().is_empty()),
+            name_val == Some(&FieldValue::Null)
+                || matches!(name_val, Some(FieldValue::String(s)) if s.trim().is_empty()),
             "NAME should be null or empty"
         );
     }
@@ -665,11 +660,8 @@ fn test_cov_large_feature_count() {
     let mut features = Vec::with_capacity(count);
     for i in 0..count {
         let mut attributes = HashMap::new();
-        attributes.insert(
-            "ID".to_string(),
-            PropertyValue::String(format!("F{:04}", i)),
-        );
-        attributes.insert("SEQ".to_string(), PropertyValue::Integer(i as i64));
+        attributes.insert("ID".to_string(), FieldValue::String(format!("F{:04}", i)));
+        attributes.insert("SEQ".to_string(), FieldValue::Integer(i as i64));
         let geometry = Some(Geometry::Point(CorePoint::new(
             (i % 360) as f64 - 180.0,
             (i % 180) as f64 - 90.0,
@@ -731,9 +723,9 @@ fn test_cov_multiple_polygons() {
     let mut attrs1 = HashMap::new();
     attrs1.insert(
         "NAME".to_string(),
-        PropertyValue::String("Triangle".to_string()),
+        FieldValue::String("Triangle".to_string()),
     );
-    attrs1.insert("AREA".to_string(), PropertyValue::Float(43.3));
+    attrs1.insert("AREA".to_string(), FieldValue::Float(43.3));
     features.push(ShapefileFeature::new(
         1,
         Some(Geometry::Polygon(poly1)),
@@ -754,9 +746,9 @@ fn test_cov_multiple_polygons() {
     let mut attrs2 = HashMap::new();
     attrs2.insert(
         "NAME".to_string(),
-        PropertyValue::String("Rectangle".to_string()),
+        FieldValue::String("Rectangle".to_string()),
     );
-    attrs2.insert("AREA".to_string(), PropertyValue::Float(50.0));
+    attrs2.insert("AREA".to_string(), FieldValue::Float(50.0));
     features.push(ShapefileFeature::new(
         2,
         Some(Geometry::Polygon(poly2)),
@@ -870,7 +862,7 @@ fn test_cov_shx_index_consistency() {
     let mut features = Vec::new();
     for i in 0..count {
         let mut attributes = HashMap::new();
-        attributes.insert("ID".to_string(), PropertyValue::String(format!("P{}", i)));
+        attributes.insert("ID".to_string(), FieldValue::String(format!("P{}", i)));
         let geometry = Some(Geometry::Point(CorePoint::new(i as f64, i as f64)));
         features.push(ShapefileFeature::new((i + 1) as i32, geometry, attributes));
     }
@@ -912,11 +904,8 @@ fn test_cov_shx_index_consistency() {
 #[test]
 fn test_cov_feature_to_oxigdal_conversion() {
     let mut attributes = HashMap::new();
-    attributes.insert(
-        "name".to_string(),
-        PropertyValue::String("Test".to_string()),
-    );
-    attributes.insert("value".to_string(), PropertyValue::Integer(42));
+    attributes.insert("name".to_string(), FieldValue::String("Test".to_string()));
+    attributes.insert("value".to_string(), FieldValue::Integer(42));
 
     let geometry = Some(Geometry::Point(CorePoint::new(10.0, 20.0)));
     let feature = ShapefileFeature::new(1, geometry, attributes);

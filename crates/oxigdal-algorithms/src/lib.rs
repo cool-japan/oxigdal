@@ -234,6 +234,8 @@ pub use vector::{
     BufferJoinStyle,
     BufferOptions,
 
+    // Clipping operations
+    ClipOperation,
     ContainsPredicate,
     // Geometric types (from oxigdal-core)
     Coordinate,
@@ -251,6 +253,7 @@ pub use vector::{
     Severity,
     SimplifyMethod,
 
+    TopologySimplifyOptions,
     TouchesPredicate,
 
     ValidationIssue,
@@ -274,6 +277,8 @@ pub use vector::{
     centroid_point,
     centroid_polygon,
 
+    clip_multi,
+    clip_polygons,
     // Difference operations
     clip_to_box,
     // Advanced modules
@@ -308,6 +313,9 @@ pub use vector::{
     simplify_linestring,
     simplify_linestring_dp,
     simplify_polygon,
+    // Topology-preserving simplification
+    simplify_topology,
+    simplify_topology_with_options,
     spatial_join,
     symmetric_difference,
 

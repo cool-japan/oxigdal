@@ -31,16 +31,6 @@ backend-optimizations = ["cuda", "vulkan", "metal", "directml"]
 # Multi-GPU support
 multi-gpu = []
 
-# Platform-specific defaults
-[target.'cfg(target_os = "macos")'.dependencies]
-wgpu = { workspace = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-wgpu = { workspace = true }
-
 [dependencies]
 # Workspace dependencies
 oxigdal-core = { workspace = true }

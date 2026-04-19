@@ -363,10 +363,11 @@ impl PackedRTree {
     }
 }
 
-/// Computes Hilbert curve index for 2D point
+/// Computes Hilbert curve index for 2D point using geographic normalization.
 ///
 /// This uses the iterative algorithm to compute the Hilbert index
 /// for a point at the given (x, y) coordinates with the specified bit resolution.
+/// Coordinates are assumed to be in geographic space (lon -180..180, lat -90..90).
 fn hilbert_index(x: f64, y: f64, bits: u32) -> u64 {
     // Normalize to [0, 2^bits)
     let max_val = (1u64 << bits) - 1;
@@ -374,6 +375,33 @@ fn hilbert_index(x: f64, y: f64, bits: u32) -> u64 {
     let y_norm = ((y + 90.0) / 180.0 * max_val as f64).clamp(0.0, max_val as f64) as u64;
 
     xy_to_hilbert(x_norm, y_norm, bits)
+}
+
+/// Computes Hilbert curve index for a 2D point normalized over a provided bounding box.
+///
+/// This normalizes coordinates relative to the given bounding box, then maps
+/// them onto a 16-bit Hilbert curve. Used by the writer to sort features by
+/// their spatial position relative to the global extent.
+pub fn hilbert_index_for_bbox(x: f64, y: f64, bbox: &BoundingBox) -> u64 {
+    const BITS: u32 = 16;
+    let max_val = (1u64 << BITS) - 1;
+
+    let width = bbox.max_x - bbox.min_x;
+    let height = bbox.max_y - bbox.min_y;
+
+    // If the bbox has zero extent in a dimension, map everything to 0
+    let x_norm = if width > 0.0 {
+        ((x - bbox.min_x) / width * max_val as f64).clamp(0.0, max_val as f64) as u64
+    } else {
+        0
+    };
+    let y_norm = if height > 0.0 {
+        ((y - bbox.min_y) / height * max_val as f64).clamp(0.0, max_val as f64) as u64
+    } else {
+        0
+    };
+
+    xy_to_hilbert(x_norm, y_norm, BITS)
 }
 
 /// Converts 2D coordinates to Hilbert curve index

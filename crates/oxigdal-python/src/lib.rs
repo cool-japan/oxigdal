@@ -93,7 +93,7 @@ fn open(path: &str, mode: &str) -> PyResult<Dataset> {
 ///
 /// Example:
 ///     >>> oxigdal.version()
-///     '0.1.0'
+///     '0.1.4'
 #[pyfunction]
 fn version() -> &'static str {
     oxigdal_core::VERSION

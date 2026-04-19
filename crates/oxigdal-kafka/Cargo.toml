@@ -24,8 +24,11 @@ compression-all = ["compression-gzip", "compression-snappy", "compression-lz4", 
 compression-gzip = ["dep:oxiarc-archive"]
 compression-snappy = ["dep:oxiarc-snappy"]
 compression-lz4 = ["dep:oxiarc-lz4"]
+
+# Policy: Gate rdkafka's cmake-build behind a feature flag
+cmake-build = ["rdkafka/cmake-build"]
 compression-zstd = ["dep:oxiarc-zstd"]
-all = ["producer", "consumer", "schema-registry", "transactions", "compression-all"]
+all = ["producer", "consumer", "schema-registry", "transactions", "compression-all", "cmake-build"]
 
 [dependencies]
 # Core dependencies
@@ -42,7 +45,9 @@ futures.workspace = true
 async-trait.workspace = true
 
 # Kafka client (pure Rust rdkafka with tokio support)
-rdkafka = { workspace = true, features = ["tokio", "cmake-build"] }
+
+# Enable cmake-build feature only if 'cmake-build' is enabled
+rdkafka = { workspace = true, features = ["tokio"], default-features = false }
 
 # Serialization
 apache-avro = { workspace = true, optional = true, features = ["snappy"] }

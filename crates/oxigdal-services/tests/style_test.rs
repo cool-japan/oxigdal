@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use oxigdal_services::style::{
-    Color, DemEncoding, Expression, Filter, GeomFilter, Interpolation, Layer, LayerType, Layout,
-    LightAnchor, LineCap, LineJoin, Paint, PropertyValue, Source, StyleRenderer, StyleSpec,
+    Color, DemEncoding, Expression, FieldValue, Filter, GeomFilter, Interpolation, Layer,
+    LayerType, Layout, LightAnchor, LineCap, LineJoin, Paint, Source, StyleRenderer, StyleSpec,
     StyleValidator, SymbolPlacement, Transition, Visibility,
 };
 
@@ -560,19 +560,19 @@ fn test_filter_geometry_type_passes_by_default() {
 
 #[test]
 fn test_eval_zoom_f64_literal() {
-    let v = PropertyValue::Literal(5.0_f64);
+    let v = FieldValue::Literal(5.0_f64);
     assert!((StyleRenderer::eval_zoom_f64(&v, 10.0) - 5.0).abs() < 1e-10);
 }
 
 #[test]
 fn test_eval_zoom_f64_zoom_expression() {
-    let v = PropertyValue::Expression(Expression::Zoom);
+    let v = FieldValue::Expression(Expression::Zoom);
     assert!((StyleRenderer::eval_zoom_f64(&v, 12.0) - 12.0).abs() < 1e-10);
 }
 
 #[test]
 fn test_eval_zoom_f64_linear_interpolation() {
-    let v = PropertyValue::Expression(Expression::Interpolate {
+    let v = FieldValue::Expression(Expression::Interpolate {
         interpolation: Interpolation::Linear,
         input: Box::new(Expression::Zoom),
         stops: vec![
@@ -587,7 +587,7 @@ fn test_eval_zoom_f64_linear_interpolation() {
 
 #[test]
 fn test_eval_zoom_f64_linear_clamp_below() {
-    let v = PropertyValue::Expression(Expression::Interpolate {
+    let v = FieldValue::Expression(Expression::Interpolate {
         interpolation: Interpolation::Linear,
         input: Box::new(Expression::Zoom),
         stops: vec![
@@ -602,7 +602,7 @@ fn test_eval_zoom_f64_linear_clamp_below() {
 
 #[test]
 fn test_eval_zoom_f64_linear_clamp_above() {
-    let v = PropertyValue::Expression(Expression::Interpolate {
+    let v = FieldValue::Expression(Expression::Interpolate {
         interpolation: Interpolation::Linear,
         input: Box::new(Expression::Zoom),
         stops: vec![
@@ -617,7 +617,7 @@ fn test_eval_zoom_f64_linear_clamp_above() {
 
 #[test]
 fn test_eval_zoom_f64_exponential_interpolation() {
-    let v = PropertyValue::Expression(Expression::Interpolate {
+    let v = FieldValue::Expression(Expression::Interpolate {
         interpolation: Interpolation::Exponential(2.0),
         input: Box::new(Expression::Zoom),
         stops: vec![
@@ -633,7 +633,7 @@ fn test_eval_zoom_f64_exponential_interpolation() {
 
 #[test]
 fn test_eval_zoom_f64_step_expression() {
-    let v = PropertyValue::Expression(Expression::Step {
+    let v = FieldValue::Expression(Expression::Step {
         input: Box::new(Expression::Zoom),
         default: Box::new(Expression::Literal(serde_json::json!(1.0))),
         stops: vec![
@@ -654,7 +654,7 @@ fn test_eval_zoom_color_literal() {
         b: 0,
         a: 1.0,
     };
-    let v: PropertyValue<Color> = PropertyValue::Literal(c.clone());
+    let v: FieldValue<Color> = FieldValue::Literal(c.clone());
     let result = StyleRenderer::eval_zoom_color(&v, 8.0);
     assert_eq!(result.r, c.r);
     assert_eq!(result.g, c.g);
@@ -889,7 +889,7 @@ fn test_paint_fill_opacity_literal() {
     map.insert("fill-opacity".to_string(), serde_json::json!(0.8));
     let paint = Paint(map);
     let val = paint.fill_opacity().expect("should have fill-opacity");
-    if let PropertyValue::Literal(v) = val {
+    if let FieldValue::Literal(v) = val {
         assert!((v - 0.8).abs() < 1e-10);
     } else {
         unreachable!("expected Literal");
@@ -907,7 +907,7 @@ fn test_paint_line_width_literal() {
     let mut map = HashMap::new();
     map.insert("line-width".to_string(), serde_json::json!(2.5));
     let paint = Paint(map);
-    if let Some(PropertyValue::Literal(v)) = paint.line_width() {
+    if let Some(FieldValue::Literal(v)) = paint.line_width() {
         assert!((v - 2.5).abs() < 1e-10);
     } else {
         unreachable!("expected Some(Literal(2.5))");

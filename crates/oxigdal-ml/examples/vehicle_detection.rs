@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         iou_threshold: 0.45,
         confidence_threshold: 0.5,
         max_detections: Some(100),
+        ..NmsConfig::default()
     };
     let filtered = non_maximum_suppression(&detections, &nms_config)?;
 

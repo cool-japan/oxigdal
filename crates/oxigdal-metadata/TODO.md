@@ -1,10 +1,10 @@
 # TODO: oxigdal-metadata
 
 ## High Priority
-- [ ] Implement ISO 19115-3 XML serialization (currently builder only)
-- [ ] Add STAC metadata extraction from actual STAC JSON catalogs
+- [x] Implement ISO 19115-3 XML serialization (currently builder only)
+- [x] Add STAC metadata extraction from actual STAC JSON catalogs (feature-gated stac feature, extracts bbox/temporal/CRS/title/description/keywords/resolution, 6 tests)
 - [ ] Implement FGDC-to-ISO 19115 bidirectional transformation
-- [ ] Add GeoTIFF metadata extraction (read TIFF tags, GeoKeys)
+- [x] Add GeoTIFF metadata extraction (read TIFF tags, GeoKeys)
 - [ ] Implement NetCDF/CF-Convention metadata extraction
 - [ ] Add metadata merge/combine for multi-source datasets
 

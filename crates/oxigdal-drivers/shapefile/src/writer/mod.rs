@@ -2,15 +2,21 @@
 //!
 //! This module provides a high-level interface for writing Shapefiles,
 //! creating geometry in .shp, attributes in .dbf, and spatial index in .shx.
+//! Supports 2D, Z (3D), and M (measured) geometry variants.
 
-use crate::dbf::{DbfRecord, DbfWriter, FieldDescriptor, FieldType, FieldValue};
+pub mod multipatch;
+pub mod point_z_m;
+pub mod polygon_z_m;
+pub mod polyline_z_m;
+
+use crate::dbf::{DbfRecord, DbfWriter, FieldDescriptor, FieldType, FieldValue as DbfFieldValue};
 use crate::error::{Result, ShapefileError};
 use crate::reader::ShapefileFeature;
 use crate::shp::header::BoundingBox;
-use crate::shp::shapes::{Point, ShapeType};
+use crate::shp::shapes::ShapeType;
 use crate::shp::{Shape, ShpWriter};
 use crate::shx::ShxWriter;
-use oxigdal_core::vector::{Feature, Geometry, PropertyValue};
+use oxigdal_core::vector::{Feature, FieldValue, Geometry};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +30,8 @@ pub struct ShapefileWriter {
     field_descriptors: Vec<FieldDescriptor>,
     /// Bounding box (will be updated as features are added)
     bbox: BoundingBox,
+    /// Optional CRS WKT to write to .prj file
+    crs: Option<String>,
 }
 
 impl ShapefileWriter {
@@ -41,7 +49,16 @@ impl ShapefileWriter {
             shape_type,
             field_descriptors,
             bbox,
+            crs: None,
         })
+    }
+
+    /// Sets the CRS as a WKT string.
+    ///
+    /// When set, `write_features` will write a `<base>.prj` file alongside the
+    /// `.shp`/`.dbf`/`.shx` files containing the WKT string.
+    pub fn set_crs(&mut self, wkt: &str) {
+        self.crs = Some(wkt.to_string());
     }
 
     /// Writes features to the Shapefile
@@ -116,6 +133,12 @@ impl ShapefileWriter {
         drop(shp_writer);
         drop(shx_writer);
 
+        // Write .prj file if a CRS was set
+        if let Some(ref wkt) = self.crs {
+            let prj_path = Self::with_extension(&self.base_path, "prj");
+            std::fs::write(&prj_path, wkt).map_err(ShapefileError::Io)?;
+        }
+
         Ok(())
     }
 
@@ -126,7 +149,7 @@ impl ShapefileWriter {
             .enumerate()
             .map(|(i, feature)| {
                 let geometry = feature.geometry.clone();
-                let attributes: std::collections::HashMap<String, PropertyValue> = feature
+                let attributes: std::collections::HashMap<String, FieldValue> = feature
                     .properties
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
@@ -145,15 +168,35 @@ impl ShapefileWriter {
         let mut y_min = f64::INFINITY;
         let mut x_max = f64::NEG_INFINITY;
         let mut y_max = f64::NEG_INFINITY;
+        let mut z_min = f64::INFINITY;
+        let mut z_max = f64::NEG_INFINITY;
+        let mut m_min = f64::INFINITY;
+        let mut m_max = f64::NEG_INFINITY;
+        let mut has_z = false;
+        let mut has_m = false;
 
         for feature in features {
             if let Some(geometry) = &feature.geometry {
+                if geometry.has_z() {
+                    has_z = true;
+                }
+                if geometry.has_m() {
+                    has_m = true;
+                }
                 match geometry {
                     Geometry::Point(point) => {
                         x_min = x_min.min(point.coord.x);
                         y_min = y_min.min(point.coord.y);
                         x_max = x_max.max(point.coord.x);
                         y_max = y_max.max(point.coord.y);
+                        if let Some(z) = point.coord.z {
+                            z_min = z_min.min(z);
+                            z_max = z_max.max(z);
+                        }
+                        if let Some(m) = point.coord.m {
+                            m_min = m_min.min(m);
+                            m_max = m_max.max(m);
+                        }
                     }
                     Geometry::LineString(linestring) => {
                         for coord in &linestring.coords {
@@ -161,21 +204,34 @@ impl ShapefileWriter {
                             y_min = y_min.min(coord.y);
                             x_max = x_max.max(coord.x);
                             y_max = y_max.max(coord.y);
+                            if let Some(z) = coord.z {
+                                z_min = z_min.min(z);
+                                z_max = z_max.max(z);
+                            }
+                            if let Some(m) = coord.m {
+                                m_min = m_min.min(m);
+                                m_max = m_max.max(m);
+                            }
                         }
                     }
                     Geometry::Polygon(polygon) => {
-                        for coord in &polygon.exterior.coords {
+                        for coord in polygon
+                            .exterior
+                            .coords
+                            .iter()
+                            .chain(polygon.interiors.iter().flat_map(|r| r.coords.iter()))
+                        {
                             x_min = x_min.min(coord.x);
                             y_min = y_min.min(coord.y);
                             x_max = x_max.max(coord.x);
                             y_max = y_max.max(coord.y);
-                        }
-                        for interior in &polygon.interiors {
-                            for coord in &interior.coords {
-                                x_min = x_min.min(coord.x);
-                                y_min = y_min.min(coord.y);
-                                x_max = x_max.max(coord.x);
-                                y_max = y_max.max(coord.y);
+                            if let Some(z) = coord.z {
+                                z_min = z_min.min(z);
+                                z_max = z_max.max(z);
+                            }
+                            if let Some(m) = coord.m {
+                                m_min = m_min.min(m);
+                                m_max = m_max.max(m);
                             }
                         }
                     }
@@ -185,33 +241,54 @@ impl ShapefileWriter {
                             y_min = y_min.min(point.coord.y);
                             x_max = x_max.max(point.coord.x);
                             y_max = y_max.max(point.coord.y);
+                            if let Some(z) = point.coord.z {
+                                z_min = z_min.min(z);
+                                z_max = z_max.max(z);
+                            }
+                            if let Some(m) = point.coord.m {
+                                m_min = m_min.min(m);
+                                m_max = m_max.max(m);
+                            }
                         }
                     }
                     Geometry::MultiLineString(multilinestring) => {
-                        for linestring in &multilinestring.line_strings {
-                            for coord in &linestring.coords {
-                                x_min = x_min.min(coord.x);
-                                y_min = y_min.min(coord.y);
-                                x_max = x_max.max(coord.x);
-                                y_max = y_max.max(coord.y);
+                        for coord in multilinestring
+                            .line_strings
+                            .iter()
+                            .flat_map(|ls| ls.coords.iter())
+                        {
+                            x_min = x_min.min(coord.x);
+                            y_min = y_min.min(coord.y);
+                            x_max = x_max.max(coord.x);
+                            y_max = y_max.max(coord.y);
+                            if let Some(z) = coord.z {
+                                z_min = z_min.min(z);
+                                z_max = z_max.max(z);
+                            }
+                            if let Some(m) = coord.m {
+                                m_min = m_min.min(m);
+                                m_max = m_max.max(m);
                             }
                         }
                     }
                     Geometry::MultiPolygon(multipolygon) => {
-                        for polygon in &multipolygon.polygons {
-                            for coord in &polygon.exterior.coords {
-                                x_min = x_min.min(coord.x);
-                                y_min = y_min.min(coord.y);
-                                x_max = x_max.max(coord.x);
-                                y_max = y_max.max(coord.y);
+                        for coord in multipolygon.polygons.iter().flat_map(|poly| {
+                            poly.exterior
+                                .coords
+                                .iter()
+                                .chain(poly.interiors.iter().flat_map(|r| r.coords.iter()))
+                        }) {
+                            x_min = x_min.min(coord.x);
+                            y_min = y_min.min(coord.y);
+                            x_max = x_max.max(coord.x);
+                            y_max = y_max.max(coord.y);
+                            if let Some(z) = coord.z {
+                                z_min = z_min.min(z);
+                                z_max = z_max.max(z);
                             }
-                            for interior in &polygon.interiors {
-                                for coord in &interior.coords {
-                                    x_min = x_min.min(coord.x);
-                                    y_min = y_min.min(coord.y);
-                                    x_max = x_max.max(coord.x);
-                                    y_max = y_max.max(coord.y);
-                                }
+                            if let Some(m) = coord.m {
+                                m_min = m_min.min(m);
+                                m_max = m_max.max(m);
                             }
                         }
                     }
@@ -235,136 +312,32 @@ impl ShapefileWriter {
             ));
         }
 
-        BoundingBox::new_2d(x_min, y_min, x_max, y_max)
+        let mut bbox = BoundingBox::new_2d(x_min, y_min, x_max, y_max)?;
+
+        if has_z && !z_min.is_infinite() {
+            bbox.z_min = Some(z_min);
+            bbox.z_max = Some(z_max);
+        }
+        if has_m && !m_min.is_infinite() {
+            bbox.m_min = Some(m_min);
+            bbox.m_max = Some(m_max);
+        }
+
+        Ok(bbox)
     }
 
-    /// Converts an OxiGDAL Geometry to a Shape
+    /// Converts an OxiGDAL Geometry to a Shape, dispatching to Z/M variants
+    /// when the geometry carries Z or M coordinates.
     fn geometry_to_shape(geometry: &Option<Geometry>) -> Result<Shape> {
         match geometry {
             None => Ok(Shape::Null),
-            Some(Geometry::Point(point)) => {
-                let shp_point = Point::new(point.coord.x, point.coord.y);
-                Ok(Shape::Point(shp_point))
-            }
-            Some(Geometry::LineString(linestring)) => {
-                let points: Vec<Point> = linestring
-                    .coords
-                    .iter()
-                    .map(|coord| Point::new(coord.x, coord.y))
-                    .collect();
-
-                if points.is_empty() {
-                    return Err(ShapefileError::invalid_geometry(
-                        "LineString must have at least one point",
-                    ));
-                }
-
-                let parts = vec![0]; // Single part
-                let multi_part = crate::shp::shapes::MultiPartShape::new(parts, points)?;
-                Ok(Shape::PolyLine(multi_part))
-            }
-            Some(Geometry::Polygon(polygon)) => {
-                let mut all_points = Vec::new();
-                let mut parts = Vec::new();
-
-                // Add exterior ring
-                parts.push(all_points.len() as i32);
-                for coord in &polygon.exterior.coords {
-                    all_points.push(Point::new(coord.x, coord.y));
-                }
-
-                // Add interior rings (holes)
-                for interior in &polygon.interiors {
-                    parts.push(all_points.len() as i32);
-                    for coord in &interior.coords {
-                        all_points.push(Point::new(coord.x, coord.y));
-                    }
-                }
-
-                if all_points.is_empty() {
-                    return Err(ShapefileError::invalid_geometry(
-                        "Polygon must have at least one point",
-                    ));
-                }
-
-                let multi_part = crate::shp::shapes::MultiPartShape::new(parts, all_points)?;
-                Ok(Shape::Polygon(multi_part))
-            }
-            Some(Geometry::MultiPoint(multipoint)) => {
-                let points: Vec<Point> = multipoint
-                    .points
-                    .iter()
-                    .map(|pt| Point::new(pt.coord.x, pt.coord.y))
-                    .collect();
-
-                if points.is_empty() {
-                    return Err(ShapefileError::invalid_geometry(
-                        "MultiPoint must have at least one point",
-                    ));
-                }
-
-                let parts: Vec<i32> = (0..points.len() as i32).collect();
-                let multi_part = crate::shp::shapes::MultiPartShape::new(parts, points)?;
-                Ok(Shape::MultiPoint(multi_part))
-            }
-            Some(Geometry::MultiLineString(multilinestring)) => {
-                let mut all_points = Vec::new();
-                let mut parts = Vec::new();
-
-                for linestring in &multilinestring.line_strings {
-                    parts.push(all_points.len() as i32);
-                    for coord in &linestring.coords {
-                        all_points.push(Point::new(coord.x, coord.y));
-                    }
-                }
-
-                if all_points.is_empty() {
-                    return Err(ShapefileError::invalid_geometry(
-                        "MultiLineString must have at least one point",
-                    ));
-                }
-
-                let multi_part = crate::shp::shapes::MultiPartShape::new(parts, all_points)?;
-                Ok(Shape::PolyLine(multi_part))
-            }
-            Some(Geometry::MultiPolygon(multipolygon)) => {
-                let mut all_points = Vec::new();
-                let mut parts = Vec::new();
-
-                for polygon in &multipolygon.polygons {
-                    // Add exterior ring
-                    parts.push(all_points.len() as i32);
-                    for coord in &polygon.exterior.coords {
-                        all_points.push(Point::new(coord.x, coord.y));
-                    }
-
-                    // Add interior rings (holes)
-                    for interior in &polygon.interiors {
-                        parts.push(all_points.len() as i32);
-                        for coord in &interior.coords {
-                            all_points.push(Point::new(coord.x, coord.y));
-                        }
-                    }
-                }
-
-                if all_points.is_empty() {
-                    return Err(ShapefileError::invalid_geometry(
-                        "MultiPolygon must have at least one point",
-                    ));
-                }
-
-                let multi_part = crate::shp::shapes::MultiPartShape::new(parts, all_points)?;
-                Ok(Shape::Polygon(multi_part))
-            }
-            Some(Geometry::GeometryCollection(_)) => Err(ShapefileError::invalid_geometry(
-                "GeometryCollection is not supported in Shapefile format",
-            )),
+            Some(geom) => dispatch_geometry(geom),
         }
     }
 
     /// Converts attributes to a DBF record
     fn attributes_to_dbf(
-        attributes: &std::collections::HashMap<String, PropertyValue>,
+        attributes: &std::collections::HashMap<String, FieldValue>,
         field_descriptors: &[FieldDescriptor],
     ) -> Result<DbfRecord> {
         let mut values = Vec::with_capacity(field_descriptors.len());
@@ -373,16 +346,19 @@ impl ShapefileWriter {
             let value = attributes
                 .get(&field.name)
                 .cloned()
-                .unwrap_or(PropertyValue::Null);
+                .unwrap_or(FieldValue::Null);
 
             let dbf_value = match value {
-                PropertyValue::String(s) => FieldValue::String(s),
-                PropertyValue::Integer(i) => FieldValue::Integer(i),
-                PropertyValue::Float(f) => FieldValue::Float(f),
-                PropertyValue::Bool(b) => FieldValue::Boolean(b),
-                PropertyValue::Null => FieldValue::Null,
-                PropertyValue::UInteger(u) => FieldValue::Integer(u as i64),
-                PropertyValue::Array(_) | PropertyValue::Object(_) => FieldValue::Null,
+                FieldValue::String(s) => DbfFieldValue::String(s),
+                FieldValue::Integer(i) => DbfFieldValue::Integer(i),
+                FieldValue::Float(f) => DbfFieldValue::Float(f),
+                FieldValue::Bool(b) => DbfFieldValue::Boolean(b),
+                FieldValue::Null => DbfFieldValue::Null,
+                FieldValue::UInteger(u) => DbfFieldValue::Integer(u as i64),
+                FieldValue::Date(d) => DbfFieldValue::Date(format!("{d}")),
+                FieldValue::Blob(_) | FieldValue::Array(_) | FieldValue::Object(_) => {
+                    DbfFieldValue::Null
+                }
             };
 
             values.push(dbf_value);
@@ -404,6 +380,32 @@ impl ShapefileWriter {
             path.set_extension(ext);
             path
         }
+    }
+}
+
+/// Dispatches a `Geometry` to the correct `Shape` variant, including Z and M.
+fn dispatch_geometry(geom: &Geometry) -> Result<Shape> {
+    let has_z = geom.has_z();
+    let has_m = geom.has_m();
+
+    match geom {
+        Geometry::Point(point) => point_z_m::geometry_point_to_shape(point, has_z, has_m),
+        Geometry::LineString(linestring) => {
+            polyline_z_m::geometry_linestring_to_shape(linestring, has_z, has_m)
+        }
+        Geometry::Polygon(polygon) => polygon_z_m::geometry_polygon_to_shape(polygon, has_z, has_m),
+        Geometry::MultiPoint(multipoint) => {
+            point_z_m::geometry_multipoint_to_shape(multipoint, has_z, has_m)
+        }
+        Geometry::MultiLineString(multilinestring) => {
+            polyline_z_m::geometry_multilinestring_to_shape(multilinestring, has_z, has_m)
+        }
+        Geometry::MultiPolygon(multipolygon) => {
+            polygon_z_m::geometry_multipolygon_to_shape(multipolygon, has_z, has_m)
+        }
+        Geometry::GeometryCollection(_) => Err(ShapefileError::invalid_geometry(
+            "GeometryCollection is not supported in Shapefile format",
+        )),
     }
 }
 
@@ -516,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn test_geometry_to_shape() {
+    fn test_geometry_to_shape_2d_point() {
         let geometry = Some(Geometry::Point(oxigdal_core::vector::Point::new(
             10.5, 20.3,
         )));
@@ -527,7 +529,51 @@ mod tests {
             assert!((point.x - 10.5).abs() < f64::EPSILON);
             assert!((point.y - 20.3).abs() < f64::EPSILON);
         } else {
-            assert!(false, "Expected Point shape");
+            panic!("Expected Point shape");
+        }
+    }
+
+    #[test]
+    fn test_geometry_to_shape_3d_point() {
+        use oxigdal_core::vector::Coordinate;
+        let geometry = Some(Geometry::Point(oxigdal_core::vector::Point::from_coord(
+            Coordinate::new_3d(10.5, 20.3, 55.0),
+        )));
+        let shape =
+            ShapefileWriter::geometry_to_shape(&geometry).expect("Failed to convert 3D point");
+
+        if let Shape::PointZ(pz) = shape {
+            assert!((pz.x - 10.5).abs() < f64::EPSILON);
+            assert!((pz.y - 20.3).abs() < f64::EPSILON);
+            assert!((pz.z - 55.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected PointZ shape, got {:?}", shape);
+        }
+    }
+
+    #[test]
+    fn test_geometry_to_shape_polygon_z_type() {
+        use oxigdal_core::vector::{Coordinate, LineString, Polygon};
+        let exterior = LineString::new(vec![
+            Coordinate::new_3d(0.0, 0.0, 1.0),
+            Coordinate::new_3d(1.0, 0.0, 1.5),
+            Coordinate::new_3d(1.0, 1.0, 2.0),
+            Coordinate::new_3d(0.0, 1.0, 1.0),
+            Coordinate::new_3d(0.0, 0.0, 1.0),
+        ])
+        .expect("valid exterior");
+        let poly = Polygon::new(exterior, vec![]).expect("valid polygon");
+        let geometry = Some(Geometry::Polygon(poly));
+        let shape =
+            ShapefileWriter::geometry_to_shape(&geometry).expect("Failed to convert PolygonZ");
+
+        if let Shape::PolygonZ(sz) = shape {
+            assert_eq!(sz.base.num_points, 5);
+            assert_eq!(sz.z_values.len(), 5);
+            assert!((sz.z_values[0] - 1.0).abs() < f64::EPSILON);
+            assert!((sz.z_values[2] - 2.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected PolygonZ shape, got {:?}", shape);
         }
     }
 }

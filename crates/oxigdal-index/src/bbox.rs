@@ -216,6 +216,30 @@ impl Bbox2D {
         };
         (dx * dx + dy * dy).sqrt()
     }
+
+    /// Minimum **squared** Euclidean distance from a point `(x, y)` to this
+    /// bbox.  Returns `0.0` when the point is inside.
+    ///
+    /// Useful for priority-queue k-NN queries where avoiding `sqrt` on every
+    /// comparison is desirable.
+    #[inline]
+    pub fn min_distance_sq_to_point(&self, x: f64, y: f64) -> f64 {
+        let dx = if x < self.min_x {
+            self.min_x - x
+        } else if x > self.max_x {
+            x - self.max_x
+        } else {
+            0.0
+        };
+        let dy = if y < self.min_y {
+            self.min_y - y
+        } else if y > self.max_y {
+            y - self.max_y
+        } else {
+            0.0
+        };
+        dx * dx + dy * dy
+    }
 }
 
 #[cfg(test)]
