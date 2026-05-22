@@ -374,18 +374,21 @@ impl ChangeDetector {
         ts: &TimeSeriesRaster,
         config: &ChangeDetectionConfig,
     ) -> Result<ChangeDetectionResult> {
-        // BFAST is complex - use CUSUM as approximation for now
-        info!("Using CUSUM approximation for BFAST");
-        Self::cusum_change(ts, config)
+        // Real BFAST (Verbesselt et al. 2010): harmonic season+trend OLS fit
+        // plus OLS-MOSUM structural-change test; see `crate::change::bfast`.
+        crate::change::bfast::bfast_detect(ts, config)
     }
 
-    /// LandTrendr change detection (simplified approximation)
+    /// LandTrendr change detection (Kennedy et al. 2010 piecewise-linear segmentation).
+    ///
+    /// Delegates per-pixel work to [`crate::change::landtrendr::landtrendr_segment`].
+    /// The reported magnitude is `|last_vertex - first_vertex|` and the direction
+    /// follows the sign of `last_vertex - first_vertex`.
     fn landtrendr_change(
         ts: &TimeSeriesRaster,
         _config: &ChangeDetectionConfig,
     ) -> Result<ChangeDetectionResult> {
-        // LandTrendr is complex - use trend-based approach as approximation
-        info!("Using trend-based approximation for LandTrendr");
+        info!("LandTrendr piecewise-linear segmentation");
 
         if ts.len() < 3 {
             return Err(TemporalError::insufficient_data(
@@ -397,37 +400,41 @@ impl ChangeDetector {
             .expected_shape()
             .ok_or_else(|| TemporalError::insufficient_data("No shape information"))?;
 
-        let mut magnitude = Array3::zeros((height, width, n_bands));
-        let mut direction = Array3::zeros((height, width, n_bands));
+        let mut magnitude = Array3::<f64>::zeros((height, width, n_bands));
+        let mut direction = Array3::<i8>::zeros((height, width, n_bands));
+        let options = crate::change::landtrendr::LandTrendrOptions::default();
 
         for i in 0..height {
             for j in 0..width {
                 for k in 0..n_bands {
                     let values = ts.extract_pixel_timeseries(i, j, k)?;
-
-                    // Calculate slope
-                    let n = values.len() as f64;
-                    let times: Vec<f64> = (0..values.len()).map(|t| t as f64).collect();
-                    let sum_t: f64 = times.iter().sum();
-                    let sum_y: f64 = values.iter().sum();
-                    let sum_t2: f64 = times.iter().map(|t| t * t).sum();
-                    let sum_ty: f64 = times.iter().zip(values.iter()).map(|(t, y)| t * y).sum();
-
-                    let slope = (n * sum_ty - sum_t * sum_y) / (n * sum_t2 - sum_t * sum_t);
-
-                    magnitude[[i, j, k]] = slope.abs();
-                    direction[[i, j, k]] = if slope > 0.0 {
-                        1
-                    } else if slope < 0.0 {
-                        -1
-                    } else {
-                        0
-                    };
+                    if values.len() < options.min_observations {
+                        continue;
+                    }
+                    if values.iter().any(|v| !v.is_finite()) {
+                        continue;
+                    }
+                    if let Ok(result) =
+                        crate::change::landtrendr::landtrendr_segment(&values, &options)
+                    {
+                        if !result.vertices.is_empty() {
+                            let first = result.vertices.first().map(|v| v.value).unwrap_or(0.0);
+                            let last = result.vertices.last().map(|v| v.value).unwrap_or(0.0);
+                            magnitude[[i, j, k]] = (last - first).abs();
+                            direction[[i, j, k]] = if last > first {
+                                1
+                            } else if last < first {
+                                -1
+                            } else {
+                                0
+                            };
+                        }
+                    }
                 }
             }
         }
 
-        info!("Completed LandTrendr approximation change detection");
+        info!("Completed LandTrendr change detection");
         Ok(ChangeDetectionResult::new(magnitude, direction))
     }
 

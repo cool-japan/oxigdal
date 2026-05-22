@@ -17,6 +17,10 @@ use crate::message::SectionHeader;
 use crate::parameter::{LevelType, Parameter, lookup_grib2_parameter};
 
 pub use decoder::Grib2Decoder;
+pub use decoder::{
+    BitReader, ComplexPackingParams, SpatialDiffParams, decode_complex_packing,
+    decode_complex_with_spatial_diff,
+};
 pub use section1::IdentificationSection;
 pub use section3::GridDefinitionSection;
 pub use section4::ProductDefinitionSection;

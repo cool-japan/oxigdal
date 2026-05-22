@@ -481,14 +481,36 @@ impl VocabularyValidator {
 pub struct CrossReferenceValidator;
 
 impl CrossReferenceValidator {
-    /// Validate that related identifiers exist.
+    /// Validate that related identifiers in the supplied metadata can be
+    /// resolved by `resolver`.
+    ///
+    /// `resolver` is invoked for each unique related identifier value found in
+    /// `metadata.related_identifiers`; identifiers for which the resolver
+    /// returns `false` are returned in the resulting `Vec<String>`. Duplicate
+    /// identifier values are de-duplicated so each unresolvable identifier is
+    /// reported at most once.
+    ///
+    /// An empty result indicates that every related identifier was successfully
+    /// resolved (or that the metadata declared no related identifiers).
     pub fn validate_related_identifiers(
-        _metadata: &DataCiteMetadata,
-        _resolver: impl Fn(&str) -> bool,
+        metadata: &DataCiteMetadata,
+        resolver: impl Fn(&str) -> bool,
     ) -> Result<Vec<String>> {
-        // Placeholder for cross-reference validation
-        // Would check if related DOIs/identifiers are valid and resolvable
-        Ok(Vec::new())
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut unresolvable: Vec<String> = Vec::new();
+        for related in &metadata.related_identifiers {
+            let id = related.related_identifier.as_str();
+            // Skip empty identifiers (they are caught by required-field
+            // validation elsewhere) and de-duplicate before invoking the
+            // resolver, which may be expensive (e.g. an HTTP lookup).
+            if id.is_empty() || !seen.insert(id.to_string()) {
+                continue;
+            }
+            if !resolver(id) {
+                unresolvable.push(id.to_string());
+            }
+        }
+        Ok(unresolvable)
     }
 }
 
@@ -538,5 +560,71 @@ mod tests {
 
         // 80 - 5 = 75
         assert!((report.quality_score - 75.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_validate_related_identifiers() {
+        use crate::datacite::{
+            Creator, DataCiteMetadata, IdentifierType, RelatedIdentifier, RelationType,
+            ResourceTypeGeneral,
+        };
+
+        // Build metadata containing three related identifiers, two of which
+        // share the same value so de-duplication can be exercised.
+        let metadata = DataCiteMetadata::builder()
+            .identifier("10.5281/zenodo.1", IdentifierType::Doi)
+            .creator(Creator::new("Doe, Jane"))
+            .title("Test")
+            .publisher("Zenodo")
+            .publication_year(2024)
+            .resource_type(ResourceTypeGeneral::Dataset)
+            .build()
+            .expect("metadata build should succeed");
+
+        let make = |id: &str| RelatedIdentifier {
+            related_identifier: id.to_string(),
+            related_identifier_type: IdentifierType::Doi,
+            relation_type: RelationType::Cites,
+            related_metadata_scheme: None,
+            scheme_uri: None,
+            scheme_type: None,
+            resource_type_general: None,
+        };
+
+        let mut metadata = metadata;
+        metadata.related_identifiers.push(make("10.5281/good"));
+        metadata.related_identifiers.push(make("10.5281/missing"));
+        // Duplicate of the unresolvable id; should only be reported once.
+        metadata.related_identifiers.push(make("10.5281/missing"));
+        // Empty identifier should be skipped silently rather than reported.
+        metadata.related_identifiers.push(make(""));
+
+        let unresolvable = CrossReferenceValidator::validate_related_identifiers(&metadata, |id| {
+            id == "10.5281/good"
+        })
+        .expect("validation should succeed");
+        assert_eq!(unresolvable, vec!["10.5281/missing".to_string()]);
+
+        // When every identifier resolves, the result should be empty.
+        let none_unresolved =
+            CrossReferenceValidator::validate_related_identifiers(&metadata, |_| true)
+                .expect("validation should succeed");
+        assert!(none_unresolved.is_empty());
+
+        // Metadata with no related identifiers should also produce an empty
+        // result.
+        let empty_meta = DataCiteMetadata::builder()
+            .identifier("10.5281/zenodo.2", IdentifierType::Doi)
+            .creator(Creator::new("Doe, Jane"))
+            .title("Test")
+            .publisher("Zenodo")
+            .publication_year(2024)
+            .resource_type(ResourceTypeGeneral::Dataset)
+            .build()
+            .expect("metadata build should succeed");
+        let empty_result =
+            CrossReferenceValidator::validate_related_identifiers(&empty_meta, |_| false)
+                .expect("validation should succeed");
+        assert!(empty_result.is_empty());
     }
 }

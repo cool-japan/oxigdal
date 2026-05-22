@@ -155,7 +155,7 @@ fn test_metadata_default_all_none() {
     assert!(meta.tile_type.is_none());
     assert!(meta.version.is_none());
     assert!(meta.json.is_none());
-    assert!(meta.extra.is_empty());
+    assert!(meta.extras.is_empty());
 }
 
 #[test]
@@ -165,11 +165,11 @@ fn test_metadata_multiple_extra_fields() {
     map.insert("custom_b".to_string(), "value_b".to_string());
     let meta = MBTilesMetadata::from_map(map);
     assert_eq!(
-        meta.extra.get("custom_a").map(|s| s.as_str()),
+        meta.extras.get("custom_a").map(|s| s.as_str()),
         Some("value_a")
     );
     assert_eq!(
-        meta.extra.get("custom_b").map(|s| s.as_str()),
+        meta.extras.get("custom_b").map(|s| s.as_str()),
         Some("value_b")
     );
 }

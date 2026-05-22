@@ -25,6 +25,7 @@ use crate::tiff::{ImageInfo, TiffFile, TiffTag};
 // Phase 2: Advanced COG tools and optimization modules
 pub mod compression_selector;
 pub mod converter;
+pub mod ghost_area;
 pub mod metadata_optimizer;
 pub mod optimizer;
 pub mod overview_optimizer;
@@ -39,6 +40,7 @@ pub use converter::{
     BatchConversionConfig, BatchConversionResult, CogConverter, ConversionConfig,
     ConversionProgress, ConversionResult, ConversionStep, convert_batch,
 };
+pub use ghost_area::{GhostArea, parse_ghost_area};
 pub use metadata_optimizer::{
     GeoKeyOptimization, MetadataOptimization, PreservationLevel, analyze_metadata,
     compress_ascii_fields, find_redundant_tags, optimize_geokeys,

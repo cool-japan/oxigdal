@@ -17,7 +17,9 @@ categories = ["command-line-utilities", "science"]
 # Internal dependencies
 oxigdal-core.workspace = true
 oxigdal-algorithms.workspace = true
-oxigdal-proj.workspace = true
+# Workspace declares oxigdal-proj with default-features = false; oxigdal-proj is
+# not no_std-clean, so std must be re-enabled here (mirrors oxigdal-geojson).
+oxigdal-proj = { workspace = true, features = ["std"] }
 # oxigdal-dev-tools.workspace = true  # Temporarily disabled due to build errors
 oxigdal-geotiff.workspace = true
 oxigdal-geojson.workspace = true

@@ -251,6 +251,88 @@ pub fn filter_noise_with_params(
     Ok(filtered_points)
 }
 
+/// Eigenvalues of a symmetric 3×3 matrix, sorted descending.
+/// Closed-form analytic solution (Smith 1961). Returns [0.0; 3] for non-finite input.
+fn symmetric_eig_3x3(cov: &[[f64; 3]; 3]) -> [f64; 3] {
+    // non-finite guard
+    for row in cov {
+        for v in row {
+            if !v.is_finite() {
+                return [0.0; 3];
+            }
+        }
+    }
+    let p1 = cov[0][1].powi(2) + cov[0][2].powi(2) + cov[1][2].powi(2);
+    if p1 <= f64::EPSILON {
+        // diagonal matrix — eigenvalues are the diagonal, sorted descending
+        let mut d = [cov[0][0], cov[1][1], cov[2][2]];
+        d.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        return d;
+    }
+    let q = (cov[0][0] + cov[1][1] + cov[2][2]) / 3.0;
+    let p2 = (cov[0][0] - q).powi(2) + (cov[1][1] - q).powi(2) + (cov[2][2] - q).powi(2) + 2.0 * p1;
+    let p = (p2 / 6.0).sqrt();
+    if p <= f64::EPSILON {
+        return [q, q, q];
+    }
+    // B = (1/p) * (cov - q*I)
+    let mut b = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            let a = cov[i][j] - if i == j { q } else { 0.0 };
+            b[i][j] = a / p;
+        }
+    }
+    // r = det(B) / 2
+    let det_b = b[0][0] * (b[1][1] * b[2][2] - b[1][2] * b[2][1])
+        - b[0][1] * (b[1][0] * b[2][2] - b[1][2] * b[2][0])
+        + b[0][2] * (b[1][0] * b[2][1] - b[1][1] * b[2][0]);
+    let r = (det_b / 2.0).clamp(-1.0, 1.0);
+    let phi = r.acos() / 3.0;
+    let eig1 = q + 2.0 * p * phi.cos();
+    let eig3 = q + 2.0 * p * (phi + 2.0 * std::f64::consts::PI / 3.0).cos();
+    let eig2 = 3.0 * q - eig1 - eig3;
+    // eig1 >= eig2 >= eig3 by construction of this method
+    [eig1, eig2, eig3]
+}
+
+/// PCA dimensionality features (Demantké et al. 2011).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DimensionalityFeatures {
+    /// Linearity: dominance of the largest eigenvalue (1D structure).
+    pub linearity: f64,
+    /// Planarity: dominance of the two largest eigenvalues (2D structure).
+    pub planarity: f64,
+    /// Sphericity: isotropy of the eigenvalue spectrum (3D structure).
+    pub sphericity: f64,
+}
+
+/// Compute linearity / planarity / sphericity from a 3×3 covariance matrix.
+///
+/// Implements the dimensionality index of Demantké et al. 2011,
+/// "Dimensionality based scale selection in 3D LiDAR point clouds".
+/// For eigenvalues `λ₁ ≥ λ₂ ≥ λ₃`:
+/// - linearity  `L_λ = (λ₁ - λ₂) / λ₁`
+/// - planarity  `P_λ = (λ₂ - λ₃) / λ₁`
+/// - sphericity `S_λ = λ₃ / λ₁`
+///
+/// Degenerate cluster (λ₁ ≈ 0) → all-zero features.
+pub(crate) fn dimensionality_features(cov: &[[f64; 3]; 3]) -> DimensionalityFeatures {
+    let [l1, l2, l3] = symmetric_eig_3x3(cov);
+    if l1 <= f64::EPSILON {
+        return DimensionalityFeatures {
+            linearity: 0.0,
+            planarity: 0.0,
+            sphericity: 0.0,
+        };
+    }
+    DimensionalityFeatures {
+        linearity: ((l1 - l2) / l1).clamp(0.0, 1.0),
+        planarity: ((l2 - l3) / l1).clamp(0.0, 1.0),
+        sphericity: (l3 / l1).clamp(0.0, 1.0),
+    }
+}
+
 /// Calculate planarity of a point set (0 = not planar, 1 = perfectly planar)
 fn calculate_planarity(points: &[&Point]) -> f64 {
     if points.len() < 3 {
@@ -297,17 +379,9 @@ fn calculate_planarity(points: &[&Point]) -> f64 {
         }
     }
 
-    // Simplified planarity: ratio of smallest to largest eigenvalue
-    // For perfect planarity, one eigenvalue should be near zero
-    // This is a simplified approximation
-    let trace = cov[0][0] + cov[1][1] + cov[2][2];
-    let min_variance = cov[0][0].min(cov[1][1]).min(cov[2][2]);
-
-    if trace > 0.0 {
-        1.0 - (min_variance / trace)
-    } else {
-        0.0
-    }
+    // Planarity from the PCA dimensionality index (Demantké et al. 2011):
+    // P_λ = (λ₂ - λ₃) / λ₁ for the local covariance eigenvalues λ₁ ≥ λ₂ ≥ λ₃.
+    dimensionality_features(&cov).planarity
 }
 
 /// Automatic classification pipeline
@@ -452,5 +526,203 @@ mod tests {
         let params = ClassificationParams::default();
         assert_eq!(params.search_radius, 2.0);
         assert_eq!(params.min_points, 5);
+    }
+
+    /// Build the symmetric 3×3 covariance matrix of a point set the same way
+    /// `calculate_planarity` does — used to exercise the dimensionality index.
+    fn covariance_of(points: &[Point]) -> [[f64; 3]; 3] {
+        let n = points.len() as f64;
+        let mut sum = [0.0f64; 3];
+        for p in points {
+            sum[0] += p.x;
+            sum[1] += p.y;
+            sum[2] += p.z;
+        }
+        let centroid = [sum[0] / n, sum[1] / n, sum[2] / n];
+        let mut cov = [[0.0f64; 3]; 3];
+        for p in points {
+            let dx = p.x - centroid[0];
+            let dy = p.y - centroid[1];
+            let dz = p.z - centroid[2];
+            cov[0][0] += dx * dx;
+            cov[0][1] += dx * dy;
+            cov[0][2] += dx * dz;
+            cov[1][1] += dy * dy;
+            cov[1][2] += dy * dz;
+            cov[2][2] += dz * dz;
+        }
+        cov[1][0] = cov[0][1];
+        cov[2][0] = cov[0][2];
+        cov[2][1] = cov[1][2];
+        for row in &mut cov {
+            for val in row {
+                *val /= n;
+            }
+        }
+        cov
+    }
+
+    #[test]
+    fn test_symmetric_eig_3x3_diagonal_matrix() {
+        // Diagonal matrix: eigenvalues are the diagonal entries, sorted descending.
+        let cov = [[3.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let eig = symmetric_eig_3x3(&cov);
+        assert!((eig[0] - 3.0).abs() < 1e-12);
+        assert!((eig[1] - 2.0).abs() < 1e-12);
+        assert!((eig[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_symmetric_eig_3x3_known_eigenvalues() {
+        // The symmetric matrix
+        //   [ 2 1 1 ]
+        //   [ 1 2 1 ]
+        //   [ 1 1 2 ]
+        // has characteristic polynomial with eigenvalues 4, 1, 1
+        // (1 is a double root; trace = 6, det = 4).
+        let cov = [[2.0, 1.0, 1.0], [1.0, 2.0, 1.0], [1.0, 1.0, 2.0]];
+        let eig = symmetric_eig_3x3(&cov);
+        assert!((eig[0] - 4.0).abs() < 1e-9, "λ₁ = {}", eig[0]);
+        assert!((eig[1] - 1.0).abs() < 1e-9, "λ₂ = {}", eig[1]);
+        assert!((eig[2] - 1.0).abs() < 1e-9, "λ₃ = {}", eig[2]);
+        // Trace and determinant invariants.
+        let trace = eig[0] + eig[1] + eig[2];
+        assert!((trace - 6.0).abs() < 1e-9);
+        let det = eig[0] * eig[1] * eig[2];
+        assert!((det - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_symmetric_eig_3x3_sorted_descending() {
+        // An arbitrary symmetric matrix — eigenvalues must come out λ₁ ≥ λ₂ ≥ λ₃.
+        let cov = [[4.0, 0.7, -1.3], [0.7, 2.5, 0.9], [-1.3, 0.9, 6.1]];
+        let eig = symmetric_eig_3x3(&cov);
+        assert!(eig[0] >= eig[1], "λ₁ {} < λ₂ {}", eig[0], eig[1]);
+        assert!(eig[1] >= eig[2], "λ₂ {} < λ₃ {}", eig[1], eig[2]);
+        // Trace invariant for a symmetric matrix.
+        let trace = eig[0] + eig[1] + eig[2];
+        assert!((trace - (4.0 + 2.5 + 6.1)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_planarity_perfectly_planar_returns_near_one() {
+        // A symmetric 5×5 grid in the XY plane with zero Z extent: equal X and
+        // Y variance (λ₁ ≈ λ₂) and λ₃ = 0, so P_λ = (λ₂ - λ₃) / λ₁ ≈ 1.
+        let mut points = Vec::new();
+        for ix in -2..=2 {
+            for iy in -2..=2 {
+                points.push(Point::new(ix as f64, iy as f64, 0.0));
+            }
+        }
+        let cov = covariance_of(&points);
+        let feat = dimensionality_features(&cov);
+        assert!(
+            feat.planarity > 0.95,
+            "planarity should be near 1 for a symmetric flat grid, got {}",
+            feat.planarity
+        );
+        // A flat patch has near-zero sphericity (λ₃ ≈ 0).
+        assert!(
+            feat.sphericity < 0.05,
+            "sphericity should be near 0 for a flat grid, got {}",
+            feat.sphericity
+        );
+    }
+
+    #[test]
+    fn test_planarity_spherical_cluster_returns_near_zero() {
+        // Isotropic covariance: eight cube corners give equal variance on each axis.
+        let points = vec![
+            Point::new(-1.0, -1.0, -1.0),
+            Point::new(1.0, -1.0, -1.0),
+            Point::new(-1.0, 1.0, -1.0),
+            Point::new(1.0, 1.0, -1.0),
+            Point::new(-1.0, -1.0, 1.0),
+            Point::new(1.0, -1.0, 1.0),
+            Point::new(-1.0, 1.0, 1.0),
+            Point::new(1.0, 1.0, 1.0),
+        ];
+        let cov = covariance_of(&points);
+        let feat = dimensionality_features(&cov);
+        assert!(
+            feat.planarity < 0.05,
+            "planarity should be near 0 for an isotropic cluster, got {}",
+            feat.planarity
+        );
+    }
+
+    #[test]
+    fn test_planarity_linear_cluster_returns_low() {
+        // Points along the X axis only.
+        let points = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(3.0, 0.0, 0.0),
+            Point::new(4.0, 0.0, 0.0),
+        ];
+        let cov = covariance_of(&points);
+        let feat = dimensionality_features(&cov);
+        assert!(
+            feat.planarity < 0.05,
+            "planarity should be near 0 for a line, got {}",
+            feat.planarity
+        );
+        assert!(
+            feat.linearity > 0.95,
+            "linearity should be near 1 for a line, got {}",
+            feat.linearity
+        );
+    }
+
+    #[test]
+    fn test_linearity_collinear_points_returns_near_one() {
+        // Collinear points along a slanted direction in 3D.
+        let points = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 1.0, 1.0),
+            Point::new(2.0, 2.0, 2.0),
+            Point::new(3.0, 3.0, 3.0),
+            Point::new(-1.0, -1.0, -1.0),
+        ];
+        let cov = covariance_of(&points);
+        let feat = dimensionality_features(&cov);
+        assert!(
+            feat.linearity > 0.99,
+            "linearity should be near 1 for collinear points, got {}",
+            feat.linearity
+        );
+    }
+
+    #[test]
+    fn test_sphericity_isotropic_cluster_returns_near_one() {
+        // Cube corners: equal variance on every axis → sphericity ≈ 1.
+        let points = vec![
+            Point::new(-1.0, -1.0, -1.0),
+            Point::new(1.0, -1.0, -1.0),
+            Point::new(-1.0, 1.0, -1.0),
+            Point::new(1.0, 1.0, -1.0),
+            Point::new(-1.0, -1.0, 1.0),
+            Point::new(1.0, -1.0, 1.0),
+            Point::new(-1.0, 1.0, 1.0),
+            Point::new(1.0, 1.0, 1.0),
+        ];
+        let cov = covariance_of(&points);
+        let feat = dimensionality_features(&cov);
+        assert!(
+            feat.sphericity > 0.95,
+            "sphericity should be near 1 for an isotropic cluster, got {}",
+            feat.sphericity
+        );
+    }
+
+    #[test]
+    fn test_dimensionality_features_degenerate_cluster_all_zero() {
+        // Zero covariance (all points coincident) → λ₁ ≈ 0 → all features 0.
+        let cov = [[0.0; 3]; 3];
+        let feat = dimensionality_features(&cov);
+        assert_eq!(feat.linearity, 0.0);
+        assert_eq!(feat.planarity, 0.0);
+        assert_eq!(feat.sphericity, 0.0);
     }
 }

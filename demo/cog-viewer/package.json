@@ -1,6 +1,6 @@
 {
   "name": "oxigdal-cog-viewer",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Advanced COG (Cloud Optimized GeoTIFF) viewer powered by OxiGDAL WebAssembly",
   "main": "main.js",
   "type": "module",

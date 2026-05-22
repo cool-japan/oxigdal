@@ -17,11 +17,13 @@ categories = ["science", "algorithms"]
 default = ["std"]
 std = ["thiserror/std", "serde/std", "dep:serde_json", "dep:once_cell", "dep:proj4rs"]
 proj-sys = ["dep:proj"]  # Optional C bindings to PROJ library
+proj-db = ["dep:rusqlite"]  # Enable PROJ.db SQLite reader for ~7500 EPSG codes
 
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
 num-traits = { workspace = true }
+byteorder = { workspace = true }
 
 # std-only dependencies
 serde_json = { workspace = true, optional = true }
@@ -33,9 +35,17 @@ proj4rs = { version = "0.1.10", optional = true }
 # Optional C bindings to PROJ library
 proj = { version = "0.31", optional = true }
 
+# Optional SQLite reader for system PROJ.db
+rusqlite = { workspace = true, optional = true, features = ["bundled"] }
+
 [dev-dependencies]
 approx = { workspace = true }
 proptest = { workspace = true }
+rusqlite = { workspace = true, features = ["bundled"] }
+
+[build-dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

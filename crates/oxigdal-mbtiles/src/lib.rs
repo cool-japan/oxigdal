@@ -2,12 +2,17 @@
 //!
 //! Provides tile coordinate helpers ([`tile_coords`]), an in-memory
 //! MBTiles store ([`mbtiles`]), a tile archive builder ([`writer`]),
-//! and geographic coordinate conversion utilities ([`bbox_util`]).
+//! geographic coordinate conversion utilities ([`bbox_util`]), and — when
+//! the `sqlite` cargo feature is enabled — a real SQLite-backed reader
+//! (`reader` module, feature-gated) for on-disk `.mbtiles` archives.
 
 pub mod bbox_util;
 pub mod error;
 pub mod mbtiles;
+#[cfg(feature = "sqlite")]
+pub mod reader;
 pub mod tile_coords;
+pub mod validation;
 pub mod writer;
 
 pub use bbox_util::{
@@ -16,7 +21,10 @@ pub use bbox_util::{
 };
 pub use error::MbTilesError;
 pub use mbtiles::{MBTiles, MBTilesMetadata};
+#[cfg(feature = "sqlite")]
+pub use reader::MBTilesReader;
 pub use tile_coords::{TileCoord, TileFormat, tms_to_xyz, xyz_to_tms};
+pub use validation::{IssueSeverity, ValidationIssue, validate_metadata};
 pub use writer::{
     FieldType, MBTilesData, MBTilesWriter, TileRange, TileRangeIter, TileScheme,
     TileStatsAggregator, VectorLayerSpec, ZoomStats,

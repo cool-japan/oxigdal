@@ -191,7 +191,7 @@ fn test_metadata_extra_fields() {
     map.insert("custom_key".to_string(), "custom_value".to_string());
     let meta = MBTilesMetadata::from_map(map);
     assert_eq!(
-        meta.extra.get("custom_key").map(|s| s.as_str()),
+        meta.extras.get("custom_key").map(|s| s.as_str()),
         Some("custom_value")
     );
 }

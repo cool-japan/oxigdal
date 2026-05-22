@@ -97,6 +97,34 @@ pub enum StreamingError {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
+    /// Tile not found (HTTP 404 or equivalent)
+    #[error("Tile not found")]
+    TileNotFound,
+
+    /// HTTP error from tile fetch
+    #[cfg(feature = "tile-http")]
+    #[error("HTTP error: status {status}, url: {url}")]
+    HttpError {
+        /// HTTP status code
+        status: u16,
+        /// The URL that returned the error
+        url: String,
+    },
+
+    /// Reqwest (HTTP client) error
+    #[cfg(feature = "tile-http")]
+    #[error("HTTP client error: {0}")]
+    Reqwest(#[from] reqwest::Error),
+
+    /// Finalize called with fewer chunks than the preset total
+    #[error("Incomplete finalize: expected {expected} chunks, wrote {actual}")]
+    IncompleteFinalize {
+        /// The preset expected chunk count
+        expected: usize,
+        /// The number of chunks actually written
+        actual: usize,
+    },
+
     /// Other error
     #[error("Other error: {0}")]
     Other(String),

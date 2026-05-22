@@ -10,8 +10,18 @@ use crate::error::{GeoParquetError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// GeoParquet format version
-pub const GEOPARQUET_VERSION: &str = "1.0.0";
+/// GeoParquet format version emitted by writers in this crate.
+///
+/// Bumped to `"1.1.0"` to enable `covering.bbox` columns, GeoArrow native
+/// encodings, and predicate pushdown features added in OxiGDAL 0.1.5.  Files
+/// written by older OxiGDAL versions declaring `"1.0.0"` continue to read
+/// because [`GeoParquetMetadata::validate`] accepts any 1.x version string.
+pub const GEOPARQUET_VERSION: &str = "1.1.0";
+
+/// The minimum supported GeoParquet specification version.
+///
+/// Any 1.x file is accepted on read; only the major version is significant.
+pub const GEOPARQUET_VERSION_MIN: &str = "1.0.0";
 
 /// Metadata key in Parquet file metadata
 pub const GEOPARQUET_METADATA_KEY: &str = "geo";
@@ -61,13 +71,18 @@ impl GeoParquetMetadata {
             .ok_or_else(|| GeoParquetError::missing_field(&self.primary_column))
     }
 
-    /// Validates the metadata
+    /// Validates the metadata.
+    ///
+    /// The version check accepts any GeoParquet `1.x` version string (currently
+    /// `"1.0.0"` and `"1.1.0"`).  Files declaring `"2.x"` or higher are
+    /// rejected.  This forward compatibility lets readers in this crate open
+    /// pre-existing 1.0 files even after we bump our writer to 1.1.
     pub fn validate(&self) -> Result<()> {
-        // Check version
-        if self.version != GEOPARQUET_VERSION {
+        // Major-version compatibility check.  Accepts any 1.x.y version string.
+        if !is_compatible_version(&self.version) {
             return Err(GeoParquetError::invalid_metadata(format!(
-                "Unsupported GeoParquet version: {} (expected {})",
-                self.version, GEOPARQUET_VERSION
+                "Unsupported GeoParquet version: {} (expected 1.x)",
+                self.version
             )));
         }
 
@@ -144,6 +159,24 @@ impl GeometryColumnMetadata {
         }
     }
 
+    /// Creates new geometry column metadata with a GeoArrow native encoding.
+    ///
+    /// `encoding` selects the geometry shape (`Point`, `LineString`, `Polygon`,
+    /// `MultiPoint`, `MultiLineString`, `MultiPolygon`).  Native encodings are
+    /// only meaningful for non-mixed columns; passing [`EncodingType::Wkb`] is
+    /// equivalent to [`Self::new_wkb`].
+    pub fn new_native(encoding: EncodingType) -> Self {
+        Self {
+            encoding,
+            geometry_types: Vec::new(),
+            crs: None,
+            bbox: None,
+            edges: None,
+            orientation: None,
+            epoch: None,
+        }
+    }
+
     /// Sets the CRS
     pub fn with_crs(mut self, crs: Crs) -> Self {
         self.crs = Some(crs);
@@ -174,15 +207,18 @@ impl GeometryColumnMetadata {
         self
     }
 
-    /// Validates the column metadata
+    /// Validates the column metadata.
+    ///
+    /// All `EncodingType` variants — WKB and the GeoArrow native encodings —
+    /// are accepted.  Bbox values, when present, must satisfy the standard
+    /// min ≤ max ordering on every axis.  The CRS, if present, is validated
+    /// recursively.
     pub fn validate(&self) -> Result<()> {
-        // Validate encoding
-        if self.encoding != EncodingType::Wkb {
-            return Err(GeoParquetError::unsupported(format!(
-                "Encoding: {:?}",
-                self.encoding
-            )));
-        }
+        // All EncodingType variants are valid in GeoParquet 1.1: WKB plus the
+        // six native GeoArrow geometry shapes.  The encoding is enforced at
+        // schema-construction time (`create_geometry_field_for`) and at
+        // write-batch time (mixed types in a native column → reject), not
+        // here at metadata-validation time.
 
         // Validate bbox if present
         if let Some(ref bbox) = self.bbox {
@@ -218,12 +254,131 @@ impl GeometryColumnMetadata {
     }
 }
 
-/// Geometry encoding type
+/// Geometry encoding type as declared in the GeoParquet `geo` metadata
+/// `columns.<name>.encoding` field.
+///
+/// `WKB` is the legacy GeoParquet 1.0 encoding (each row is an opaque WKB
+/// `BinaryArray` blob, mixing geometry types is allowed).  The remaining
+/// variants are GeoArrow 1.1 native encodings — each binds the column to a
+/// single uniform geometry type and a structured Arrow array shape:
+///
+/// | Variant | Arrow shape (interleaved) |
+/// |---|---|
+/// | `Point` | `FixedSizeList<f64, N>` |
+/// | `LineString` | `List<FixedSizeList<f64, N>>` |
+/// | `Polygon` | `List<List<FixedSizeList<f64, N>>>` |
+/// | `MultiPoint` | `List<FixedSizeList<f64, N>>` |
+/// | `MultiLineString` | `List<List<FixedSizeList<f64, N>>>` |
+/// | `MultiPolygon` | `List<List<List<FixedSizeList<f64, N>>>>` |
+///
+/// `N` is the coordinate arity (`CoordDim::arity()`): 2 for XY, 3 for XYZ/XYM,
+/// 4 for XYZM.  Note that `LineString`/`MultiPoint` and
+/// `Polygon`/`MultiLineString` share an Arrow shape — disambiguation comes from
+/// the `ARROW:extension:name` field metadata, never from the array structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum EncodingType {
-    /// Well-Known Binary encoding
+    /// Well-Known Binary encoding (GeoParquet 1.0; mixed types allowed).
     #[serde(rename = "WKB")]
     Wkb,
+    /// GeoArrow 1.1 native `point` encoding.
+    #[serde(rename = "point")]
+    Point,
+    /// GeoArrow 1.1 native `linestring` encoding.
+    #[serde(rename = "linestring")]
+    LineString,
+    /// GeoArrow 1.1 native `polygon` encoding.
+    #[serde(rename = "polygon")]
+    Polygon,
+    /// GeoArrow 1.1 native `multipoint` encoding.
+    #[serde(rename = "multipoint")]
+    MultiPoint,
+    /// GeoArrow 1.1 native `multilinestring` encoding.
+    #[serde(rename = "multilinestring")]
+    MultiLineString,
+    /// GeoArrow 1.1 native `multipolygon` encoding.
+    #[serde(rename = "multipolygon")]
+    MultiPolygon,
+}
+
+impl EncodingType {
+    /// Returns `true` if this is the WKB encoding (the legacy 1.0 path).
+    pub const fn is_wkb(self) -> bool {
+        matches!(self, Self::Wkb)
+    }
+
+    /// Returns `true` if this is a GeoArrow native encoding.
+    pub const fn is_native(self) -> bool {
+        !self.is_wkb()
+    }
+}
+
+/// Coordinate dimensionality / arity for native GeoArrow geometry encodings.
+///
+/// GeoArrow stores coordinates *interleaved* in a `FixedSizeList<f64, N>`,
+/// where `N` is the value returned by [`Self::arity`].  The variant chosen at
+/// the writer determines `N` for every coordinate in the column — native
+/// encodings cannot mix dimensionalities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CoordDim {
+    /// 2D coordinates (`x, y`); arity = 2.
+    Xy,
+    /// 3D coordinates with elevation (`x, y, z`); arity = 3.
+    Xyz,
+    /// 2D coordinates with measure (`x, y, m`); arity = 3.
+    Xym,
+    /// 4D coordinates (`x, y, z, m`); arity = 4.
+    Xyzm,
+}
+
+impl CoordDim {
+    /// Returns the number of f64 values per coordinate (the FixedSizeList size).
+    pub const fn arity(self) -> usize {
+        match self {
+            Self::Xy => 2,
+            Self::Xyz | Self::Xym => 3,
+            Self::Xyzm => 4,
+        }
+    }
+
+    /// Returns the [`CoordDim`] for the given arity, or `None` if unsupported.
+    ///
+    /// Arity 3 maps to [`Self::Xyz`] by default — the writer should set the
+    /// field metadata explicitly to disambiguate XYZ from XYM if needed.
+    pub const fn from_arity(n: usize) -> Option<Self> {
+        match n {
+            2 => Some(Self::Xy),
+            3 => Some(Self::Xyz),
+            4 => Some(Self::Xyzm),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if this dimensionality has a Z component.
+    pub const fn has_z(self) -> bool {
+        matches!(self, Self::Xyz | Self::Xyzm)
+    }
+
+    /// Returns `true` if this dimensionality has an M component.
+    pub const fn has_m(self) -> bool {
+        matches!(self, Self::Xym | Self::Xyzm)
+    }
+}
+
+/// Returns `true` if `version` is a 1.x GeoParquet specification version that
+/// this crate accepts on read.
+fn is_compatible_version(version: &str) -> bool {
+    // Strip any pre-release / build suffix, then check the major component.
+    let core = version
+        .split('-')
+        .next()
+        .unwrap_or(version)
+        .split('+')
+        .next()
+        .unwrap_or(version);
+    let major = core.split('.').next().unwrap_or("");
+    major == "1"
 }
 
 /// Coordinate Reference System
@@ -428,6 +583,98 @@ mod tests {
         let deserialized = GeoParquetMetadata::from_json(&json.expect("json should serialize"));
         assert!(deserialized.is_ok());
         assert_eq!(deserialized.expect("should deserialize"), metadata);
+    }
+
+    // ── New EncodingType / CoordDim / version tests ──────────────────────────
+
+    /// A GeoParquet `1.0.0` file written by an older OxiGDAL must still load.
+    #[test]
+    fn test_legacy_1_0_0_metadata_validates() {
+        // Hand-craft a metadata document that declares version 1.0.0
+        // (older writers will produce this).
+        let json = r#"{
+            "version": "1.0.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {"encoding": "WKB"}
+            }
+        }"#;
+        let parsed = GeoParquetMetadata::from_json(json).expect("legacy 1.0 should parse");
+        assert_eq!(parsed.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_geoparquet_version_is_1_1_0() {
+        // The writer constant is bumped, but the reader still accepts 1.0.
+        assert_eq!(GEOPARQUET_VERSION, "1.1.0");
+        assert_eq!(GEOPARQUET_VERSION_MIN, "1.0.0");
+    }
+
+    #[test]
+    fn test_encoding_type_point_serde_roundtrip() {
+        let enc = EncodingType::Point;
+        let json = serde_json::to_string(&enc).expect("ser");
+        assert_eq!(json, "\"point\"");
+        let back: EncodingType = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, EncodingType::Point);
+    }
+
+    #[test]
+    fn test_encoding_type_polygon_serde_roundtrip() {
+        let enc = EncodingType::Polygon;
+        let json = serde_json::to_string(&enc).expect("ser");
+        assert_eq!(json, "\"polygon\"");
+        let back: EncodingType = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, EncodingType::Polygon);
+    }
+
+    #[test]
+    fn test_encoding_type_validate_native_passes() {
+        // Native point column should validate cleanly.
+        let column = GeometryColumnMetadata::new_native(EncodingType::Point);
+        assert!(column.validate().is_ok());
+
+        // The metadata wrapper should also pass with version bumped.
+        let mut metadata = GeoParquetMetadata::new("geometry");
+        metadata.add_column("geometry", column);
+        assert!(metadata.validate().is_ok());
+    }
+
+    #[test]
+    fn test_encoding_type_all_native_variants_serde() {
+        let cases = [
+            (EncodingType::Wkb, "WKB"),
+            (EncodingType::Point, "point"),
+            (EncodingType::LineString, "linestring"),
+            (EncodingType::Polygon, "polygon"),
+            (EncodingType::MultiPoint, "multipoint"),
+            (EncodingType::MultiLineString, "multilinestring"),
+            (EncodingType::MultiPolygon, "multipolygon"),
+        ];
+        for (enc, expected) in cases {
+            let s = serde_json::to_string(&enc).expect("ser");
+            assert_eq!(s, format!("\"{expected}\""));
+            let back: EncodingType = serde_json::from_str(&s).expect("de");
+            assert_eq!(back, enc);
+        }
+    }
+
+    #[test]
+    fn test_coord_dim_arity() {
+        assert_eq!(CoordDim::Xy.arity(), 2);
+        assert_eq!(CoordDim::Xyz.arity(), 3);
+        assert_eq!(CoordDim::Xym.arity(), 3);
+        assert_eq!(CoordDim::Xyzm.arity(), 4);
+
+        assert_eq!(CoordDim::from_arity(2), Some(CoordDim::Xy));
+        assert_eq!(CoordDim::from_arity(3), Some(CoordDim::Xyz));
+        assert_eq!(CoordDim::from_arity(4), Some(CoordDim::Xyzm));
+        assert_eq!(CoordDim::from_arity(5), None);
+
+        assert!(!CoordDim::Xy.has_z() && !CoordDim::Xy.has_m());
+        assert!(CoordDim::Xyz.has_z() && !CoordDim::Xyz.has_m());
+        assert!(!CoordDim::Xym.has_z() && CoordDim::Xym.has_m());
+        assert!(CoordDim::Xyzm.has_z() && CoordDim::Xyzm.has_m());
     }
 
     #[test]

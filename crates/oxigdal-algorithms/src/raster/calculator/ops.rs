@@ -53,18 +53,22 @@ impl RasterCalculator {
 
         // Parse
         let mut parser = Parser::new(tokens);
-        let expr = parser.parse()?;
+        let raw_expr = parser.parse()?;
 
-        // Optimize expression
-        let expr = Optimizer::optimize(expr);
+        // Optimize — returns (rewritten_expr, cse_slots)
+        let (expr, cache_slots) = Optimizer::optimize(raw_expr);
 
-        // Evaluate
-        let evaluator = Evaluator::new(bands);
+        // Build evaluator with CSE slot expressions
+        let evaluator = Evaluator::new(bands, &cache_slots);
+        let slot_count = cache_slots.len();
+
         let mut result = RasterBuffer::zeros(width, height, bands[0].data_type());
 
         for y in 0..height {
             for x in 0..width {
-                let value = evaluator.eval_pixel(&expr, x, y)?;
+                // One fresh pixel-cache per pixel — reset to all-None
+                let mut pixel_cache: Vec<Option<f64>> = vec![None; slot_count];
+                let value = evaluator.eval_pixel(&expr, x, y, &mut pixel_cache)?;
                 result
                     .set_pixel(x, y, value)
                     .map_err(AlgorithmError::Core)?;
@@ -120,24 +124,26 @@ impl RasterCalculator {
 
         // Parse
         let mut parser = Parser::new(tokens);
-        let expr = parser.parse()?;
+        let raw_expr = parser.parse()?;
 
-        // Optimize expression
-        let expr = Optimizer::optimize(expr);
+        // Optimize — returns (rewritten_expr, cse_slots)
+        let (expr, cache_slots) = Optimizer::optimize(raw_expr);
 
         // Create evaluator
-        let evaluator = Evaluator::new(bands);
+        let evaluator = Evaluator::new(bands, &cache_slots);
+        let slot_count = cache_slots.len();
 
         // Create result buffer
         let mut result = RasterBuffer::zeros(width, height, bands[0].data_type());
 
-        // Process rows in parallel
+        // Process rows in parallel — each row gets its own pixel_cache per pixel
         let row_data: Result<Vec<Vec<f64>>> = (0..height)
             .into_par_iter()
             .map(|y| {
                 let mut row = Vec::with_capacity(width as usize);
                 for x in 0..width {
-                    let value = evaluator.eval_pixel(&expr, x, y)?;
+                    let mut pixel_cache: Vec<Option<f64>> = vec![None; slot_count];
+                    let value = evaluator.eval_pixel(&expr, x, y, &mut pixel_cache)?;
                     row.push(value);
                 }
                 Ok(row)

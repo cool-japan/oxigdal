@@ -5,6 +5,13 @@ pub mod filter;
 pub mod join;
 pub mod scan;
 pub mod sort;
+pub mod spatial_funcs;
+
+pub use spatial_funcs::evaluate_spatial_function;
+
+pub mod window;
+
+pub use window::{OrderKey, WindowFunction, WindowSpec, evaluate_window, evaluate_window_batch};
 
 use crate::error::{QueryError, Result};
 use crate::parser::ast::*;

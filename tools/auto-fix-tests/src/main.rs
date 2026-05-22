@@ -758,7 +758,11 @@ fn process_rust_file(
         }
 
         if !found_tests.is_empty() && file_path.to_string_lossy().contains("gpu_test.rs") {
-            println!("  [DEBUG] Tests in {}: {:?}", file_path.file_name().unwrap().to_string_lossy(), found_tests);
+            let display_name = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| String::from("<unknown>"));
+            println!("  [DEBUG] Tests in {}: {:?}", display_name, found_tests);
         }
     }
 

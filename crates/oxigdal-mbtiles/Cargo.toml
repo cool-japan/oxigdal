@@ -16,13 +16,20 @@ categories = ["science", "parser-implementations", "encoding"]
 [features]
 default = ["std"]
 std = ["thiserror/std"]
+# Enable SQLite-backed `.mbtiles` reader.  SQLite IS the MBTiles container
+# format, so this opt-in feature pulls in the `rusqlite` (bundled SQLite)
+# dependency for the real on-disk reader implementation.
+sqlite = ["dep:rusqlite"]
 
 [dependencies]
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rusqlite = { workspace = true, optional = true, features = ["bundled"] }
 
 [dev-dependencies]
+rusqlite = { workspace = true, features = ["bundled"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

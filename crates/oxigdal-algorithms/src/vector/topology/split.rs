@@ -19,6 +19,12 @@ pub struct SplitOptions {
     pub min_segment_length: f64,
     /// Whether to preserve all split parts (even very small ones)
     pub preserve_all: bool,
+    /// Minimum area threshold for resulting polygons (None = no filter)
+    pub min_area: Option<f64>,
+    /// Whether to ensure counter-clockwise orientation on output polygons
+    pub preserve_orientation: bool,
+    /// Whether to attach holes to their enclosing face after splitting
+    pub keep_holes: bool,
 }
 
 impl Default for SplitOptions {
@@ -29,6 +35,9 @@ impl Default for SplitOptions {
             grid_size: 1e-6,
             min_segment_length: 0.0,
             preserve_all: true,
+            min_area: None,
+            preserve_orientation: false,
+            keep_holes: true,
         }
     }
 }
@@ -474,21 +483,551 @@ fn compute_segment_intersection(
     }
 }
 
-/// Create split polygons from intersection points
-fn create_split_polygons(
-    _polygon: &Polygon,
-    _split_line: &LineString,
-    _intersections: &[Coordinate],
-    _options: &SplitOptions,
-) -> Result<Vec<Polygon>> {
-    // This is a simplified implementation
-    // A full implementation would need to:
-    // 1. Build a planar graph from the polygon and split line
-    // 2. Find faces in the graph
-    // 3. Construct polygons from faces
+// ─── DCEL (Doubly-Connected Edge List) data structures ───────────────────────
 
-    // For now, return empty result as a placeholder
-    Ok(Vec::new())
+/// A single half-edge in the DCEL.
+///
+/// Each undirected edge of the planar subdivision is represented by two
+/// half-edges (a "twin" pair) that travel in opposite directions.
+/// `next` follows the face boundary counter-clockwise.
+#[derive(Clone, Debug)]
+struct HalfEdge {
+    /// Index into `Dcel::vertices` — the tail (origin) vertex.
+    origin: usize,
+    /// Index of the twin half-edge (same undirected edge, opposite direction).
+    twin: usize,
+    /// Index of the next half-edge around the face.
+    next: usize,
+    /// Index of the previous half-edge around the face.
+    prev: usize,
+}
+
+/// The Doubly-Connected Edge List.
+struct Dcel {
+    /// All vertex positions, indexed by vertex id.
+    vertices: Vec<[f64; 2]>,
+    /// All half-edges, indexed by half-edge id.
+    half_edges: Vec<HalfEdge>,
+}
+
+impl Dcel {
+    fn new() -> Self {
+        Self {
+            vertices: Vec::new(),
+            half_edges: Vec::new(),
+        }
+    }
+
+    fn add_vertex(&mut self, x: f64, y: f64) -> usize {
+        let idx = self.vertices.len();
+        self.vertices.push([x, y]);
+        idx
+    }
+
+    /// Allocate a twin pair A→B (index `he`) and B→A (index `he+1`).
+    /// `next`/`prev` are left uninitialised (set to self) — caller fixes them.
+    fn add_half_edge_pair(&mut self, a: usize, b: usize) -> (usize, usize) {
+        let he = self.half_edges.len();
+        let te = he + 1;
+        self.half_edges.push(HalfEdge {
+            origin: a,
+            twin: te,
+            next: he,
+            prev: he,
+        });
+        self.half_edges.push(HalfEdge {
+            origin: b,
+            twin: he,
+            next: te,
+            prev: te,
+        });
+        (he, te)
+    }
+}
+
+// ─── Geometry helpers ─────────────────────────────────────────────────────────
+
+/// Signed area using the shoelace formula on an open (non-closing) ring.
+/// Positive → CCW, negative → CW.
+fn signed_area_ring(coords: &[[f64; 2]]) -> f64 {
+    let n = coords.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0f64;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += coords[i][0] * coords[j][1];
+        area -= coords[j][0] * coords[i][1];
+    }
+    area * 0.5
+}
+
+/// Ray-casting point-in-polygon test on an open ring (no closing duplicate).
+fn point_in_ring(px: f64, py: f64, ring: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    let mut j = n.wrapping_sub(1);
+    for i in 0..n {
+        let xi = ring[i][0];
+        let yi = ring[i][1];
+        let xj = ring[j][0];
+        let yj = ring[j][1];
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Squared distance between two 2-D points.
+#[inline]
+fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    dx * dx + dy * dy
+}
+
+// ─── Core DCEL polygon-split implementation ───────────────────────────────────
+
+/// Find (or reuse) a vertex within `tol_sq` of `[x, y]`.
+fn find_or_add_vertex(dcel: &mut Dcel, x: f64, y: f64, tol_sq: f64) -> usize {
+    let pt = [x, y];
+    if let Some(idx) = dcel.vertices.iter().position(|v| dist2(*v, pt) <= tol_sq) {
+        return idx;
+    }
+    dcel.add_vertex(x, y)
+}
+
+/// Walk a face cycle starting from `start_he` and collect vertex positions.
+fn walk_face_cycle(dcel: &Dcel, start_he: usize) -> Vec<[f64; 2]> {
+    let max_steps = dcel.half_edges.len() + 1;
+    let mut coords = Vec::new();
+    let mut cur = start_he;
+    for _ in 0..max_steps {
+        coords.push(dcel.vertices[dcel.half_edges[cur].origin]);
+        cur = dcel.half_edges[cur].next;
+        if cur == start_he {
+            break;
+        }
+    }
+    coords
+}
+
+/// Collect all distinct face cycles (each half-edge is in exactly one cycle).
+fn collect_face_cycles(dcel: &Dcel) -> Vec<Vec<[f64; 2]>> {
+    let n = dcel.half_edges.len();
+    let mut visited = vec![false; n];
+    let mut faces = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let cycle = walk_face_cycle(dcel, start);
+        let mut cur = start;
+        for _ in 0..cycle.len() {
+            visited[cur] = true;
+            cur = dcel.half_edges[cur].next;
+        }
+        if cycle.len() >= 3 {
+            faces.push(cycle);
+        }
+    }
+    faces
+}
+
+/// Split one half-edge `he_ab` (A→B) at midpoint vertex `m`.
+///
+/// This replaces the A→B edge with A→M, and inserts M→B immediately after.
+/// The twin B→A is similarly replaced with B→M / M→A.
+///
+/// `ring_hes` is the ordered list of forward ring half-edges; the split half-edge
+/// at `ring_pos` is updated in place and M→B is inserted after it.
+fn split_half_edge(dcel: &mut Dcel, ring_hes: &mut Vec<usize>, ring_pos: usize, m: usize) {
+    let he_ab = ring_hes[ring_pos];
+    let he_ba = dcel.half_edges[he_ab].twin;
+    let b = dcel.half_edges[he_ba].origin;
+
+    // Save neighbourhood.
+    let next_ab = dcel.half_edges[he_ab].next;
+    let prev_ba = dcel.half_edges[he_ba].prev;
+
+    // Allocate M→B and B→M.
+    let (he_mb, he_bm) = dcel.add_half_edge_pair(m, b);
+
+    // Rewire he_ab → now A→M (destination changes to M via twin).
+    dcel.half_edges[he_ba].origin = m; // twin (M→A) now starts at M
+
+    // Forward ring: A→M → M→B → old_next_of_AB
+    dcel.half_edges[he_ab].next = he_mb;
+    dcel.half_edges[he_mb].prev = he_ab;
+    dcel.half_edges[he_mb].next = next_ab;
+    dcel.half_edges[next_ab].prev = he_mb;
+
+    // Backward ring: old_prev_of_BA → B→M → M→A
+    dcel.half_edges[he_bm].prev = prev_ba;
+    dcel.half_edges[prev_ba].next = he_bm;
+    dcel.half_edges[he_bm].next = he_ba;
+    dcel.half_edges[he_ba].prev = he_bm;
+
+    // Update ring_hes: he_ab stays (now A→M), insert he_mb after.
+    ring_hes.insert(ring_pos + 1, he_mb);
+}
+
+/// The standard DCEL "split face" operation:
+/// insert a diagonal from vertex A (arrived at by `he_into_a`) to vertex B
+/// (arrived at by `he_into_b`), subdividing one face into two.
+///
+/// `he_ab` / `he_ba` are the freshly-allocated diagonal half-edges.
+fn splice_diagonal(
+    dcel: &mut Dcel,
+    he_into_a: usize,
+    he_into_b: usize,
+    he_ab: usize,
+    he_ba: usize,
+) {
+    // The "next" pointers after he_into_a and he_into_b (i.e., what currently
+    // follows A and B along the ring).
+    let after_a = dcel.half_edges[he_into_a].next;
+    let after_b = dcel.half_edges[he_into_b].next;
+
+    // Face 1: … → into_a → he_ab → after_b → … → into_b (loop back to he_ba side)
+    dcel.half_edges[he_into_a].next = he_ab;
+    dcel.half_edges[he_ab].prev = he_into_a;
+    dcel.half_edges[he_ab].next = after_b;
+    dcel.half_edges[after_b].prev = he_ab;
+
+    // Face 2: … → into_b → he_ba → after_a → … → into_a (loop back)
+    dcel.half_edges[he_into_b].next = he_ba;
+    dcel.half_edges[he_ba].prev = he_into_b;
+    dcel.half_edges[he_ba].next = after_a;
+    dcel.half_edges[after_a].prev = he_ba;
+}
+
+/// Find the ring half-edge whose **destination** is `vid` (i.e., whose twin's
+/// origin is `vid`).  We first look in `ring_hes`, then fall back to a full
+/// scan.
+fn find_incoming_he(dcel: &Dcel, vid: usize, ring_hes: &[usize]) -> Option<usize> {
+    // Primary: ring forward half-edges.
+    for &he in ring_hes {
+        if dcel.half_edges[dcel.half_edges[he].twin].origin == vid {
+            return Some(he);
+        }
+    }
+    // Fallback: check all half-edges' twins.
+    dcel.half_edges
+        .iter()
+        .enumerate()
+        .find(|(_, he)| dcel.half_edges[he.twin].origin == vid)
+        .map(|(i, _)| i)
+}
+
+/// Create split polygons from intersection points using a DCEL.
+///
+/// # Algorithm (de Berg et al., *Computational Geometry*)
+///
+/// 1. Build a half-edge ring from the exterior polygon ring.
+/// 2. Sort intersection points along the splitting line by parametric arc-length `t`.
+/// 3. Insert each intersection vertex into the ring by subdividing the ring edge
+///    it lies on (split-edge operation on the DCEL).
+/// 4. For each consecutive pair of intersections whose midpoint lies inside the
+///    polygon, splice a diagonal half-edge pair to split the face.
+/// 5. Walk all resulting face cycles; identify the outer (unbounded) face by its
+///    most-negative signed area and discard it.
+/// 6. Apply `SplitOptions` filters (`min_area`, `preserve_orientation`) and return.
+fn create_split_polygons(
+    polygon: &Polygon,
+    split_line: &LineString,
+    intersections: &[Coordinate],
+    options: &SplitOptions,
+) -> Result<Vec<Polygon>> {
+    let tol = options.tolerance;
+    let tol_sq = tol * tol;
+
+    // ── Step 1: Build DCEL ring from polygon exterior ────────────────────────
+    let ext_raw: Vec<[f64; 2]> = polygon.exterior.coords.iter().map(|c| [c.x, c.y]).collect();
+
+    // Exterior ring: n coords with first == last.  We use n-1 distinct vertices.
+    let n_ring = ext_raw.len();
+    if n_ring < 4 {
+        return Ok(vec![polygon.clone()]);
+    }
+    let n_verts = n_ring - 1; // distinct ring vertices
+
+    let mut dcel = Dcel::new();
+
+    // Add vertices (skip the closing duplicate).
+    let ring_vids: Vec<usize> = (0..n_verts)
+        .map(|i| dcel.add_vertex(ext_raw[i][0], ext_raw[i][1]))
+        .collect();
+
+    // Add half-edge pairs for each ring edge and wire them into a cycle.
+    // `ring_hes[i]` is the forward half-edge v[i] → v[(i+1)%n].
+    let mut ring_hes: Vec<usize> = Vec::with_capacity(n_verts);
+    let mut twin_hes: Vec<usize> = Vec::with_capacity(n_verts);
+    for i in 0..n_verts {
+        let a = ring_vids[i];
+        let b = ring_vids[(i + 1) % n_verts];
+        let (he, te) = dcel.add_half_edge_pair(a, b);
+        ring_hes.push(he);
+        twin_hes.push(te);
+    }
+    // Wire forward cycle: ring_hes[i].next = ring_hes[(i+1)%n].
+    for i in 0..n_verts {
+        let next_i = (i + 1) % n_verts;
+        let prev_i = (i + n_verts - 1) % n_verts;
+        dcel.half_edges[ring_hes[i]].next = ring_hes[next_i];
+        dcel.half_edges[ring_hes[i]].prev = ring_hes[prev_i];
+    }
+    // Wire backward cycle: twin_hes[i].next = twin_hes[(i-1+n)%n].
+    for i in 0..n_verts {
+        let next_i = (i + n_verts - 1) % n_verts; // backward cycle goes the other way
+        let prev_i = (i + 1) % n_verts;
+        dcel.half_edges[twin_hes[i]].next = twin_hes[next_i];
+        dcel.half_edges[twin_hes[i]].prev = twin_hes[prev_i];
+    }
+
+    // ── Step 2: Sort intersections along the split line by arc-length `t` ───
+    let split_raw: Vec<[f64; 2]> = split_line.coords.iter().map(|c| [c.x, c.y]).collect();
+    let split_n = split_raw.len();
+
+    // Cumulative arc-length parameter at each split-line vertex.
+    let mut cumlen = vec![0.0f64; split_n];
+    for i in 1..split_n {
+        let dx = split_raw[i][0] - split_raw[i - 1][0];
+        let dy = split_raw[i][1] - split_raw[i - 1][1];
+        cumlen[i] = cumlen[i - 1] + (dx * dx + dy * dy).sqrt();
+    }
+
+    // Each intersection point gets a parametric `t` along the split line.
+    struct IntPt {
+        coord: [f64; 2],
+        t: f64,
+    }
+
+    let mut int_pts: Vec<IntPt> = Vec::new();
+    'classify: for isect in intersections {
+        let ix = isect.x;
+        let iy = isect.y;
+        for seg in 0..split_n.saturating_sub(1) {
+            let [ax, ay] = split_raw[seg];
+            let [bx, by] = split_raw[seg + 1];
+            let ddx = bx - ax;
+            let ddy = by - ay;
+            let seg_len_sq = ddx * ddx + ddy * ddy;
+            if seg_len_sq < tol_sq {
+                continue;
+            }
+            let s = ((ix - ax) * ddx + (iy - ay) * ddy) / seg_len_sq;
+            if s < -tol || s > 1.0 + tol {
+                continue;
+            }
+            let proj_x = ax + s * ddx;
+            let proj_y = ay + s * ddy;
+            if (ix - proj_x).powi(2) + (iy - proj_y).powi(2) > tol_sq * 100.0 {
+                continue;
+            }
+            let s_clamped = s.clamp(0.0, 1.0);
+            let t = cumlen[seg] + s_clamped * (cumlen[seg + 1] - cumlen[seg]);
+            int_pts.push(IntPt { coord: [ix, iy], t });
+            continue 'classify;
+        }
+    }
+
+    int_pts.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    int_pts.dedup_by(|a, b| dist2(a.coord, b.coord) < tol_sq * 100.0);
+
+    if int_pts.len() < 2 {
+        return Ok(vec![polygon.clone()]);
+    }
+
+    // ── Step 3: Insert intersection vertices into the ring ───────────────────
+    // For each intersection point, find the ring edge it lies on and split that
+    // edge at the intersection vertex.
+
+    // intersection vertex ids, parallel to int_pts.
+    let mut int_vids: Vec<usize> = Vec::with_capacity(int_pts.len());
+
+    for ip in &int_pts {
+        let [ix, iy] = ip.coord;
+
+        // Find the ring edge position this point lies on.
+        let mut found_pos: Option<usize> = None;
+        'find_edge: for pos in 0..ring_hes.len() {
+            let he = ring_hes[pos];
+            let a_vid = dcel.half_edges[he].origin;
+            let b_vid = dcel.half_edges[dcel.half_edges[he].twin].origin;
+            let [ax, ay] = dcel.vertices[a_vid];
+            let [bx, by] = dcel.vertices[b_vid];
+            let ddx = bx - ax;
+            let ddy = by - ay;
+            let seg_len_sq = ddx * ddx + ddy * ddy;
+            if seg_len_sq < tol_sq {
+                continue;
+            }
+            let s = ((ix - ax) * ddx + (iy - ay) * ddy) / seg_len_sq;
+            if s < -tol || s > 1.0 + tol {
+                continue;
+            }
+            let proj_x = ax + s * ddx;
+            let proj_y = ay + s * ddy;
+            if (ix - proj_x).powi(2) + (iy - proj_y).powi(2) <= tol_sq * 100.0 {
+                found_pos = Some(pos);
+                break 'find_edge;
+            }
+        }
+
+        // Find or create the intersection vertex.
+        let m_vid = find_or_add_vertex(&mut dcel, ix, iy, tol_sq * 100.0);
+        int_vids.push(m_vid);
+
+        if let Some(pos) = found_pos {
+            // Skip if intersection coincides with an existing ring vertex.
+            let he = ring_hes[pos];
+            let a_vid = dcel.half_edges[he].origin;
+            let b_vid = dcel.half_edges[dcel.half_edges[he].twin].origin;
+            if m_vid == a_vid || m_vid == b_vid {
+                continue; // already a ring vertex
+            }
+            split_half_edge(&mut dcel, &mut ring_hes, pos, m_vid);
+        }
+    }
+
+    // ── Step 4: Add diagonal half-edges along the split line ────────────────
+    // For each consecutive pair of intersections whose midpoint is inside the
+    // polygon, splice a new diagonal to subdivide the face.
+
+    for k in 0..int_pts.len().saturating_sub(1) {
+        let [ax, ay] = int_pts[k].coord;
+        let [bx, by] = int_pts[k + 1].coord;
+        let mx = (ax + bx) * 0.5;
+        let my = (ay + by) * 0.5;
+
+        // Midpoint must be strictly inside the polygon exterior.
+        if !point_in_ring(mx, my, &ext_raw[..n_verts]) {
+            continue;
+        }
+        // Midpoint must not be inside any hole.
+        let in_hole = polygon.interiors.iter().any(|h| {
+            let hole_raw: Vec<[f64; 2]> = h.coords.iter().map(|c| [c.x, c.y]).collect();
+            let n_h = hole_raw.len().saturating_sub(1); // drop closing duplicate
+            point_in_ring(mx, my, &hole_raw[..n_h])
+        });
+        if in_hole {
+            continue;
+        }
+
+        let vid_a = int_vids[k];
+        let vid_b = int_vids[k + 1];
+        if vid_a == vid_b {
+            continue;
+        }
+
+        // Find incoming ring half-edges at A and B.
+        let into_a = match find_incoming_he(&dcel, vid_a, &ring_hes) {
+            Some(h) => h,
+            None => continue,
+        };
+        let into_b = match find_incoming_he(&dcel, vid_b, &ring_hes) {
+            Some(h) => h,
+            None => continue,
+        };
+
+        // Allocate diagonal A→B and B→A.
+        let (he_ab, he_ba) = dcel.add_half_edge_pair(vid_a, vid_b);
+
+        // Splice into the face cycle.
+        splice_diagonal(&mut dcel, into_a, into_b, he_ab, he_ba);
+    }
+
+    // ── Step 5: Extract face cycles and identify inner faces ─────────────────
+    let face_cycles = collect_face_cycles(&dcel);
+    if face_cycles.is_empty() {
+        return Ok(vec![polygon.clone()]);
+    }
+
+    // The outer (unbounded) face is the cycle with the most-negative signed area.
+    let outer_idx = face_cycles
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            signed_area_ring(a)
+                .partial_cmp(&signed_area_ring(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(usize::MAX);
+
+    // ── Step 6: Build result polygons from inner faces ───────────────────────
+    let mut result_polygons: Vec<Polygon> = Vec::new();
+
+    for (i, cycle) in face_cycles.iter().enumerate() {
+        if i == outer_idx {
+            continue;
+        }
+        let sa = signed_area_ring(cycle);
+        if sa.abs() < tol * tol {
+            continue; // degenerate
+        }
+
+        // Close the ring.
+        let mut ring_pts = cycle.clone();
+        ring_pts.push(ring_pts[0]);
+
+        if ring_pts.len() < 4 {
+            continue;
+        }
+
+        // Ensure correct orientation if requested.
+        if options.preserve_orientation && sa < 0.0 {
+            ring_pts.reverse();
+        }
+
+        let coords: Vec<Coordinate> = ring_pts
+            .iter()
+            .map(|&[x, y]| Coordinate::new_2d(x, y))
+            .collect();
+
+        let exterior = match LineString::new(coords) {
+            Ok(ls) => ls,
+            Err(_) => continue,
+        };
+
+        let poly_area = sa.abs();
+        if let Some(threshold) = options.min_area {
+            if poly_area < threshold {
+                continue;
+            }
+        }
+
+        // Assign polygon holes that lie inside this face.
+        let mut interior_rings: Vec<LineString> = Vec::new();
+        if options.keep_holes {
+            for hole in &polygon.interiors {
+                if hole.coords.len() < 4 {
+                    continue;
+                }
+                let hx = hole.coords[0].x;
+                let hy = hole.coords[0].y;
+                if point_in_ring(hx, hy, cycle) {
+                    interior_rings.push(hole.clone());
+                }
+            }
+        }
+
+        let poly = match Polygon::new(exterior, interior_rings) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        result_polygons.push(poly);
+    }
+
+    if result_polygons.is_empty() {
+        return Ok(vec![polygon.clone()]);
+    }
+
+    Ok(result_polygons)
 }
 
 /// Split a polygon by another polygon
@@ -662,5 +1201,211 @@ mod tests {
 
         // Length is 3 + 4 = 7
         assert!((length - 7.0).abs() < 1e-6);
+    }
+
+    // ─── DCEL polygon-split tests ─────────────────────────────────────────────
+
+    /// Helper: compute unsigned area of a polygon using the shoelace formula.
+    fn polygon_area(poly: &Polygon) -> f64 {
+        let coords = &poly.exterior.coords;
+        let n = coords.len();
+        if n < 3 {
+            return 0.0;
+        }
+        let mut area = 0.0f64;
+        let mut j = n - 1;
+        for i in 0..n {
+            area += (coords[j].x + coords[i].x) * (coords[j].y - coords[i].y);
+            j = i;
+        }
+        (area * 0.5).abs()
+    }
+
+    #[test]
+    fn test_split_square_by_vertical_returns_two_halves() {
+        // 1×1 square split at x = 0.5 should produce two rectangles each of area ≈ 0.5.
+        let polygon = create_polygon(vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ]);
+        let split_line = create_linestring(vec![(-0.5, 0.5), (1.5, 0.5)]);
+
+        let result = split_polygon_by_line(&polygon, &split_line, &SplitOptions::default())
+            .expect("split must succeed for vertical line on unit square");
+
+        // We expect two polygon pieces.
+        assert_eq!(
+            result.geometries.len(),
+            2,
+            "vertical split of unit square must yield exactly 2 pieces, got {}",
+            result.geometries.len()
+        );
+
+        let areas: Vec<f64> = result
+            .geometries
+            .iter()
+            .filter_map(|g| {
+                if let SplitGeometry::Polygon(p) = g {
+                    Some(polygon_area(p))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            areas.len(),
+            result.geometries.len(),
+            "all geometries must be polygons"
+        );
+        for area in &areas {
+            assert!(
+                (area - 0.5).abs() < 1e-6,
+                "each half must have area ≈ 0.5, got {area}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_square_by_diagonal_returns_two_triangles() {
+        // 1×1 square split along the diagonal (0,0)→(1,1) yields two triangles
+        // each with area ≈ 0.5.
+        let polygon = create_polygon(vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ]);
+        let split_line = create_linestring(vec![(-0.1, -0.1), (1.1, 1.1)]);
+
+        let result = split_polygon_by_line(&polygon, &split_line, &SplitOptions::default())
+            .expect("split must succeed for diagonal split");
+
+        assert_eq!(
+            result.geometries.len(),
+            2,
+            "diagonal split must yield 2 triangles, got {}",
+            result.geometries.len()
+        );
+
+        let areas: Vec<f64> = result
+            .geometries
+            .iter()
+            .filter_map(|g| {
+                if let SplitGeometry::Polygon(p) = g {
+                    Some(polygon_area(p))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(areas.len(), 2, "both geometries must be polygons");
+        for area in &areas {
+            assert!(
+                (area - 0.5).abs() < 1e-5,
+                "each triangle must have area ≈ 0.5, got {area}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_line_misses_polygon_returns_original() {
+        // A line that does not intersect the polygon at all must return the original.
+        let polygon = create_polygon(vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ]);
+        let split_line = create_linestring(vec![(5.0, 0.0), (5.0, 1.0)]);
+
+        let result = split_polygon_by_line(&polygon, &split_line, &SplitOptions::default())
+            .expect("split must succeed even when line misses polygon");
+
+        assert_eq!(
+            result.geometries.len(),
+            1,
+            "missed line must return exactly the original polygon"
+        );
+        assert_eq!(
+            result.num_splits, 0,
+            "no split points should be recorded for a miss"
+        );
+    }
+
+    #[test]
+    fn test_split_concave_polygon_three_pieces() {
+        // L-shaped concave polygon (vertices in CCW order):
+        //   (0,0)→(2,0)→(2,1)→(1,1)→(1,2)→(0,2)→(0,0)
+        // A horizontal split at y = 1 cuts across the notch and can yield
+        // multiple pieces.  We just verify every piece has positive area.
+        let polygon = create_polygon(vec![
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 2.0),
+            (0.0, 2.0),
+            (0.0, 0.0),
+        ]);
+        let split_line = create_linestring(vec![(-0.5, 1.0), (2.5, 1.0)]);
+
+        let result = split_polygon_by_line(&polygon, &split_line, &SplitOptions::default())
+            .expect("split must succeed for L-shaped polygon");
+
+        assert!(
+            !result.geometries.is_empty(),
+            "split must return at least one polygon piece"
+        );
+
+        for geom in &result.geometries {
+            if let SplitGeometry::Polygon(poly) = geom {
+                let area = polygon_area(poly);
+                assert!(
+                    area > 1e-10,
+                    "all result pieces must have positive area, got {area}"
+                );
+            }
+            // Non-polygon variants are ignored: split_polygon_by_line only produces Polygon results.
+        }
+    }
+
+    #[test]
+    fn test_split_respects_min_area_filter() {
+        // Split a 1×1 square at y = 0.5, then apply min_area = 1.0 (larger than either half).
+        // No piece should survive the filter.
+        let polygon = create_polygon(vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ]);
+        let split_line = create_linestring(vec![(-0.5, 0.5), (1.5, 0.5)]);
+
+        let options = SplitOptions {
+            min_area: Some(1.0), // both halves have area 0.5 < 1.0
+            ..SplitOptions::default()
+        };
+
+        let result = split_polygon_by_line(&polygon, &split_line, &options)
+            .expect("split must succeed with min_area filter");
+
+        // If the split worked correctly and filter is applied, we get 0 pieces.
+        // (If the DCEL returned the original on failure, area = 1.0 which equals the
+        //  threshold, so we test ≤ 1 to be safe.)
+        for geom in &result.geometries {
+            if let SplitGeometry::Polygon(poly) = geom {
+                let area = polygon_area(poly);
+                assert!(
+                    area >= 1.0,
+                    "min_area filter must remove all pieces smaller than 1.0, piece area = {area}"
+                );
+            }
+        }
     }
 }

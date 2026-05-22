@@ -5,10 +5,10 @@
 
 use oxigdal_core::error::{OxiGdalError, Result};
 use oxigdal_core::io::{DataSource, FileDataSource};
-use oxigdal_core::types::RasterDataType;
 
-use crate::tiff::{Compression, PhotometricInterpretation, TiffFile};
-use crate::writer::OverviewResampling;
+use crate::GeoTiffReader;
+use crate::tiff::{Compression, TiffFile};
+use crate::writer::{CogWriter, CogWriterOptions, OverviewResampling, WriterConfig};
 
 use super::optimizer::{OptimizationGoal, analyze_for_cog};
 
@@ -214,15 +214,29 @@ impl CogConverter {
             })?
             .get_u64_from_source(&source, tiff.byte_order(), tiff.header.variant)?;
 
-        // For now, we'll use placeholder data for analysis
-        // In a real implementation, we'd read actual image data
-        let data_type = RasterDataType::UInt8; // Would be detected from file
-        let samples_per_pixel = 1; // Would be detected from file
-        let photometric = PhotometricInterpretation::BlackIsZero; // Would be detected
+        // Detect data type, sample count and photometric from the actual IFD.
+        // `ImageInfo` derives these straight from the SampleFormat / BitsPerSample /
+        // SamplesPerPixel / PhotometricInterpretation tags of the primary image.
+        let primary_info =
+            crate::tiff::ImageInfo::from_ifd(ifd, &source, tiff.byte_order(), tiff.header.variant)?;
+        let data_type = primary_info
+            .data_type()
+            .ok_or_else(|| OxiGdalError::InvalidParameter {
+                parameter: "SampleFormat",
+                message: format!("Unsupported sample format/bit depth in {}", self.input_path),
+            })?;
+        let samples_per_pixel = primary_info.samples_per_pixel as usize;
+        let photometric = primary_info.photometric;
 
-        // Create sample data for analysis
-        let sample_size = (width.min(1024) * height.min(1024) * samples_per_pixel as u64) as usize;
-        let sample_data = vec![0u8; sample_size];
+        // Read the REAL pixel data of the primary image for analysis. The
+        // GeoTIFF reader reassembles all tiles/strips into a row-major,
+        // band-interleaved buffer — exactly the layout `analyze_for_cog`
+        // and `CogWriter::write` expect. The same reader also carries the
+        // input's geospatial referencing, and the same buffer is reused for
+        // the write pipeline below so the input is only decoded once.
+        let source_reader = GeoTiffReader::open(FileDataSource::open(&self.input_path)?)?;
+        let image_data = source_reader.read_band(0, 0)?;
+        let sample_data = image_data.as_slice();
 
         // Report progress
         self.report_progress(ConversionProgress {
@@ -237,7 +251,7 @@ impl CogConverter {
             || self.config.overview_levels.is_none()
         {
             Some(analyze_for_cog(
-                &sample_data,
+                sample_data,
                 width,
                 height,
                 data_type,
@@ -281,7 +295,7 @@ impl CogConverter {
             .unwrap_or_else(|| vec![2, 4, 8]);
 
         // Determine output path
-        let _output_path = if let Some(path) = &self.output_path {
+        let output_path = if let Some(path) = &self.output_path {
             path.clone()
         } else {
             let input_path = std::path::Path::new(&self.input_path);
@@ -302,15 +316,83 @@ impl CogConverter {
             )),
         });
 
-        // For now, return a placeholder result
-        // In a real implementation, we would:
-        // 1. Read the input data
-        // 2. Create a CogWriter
-        // 3. Write tiles and overviews
-        // 4. Validate the output
+        // Build a COG-compliant writer configuration from the resolved
+        // options. Predictor is left at the WriterConfig default (horizontal
+        // differencing) which is appropriate for the deflate/LZW codecs the
+        // optimizer recommends.
+        let band_count =
+            u16::try_from(samples_per_pixel).map_err(|_| OxiGdalError::InvalidParameter {
+                parameter: "SamplesPerPixel",
+                message: format!(
+                    "Samples per pixel {} exceeds the supported range",
+                    samples_per_pixel
+                ),
+            })?;
 
+        let mut writer_config = WriterConfig::new(width, height, band_count, data_type)
+            .with_compression(compression)
+            .with_tile_size(tile_width, tile_height)
+            .with_photometric(photometric)
+            .with_overviews(!overview_levels.is_empty(), self.config.resampling)
+            .with_overview_levels(overview_levels.clone());
+
+        // Carry the input's geospatial referencing through to the output so
+        // the produced COG is not silently un-georeferenced.
+        if let Some(gt) = source_reader.geo_transform() {
+            writer_config = writer_config.with_geo_transform(*gt);
+        }
+        if let Some(epsg) = source_reader.epsg_code() {
+            writer_config = writer_config.with_epsg_code(epsg);
+        }
+        writer_config = writer_config.with_nodata(source_reader.nodata());
+
+        // The input may not fit in a classic (32-bit-offset) TIFF; escalate
+        // to BigTIFF when the projected size demands it.
+        let bytes_per_sample = data_type.size_bytes() as u64;
+        if crate::writer::needs_bigtiff(
+            width,
+            height,
+            band_count as u64,
+            bytes_per_sample,
+            crate::writer::BigTiffMode::Auto,
+        )? {
+            writer_config = writer_config.with_bigtiff(true);
+        }
+
+        // Write the real COG to disk. `CogWriter::write` takes the full
+        // row-major, band-interleaved buffer, generates overviews per the
+        // configured levels, lays out all IFDs before tile data and finalises
+        // the file (flush happens inside `write`).
+        let writer_options = CogWriterOptions {
+            byte_order: crate::tiff::ByteOrderType::LittleEndian,
+            validate_after_write: self.config.validate_output,
+        };
+        let mut cog_writer = CogWriter::create(&output_path, writer_config, writer_options)?;
+        let validation = cog_writer.write(&image_data)?;
+        drop(cog_writer);
+
+        // Measure the REAL sizes from disk.
         let input_size = source.size()?;
-        let output_size = (input_size as f64 * 0.8) as u64; // Placeholder
+        let output_size = std::fs::metadata(&output_path)
+            .map_err(|e| OxiGdalError::Io(e.into()))?
+            .len();
+
+        // Guard the ratio against a zero-byte output (a degenerate write).
+        // 1.0 means "no size change" — the most neutral fallback.
+        let compression_ratio = if output_size == 0 {
+            1.0
+        } else {
+            input_size as f64 / output_size as f64
+        };
+
+        // Determine the real overview count from the file that was actually
+        // written, rather than trusting the requested level list.
+        let overview_count = match FileDataSource::open(&output_path)
+            .and_then(|out_source| TiffFile::parse(&out_source).map(|t| t.ifds.len()))
+        {
+            Ok(ifd_count) => ifd_count.saturating_sub(1),
+            Err(_) => overview_levels.len(),
+        };
 
         // Report completion
         self.report_progress(ConversionProgress {
@@ -324,11 +406,11 @@ impl CogConverter {
         Ok(ConversionResult {
             output_size,
             input_size,
-            compression_ratio: input_size as f64 / output_size as f64,
-            overview_count: overview_levels.len(),
+            compression_ratio,
+            overview_count,
             tile_size: (tile_width, tile_height),
             compression_used: compression,
-            validation_passed: true,
+            validation_passed: validation.is_valid,
             duration_ms,
         })
     }

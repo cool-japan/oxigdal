@@ -1,6 +1,7 @@
 //! GeoJSON writer — serialises geometry, features and collections to strings.
 
 use crate::parser::{FeatureCollection, GeoJsonDocument};
+use crate::simplify::simplify_dp;
 use crate::types::{FeatureId, GeoJsonFeature, GeoJsonGeometry};
 
 // ─── GeoJsonWriter ───────────────────────────────────────────────────────────
@@ -14,6 +15,10 @@ pub struct GeoJsonWriter {
     pub coordinate_precision: usize,
     /// Include a `"bbox"` field when `true`.
     pub bbox: bool,
+    /// When `Some(epsilon)`, apply Ramer-Douglas-Peucker simplification to
+    /// `LineString` and `Polygon` coordinate rings before serialisation.
+    /// `epsilon` is in the same units as the coordinates (degrees for WGS-84).
+    pub simplify_tolerance: Option<f64>,
 }
 
 impl Default for GeoJsonWriter {
@@ -22,6 +27,7 @@ impl Default for GeoJsonWriter {
             indent: None,
             coordinate_precision: 6,
             bbox: false,
+            simplify_tolerance: None,
         }
     }
 }
@@ -53,6 +59,21 @@ impl GeoJsonWriter {
     #[must_use]
     pub fn with_bbox(mut self) -> Self {
         self.bbox = true;
+        self
+    }
+
+    /// Enable Ramer-Douglas-Peucker coordinate simplification for `LineString`
+    /// and `Polygon` geometries (including their `Multi*` counterparts).
+    ///
+    /// `tolerance` is in the same units as the geometry coordinates.  For
+    /// WGS-84 geographic coordinates this is degrees; values in the range
+    /// `0.0001`–`0.01` are typical for web-map pre-transmission simplification.
+    ///
+    /// `Point`, `MultiPoint`, and `GeometryCollection` members are never
+    /// simplified — only coordinate rings.
+    #[must_use]
+    pub fn with_simplify(mut self, tolerance: f64) -> Self {
+        self.simplify_tolerance = Some(tolerance);
         self
     }
 
@@ -235,7 +256,7 @@ impl GeoJsonWriter {
             GeoJsonGeometry::LineString(pts) => {
                 format!(
                     r#"{{"type":"LineString","coordinates":{}}}"#,
-                    self.serialize_ring_2d(pts)
+                    self.serialize_ring_2d(&self.maybe_simplify_ring_2d(pts))
                 )
             }
             GeoJsonGeometry::LineStringZ(pts) => {
@@ -245,8 +266,10 @@ impl GeoJsonWriter {
                 )
             }
             GeoJsonGeometry::Polygon(rings) => {
-                let rings_s: Vec<String> =
-                    rings.iter().map(|r| self.serialize_ring_2d(r)).collect();
+                let rings_s: Vec<String> = rings
+                    .iter()
+                    .map(|r| self.serialize_ring_2d(&self.maybe_simplify_ring_2d(r)))
+                    .collect();
                 format!(
                     r#"{{"type":"Polygon","coordinates":[{}]}}"#,
                     rings_s.join(",")
@@ -273,8 +296,10 @@ impl GeoJsonWriter {
                 )
             }
             GeoJsonGeometry::MultiLineString(lines) => {
-                let lines_s: Vec<String> =
-                    lines.iter().map(|l| self.serialize_ring_2d(l)).collect();
+                let lines_s: Vec<String> = lines
+                    .iter()
+                    .map(|l| self.serialize_ring_2d(&self.maybe_simplify_ring_2d(l)))
+                    .collect();
                 format!(
                     r#"{{"type":"MultiLineString","coordinates":[{}]}}"#,
                     lines_s.join(",")
@@ -292,8 +317,10 @@ impl GeoJsonWriter {
                 let polys_s: Vec<String> = polys
                     .iter()
                     .map(|poly| {
-                        let rings_s: Vec<String> =
-                            poly.iter().map(|r| self.serialize_ring_2d(r)).collect();
+                        let rings_s: Vec<String> = poly
+                            .iter()
+                            .map(|r| self.serialize_ring_2d(&self.maybe_simplify_ring_2d(r)))
+                            .collect();
                         format!("[{}]", rings_s.join(","))
                     })
                     .collect();
@@ -327,6 +354,20 @@ impl GeoJsonWriter {
         }
     }
 
+    /// Apply RDP simplification to a 2-D ring when a tolerance is configured,
+    /// otherwise return a cheap clone of the input slice as an owned `Vec`.
+    ///
+    /// Returning `Cow<[_]>` would avoid the allocation when no simplification
+    /// is needed, but the borrow lifetime prevents it from working cleanly with
+    /// the closures in `serialize_geometry`.  The hot path (no simplify) still
+    /// avoids any algorithmic work.
+    fn maybe_simplify_ring_2d(&self, pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+        match self.simplify_tolerance {
+            Some(eps) => simplify_dp(pts, eps),
+            None => pts.to_vec(),
+        }
+    }
+
     fn serialize_ring_2d(&self, pts: &[[f64; 2]]) -> String {
         let coords: Vec<String> = pts
             .iter()
@@ -354,6 +395,36 @@ impl GeoJsonWriter {
     fn format_coord(&self, v: f64) -> String {
         format!("{:.prec$}", v, prec = self.coordinate_precision)
     }
+}
+
+// ─── Reprojection-aware write helper ─────────────────────────────────────────
+
+/// Reproject all coordinates from `source_crs` to `target_crs`, then
+/// serialise the resulting collection to a compact GeoJSON string.
+///
+/// # Errors
+///
+/// Returns [`GeoJsonError::ReprojectError`] when the CRS pair is unsupported,
+/// or any serialisation error from the underlying writer.
+#[cfg(feature = "reproject")]
+pub fn write_feature_collection_with_reprojection(
+    fc: &crate::parser::FeatureCollection,
+    source_crs: &str,
+    target_crs: &str,
+) -> Result<String, crate::error::GeoJsonError> {
+    use crate::reproject::{ReprojectOptions, Reprojector};
+
+    let mut fc_clone = fc.clone();
+    let opts = ReprojectOptions {
+        source_crs: source_crs.to_string(),
+        target_crs: target_crs.to_string(),
+        ..ReprojectOptions::default()
+    };
+    let reproj = Reprojector::new(opts)?;
+    reproj.reproject_feature_collection(&mut fc_clone)?;
+
+    let writer = GeoJsonWriter::compact();
+    Ok(writer.write_feature_collection(&fc_clone))
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────────

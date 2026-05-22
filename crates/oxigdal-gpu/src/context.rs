@@ -4,8 +4,11 @@
 //! and resource management for GPU-accelerated operations.
 
 use crate::error::{GpuError, GpuResult};
+use crate::pipeline_cache::{SharedPipelineCache, new_shared_pipeline_cache};
+use crate::workgroup_tuner::WorkgroupTuner;
 use std::sync::Arc;
-use tracing::{debug, info};
+use std::sync::atomic::AtomicBool;
+use tracing::{debug, info, warn};
 use wgpu::{
     Adapter, AdapterInfo, Backend, Backends, Device, DeviceDescriptor, Features, Instance,
     InstanceDescriptor, Limits, PowerPreference, Queue, RequestAdapterOptions,
@@ -157,6 +160,84 @@ impl GpuContextConfig {
         self.label = Some(label.into());
         self
     }
+
+    /// Request `SHADER_F16` GPU feature support.
+    ///
+    /// When this flag is set the context will require the adapter to expose
+    /// `wgpu::Features::SHADER_F16`, which enables the `enable f16;`
+    /// directive in WGSL shaders and allows native half-precision arithmetic
+    /// on the GPU.
+    ///
+    /// # Availability
+    ///
+    /// Not all adapters support this feature.  Check with
+    /// [`GpuContext::supports_feature`] after context creation.  If the
+    /// adapter lacks support, context creation will fail — consider first
+    /// checking via [`wgpu::Adapter::features`] or falling back to the
+    /// widening path provided by [`crate::buffer::from_f16_slice_widening`].
+    pub fn with_f16_support(mut self) -> Self {
+        self.required_features |= Features::SHADER_F16;
+        self
+    }
+
+    /// Request `IMMEDIATES` GPU feature support (push constants).
+    ///
+    /// When this flag is set the context will require the adapter to expose
+    /// [`wgpu::Features::IMMEDIATES`], which enables:
+    /// - `var<immediate>` variables in WGSL shaders.
+    /// - [`wgpu::PipelineLayoutDescriptor::immediate_size`] > 0.
+    /// - [`wgpu::ComputePass::set_immediates`] / [`wgpu::RenderPass::set_immediates`].
+    ///
+    /// This corresponds to Vulkan push constants and is available on Vulkan,
+    /// Metal, DX12, and WebGPU (as a proposal).
+    ///
+    /// # Availability
+    ///
+    /// Check adapter support before requesting this feature.  If unsupported,
+    /// use a uniform buffer to pass small per-dispatch constants instead.
+    pub fn with_push_constants(mut self) -> Self {
+        self.required_features |= Features::IMMEDIATES;
+        self
+    }
+
+    /// Request cooperative-matrix and subgroup GPU features.
+    ///
+    /// When this flag is set the context will attempt to request:
+    /// - [`wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX`] — hardware tile
+    ///   MMA (WMMA / tensor-core) support.
+    /// - [`wgpu::Features::SUBGROUP`] — subgroup intrinsics in compute and
+    ///   fragment shaders (required by the cooperative-matrix extension).
+    ///
+    /// Both flags are added to [`GpuContextConfig::required_features`].
+    /// If the adapter does not expose these features, context creation will
+    /// fail.  Use [`crate::cooperative_matrix::supports_cooperative_matrix`]
+    /// after creating a context **without** this method to check availability
+    /// before upgrading.
+    ///
+    /// # Fallback
+    ///
+    /// The workgroup-tiled GEMM path in
+    /// [`crate::cooperative_matrix::build_cooperative_matrix_gemm_pipeline`]
+    /// is correct on **all** adapters regardless of this flag.  Requesting
+    /// cooperative-matrix features is only necessary when the shader code
+    /// explicitly uses `subgroupMatrix*` builtins.
+    pub fn with_cooperative_matrix(mut self) -> Self {
+        self.required_features |= Features::SUBGROUP;
+        self.required_features |= Features::EXPERIMENTAL_COOPERATIVE_MATRIX;
+        self
+    }
+
+    /// Build a [`GpuContext`] from this configuration.
+    ///
+    /// Convenience async builder that calls [`GpuContext::with_config`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no suitable GPU adapter is found or device
+    /// request fails (e.g., a required feature is unsupported).
+    pub async fn build(self) -> crate::error::GpuResult<GpuContext> {
+        GpuContext::with_config(self).await
+    }
 }
 
 /// GPU context holding device and queue.
@@ -178,6 +259,19 @@ pub struct GpuContext {
     adapter_info: AdapterInfo,
     /// Device limits.
     limits: Limits,
+    /// Workgroup sizes tuned to this adapter's limits.
+    pub tuner: WorkgroupTuner,
+    /// Atomic flag set to `true` when the GPU device is lost.
+    ///
+    /// Written from the wgpu device-lost callback (a background thread);
+    /// read on the submission path before every `queue.submit`.
+    device_lost: Arc<AtomicBool>,
+    /// Shared cache of compiled compute pipelines.
+    ///
+    /// Keyed by `(shader_hash, entry_point, layout_tag)`.  Must be cleared
+    /// whenever the underlying `wgpu::Device` is replaced (device-lost
+    /// recovery), because compiled pipelines are bound to a specific device.
+    pipeline_cache: SharedPipelineCache,
 }
 
 impl GpuContext {
@@ -221,6 +315,11 @@ impl GpuContext {
 
         // Get adapter limits
         let adapter_limits = adapter.limits();
+
+        // Derive workgroup sizes from the adapter's actual capabilities before
+        // we potentially clamp/override them via `required_limits`.
+        let tuner = WorkgroupTuner::derive_from_limits(&adapter_limits);
+
         let limits = config
             .required_limits
             .unwrap_or_else(|| Self::default_limits(&adapter_limits));
@@ -247,8 +346,18 @@ impl GpuContext {
             .await
             .map_err(|e| GpuError::device_request(e.to_string()))?;
 
+        // Install device-lost callback: atomically flags that the device has
+        // been lost so that subsequent `queue.submit` calls can short-circuit.
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let flag_clone = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |_reason, message| {
+            warn!("GPU device lost: {}", message);
+            flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
         info!("GPU device created successfully");
         debug!("Device limits: {:?}", limits);
+        debug!("Workgroup tuner: {:?}", tuner);
 
         Ok(Self {
             instance: Arc::new(instance),
@@ -257,6 +366,9 @@ impl GpuContext {
             queue: Arc::new(queue),
             adapter_info,
             limits,
+            tuner,
+            device_lost,
+            pipeline_cache: new_shared_pipeline_cache(),
         })
     }
 
@@ -361,6 +473,37 @@ impl GpuContext {
         // This method is kept for API compatibility
     }
 
+    /// Spawn a background thread that keeps the wgpu device polled.
+    ///
+    /// This is an **advanced helper** intended for callers that run async GPU
+    /// readbacks without a runtime that issues device polls automatically (e.g.
+    /// bare `pollster` or custom executors).
+    ///
+    /// The spawned thread calls `device.poll(wgpu::PollType::Poll)` in a tight
+    /// loop with a 1 ms sleep between iterations.  Call
+    /// [`std::thread::JoinHandle::join`] when the thread is no longer needed
+    /// (the caller is responsible for signalling termination through a shared
+    /// flag or by dropping all `Arc<Device>` clones and letting the thread
+    /// detect the closed handle).
+    ///
+    /// In most tokio/async-std environments the runtime's built-in submission
+    /// loop makes this unnecessary.
+    pub fn spawn_poll_task(&self) -> std::thread::JoinHandle<()> {
+        let device = Arc::clone(&self.device);
+        std::thread::spawn(move || {
+            loop {
+                let poll_result = device.poll(wgpu::PollType::Poll);
+                // If the device queue is empty and all work is done, sleep
+                // more aggressively to avoid spinning.
+                if matches!(poll_result, Ok(wgpu::PollStatus::QueueEmpty)) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        })
+    }
+
     /// Check if the device is still valid.
     pub fn is_valid(&self) -> bool {
         // Try to create a small buffer as a health check
@@ -372,6 +515,167 @@ impl GpuContext {
         });
         true
     }
+
+    /// Override the workgroup tuner (useful in tests or for custom tuning).
+    ///
+    /// Returns `self` so it can be chained in a builder-style pattern:
+    ///
+    /// ```rust,no_run
+    /// # use oxigdal_gpu::{GpuContext, WorkgroupTuner};
+    /// # async fn ex() -> Result<(), Box<dyn std::error::Error>> {
+    /// let gpu = GpuContext::new().await?.with_tuner(WorkgroupTuner::unlimited());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_tuner(mut self, tuner: WorkgroupTuner) -> Self {
+        self.tuner = tuner;
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Device-lost recovery
+    // -------------------------------------------------------------------------
+
+    /// Returns `true` if the GPU device has been lost and operations will fail.
+    ///
+    /// The flag is set atomically by the wgpu device-lost callback registered
+    /// during [`GpuContext::new`] / [`GpuContext::with_config`].
+    pub fn is_device_lost(&self) -> bool {
+        self.device_lost.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Checks whether the device has been lost and returns an error if so.
+    ///
+    /// Call this before every `queue.submit` to short-circuit operations on a
+    /// defunct device instead of generating silent GPU errors.
+    pub fn check_device_lost(&self) -> GpuResult<()> {
+        if self.is_device_lost() {
+            Err(GpuError::device_lost("device was lost"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns a reference to the shared pipeline cache.
+    ///
+    /// The cache maps `(shader_hash, entry_point, layout_tag)` keys to
+    /// previously compiled [`wgpu::ComputePipeline`]s wrapped in `Arc`.
+    ///
+    /// Kernel implementations can call
+    /// [`PipelineCache::get_or_insert_with`][crate::pipeline_cache::PipelineCache::get_or_insert_with]
+    /// on the inner [`crate::pipeline_cache::PipelineCache`] to avoid
+    /// recompiling the same WGSL shader on every kernel construction.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use oxigdal_gpu::{GpuContext, pipeline_cache::PipelineCacheKey};
+    ///
+    /// # async fn ex(ctx: &GpuContext) {
+    /// let cache = ctx.pipeline_cache();
+    /// if let Ok(mut guard) = cache.lock() {
+    ///     println!("cached pipelines: {}", guard.len());
+    /// }
+    /// # }
+    /// ```
+    pub fn pipeline_cache(&self) -> &SharedPipelineCache {
+        &self.pipeline_cache
+    }
+
+    /// Replaces the internal device-lost flag with an externally-supplied one.
+    ///
+    /// This builder method is intended **for testing only** — it allows a test
+    /// to inject a shared `Arc<AtomicBool>` whose state it controls directly,
+    /// exercising the `check_device_lost` / `is_device_lost` paths without
+    /// requiring a real GPU device.
+    ///
+    /// ```rust
+    /// use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    /// // NB: GpuContext::new() requires a GPU; this is conceptual.
+    /// // let ctx = ctx.with_device_lost_flag(Arc::new(AtomicBool::new(true)));
+    /// ```
+    pub fn with_device_lost_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.device_lost = flag;
+        self
+    }
+
+    /// Attempts to recreate the GPU device on the same adapter.
+    ///
+    /// This creates a fresh `GpuContext` via the same wgpu instance, selecting
+    /// an adapter with matching properties to the one this context was built
+    /// on.  The old context **must be dropped** after calling this method;
+    /// continuing to use it will only generate further device-lost errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if adapter enumeration fails or the device cannot be
+    /// re-created (e.g., the GPU has been physically removed).
+    pub async fn reinitialize(&self) -> GpuResult<GpuContext> {
+        // Re-use the existing instance so we stay within the same set of
+        // enabled backends.  We enumerate adapters and pick the first one
+        // whose backend matches the original; fall back to `GpuContext::new`
+        // which will pick the platform default if none match.
+        let original_backend = self.adapter_info.backend;
+        let adapters = self.instance.enumerate_adapters(Backends::all()).await;
+        let matching = adapters
+            .into_iter()
+            .find(|a| a.get_info().backend == original_backend);
+
+        if let Some(adapter) = matching {
+            let adapter_info = adapter.get_info();
+            let adapter_limits = adapter.limits();
+            let tuner = WorkgroupTuner::derive_from_limits(&adapter_limits);
+            let limits = Self::default_limits(&adapter_limits);
+
+            let (device, queue) = adapter
+                .request_device(&DeviceDescriptor {
+                    label: Some("OxiGDAL GPU Context (reinit)"),
+                    required_features: Features::empty(),
+                    required_limits: limits.clone(),
+                    memory_hints: Default::default(),
+                    experimental_features: Default::default(),
+                    trace: Default::default(),
+                })
+                .await
+                .map_err(|e| GpuError::device_request(format!("reinitialize: {e}")))?;
+
+            let device_lost = Arc::new(AtomicBool::new(false));
+            let flag_clone = Arc::clone(&device_lost);
+            device.set_device_lost_callback(move |_reason, message| {
+                warn!("GPU device lost (reinit): {}", message);
+                flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+
+            info!(
+                "GPU device successfully reinitialized on adapter: {}",
+                adapter_info.name
+            );
+
+            // Evict all stale pipelines compiled against the old device before
+            // handing the cache to the new context.
+            let pipeline_cache = new_shared_pipeline_cache();
+
+            Ok(Self {
+                instance: Arc::clone(&self.instance),
+                adapter: Arc::new(adapter),
+                device: Arc::new(device),
+                queue: Arc::new(queue),
+                adapter_info,
+                limits,
+                tuner,
+                device_lost,
+                pipeline_cache,
+            })
+        } else {
+            // No matching adapter found — fall back to a completely fresh init.
+            warn!(
+                "No adapter matching original backend {:?} found during reinitialize, \
+                 falling back to platform default",
+                original_backend
+            );
+            GpuContext::new().await
+        }
+    }
 }
 
 impl std::fmt::Debug for GpuContext {
@@ -381,6 +685,7 @@ impl std::fmt::Debug for GpuContext {
             .field("backend", &self.adapter_info.backend)
             .field("device_type", &self.adapter_info.device_type)
             .field("limits", &self.limits)
+            .field("tuner", &self.tuner)
             .finish()
     }
 }

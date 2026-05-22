@@ -40,13 +40,23 @@ pub mod cloud;
 pub mod core;
 pub mod error;
 #[cfg(feature = "std")]
+pub mod io;
+#[cfg(feature = "std")]
 pub mod io_coalescing;
 #[cfg(feature = "std")]
 pub mod metrics;
 #[cfg(feature = "std")]
 pub mod mmap;
 #[cfg(feature = "std")]
+pub mod pipeline;
+// Raster streaming requires the GeoTIFF driver; gated on `raster-streaming`
+// which is normally enabled by `std` but can be disabled for leaner builds.
+#[cfg(feature = "raster-streaming")]
+pub mod raster;
+#[cfg(feature = "std")]
 pub mod state;
+#[cfg(feature = "std")]
+pub mod tile;
 #[cfg(feature = "std")]
 pub mod transformations;
 #[cfg(feature = "std")]

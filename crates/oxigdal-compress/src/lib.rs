@@ -61,8 +61,8 @@ pub mod prelude {
     pub use crate::{
         auto_select::{AutoSelector, CompressionGoal, DataCharacteristics, DataType},
         codecs::{
-            BrotliCodec, CodecType, DeflateCodec, DeltaCodec, DictionaryCodec, Lz4Codec, RleCodec,
-            SnappyCodec, ZstdCodec,
+            BloscCodec, BrotliCodec, CodecType, DeflateCodec, DeltaCodec, DictionaryCodec,
+            Lz4Codec, RleCodec, SnappyCodec, ZstdCodec,
         },
         error::{CompressionError, Result},
         metadata::CompressionMetadata,

@@ -571,6 +571,284 @@ pub fn parallel_focal_median(input: &RasterBuffer, window_size: usize) -> Result
     })
 }
 
+// ---------------------------------------------------------------------------
+// Strip-based parallel terrain and focal functions
+// ---------------------------------------------------------------------------
+
+/// Focal operation selector for the strip-based parallel focal function.
+///
+/// Each variant maps to the corresponding scalar `focal_*` function in
+/// `crate::raster::focal`.
+#[cfg(feature = "parallel")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocalOp {
+    /// Arithmetic mean over the window
+    Mean,
+    /// Median value over the window
+    Median,
+    /// Minimum value over the window
+    Min,
+    /// Maximum value over the window
+    Max,
+    /// Sum of values over the window
+    Sum,
+    /// Max minus min over the window
+    Range,
+    /// Population standard deviation over the window
+    StdDev,
+}
+
+/// Default strip height used when decomposing a raster into horizontal bands.
+///
+/// Chosen to keep per-strip working sets comfortably inside L2 cache for
+/// typical raster widths (≤16 384 pixels × 8 bytes/pixel ≈ 1 MiB) while
+/// giving rayon enough strips to balance work across threads.
+#[cfg(feature = "parallel")]
+const DEFAULT_STRIP_HEIGHT: u64 = 128;
+
+/// Extracts a contiguous sub-buffer of rows `[row_start, row_end)` from `src`.
+#[cfg(feature = "parallel")]
+fn extract_row_range(src: &RasterBuffer, row_start: u64, row_end: u64) -> Result<RasterBuffer> {
+    let w = src.width();
+    let h = row_end - row_start;
+    let mut sub = RasterBuffer::zeros(w, h, src.data_type());
+    for sy in 0..h {
+        let gy = row_start + sy;
+        for x in 0..w {
+            let v = src.get_pixel(x, gy).map_err(AlgorithmError::Core)?;
+            sub.set_pixel(x, sy, v).map_err(AlgorithmError::Core)?;
+        }
+    }
+    Ok(sub)
+}
+
+/// Copies rows from `partial` (starting at `partial_row_start`) into `dst`
+/// at the global row range `[dst_row_start, dst_row_end)`.
+#[cfg(feature = "parallel")]
+fn write_strip_to_output(
+    partial: &RasterBuffer,
+    partial_row_start: u64,
+    dst: &mut RasterBuffer,
+    dst_row_start: u64,
+    dst_row_end: u64,
+) -> Result<()> {
+    let w = dst.width();
+    for dy in 0..(dst_row_end - dst_row_start) {
+        let py = partial_row_start + dy;
+        let gy = dst_row_start + dy;
+        for x in 0..w {
+            let v = partial.get_pixel(x, py).map_err(AlgorithmError::Core)?;
+            dst.set_pixel(x, gy, v).map_err(AlgorithmError::Core)?;
+        }
+    }
+    Ok(())
+}
+
+/// Computes hillshade in parallel using horizontal strip decomposition.
+///
+/// Each strip extends `[strip_row_start, strip_row_end)` in the output, and the
+/// sub-buffer passed to the scalar kernel includes a 1-row halo on both sides so
+/// that the 3×3 finite-difference stencil never reads out-of-bounds.  The border
+/// rows of the full raster (row 0 and row H-1) stay zero, matching the scalar
+/// `hillshade()` behaviour.
+///
+/// # Errors
+///
+/// Returns an error if any strip fails to process or pixel access fails.
+#[cfg(feature = "parallel")]
+pub fn hillshade_parallel(
+    dem: &RasterBuffer,
+    params: crate::raster::HillshadeParams,
+) -> Result<RasterBuffer> {
+    let w = dem.width();
+    let h = dem.height();
+
+    // Scalar kernel requires ≥ 3×3; let it produce the error for small rasters.
+    if w < 3 || h < 3 {
+        return crate::raster::hillshade(dem, params);
+    }
+
+    // Interior rows only (1..h-1).  Rows 0 and h-1 stay zero — same as scalar.
+    let interior_start: u64 = 1;
+    let interior_end: u64 = h - 1;
+    let interior_h = interior_end - interior_start;
+
+    let strip_h = DEFAULT_STRIP_HEIGHT.min(interior_h).max(1);
+    let n_strips = interior_h.div_ceil(strip_h) as usize;
+
+    let strips: Vec<(u64, u64)> = (0..n_strips)
+        .map(|i| {
+            let s = interior_start + i as u64 * strip_h;
+            let e = (s + strip_h).min(interior_end);
+            (s, e)
+        })
+        .collect();
+
+    // Each strip item: (global_row_start, global_row_end, partial_result).
+    let strip_results: Result<Vec<(u64, u64, RasterBuffer)>> = strips
+        .into_par_iter()
+        .map(|(s, e)| {
+            // 1-row halo: s-1 is always ≥ 0 because s ≥ interior_start = 1.
+            let halo_top = s - 1;
+            let halo_bot = (e + 1).min(h);
+
+            let sub = extract_row_range(dem, halo_top, halo_bot)?;
+            let partial = crate::raster::hillshade(&sub, params)?;
+            Ok((s, e, partial))
+        })
+        .collect();
+
+    let mut out = RasterBuffer::zeros(w, h, dem.data_type());
+    for (s, e, partial) in strip_results? {
+        // Inside `partial`, local row 1 maps to global row s.
+        // Local row 0 (top halo) is discarded.
+        write_strip_to_output(&partial, 1, &mut out, s, e)?;
+    }
+    Ok(out)
+}
+
+/// Computes slope in parallel using horizontal strip decomposition.
+///
+/// Applies the same 1-row halo strategy as [`hillshade_parallel`] so that the
+/// 3×3 Horn gradient is well-defined inside every strip.  Border rows stay zero.
+///
+/// # Errors
+///
+/// Returns an error if any strip fails or pixel access fails.
+#[cfg(feature = "parallel")]
+pub fn slope_parallel(dem: &RasterBuffer, pixel_size: f64, z_factor: f64) -> Result<RasterBuffer> {
+    let w = dem.width();
+    let h = dem.height();
+
+    if w < 3 || h < 3 {
+        return crate::raster::slope(dem, pixel_size, z_factor);
+    }
+
+    let interior_start: u64 = 1;
+    let interior_end: u64 = h - 1;
+    let interior_h = interior_end - interior_start;
+
+    let strip_h = DEFAULT_STRIP_HEIGHT.min(interior_h).max(1);
+    let n_strips = interior_h.div_ceil(strip_h) as usize;
+
+    let strips: Vec<(u64, u64)> = (0..n_strips)
+        .map(|i| {
+            let s = interior_start + i as u64 * strip_h;
+            let e = (s + strip_h).min(interior_end);
+            (s, e)
+        })
+        .collect();
+
+    let strip_results: Result<Vec<(u64, u64, RasterBuffer)>> = strips
+        .into_par_iter()
+        .map(|(s, e)| {
+            let halo_top = s - 1;
+            let halo_bot = (e + 1).min(h);
+
+            let sub = extract_row_range(dem, halo_top, halo_bot)?;
+            let partial = crate::raster::slope(&sub, pixel_size, z_factor)?;
+            Ok((s, e, partial))
+        })
+        .collect();
+
+    let mut out = RasterBuffer::zeros(w, h, dem.data_type());
+    for (s, e, partial) in strip_results? {
+        write_strip_to_output(&partial, 1, &mut out, s, e)?;
+    }
+    Ok(out)
+}
+
+/// Runs the appropriate scalar focal function for the given [`FocalOp`].
+#[cfg(feature = "parallel")]
+fn dispatch_focal(
+    sub: &RasterBuffer,
+    window: &crate::raster::WindowShape,
+    op: FocalOp,
+    boundary: &crate::raster::FocalBoundaryMode,
+) -> Result<RasterBuffer> {
+    use crate::raster::{
+        focal_max, focal_mean, focal_median, focal_min, focal_range, focal_stddev, focal_sum,
+    };
+    match op {
+        FocalOp::Mean => focal_mean(sub, window, boundary),
+        FocalOp::Median => focal_median(sub, window, boundary),
+        FocalOp::Min => focal_min(sub, window, boundary),
+        FocalOp::Max => focal_max(sub, window, boundary),
+        FocalOp::Sum => focal_sum(sub, window, boundary),
+        FocalOp::Range => focal_range(sub, window, boundary),
+        FocalOp::StdDev => focal_stddev(sub, window, boundary),
+    }
+}
+
+/// Computes a focal (neighbourhood) statistic in parallel using horizontal strip
+/// decomposition.
+///
+/// The halo height equals the window's vertical radius `(window_height - 1) / 2`
+/// so that every output pixel inside a strip has a complete neighbourhood, identical
+/// to what the scalar function would see.
+///
+/// When the halo rows extend to the edge of the source raster, the sub-buffer
+/// edge coincides with the true raster edge, so the supplied `boundary` mode
+/// applies correctly without special-casing.
+///
+/// # Arguments
+///
+/// * `src` - Source raster buffer.
+/// * `window` - Window shape (rectangular, circular, or custom).
+/// * `op` - Which focal statistic to compute.
+/// * `boundary` - How to handle pixels that fall outside the raster edge.
+///
+/// # Errors
+///
+/// Returns an error if any strip fails or pixel access fails.
+#[cfg(feature = "parallel")]
+pub fn focal_parallel(
+    src: &RasterBuffer,
+    window: &crate::raster::WindowShape,
+    op: FocalOp,
+    boundary: &crate::raster::FocalBoundaryMode,
+) -> Result<RasterBuffer> {
+    let w = src.width();
+    let h = src.height();
+
+    // Vertical halo = half the window height.
+    let (_, win_h) = window.dimensions();
+    let halo = (win_h / 2) as u64;
+
+    let strip_h = DEFAULT_STRIP_HEIGHT.min(h).max(1);
+    let n_strips = h.div_ceil(strip_h) as usize;
+
+    let strips: Vec<(u64, u64)> = (0..n_strips)
+        .map(|i| {
+            let s = i as u64 * strip_h;
+            let e = (s + strip_h).min(h);
+            (s, e)
+        })
+        .collect();
+
+    // Each item: (global_row_start, global_row_end, partial_result, local_row_start_in_partial).
+    let strip_results: Result<Vec<(u64, u64, RasterBuffer, u64)>> = strips
+        .into_par_iter()
+        .map(|(s, e)| {
+            let halo_top = s.saturating_sub(halo);
+            let halo_bot = (e + halo).min(h);
+
+            let sub = extract_row_range(src, halo_top, halo_bot)?;
+            let partial = dispatch_focal(&sub, window, op, boundary)?;
+
+            // Local offset within partial that corresponds to global row s.
+            let local_start = s - halo_top;
+            Ok((s, e, partial, local_start))
+        })
+        .collect();
+
+    let mut out = RasterBuffer::zeros(w, h, src.data_type());
+    for (s, e, partial, local_start) in strip_results? {
+        write_strip_to_output(&partial, local_start, &mut out, s, e)?;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]

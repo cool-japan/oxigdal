@@ -240,6 +240,25 @@ impl From<oxigdal_core::error::OxiGdalError> for Error {
     }
 }
 
+// COPC-VLR error constructors (additive). All helpers reuse the existing
+// `Error::Copc(String)` variant to keep the public enum surface unchanged.
+impl Error {
+    /// COPC info VLR (user_id=copc, record_id=1) not found in LAS header.
+    pub fn missing_copc_vlr() -> Self {
+        Error::Copc("COPC info VLR (user_id=copc, record_id=1) not found in LAS header".to_string())
+    }
+
+    /// COPC info VLR or hierarchy page failed structural validation.
+    pub fn malformed_copc_info(msg: impl Into<String>) -> Self {
+        Error::Copc(format!("COPC info malformed: {}", msg.into()))
+    }
+
+    /// COPC hierarchy traversal exceeded its safety cap on page-loads.
+    pub fn hierarchy_recursion_limit() -> Self {
+        Error::Copc("COPC hierarchy recursion exceeded MAX_DEPTH=32".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

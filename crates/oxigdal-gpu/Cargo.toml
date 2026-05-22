@@ -30,6 +30,8 @@ all-native-backends = ["vulkan", "metal", "dx12"]
 backend-optimizations = ["cuda", "vulkan", "metal", "directml"]
 # Multi-GPU support
 multi-gpu = []
+# Native filesystem-polling shader hot-reload backend (std only, no extra deps)
+shader-hot-reload = []
 
 [dependencies]
 # Workspace dependencies
@@ -50,6 +52,9 @@ wgpu = { workspace = true }
 pollster.workspace = true
 encase.workspace = true
 naga = { workspace = true }
+
+# Half-precision float support
+half = { workspace = true }
 
 # Math
 glam = { workspace = true }

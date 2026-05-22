@@ -641,6 +641,19 @@ pub fn encode_jpeg(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Rend
     Ok(jpeg_buffer)
 }
 
+/// Encode RGBA data to lossless WebP format
+pub fn encode_webp(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, RenderError> {
+    use image::ExtendedColorType;
+    use image::codecs::webp::WebPEncoder;
+
+    let mut output = Vec::new();
+    let encoder = WebPEncoder::new_lossless(&mut output);
+    encoder
+        .encode(data, width, height, ExtendedColorType::Rgba8)
+        .map_err(|e| RenderError::EncodingError(e.to_string()))?;
+    Ok(output)
+}
+
 /// Encode RGBA data to the specified format
 pub fn encode_image(
     data: &[u8],
@@ -651,11 +664,7 @@ pub fn encode_image(
     let encoded = match format {
         ImageFormat::Png => encode_png(data, width, height)?,
         ImageFormat::Jpeg => encode_jpeg(data, width, height)?,
-        ImageFormat::Webp => {
-            return Err(RenderError::Unsupported(
-                "WebP encoding not yet implemented".to_string(),
-            ));
-        }
+        ImageFormat::Webp => encode_webp(data, width, height)?,
         ImageFormat::Geotiff => {
             return Err(RenderError::Unsupported(
                 "GeoTIFF encoding not yet implemented".to_string(),
@@ -780,6 +789,34 @@ mod tests {
         let rgba = vec![128u8; 4 * 4 * 4]; // 4x4 image
         let result = encode_png(&rgba, 4, 4);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_encode_webp() {
+        let rgba = vec![128u8; 4 * 4 * 4]; // 4x4 RGBA image
+        let result = encode_webp(&rgba, 4, 4);
+        assert!(result.is_ok(), "WebP encoding failed: {:?}", result.err());
+        let bytes = result.expect("webp bytes");
+        // WebP files start with "RIFF" magic bytes
+        assert!(bytes.len() > 4, "WebP output should be non-empty");
+        assert_eq!(
+            &bytes[0..4],
+            b"RIFF",
+            "WebP output should start with RIFF header"
+        );
+    }
+
+    #[test]
+    fn test_encode_image_webp() {
+        let rgba = vec![200u8; 8 * 8 * 4]; // 8x8 RGBA image
+        let result = encode_image(&rgba, 8, 8, ImageFormat::Webp);
+        assert!(
+            result.is_ok(),
+            "encode_image(Webp) failed: {:?}",
+            result.err()
+        );
+        let bytes = result.expect("webp bytes");
+        assert!(!bytes.is_empty(), "encoded WebP bytes must be non-empty");
     }
 
     #[test]

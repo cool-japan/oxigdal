@@ -3,14 +3,17 @@
 //! This module handles reading and writing dBase III/IV (.dbf) files,
 //! which contain the attribute data for Shapefile features.
 
+pub mod memo;
 pub mod record;
 
+pub use memo::{MemoError, MemoFile, MemoVersion};
 pub use record::{FieldDescriptor, FieldType, FieldValue};
 
 use crate::error::{Result, ShapefileError};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
 use std::io::{Read, Seek, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// DBF header size in bytes
 pub const DBF_HEADER_SIZE: usize = 32;
@@ -268,6 +271,13 @@ pub struct DbfReader<R: Read> {
     reader: R,
     header: DbfHeader,
     field_descriptors: Vec<FieldDescriptor>,
+    /// Optional sibling `.dbt` memo file.  Populated by
+    /// [`DbfReader::set_memo_file`]; when present, memo-field values are
+    /// dereferenced from this file as part of [`DbfReader::read_record`].
+    memo: Option<MemoFile>,
+    /// One-shot guard: emit the "memo field without .dbt" warning at most
+    /// once per `DbfReader` to avoid flooding logs on large tables.
+    missing_memo_warned: AtomicBool,
 }
 
 impl<R: Read> DbfReader<R> {
@@ -306,6 +316,8 @@ impl<R: Read> DbfReader<R> {
             reader,
             header,
             field_descriptors,
+            memo: None,
+            missing_memo_warned: AtomicBool::new(false),
         })
     }
 
@@ -319,19 +331,126 @@ impl<R: Read> DbfReader<R> {
         &self.field_descriptors
     }
 
+    /// Attaches a sibling `.dbt` memo file to this reader.
+    ///
+    /// When a memo file is attached, subsequent calls to [`Self::read_record`]
+    /// will dereference any [`FieldType::Memo`] columns: the on-disk
+    /// 10-byte ASCII pointer is parsed as a block index and the corresponding
+    /// text is read from the memo file.  If parsing or lookup fails the field
+    /// is returned as an empty string (`FieldValue::String(String::new())`).
+    ///
+    /// Replaces any previously attached memo handle.
+    pub fn set_memo_file(&mut self, memo: MemoFile) {
+        self.memo = Some(memo);
+    }
+
+    /// Returns whether a sibling `.dbt` memo file is attached.
+    pub fn has_memo(&self) -> bool {
+        self.memo.is_some()
+    }
+
+    /// Returns whether this DBF table declares any Memo (`M`) columns.
+    fn has_memo_field(&self) -> bool {
+        self.field_descriptors
+            .iter()
+            .any(|f| f.field_type == FieldType::Memo)
+    }
+
+    /// Dereferences memo pointers in `record` against the attached memo file.
+    ///
+    /// For each [`FieldType::Memo`] column whose value parses to a `u32`
+    /// block index, the parsed text replaces the in-place pointer string.
+    /// On parse failure the field is left as an empty string.
+    ///
+    /// When the table declares memo fields but no `.dbt` is attached, a
+    /// single one-time `tracing::warn!` is emitted via
+    /// [`DbfReader::missing_memo_warned`] so consumers know the data is
+    /// incomplete without flooding the log.
+    fn resolve_memo_fields(&mut self, record: &mut DbfRecord) -> Result<()> {
+        if self.memo.is_none() {
+            if self.has_memo_field() && !self.missing_memo_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "DBF Memo field but no .dbt attached; memo values will be returned as empty"
+                );
+            }
+            return Ok(());
+        }
+
+        // Snapshot the column types so we can mutate values while iterating.
+        let column_types: Vec<FieldType> = self
+            .field_descriptors
+            .iter()
+            .map(|f| f.field_type)
+            .collect();
+
+        for (idx, value) in record.values.iter_mut().enumerate() {
+            if column_types.get(idx).copied() != Some(FieldType::Memo) {
+                continue;
+            }
+
+            // Memo "pointer" is the 10-byte ASCII value already parsed into a
+            // string.  Empty / unparseable pointers map to an empty memo.
+            let pointer_text = match value {
+                FieldValue::String(s) => s.trim().to_string(),
+                FieldValue::Null => String::new(),
+                _ => continue,
+            };
+
+            if pointer_text.is_empty() {
+                *value = FieldValue::String(String::new());
+                continue;
+            }
+
+            let block_index = match pointer_text.parse::<u32>() {
+                Ok(n) => n,
+                Err(_) => {
+                    *value = FieldValue::String(String::new());
+                    continue;
+                }
+            };
+
+            // SAFETY: we just confirmed `self.memo.is_some()` above; the
+            // closure cannot be `None` here.
+            if let Some(memo) = self.memo.as_mut() {
+                match memo.read_block(block_index) {
+                    Ok(text) => *value = FieldValue::String(text),
+                    Err(MemoError::BlockIndexOutOfRange { .. }) => {
+                        // Out-of-range pointers are tolerated as empty memos
+                        // so that one bad row does not abort the whole scan.
+                        *value = FieldValue::String(String::new());
+                    }
+                    Err(MemoError::Io(e)) => return Err(ShapefileError::Io(e)),
+                    Err(other) => {
+                        return Err(ShapefileError::DbfError {
+                            message: format!("memo lookup failed: {}", other),
+                            field: None,
+                            record: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Reads the next record
     pub fn read_record(&mut self) -> Result<Option<DbfRecord>> {
-        match DbfRecord::read(&mut self.reader, &self.field_descriptors) {
-            Ok(record) => Ok(Some(record)),
+        let raw = match DbfRecord::read(&mut self.reader, &self.field_descriptors) {
+            Ok(record) => record,
             Err(ShapefileError::Io(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                Ok(None)
+                return Ok(None);
             }
             Err(ShapefileError::UnexpectedEof { .. }) => {
                 // EOF when reading record is expected at end of file
-                Ok(None)
+                return Ok(None);
             }
-            Err(e) => Err(e),
-        }
+            Err(e) => return Err(e),
+        };
+
+        let mut record = raw;
+        self.resolve_memo_fields(&mut record)?;
+        Ok(Some(record))
     }
 
     /// Reads all records

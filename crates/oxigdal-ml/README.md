@@ -73,11 +73,11 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-ml = "0.1.4"
-oxigdal-ml-foundation = "0.1.4"
+oxigdal-ml = "0.1.5"
+oxigdal-ml-foundation = "0.1.5"
 
 # Optional: Enable specific features
-oxigdal-ml = { version = "0.1.4", features = ["gpu", "cuda", "temporal", "cloud-removal"] }
+oxigdal-ml = { version = "0.1.5", features = ["gpu", "cuda", "temporal", "cloud-removal"] }
 ```
 
 ### System Requirements

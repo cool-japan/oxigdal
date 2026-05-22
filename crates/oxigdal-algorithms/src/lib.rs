@@ -226,6 +226,36 @@ pub mod tutorials;
 pub use error::{AlgorithmError, Result};
 pub use resampling::{Resampler, ResamplingMethod};
 
+// Re-export bytecode compiler + VM for band-math expressions
+pub use raster::{
+    CompiledProgram, OpCode, RasterCalculator, RasterExpression, estimate_stack_depth,
+    eval_bytecode,
+};
+
+// Re-export streaming raster abstraction (out-of-core chunked processing)
+pub use raster::streaming::{
+    Chunk, ChunkIterator, ChunkedRaster, InMemoryRasterSource, RasterError, RasterSource,
+    extract_inner, process_streaming, streaming_focal_mean, streaming_hillshade, streaming_slope,
+};
+
+// Re-export compound morphological operators (slice-based API)
+pub use raster::{
+    BorderMode, MorphologyOptions, black_hat, black_hat_with, closing, closing_with, opening,
+    opening_with, top_hat, top_hat_with,
+};
+
+// Re-export TIN (Triangulated Irregular Network) interpolation
+pub use raster::{
+    Tin, TinInterpMethod, TinPoint, build_tin, interpolate_idw_tin, interpolate_natural_neighbor,
+    rasterize_tin,
+};
+
+// Re-export point-cloud thinning (grid/random/Poisson-disk)
+pub use raster::{
+    ThinPoint3, ThinningMethod, ThinningStats, thin_grid, thin_poisson_disk, thin_random,
+    thin_with_stats,
+};
+
 // Re-export vector operations for convenience
 pub use vector::{
     AreaMethod,
@@ -234,29 +264,53 @@ pub use vector::{
     BufferJoinStyle,
     BufferOptions,
 
+    // Minimum bounding geometry
+    Circle,
     // Clipping operations
     ClipOperation,
+    // Map generalization operators (ICA taxonomy: collapse, exaggerate, displace)
+    CollapseOptions,
     ContainsPredicate,
     // Geometric types (from oxigdal-core)
     Coordinate,
+    DisplaceOptions,
+    DisplaceStats,
     DistanceMethod,
 
+    ExaggerateAnchor,
+    ExaggerateOptions,
     IntersectsPredicate,
     IssueType,
+    // Line offset (parallel curves)
+    JoinStyle,
     LineString,
     MultiPolygon,
+    OffsetOptions,
+    OffsetResult,
     Point,
     Polygon,
 
+    // Power diagram (weighted Voronoi)
+    PowerCell,
+    PowerDiagram,
+    PowerDiagramOptions,
+    // Robust location estimators (geometric median, L1 median, spatial mean)
+    RobustLocationOptions,
+    RotatedRect,
     SegmentIntersection,
 
     Severity,
     SimplifyMethod,
 
+    SnapRoundingOptions,
+    SnapRoundingResult,
+    SnappedSegment,
     TopologySimplifyOptions,
     TouchesPredicate,
 
     ValidationIssue,
+    WeightedPoint,
+    aabb,
     // Area operations
     area,
     area_multipolygon,
@@ -283,18 +337,32 @@ pub use vector::{
     clip_to_box,
     // Advanced modules
     clustering,
+    collapse_linestring_to_point,
+    collapse_polygon_to_point,
     // Spatial predicates (contains, intersects, etc.)
     contains,
     convex_hull,
     delaunay,
     difference_polygon,
     difference_polygons,
-    disjoint,
     // Distance operations
+    directed_hausdorff,
+    discrete_frechet_distance,
+    disjoint,
+    displace_points,
+    displace_polygons_by_centroid,
     distance_point_to_linestring,
     distance_point_to_point,
     distance_point_to_polygon,
     erase_small_holes,
+    exaggerate_coord,
+    exaggerate_linestring,
+    exaggerate_polygon,
+    geometric_median,
+    geometric_median_3d,
+    geometric_median_with_options,
+    hausdorff_distance,
+    hausdorff_distance_to_segments,
     // Intersection operations
     intersect_linestrings,
     intersect_linestrings_sweep,
@@ -303,12 +371,18 @@ pub use vector::{
     intersects,
     is_clockwise,
     is_counter_clockwise,
+    l1_median,
     merge_polygons,
+    min_area_rotated_rect,
     network,
+    offset_linestring,
+    offset_polygon_rings,
     point_in_polygon,
     point_in_polygon_or_boundary,
     point_on_polygon_boundary,
     point_strictly_inside_polygon,
+    power_diagram,
+    should_collapse_polygon,
     // Simplification operations
     simplify_linestring,
     simplify_linestring_dp,
@@ -316,7 +390,13 @@ pub use vector::{
     // Topology-preserving simplification
     simplify_topology,
     simplify_topology_with_options,
+    smallest_enclosing_circle,
+    // Snap rounding operations
+    snap_coordinate,
+    snap_linestring,
+    snap_round,
     spatial_join,
+    spatial_mean,
     symmetric_difference,
 
     topology,
@@ -329,6 +409,9 @@ pub use vector::{
     validate_linestring,
     validate_polygon,
     voronoi,
+    weighted_bisector,
+    weighted_geometric_median,
+
     within,
 };
 

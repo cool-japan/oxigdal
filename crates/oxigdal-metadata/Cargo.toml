@@ -18,6 +18,7 @@ default = ["std"]
 std = ["thiserror/std", "serde/std"]
 xml = ["dep:quick-xml"]
 stac = ["dep:oxigdal-stac"]
+netcdf = ["dep:oxigdal-netcdf"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -31,7 +32,8 @@ quick-xml = { workspace = true, optional = true, features = ["serialize"] }
 
 # Internal crates
 oxigdal-core = { workspace = true }
-oxigdal-stac = { workspace = true, default-features = false, features = ["std"], optional = true }
+oxigdal-stac = { workspace = true, features = ["std"], optional = true }
+oxigdal-netcdf = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

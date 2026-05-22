@@ -1,6 +1,9 @@
 //! STAC Asset representation.
 
-use crate::error::{Result, StacError};
+use crate::{
+    error::{Result, StacError},
+    extensions::eo::Band,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -26,6 +29,14 @@ pub struct Asset {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
 
+    /// Spectral bands associated with this asset (STAC 1.1.0 shorthand).
+    ///
+    /// Introduced in STAC 1.1.0 as a top-level field on assets so that band
+    /// metadata can be embedded without requiring a separate EO extension
+    /// object on the Item properties.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bands: Option<Vec<Band>>,
+
     /// Additional fields for extensions.
     #[serde(flatten)]
     pub additional_fields: HashMap<String, serde_json::Value>,
@@ -48,6 +59,7 @@ impl Asset {
             description: None,
             media_type: None,
             roles: None,
+            bands: None,
             additional_fields: HashMap::new(),
         }
     }
@@ -136,6 +148,37 @@ impl Asset {
     /// Self for method chaining
     pub fn with_roles(mut self, roles: Vec<String>) -> Self {
         self.roles = Some(roles);
+        self
+    }
+
+    /// Sets the spectral bands for this asset (STAC 1.1.0).
+    ///
+    /// # Arguments
+    ///
+    /// * `bands` - Vector of [`Band`] descriptors
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining
+    pub fn with_bands(mut self, bands: Vec<Band>) -> Self {
+        self.bands = Some(bands);
+        self
+    }
+
+    /// Adds a single spectral band to the asset (STAC 1.1.0).
+    ///
+    /// # Arguments
+    ///
+    /// * `band` - [`Band`] to append
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining
+    pub fn add_band(mut self, band: Band) -> Self {
+        match &mut self.bands {
+            Some(bands) => bands.push(band),
+            None => self.bands = Some(vec![band]),
+        }
         self
     }
 

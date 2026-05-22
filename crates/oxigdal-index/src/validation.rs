@@ -114,6 +114,25 @@ pub enum ValidationIssue {
     HoleOutsideExterior,
     /// The ring has zero signed area (all points are collinear).
     ZeroAreaRing,
+    /// The interiors of two parts of a multi-polygon overlap.
+    PartsOverlapInterior {
+        /// Index of the first part.
+        part_a: usize,
+        /// Index of the second part.
+        part_b: usize,
+    },
+    /// Two parts share an edge with opposite orientations (i.e. they overlap on
+    /// that edge in the topological sense rather than merely touching).
+    SharedEdgeUsesOppositeOrientation {
+        /// Index of the first part.
+        part_a: usize,
+        /// Index of the second part.
+        part_b: usize,
+        /// Start coordinate of the shared edge.
+        edge_start: Coord,
+        /// End coordinate of the shared edge.
+        edge_end: Coord,
+    },
 }
 
 /// Result of validating a polygon: a collection of zero or more issues.
@@ -414,6 +433,243 @@ fn coord_eq(a: Coord, b: Coord) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// MultiPolygon
+// ---------------------------------------------------------------------------
+
+/// A multi-polygon: an ordered list of (possibly disjoint, possibly edge-sharing)
+/// polygons.
+///
+/// In OGC Simple Features semantics the parts of a `MultiPolygon` may touch on
+/// boundaries (shared edges or vertices) but must not overlap in their
+/// interiors.  [`validate_multipolygon`] enforces both per-part validity and
+/// these cross-part topological constraints.
+#[derive(Debug, Clone)]
+pub struct MultiPolygon {
+    parts: Vec<Polygon>,
+}
+
+impl MultiPolygon {
+    /// Create a multi-polygon from a list of polygons.
+    pub fn new(parts: Vec<Polygon>) -> Self {
+        Self { parts }
+    }
+
+    /// The parts of this multi-polygon.
+    #[inline]
+    pub fn parts(&self) -> &[Polygon] {
+        &self.parts
+    }
+
+    /// Number of parts.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.parts.len()
+    }
+
+    /// Whether this multi-polygon has no parts.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+}
+
+/// Epsilon used by the multi-polygon helpers for coordinate equality.
+///
+/// Slightly larger than the [`coord_eq`] epsilon to be more tolerant of
+/// rounding when two parts have been authored against a shared boundary.
+const MULTIPOLYGON_EPS: f64 = 1e-9;
+
+/// Epsilon-equal comparison for two coordinates (multi-polygon helpers).
+#[inline]
+fn approx_coord_eq(a: Coord, b: Coord) -> bool {
+    (a.x - b.x).abs() < MULTIPOLYGON_EPS && (a.y - b.y).abs() < MULTIPOLYGON_EPS
+}
+
+/// Validate a multi-polygon: each part valid, parts don't overlap interiors.
+///
+/// The checks performed are:
+///
+/// 1. Each part is validated individually with [`validate_polygon`]; any
+///    issues are appended to the result.
+/// 2. For every pair of parts `(i, j)` with `i < j`:
+///    * If the parts' interiors overlap, a
+///      [`ValidationIssue::PartsOverlapInterior`] is recorded.
+///    * If the parts share an edge with the same direction (rather than the
+///      opposite direction that is normal for touching coverage tiles) a
+///      [`ValidationIssue::SharedEdgeUsesOppositeOrientation`] is recorded.
+///
+/// Shared edges between adjacent parts are valid topology (typical for
+/// coverage maps).  The misleadingly named
+/// `SharedEdgeUsesOppositeOrientation` variant fires when two adjacent
+/// parts use the *same* directional traversal of a shared edge — which means
+/// they are on the same side of the edge, indicating an overlap rather than
+/// a clean shared boundary.
+pub fn validate_multipolygon(mp: &MultiPolygon) -> ValidationResult {
+    let mut result = ValidationResult::new();
+
+    // Per-part validation
+    for part in mp.parts.iter() {
+        let part_result = validate_polygon(part);
+        for issue in part_result.issues() {
+            result.push(issue.clone());
+        }
+    }
+
+    // Cross-part checks
+    for i in 0..mp.parts.len() {
+        for j in (i + 1)..mp.parts.len() {
+            if polygon_interiors_overlap(&mp.parts[i], &mp.parts[j]) {
+                result.push(ValidationIssue::PartsOverlapInterior {
+                    part_a: i,
+                    part_b: j,
+                });
+            }
+
+            // Shared-edge orientation check.  A clean shared boundary between
+            // two CCW exteriors traverses the edge in *opposite* directions;
+            // if two CCW exteriors traverse the same edge in the *same*
+            // direction, both polygons lie on the same side of that edge and
+            // therefore overlap on it.
+            for (edge_start, edge_end) in
+                shared_edges_same_direction(&mp.parts[i].exterior, &mp.parts[j].exterior)
+            {
+                result.push(ValidationIssue::SharedEdgeUsesOppositeOrientation {
+                    part_a: i,
+                    part_b: j,
+                    edge_start,
+                    edge_end,
+                });
+            }
+        }
+    }
+
+    result
+}
+
+/// Collect all `(edge_start, edge_end)` pairs for which segments of `ring_a`
+/// and `ring_b` coincide and traverse the edge in the same direction.
+///
+/// Each match indicates an edge that both rings walk identically, which — for
+/// CCW exteriors — implies the polygons overlap on that edge.
+fn shared_edges_same_direction(ring_a: &Ring, ring_b: &Ring) -> Vec<(Coord, Coord)> {
+    let mut out = Vec::new();
+    let segs_a = ring_segments(ring_a);
+    let segs_b = ring_segments(ring_b);
+    for (a0, a1) in &segs_a {
+        for (b0, b1) in &segs_b {
+            if approx_coord_eq(*a0, *b0) && approx_coord_eq(*a1, *b1) {
+                out.push((*a0, *a1));
+            }
+        }
+    }
+    out
+}
+
+/// True if two rings share any segment (direction-insensitive).
+///
+/// Exposed at crate visibility for unit tests; not yet used by the public
+/// API of [`validate_multipolygon`] (which relies on the directional variant
+/// [`shared_edges_same_direction`] for its overlap heuristic).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn rings_share_edge(ring_a: &Ring, ring_b: &Ring) -> bool {
+    let segs_a = ring_segments(ring_a);
+    let segs_b = ring_segments(ring_b);
+
+    for (a0, a1) in &segs_a {
+        for (b0, b1) in &segs_b {
+            let same_direction = approx_coord_eq(*a0, *b0) && approx_coord_eq(*a1, *b1);
+            let opposite_direction = approx_coord_eq(*a0, *b1) && approx_coord_eq(*a1, *b0);
+            if same_direction || opposite_direction {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True if the interiors of `p1` and `p2` overlap.
+///
+/// Detection strategy:
+///
+/// 1. Any pair of exterior segments that *properly* cross (excluding shared
+///    edges and endpoint-only touches) implies an interior overlap.
+/// 2. Otherwise, if one polygon's exterior centroid lies strictly inside the
+///    other polygon's exterior (and not inside any of its holes), the
+///    interiors overlap.
+///
+/// Exposed at crate visibility for unit tests in the integration test crate.
+pub(crate) fn polygon_interiors_overlap(p1: &Polygon, p2: &Polygon) -> bool {
+    let e1 = &p1.exterior;
+    let e2 = &p2.exterior;
+
+    let segs1 = ring_segments(e1);
+    let segs2 = ring_segments(e2);
+    for (a0, a1) in &segs1 {
+        for (b0, b1) in &segs2 {
+            if segments_share_endpoint(*a0, *a1, *b0, *b1) {
+                continue;
+            }
+            if segments_intersect(*a0, *a1, *b0, *b1) {
+                return true;
+            }
+        }
+    }
+
+    // Centroid-inside-other test (both directions).
+    if let Some(c1) = ring_centroid(e1)
+        && ring_contains_point(e2, c1)
+        && !p2.holes.iter().any(|h| ring_contains_point(h, c1))
+    {
+        return true;
+    }
+    if let Some(c2) = ring_centroid(e2)
+        && ring_contains_point(e1, c2)
+        && !p1.holes.iter().any(|h| ring_contains_point(h, c2))
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Collect segments of a ring as `(start, end)` pairs.
+fn ring_segments(ring: &Ring) -> Vec<(Coord, Coord)> {
+    ring.coords().windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// True if the two segments share at least one endpoint coordinate.
+fn segments_share_endpoint(a0: Coord, a1: Coord, b0: Coord, b1: Coord) -> bool {
+    approx_coord_eq(a0, b0)
+        || approx_coord_eq(a0, b1)
+        || approx_coord_eq(a1, b0)
+        || approx_coord_eq(a1, b1)
+}
+
+/// Arithmetic-mean centroid of a ring's coordinates (returns `None` for rings
+/// with fewer than three points).
+fn ring_centroid(ring: &Ring) -> Option<Coord> {
+    let coords = ring.coords();
+    if coords.len() < 3 {
+        return None;
+    }
+    let mut x = 0.0_f64;
+    let mut y = 0.0_f64;
+    for c in coords {
+        x += c.x;
+        y += c.y;
+    }
+    let n = coords.len() as f64;
+    Some(Coord::new(x / n, y / n))
+}
+
+/// Thin wrapper around the internal `point_in_ring` so callers can pass a
+/// value rather than a reference.
+#[inline]
+fn ring_contains_point(ring: &Ring, p: Coord) -> bool {
+    point_in_ring(&p, ring)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -536,5 +792,68 @@ mod tests {
         let poly = Polygon::simple(ring);
         let res = validate_polygon(&poly);
         assert!(res.issues().contains(&ValidationIssue::TooFewPoints));
+    }
+
+    // ----- multi-polygon crate-private helpers --------------------------
+
+    fn unit_square_at(ox: f64, oy: f64) -> Polygon {
+        let r = Ring::new(vec![
+            Coord::new(ox, oy),
+            Coord::new(ox + 1.0, oy),
+            Coord::new(ox + 1.0, oy + 1.0),
+            Coord::new(ox, oy + 1.0),
+            Coord::new(ox, oy),
+        ]);
+        Polygon::simple(r)
+    }
+
+    #[test]
+    fn test_multipolygon_rings_share_edge_helper_detects_same_direction() {
+        // Two CCW unit squares that share the edge x = 1 (between them).
+        let a = unit_square_at(0.0, 0.0);
+        let b = unit_square_at(1.0, 0.0);
+        // Direction-insensitive: a's right edge is (1,0)→(1,1), b's left edge
+        // is (1,1)→(1,0).  rings_share_edge should detect this in either
+        // orientation.
+        assert!(rings_share_edge(&a.exterior, &b.exterior));
+
+        // Same-direction shared edge: construct a deliberately bad pair where
+        // both rings traverse the seam (1,0)→(1,1).
+        let bad = Polygon::simple(Ring::new(vec![
+            Coord::new(1.0, 0.0),
+            Coord::new(1.0, 1.0),
+            Coord::new(2.0, 1.0),
+            Coord::new(2.0, 0.0),
+            Coord::new(1.0, 0.0),
+        ]));
+        // a contains (1,0)→(1,1)?  a's right edge in CCW order is
+        // (1,0)→(1,1).  bad's first segment is (1,0)→(1,1).  Therefore
+        // shared_edges_same_direction must find this.
+        let same_dir = shared_edges_same_direction(&a.exterior, &bad.exterior);
+        assert!(
+            !same_dir.is_empty(),
+            "expected a same-direction shared edge between a and bad"
+        );
+    }
+
+    #[test]
+    fn test_multipolygon_polygon_interiors_overlap_detects_centroid_inside() {
+        // Big square (0,0)-(4,4) and a small square (1,1)-(2,2) fully inside.
+        // Centroid of the inner square lies inside the outer; overlap detected.
+        let outer = Polygon::simple(Ring::new(vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(4.0, 0.0),
+            Coord::new(4.0, 4.0),
+            Coord::new(0.0, 4.0),
+            Coord::new(0.0, 0.0),
+        ]));
+        let inner = unit_square_at(1.0, 1.0);
+        assert!(polygon_interiors_overlap(&outer, &inner));
+        assert!(polygon_interiors_overlap(&inner, &outer));
+
+        // Two disjoint squares should not overlap.
+        let a = unit_square_at(0.0, 0.0);
+        let b = unit_square_at(5.0, 5.0);
+        assert!(!polygon_interiors_overlap(&a, &b));
     }
 }

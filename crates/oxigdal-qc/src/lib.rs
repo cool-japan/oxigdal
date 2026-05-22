@@ -63,8 +63,10 @@ pub mod prelude {
     pub use crate::fix::{FixResult, FixStrategy, TopologyFixer};
     pub use crate::metadata::{MetadataChecker, MetadataConfig, MetadataResult, MetadataStandard};
     pub use crate::raster::{
-        AccuracyChecker, AccuracyConfig, AccuracyResult, CompletenessChecker, CompletenessConfig,
-        CompletenessResult, ConsistencyChecker, ConsistencyConfig, ConsistencyResult,
+        AccuracyChecker, AccuracyConfig, AccuracyResult, CogComplianceChecker, CogComplianceResult,
+        CompletenessChecker, CompletenessConfig, CompletenessResult, ConsistencyChecker,
+        ConsistencyConfig, ConsistencyResult, CrsAndExtentValidator, CrsExtentValidationResult,
+        NoDataBandStats, NoDataValidationResult, NoDataValidator, StrictMode,
     };
     pub use crate::report::{QualityAssessment, QualityReport, ReportSection};
     pub use crate::rules::{
@@ -72,7 +74,8 @@ pub mod prelude {
     };
     pub use crate::vector::{
         AttributionChecker, AttributionConfig, AttributionResult, TopologyChecker, TopologyConfig,
-        TopologyResult,
+        TopologyOptions, TopologyResult, TopologyViolation, check_topology_rules,
+        has_self_intersection,
     };
 }
 

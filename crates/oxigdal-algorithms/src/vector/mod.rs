@@ -98,13 +98,19 @@ mod difference;
 mod distance;
 mod douglas_peucker;
 mod envelope;
+pub mod generalization;
 pub mod geodesic;
-mod intersection;
+pub(crate) mod intersection;
 mod length;
+pub mod min_bounds;
 pub mod network;
+pub mod offset;
 pub mod pool;
+pub mod ransac;
 mod repair;
+pub mod robust_location;
 mod simplify;
+pub mod snap_rounding;
 pub mod spatial_join;
 pub mod topology;
 mod topology_simplify;
@@ -155,8 +161,9 @@ pub use difference::{
 
 // Re-export distance operations
 pub use distance::{
-    DistanceMethod, distance_point_to_linestring, distance_point_to_point,
-    distance_point_to_polygon,
+    DistanceMethod, directed_hausdorff, discrete_frechet_distance, distance_point_to_linestring,
+    distance_point_to_point, distance_point_to_polygon, hausdorff_distance,
+    hausdorff_distance_to_segments,
 };
 
 // Re-export Douglas-Peucker
@@ -188,6 +195,18 @@ pub use topology_simplify::{
     TopologySimplifyOptions, simplify_topology, simplify_topology_with_options,
 };
 
+// Re-export minimum bounding geometry
+pub use min_bounds::{Circle, RotatedRect, aabb, min_area_rotated_rect, smallest_enclosing_circle};
+
+// Re-export line offset operations
+pub use offset::{JoinStyle, OffsetOptions, OffsetResult, offset_linestring, offset_polygon_rings};
+
+// Re-export snap rounding operations
+pub use snap_rounding::{
+    SnapRoundingOptions, SnapRoundingResult, SnappedSegment, snap_coordinate, snap_linestring,
+    snap_round,
+};
+
 // Re-export union operations
 pub use union_ops::{
     cascaded_union, cascaded_union_pooled, convex_hull, convex_hull_pooled, merge_polygons,
@@ -215,10 +234,35 @@ pub use repair::{
 // Re-export clipping operations
 pub use clipping::{ClipOperation, clip_multi, clip_polygons};
 
+// Re-export power diagram (weighted Voronoi) operations
+pub use voronoi::{
+    PowerCell, PowerDiagram, PowerDiagramOptions, WeightedPoint, power_diagram, weighted_bisector,
+};
+
+// Re-export generalization operators (ICA taxonomy: collapse, exaggerate, displace)
+pub use generalization::{
+    CollapseOptions, DisplaceOptions, DisplaceStats, ExaggerateAnchor, ExaggerateOptions,
+    collapse_linestring_to_point, collapse_polygon_to_point, displace_points,
+    displace_polygons_by_centroid, exaggerate_coord, exaggerate_linestring, exaggerate_polygon,
+    should_collapse_polygon,
+};
+
+// Re-export robust location estimators
+pub use robust_location::{
+    RobustLocationOptions, geometric_median, geometric_median_3d, geometric_median_with_options,
+    l1_median, spatial_mean, weighted_geometric_median,
+};
+
 // Re-export coordinate transformations
 pub use transform::{
     CommonCrs, CrsTransformer, transform_geometry, transform_linestring, transform_point,
     transform_polygon,
+};
+
+// Re-export RANSAC robust fitting
+pub use ransac::{
+    RansacLineModel, RansacOptions, RansacPlaneModel, RansacResult, ransac_fit_line,
+    ransac_fit_plane,
 };
 
 #[cfg(test)]

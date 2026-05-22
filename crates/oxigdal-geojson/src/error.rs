@@ -33,4 +33,29 @@ pub enum GeoJsonError {
     /// A coordinate array was present but contained no elements.
     #[error("Empty coordinates array")]
     EmptyCoordinates,
+
+    /// The JSON structure does not match expected GeoJSON layout.
+    #[error("Invalid GeoJSON structure: {0}")]
+    InvalidStructure(String),
+
+    /// An I/O error occurred while reading.
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    /// A WKT string could not be parsed.
+    #[error("WKT parse error: {0}")]
+    WktParseError(String),
+
+    /// An error occurred during TopoJSON encoding.
+    #[error("TopoJSON error: {0}")]
+    TopologyError(String),
+
+    /// An error occurred during a dissolve / merge-by-property operation.
+    #[error("dissolve error: {0}")]
+    DissolveError(String),
+
+    /// A CRS reprojection operation failed.
+    #[cfg(feature = "reproject")]
+    #[error("reprojection error: {0}")]
+    ReprojectError(String),
 }

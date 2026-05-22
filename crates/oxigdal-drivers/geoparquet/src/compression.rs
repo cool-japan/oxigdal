@@ -7,9 +7,9 @@ use parquet::basic::Compression as ParquetCompression;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionType {
     /// No compression
+    #[default]
     Uncompressed,
     /// Snappy compression
-    #[default]
     Snappy,
     /// Gzip compression
     Gzip,

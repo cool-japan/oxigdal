@@ -283,27 +283,73 @@ impl CopcReader {
         })
     }
 
-    /// Read COPC info from VLR
-    fn read_copc_info(_file: &mut File, _header: &las::Header) -> Result<CopcInfo> {
-        // Simplified: In real implementation, parse VLRs from LAS header
-        // For now, return default info
+    /// Read COPC info from the LAS header's VLR list.
+    ///
+    /// Locates the COPC info VLR (user_id=`copc`, record_id=1) and parses its
+    /// 160-byte payload per the COPC 1.0 spec (<https://copc.io/>).
+    fn read_copc_info(_file: &mut File, header: &las::Header) -> Result<CopcInfo> {
+        use crate::pointcloud::copc_vlr::{find_copc_info_vlr, parse_copc_info};
+        let vlr = find_copc_info_vlr(header).ok_or_else(Error::missing_copc_vlr)?;
+        let payload = parse_copc_info(&vlr.data)?;
         Ok(CopcInfo {
-            center_x: 0.0,
-            center_y: 0.0,
-            center_z: 0.0,
-            halfsize: 1000.0,
-            spacing: 0.5,
-            root_hier_offset: 0,
-            root_hier_size: 0,
-            gps_time_min: 0.0,
-            gps_time_max: 0.0,
+            center_x: payload.center_x,
+            center_y: payload.center_y,
+            center_z: payload.center_z,
+            halfsize: payload.halfsize,
+            spacing: payload.spacing,
+            root_hier_offset: payload.root_hier_offset,
+            root_hier_size: payload.root_hier_size,
+            gps_time_min: payload.gps_time_min,
+            gps_time_max: payload.gps_time_max,
         })
     }
 
-    /// Read hierarchy from file
-    fn read_hierarchy(_file: &mut File, _info: &CopcInfo) -> Result<CopcHierarchy> {
-        // Simplified: In real implementation, read hierarchy pages
-        Ok(CopcHierarchy::new())
+    /// Walk the COPC hierarchy starting from the root page and collect all
+    /// leaf entries.
+    ///
+    /// Negative `byte_size` entries are treated as forward references to a
+    /// child hierarchy page (the absolute value is the page size in bytes).
+    /// Traversal is iterative with a sanity cap of
+    /// [`copc_vlr::COPC_MAX_HIERARCHY_DEPTH`] page-loads to defend against
+    /// malformed files.
+    fn read_hierarchy(file: &mut File, info: &CopcInfo) -> Result<CopcHierarchy> {
+        use crate::pointcloud::copc_vlr::{COPC_MAX_HIERARCHY_DEPTH, parse_hierarchy_page};
+
+        let mut hierarchy = CopcHierarchy::new();
+        if info.root_hier_size == 0 {
+            return Ok(hierarchy);
+        }
+
+        let mut pending: Vec<(u64, u64)> = vec![(info.root_hier_offset, info.root_hier_size)];
+        let mut pages_loaded = 0usize;
+
+        while let Some((page_off, page_size)) = pending.pop() {
+            if pages_loaded >= COPC_MAX_HIERARCHY_DEPTH {
+                return Err(Error::hierarchy_recursion_limit());
+            }
+            pages_loaded += 1;
+
+            file.seek(SeekFrom::Start(page_off))?;
+            let mut buf = vec![0u8; page_size as usize];
+            file.read_exact(&mut buf)?;
+            let entries = parse_hierarchy_page(&buf)?;
+            for entry in entries {
+                if entry.byte_size < 0 {
+                    // Child hierarchy page reference.
+                    let child_size = (-(entry.byte_size as i64)) as u64;
+                    pending.push((entry.offset, child_size));
+                } else {
+                    let key = VoxelKey::new(entry.key.level, entry.key.x, entry.key.y, entry.key.z);
+                    hierarchy.add_entry(CopcEntry {
+                        key,
+                        offset: entry.offset,
+                        byte_size: entry.byte_size,
+                        point_count: entry.point_count,
+                    });
+                }
+            }
+        }
+        Ok(hierarchy)
     }
 
     /// Get header

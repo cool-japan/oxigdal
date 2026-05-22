@@ -16,4 +16,19 @@ pub enum CopcError {
     /// An I/O error occurred.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A LAZ point format that this crate cannot yet decompress was requested.
+    ///
+    /// Slice 24 W3 ships PF0 and PF1 only.  PF6/7/8 (the COPC mandate) are
+    /// deferred to a follow-up slice; until then, this variant flags them so
+    /// callers can fail gracefully instead of producing garbage points.
+    #[error("Unsupported LAZ point format: {format_id} (only formats 0 and 1 are supported)")]
+    UnsupportedLazFormat {
+        /// LAS point data record format ID (0-10) that is not yet supported.
+        format_id: u8,
+    },
+
+    /// An internal LASzip decoder invariant was violated (malformed compressed stream).
+    #[error("LAZ decoder error: {0}")]
+    LazDecoderError(String),
 }

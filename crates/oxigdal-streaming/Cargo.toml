@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 oxicode = { workspace = true }
 
+# Raster driver (GeoTIFF) - optional, enables raster streaming
+oxigdal-geotiff = { workspace = true, optional = true }
+
 # std-only dependencies
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
@@ -35,10 +38,12 @@ parking_lot = { workspace = true, optional = true }
 crossbeam = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 dashmap = { workspace = true, optional = true }
+lru = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 num-traits = { workspace = true, optional = true }
 byteorder = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 
 # State backend (RocksDB) - C FFI, feature-gated
 rocksdb = { version = "0.24", default-features = false, features = ["snappy"], optional = true }
@@ -52,7 +57,11 @@ proptest = { workspace = true }
 approx = { workspace = true }
 
 [features]
-default = ["std"]
+default = ["std", "raster-streaming"]
+
+# Base std feature: enables all async/IO modules that only need the standard
+# Rust library.  Does NOT enable raster-streaming (oxigdal-geotiff) to allow
+# leaner builds (e.g., tile-http) that don't need the raster driver chain.
 std = [
     "oxigdal-core/std",
     "thiserror/std",
@@ -70,12 +79,38 @@ std = [
     "dep:crossbeam",
     "dep:crossbeam-channel",
     "dep:dashmap",
+    "dep:lru",
     "dep:tracing",
     "dep:bytes",
     "dep:ahash",
     "dep:byteorder",
     "dep:num-traits",
 ]
+
+# GeoTIFF / raster streaming support (requires oxigdal-geotiff).
+# Automatically enabled by the `std` default feature via the default member
+# list.  Can be disabled with --no-default-features when only tile-http is
+# needed.
+raster-streaming = [
+    "std",
+    "dep:oxigdal-geotiff",
+    "oxigdal-geotiff/std",
+]
+
+# HTTP tile fetching via reqwest.  Enables XyzProtocol::get_tile to actually
+# perform HTTP GET requests instead of returning a placeholder empty body.
+tile-http = [
+    "std",
+    "dep:reqwest",
+]
+
+# Real HTTP transport for cloud object-store operations (HttpObjectStore).
+# Uses reqwest for async range GET, full GET, and HEAD requests with retry.
+cloud-http = [
+    "std",
+    "dep:reqwest",
+]
+
 rocksdb-backend = ["dep:rocksdb"]
 
 [lib]

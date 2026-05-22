@@ -1,31 +1,54 @@
-//! Pure-Rust R*-tree (R-tree variant) spatial index.
+//! Pure-Rust R*-tree spatial index.
 //!
-//! This implementation uses a **linear split** strategy which is simple and
-//! fast.  The maximum node capacity `M` defaults to 9; the minimum fill
-//! `m = ceil(M * 0.4)`.
+//! This implementation uses the **R*-tree split heuristic** (Beckmann,
+//! Kriegel, Schneider, Seeger — SIGMOD 1990) together with **forced
+//! reinsertion** on the first overflow at each level per top-level insert.
+//!
+//! The maximum node capacity `M` defaults to 9; the minimum fill
+//! `m = ceil(M × 0.4)`.  The reinsertion fraction p = ceil(0.3 × M), min 1.
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::collections::HashSet;
+
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet as HashSet;
 
 use crate::bbox::Bbox2D;
 use crate::error::IndexError;
 
 mod bulk;
+pub mod hilbert;
 mod knn;
 pub(crate) mod node;
 mod serial;
 
+pub use hilbert::HilbertRTree;
+
 use node::{
     InternalEntry, InternalNode, LeafEntry, LeafNode, Node, choose_subtree, collect_all_pairs,
-    count_in_node, internal_bbox, leaf_bbox, node_bbox, search_node, split_internal, split_leaf,
-    within_node,
+    count_in_node, internal_bbox, leaf_bbox, node_bbox, search_node, search_with_bbox_node,
+    split_internal, split_leaf, within_node,
 };
+
+// ---------------------------------------------------------------------------
+// Helper type alias for the recursive insertion return type.
+// ---------------------------------------------------------------------------
+
+/// Return type of the recursive `insert_into` helper:
+/// `(updated_node, maybe_split, pending_reinserts)`.
+type InsertResult<T> = (Node<T>, Option<(Bbox2D, Node<T>)>, Vec<(Bbox2D, T)>);
 
 // ---------------------------------------------------------------------------
 // RTree
 // ---------------------------------------------------------------------------
 
 /// An R-tree spatial index mapping [`Bbox2D`] regions to values of type `T`.
+///
+/// Uses the R*-tree split heuristic (Beckmann et al., SIGMOD 1990) and
+/// forced reinsertion to minimise overlap between nodes.
 ///
 /// # Example
 /// ```
@@ -40,6 +63,8 @@ pub struct RTree<T> {
     size: usize,
     max_entries: usize,
     min_entries: usize,
+    /// p = number of entries to reinsert on forced-reinsertion (ceil(0.3 × M)).
+    reinsert_p: usize,
 }
 
 impl<T> Default for RTree<T>
@@ -56,11 +81,13 @@ impl<T: Clone> RTree<T> {
     pub fn new() -> Self {
         let max_entries = 9;
         let min_entries = ((max_entries as f64) * 0.4).ceil() as usize;
+        let reinsert_p = compute_reinsert_p(max_entries);
         Self {
             root: None,
             size: 0,
             max_entries,
             min_entries,
+            reinsert_p,
         }
     }
 
@@ -70,11 +97,13 @@ impl<T: Clone> RTree<T> {
     pub fn with_max_entries(max_entries: usize) -> Self {
         let max_entries = max_entries.max(2);
         let min_entries = ((max_entries as f64) * 0.4).ceil() as usize;
+        let reinsert_p = compute_reinsert_p(max_entries);
         Self {
             root: None,
             size: 0,
             max_entries,
             min_entries,
+            reinsert_p,
         }
     }
 
@@ -93,6 +122,18 @@ impl<T: Clone> RTree<T> {
     /// Insert `value` associated with `bbox`.
     pub fn insert(&mut self, bbox: Bbox2D, value: T) {
         let entry = LeafEntry { bbox, value };
+        // Per-top-level-insert set of levels that have already triggered
+        // forced reinsertion.  This prevents infinite loops: once a level L
+        // has been reinserted, subsequent overflows at L go straight to split.
+        let mut reinsert_levels: HashSet<usize> = HashSet::new();
+        self.insert_entry(entry, &mut reinsert_levels);
+        self.size += 1;
+    }
+
+    /// Core insertion that does NOT increment `self.size`.  Shared by
+    /// `insert` (which manages `reinsert_levels` and bumps `size`) and
+    /// condense-tree reinsertion in `remove`.
+    fn insert_entry(&mut self, entry: LeafEntry<T>, reinsert_levels: &mut HashSet<usize>) {
         match self.root.take() {
             None => {
                 self.root = Some(Node::Leaf(LeafNode {
@@ -100,10 +141,13 @@ impl<T: Clone> RTree<T> {
                 }));
             }
             Some(root) => {
-                let (updated_root, maybe_split) = self.insert_into(root, entry);
-                if let Some((split_bbox, split_node)) = maybe_split {
+                let (updated_root, maybe_split, pending_reinserts) =
+                    self.insert_into(root, entry, 0, reinsert_levels);
+
+                // Handle root split.
+                let new_root = if let Some((split_bbox, split_node)) = maybe_split {
                     let old_bbox = node_bbox(&updated_root);
-                    let new_root = Node::Internal(InternalNode {
+                    Node::Internal(InternalNode {
                         entries: vec![
                             InternalEntry {
                                 bbox: old_bbox,
@@ -114,37 +158,72 @@ impl<T: Clone> RTree<T> {
                                 child: Box::new(split_node),
                             },
                         ],
-                    });
-                    self.root = Some(new_root);
+                    })
                 } else {
-                    self.root = Some(updated_root);
+                    updated_root
+                };
+                self.root = Some(new_root);
+
+                // Re-insert entries that were ejected by forced reinsertion
+                // further down the tree.  These are inserted without bumping
+                // `self.size` because they were already counted.
+                for (rb, rv) in pending_reinserts {
+                    let re_entry = LeafEntry {
+                        bbox: rb,
+                        value: rv,
+                    };
+                    self.insert_entry_no_count(re_entry, reinsert_levels);
                 }
             }
         }
-        self.size += 1;
     }
 
     /// Recursive insertion helper.
+    ///
+    /// Returns `(updated_node, maybe_split, pending_reinserts)`.
+    ///
+    /// * `updated_node`      — the node after insertion.
+    /// * `maybe_split`       — `Some((bbox, new_node))` if the node was split.
+    /// * `pending_reinserts` — entries ejected by forced reinsertion that must
+    ///   be reinserted from the root by the caller.
+    ///
+    /// `level` is 0 at the root and increases going down towards leaves.
     fn insert_into(
         &self,
         node: Node<T>,
         entry: LeafEntry<T>,
-    ) -> (Node<T>, Option<(Bbox2D, Node<T>)>) {
+        level: usize,
+        reinsert_levels: &mut HashSet<usize>,
+    ) -> InsertResult<T> {
         match node {
             Node::Leaf(mut leaf) => {
                 leaf.entries.push(entry);
                 if leaf.entries.len() > self.max_entries {
-                    let (left, right) = split_leaf(leaf, self.min_entries);
-                    let right_bbox = leaf_bbox(&right);
-                    (Node::Leaf(left), Some((right_bbox, Node::Leaf(right))))
+                    // Forced reinsertion: first time we overflow at this level.
+                    if !reinsert_levels.contains(&level) {
+                        reinsert_levels.insert(level);
+                        let pending = self.forced_reinsert_leaf(&mut leaf);
+                        // After ejection the node may no longer overflow.
+                        (Node::Leaf(leaf), None, pending)
+                    } else {
+                        // Already reinserted at this level — do the real split.
+                        let (left, right) = split_leaf(leaf, self.min_entries);
+                        let right_bbox = leaf_bbox(&right);
+                        (
+                            Node::Leaf(left),
+                            Some((right_bbox, Node::Leaf(right))),
+                            Vec::new(),
+                        )
+                    }
                 } else {
-                    (Node::Leaf(leaf), None)
+                    (Node::Leaf(leaf), None, Vec::new())
                 }
             }
             Node::Internal(mut internal) => {
                 let best_idx = choose_subtree(&internal.entries, &entry.bbox);
                 let chosen = internal.entries.remove(best_idx);
-                let (updated_child, maybe_split) = self.insert_into(*chosen.child, entry);
+                let (updated_child, maybe_split, mut pending) =
+                    self.insert_into(*chosen.child, entry, level + 1, reinsert_levels);
                 let updated_bbox = node_bbox(&updated_child);
                 internal.entries.push(InternalEntry {
                     bbox: updated_bbox,
@@ -157,23 +236,96 @@ impl<T: Clone> RTree<T> {
                     });
                 }
                 if internal.entries.len() > self.max_entries {
-                    let (left, right) = split_internal(internal, self.min_entries);
-                    let right_bbox = internal_bbox(&right);
-                    (
-                        Node::Internal(left),
-                        Some((right_bbox, Node::Internal(right))),
-                    )
+                    // Forced reinsertion for internal nodes.
+                    if !reinsert_levels.contains(&level) {
+                        reinsert_levels.insert(level);
+                        let internal_pending = self.forced_reinsert_internal(&mut internal);
+                        pending.extend(internal_pending);
+                        (Node::Internal(internal), None, pending)
+                    } else {
+                        let (left, right) = split_internal(internal, self.min_entries);
+                        let right_bbox = internal_bbox(&right);
+                        (
+                            Node::Internal(left),
+                            Some((right_bbox, Node::Internal(right))),
+                            pending,
+                        )
+                    }
                 } else {
-                    (Node::Internal(internal), None)
+                    (Node::Internal(internal), None, pending)
                 }
             }
         }
     }
 
+    /// Eject the `p` farthest leaf entries from `leaf` and return them as
+    /// `(Bbox2D, T)` pairs to be reinserted from the root.
+    ///
+    /// "Farthest" is measured from the centroid of the leaf's current MBR.
+    fn forced_reinsert_leaf(&self, leaf: &mut LeafNode<T>) -> Vec<(Bbox2D, T)> {
+        let node_mbr = leaf_bbox(leaf);
+        let (cx, cy) = node_mbr.center();
+
+        // Sort entries by their centroid distance from the node centroid,
+        // descending (farthest first).
+        leaf.entries.sort_by(|a, b| {
+            let (ax, ay) = a.bbox.center();
+            let (bx, by) = b.bbox.center();
+            let da = (ax - cx).powi(2) + (ay - cy).powi(2);
+            let db = (bx - cx).powi(2) + (by - cy).powi(2);
+            db.partial_cmp(&da).unwrap_or(core::cmp::Ordering::Equal)
+        });
+
+        // Drain the p farthest entries.
+        let p = self.reinsert_p.min(leaf.entries.len().saturating_sub(1));
+        let p = p.max(1).min(leaf.entries.len());
+        leaf.entries.drain(..p).map(|e| (e.bbox, e.value)).collect()
+    }
+
+    /// Eject the `p` farthest internal entries from `internal` (collecting
+    /// all their leaf entries) and return them as `(Bbox2D, T)` pairs to be
+    /// reinserted from the root.
+    fn forced_reinsert_internal(&self, internal: &mut InternalNode<T>) -> Vec<(Bbox2D, T)> {
+        let node_mbr = internal_bbox(internal);
+        let (cx, cy) = node_mbr.center();
+
+        // Sort entries by their centroid distance from the node centroid,
+        // descending (farthest first).
+        internal.entries.sort_by(|a, b| {
+            let (ax, ay) = a.bbox.center();
+            let (bx, by) = b.bbox.center();
+            let da = (ax - cx).powi(2) + (ay - cy).powi(2);
+            let db = (bx - cx).powi(2) + (by - cy).powi(2);
+            db.partial_cmp(&da).unwrap_or(core::cmp::Ordering::Equal)
+        });
+
+        let p = self
+            .reinsert_p
+            .min(internal.entries.len().saturating_sub(1));
+        let p = p.max(1).min(internal.entries.len());
+        let ejected: Vec<InternalEntry<T>> = internal.entries.drain(..p).collect();
+
+        // Collect all leaf entries from the ejected subtrees.
+        let mut pending: Vec<(Bbox2D, T)> = Vec::new();
+        for e in ejected {
+            collect_leaf_entries_owned(*e.child, &mut pending);
+        }
+        pending
+    }
+
     /// Internal insert that does NOT increment `self.size`.  Used by
-    /// condense-tree reinsertion so the count stays correct.
+    /// condense-tree reinsertion so the count stays correct, and by
+    /// forced-reinsertion of previously-counted entries.
     fn insert_no_count(&mut self, bbox: Bbox2D, value: T) {
         let entry = LeafEntry { bbox, value };
+        let mut reinsert_levels: HashSet<usize> = HashSet::new();
+        self.insert_entry_no_count(entry, &mut reinsert_levels);
+    }
+
+    /// Like `insert_entry` but does not touch `self.size` and accepts an
+    /// existing `reinsert_levels` set (forwarded from the parent reinsertion
+    /// context to prevent infinite loops).
+    fn insert_entry_no_count(&mut self, entry: LeafEntry<T>, reinsert_levels: &mut HashSet<usize>) {
         match self.root.take() {
             None => {
                 self.root = Some(Node::Leaf(LeafNode {
@@ -181,10 +333,12 @@ impl<T: Clone> RTree<T> {
                 }));
             }
             Some(root) => {
-                let (updated_root, maybe_split) = self.insert_into(root, entry);
-                if let Some((split_bbox, split_node)) = maybe_split {
+                let (updated_root, maybe_split, pending_reinserts) =
+                    self.insert_into(root, entry, 0, reinsert_levels);
+
+                let new_root = if let Some((split_bbox, split_node)) = maybe_split {
                     let old_bbox = node_bbox(&updated_root);
-                    let new_root = Node::Internal(InternalNode {
+                    Node::Internal(InternalNode {
                         entries: vec![
                             InternalEntry {
                                 bbox: old_bbox,
@@ -195,10 +349,18 @@ impl<T: Clone> RTree<T> {
                                 child: Box::new(split_node),
                             },
                         ],
-                    });
-                    self.root = Some(new_root);
+                    })
                 } else {
-                    self.root = Some(updated_root);
+                    updated_root
+                };
+                self.root = Some(new_root);
+
+                for (rb, rv) in pending_reinserts {
+                    let re_entry = LeafEntry {
+                        bbox: rb,
+                        value: rv,
+                    };
+                    self.insert_entry_no_count(re_entry, reinsert_levels);
                 }
             }
         }
@@ -221,6 +383,112 @@ impl<T: Clone> RTree<T> {
     pub fn contains_point(&self, x: f64, y: f64) -> Vec<&T> {
         let pt = Bbox2D::point(x, y);
         self.search(&pt)
+    }
+
+    /// Return all entries whose bounding box lies within `buffer` distance of
+    /// any segment of `line`.
+    ///
+    /// `line` is a sequence of `(x, y)` vertices defining a polyline. Each
+    /// consecutive pair of vertices defines one segment. Entries whose bbox
+    /// comes within `buffer` of **any** segment are included in the result.
+    ///
+    /// An entry appears at most once even if it intersects multiple segments
+    /// (deduplication by pointer identity).
+    ///
+    /// Returns an empty `Vec` when `line` has fewer than 2 vertices.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Build a corridor bbox that encloses the entire buffered polyline for
+    ///    a root-level broad-phase prune (identical cost to a normal `search`
+    ///    at the root).
+    /// 2. Recurse into the R-tree:
+    ///    - **Internal nodes**: visit if the node MBR intersects the corridor
+    ///      bbox (cheap conservative filter).
+    ///    - **Leaf entries**: include if the segment–bbox distance is ≤ buffer
+    ///      (exact Liang-Barsky test on the bbox expanded by `buffer`).
+    /// 3. Deduplicate results by pointer address.
+    pub fn search_line(&self, line: &[(f64, f64)], buffer: f64) -> Vec<&T> {
+        if line.len() < 2 {
+            return vec![];
+        }
+
+        let corridor = line_corridor_bbox(line, buffer);
+        let mut results: Vec<&T> = Vec::new();
+
+        if let Some(ref root) = self.root {
+            search_line_node(root, line, buffer, &corridor, &mut results);
+        }
+
+        // Deduplicate: a single entry's bbox may intersect multiple segments.
+        // Sort by raw pointer then dedup so each entry appears at most once.
+        results.sort_unstable_by_key(|r| *r as *const T as usize);
+        results.dedup_by_key(|r| *r as *const T as usize);
+        results
+    }
+
+    // ------------------------------------------------------------------
+    // Window query with result-count limit (top-k within bbox)
+    // ------------------------------------------------------------------
+
+    /// Find all entries whose bbox intersects `query`, returning both the
+    /// stored bounding box and the value reference for each hit.
+    ///
+    /// This is the building block for [`search_top_k`](Self::search_top_k):
+    /// callers that need the per-entry bounding boxes alongside the values
+    /// can use this directly.
+    pub fn search_with_bbox<'a>(&'a self, query: &Bbox2D) -> Vec<(&'a Bbox2D, &'a T)> {
+        let mut results = Vec::new();
+        if let Some(ref root) = self.root {
+            search_with_bbox_node(root, query, &mut results);
+        }
+        results
+    }
+
+    /// Return the top-`k` items whose bounding boxes overlap `window`,
+    /// sorted by ascending minimum Euclidean distance from the window's
+    /// centre point to each item's bounding box (the MINDIST metric).
+    ///
+    /// Items are ranked by how close their stored bbox is to the geometric
+    /// centre of `window`.  An item whose bbox contains the centre has
+    /// distance 0 and always ranks first.
+    ///
+    /// Returns fewer than `k` results if fewer items intersect `window`.
+    /// Returns an empty [`Vec`] when `k == 0` or the tree is empty.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Execute `search_with_bbox(window)` to collect all candidates that
+    ///    intersect the query window together with their stored bounding boxes.
+    /// 2. For each candidate compute `bbox.min_distance_to_point(cx, cy)` where
+    ///    `(cx, cy)` is the centre of `window`.
+    /// 3. Sort the candidate list ascending by that distance using a
+    ///    NaN-safe total ordering.
+    /// 4. Truncate to at most `k` results.
+    ///
+    /// Time complexity: O(m log m) where m is the number of candidates in the
+    /// window — the R-tree structure prunes branches whose MBR does not overlap
+    /// the window, so m ≪ n in typical workloads.
+    pub fn search_top_k(&self, window: &Bbox2D, k: usize) -> Vec<(&T, f64)> {
+        if k == 0 {
+            return Vec::new();
+        }
+        let (cx, cy) = window.center();
+        let mut candidates: Vec<(&Bbox2D, &T)> = self.search_with_bbox(window);
+        // Sort ascending by distance from the window centre to each item's bbox.
+        candidates.sort_by(|(bbox_a, _), (bbox_b, _)| {
+            let da = bbox_a.min_distance_to_point(cx, cy);
+            let db = bbox_b.min_distance_to_point(cx, cy);
+            da.total_cmp(&db)
+        });
+        candidates.truncate(k);
+        candidates
+            .into_iter()
+            .map(|(bbox, v)| {
+                let d = bbox.min_distance_to_point(cx, cy);
+                (v, d)
+            })
+            .collect()
     }
 
     // ------------------------------------------------------------------
@@ -284,6 +552,23 @@ impl<T: Clone> RTree<T> {
     }
 
     // ------------------------------------------------------------------
+    // Structural validation
+    // ------------------------------------------------------------------
+
+    /// Validate the R*-tree minimum-fill invariant.
+    ///
+    /// Every non-root node must have at least `min_entries` entries.
+    /// Returns a list of violation descriptions; an empty list means the
+    /// tree is structurally valid.
+    pub fn check_min_fill_invariant(&self) -> Vec<String> {
+        let mut violations = Vec::new();
+        if let Some(ref root) = self.root {
+            node::validate_min_fill(root, self.min_entries, true, &mut violations);
+        }
+        violations
+    }
+
+    // ------------------------------------------------------------------
     // Bulk loading (STR)
     // ------------------------------------------------------------------
 
@@ -302,18 +587,21 @@ impl<T: Clone> RTree<T> {
     pub fn bulk_load_with_max_entries(items: Vec<(Bbox2D, T)>, max_entries: usize) -> Self {
         let max_entries = max_entries.max(2);
         let min_entries = ((max_entries as f64) * 0.4).ceil() as usize;
+        let reinsert_p = compute_reinsert_p(max_entries);
         match bulk::str_bulk_load(items, max_entries) {
             Some((root, count)) => Self {
                 root: Some(root),
                 size: count,
                 max_entries,
                 min_entries,
+                reinsert_p,
             },
             None => Self {
                 root: None,
                 size: 0,
                 max_entries,
                 min_entries,
+                reinsert_p,
             },
         }
     }
@@ -493,8 +781,13 @@ enum RemoveResult<T> {
 }
 
 /// Collect all leaf entries from a node (used during condense-tree when
-/// dissolving an under-full node).
+/// dissolving an under-full node).  Takes ownership of the node.
 fn collect_leaf_entries<T: Clone>(node: Node<T>, out: &mut Vec<(Bbox2D, T)>) {
+    collect_leaf_entries_owned(node, out);
+}
+
+/// Collect all leaf entries from an owned node into `out`.
+pub(crate) fn collect_leaf_entries_owned<T: Clone>(node: Node<T>, out: &mut Vec<(Bbox2D, T)>) {
     match node {
         Node::Leaf(leaf) => {
             for e in leaf.entries {
@@ -503,10 +796,166 @@ fn collect_leaf_entries<T: Clone>(node: Node<T>, out: &mut Vec<(Bbox2D, T)>) {
         }
         Node::Internal(internal) => {
             for e in internal.entries {
-                collect_leaf_entries(*e.child, out);
+                collect_leaf_entries_owned(*e.child, out);
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Line-segment corridor helpers
+// ---------------------------------------------------------------------------
+
+/// Build the axis-aligned corridor bbox for the entire buffered polyline.
+///
+/// This is the union of all per-segment buffered bboxes; used as a cheap
+/// broad-phase filter at the root of the R-tree traversal.
+fn line_corridor_bbox(line: &[(f64, f64)], buffer: f64) -> Bbox2D {
+    let min_x = line.iter().fold(f64::INFINITY, |acc, p| acc.min(p.0)) - buffer;
+    let min_y = line.iter().fold(f64::INFINITY, |acc, p| acc.min(p.1)) - buffer;
+    let max_x = line.iter().fold(f64::NEG_INFINITY, |acc, p| acc.max(p.0)) + buffer;
+    let max_y = line.iter().fold(f64::NEG_INFINITY, |acc, p| acc.max(p.1)) + buffer;
+    Bbox2D {
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+    }
+}
+
+/// Return `true` if the line segment from `p` to `q`, padded by `buffer`,
+/// intersects `bbox`.
+///
+/// The test is performed by expanding the bbox on all four sides by `buffer`
+/// and then running the Liang-Barsky parametric clip algorithm to determine
+/// whether the segment intersects the expanded rectangle.
+///
+/// Edge cases handled correctly:
+/// * Segment endpoint inside the expanded bbox → true.
+/// * Purely horizontal segment (dy = 0) — uses the `|denom| < ε` branch.
+/// * Purely vertical segment (dx = 0) — likewise.
+/// * Zero-length segment (degenerate point) — degrades to a point-in-bbox check.
+fn segment_intersects_bbox_buffered(
+    p: (f64, f64),
+    q: (f64, f64),
+    buffer: f64,
+    bbox: &Bbox2D,
+) -> bool {
+    // Expand bbox by buffer on all sides.
+    let exp = Bbox2D {
+        min_x: bbox.min_x - buffer,
+        min_y: bbox.min_y - buffer,
+        max_x: bbox.max_x + buffer,
+        max_y: bbox.max_y + buffer,
+    };
+
+    // Fast path: either endpoint is inside the expanded bbox.
+    if exp.contains_point(p.0, p.1) || exp.contains_point(q.0, q.1) {
+        return true;
+    }
+
+    // Liang-Barsky parametric clip in t ∈ [0, 1].
+    // For each clip boundary we compute t where the ray crosses the edge.
+    // denom < 0  →  entering half-plane: update t_min.
+    // denom > 0  →  exiting  half-plane: update t_max.
+    let dx = q.0 - p.0;
+    let dy = q.1 - p.1;
+
+    let mut t_min = 0.0_f64;
+    let mut t_max = 1.0_f64;
+
+    // Liang-Barsky: four clip planes (left, right, bottom, top).
+    // For each plane: denom is the component of the direction vector
+    // pointing away from the outside; num is the signed distance from
+    // the start point to the plane.
+    //
+    // Plane equation: denom * t >= -num  (i.e. t >= -num / denom when denom > 0)
+    //
+    // Using the standard form: p + t*d, clip against each half-plane:
+    //   left:   -dx * t <= p.x - exp.min_x   → denom = -dx, num = p.x - exp.min_x
+    //   right:   dx * t <= exp.max_x - p.x   → denom =  dx, num = exp.max_x - p.x
+    //   bottom: -dy * t <= p.y - exp.min_y   → denom = -dy, num = p.y - exp.min_y
+    //   top:     dy * t <= exp.max_y - p.y   → denom =  dy, num = exp.max_y - p.y
+    let clips = [
+        (-dx, p.0 - exp.min_x),
+        (dx, exp.max_x - p.0),
+        (-dy, p.1 - exp.min_y),
+        (dy, exp.max_y - p.1),
+    ];
+
+    for (denom, num) in clips {
+        if denom.abs() < f64::EPSILON {
+            // Segment is parallel to this clip boundary.
+            if num < 0.0 {
+                // Outside and parallel → no intersection possible.
+                return false;
+            }
+            // Inside or on boundary → this boundary doesn't clip anything.
+        } else {
+            let t = num / denom;
+            if denom < 0.0 {
+                // Entering half-plane.
+                t_min = t_min.max(t);
+            } else {
+                // Exiting half-plane.
+                t_max = t_max.min(t);
+            }
+            if t_min > t_max {
+                return false;
+            }
+        }
+    }
+
+    t_min <= t_max
+}
+
+/// Recursive R-tree traversal for `search_line`.
+///
+/// * **Internal nodes**: descend only when the node MBR overlaps the corridor
+///   bbox (cheap broad-phase).
+/// * **Leaf entries**: include if any segment of `line` comes within `buffer`
+///   of the entry bbox (exact test via `segment_intersects_bbox_buffered`).
+fn search_line_node<'a, T>(
+    node: &'a Node<T>,
+    line: &[(f64, f64)],
+    buffer: f64,
+    corridor: &Bbox2D,
+    results: &mut Vec<&'a T>,
+) {
+    match node {
+        Node::Leaf(leaf) => {
+            'entry: for entry in &leaf.entries {
+                // Broad-phase: entry bbox must intersect the overall corridor.
+                if !entry.bbox.intersects(corridor) {
+                    continue;
+                }
+                // Exact-phase: test each segment individually.
+                for i in 0..line.len() - 1 {
+                    if segment_intersects_bbox_buffered(line[i], line[i + 1], buffer, &entry.bbox) {
+                        results.push(&entry.value);
+                        continue 'entry;
+                    }
+                }
+            }
+        }
+        Node::Internal(internal) => {
+            for entry in &internal.entries {
+                // Only descend into children whose MBR overlaps the corridor.
+                if entry.bbox.intersects(corridor) {
+                    search_line_node(&entry.child, line, buffer, corridor, results);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: compute reinsertion count p = ceil(0.3 × M), min 1.
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn compute_reinsert_p(max_entries: usize) -> usize {
+    ((max_entries as f64 * 0.3).ceil() as usize).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -528,11 +977,13 @@ impl<T: Clone + From<Vec<u8>>> RTree<T> {
     pub fn from_bytes(data: &[u8]) -> Result<Self, IndexError> {
         let (root, count, max_entries) = serial::deserialize(data)?;
         let min_entries = ((max_entries as f64) * 0.4).ceil() as usize;
+        let reinsert_p = compute_reinsert_p(max_entries);
         Ok(Self {
             root,
             size: count,
             max_entries,
             min_entries,
+            reinsert_p,
         })
     }
 }
@@ -583,5 +1034,48 @@ impl SpatialQuery {
             }
         }
         results
+    }
+
+    /// Window query with result-count limit: return the top-`k` items from
+    /// `rtree` whose bounding boxes overlap `window`, sorted by ascending
+    /// minimum distance from the window's centre to each item's bbox.
+    ///
+    /// This is a stateless convenience wrapper around
+    /// [`RTree::search_top_k`].
+    pub fn top_k_in_window<'a, T: Clone>(
+        rtree: &'a RTree<T>,
+        window: &Bbox2D,
+        k: usize,
+    ) -> Vec<(&'a T, f64)> {
+        rtree.search_top_k(window, k)
+    }
+
+    /// Geographic linear k-NN: find up to `k` nearest points from a
+    /// `(GeoPoint, T)` slice to a query location, using haversine distance.
+    ///
+    /// This is a stateless convenience wrapper around
+    /// [`crate::geo_distance::geo_nearest_k`].
+    pub fn geo_nearest_k<T: Clone>(
+        points: &[(crate::geo_distance::GeoPoint, T)],
+        query_lat_deg: f64,
+        query_lon_deg: f64,
+        k: usize,
+    ) -> Vec<crate::geo_distance::GeoNearestResult<T>> {
+        crate::geo_distance::geo_nearest_k(points, query_lat_deg, query_lon_deg, k)
+    }
+
+    /// Geographic radius filter: return all points in `points` within
+    /// `radius_m` metres of the query location (haversine), sorted by
+    /// ascending distance.
+    ///
+    /// This is a stateless convenience wrapper around
+    /// [`crate::geo_distance::geo_within_radius`].
+    pub fn geo_within_radius<T: Clone>(
+        points: &[(crate::geo_distance::GeoPoint, T)],
+        query_lat_deg: f64,
+        query_lon_deg: f64,
+        radius_m: f64,
+    ) -> Vec<crate::geo_distance::GeoNearestResult<T>> {
+        crate::geo_distance::geo_within_radius(points, query_lat_deg, query_lon_deg, radius_m)
     }
 }

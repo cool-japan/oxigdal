@@ -138,6 +138,14 @@ fn map_storage_error(err: StorageError) -> OxiGdalError {
         StorageError::Internal(ref msg) => OxiGdalError::Internal {
             message: msg.clone(),
         },
+        StorageError::ObjectLocked(ref msg) => OxiGdalError::InvalidParameter {
+            parameter: "object",
+            message: format!("Object locked: {msg}"),
+        },
+        StorageError::InvalidBucketState(ref msg) => OxiGdalError::InvalidParameter {
+            parameter: "bucket",
+            message: format!("Invalid bucket state: {msg}"),
+        },
         StorageError::Io(e) => OxiGdalError::Io(IoError::Read {
             message: e.to_string(),
         }),

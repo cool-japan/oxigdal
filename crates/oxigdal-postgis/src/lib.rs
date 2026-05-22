@@ -96,6 +96,7 @@
 #![allow(unsafe_code)]
 
 pub mod connection;
+pub mod copy_binary;
 pub mod error;
 pub mod query;
 pub mod reader;
@@ -107,6 +108,7 @@ pub mod writer;
 
 // Re-export commonly used items
 pub use connection::{ConnectionConfig, ConnectionPool, HealthCheckResult, PoolConfig, SslMode};
+pub use copy_binary::{COPY_BINARY_SIGNATURE, CopyBinaryEncoder, ewkb_from_wkb};
 pub use error::{PostGisError, Result};
 pub use query::{JoinType, SpatialJoin, SpatialQuery};
 pub use reader::PostGisReader;

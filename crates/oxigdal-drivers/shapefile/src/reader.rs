@@ -3,7 +3,7 @@
 //! This module provides a high-level interface for reading Shapefiles,
 //! combining geometry from .shp, attributes from .dbf, and spatial index from .shx.
 
-use crate::dbf::{DbfReader, FieldDescriptor};
+use crate::dbf::{DbfReader, FieldDescriptor, MemoFile};
 use crate::error::{Result, ShapefileError};
 use crate::shp::{Shape, ShapefileHeader, ShpReader};
 use crate::shx::{IndexEntry, ShxReader};
@@ -103,7 +103,13 @@ impl ShapefileReader {
             file_type: ".dbf".to_string(),
         })?;
         let dbf_reader = BufReader::new(dbf_file);
-        let dbf_reader = DbfReader::new(dbf_reader)?;
+        let mut dbf_reader = DbfReader::new(dbf_reader)?;
+        // Discover and attach the sibling memo file (`.dbt` / `.DBT`) if present.
+        if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
+            if let Ok(memo) = MemoFile::open(&memo_path) {
+                dbf_reader.set_memo_file(memo);
+            }
+        }
         let field_descriptors = dbf_reader.field_descriptors().to_vec();
 
         // Open .shx file (optional)
@@ -250,7 +256,13 @@ impl ShapefileReader {
 
         let dbf_file = File::open(&dbf_path)?;
         let dbf_reader = BufReader::new(dbf_file);
-        let dbf_reader = DbfReader::new(dbf_reader)?;
+        let mut dbf_reader = DbfReader::new(dbf_reader)?;
+        // Re-attach the sibling memo file so streamed records dereference memos.
+        if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
+            if let Ok(memo) = MemoFile::open(&memo_path) {
+                dbf_reader.set_memo_file(memo);
+            }
+        }
 
         Ok(FeatureIter {
             shp_reader,
@@ -311,6 +323,12 @@ impl ShapefileReader {
         let dbf_file = File::open(&dbf_path)?;
         let dbf_reader = BufReader::new(dbf_file);
         let mut dbf_reader = DbfReader::new(dbf_reader)?;
+        // Re-attach the sibling memo file so batch-read records dereference memos.
+        if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
+            if let Ok(memo) = MemoFile::open(&memo_path) {
+                dbf_reader.set_memo_file(memo);
+            }
+        }
 
         // Read all shape records
         let shape_records = shp_reader.read_all_records()?;
@@ -856,6 +874,24 @@ impl ShapefileReader {
     /// Converts a Shape to an OxiGDAL Geometry (public version for FeatureIter)
     pub(crate) fn shape_to_geometry_pub(shape: &Shape) -> Result<Option<Geometry>> {
         Self::shape_to_geometry(shape)
+    }
+
+    /// Discovers the sibling memo file (`.dbt` / `.DBT`) for the given `.dbf`
+    /// path, returning the first variant that exists on disk.
+    ///
+    /// Returns `None` when neither sibling exists; the caller treats that as
+    /// "no memo support" and emits a one-time warning if the table later
+    /// turns out to declare memo fields.
+    fn discover_memo_path(dbf_path: &Path) -> Option<PathBuf> {
+        let lower = dbf_path.with_extension("dbt");
+        if lower.exists() {
+            return Some(lower);
+        }
+        let upper = dbf_path.with_extension("DBT");
+        if upper.exists() {
+            return Some(upper);
+        }
+        None
     }
 
     /// Helper to add extension to base path

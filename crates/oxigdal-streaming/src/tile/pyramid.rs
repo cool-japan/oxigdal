@@ -64,12 +64,7 @@ pub struct TileMatrix {
 
 impl TileMatrix {
     /// Create a new tile matrix.
-    pub fn new(
-        identifier: String,
-        bbox: BoundingBox,
-        tile_width: u32,
-        tile_height: u32,
-    ) -> Self {
+    pub fn new(identifier: String, bbox: BoundingBox, tile_width: u32, tile_height: u32) -> Self {
         Self {
             identifier,
             bbox,
@@ -91,10 +86,9 @@ impl TileMatrix {
 
     /// Get the bounding box for a specific tile.
     pub fn tile_bbox(&self, coord: &TileCoordinate) -> Result<BoundingBox> {
-        let zoom = self.get_zoom_level(coord.z)
-            .ok_or_else(|| StreamingError::InvalidOperation(
-                format!("Zoom level {} not found", coord.z)
-            ))?;
+        let zoom = self.get_zoom_level(coord.z).ok_or_else(|| {
+            StreamingError::InvalidOperation(format!("Zoom level {} not found", coord.z))
+        })?;
 
         let width = self.bbox.width() / (zoom.matrix_width as f64);
         let height = self.bbox.height() / (zoom.matrix_height as f64);
@@ -104,8 +98,7 @@ impl TileMatrix {
         let max_x = min_x + width;
         let min_y = max_y - height;
 
-        BoundingBox::new(min_x, min_y, max_x, max_y)
-            .map_err(|e| StreamingError::Core(e))
+        BoundingBox::new(min_x, min_y, max_x, max_y).map_err(StreamingError::Core)
     }
 }
 
@@ -133,18 +126,13 @@ impl TilePyramid {
 
     /// Create a standard Web Mercator pyramid.
     pub fn web_mercator(max_zoom: u8) -> Result<Self> {
-        let bbox = BoundingBox::new(-180.0, -85.0511, 180.0, 85.0511)
-            .map_err(|e| StreamingError::Core(e))?;
+        let bbox =
+            BoundingBox::new(-180.0, -85.0511, 180.0, 85.0511).map_err(StreamingError::Core)?;
 
         let mut pyramid = Self::new(0, max_zoom);
 
         for z in 0..=max_zoom {
-            let mut matrix = TileMatrix::new(
-                format!("WebMercator:{}", z),
-                bbox.clone(),
-                256,
-                256,
-            );
+            let mut matrix = TileMatrix::new(format!("WebMercator:{}", z), bbox, 256, 256);
 
             let resolution = 360.0 / (256.0 * (1u32 << z) as f64);
             matrix.add_zoom_level(ZoomLevel::new(z, resolution));
@@ -189,23 +177,25 @@ impl TilePyramid {
             return Ok(Vec::new());
         }
 
-        let matrix = self.matrices.get(zoom as usize)
-            .ok_or_else(|| StreamingError::InvalidOperation(
-                format!("Matrix for zoom {} not found", zoom)
-            ))?;
+        let matrix = self.matrices.get(zoom as usize).ok_or_else(|| {
+            StreamingError::InvalidOperation(format!("Matrix for zoom {} not found", zoom))
+        })?;
 
-        let zoom_level = matrix.get_zoom_level(zoom)
-            .ok_or_else(|| StreamingError::InvalidOperation(
-                format!("Zoom level {} not found", zoom)
-            ))?;
+        let zoom_level = matrix.get_zoom_level(zoom).ok_or_else(|| {
+            StreamingError::InvalidOperation(format!("Zoom level {} not found", zoom))
+        })?;
 
         let width = matrix.bbox.width() / (zoom_level.matrix_width as f64);
         let height = matrix.bbox.height() / (zoom_level.matrix_height as f64);
 
         let min_x = ((bbox.min_x - matrix.bbox.min_x) / width).floor().max(0.0) as u32;
-        let max_x = ((bbox.max_x - matrix.bbox.min_x) / width).ceil().min(zoom_level.matrix_width as f64) as u32;
+        let max_x = ((bbox.max_x - matrix.bbox.min_x) / width)
+            .ceil()
+            .min(zoom_level.matrix_width as f64) as u32;
         let min_y = ((matrix.bbox.max_y - bbox.max_y) / height).floor().max(0.0) as u32;
-        let max_y = ((matrix.bbox.max_y - bbox.min_y) / height).ceil().min(zoom_level.matrix_height as f64) as u32;
+        let max_y = ((matrix.bbox.max_y - bbox.min_y) / height)
+            .ceil()
+            .min(zoom_level.matrix_height as f64) as u32;
 
         let mut tiles = Vec::new();
         for y in min_y..max_y {

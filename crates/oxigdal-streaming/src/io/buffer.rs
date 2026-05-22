@@ -1,11 +1,11 @@
 //! Buffer management for chunked I/O operations.
 
 use crate::error::{Result, StreamingError};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Descriptor for a data chunk.
 #[derive(Debug, Clone)]
@@ -105,7 +105,7 @@ impl ChunkedBuffer {
 
     /// Calculate the number of chunks needed for a given size.
     pub fn calculate_chunks(&self, total_size: u64) -> usize {
-        ((total_size + self.chunk_size as u64 - 1) / self.chunk_size as u64) as usize
+        total_size.div_ceil(self.chunk_size as u64) as usize
     }
 
     /// Get a chunk descriptor for a given index.
@@ -172,7 +172,9 @@ impl ChunkedBuffer {
             }
         }
 
-        let chunk = inner.chunks.pop_front()
+        let chunk = inner
+            .chunks
+            .pop_front()
             .ok_or_else(|| StreamingError::Other("Failed to pop chunk".to_string()))?;
 
         inner.current_size = inner.current_size.saturating_sub(chunk.descriptor.length);
@@ -440,9 +442,9 @@ mod tests {
         assert_eq!(desc.offset, 0);
         assert_eq!(desc.length, 1024);
         assert_eq!(desc.end_offset(), 1024);
-        assert_eq!(desc.is_last, false);
+        assert!(!desc.is_last);
 
         let last_desc = ChunkDescriptor::new(9216, 1024, 9, 10);
-        assert_eq!(last_desc.is_last, true);
+        assert!(last_desc.is_last);
     }
 }

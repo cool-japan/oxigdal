@@ -46,6 +46,12 @@ pub mod visibility;
 #[cfg(feature = "geomorphometry")]
 pub mod geomorphometry;
 
+#[cfg(all(feature = "derivatives", feature = "hydrology"))]
+pub mod morphometry;
+
+#[cfg(feature = "derivatives")]
+pub mod radiation;
+
 // Re-exports
 pub use error::{Result, TerrainError};
 
@@ -57,7 +63,10 @@ pub use derivatives::{
 
 #[cfg(feature = "hydrology")]
 pub use hydrology::{
-    FlowAlgorithm, extract_streams, fill_sinks, flow_accumulation, flow_direction,
+    CatchmentInfo, ChannelSegment, FlowAlgorithm, SnapPolicy, ThresholdMode, delineate_catchments,
+    extract_channel_network, extract_streams, fill_sinks, fill_sinks_iterative,
+    fill_sinks_priority_flood, flow_accumulation, flow_accumulation_dinf, flow_direction,
+    flow_direction_d8, flow_direction_dinf, strahler_order, strahler_order_from_d8,
     watershed_from_point,
 };
 
@@ -68,4 +77,13 @@ pub use visibility::{line_of_sight, viewshed_binary, viewshed_cumulative};
 pub use geomorphometry::{
     LandformClass, classify_iwahashi_pike, classify_weiss, convergence_index, negative_openness,
     positive_openness,
+};
+
+#[cfg(all(feature = "derivatives", feature = "hydrology"))]
+pub use morphometry::{CurvatureResult, compute_curvature, compute_twi};
+
+#[cfg(feature = "derivatives")]
+pub use radiation::{
+    SolarOptions, SolarPosition, SolarRadiationResult, hillshade_at, solar_position,
+    solar_radiation,
 };

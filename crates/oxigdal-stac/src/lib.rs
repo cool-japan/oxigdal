@@ -89,6 +89,7 @@ pub mod error;
 pub mod extensions;
 pub mod item;
 pub mod transaction;
+pub mod version;
 
 #[cfg(feature = "reqwest")]
 pub mod pagination;
@@ -123,6 +124,7 @@ pub use extensions::{
 };
 pub use item::{Item, ItemProperties, Link, link_rel};
 pub use transaction::{StacItemStore, TransactionOp, TransactionResult};
+pub use version::StacVersion;
 
 #[cfg(feature = "reqwest")]
 pub use pagination::{CursorPagination, PagePagination, Paginator, TokenPagination};

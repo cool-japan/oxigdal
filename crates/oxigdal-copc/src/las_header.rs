@@ -87,6 +87,16 @@ pub struct LasHeader {
     pub max_z: f64,
     /// Minimum Z value.
     pub min_z: f64,
+    /// Byte offset (from file start) to the first Extended VLR (LAS 1.4).
+    ///
+    /// Zero when the file contains no EVLRs or predates LAS 1.4. Parsed from
+    /// header bytes 235–242 (`u64`); defaults to 0 when the header is too short.
+    pub start_of_first_evlr: u64,
+    /// Number of Extended VLRs (LAS 1.4).
+    ///
+    /// Parsed from header bytes 243–246 (`u32`); defaults to 0 when the header
+    /// is too short or the version predates LAS 1.4.
+    pub number_of_evlrs: u32,
 }
 
 impl LasHeader {
@@ -152,6 +162,21 @@ impl LasHeader {
             u32::from_le_bytes([data[107], data[108], data[109], data[110]]) as u64
         };
 
+        // LAS 1.4 EVLR locator: start_of_first_evlr (u64) at byte 235,
+        // number_of_evlrs (u32) at byte 243. Absent / zero for earlier versions
+        // or short headers; default to 0 so existing behaviour is unchanged.
+        let (start_of_first_evlr, number_of_evlrs) =
+            if matches!(version, LasVersion::V14) && data.len() >= 247 {
+                let start = u64::from_le_bytes([
+                    data[235], data[236], data[237], data[238], data[239], data[240], data[241],
+                    data[242],
+                ]);
+                let count = u32::from_le_bytes([data[243], data[244], data[245], data[246]]);
+                (start, count)
+            } else {
+                (0, 0)
+            };
+
         Ok(Self {
             version,
             system_id,
@@ -176,7 +201,23 @@ impl LasHeader {
             min_y: f64_le(203),
             max_z: f64_le(211),
             min_z: f64_le(219),
+            start_of_first_evlr,
+            number_of_evlrs,
         })
+    }
+
+    /// Byte offset (from file start) of the first Extended VLR.
+    ///
+    /// Returns 0 when the file has no EVLRs or is not LAS 1.4.
+    pub fn start_of_first_evlr(&self) -> u64 {
+        self.start_of_first_evlr
+    }
+
+    /// Number of Extended VLRs declared in the header.
+    ///
+    /// Returns 0 when the file has no EVLRs or is not LAS 1.4.
+    pub fn number_of_evlrs(&self) -> u32 {
+        self.number_of_evlrs
     }
 
     /// Return the bounding box as `(min, max)` in (X, Y, Z) order.

@@ -49,6 +49,10 @@ pub enum CrsType {
     Engineering,
 }
 
+// Include build-generated EPSG registrations (std feature only — no_std builds skip this).
+#[cfg(feature = "std")]
+include!(concat!(env!("OUT_DIR"), "/generated_epsg.rs"));
+
 /// EPSG database containing common coordinate reference systems.
 pub struct EpsgDatabase {
     pub(crate) definitions: HashMap<u32, EpsgDefinition>,
@@ -98,18 +102,48 @@ impl EpsgDatabase {
         self.definitions.insert(definition.code, definition);
     }
 
+    /// Removes an EPSG code from the database, if present.
+    ///
+    /// Returns the removed definition, or `None` when the code was not in the
+    /// database.  Primarily useful for testing and dynamic management.
+    pub fn remove_definition(&mut self, code: u32) -> Option<EpsgDefinition> {
+        self.definitions.remove(&code)
+    }
+
     /// Initializes the database with built-in EPSG codes.
     fn initialize_builtin_codes(&mut self) {
         super::geographic::register_geographic_crs(self);
         super::utm::register_utm_zones(self);
         super::projected::register_projected_crs(self);
         super::extended::register_extended_crs(self);
+        #[cfg(feature = "std")]
+        register_generated_epsg(self);
     }
 }
 
 impl Default for EpsgDatabase {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(feature = "proj-db")]
+impl EpsgDatabase {
+    /// Attempts to open the first available system PROJ.db and populate this
+    /// database with any EPSG codes not already present.
+    ///
+    /// Built-in entries are **never** overwritten (they win on collision).
+    ///
+    /// Returns:
+    /// - `Ok(None)` — no PROJ.db was found on the system.
+    /// - `Ok(Some(n))` — `n` new entries were inserted.
+    /// - `Err(_)` — a database that was found could not be read.
+    pub fn populate_from_system_proj_db(&mut self) -> crate::error::Result<Option<usize>> {
+        use crate::epsg::proj_db::ProjDb;
+        match ProjDb::open_first_available()? {
+            None => Ok(None),
+            Some(proj_db) => Ok(Some(super::proj_db::populate_from_proj_db(self, &proj_db)?)),
+        }
     }
 }
 

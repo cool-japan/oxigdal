@@ -169,9 +169,27 @@ impl SloMonitor {
     }
 
     /// Evaluate all SLOs.
+    ///
+    /// Builds a [`SloStatus`] for every SLO currently registered with this
+    /// monitor by deriving the achievement percentage from each SLO's stored
+    /// [`ErrorBudget::consumed`] value (i.e. `achievement = 100 - consumed`).
+    /// Callers are expected to update each SLO's error budget out-of-band
+    /// (typically via [`ErrorBudget::update`]) prior to evaluation.
     pub fn evaluate_all(&self) -> Result<Vec<SloStatus>> {
-        // Placeholder - would query actual metrics
-        Ok(Vec::new())
+        let mut statuses = Vec::with_capacity(self.slos.len());
+        for slo in &self.slos {
+            // Achievement is the inverse of consumed error budget. We clamp to
+            // [0, 100] so misconfigured budgets cannot produce nonsensical
+            // percentages.
+            let achievement = (100.0 - slo.error_budget.consumed).clamp(0.0, 100.0);
+            statuses.push(SloStatus::new(
+                slo.name.clone(),
+                achievement,
+                slo.target,
+                slo.error_budget.clone(),
+            ));
+        }
+        Ok(statuses)
     }
 }
 
@@ -207,5 +225,58 @@ mod tests {
 
         assert!(status.is_met);
         assert_eq!(status.achievement, 99.95);
+    }
+
+    #[test]
+    fn test_slo_monitor_evaluate_all() {
+        let mut monitor = SloMonitor::new();
+        // Empty monitor returns an empty status list.
+        let empty = monitor
+            .evaluate_all()
+            .expect("evaluate_all on empty monitor should succeed");
+        assert!(empty.is_empty());
+
+        // SLO whose error budget has been (mostly) consumed should evaluate
+        // to a status that is *not* met.
+        let mut breached_budget = ErrorBudget::from_target(99.9);
+        breached_budget.update(0.5); // consumed 0.5% of error budget
+        monitor.add_slo(Slo {
+            name: "breached".to_string(),
+            description: "breached SLO".to_string(),
+            target: 99.9,
+            sli_query: "rate(errors)".to_string(),
+            time_window: TimeWindow::Rolling(Duration::days(30)),
+            error_budget: breached_budget,
+        });
+
+        // SLO with no consumption should be at full achievement (100%).
+        let healthy_budget = ErrorBudget::from_target(99.9);
+        monitor.add_slo(Slo {
+            name: "healthy".to_string(),
+            description: "healthy SLO".to_string(),
+            target: 99.9,
+            sli_query: "rate(errors)".to_string(),
+            time_window: TimeWindow::Rolling(Duration::days(30)),
+            error_budget: healthy_budget,
+        });
+
+        let statuses = monitor.evaluate_all().expect("evaluate_all should succeed");
+        assert_eq!(statuses.len(), 2);
+
+        let breached = statuses
+            .iter()
+            .find(|s| s.name == "breached")
+            .expect("breached status missing");
+        // 100 - 0.5 = 99.5, which is below the 99.9 target.
+        assert!((breached.achievement - 99.5).abs() < 1e-9);
+        assert!(!breached.is_met);
+
+        let healthy = statuses
+            .iter()
+            .find(|s| s.name == "healthy")
+            .expect("healthy status missing");
+        // No consumption -> 100% achievement, well above the 99.9 target.
+        assert!((healthy.achievement - 100.0).abs() < 1e-9);
+        assert!(healthy.is_met);
     }
 }

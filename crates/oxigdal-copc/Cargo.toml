@@ -16,6 +16,10 @@ categories = ["science", "parser-implementations", "encoding"]
 [features]
 default = ["std"]
 std = ["thiserror/std"]
+# Exposes LAZ encoder helpers used by round-trip integration tests.  Not
+# intended for production use — the encoder is correctness-focused, not
+# bitstream-compatible with the reference C++ writer.
+laz-encoder = []
 
 [dependencies]
 thiserror = { workspace = true }
@@ -25,3 +29,7 @@ tracing = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "laz_test"
+required-features = ["laz-encoder"]

@@ -232,9 +232,25 @@ impl RasterBuffer {
                     chunk.copy_from_slice(&v);
                 }
             }
-            RasterDataType::CFloat32 | RasterDataType::CFloat64 => {
-                // Complex types: fill with (value, 0)
-                // This is a simplified implementation
+            RasterDataType::CFloat32 => {
+                // Complex pixel: 8 bytes = [real_f32 (4 bytes), imag_f32 (4 bytes)]
+                // Fill real = value, imag = 0.0
+                let real_bytes = (value as f32).to_ne_bytes();
+                let imag_bytes = 0f32.to_ne_bytes();
+                for chunk in self.data.chunks_exact_mut(8) {
+                    chunk[..4].copy_from_slice(&real_bytes);
+                    chunk[4..].copy_from_slice(&imag_bytes);
+                }
+            }
+            RasterDataType::CFloat64 => {
+                // Complex pixel: 16 bytes = [real_f64 (8 bytes), imag_f64 (8 bytes)]
+                // Fill real = value, imag = 0.0
+                let real_bytes = value.to_ne_bytes();
+                let imag_bytes = 0f64.to_ne_bytes();
+                for chunk in self.data.chunks_exact_mut(16) {
+                    chunk[..8].copy_from_slice(&real_bytes);
+                    chunk[8..].copy_from_slice(&imag_bytes);
+                }
             }
         }
     }
@@ -490,14 +506,23 @@ impl RasterBuffer {
                 })?;
                 i64::from_ne_bytes(bytes) as f64
             }
-            RasterDataType::CFloat32 | RasterDataType::CFloat64 => {
-                // Return only the real part for complex types
+            RasterDataType::CFloat32 => {
+                // Return only the real part; CFloat32 pixel = [real_f32 | imag_f32]
                 let bytes: [u8; 4] = self.data[offset..offset + 4].try_into().map_err(|_| {
                     OxiGdalError::Internal {
                         message: "Invalid slice length".to_string(),
                     }
                 })?;
                 f64::from(f32::from_ne_bytes(bytes))
+            }
+            RasterDataType::CFloat64 => {
+                // Return only the real part; CFloat64 pixel = [real_f64 | imag_f64]
+                let bytes: [u8; 8] = self.data[offset..offset + 8].try_into().map_err(|_| {
+                    OxiGdalError::Internal {
+                        message: "Invalid slice length".to_string(),
+                    }
+                })?;
+                f64::from_ne_bytes(bytes)
             }
         };
 
@@ -1333,5 +1358,39 @@ mod tests {
     fn test_window_out_of_bounds() {
         let buffer = RasterBuffer::zeros(10, 10, RasterDataType::UInt8);
         assert!(buffer.window(8, 8, 4, 4).is_err());
+    }
+
+    #[test]
+    fn test_fill_value_cfloat32_writes_real_zero_imag() {
+        // Use a value that is not a well-known constant to avoid clippy::approx_constant
+        let fill: f64 = 1.23456789;
+        let mut buf = RasterBuffer::zeros(2, 2, RasterDataType::CFloat32);
+        buf.fill_value(fill);
+        // get_pixel returns only the real part for complex types
+        let v = buf.get_pixel(0, 0).expect("pixel access");
+        assert!(
+            (v - fill).abs() < 1e-5,
+            "real part should be {fill}, got {v}"
+        );
+        // Confirm imag bytes are zero (bytes 4-8 of pixel 0)
+        let raw = buf.as_bytes();
+        let imag_bytes: [u8; 4] = raw[4..8].try_into().expect("slice");
+        let imag = f32::from_ne_bytes(imag_bytes);
+        assert_eq!(imag, 0.0f32, "imaginary part should be 0.0");
+    }
+
+    #[test]
+    fn test_fill_value_cfloat64_writes_real_zero_imag() {
+        // Use an arbitrary value that is not a well-known constant (avoids clippy::approx_constant)
+        let fill: f64 = 9.876_543_21_f64;
+        let mut buf = RasterBuffer::zeros(2, 2, RasterDataType::CFloat64);
+        buf.fill_value(fill);
+        let v = buf.get_pixel(0, 0).expect("pixel access");
+        assert!((v - fill).abs() < 1e-9, "real part mismatch, got {v}");
+        // Confirm imag bytes are zero (bytes 8-16 of pixel 0)
+        let raw = buf.as_bytes();
+        let imag_bytes: [u8; 8] = raw[8..16].try_into().expect("slice");
+        let imag = f64::from_ne_bytes(imag_bytes);
+        assert_eq!(imag, 0.0f64, "imaginary part should be 0.0");
     }
 }

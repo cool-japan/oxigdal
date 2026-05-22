@@ -41,6 +41,34 @@ pub enum CloudError {
         /// Actual size of the object.
         size: u64,
     },
+
+    /// An HTTP error was returned by the remote server.
+    #[error("HTTP error: status {status}, url: {url}")]
+    HttpError {
+        /// The HTTP status code.
+        status: u16,
+        /// The URL that returned the error.
+        url: String,
+    },
+
+    /// The HTTP client encountered a network or protocol error.
+    #[error("HTTP transport error: {0}")]
+    TransportError(String),
+
+    /// The remote exhausted all retry attempts.
+    #[error("exhausted all {attempts} retry attempts")]
+    RetryExhausted {
+        /// How many attempts were made.
+        attempts: u32,
+    },
+
+    /// The credential type is not supported for the requested operation.
+    #[error("unsupported credentials: {0}")]
+    UnsupportedCredentials(String),
+
+    /// A required response header was missing or malformed.
+    #[error("missing or malformed header: {0}")]
+    MissingHeader(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -26,15 +26,27 @@ pub enum ResamplingMethod {
     Bilinear,
     /// Bicubic interpolation (highest quality, slower).
     Bicubic,
+    /// Lanczos resampling with window radius `a` (typical values: 2 or 3).
+    ///
+    /// Evaluates `L(x) = sinc(x) * sinc(x/a)` for `|x| < a`, else 0.
+    /// The 2D kernel is the outer product of two 1D Lanczos kernels.
+    /// Results are normalized by dividing by the total weight sum.
+    ///
+    /// Valid range for `a`: 1..=8.
+    Lanczos {
+        /// Window radius (half-width). Valid range: 1..=8.
+        a: u32,
+    },
 }
 
 impl ResamplingMethod {
-    /// Get the shader entry point name.
-    fn entry_point(&self) -> &'static str {
+    /// Get the shader entry point name for this resampling method.
+    pub fn entry_point(&self) -> &'static str {
         match self {
             Self::NearestNeighbor => "nearest_neighbor",
             Self::Bilinear => "bilinear",
             Self::Bicubic => "bicubic",
+            Self::Lanczos { .. } => "lanczos",
         }
     }
 }
@@ -84,13 +96,47 @@ pub struct ResamplingKernel {
 impl ResamplingKernel {
     /// Create a new resampling kernel.
     ///
+    /// The workgroup size is taken from `context.tuner.raster_2d` so it
+    /// automatically adapts to low-end and high-end GPUs.
+    ///
     /// # Errors
     ///
-    /// Returns an error if shader compilation or pipeline creation fails.
+    /// Returns an error if shader compilation or pipeline creation fails,
+    /// or if `method` parameters are out of valid range.
     pub fn new(context: &GpuContext, method: ResamplingMethod) -> GpuResult<Self> {
-        debug!("Creating resampling kernel: {:?}", method);
+        let workgroup_size = context.tuner.raster_2d;
+        Self::new_with_workgroup_size(context, method, workgroup_size)
+    }
 
-        let shader_source = Self::resampling_shader(method);
+    /// Create a new resampling kernel with an explicit workgroup size.
+    ///
+    /// Prefer [`ResamplingKernel::new`] which derives the size from the
+    /// context's tuner automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if shader compilation or pipeline creation fails,
+    /// or if `method` parameters are out of valid range.
+    pub fn new_with_workgroup_size(
+        context: &GpuContext,
+        method: ResamplingMethod,
+        workgroup_size: (u32, u32),
+    ) -> GpuResult<Self> {
+        debug!(
+            "Creating resampling kernel: {:?} (workgroup {}x{})",
+            method, workgroup_size.0, workgroup_size.1
+        );
+
+        // Validate Lanczos window parameter before touching the GPU.
+        if let ResamplingMethod::Lanczos { a } = method {
+            if a == 0 || a > 8 {
+                return Err(GpuError::invalid_kernel_params(format!(
+                    "Lanczos window parameter a={a} out of valid range 1..=8"
+                )));
+            }
+        }
+
+        let shader_source = Self::resampling_shader(method, workgroup_size);
         let mut shader = WgslShader::new(shader_source, method.entry_point());
         let shader_module = shader.compile(context.device())?;
 
@@ -114,13 +160,22 @@ impl ResamplingKernel {
             context: context.clone(),
             pipeline,
             bind_group_layout,
-            workgroup_size: (16, 16),
+            workgroup_size,
             method,
         })
     }
 
-    /// Get shader source for resampling method.
-    fn resampling_shader(method: ResamplingMethod) -> String {
+    /// Get shader source for resampling method, with workgroup size interpolated
+    /// into the WGSL `@workgroup_size` attribute at build time.
+    ///
+    /// Because `@workgroup_size` requires compile-time constants in WGSL, the
+    /// sizes are baked into the shader source string rather than passed as
+    /// push constants.  The pipeline is therefore implicitly keyed by workgroup
+    /// size, which is the correct behaviour — different devices compile
+    /// different (but correct) pipelines.
+    fn resampling_shader(method: ResamplingMethod, workgroup_size: (u32, u32)) -> String {
+        let (wg_x, wg_y) = workgroup_size;
+
         let common = r#"
 struct ResamplingParams {
     src_width: u32,
@@ -150,7 +205,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
                 r#"
 {}
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size({wg_x}, {wg_y})
 fn nearest_neighbor(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     let dst_x = global_id.x;
     let dst_y = global_id.y;
@@ -169,14 +224,16 @@ fn nearest_neighbor(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     output[dst_y * params.dst_width + dst_x] = value;
 }}
 "#,
-                common
+                common,
+                wg_x = wg_x,
+                wg_y = wg_y,
             ),
 
             ResamplingMethod::Bilinear => format!(
                 r#"
 {}
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size({wg_x}, {wg_y})
 fn bilinear(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     let dst_x = global_id.x;
     let dst_y = global_id.y;
@@ -211,7 +268,9 @@ fn bilinear(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     output[dst_y * params.dst_width + dst_x] = value;
 }}
 "#,
-                common
+                common,
+                wg_x = wg_x,
+                wg_y = wg_y,
             ),
 
             ResamplingMethod::Bicubic => format!(
@@ -226,7 +285,7 @@ fn cubic_interpolate(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {{
     return a * t * t * t + b * t * t + c * t + d;
 }}
 
-@compute @workgroup_size(16, 16)
+@compute @workgroup_size({wg_x}, {wg_y})
 fn bicubic(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     let dst_x = global_id.x;
     let dst_y = global_id.y;
@@ -266,8 +325,96 @@ fn bicubic(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     output[dst_y * params.dst_width + dst_x] = value;
 }}
 "#,
-                common
+                common,
+                wg_x = wg_x,
+                wg_y = wg_y,
             ),
+
+            ResamplingMethod::Lanczos { a } => {
+                // Pre-compute the loop trip count: 2*a samples per axis.
+                let two_a = 2 * a;
+                format!(
+                    r#"
+{common}
+
+// sinc(x) = sin(pi*x) / (pi*x), with sinc(0) = 1.
+fn sinc(x: f32) -> f32 {{
+    if (abs(x) < 1e-6) {{
+        return 1.0;
+    }}
+    let pi_x: f32 = 3.14159265358979323846 * x;
+    return sin(pi_x) / pi_x;
+}}
+
+// Lanczos weighting function with window radius a.
+// L(x) = sinc(x) * sinc(x/a)  for |x| < a, else 0.
+fn lanczos_weight(x: f32, a: f32) -> f32 {{
+    if (abs(x) >= a) {{
+        return 0.0;
+    }}
+    return sinc(x) * sinc(x / a);
+}}
+
+@compute @workgroup_size({wg_x}, {wg_y})
+fn lanczos(@builtin(global_invocation_id) global_id: vec3<u32>) {{
+    let dst_x = global_id.x;
+    let dst_y = global_id.y;
+
+    if (dst_x >= params.dst_width || dst_y >= params.dst_height) {{
+        return;
+    }}
+
+    let scale_x = f32(params.src_width) / f32(params.dst_width);
+    let scale_y = f32(params.src_height) / f32(params.dst_height);
+
+    // Map destination pixel centre to source coordinate space.
+    // The +0.5 / -0.5 shift aligns pixel centres correctly.
+    let src_cx = (f32(dst_x) + 0.5) * scale_x - 0.5;
+    let src_cy = (f32(dst_y) + 0.5) * scale_y - 0.5;
+
+    // Window radius injected at shader-build time.
+    let lanczos_a: f32 = {a}f;
+
+    var weight_sum: f32 = 0.0;
+    var value_sum: f32 = 0.0;
+
+    // Sample 2*a rows and 2*a columns centred on src_c(x,y).
+    // Row/col index starts at floor(src_c) - a + 1 and runs for 2*a steps.
+    let x_start: i32 = i32(floor(src_cx)) - i32({a}) + 1;
+    let y_start: i32 = i32(floor(src_cy)) - i32({a}) + 1;
+
+    for (var j: i32 = 0; j < {two_a}; j++) {{
+        let sy: i32 = y_start + j;
+        let wy: f32 = lanczos_weight(src_cy - f32(sy), lanczos_a);
+        if (wy == 0.0) {{ continue; }}
+
+        // Clamp-to-edge: keep source coordinate inside the image.
+        let clamped_y: u32 = u32(clamp(sy, 0, i32(params.src_height) - 1));
+
+        for (var i: i32 = 0; i < {two_a}; i++) {{
+            let sx: i32 = x_start + i;
+            let wx: f32 = lanczos_weight(src_cx - f32(sx), lanczos_a);
+            if (wx == 0.0) {{ continue; }}
+
+            let clamped_x: u32 = u32(clamp(sx, 0, i32(params.src_width) - 1));
+
+            let w: f32 = wx * wy;
+            weight_sum += w;
+            value_sum += w * get_pixel(clamped_x, clamped_y);
+        }}
+    }}
+
+    // Normalise to preserve overall brightness; guard against zero weight sum.
+    let result: f32 = select(0.0, value_sum / weight_sum, weight_sum > 1e-10);
+    output[dst_y * params.dst_width + dst_x] = result;
+}}
+"#,
+                    a = a,
+                    two_a = two_a,
+                    wg_x = wg_x,
+                    wg_y = wg_y,
+                )
+            }
         }
     }
 
@@ -435,9 +582,78 @@ mod tests {
 
     #[test]
     fn test_resampling_shader() {
-        let shader = ResamplingKernel::resampling_shader(ResamplingMethod::Bilinear);
+        let shader = ResamplingKernel::resampling_shader(ResamplingMethod::Bilinear, (16, 16));
         assert!(shader.contains("@compute"));
         assert!(shader.contains("bilinear"));
+        assert!(shader.contains("@workgroup_size(16, 16)"));
+    }
+
+    #[test]
+    fn test_resampling_shader_custom_workgroup() {
+        let shader = ResamplingKernel::resampling_shader(ResamplingMethod::NearestNeighbor, (8, 8));
+        assert!(shader.contains("@workgroup_size(8, 8)"));
+        assert!(shader.contains("nearest_neighbor"));
+    }
+
+    #[test]
+    fn test_resampling_shader_4x4_fallback() {
+        let shader = ResamplingKernel::resampling_shader(ResamplingMethod::Bilinear, (4, 4));
+        assert!(shader.contains("@workgroup_size(4, 4)"));
+    }
+
+    #[test]
+    fn test_lanczos_shader_a2() {
+        let shader =
+            ResamplingKernel::resampling_shader(ResamplingMethod::Lanczos { a: 2 }, (16, 16));
+        assert!(shader.contains("@compute"));
+        assert!(shader.contains("fn lanczos("));
+        assert!(shader.contains("fn sinc("));
+        assert!(shader.contains("fn lanczos_weight("));
+        // Loop trip count 2*a = 4 should appear in the shader.
+        assert!(shader.contains("4"));
+        // The window radius should be embedded as a float literal.
+        assert!(shader.contains("2f"));
+        assert!(shader.contains("@workgroup_size(16, 16)"));
+    }
+
+    #[test]
+    fn test_lanczos_shader_a3() {
+        let shader =
+            ResamplingKernel::resampling_shader(ResamplingMethod::Lanczos { a: 3 }, (16, 16));
+        assert!(shader.contains("fn lanczos("));
+        // Loop trip count 2*a = 6.
+        assert!(shader.contains("6"));
+        assert!(shader.contains("3f"));
+    }
+
+    #[test]
+    fn test_lanczos_shader_a2_custom_workgroup() {
+        let shader =
+            ResamplingKernel::resampling_shader(ResamplingMethod::Lanczos { a: 2 }, (8, 8));
+        assert!(shader.contains("@workgroup_size(8, 8)"));
+        assert!(shader.contains("fn lanczos("));
+    }
+
+    #[test]
+    fn test_lanczos_entry_point() {
+        assert_eq!(ResamplingMethod::Lanczos { a: 2 }.entry_point(), "lanczos");
+        assert_eq!(ResamplingMethod::Lanczos { a: 3 }.entry_point(), "lanczos");
+    }
+
+    #[test]
+    fn test_lanczos_equality() {
+        assert_eq!(
+            ResamplingMethod::Lanczos { a: 2 },
+            ResamplingMethod::Lanczos { a: 2 }
+        );
+        assert_ne!(
+            ResamplingMethod::Lanczos { a: 2 },
+            ResamplingMethod::Lanczos { a: 3 }
+        );
+        assert_ne!(
+            ResamplingMethod::Lanczos { a: 2 },
+            ResamplingMethod::Bilinear
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,11 @@
 //! Feature filtering by property values and bounding box.
+//!
+//! This module provides:
+//!
+//! * [`FilterOp`] / [`PropertyFilter`] — simple per-property predicates including regex
+//! * [`CompiledRegexFilter`] — pre-compiled regex filter for hot-path evaluation
+//! * [`FeatureFilter`] — composite spatial + attribute filter with builder API
+//! * [`FilterExpr`] — composable AND / OR / NOT expression tree
 
 use crate::parser::FeatureCollection;
 use crate::types::GeoJsonFeature;
@@ -24,6 +31,16 @@ pub enum FilterOp {
     Contains,
     /// String starts with prefix.
     StartsWith,
+    /// String property matches the given regex pattern (stored as a JSON string value).
+    ///
+    /// Case-sensitive by default; use `(?i)` prefix for case-insensitive matching.
+    /// An invalid regex pattern never matches (returns `false`).
+    MatchesRegex,
+    /// String property does NOT match the given regex pattern.
+    ///
+    /// An invalid regex pattern is treated as vacuously not-matching (returns `true`).
+    /// Absent or non-string fields also return `true`.
+    NotMatchesRegex,
 }
 
 // ─── PropertyFilter ──────────────────────────────────────────────────────────
@@ -65,6 +82,34 @@ impl PropertyFilter {
                 let prefix = self.value.as_str().unwrap_or("");
                 s.starts_with(prefix)
             }
+            FilterOp::MatchesRegex => {
+                // self.value must be the pattern as a JSON string
+                let pattern = match self.value.as_str() {
+                    Some(p) => p,
+                    None => return false,
+                };
+                let actual_str = match actual.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                // Invalid patterns never match — no panic, no error propagation
+                regex::Regex::new(pattern)
+                    .map(|re| re.is_match(actual_str))
+                    .unwrap_or(false)
+            }
+            FilterOp::NotMatchesRegex => {
+                let pattern = match self.value.as_str() {
+                    Some(p) => p,
+                    None => return true, // no pattern → vacuously not-matching
+                };
+                let actual_str = match actual.as_str() {
+                    Some(s) => s,
+                    None => return true, // non-string → vacuously not-matching
+                };
+                regex::Regex::new(pattern)
+                    .map(|re| !re.is_match(actual_str))
+                    .unwrap_or(true) // invalid pattern → vacuously not-matching
+            }
         }
     }
 }
@@ -79,9 +124,94 @@ where
     }
 }
 
+// ─── CompiledRegexFilter ─────────────────────────────────────────────────────
+
+/// A property filter with a **pre-compiled** regex, suitable for hot-path
+/// evaluation where re-compiling the pattern on every call would be wasteful.
+///
+/// # Example
+///
+/// ```
+/// use oxigdal_geojson_stream::filter::CompiledRegexFilter;
+/// use serde_json::json;
+///
+/// let f = CompiledRegexFilter::new("city", "^New", false).unwrap();
+/// let props = json!({"city": "New York"})
+///     .as_object()
+///     .cloned()
+///     .unwrap();
+/// assert!(f.evaluate(&props));
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompiledRegexFilter {
+    field: String,
+    pattern: regex::Regex,
+    negate: bool,
+}
+
+impl CompiledRegexFilter {
+    /// Compile a regex filter.
+    ///
+    /// * `field`  — the property key to inspect.
+    /// * `pattern` — a regular-expression pattern string.
+    /// * `negate`  — when `true`, the filter matches features that do **not**
+    ///   match the pattern (equivalent to `NotMatchesRegex`).
+    ///
+    /// Returns [`regex::Error`] when `pattern` is syntactically invalid.
+    pub fn new(
+        field: impl Into<String>,
+        pattern: &str,
+        negate: bool,
+    ) -> Result<Self, regex::Error> {
+        Ok(Self {
+            field: field.into(),
+            pattern: regex::Regex::new(pattern)?,
+            negate,
+        })
+    }
+
+    /// Evaluate this filter against a JSON property map.
+    ///
+    /// * Absent field  → `MatchesRegex` returns `false`, `NotMatchesRegex` returns `true`
+    /// * Non-string    → same semantics as absent field
+    #[must_use]
+    pub fn evaluate(&self, props: &serde_json::Map<String, serde_json::Value>) -> bool {
+        let actual = match props.get(&self.field) {
+            Some(v) => v,
+            None => return self.negate,
+        };
+        let s = match actual.as_str() {
+            Some(s) => s,
+            None => return self.negate,
+        };
+        let matched = self.pattern.is_match(s);
+        if self.negate { !matched } else { matched }
+    }
+
+    /// The field name this filter inspects.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// The compiled regex pattern.
+    #[must_use]
+    pub fn pattern(&self) -> &regex::Regex {
+        &self.pattern
+    }
+
+    /// Whether this filter negates the match result.
+    #[must_use]
+    pub fn negate(&self) -> bool {
+        self.negate
+    }
+}
+
 // ─── FeatureFilter ───────────────────────────────────────────────────────────
 
-/// Composite feature filter combining property, bbox, and geometry-type tests.
+/// Composite feature filter combining property, bbox, geometry-type, and regex tests.
+///
+/// All active filters are combined with AND semantics: every filter must pass.
 #[derive(Debug, Clone, Default)]
 pub struct FeatureFilter {
     /// Property predicates (ALL must match — AND semantics).
@@ -90,6 +220,8 @@ pub struct FeatureFilter {
     pub bbox_filter: Option<[f64; 4]>,
     /// Optional allow-list of geometry type names (e.g. `["Point", "Polygon"]`).
     pub geometry_types: Option<Vec<String>>,
+    /// Pre-compiled regex filters (ALL must match — AND semantics).
+    pub regex_filters: Vec<CompiledRegexFilter>,
 }
 
 impl FeatureFilter {
@@ -146,6 +278,42 @@ impl FeatureFilter {
         self
     }
 
+    /// Add a pre-compiled regex filter requiring that `field` matches `pattern`.
+    ///
+    /// Returns `Err` when `pattern` is not a valid regular expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use oxigdal_geojson_stream::filter::FeatureFilter;
+    ///
+    /// let f = FeatureFilter::new()
+    ///     .with_regex_filter("name", "^geo")
+    ///     .unwrap();
+    /// ```
+    pub fn with_regex_filter(
+        mut self,
+        field: impl Into<String>,
+        pattern: &str,
+    ) -> Result<Self, regex::Error> {
+        self.regex_filters
+            .push(CompiledRegexFilter::new(field, pattern, false)?);
+        Ok(self)
+    }
+
+    /// Add a pre-compiled regex filter requiring that `field` does **not** match `pattern`.
+    ///
+    /// Returns `Err` when `pattern` is not a valid regular expression.
+    pub fn with_not_regex_filter(
+        mut self,
+        field: impl Into<String>,
+        pattern: &str,
+    ) -> Result<Self, regex::Error> {
+        self.regex_filters
+            .push(CompiledRegexFilter::new(field, pattern, true)?);
+        Ok(self)
+    }
+
     /// Returns `true` when `feature` passes all active filters.
     #[must_use]
     pub fn matches(&self, feature: &GeoJsonFeature) -> bool {
@@ -154,6 +322,23 @@ impl FeatureFilter {
             let pass = match &feature.properties {
                 Some(props) => pf.matches(props),
                 None => false,
+            };
+            if !pass {
+                return false;
+            }
+        }
+
+        // --- regex filters ---
+        for rf in &self.regex_filters {
+            let pass = match &feature.properties {
+                Some(props) => {
+                    if let serde_json::Value::Object(map) = props {
+                        rf.evaluate(map)
+                    } else {
+                        rf.negate() // non-object properties: same as absent field
+                    }
+                }
+                None => rf.negate(), // no properties: absent field semantics
             };
             if !pass {
                 return false;
@@ -238,6 +423,8 @@ fn bboxes_intersect(a: [f64; 4], b: [f64; 4]) -> bool {
 pub enum FilterExpr {
     /// A single property predicate.
     Property(PropertyFilter),
+    /// A pre-compiled regex filter (efficient for repeated evaluation).
+    CompiledRegex(CompiledRegexFilter),
     /// All children must match.
     And(Vec<FilterExpr>),
     /// At least one child must match.
@@ -281,6 +468,13 @@ impl FilterExpr {
     pub fn matches(&self, props: &serde_json::Value) -> bool {
         match self {
             Self::Property(pf) => pf.matches(props),
+            Self::CompiledRegex(rf) => {
+                if let serde_json::Value::Object(map) = props {
+                    rf.evaluate(map)
+                } else {
+                    rf.negate() // non-object value: absent-field semantics
+                }
+            }
             Self::And(children) => children.iter().all(|c| c.matches(props)),
             Self::Or(children) => children.iter().any(|c| c.matches(props)),
             Self::Not(inner) => !inner.matches(props),
@@ -296,6 +490,7 @@ impl FilterExpr {
                 // No properties: Property always false, Not(Property) true, etc.
                 match self {
                     Self::Property(_) => false,
+                    Self::CompiledRegex(rf) => rf.negate(), // absent field semantics
                     Self::And(children) => children.iter().all(|c| c.matches_feature(feature)),
                     Self::Or(children) => children.iter().any(|c| c.matches_feature(feature)),
                     Self::Not(inner) => !inner.matches_feature(feature),

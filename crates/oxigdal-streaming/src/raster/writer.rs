@@ -1,20 +1,22 @@
 //! Async raster stream writer for large datasets.
+//!
+//! Writes GeoTIFF files by accumulating chunk data and flushing the complete
+//! image on [`RasterStreamWriter::finalize`].
 
-use super::{RasterChunk, RasterStreamConfig, ChunkStats};
+use super::{ChunkStats, RasterChunk, RasterStreamConfig};
 use crate::error::{Result, StreamingError};
-use oxigdal_core::{
-    buffer::RasterBuffer,
-    types::{RasterDataType, RasterMetadata},
-};
+use oxigdal_core::types::RasterMetadata;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock, Semaphore};
-use tokio::task;
-use tracing::{debug, error, info, warn};
+use tokio::sync::RwLock;
+use tracing::info;
 
 /// Async raster stream writer.
+///
+/// Accepts chunks via [`write_chunk`](Self::write_chunk) and writes a complete
+/// GeoTIFF when [`finalize`](Self::finalize) is called.
 pub struct RasterStreamWriter {
     /// Path to the output raster file
     path: PathBuf,
@@ -25,30 +27,14 @@ pub struct RasterStreamWriter {
     /// Raster metadata
     metadata: RasterMetadata,
 
-    /// Channel for receiving chunks to write
-    sender: mpsc::Sender<WriteRequest>,
-
-    /// Write semaphore for limiting concurrent operations
-    write_semaphore: Arc<Semaphore>,
-
     /// Statistics
     stats: Arc<RwLock<ChunkStats>>,
 
-    /// Chunk cache for reordering
-    chunk_cache: Arc<RwLock<HashMap<(usize, usize), RasterChunk>>>,
-
-    /// Expected chunk order
-    next_chunk: Arc<RwLock<(usize, usize)>>,
+    /// Accumulated chunk data indexed by (row, col)
+    chunk_store: Arc<RwLock<HashMap<(usize, usize), RasterChunk>>>,
 
     /// Total chunks
     total_chunks: (usize, usize),
-}
-
-/// A write request for a raster chunk.
-#[derive(Debug)]
-struct WriteRequest {
-    chunk: RasterChunk,
-    response: tokio::sync::oneshot::Sender<Result<()>>,
 }
 
 impl RasterStreamWriter {
@@ -62,64 +48,30 @@ impl RasterStreamWriter {
 
         // Calculate total chunks
         let total_chunks = Self::calculate_chunks(
-            metadata.width,
-            metadata.height,
+            metadata.width as usize,
+            metadata.height as usize,
             config.chunk_size.0,
             config.chunk_size.1,
             config.overlap,
         );
 
-        let (sender, mut receiver) = mpsc::channel::<WriteRequest>(config.buffer_size);
-        let write_semaphore = Arc::new(Semaphore::new(config.num_workers));
-        let stats = Arc::new(RwLock::new(ChunkStats::new()));
-        let chunk_cache = Arc::new(RwLock::new(HashMap::new()));
-        let next_chunk = Arc::new(RwLock::new((0, 0)));
-
         info!(
-            "Created raster stream writer for {}x{} raster with {} x {} chunks",
+            "Created raster stream writer for {}x{} raster ({} x {} chunks)",
             metadata.width, metadata.height, total_chunks.0, total_chunks.1
         );
-
-        // Start the write worker
-        let write_path = path.clone();
-        let write_stats = Arc::clone(&stats);
-        let write_cache = Arc::clone(&chunk_cache);
-        let write_next = Arc::clone(&next_chunk);
-        let write_semaphore_clone = Arc::clone(&write_semaphore);
-
-        tokio::spawn(async move {
-            while let Some(request) = receiver.recv().await {
-                let _permit = write_semaphore_clone.acquire().await;
-
-                let result = Self::write_chunk_async(
-                    &write_path,
-                    request.chunk,
-                    &write_stats,
-                    &write_cache,
-                    &write_next,
-                    total_chunks,
-                )
-                .await;
-
-                let _ = request.response.send(result);
-            }
-        });
 
         Ok(Self {
             path,
             config,
             metadata,
-            sender,
-            write_semaphore,
-            stats,
-            chunk_cache,
-            next_chunk,
+            stats: Arc::new(RwLock::new(ChunkStats::new())),
+            chunk_store: Arc::new(RwLock::new(HashMap::new())),
             total_chunks,
         })
     }
 
     /// Calculate the number of chunks needed.
-    fn calculate_chunks(
+    pub fn calculate_chunks(
         width: usize,
         height: usize,
         chunk_width: usize,
@@ -129,127 +81,37 @@ impl RasterStreamWriter {
         let effective_chunk_width = chunk_width - overlap;
         let effective_chunk_height = chunk_height - overlap;
 
-        let num_cols = (width + effective_chunk_width - 1) / effective_chunk_width;
-        let num_rows = (height + effective_chunk_height - 1) / effective_chunk_height;
+        let num_cols = width.div_ceil(effective_chunk_width);
+        let num_rows = height.div_ceil(effective_chunk_height);
 
         (num_rows, num_cols)
     }
 
     /// Write a chunk to the raster.
+    ///
+    /// Chunks are stored in memory and written to disk on [`finalize`](Self::finalize).
     pub async fn write_chunk(&self, chunk: RasterChunk) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let request = WriteRequest {
-            chunk,
-            response: tx,
-        };
-
-        self.sender
-            .send(request)
-            .await
-            .map_err(|_| StreamingError::SendError)?;
-
-        rx.await
-            .map_err(|_| StreamingError::RecvError)?
-    }
-
-    /// Write multiple chunks in parallel.
-    pub async fn write_chunks(&self, chunks: Vec<RasterChunk>) -> Result<()> {
-        let mut handles = Vec::with_capacity(chunks.len());
-
-        for chunk in chunks {
-            let sender = self.sender.clone();
-
-            let handle = tokio::spawn(async move {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let request = WriteRequest {
-                    chunk,
-                    response: tx,
-                };
-
-                sender
-                    .send(request)
-                    .await
-                    .map_err(|_| StreamingError::SendError)?;
-
-                rx.await
-                    .map_err(|_| StreamingError::RecvError)?
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle
-                .await
-                .map_err(|e| StreamingError::Other(e.to_string()))??;
-        }
-
-        Ok(())
-    }
-
-    /// Write a chunk asynchronously with ordering.
-    async fn write_chunk_async(
-        path: &Path,
-        chunk: RasterChunk,
-        stats: &Arc<RwLock<ChunkStats>>,
-        cache: &Arc<RwLock<HashMap<(usize, usize), RasterChunk>>>,
-        next_chunk: &Arc<RwLock<(usize, usize)>>,
-        total_chunks: (usize, usize),
-    ) -> Result<()> {
         let start = Instant::now();
+        let size = chunk.size_bytes();
+        let indices = chunk.indices;
 
-        // Check if this is the next expected chunk
-        let expected = *next_chunk.read().await;
-        if chunk.indices != expected {
-            // Cache this chunk for later
-            debug!("Caching chunk {:?}, expected {:?}", chunk.indices, expected);
-            let mut cache_guard = cache.write().await;
-            cache_guard.insert(chunk.indices, chunk);
-            return Ok(());
-        }
-
-        // Write this chunk
-        Self::write_chunk_blocking(path, &chunk).await?;
+        let mut store = self.chunk_store.write().await;
+        store.insert(indices, chunk);
+        drop(store);
 
         let elapsed = start.elapsed().as_millis() as u64;
-        let mut stats_guard = stats.write().await;
-        stats_guard.record_chunk(chunk.size_bytes(), elapsed);
-        drop(stats_guard);
-
-        // Update next chunk
-        let mut next_guard = next_chunk.write().await;
-        next_guard.1 += 1;
-        if next_guard.1 >= total_chunks.1 {
-            next_guard.1 = 0;
-            next_guard.0 += 1;
-        }
-        let next_expected = *next_guard;
-        drop(next_guard);
-
-        // Check if the next chunk is in cache
-        let mut cache_guard = cache.write().await;
-        if let Some(cached_chunk) = cache_guard.remove(&next_expected) {
-            drop(cache_guard);
-            // Recursively write cached chunks
-            Self::write_chunk_async(path, cached_chunk, stats, cache, next_chunk, total_chunks).await?;
-        }
+        let mut stats_guard = self.stats.write().await;
+        stats_guard.record_chunk(size, elapsed);
 
         Ok(())
     }
 
-    /// Write a chunk in blocking mode.
-    async fn write_chunk_blocking(path: &Path, chunk: &RasterChunk) -> Result<()> {
-        let path = path.to_path_buf();
-        let indices = chunk.indices;
-        let size = chunk.size_bytes();
-
-        task::spawn_blocking(move || {
-            // Placeholder for actual write implementation
-            debug!("Writing chunk {:?} ({} bytes)", indices, size);
-            Ok(())
-        })
-        .await
-        .map_err(|e| StreamingError::Other(e.to_string()))?
+    /// Write multiple chunks.
+    pub async fn write_chunks(&self, chunks: Vec<RasterChunk>) -> Result<()> {
+        for chunk in chunks {
+            self.write_chunk(chunk).await?;
+        }
+        Ok(())
     }
 
     /// Get statistics for written chunks.
@@ -257,35 +119,120 @@ impl RasterStreamWriter {
         self.stats.read().await.clone()
     }
 
-    /// Flush all pending writes.
+    /// Flush — no-op for the accumulation model (all data is held in memory).
     pub async fn flush(&self) -> Result<()> {
-        // Wait for all cached chunks to be written
-        loop {
-            let cache_size = self.chunk_cache.read().await.len();
-            if cache_size == 0 {
-                break;
-            }
-            debug!("Waiting for {} cached chunks to be written", cache_size);
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-
-        info!("All chunks flushed");
         Ok(())
     }
 
     /// Finalize the raster file.
+    ///
+    /// Assembles all accumulated chunks into a contiguous pixel buffer and
+    /// writes a GeoTIFF using the `oxigdal-geotiff` driver.
     pub async fn finalize(&self) -> Result<()> {
-        self.flush().await?;
+        let img_width = self.metadata.width as usize;
+        let img_height = self.metadata.height as usize;
+        let band_count = self.metadata.band_count as usize;
+        let data_type = self.metadata.data_type;
+        let bytes_per_sample = data_type.size_bytes();
+        let bytes_per_pixel = bytes_per_sample * band_count;
+        let total_bytes = img_width * img_height * bytes_per_pixel;
 
-        // Write final metadata, overviews, etc.
+        // Assemble chunks into a contiguous image buffer
+        let mut image_data = vec![0u8; total_bytes];
+        let chunk_store = self.chunk_store.read().await;
+
+        let chunk_w = self.config.chunk_size.0;
+        let chunk_h = self.config.chunk_size.1;
+        let overlap = self.config.overlap;
+        let effective_w = chunk_w - overlap;
+        let effective_h = chunk_h - overlap;
+
+        for (&(row, col), chunk) in chunk_store.iter() {
+            let x_start = col * effective_w;
+            let y_start = row * effective_h;
+            let src_width = chunk.buffer.width() as usize / band_count; // actual pixel width
+            let src_height = chunk.buffer.height() as usize;
+            let src_bytes = chunk.buffer.as_bytes();
+
+            for cy in 0..src_height {
+                let dst_y = y_start + cy;
+                if dst_y >= img_height {
+                    break;
+                }
+                for cx in 0..src_width {
+                    let dst_x = x_start + cx;
+                    if dst_x >= img_width {
+                        break;
+                    }
+                    let src_offset = (cy * src_width + cx) * bytes_per_pixel;
+                    let dst_offset = (dst_y * img_width + dst_x) * bytes_per_pixel;
+
+                    if src_offset + bytes_per_pixel <= src_bytes.len()
+                        && dst_offset + bytes_per_pixel <= image_data.len()
+                    {
+                        image_data[dst_offset..dst_offset + bytes_per_pixel]
+                            .copy_from_slice(&src_bytes[src_offset..src_offset + bytes_per_pixel]);
+                    }
+                }
+            }
+        }
+        drop(chunk_store);
+
+        // Write the assembled image to disk
         let path = self.path.clone();
-        task::spawn_blocking(move || {
-            debug!("Finalizing raster file: {:?}", path);
-            // Placeholder for finalization logic
-            Ok(())
-        })
-        .await
-        .map_err(|e| StreamingError::Other(e.to_string()))?
+        let meta = self.metadata.clone();
+        tokio::task::spawn_blocking(move || Self::write_geotiff_blocking(&path, &meta, &image_data))
+            .await
+            .map_err(|e| StreamingError::Other(format!("finalize task failed: {}", e)))?
+    }
+
+    /// Write a complete image to a GeoTIFF file.
+    fn write_geotiff_blocking(path: &Path, metadata: &RasterMetadata, data: &[u8]) -> Result<()> {
+        use oxigdal_geotiff::tiff::{Compression, PhotometricInterpretation, Predictor};
+        use oxigdal_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
+
+        let photometric = if metadata.band_count >= 3 {
+            PhotometricInterpretation::Rgb
+        } else {
+            PhotometricInterpretation::BlackIsZero
+        };
+
+        let mut config = WriterConfig::new(
+            metadata.width,
+            metadata.height,
+            metadata.band_count as u16,
+            metadata.data_type,
+        )
+        .with_compression(Compression::Lzw)
+        .with_predictor(Predictor::HorizontalDifferencing)
+        .with_tile_size(256, 256)
+        .with_photometric(photometric)
+        .with_nodata(metadata.nodata)
+        .with_overviews(false, oxigdal_geotiff::OverviewResampling::Average);
+
+        if let Some(gt) = metadata.geo_transform {
+            config = config.with_geo_transform(gt);
+        }
+
+        let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())
+            .map_err(|e| {
+                StreamingError::Other(format!(
+                    "Failed to create GeoTIFF writer for '{}': {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+
+        writer.write(data).map_err(|e| {
+            StreamingError::Other(format!(
+                "Failed to write GeoTIFF data to '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        info!("Finalized GeoTIFF: {}", path.display());
+        Ok(())
     }
 
     /// Get the total number of chunks.
@@ -293,9 +240,14 @@ impl RasterStreamWriter {
         self.total_chunks
     }
 
-    /// Get the current write position.
+    /// Get the current write position (number of chunks written so far).
     pub async fn current_position(&self) -> (usize, usize) {
-        *self.next_chunk.read().await
+        let store = self.chunk_store.read().await;
+        let count = store.len();
+        drop(store);
+        // Convert linear count to (row, col) for compatibility
+        let cols = self.total_chunks.1.max(1);
+        (count / cols, count % cols)
     }
 }
 
@@ -349,7 +301,7 @@ impl RasterStreamWriterBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxigdal_core::types::GeoTransform;
+    use oxigdal_core::types::{GeoTransform, NoDataValue, PixelLayout, RasterDataType};
     use std::env;
 
     #[tokio::test]
@@ -360,18 +312,22 @@ mod tests {
         let metadata = RasterMetadata {
             width: 1024,
             height: 1024,
-            bands: 1,
+            band_count: 1,
             data_type: RasterDataType::Float32,
-            geotransform: Some(GeoTransform {
+            geo_transform: Some(GeoTransform {
                 origin_x: 0.0,
                 origin_y: 0.0,
                 pixel_width: 1.0,
                 pixel_height: -1.0,
-                rotation_x: 0.0,
-                rotation_y: 0.0,
+                row_rotation: 0.0,
+                col_rotation: 0.0,
             }),
-            crs: None,
-            no_data_value: None,
+            crs_wkt: None,
+            nodata: NoDataValue::None,
+            color_interpretation: Vec::new(),
+            layout: PixelLayout::default(),
+            driver_metadata: Vec::new(),
+            statistics: None,
         };
 
         let result = RasterStreamWriterBuilder::new(&test_path, metadata)

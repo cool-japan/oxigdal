@@ -7,9 +7,14 @@
 
 pub mod dbscan;
 pub mod kmeans;
+pub mod optics;
 
 pub use dbscan::{DbscanClusterer, DbscanResult};
 pub use kmeans::{KMeansClusterer, KMeansResult};
+pub use optics::{
+    OpticsCluster, OpticsClusterer, OpticsOptions, OpticsResult, Point2D, extract_dbscan_clusters,
+    extract_xi_clusters, optics,
+};
 
 use crate::error::{AnalyticsError, Result};
 use scirs2_core::ndarray::{Array1, Array2, ArrayView2};

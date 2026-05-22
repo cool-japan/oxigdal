@@ -72,10 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ndvi_path = output_dir.join(format!("{}_ndvi.tif", scene.stem().unwrap().to_string_lossy()));
 
         let result = process_single_scene(scene, &ndvi_path, width, height)?;
-        sequential_results.lock().unwrap().push(result);
+        sequential_results.lock().unwrap_or_else(|e| e.into_inner()).push(result);
 
         // Print progress every 20 scenes
-        let count = sequential_results.lock().unwrap().len();
+        let count = sequential_results.lock().unwrap_or_else(|e| e.into_inner()).len();
         if count % 20 == 0 {
             println!("  Processed {}/{} scenes", count, num_files);
         }

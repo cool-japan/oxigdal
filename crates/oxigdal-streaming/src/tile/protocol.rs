@@ -284,9 +284,40 @@ pub struct TileMetadata {
     pub metadata: std::collections::HashMap<String, String>,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP retry helper (feature = "tile-http")
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum number of retry attempts for transient 5xx errors.
+#[cfg(feature = "tile-http")]
+const HTTP_MAX_ATTEMPTS: u32 = 3;
+
+/// Initial backoff delay in milliseconds before the first retry.
+#[cfg(feature = "tile-http")]
+const HTTP_INITIAL_DELAY_MS: u64 = 100;
+
+/// Parse an RFC-2616 / RFC-7231 `Last-Modified` header value into a UTC datetime.
+#[cfg(feature = "tile-http")]
+fn parse_http_date(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // Try RFC 2822 (most common in HTTP/1.1)
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(value) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    // Try the older ANSI-C asctime format: "Tue, 15 Nov 1994 08:12:31 GMT"
+    // also covered by rfc2822 above. Try ISO 8601 as a fallback.
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    None
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// XyzProtocol
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// XYZ tile protocol implementation.
 pub struct XyzProtocol {
-    /// Base URL template
+    /// Base URL template (`{z}`, `{x}`, `{y}` are replaced at fetch time)
     url_template: String,
 
     /// Minimum zoom level
@@ -297,16 +328,33 @@ pub struct XyzProtocol {
 
     /// Tile size
     tile_size: (u32, u32),
+
+    /// Reusable HTTP client (only compiled when tile-http is active)
+    #[cfg(feature = "tile-http")]
+    http_client: reqwest::Client,
 }
 
 impl XyzProtocol {
     /// Create a new XYZ protocol.
+    #[cfg(not(feature = "tile-http"))]
     pub fn new(url_template: String, min_zoom: u8, max_zoom: u8) -> Self {
         Self {
             url_template,
             min_zoom,
             max_zoom,
             tile_size: (256, 256),
+        }
+    }
+
+    /// Create a new XYZ protocol with an HTTP client.
+    #[cfg(feature = "tile-http")]
+    pub fn new(url_template: String, min_zoom: u8, max_zoom: u8) -> Self {
+        Self {
+            url_template,
+            min_zoom,
+            max_zoom,
+            tile_size: (256, 256),
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -323,24 +371,164 @@ impl XyzProtocol {
             .replace("{x}", &coord.x.to_string())
             .replace("{y}", &coord.y.to_string())
     }
+
+    /// Build URL for a tile with an explicit file extension.
+    #[cfg(feature = "tile-http")]
+    fn build_url_with_ext(&self, coord: &TileCoordinate, ext: &str) -> String {
+        // If the template already contains `{ext}` expand it; otherwise fall
+        // back to the numeric placeholders only.
+        self.url_template
+            .replace("{ext}", ext)
+            .replace("{z}", &coord.z.to_string())
+            .replace("{x}", &coord.x.to_string())
+            .replace("{y}", &coord.y.to_string())
+    }
+
+    /// Perform a single HTTP GET and return `(status, headers, body)`.
+    #[cfg(feature = "tile-http")]
+    async fn http_get_raw(
+        &self,
+        url: &str,
+    ) -> std::result::Result<reqwest::Response, reqwest::Error> {
+        self.http_client.get(url).send().await
+    }
+
+    /// Fetch the tile bytes with automatic retry on transient 5xx errors.
+    ///
+    /// Returns `(data_bytes, etag, last_modified, cache_control, content_type)`.
+    #[cfg(feature = "tile-http")]
+    async fn fetch_with_retry(&self, url: &str, expected_mime: &str) -> Result<TileResponse> {
+        use std::time::Duration;
+
+        let coord_placeholder = TileCoordinate::new(0, 0, 0); // only used for the error path
+        let mut last_err: Option<StreamingError> = None;
+
+        for attempt in 0..HTTP_MAX_ATTEMPTS {
+            if attempt > 0 {
+                // Simple exponential back-off: 100 ms, 200 ms, …
+                let delay_ms = HTTP_INITIAL_DELAY_MS * (1u64 << (attempt - 1));
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+
+            let response = match self.http_get_raw(url).await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(StreamingError::Reqwest(e));
+                    continue;
+                }
+            };
+
+            let status = response.status();
+
+            // 404 → tile does not exist; do not retry
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(StreamingError::TileNotFound);
+            }
+
+            // 5xx → transient; retry
+            if status.is_server_error() {
+                last_err = Some(StreamingError::HttpError {
+                    status: status.as_u16(),
+                    url: url.to_owned(),
+                });
+                continue;
+            }
+
+            // Any other non-2xx → permanent client-side error; fail immediately
+            if !status.is_success() {
+                return Err(StreamingError::HttpError {
+                    status: status.as_u16(),
+                    url: url.to_owned(),
+                });
+            }
+
+            // --- 2xx: extract metadata from headers before consuming body ---
+
+            // ETag
+            let etag = response
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned());
+
+            // Last-Modified
+            let last_modified = response
+                .headers()
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_http_date);
+
+            // Cache-Control
+            let cache_control = response
+                .headers()
+                .get(reqwest::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned());
+
+            // Content-Type: prefer what the server says; fall back to expected_mime
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| expected_mime.to_owned());
+
+            // Consume body
+            let data = response.bytes().await.map_err(StreamingError::Reqwest)?;
+
+            let mut tile_resp = TileResponse::new(coord_placeholder, data, content_type);
+
+            if let Some(e) = etag {
+                tile_resp = tile_resp.with_etag(e);
+            }
+            if let Some(cc) = cache_control {
+                tile_resp = tile_resp.with_cache_control(cc);
+            }
+            tile_resp.last_modified = last_modified;
+
+            return Ok(tile_resp);
+        }
+
+        // All attempts exhausted
+        Err(last_err.unwrap_or_else(|| StreamingError::HttpError {
+            status: 500,
+            url: url.to_owned(),
+        }))
+    }
 }
 
 #[async_trait::async_trait]
 impl TileProtocol for XyzProtocol {
     async fn get_tile(&self, request: &TileRequest) -> Result<TileResponse> {
         if request.coord.z < self.min_zoom || request.coord.z > self.max_zoom {
-            return Err(StreamingError::InvalidOperation(
-                format!("Zoom level {} out of range", request.coord.z)
-            ));
+            return Err(StreamingError::InvalidOperation(format!(
+                "Zoom level {} out of range [{}, {}]",
+                request.coord.z, self.min_zoom, self.max_zoom
+            )));
         }
 
-        // Placeholder - would fetch from URL
-        let data = Bytes::new();
-        Ok(TileResponse::new(
-            request.coord,
-            data,
-            request.format.mime_type().to_string(),
-        ))
+        #[cfg(feature = "tile-http")]
+        {
+            let ext = request.format.extension();
+            let url = self.build_url_with_ext(&request.coord, ext);
+            let expected_mime = request.format.mime_type();
+
+            let mut tile_resp = self.fetch_with_retry(&url, expected_mime).await?;
+            // Stamp the actual requested coordinate (the placeholder in fetch_with_retry
+            // is only used before we know which coord is being requested).
+            tile_resp.coord = request.coord;
+            return Ok(tile_resp);
+        }
+
+        #[cfg(not(feature = "tile-http"))]
+        {
+            let _ = request; // suppress unused warning
+            Ok(TileResponse::new(
+                request.coord,
+                Bytes::new(),
+                request.format.mime_type().to_string(),
+            ))
+        }
     }
 
     async fn has_tile(&self, coord: &TileCoordinate) -> Result<bool> {
@@ -348,15 +536,74 @@ impl TileProtocol for XyzProtocol {
     }
 
     async fn get_tile_metadata(&self, coord: &TileCoordinate) -> Result<TileMetadata> {
-        Ok(TileMetadata {
-            coord: *coord,
-            size_bytes: 0,
-            format: TileFormat::Png,
-            created_at: None,
-            modified_at: None,
-            bbox: None,
-            metadata: std::collections::HashMap::new(),
-        })
+        #[cfg(feature = "tile-http")]
+        {
+            // Perform a HEAD-like request (GET is the safest fallback since many
+            // tile CDNs do not implement HEAD).  We use a PNG request by default.
+            let url = self.build_url(coord);
+            let response = self
+                .http_get_raw(&url)
+                .await
+                .map_err(StreamingError::Reqwest)?;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(StreamingError::TileNotFound);
+            }
+            if !status.is_success() {
+                return Err(StreamingError::HttpError {
+                    status: status.as_u16(),
+                    url: url.clone(),
+                });
+            }
+
+            // Extract Last-Modified and ETag from headers.
+            let modified_at = response
+                .headers()
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_http_date);
+
+            let size_bytes = response
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            let mut metadata_map = std::collections::HashMap::new();
+            if let Some(etag) = response
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+            {
+                metadata_map.insert("etag".to_owned(), etag.to_owned());
+            }
+
+            return Ok(TileMetadata {
+                coord: *coord,
+                size_bytes,
+                format: TileFormat::Png,
+                created_at: None,
+                modified_at,
+                bbox: None,
+                metadata: metadata_map,
+            });
+        }
+
+        #[cfg(not(feature = "tile-http"))]
+        {
+            let _ = coord;
+            Ok(TileMetadata {
+                coord: *coord,
+                size_bytes: 0,
+                format: TileFormat::Png,
+                created_at: None,
+                modified_at: None,
+                bbox: None,
+                metadata: std::collections::HashMap::new(),
+            })
+        }
     }
 
     fn zoom_levels(&self) -> (u8, u8) {
@@ -462,5 +709,30 @@ mod tests {
         assert_eq!(TileFormat::Png.mime_type(), "image/png");
         assert_eq!(TileFormat::Jpeg.extension(), "jpg");
         assert_eq!(TileFormat::WebP.to_string(), "webp");
+    }
+
+    #[test]
+    fn test_build_url() {
+        let proto = XyzProtocol::new(
+            "https://tiles.example.com/{z}/{x}/{y}.png".to_string(),
+            0,
+            18,
+        );
+        let coord = TileCoordinate::new(10, 512, 384);
+        let url = proto.build_url(&coord);
+        assert_eq!(url, "https://tiles.example.com/10/512/384.png");
+    }
+
+    #[cfg(feature = "tile-http")]
+    #[test]
+    fn test_build_url_with_ext() {
+        let proto = XyzProtocol::new(
+            "https://tiles.example.com/{z}/{x}/{y}.{ext}".to_string(),
+            0,
+            18,
+        );
+        let coord = TileCoordinate::new(7, 63, 42);
+        let url = proto.build_url_with_ext(&coord, "pbf");
+        assert_eq!(url, "https://tiles.example.com/7/63/42.pbf");
     }
 }

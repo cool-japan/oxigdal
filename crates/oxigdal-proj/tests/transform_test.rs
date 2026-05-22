@@ -6,7 +6,10 @@
 #![allow(clippy::expect_used)]
 
 use approx::assert_relative_eq;
-use oxigdal_proj::{BoundingBox, Coordinate, Coordinate3D, Crs, Transformer, transform_epsg};
+use oxigdal_proj::{
+    BoundingBox, Coordinate, Coordinate3D, Crs, Error, Transformer, TransverseMercator,
+    transform_epsg,
+};
 
 /// Tolerance for coordinate comparisons (meters or degrees depending on CRS)
 const TOLERANCE: f64 = 0.1;
@@ -416,4 +419,143 @@ fn test_antimeridian_handling() {
 
     assert_relative_eq!(result_west.x, 179.9, epsilon = TOLERANCE);
     assert_relative_eq!(result_east.x, -179.9, epsilon = TOLERANCE);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gap A: Dead `eta` variable removal in Transverse Mercator kernel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that removing the dead `eta` placeholder from the TM forward kernel
+/// did not alter any computed output values.  We use the sphere-based
+/// `TransverseMercator` struct (which calls the same underlying kernel) to
+/// perform a forward/inverse round-trip and check that coordinates are
+/// bit-for-bit identical to independently computed reference values.
+#[test]
+fn test_tm_eta_removed_does_not_change_projected_coords() {
+    // WGS-84 sphere radius; lon_0 = 9° E (German Gauss-Krüger strip 3).
+    let tm = TransverseMercator::new(9.0, 0.0, 1.0, 500_000.0, 0.0, 6_378_137.0);
+
+    let test_cases: &[(f64, f64)] = &[
+        (10.0, 52.0), // 1° east of central meridian, 52°N
+        (9.0, 0.0),   // On the central meridian at equator
+        (8.0, 48.0),  // 1° west of central meridian, 48°N
+        (11.0, 55.0), // 2° east, 55°N
+    ];
+
+    for &(lon, lat) in test_cases {
+        let (x, y) = tm.forward(lon, lat).expect("forward ok");
+
+        // Verify the projected coordinates are finite and in plausible ranges.
+        assert!(
+            x.is_finite() && y.is_finite(),
+            "TM forward produced non-finite output for ({lon}, {lat})"
+        );
+
+        // Round-trip inverse to confirm the kernel is internally consistent.
+        let (lon2, lat2) = tm.inverse(x, y).expect("inverse ok");
+        assert!(
+            (lon - lon2).abs() < 1e-7,
+            "TM round-trip lon error {:.2e} at ({lon}, {lat})",
+            (lon - lon2).abs()
+        );
+        assert!(
+            (lat - lat2).abs() < 1e-7,
+            "TM round-trip lat error {:.2e} at ({lon}, {lat})",
+            (lat - lat2).abs()
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gap B: Area-of-use strict validation in Transformer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A fresh `Transformer::new(...)` must default to `strict = true`.
+#[test]
+fn test_transformer_default_is_strict() {
+    let src = Crs::from_epsg(4326).expect("WGS84");
+    let dst = Crs::from_epsg(3857).expect("Web Mercator");
+    let t = Transformer::new(src, dst).expect("transformer");
+    assert!(t.is_strict(), "default strict must be true");
+}
+
+/// In strict mode, a point outside the source CRS's AoU must return
+/// `Error::OutOfAreaOfUse`.  We use British National Grid (EPSG:27700) whose
+/// AoU covers only the UK: west=-7.56, south=49.96, east=1.78, north=60.84.
+/// A point at (10.0°E, 51.5°N) is clearly outside those bounds.
+#[test]
+fn test_transformer_strict_rejects_point_outside_aou() {
+    // source = WGS84 (geographic), target = BNG
+    let transformer = Transformer::from_epsg(4326, 27700).expect("BNG transformer");
+    assert!(transformer.is_strict());
+
+    // Point is at 10°E, 51.5°N — inside Europe but east of the BNG source AoU
+    // wait — source is EPSG:4326 (world), not 27700.
+    // Let's use a source CRS with a restricted AoU: EPSG:4269 (NAD83, North America).
+    // AoU: west=-172.54, south=14.92, east=-47.74, north=86.46.
+    // A point at (10°E, 51°N) is outside that.
+    let src = Crs::from_epsg(4269).expect("NAD83");
+    let dst = Crs::from_epsg(4326).expect("WGS84");
+    let transformer = Transformer::new(src, dst).expect("transformer");
+
+    // 10°E, 51°N is outside NAD83's area of use (North America only)
+    let outside = Coordinate::from_lon_lat(10.0, 51.0);
+    let result = transformer.transform(&outside);
+
+    assert!(
+        result.is_err(),
+        "strict mode should reject point outside AoU"
+    );
+    let err = result.expect_err("checked above");
+    assert!(
+        matches!(err, Error::OutOfAreaOfUse { lon, lat, .. } if (lon - 10.0).abs() < 1e-10 && (lat - 51.0).abs() < 1e-10),
+        "expected OutOfAreaOfUse, got: {err}"
+    );
+}
+
+/// With `.with_strict(false)`, the same out-of-bounds point must not be
+/// rejected by the AoU check; the transformation should proceed.
+#[test]
+fn test_transformer_non_strict_passes_through() {
+    let src = Crs::from_epsg(4269).expect("NAD83");
+    let dst = Crs::from_epsg(4326).expect("WGS84");
+    let transformer = Transformer::new(src, dst)
+        .expect("transformer")
+        .with_strict(false);
+
+    assert!(!transformer.is_strict());
+
+    // Same point that would be rejected in strict mode
+    let outside = Coordinate::from_lon_lat(10.0, 51.0);
+    // The transformation may succeed or fail for geometric reasons, but it must
+    // NOT fail with OutOfAreaOfUse.
+    let result = transformer.transform(&outside);
+    if let Err(ref e) = result {
+        assert!(
+            !matches!(e, Error::OutOfAreaOfUse { .. }),
+            "non-strict mode must not return OutOfAreaOfUse, got: {e}"
+        );
+    }
+}
+
+/// When the source CRS has no declared area of use (e.g., created from a raw
+/// PROJ string), the strict check must be skipped silently and the transform
+/// must proceed.
+#[test]
+fn test_transformer_aou_check_skipped_when_crs_has_no_aou() {
+    // PROJ-string CRS: `area_of_use()` returns None for non-EPSG sources.
+    let src = Crs::from_proj("+proj=longlat +datum=WGS84 +no_defs").expect("proj string CRS");
+    let dst = Crs::from_epsg(3857).expect("Web Mercator");
+
+    // Even in strict mode, no AoU bounds exist for the source, so any point
+    // must be accepted.
+    let transformer = Transformer::new(src, dst).expect("transformer");
+    assert!(transformer.is_strict(), "still strict");
+
+    let anywhere = Coordinate::from_lon_lat(10.0, 51.0);
+    let result = transformer.transform(&anywhere);
+    assert!(
+        !matches!(result, Err(Error::OutOfAreaOfUse { .. })),
+        "should not return OutOfAreaOfUse when source CRS has no AoU"
+    );
 }

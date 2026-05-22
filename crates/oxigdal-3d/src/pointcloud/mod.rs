@@ -11,6 +11,9 @@ pub mod las;
 #[cfg(feature = "copc")]
 pub mod copc;
 
+#[cfg(feature = "copc")]
+pub mod copc_vlr;
+
 #[cfg(feature = "ept")]
 pub mod ept;
 
@@ -22,6 +25,13 @@ pub use las::{
 
 #[cfg(feature = "copc")]
 pub use copc::{CopcHierarchy, CopcInfo, CopcReader};
+
+#[cfg(feature = "copc")]
+pub use copc_vlr::{
+    COPC_HIERARCHY_RECORD_ID, COPC_INFO_RECORD_ID, COPC_USER_ID, CopcInfoVlrPayload,
+    HierarchyEntry, VoxelKey as CopcVoxelKey, find_copc_info_vlr, parse_copc_info,
+    parse_hierarchy_page,
+};
 
 #[cfg(feature = "ept")]
 pub use ept::{EptMetadata, EptOctree, EptReader};

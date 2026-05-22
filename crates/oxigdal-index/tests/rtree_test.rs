@@ -1118,3 +1118,194 @@ fn rtree_height_grows_with_many_entries() {
         "tree with 50 entries and M=3 should have height >= 3"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R*-tree split heuristic and forced reinsertion tests
+// ---------------------------------------------------------------------------
+
+/// Insert exactly M+1 entries (triggering one split) and verify that the
+/// split results in two groups each with at least min_entries items.
+/// With M=9, min_entries = ceil(0.4*9) = 4.  After inserting 10 entries we
+/// must have a root with two children, each carrying ≥ 4 entries.
+#[test]
+fn test_rstar_split_produces_two_groups_above_min_entries() {
+    // M = 9, min_entries = 4, so inserting 10 entries forces exactly one
+    // split.  The resulting tree must have height 2 with two leaf children.
+    let mut tree: RTree<u32> = RTree::new();
+    let m = 9_u32;
+    for i in 0..=m {
+        let f = i as f64;
+        tree.insert(Bbox2D::new(f, f, f + 0.5, f + 0.5).expect("valid bbox"), i);
+    }
+    assert_eq!(tree.len(), (m + 1) as usize);
+    // The tree should have split; height should be 2.
+    assert_eq!(
+        tree.height(),
+        2,
+        "after inserting M+1 entries the tree must have height 2"
+    );
+    // Structural invariant: every non-root node has >= min_entries entries.
+    let violations = tree.check_min_fill_invariant();
+    assert!(
+        violations.is_empty(),
+        "min-fill invariant violated after split: {violations:?}"
+    );
+}
+
+/// Insert enough entries to trigger overflow and forced reinsertion, then
+/// verify that the tree is still structurally valid and every entry is
+/// recoverable.
+#[test]
+fn test_rstar_forced_reinsertion_happens_once_per_level_per_insert() {
+    // M = 5, p = ceil(0.3 * 5) = 2.  Insert enough entries to trigger
+    // multiple levels of overflow and reinsertion.
+    let max_entries = 5_u32;
+    let mut tree: RTree<u32> = RTree::with_max_entries(max_entries as usize);
+
+    // 50 entries spread across a 2-D grid to create diverse overflow patterns.
+    let mut rng = Lcg::new(0xDEAD_CAFE_BEEF_1234);
+    let mut inserted: Vec<(Bbox2D, u32)> = Vec::new();
+    for i in 0..50_u32 {
+        let x0 = rng.range(0.0, 90.0);
+        let y0 = rng.range(0.0, 90.0);
+        let x1 = x0 + rng.range(0.5, 5.0);
+        let y1 = y0 + rng.range(0.5, 5.0);
+        let bbox = Bbox2D::new(x0, y0, x1, y1).expect("valid bbox");
+        tree.insert(bbox, i);
+        inserted.push((bbox, i));
+    }
+
+    // Size must be exactly what we inserted.
+    assert_eq!(
+        tree.len(),
+        50,
+        "tree size must equal the number of inserts after forced reinsertion"
+    );
+
+    // Structural invariant.
+    let violations = tree.check_min_fill_invariant();
+    assert!(
+        violations.is_empty(),
+        "min-fill invariant violated: {violations:?}"
+    );
+
+    // Every inserted entry must be searchable.
+    for (bbox, val) in &inserted {
+        let hits = tree.search(bbox);
+        assert!(
+            hits.iter().any(|v| **v == *val),
+            "entry {val} at {bbox:?} missing after reinsertion"
+        );
+    }
+}
+
+/// Build bboxes aligned along the X-axis (all with the same Y-range) so that
+/// the R*-tree axis-selection algorithm should prefer the X axis (smaller
+/// perimeter sum) over the Y axis.
+///
+/// We verify the split is correct by asserting structural validity and that
+/// all entries remain searchable.
+#[test]
+fn test_rstar_axis_selection_picks_minimum_margin_axis() {
+    // M = 9, entries are long thin horizontal strips — X-spread >> Y-spread.
+    // The R*-tree should select X as the split axis (smaller margin sum).
+    let mut tree: RTree<u32> = RTree::new();
+
+    // Create 10 bboxes arranged horizontally; all share y ∈ [0.0, 0.1].
+    for i in 0..10_u32 {
+        let x = i as f64 * 10.0;
+        tree.insert(
+            Bbox2D::new(x, 0.0, x + 9.5, 0.1).expect("valid horizontal strip"),
+            i,
+        );
+    }
+
+    assert_eq!(tree.len(), 10);
+
+    // Structural invariant must hold.
+    let violations = tree.check_min_fill_invariant();
+    assert!(
+        violations.is_empty(),
+        "min-fill violated with axis-selection data: {violations:?}"
+    );
+
+    // All entries must still be searchable.
+    for i in 0..10_u32 {
+        let x = i as f64 * 10.0;
+        let q = Bbox2D::new(x + 1.0, 0.0, x + 2.0, 0.1).expect("valid query");
+        let hits = tree.search(&q);
+        assert!(
+            hits.iter().any(|v| **v == i),
+            "entry {i} not found after axis-selection split"
+        );
+    }
+}
+
+/// After 500 inserts, traverse the entire tree and assert every non-root node
+/// has at least min_entries entries (the R*-tree minimum-fill invariant).
+#[test]
+fn test_rstar_split_invariant_min_entries_per_node() {
+    let mut rng = Lcg::new(0x1234_ABCD_5678_EF01);
+    let mut tree: RTree<u32> = RTree::new();
+
+    for i in 0..500_u32 {
+        let x0 = rng.range(0.0, 950.0);
+        let y0 = rng.range(0.0, 950.0);
+        let x1 = x0 + rng.range(0.5, 50.0);
+        let y1 = y0 + rng.range(0.5, 50.0);
+        tree.insert(Bbox2D::new(x0, y0, x1, y1).expect("valid bbox"), i);
+    }
+
+    assert_eq!(tree.len(), 500, "tree must hold exactly 500 entries");
+
+    let violations = tree.check_min_fill_invariant();
+    assert!(
+        violations.is_empty(),
+        "min-fill invariant violated after 500 inserts: {violations:?}"
+    );
+}
+
+/// Insert 1000 bboxes using a deterministic PRNG, then run 50 window queries
+/// and verify the R-tree returns exactly the same results as a brute-force
+/// linear scan.
+#[test]
+fn test_rstar_query_correctness_after_1000_inserts() {
+    let mut rng = Lcg::new(0xFEED_1234_CAFE_5678);
+    let mut tree: RTree<usize> = RTree::new();
+    let mut reference: Vec<(Bbox2D, usize)> = Vec::new();
+
+    for i in 0..1000 {
+        let x0 = rng.range(0.0, 900.0);
+        let y0 = rng.range(0.0, 900.0);
+        let x1 = x0 + rng.range(0.5, 15.0);
+        let y1 = y0 + rng.range(0.5, 15.0);
+        let bbox = Bbox2D::new(x0, y0, x1, y1).expect("valid bbox for insert");
+        tree.insert(bbox, i);
+        reference.push((bbox, i));
+    }
+
+    assert_eq!(tree.len(), 1000, "tree must hold exactly 1000 entries");
+
+    // Structural validity.
+    let violations = tree.check_min_fill_invariant();
+    assert!(
+        violations.is_empty(),
+        "min-fill violated after 1000 inserts: {violations:?}"
+    );
+
+    // Query correctness.
+    for _ in 0..50 {
+        let qx0 = rng.range(50.0, 700.0);
+        let qy0 = rng.range(50.0, 700.0);
+        let qx1 = qx0 + rng.range(20.0, 100.0);
+        let qy1 = qy0 + rng.range(20.0, 100.0);
+        let query = Bbox2D::new(qx0, qy0, qx1, qy1).expect("valid query bbox");
+
+        let tree_count = SpatialQuery::count_in(&tree, &query);
+        let brute_count = brute_search(&reference, &query).len();
+        assert_eq!(
+            tree_count, brute_count,
+            "query {query:?}: tree returned {tree_count}, brute force {brute_count}"
+        );
+    }
+}

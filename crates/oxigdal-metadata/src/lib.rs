@@ -48,6 +48,7 @@ pub mod datacite;
 pub mod dcat;
 pub mod error;
 pub mod extract;
+pub mod extractors;
 pub mod fgdc;
 pub mod inspire;
 pub mod iso19115;

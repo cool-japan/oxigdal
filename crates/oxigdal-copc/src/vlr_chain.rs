@@ -61,6 +61,29 @@ pub fn find_copc_hierarchy_vlr(vlrs: &[Vlr]) -> Result<&Vlr, CopcError> {
         })
 }
 
+/// Find the COPC hierarchy record (user_id = "copc", record_id = 1000) among
+/// Extended VLRs, used as a fallback when it is absent from the classic VLR
+/// chain.
+///
+/// Large COPC hierarchies may be stored as an EVLR after the point data rather
+/// than as a classic VLR. This helper scans the EVLR list for that record and
+/// returns a reference to it.
+///
+/// # Errors
+/// Returns [`CopcError::InvalidFormat`] when no matching EVLR is present.
+pub fn find_copc_hierarchy_in_evlrs(
+    evlrs: &[crate::extended_vlr::ExtendedVlr],
+) -> Result<&crate::extended_vlr::ExtendedVlr, CopcError> {
+    evlrs
+        .iter()
+        .find(|e| e.user_id_str() == "copc" && e.record_id == 1000)
+        .ok_or_else(|| {
+            CopcError::InvalidFormat(
+                "No COPC hierarchy EVLR (user_id=\"copc\", record_id=1000)".into(),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

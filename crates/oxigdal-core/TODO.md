@@ -1,5 +1,9 @@
 # TODO: oxigdal-core
 
+> **Purpose:** Core abstractions for OxiGDAL — Pure Rust GDAL reimplementation with zero-copy buffers and cloud-native support
+> **Status (2026-05-16):** 13,527 Rust LoC · 341 tests · 0 real-code stubs
+> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+
 ## High Priority
 - [x] Add `RasterBuffer` typed accessors (get_f32, get_f64, get_u16, etc.) with bounds checking
 - [x] Implement `Dataset` trait as a unified interface for raster and vector drivers (planned 2026-04-17)
@@ -20,6 +24,31 @@
   - **Files:** `crates/oxigdal-core/src/buffer/band_iterator.rs` (~120 new lines + inline tests).
   - **Tests:** `test_from_bil_roundtrip` (2×3×4 u8), `test_from_bil_to_bsq_equivalence`, `test_from_bil_mismatched_size`, `test_from_bil_various_types` (u16/i32/f32/f64).
 - [x] Implement `From<RasterBuffer>` for Arrow `RecordBatch` (arrow feature)
+- [x] Implement reverse `RasterBuffer::from_arrow_array()` (completed 2026-05-16)
+  - **Goal:** Round-trip Arrow → RasterBuffer to match the existing forward path (`From<RasterBuffer>` for `RecordBatch`). Public API at `crates/oxigdal-core/src/buffer/mod.rs:1088` currently bails with `OxiGdalError::NotSupported { operation: "Arrow array conversion" }`.
+  - **Verified gap:** `// This is a simplified implementation\n// A full implementation would handle all Arrow types` (buffer/mod.rs:1089-1090) — the function signature is `pub fn from_arrow_array<A: Array>(_array: &A, _width: u64, _height: u64) -> Result<Self>` with all parameters underscore-prefixed (i.e. unused).
+  - **Design:**
+    1. Downcast `&A` via Arrow's `as_any()` to concrete typed arrays (`UInt8Array`, `UInt16Array`, `Int16Array`, `Int32Array`, `UInt32Array`, `Int64Array`, `Float32Array`, `Float64Array`).
+    2. Dispatch on Arrow `DataType` → `RasterDataType` mapping; fail with `NotSupported` only for unsupported Arrow types (lists/structs/strings).
+    3. Validate `width * height == array.len()`; reject mismatch via `InvalidParameter`.
+    4. Copy values into a `RasterBuffer` of the matching `RasterDataType`. For nullable Arrow arrays, populate `nodata` from `array.nulls()` if present.
+  - **Files:**
+    - `crates/oxigdal-core/src/buffer/mod.rs` (replace stub at line 1088, ~80 new LoC).
+    - `crates/oxigdal-core/src/buffer/arrow_convert.rs` (existing test module — add roundtrip tests).
+  - **Tests:** `test_from_arrow_uint8_roundtrip`, `test_from_arrow_float32_roundtrip`, `test_from_arrow_float64_roundtrip`, `test_from_arrow_size_mismatch_errors`, `test_from_arrow_unsupported_type_errors`, `test_from_arrow_nullable_propagates_nodata`.
+  - **Prerequisites:** None — typed Arrow arrays already imported in `arrow_convert.rs`.
+  - **Risk:** Endianness — Arrow LE matches RasterBuffer's `to_ne_bytes` only on LE hosts; document constraint or always normalise. Nullable arrays: nodata sentinel selection per dtype (e.g. `f32::NAN`, `i32::MIN`).
+- [x] Implement `RasterBuffer::fill_value()` for complex dtypes `CFloat32`/`CFloat64` (completed 2026-05-16)
+  - **Goal:** `RasterBuffer::fill_value()` currently no-ops for complex pixel types at `buffer/mod.rs:235-238`. Fill with `(value, 0)` per-pair to honour the documented "fill with (value, 0)" intent.
+  - **Verified gap:** `RasterDataType::CFloat32 | RasterDataType::CFloat64 => { // Complex types: fill with (value, 0) // This is a simplified implementation }` (buffer/mod.rs:235-238) — empty match arm; callers receive an uninitialised buffer.
+  - **Design:**
+    1. `CFloat32`: pack 8 bytes per pixel = `[real_f32_ne, imag_f32_ne(=0.0)]`. Loop `chunks_exact_mut(8)` writing the pair.
+    2. `CFloat64`: pack 16 bytes per pixel = `[real_f64_ne, imag_f64_ne(=0.0)]`. Loop `chunks_exact_mut(16)`.
+    3. Match existing pattern of other branches (e.g. `RasterDataType::Float32` at the same site).
+  - **Files:** `crates/oxigdal-core/src/buffer/mod.rs` (replace lines 235-238, ~14 new LoC).
+  - **Tests:** `test_fill_value_cfloat32_writes_real_zero_imag`, `test_fill_value_cfloat64_writes_real_zero_imag`.
+  - **Prerequisites:** None.
+  - **Risk:** Minor. Endianness uses `to_ne_bytes` per existing convention.
 - [ ] Add `no_std` + `alloc` support for `RasterBuffer` (currently std-only internals)
 - [x] Implement `SpatialReference` type wrapping CRS info for core-level reprojection awareness
 
@@ -86,3 +115,10 @@
   - **Tests:** `test_color_table_roundtrip`, `test_color_entry_from_tuples`, `test_to_rgba_bytes_indexed_u8`, `test_grayscale_ramp_linear`, `test_color_table_serde_roundtrip`.
   - **Risk:** Minor. No cross-crate dependencies.
 - [ ] Add benchmark suite comparing buffer operations against raw slice ops
+
+## Cross-crate dependencies
+- **Blocks:** Every other crate in the workspace (78 crates depend on `oxigdal-core` for `RasterBuffer`, `Dataset`, `Result`/`Error`, `GeoTransform`, `BoundingBox`, `FieldValue`, `Geometry`, `DataSource`, etc.)
+- **Blocked by:** None (foundation crate); pure Rust foundation libs only (`scirs2-core`, `oxiarc-*`, `oxicode`)
+
+---
+*Last audited: 2026-05-16*

@@ -59,7 +59,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-mobile-enhanced = "0.1.4"
+oxigdal-mobile-enhanced = "0.1.5"
 ```
 
 ### Feature Flags

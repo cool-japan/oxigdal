@@ -9,6 +9,6 @@ pub mod stage;
 pub mod zerocopy;
 
 pub use builder::{PipelineBuilder, PipelineConfig};
-pub use executor::{PipelineExecutor, ExecutionStats};
+pub use executor::{ExecutionStats, PipelineExecutor};
 pub use stage::{PipelineStage, StageResult};
-pub use zerocopy::{ZeroCopyBuffer, SharedBuffer};
+pub use zerocopy::{SharedBuffer, ZeroCopyBuffer};

@@ -86,3 +86,5 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 crates/oxigdal-node/oxigdal.darwin-arm64.node
+
+target

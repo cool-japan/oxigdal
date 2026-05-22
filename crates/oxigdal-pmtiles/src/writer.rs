@@ -18,6 +18,9 @@ use std::path::Path;
 use crate::error::PmTilesError;
 use crate::header::{Compression, PMTILES_HEADER_SIZE, PMTILES_MAGIC, TileType};
 use crate::hilbert::zxy_to_tile_id;
+use crate::layout::{
+    LayoutStrategy, analyze_tile_ordering, apply_strategy_to_writer, choose_strategy,
+};
 use crate::varint::encode_varint_into;
 
 /// Root directory size threshold (bytes) above which leaf directories are used.
@@ -191,8 +194,22 @@ struct DirectorySplit {
 ///
 /// Leaf entries in the root have `run_length == 0`, pointing into the leaf
 /// section by byte offset and length.
-fn split_into_leaves(entries: Vec<DirEntry>) -> Result<DirectorySplit, PmTilesError> {
-    // Probe root size first.
+///
+/// When `compression` is anything other than [`Compression::None`] (and the
+/// `compression` feature is enabled), each leaf chunk's serialised bytes are
+/// individually compressed before being appended to `leaf_bytes`.  The root
+/// entry's `length` records the compressed byte length, which is what the
+/// reader needs to extract and decompress that single leaf.
+fn split_into_leaves(
+    entries: Vec<DirEntry>,
+    compression: &Compression,
+) -> Result<DirectorySplit, PmTilesError> {
+    // Probe root size first using the *uncompressed* encoding.  When the root
+    // directory itself is later compressed (in `build`), the threshold check
+    // is intentionally based on the uncompressed size: leaf splitting affects
+    // the directory-structure cost regardless of how the bytes are eventually
+    // stored, and the spec's ~16 kB suggestion is about random-access
+    // friendliness of the tree.
     let root_serialised = encode_directory(&entries)?;
     if root_serialised.len() <= LEAF_SPLIT_THRESHOLD {
         return Ok(DirectorySplit {
@@ -211,15 +228,21 @@ fn split_into_leaves(entries: Vec<DirEntry>) -> Result<DirectorySplit, PmTilesEr
 
     for chunk in entries.chunks(chunk_size) {
         let leaf_serialised = encode_directory(chunk)?;
+        // Per-leaf compression: the reader extracts each leaf by absolute
+        // (offset, length) within the leaf-dirs section and then decompresses
+        // it in isolation, so each chunk MUST be its own compression frame.
+        let leaf_payload = compress_internal_section(&leaf_serialised, compression)?;
+
         let leaf_offset = leaf_bytes.len() as u64;
-        let leaf_length = u32::try_from(leaf_serialised.len()).map_err(|_| {
+        let leaf_length = u32::try_from(leaf_payload.len()).map_err(|_| {
             PmTilesError::InvalidFormat("Leaf directory exceeds u32::MAX bytes".into())
         })?;
 
         // Root entry: run_length == 0 signals a leaf pointer.
         // `tile_id` = first tile in the leaf chunk.
         // `offset` = byte offset within the leaf_dirs section.
-        // `length` = byte length of this leaf directory.
+        // `length` = byte length of this leaf directory (compressed when an
+        //            internal compression is in effect).
         root_entries.push(DirEntry {
             tile_id: chunk[0].tile_id,
             offset: leaf_offset,
@@ -227,13 +250,53 @@ fn split_into_leaves(entries: Vec<DirEntry>) -> Result<DirectorySplit, PmTilesEr
             run_length: 0,
         });
 
-        leaf_bytes.extend_from_slice(&leaf_serialised);
+        leaf_bytes.extend_from_slice(&leaf_payload);
     }
 
     Ok(DirectorySplit {
         root_entries,
         leaf_bytes,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Internal compression dispatch (root / leaf directories + metadata)
+// ---------------------------------------------------------------------------
+
+/// Compress `data` using the archive's `internal_compression` algorithm.
+///
+/// * [`Compression::None`] / [`Compression::Unknown`] — returns a copy of
+///   `data` unmodified, matching the reader's pass-through semantics.
+/// * Other algorithms require the `compression` Cargo feature.
+///
+/// # Errors
+/// * [`PmTilesError::UnsupportedCompression`] when a non-`None` algorithm is
+///   requested but the `compression` feature is disabled at compile time.
+/// * [`PmTilesError::Decompression`] when the underlying OxiARC codec reports
+///   a failure (the variant is named after decompression but is reused for
+///   compression errors throughout the crate for consistency).
+fn compress_internal_section(
+    data: &[u8],
+    compression: &Compression,
+) -> Result<Vec<u8>, PmTilesError> {
+    match compression {
+        Compression::None | Compression::Unknown => Ok(data.to_vec()),
+        #[cfg(feature = "compression")]
+        Compression::Gzip => {
+            // Default to compression level 6 (zlib's classic "balanced" preset)
+            // — this matches the level used by [`crate::transcode`].
+            oxiarc_archive::gzip::compress(data, 6)
+                .map_err(|e| PmTilesError::Decompression(format!("Gzip compression failed: {e}")))
+        }
+        #[cfg(feature = "compression")]
+        Compression::Brotli => oxiarc_archive::brotli::compress_with_quality(data, 6)
+            .map_err(|e| PmTilesError::Decompression(format!("Brotli compression failed: {e}"))),
+        #[cfg(feature = "compression")]
+        Compression::Zstd => oxiarc_archive::zstd::compress(data)
+            .map_err(|e| PmTilesError::Decompression(format!("Zstd compression failed: {e}"))),
+        #[cfg(not(feature = "compression"))]
+        _ => Err(PmTilesError::UnsupportedCompression),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +434,16 @@ pub struct PmTilesBuilder {
     center_lon_e7: i32,
     center_lat_e7: i32,
     center_zoom: u8,
+    internal_compression: Compression,
+    tile_compression: Compression,
     tiles: Vec<PendingTile>,
+    /// Directory layout strategy.  [`LayoutStrategy::Auto`] (the default) is
+    /// resolved from a tile-ordering analysis at [`build`](Self::build) time.
+    layout_strategy: LayoutStrategy,
+    /// Explicit override for the header `clustered` flag, set by
+    /// [`apply_strategy_to_writer`] once a concrete strategy is resolved.
+    /// `None` falls back to the deduplication-derived default.
+    clustered_override: Option<bool>,
 }
 
 impl PmTilesBuilder {
@@ -389,13 +461,74 @@ impl PmTilesBuilder {
             center_lon_e7: 0,
             center_lat_e7: 0,
             center_zoom: min_zoom,
+            internal_compression: Compression::None,
+            tile_compression: Compression::None,
             tiles: Vec::new(),
+            layout_strategy: LayoutStrategy::Auto,
+            clustered_override: None,
         }
+    }
+
+    /// Set the tile payload compression header value.
+    ///
+    /// This only records the compression byte in the PMTiles header; it does
+    /// not transform the tile bytes themselves.  The caller is responsible for
+    /// supplying tile payloads that are already encoded in the declared
+    /// algorithm.  Used by `crate::transcode` (feature-gated behind
+    /// `compression`) when re-compressing archives.
+    pub fn set_tile_compression(&mut self, c: Compression) -> &mut Self {
+        self.tile_compression = c;
+        self
+    }
+
+    /// Set the directory/metadata compression algorithm.
+    ///
+    /// When set to any value other than [`Compression::None`] (and the
+    /// `compression` Cargo feature is enabled), [`Self::build`] will compress
+    /// the root directory, every leaf directory, and the JSON metadata block
+    /// using the chosen algorithm before they are written into the output
+    /// archive.  The compression byte at header offset 97 is updated to
+    /// match, so a compliant reader (such as [`crate::PmTilesReader`]) will
+    /// transparently decompress these regions on load.
+    ///
+    /// [`Compression::Unknown`] is treated identically to [`Compression::None`]
+    /// at write time — the directory/metadata bytes are emitted verbatim.
+    ///
+    /// When the `compression` feature is **not** enabled, passing a non-`None`
+    /// algorithm will cause [`Self::build`] to return
+    /// [`PmTilesError::UnsupportedCompression`].
+    pub fn set_internal_compression(&mut self, c: Compression) -> &mut Self {
+        self.internal_compression = c;
+        self
     }
 
     /// Set the JSON metadata string.
     pub fn set_metadata(&mut self, json: String) {
         self.metadata_json = Some(json);
+    }
+
+    /// Set the directory [`LayoutStrategy`].
+    ///
+    /// Defaults to [`LayoutStrategy::Auto`], which is resolved from a
+    /// tile-ordering analysis at [`build`](Self::build) time.  An explicit
+    /// strategy is honoured directly.  Returns `&mut Self` for chaining.
+    pub fn set_layout_strategy(&mut self, strategy: LayoutStrategy) -> &mut Self {
+        self.layout_strategy = strategy;
+        self
+    }
+
+    /// Return the configured directory [`LayoutStrategy`].
+    pub fn layout_strategy(&self) -> LayoutStrategy {
+        self.layout_strategy
+    }
+
+    /// Override the header `clustered` flag directly.
+    ///
+    /// Used by [`apply_strategy_to_writer`] once a concrete
+    /// [`LayoutStrategy`] is resolved.  Setting this takes precedence over the
+    /// deduplication-derived default at [`build`](Self::build) time.
+    pub(crate) fn set_clustered_flag(&mut self, clustered: bool) {
+        self.clustered_override = Some(clustered);
     }
 
     /// Set the geographic bounding box in decimal degrees.
@@ -433,9 +566,131 @@ impl PmTilesBuilder {
         Ok(())
     }
 
+    /// Add a tile using a raw Hilbert-curve tile ID (bypasses zoom validation).
+    ///
+    /// This is intended for archive compaction and copy operations where the
+    /// tile ID is already known and correct.
+    pub fn add_tile_by_id(&mut self, tile_id: u64, data: &[u8]) -> Result<(), PmTilesError> {
+        self.tiles.push(PendingTile {
+            tile_id,
+            data: data.to_vec(),
+        });
+        Ok(())
+    }
+
     /// Return the number of tiles added so far.
     pub fn tile_count(&self) -> usize {
         self.tiles.len()
+    }
+
+    // ------------------------------------------------------------------
+    // Auto-derivation helpers (bounds / zoom / center from tile set)
+    // ------------------------------------------------------------------
+
+    /// Derive the geographic bounding box automatically from the tiles added
+    /// so far by computing the union of all tile extents in WGS-84 degrees.
+    ///
+    /// When no tiles have been added the existing bounds are left unchanged.
+    /// This is most useful just before calling [`build`](Self::build).
+    ///
+    /// Returns `&mut self` for method chaining.
+    pub fn auto_bounds(&mut self) -> &mut Self {
+        use crate::hilbert::tile_id_to_zxy;
+        use crate::webmerc::tile_bounds_lonlat;
+
+        if self.tiles.is_empty() {
+            return self;
+        }
+
+        let mut min_lon = f64::INFINITY;
+        let mut max_lon = f64::NEG_INFINITY;
+        let mut min_lat = f64::INFINITY;
+        let mut max_lat = f64::NEG_INFINITY;
+
+        for tile in &self.tiles {
+            if let Ok((z, x, y)) = tile_id_to_zxy(tile.tile_id) {
+                let (tl, bl, tr, br) = tile_bounds_lonlat(z, x, y);
+                if tl < min_lon {
+                    min_lon = tl;
+                }
+                if bl < min_lat {
+                    min_lat = bl;
+                }
+                if tr > max_lon {
+                    max_lon = tr;
+                }
+                if br > max_lat {
+                    max_lat = br;
+                }
+            }
+        }
+
+        if min_lon.is_finite() {
+            self.min_lon_e7 = (min_lon * 1e7).round() as i32;
+            self.max_lon_e7 = (max_lon * 1e7).round() as i32;
+            self.min_lat_e7 = (min_lat * 1e7).round() as i32;
+            self.max_lat_e7 = (max_lat * 1e7).round() as i32;
+        }
+        self
+    }
+
+    /// Derive the zoom range (`min_zoom`, `max_zoom`) from the zoom levels of
+    /// tiles already added to the builder.
+    ///
+    /// When no tiles have been added the existing values are left unchanged.
+    /// Returns `&mut self` for method chaining.
+    pub fn auto_zoom_range(&mut self) -> &mut Self {
+        use crate::hilbert::tile_id_to_zxy;
+
+        if self.tiles.is_empty() {
+            return self;
+        }
+
+        let mut min_z = u8::MAX;
+        let mut max_z = 0u8;
+
+        for tile in &self.tiles {
+            if let Ok((z, _, _)) = tile_id_to_zxy(tile.tile_id) {
+                if z < min_z {
+                    min_z = z;
+                }
+                if z > max_z {
+                    max_z = z;
+                }
+            }
+        }
+
+        if min_z <= max_z {
+            self.min_zoom = min_z;
+            self.max_zoom = max_z;
+        }
+        self
+    }
+
+    /// Set the default view centre to the midpoint of the current bounding box
+    /// and the zoom level to `min_zoom`.
+    ///
+    /// Call [`auto_bounds`](Self::auto_bounds) (or [`set_bounds`](Self::set_bounds))
+    /// first so that the bounding box reflects the actual tile coverage.
+    /// Returns `&mut self` for method chaining.
+    pub fn auto_center(&mut self) -> &mut Self {
+        let center_lon = (self.min_lon_e7 as f64 + self.max_lon_e7 as f64) / 2.0 / 1e7;
+        let center_lat = (self.min_lat_e7 as f64 + self.max_lat_e7 as f64) / 2.0 / 1e7;
+        self.center_lon_e7 = (center_lon * 1e7).round() as i32;
+        self.center_lat_e7 = (center_lat * 1e7).round() as i32;
+        self.center_zoom = self.min_zoom;
+        self
+    }
+
+    /// Convenience wrapper: calls [`auto_zoom_range`](Self::auto_zoom_range),
+    /// [`auto_bounds`](Self::auto_bounds), and [`auto_center`](Self::auto_center)
+    /// in that order.
+    ///
+    /// After this call the archive header will reflect the actual zoom levels,
+    /// geographic extent, and centre of the tiles that were added.
+    /// Returns `&mut self` for method chaining.
+    pub fn auto_all(&mut self) -> &mut Self {
+        self.auto_zoom_range().auto_bounds().auto_center()
     }
 
     /// Consume the builder and produce a complete PMTiles v3 archive as bytes.
@@ -498,6 +753,25 @@ impl PmTilesBuilder {
         let unique_contents = seen_hashes.len() as u64;
 
         // ------------------------------------------------------------------
+        // Step 1b: Resolve the directory layout strategy.
+        //
+        // Build a `(tile_id, data_offset, data_length)` manifest from the raw
+        // (pre-run-length) entries, analyse it, resolve `Auto` to a concrete
+        // strategy, and apply it to the builder's `clustered` override.  An
+        // explicit override (set directly via `set_clustered_flag`) wins over
+        // the resolution; otherwise the resolved strategy drives the flag.
+        // ------------------------------------------------------------------
+        let ordering_manifest: Vec<(u64, u64, u64)> = raw_entries
+            .iter()
+            .map(|e| (e.tile_id, e.offset, u64::from(e.length)))
+            .collect();
+        let analysis = analyze_tile_ordering(&ordering_manifest);
+        let resolved_strategy = choose_strategy(&analysis, self.layout_strategy);
+        if self.clustered_override.is_none() {
+            apply_strategy_to_writer(&mut self, resolved_strategy);
+        }
+
+        // ------------------------------------------------------------------
         // Step 2: Run-length compression.
         // Consecutive tiles with the same (offset, length) and contiguous IDs
         // are merged into a single directory entry.
@@ -507,21 +781,38 @@ impl PmTilesBuilder {
 
         // ------------------------------------------------------------------
         // Step 3: Leaf directory split (if root is too large).
+        // When `internal_compression` is set, each leaf chunk is compressed
+        // independently inside `split_into_leaves` so that the reader can
+        // extract and decompress one leaf at a time without scanning the
+        // entire leaf-dirs section.
         // ------------------------------------------------------------------
-        let split = split_into_leaves(compressed_entries)?;
+        let split = split_into_leaves(compressed_entries, &self.internal_compression)?;
 
-        let root_dir_bytes = encode_directory(&split.root_entries)?;
+        let root_dir_uncompressed = encode_directory(&split.root_entries)?;
+        // The root directory is compressed (when an internal compression is
+        // selected) as a single frame.  Readers fetch the whole region using
+        // header.root_dir_offset / root_dir_length, so a single frame is the
+        // natural unit.
+        let root_dir_bytes =
+            compress_internal_section(&root_dir_uncompressed, &self.internal_compression)?;
         let leaf_dir_bytes = split.leaf_bytes;
 
         // ------------------------------------------------------------------
         // Step 4: Encode metadata.
+        //
+        // JSON metadata defaults to `"{}"` when the caller did not supply
+        // one.  When an internal compression is selected, the metadata block
+        // is compressed as a single frame as well — matching what
+        // [`PmTilesMetadata::from_bytes`] expects on the reader side.
         // ------------------------------------------------------------------
-        let metadata_bytes = self
+        let metadata_uncompressed = self
             .metadata_json
             .as_deref()
             .unwrap_or("{}")
             .as_bytes()
             .to_vec();
+        let metadata_bytes =
+            compress_internal_section(&metadata_uncompressed, &self.internal_compression)?;
 
         // ------------------------------------------------------------------
         // Step 5: Compute section offsets.
@@ -556,10 +847,12 @@ impl PmTilesBuilder {
             tile_entries: tile_entries_count,
             tile_contents: unique_contents,
             // Clustered = tiles in tile-id order with offsets monotonically
-            // increasing.  Dedup breaks this for duplicate tiles.
-            clustered: !had_dedup,
-            internal_compression: Compression::None,
-            tile_compression: Compression::None,
+            // increasing.  When a layout strategy resolved an explicit flag
+            // (`clustered_override`), honour it; otherwise fall back to the
+            // deduplication-derived default (dedup breaks clustering).
+            clustered: self.clustered_override.unwrap_or(!had_dedup),
+            internal_compression: self.internal_compression,
+            tile_compression: self.tile_compression,
             tile_type: self.tile_type,
             min_zoom: self.min_zoom,
             max_zoom: self.max_zoom,

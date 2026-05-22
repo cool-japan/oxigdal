@@ -157,7 +157,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.85"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -187,21 +187,24 @@ async-stream = "0.3"
 arrow = { version = "58", default-features = false }
 arrow-array = "58"
 arrow-buffer = "58"
+arrow-ipc = "58"
 arrow-schema = "58"
 parquet = { version = "58", default-features = false }
 
 # Compression - COOLJAPAN Pure Rust Policy (oxiarc ecosystem)
 # Use oxiarc-* crates instead of C-based compression libraries
-oxiarc-archive = "0.2.6"  # ZIP, TAR, GZIP, LZH, XZ archive formats
-oxiarc-core = "0.2.6"     # Core components for OxiArc
-oxiarc-deflate = "0.2.6"  # Pure Rust DEFLATE (replacement for flate2)
-oxiarc-lzw = "0.2.6"      # Pure Rust LZW compression (updated from 0.2.2)
-oxiarc-lz4 = "0.2.6"      # Pure Rust LZ4 compression
-oxiarc-zstd = "0.2.6"     # Pure Rust Zstandard compression
-oxiarc-bzip2 = "0.2.6"    # Pure Rust BZip2 compression
-oxiarc-lzhuf = "0.2.6"    # Pure Rust LZH compression
-oxiarc-snappy = "0.2.6"   # Pure Rust Snappy compression (replacement for snap)
-oxiarc-brotli = "0.2.6"   # Pure Rust Brotli compression (replacement for brotli)
+# Updated to 0.2.8: rs3gw 0.2.1 requires oxiarc-deflate/lz4 ^0.2.8 which in turn
+# needs oxiarc-core 0.2.8 for OutputRingBuffer::{ring_snapshot,drain_output,restore_ring}
+oxiarc-archive = "0.3.0"  # ZIP, TAR, GZIP, LZH, XZ archive formats
+oxiarc-core = "0.3.0"     # Core components for OxiArc
+oxiarc-deflate = "0.3.0"  # Pure Rust DEFLATE (replacement for flate2)
+oxiarc-lzw = "0.3.0"      # Pure Rust LZW compression
+oxiarc-lz4 = "0.3.0"      # Pure Rust LZ4 compression
+oxiarc-zstd = "0.3.0"     # Pure Rust Zstandard compression
+oxiarc-bzip2 = "0.3.0"    # Pure Rust BZip2 compression
+oxiarc-lzhuf = "0.3.0"    # Pure Rust LZH compression
+oxiarc-snappy = "0.3.0"   # Pure Rust Snappy compression (replacement for snap)
+oxiarc-brotli = "0.3.0"   # Pure Rust Brotli compression (replacement for brotli)
 
 jpeg-decoder = "0.3"
 jpeg-encoder = "0.7"
@@ -216,7 +219,7 @@ toml = "1.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking", "json"] }
 
 # Storage backend
-rs3gw = "0.2"
+rs3gw = "0.2.1"
 
 # WASM support
 wasm-bindgen = "0.2"
@@ -263,10 +266,10 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # COOLJAPAN ecosystem
-scirs2-core = "0.4.2"
+scirs2-core = "0.4.4"
 # numrs2 = { version = "0.1", optional = true }
 # oxiblas = { version = "0.1", optional = true }
-oxicode = "0.2"
+oxicode = "0.2.3"
 
 # Logging
 tracing = "0.1"
@@ -295,7 +298,9 @@ lru = "0.17.0"
 tempfile = "3"
 quick-xml = "0.39"
 bytemuck = "1"
+half = { version = "2.7.1", features = ["bytemuck"] }
 dashmap = "6"
+ordered-float = "5.0"
 sysinfo = "0.38"
 tinytemplate = "1"
 
@@ -328,81 +333,82 @@ console_error_panic_hook = "0.1"
 serde-wasm-bindgen = "0.6"
 
 # Internal crates - core
-oxigdal-core = { path = "crates/oxigdal-core", version = "0.1.4" }
-oxigdal-algorithms = { path = "crates/oxigdal-algorithms", version = "0.1.4" }
-oxigdal-proj = { path = "crates/oxigdal-proj", version = "0.1.4" }
-oxigdal-qc = { path = "crates/oxigdal-qc", version = "0.1.4" }
+oxigdal-core = { path = "crates/oxigdal-core", version = "0.1.5" }
+oxigdal-algorithms = { path = "crates/oxigdal-algorithms", version = "0.1.5" }
+oxigdal-proj = { path = "crates/oxigdal-proj", version = "0.1.5" }
+oxigdal-qc = { path = "crates/oxigdal-qc", version = "0.1.5" }
 
 # Driver crates
-oxigdal-geotiff = { path = "crates/oxigdal-drivers/geotiff", version = "0.1.4" }
-oxigdal-geojson = { path = "crates/oxigdal-drivers/geojson", version = "0.1.4" }
-oxigdal-zarr = { path = "crates/oxigdal-drivers/zarr", version = "0.1.4" }
-oxigdal-flatgeobuf = { path = "crates/oxigdal-drivers/flatgeobuf", version = "0.1.4" }
-oxigdal-shapefile = { path = "crates/oxigdal-drivers/shapefile", version = "0.1.4" }
-oxigdal-netcdf = { path = "crates/oxigdal-drivers/netcdf", version = "0.1.4" }
-oxigdal-geoparquet = { path = "crates/oxigdal-drivers/geoparquet", version = "0.1.4" }
-oxigdal-hdf5 = { path = "crates/oxigdal-drivers/hdf5", version = "0.1.4" }
-oxigdal-vrt = { path = "crates/oxigdal-drivers/vrt", version = "0.1.4" }
-oxigdal-grib = { path = "crates/oxigdal-drivers/grib", version = "0.1.4" }
-oxigdal-jpeg2000 = { path = "crates/oxigdal-drivers/jpeg2000", version = "0.1.4" }
+oxigdal-geotiff = { path = "crates/oxigdal-drivers/geotiff", version = "0.1.5" }
+oxigdal-geojson = { path = "crates/oxigdal-drivers/geojson", version = "0.1.5" }
+oxigdal-geojson-stream = { path = "crates/oxigdal-geojson", version = "0.1.5" }
+oxigdal-zarr = { path = "crates/oxigdal-drivers/zarr", version = "0.1.5" }
+oxigdal-flatgeobuf = { path = "crates/oxigdal-drivers/flatgeobuf", version = "0.1.5" }
+oxigdal-shapefile = { path = "crates/oxigdal-drivers/shapefile", version = "0.1.5" }
+oxigdal-netcdf = { path = "crates/oxigdal-drivers/netcdf", version = "0.1.5" }
+oxigdal-geoparquet = { path = "crates/oxigdal-drivers/geoparquet", version = "0.1.5" }
+oxigdal-hdf5 = { path = "crates/oxigdal-drivers/hdf5", version = "0.1.5" }
+oxigdal-vrt = { path = "crates/oxigdal-drivers/vrt", version = "0.1.5" }
+oxigdal-grib = { path = "crates/oxigdal-drivers/grib", version = "0.1.5" }
+oxigdal-jpeg2000 = { path = "crates/oxigdal-drivers/jpeg2000", version = "0.1.5" }
 
 # Feature-specific crates
-oxigdal-wasm = { path = "crates/oxigdal-wasm", version = "0.1.4" }
-oxigdal-mobile = { path = "crates/oxigdal-mobile", version = "0.1.4" }
-oxigdal-cloud = { path = "crates/oxigdal-cloud", version = "0.1.4" }
-oxigdal-3d = { path = "crates/oxigdal-3d", version = "0.1.4" }
-oxigdal-server = { path = "crates/oxigdal-server", version = "0.1.4" }
-oxigdal-postgis = { path = "crates/oxigdal-postgis", version = "0.1.4" }
-oxigdal-analytics = { path = "crates/oxigdal-analytics", version = "0.1.4" }
-oxigdal-temporal = { path = "crates/oxigdal-temporal", version = "0.1.4" }
-oxigdal-terrain = { path = "crates/oxigdal-terrain", version = "0.1.4" }
-oxigdal-rs3gw = { path = "crates/oxigdal-rs3gw", version = "0.1.4" }
-oxigdal-distributed = { path = "crates/oxigdal-distributed", version = "0.1.4" }
-oxigdal-python = { path = "crates/oxigdal-python", version = "0.1.4" }
-oxigdal-stac = { path = "crates/oxigdal-stac", version = "0.1.4", default-features = false }
-oxigdal-ml = { path = "crates/oxigdal-ml", version = "0.1.4" }
-oxigdal-ml-foundation = { path = "crates/oxigdal-ml-foundation", version = "0.1.4" }
-oxigdal-metadata = { path = "crates/oxigdal-metadata", version = "0.1.4" }
-oxigdal-sensors = { path = "crates/oxigdal-sensors", version = "0.1.4" }
-oxigdal-gpu = { path = "crates/oxigdal-gpu", version = "0.1.4" }
-oxigdal-gpu-advanced = { path = "crates/oxigdal-gpu-advanced", version = "0.1.4" }
-oxigdal-bench = { path = "crates/oxigdal-bench", version = "0.1.4" }
-oxigdal-ws = { path = "crates/oxigdal-ws", version = "0.1.4" }
-oxigdal-websocket = { path = "crates/oxigdal-websocket", version = "0.1.4" }
-oxigdal-etl = { path = "crates/oxigdal-etl", version = "0.1.4" }
-oxigdal-services = { path = "crates/oxigdal-services", version = "0.1.4" }
-oxigdal-cache-advanced = { path = "crates/oxigdal-cache-advanced", version = "0.1.4" }
-oxigdal-cluster = { path = "crates/oxigdal-cluster", version = "0.1.4" }
-oxigdal-query = { path = "crates/oxigdal-query", version = "0.1.4" }
-oxigdal-compress = { path = "crates/oxigdal-compress", version = "0.1.4" }
-oxigdal-observability = { path = "crates/oxigdal-observability", version = "0.1.4" }
-oxigdal-security = { path = "crates/oxigdal-security", version = "0.1.4" }
-oxigdal-ha = { path = "crates/oxigdal-ha", version = "0.1.4" }
-oxigdal-gateway = { path = "crates/oxigdal-gateway", version = "0.1.4" }
-oxigdal-workflow = { path = "crates/oxigdal-workflow", version = "0.1.4" }
-oxigdal-cloud-enhanced = { path = "crates/oxigdal-cloud-enhanced", version = "0.1.4" }
-oxigdal-db-connectors = { path = "crates/oxigdal-db-connectors", version = "0.1.4" }
-oxigdal-drivers-advanced = { path = "crates/oxigdal-drivers-advanced", version = "0.1.4" }
-oxigdal-jupyter = { path = "crates/oxigdal-jupyter", version = "0.1.4" }
-oxigdal-dev-tools = { path = "crates/oxigdal-dev-tools", version = "0.1.4" }
-oxigdal-kinesis = { path = "crates/oxigdal-kinesis", version = "0.1.4" }
-oxigdal-mqtt = { path = "crates/oxigdal-mqtt", version = "0.1.4" }
-oxigdal-pubsub = { path = "crates/oxigdal-pubsub", version = "0.1.4" }
-oxigdal-streaming = { path = "crates/oxigdal-streaming", version = "0.1.4" }
-oxigdal-kafka = { path = "crates/oxigdal-kafka", version = "0.1.4" }
-oxigdal-mobile-enhanced = { path = "crates/oxigdal-mobile-enhanced", version = "0.1.4" }
-oxigdal-pwa = { path = "crates/oxigdal-pwa", version = "0.1.4" }
-oxigdal-sync = { path = "crates/oxigdal-sync", version = "0.1.4" }
-oxigdal-edge = { path = "crates/oxigdal-edge", version = "0.1.4" }
-oxigdal-offline = { path = "crates/oxigdal-offline", version = "0.1.4" }
-oxigdal-embedded = { path = "crates/oxigdal-embedded", version = "0.1.4" }
-oxigdal-node = { path = "crates/oxigdal-node", version = "0.1.4" }
-oxigdal-gpkg = { path = "crates/oxigdal-gpkg", version = "0.1.4" }
-oxigdal-mbtiles = { path = "crates/oxigdal-mbtiles", version = "0.1.4" }
-oxigdal-copc = { path = "crates/oxigdal-copc", version = "0.1.4" }
-oxigdal-pmtiles = { path = "crates/oxigdal-pmtiles", version = "0.1.4" }
-oxigdal-noalloc = { path = "crates/oxigdal-noalloc", version = "0.1.4" }
-oxigdal-index = { path = "crates/oxigdal-index", version = "0.1.4" }
+oxigdal-wasm = { path = "crates/oxigdal-wasm", version = "0.1.5" }
+oxigdal-mobile = { path = "crates/oxigdal-mobile", version = "0.1.5" }
+oxigdal-cloud = { path = "crates/oxigdal-cloud", version = "0.1.5" }
+oxigdal-3d = { path = "crates/oxigdal-3d", version = "0.1.5" }
+oxigdal-server = { path = "crates/oxigdal-server", version = "0.1.5" }
+oxigdal-postgis = { path = "crates/oxigdal-postgis", version = "0.1.5" }
+oxigdal-analytics = { path = "crates/oxigdal-analytics", version = "0.1.5" }
+oxigdal-temporal = { path = "crates/oxigdal-temporal", version = "0.1.5" }
+oxigdal-terrain = { path = "crates/oxigdal-terrain", version = "0.1.5" }
+oxigdal-rs3gw = { path = "crates/oxigdal-rs3gw", version = "0.1.5" }
+oxigdal-distributed = { path = "crates/oxigdal-distributed", version = "0.1.5" }
+oxigdal-python = { path = "crates/oxigdal-python", version = "0.1.5" }
+oxigdal-stac = { path = "crates/oxigdal-stac", version = "0.1.5" }
+oxigdal-ml = { path = "crates/oxigdal-ml", version = "0.1.5" }
+oxigdal-ml-foundation = { path = "crates/oxigdal-ml-foundation", version = "0.1.5" }
+oxigdal-metadata = { path = "crates/oxigdal-metadata", version = "0.1.5" }
+oxigdal-sensors = { path = "crates/oxigdal-sensors", version = "0.1.5" }
+oxigdal-gpu = { path = "crates/oxigdal-gpu", version = "0.1.5" }
+oxigdal-gpu-advanced = { path = "crates/oxigdal-gpu-advanced", version = "0.1.5" }
+oxigdal-bench = { path = "crates/oxigdal-bench", version = "0.1.5" }
+oxigdal-ws = { path = "crates/oxigdal-ws", version = "0.1.5" }
+oxigdal-websocket = { path = "crates/oxigdal-websocket", version = "0.1.5" }
+oxigdal-etl = { path = "crates/oxigdal-etl", version = "0.1.5" }
+oxigdal-services = { path = "crates/oxigdal-services", version = "0.1.5" }
+oxigdal-cache-advanced = { path = "crates/oxigdal-cache-advanced", version = "0.1.5" }
+oxigdal-cluster = { path = "crates/oxigdal-cluster", version = "0.1.5" }
+oxigdal-query = { path = "crates/oxigdal-query", version = "0.1.5" }
+oxigdal-compress = { path = "crates/oxigdal-compress", version = "0.1.5" }
+oxigdal-observability = { path = "crates/oxigdal-observability", version = "0.1.5" }
+oxigdal-security = { path = "crates/oxigdal-security", version = "0.1.5" }
+oxigdal-ha = { path = "crates/oxigdal-ha", version = "0.1.5" }
+oxigdal-gateway = { path = "crates/oxigdal-gateway", version = "0.1.5" }
+oxigdal-workflow = { path = "crates/oxigdal-workflow", version = "0.1.5" }
+oxigdal-cloud-enhanced = { path = "crates/oxigdal-cloud-enhanced", version = "0.1.5" }
+oxigdal-db-connectors = { path = "crates/oxigdal-db-connectors", version = "0.1.5" }
+oxigdal-drivers-advanced = { path = "crates/oxigdal-drivers-advanced", version = "0.1.5" }
+oxigdal-jupyter = { path = "crates/oxigdal-jupyter", version = "0.1.5" }
+oxigdal-dev-tools = { path = "crates/oxigdal-dev-tools", version = "0.1.5" }
+oxigdal-kinesis = { path = "crates/oxigdal-kinesis", version = "0.1.5" }
+oxigdal-mqtt = { path = "crates/oxigdal-mqtt", version = "0.1.5" }
+oxigdal-pubsub = { path = "crates/oxigdal-pubsub", version = "0.1.5" }
+oxigdal-streaming = { path = "crates/oxigdal-streaming", version = "0.1.5" }
+oxigdal-kafka = { path = "crates/oxigdal-kafka", version = "0.1.5" }
+oxigdal-mobile-enhanced = { path = "crates/oxigdal-mobile-enhanced", version = "0.1.5" }
+oxigdal-pwa = { path = "crates/oxigdal-pwa", version = "0.1.5" }
+oxigdal-sync = { path = "crates/oxigdal-sync", version = "0.1.5" }
+oxigdal-edge = { path = "crates/oxigdal-edge", version = "0.1.5" }
+oxigdal-offline = { path = "crates/oxigdal-offline", version = "0.1.5" }
+oxigdal-embedded = { path = "crates/oxigdal-embedded", version = "0.1.5" }
+oxigdal-node = { path = "crates/oxigdal-node", version = "0.1.5" }
+oxigdal-gpkg = { path = "crates/oxigdal-gpkg", version = "0.1.5" }
+oxigdal-mbtiles = { path = "crates/oxigdal-mbtiles", version = "0.1.5" }
+oxigdal-copc = { path = "crates/oxigdal-copc", version = "0.1.5" }
+oxigdal-pmtiles = { path = "crates/oxigdal-pmtiles", version = "0.1.5" }
+oxigdal-noalloc = { path = "crates/oxigdal-noalloc", version = "0.1.5" }
+oxigdal-index = { path = "crates/oxigdal-index", version = "0.1.5" }
 
 # Node.js bindings dependencies
 napi = "3"
@@ -515,7 +521,7 @@ aws-sdk-costexplorer = "1"
 
 # Scientific computing
 # scirs2-core already defined above in COOLJAPAN ecosystem section
-oxionnx = { version = "0.1.2", features = ["ndarray"] }
+oxionnx = { version = "0.1.3", features = ["ndarray"] }
 ndarray = "0.17"
 
 # Python bindings
@@ -523,14 +529,14 @@ numpy = "0.28"
 pyo3-build-config = "0.28"
 
 # SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant)
-scirs2-neural = "0.4"
-scirs2-autograd = "0.4"
-scirs2-optimize = "0.4"
-scirs2-datasets = "0.4"
-scirs2-metrics = "0.4"
-scirs2-linalg = "0.4"
-scirs2-vision = "0.4"
-scirs2-series = "0.4"
+scirs2-neural = "0.4.4"
+scirs2-autograd = "0.4.4"
+scirs2-optimize = "0.4.4"
+scirs2-datasets = "0.4.4"
+scirs2-metrics = "0.4.4"
+scirs2-linalg = "0.4.4"
+scirs2-vision = "0.4.4"
+scirs2-series = "0.4.4"
 
 # PostgreSQL
 tokio-postgres = "0.7"
@@ -578,7 +584,7 @@ num_cpus = "1"
 jupyter = "0.2"
 # NOTE: evcxr 0.18 uses json 0.12.4 (RUSTSEC-2022-0081: unmaintained). Low risk: dev tool only.
 evcxr = "0.21"
-plotters = "0.3"
+plotters = { version = "0.3", default-features = false, features = ["svg_backend", "bitmap_backend", "image", "all_series", "all_elements"] }
 plotters-backend = "0.3"
 # indicatif 0.18 replaced number_prefix with unit-prefix (resolves RUSTSEC-2025-0119)
 indicatif = "0.18"
@@ -627,3 +633,10 @@ opt-level = 3
 
 [profile.bench]
 inherits = "release"
+
+[patch.crates-io]
+# Interim: nightly Rust removed simd_minimum_number_nsz/simd_maximum_number_nsz
+# intrinsics that pathfinder_simd 0.5.6 still uses. Remove this patch when the
+# COOLJAPAN font crate replaces plotters in oxigdal-jupyter (and criterion's
+# html_reports path no longer matters).
+pathfinder_simd = { path = "vendor/pathfinder_simd" }

@@ -171,9 +171,98 @@ pub enum Error {
     #[error("PROJ library error: {0}")]
     ProjSysError(String),
 
+    /// Coordinate is outside the source CRS area of use
+    #[error("Coordinate ({lon}, {lat}) is outside area of use for CRS '{crs}'")]
+    OutOfAreaOfUse {
+        /// Longitude
+        lon: f64,
+        /// Latitude
+        lat: f64,
+        /// CRS description
+        crs: String,
+    },
+
+    /// Coordinate lies outside the registered area-of-use bounding box for
+    /// the source EPSG (raised by `Transformer` when the per-instance check
+    /// mode is `AreaOfUseCheck::Strict`).
+    #[error(
+        "coordinate ({lon}, {lat}) outside area-of-use for EPSG:{epsg} \
+         (west={west}, south={south}, east={east}, north={north})"
+    )]
+    OutsideAreaOfUse {
+        /// Longitude of the offending point (degrees, WGS84).
+        lon: f64,
+        /// Latitude of the offending point (degrees, WGS84).
+        lat: f64,
+        /// Source EPSG code whose area-of-use was violated.
+        epsg: u32,
+        /// Western bound of the area-of-use (degrees).
+        west: f64,
+        /// Southern bound of the area-of-use (degrees).
+        south: f64,
+        /// Eastern bound of the area-of-use (degrees).
+        east: f64,
+        /// Northern bound of the area-of-use (degrees).
+        north: f64,
+    },
+
+    /// NTv2 binary grid-shift parse error
+    #[error("NTv2 parse error: {0}")]
+    Ntv2ParseError(String),
+
+    /// Coordinate is outside all loaded NTv2 sub-grid extents
+    #[error("Coordinate ({lon}, {lat}) is outside NTv2 grid extent")]
+    Ntv2OutOfGrid {
+        /// Longitude in degrees
+        lon: f64,
+        /// Latitude in degrees
+        lat: f64,
+    },
+
+    /// Invalid arguments for compound CRS construction.
+    #[error("Invalid compound CRS: {reason}")]
+    InvalidCompoundCrs {
+        /// Reason the compound CRS is invalid
+        reason: String,
+    },
+
+    /// Geoid model required for vertical datum transformation is not available.
+    #[error("Geoid model not available for vertical CRS: {vertical_crs}")]
+    GeoidNotAvailable {
+        /// Name/description of the vertical CRS that requires a geoid model
+        vertical_crs: String,
+    },
+
+    /// Geoid grid file has an unexpected size, layout, or could not be read.
+    #[error("geoid file format: {0}")]
+    GeoidFileFormat(String),
+
+    /// No geoid model has been attached to a [`crate::transform::Transformer`]
+    /// that is being asked to perform a compound-CRS transform requiring a
+    /// vertical-datum shift.
+    #[error("no geoid model available for compound CRS transform")]
+    NoGeoidAvailable,
+
+    /// Error from PROJ.db SQLite file (always present so non-proj-db builds also compile)
+    #[error("PROJ.db error: {0}")]
+    ProjDbError(String),
+
     /// Generic error for cases not covered by specific error types
     #[error("{0}")]
     Other(String),
+
+    /// Pipeline PROJ string could not be parsed.
+    #[error("Pipeline parse error: {0}")]
+    PipelineParseError(String),
+
+    /// A step inside a coordinate pipeline failed.
+    #[error("Pipeline step {step} failed: {inner}")]
+    PipelineStepError {
+        /// Zero-based index of the failing step
+        step: usize,
+        /// Error message from the step
+        inner: String,
+    },
 }
 
 impl Error {
@@ -302,6 +391,39 @@ impl Error {
     #[cfg(feature = "std")]
     pub fn from_proj4rs<S: Into<String>>(message: S) -> Self {
         Self::Proj4rsError(message.into())
+    }
+
+    /// Creates an out-of-area-of-use error.
+    pub fn out_of_area_of_use<S: Into<String>>(lon: f64, lat: f64, crs: S) -> Self {
+        Self::OutOfAreaOfUse {
+            lon,
+            lat,
+            crs: crs.into(),
+        }
+    }
+
+    /// Creates an NTv2 parse error.
+    pub fn ntv2_parse_error<S: Into<String>>(message: S) -> Self {
+        Self::Ntv2ParseError(message.into())
+    }
+
+    /// Creates an NTv2 out-of-grid error.
+    pub fn ntv2_out_of_grid(lon: f64, lat: f64) -> Self {
+        Self::Ntv2OutOfGrid { lon, lat }
+    }
+
+    /// Creates an invalid compound CRS error.
+    pub fn invalid_compound_crs(reason: impl Into<String>) -> Self {
+        Self::InvalidCompoundCrs {
+            reason: reason.into(),
+        }
+    }
+
+    /// Creates a geoid-not-available error.
+    pub fn geoid_not_available(vertical_crs: impl Into<String>) -> Self {
+        Self::GeoidNotAvailable {
+            vertical_crs: vertical_crs.into(),
+        }
     }
 
     /// Creates a generic other error.

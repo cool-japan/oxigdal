@@ -56,4 +56,9 @@ ignore = [
     # RUSTSEC-2026-0099: `rustls-webpki` - wildcard cert name constraints bypass
     # Transitive dependency via AWS SDK. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0099",
+
+    # RUSTSEC-2026-0104: `rustls-webpki` - Reachable panic in certificate revocation list parsing
+    # Transitive dependency via rumqttc (latest stable 0.25.1 still pins the affected line).
+    # Cannot be fixed upstream by us — same pattern as RUSTSEC-2025-0134.
+    "RUSTSEC-2026-0104",
 ]

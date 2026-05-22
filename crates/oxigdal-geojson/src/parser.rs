@@ -17,6 +17,11 @@ pub struct GeoJsonParser {
     pub strict_mode: bool,
     /// Maximum JSON nesting depth (default `64`).
     pub max_depth: usize,
+    /// Optional coordinate precision (decimal places, 0–15).
+    /// When `Some(p)`, every parsed coordinate is rounded to `p` decimal
+    /// places using round-half-to-even semantics of `f64::round`.
+    /// Non-finite values (NaN, ±∞) are passed through unchanged.
+    pub coordinate_precision: Option<u8>,
 }
 
 impl Default for GeoJsonParser {
@@ -32,6 +37,7 @@ impl GeoJsonParser {
         Self {
             strict_mode: false,
             max_depth: 64,
+            coordinate_precision: None,
         }
     }
 
@@ -40,6 +46,30 @@ impl GeoJsonParser {
     pub fn strict(mut self) -> Self {
         self.strict_mode = true;
         self
+    }
+
+    /// Set coordinate precision (decimal places, clamped to `[0, 15]`).
+    ///
+    /// When set, every coordinate value extracted from the JSON is rounded
+    /// to `decimals` decimal places.  Non-finite values pass through
+    /// unchanged.  Call with `decimals = 6` for micro-degree precision.
+    #[must_use]
+    pub fn with_coordinate_precision(mut self, decimals: u8) -> Self {
+        self.coordinate_precision = Some(decimals.min(15));
+        self
+    }
+
+    /// Truncate `v` to the configured precision, or return `v` unchanged.
+    #[inline]
+    fn maybe_truncate(&self, v: f64) -> f64 {
+        match self.coordinate_precision {
+            None => v,
+            Some(_) if !v.is_finite() => v,
+            Some(p) => {
+                let scale = 10f64.powi(p as i32);
+                (v * scale).round() / scale
+            }
+        }
     }
 
     /// Parse a complete GeoJSON document from bytes.
@@ -180,7 +210,7 @@ impl GeoJsonParser {
 
         let mut features = Vec::with_capacity(features_arr.len());
         for feat_val in features_arr {
-            features.push(self.parse_feature(feat_val)?);
+            features.push(parse_feature_value(feat_val, None)?);
         }
 
         let bbox = parse_bbox(value.get("bbox"));
@@ -223,19 +253,19 @@ impl GeoJsonParser {
                 let coords = value
                     .get("coordinates")
                     .ok_or_else(|| GeoJsonError::MissingField("coordinates".into()))?;
-                parse_point_coords(coords)
+                self.parse_point_coords(coords)
             }
             "LineString" => {
                 let coords = value
                     .get("coordinates")
                     .ok_or_else(|| GeoJsonError::MissingField("coordinates".into()))?;
-                parse_linestring_coords(coords)
+                self.parse_linestring_coords(coords)
             }
             "Polygon" => {
                 let coords = value
                     .get("coordinates")
                     .ok_or_else(|| GeoJsonError::MissingField("coordinates".into()))?;
-                parse_polygon_coords(coords)
+                self.parse_polygon_coords(coords)
             }
             "MultiPoint" => {
                 let coords = value
@@ -254,11 +284,11 @@ impl GeoJsonParser {
                     .unwrap_or(false);
                 if has_z {
                     let pts: Result<Vec<[f64; 3]>, GeoJsonError> =
-                        arr.iter().map(parse_coord_3d).collect();
+                        arr.iter().map(|v| self.parse_coord_3d(v)).collect();
                     Ok(GeoJsonGeometry::MultiPointZ(pts?))
                 } else {
                     let pts: Result<Vec<[f64; 2]>, GeoJsonError> =
-                        arr.iter().map(parse_coord_2d).collect();
+                        arr.iter().map(|v| self.parse_coord_2d(v)).collect();
                     Ok(GeoJsonGeometry::MultiPoint(pts?))
                 }
             }
@@ -283,7 +313,7 @@ impl GeoJsonParser {
                             let pts_arr = line.as_array().ok_or_else(|| {
                                 GeoJsonError::InvalidCoordinates("expected array".into())
                             })?;
-                            pts_arr.iter().map(parse_coord_3d).collect()
+                            pts_arr.iter().map(|v| self.parse_coord_3d(v)).collect()
                         })
                         .collect();
                     Ok(GeoJsonGeometry::MultiLineStringZ(lines?))
@@ -294,7 +324,7 @@ impl GeoJsonParser {
                             let pts_arr = line.as_array().ok_or_else(|| {
                                 GeoJsonError::InvalidCoordinates("expected array".into())
                             })?;
-                            pts_arr.iter().map(parse_coord_2d).collect()
+                            pts_arr.iter().map(|v| self.parse_coord_2d(v)).collect()
                         })
                         .collect();
                     Ok(GeoJsonGeometry::MultiLineString(lines?))
@@ -329,7 +359,7 @@ impl GeoJsonParser {
                                     let ring_arr = ring.as_array().ok_or_else(|| {
                                         GeoJsonError::InvalidCoordinates("expected array".into())
                                     })?;
-                                    ring_arr.iter().map(parse_coord_3d).collect()
+                                    ring_arr.iter().map(|v| self.parse_coord_3d(v)).collect()
                                 })
                                 .collect()
                         })
@@ -348,7 +378,7 @@ impl GeoJsonParser {
                                     let ring_arr = ring.as_array().ok_or_else(|| {
                                         GeoJsonError::InvalidCoordinates("expected array".into())
                                     })?;
-                                    ring_arr.iter().map(parse_coord_2d).collect()
+                                    ring_arr.iter().map(|v| self.parse_coord_2d(v)).collect()
                                 })
                                 .collect()
                         })
@@ -372,6 +402,288 @@ impl GeoJsonParser {
                 got: other.into(),
             }),
         }
+    }
+
+    /// Parse a 2-D coordinate array `[x, y]`, applying precision truncation.
+    fn parse_coord_2d(&self, v: &serde_json::Value) -> Result<[f64; 2], GeoJsonError> {
+        let arr = v
+            .as_array()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("coordinate must be array".into()))?;
+        if arr.len() < 2 {
+            return Err(GeoJsonError::InvalidCoordinates(
+                "coordinate needs at least 2 elements".into(),
+            ));
+        }
+        let x = arr[0]
+            .as_f64()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("x is not a number".into()))?;
+        let y = arr[1]
+            .as_f64()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("y is not a number".into()))?;
+        Ok([self.maybe_truncate(x), self.maybe_truncate(y)])
+    }
+
+    /// Parse a 3-D coordinate array `[x, y, z]`, applying precision truncation.
+    fn parse_coord_3d(&self, v: &serde_json::Value) -> Result<[f64; 3], GeoJsonError> {
+        let arr = v
+            .as_array()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("coordinate must be array".into()))?;
+        if arr.len() < 3 {
+            return Err(GeoJsonError::InvalidCoordinates(
+                "Z coordinate needs at least 3 elements".into(),
+            ));
+        }
+        let x = arr[0]
+            .as_f64()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("x is not a number".into()))?;
+        let y = arr[1]
+            .as_f64()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("y is not a number".into()))?;
+        let z = arr[2]
+            .as_f64()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("z is not a number".into()))?;
+        Ok([
+            self.maybe_truncate(x),
+            self.maybe_truncate(y),
+            self.maybe_truncate(z),
+        ])
+    }
+
+    /// Parse Point coordinates, applying precision truncation.
+    fn parse_point_coords(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<GeoJsonGeometry, GeoJsonError> {
+        let arr = value
+            .as_array()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
+        if arr.is_empty() {
+            return Err(GeoJsonError::EmptyCoordinates);
+        }
+        if arr.len() >= 3 {
+            let c = self.parse_coord_3d(value)?;
+            Ok(GeoJsonGeometry::PointZ(c))
+        } else {
+            let c = self.parse_coord_2d(value)?;
+            Ok(GeoJsonGeometry::Point(c))
+        }
+    }
+
+    /// Parse LineString coordinates, applying precision truncation.
+    fn parse_linestring_coords(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<GeoJsonGeometry, GeoJsonError> {
+        let arr = value
+            .as_array()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
+        if arr.is_empty() {
+            return Err(GeoJsonError::EmptyCoordinates);
+        }
+        let has_z = arr
+            .first()
+            .and_then(|c| c.as_array())
+            .map(|c| c.len() >= 3)
+            .unwrap_or(false);
+
+        if has_z {
+            let pts: Result<Vec<[f64; 3]>, GeoJsonError> =
+                arr.iter().map(|v| self.parse_coord_3d(v)).collect();
+            Ok(GeoJsonGeometry::LineStringZ(pts?))
+        } else {
+            let pts: Result<Vec<[f64; 2]>, GeoJsonError> =
+                arr.iter().map(|v| self.parse_coord_2d(v)).collect();
+            Ok(GeoJsonGeometry::LineString(pts?))
+        }
+    }
+
+    /// Parse Polygon coordinates, applying precision truncation.
+    fn parse_polygon_coords(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<GeoJsonGeometry, GeoJsonError> {
+        let rings_arr = value
+            .as_array()
+            .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
+        if rings_arr.is_empty() {
+            return Err(GeoJsonError::EmptyCoordinates);
+        }
+        let has_z = rings_arr
+            .first()
+            .and_then(|r| r.as_array())
+            .and_then(|r| r.first())
+            .and_then(|c| c.as_array())
+            .map(|c| c.len() >= 3)
+            .unwrap_or(false);
+
+        if has_z {
+            let rings: Result<Vec<Vec<[f64; 3]>>, GeoJsonError> = rings_arr
+                .iter()
+                .map(|ring| {
+                    let ring_arr = ring
+                        .as_array()
+                        .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
+                    ring_arr.iter().map(|v| self.parse_coord_3d(v)).collect()
+                })
+                .collect();
+            Ok(GeoJsonGeometry::PolygonZ(rings?))
+        } else {
+            let rings: Result<Vec<Vec<[f64; 2]>>, GeoJsonError> = rings_arr
+                .iter()
+                .map(|ring| {
+                    let ring_arr = ring
+                        .as_array()
+                        .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
+                    ring_arr.iter().map(|v| self.parse_coord_2d(v)).collect()
+                })
+                .collect();
+            Ok(GeoJsonGeometry::Polygon(rings?))
+        }
+    }
+}
+
+// ─── Standalone feature parsing ──────────────────────────────────────────────
+
+/// Parse a single GeoJSON `Feature` from a [`serde_json::Value`] without
+/// requiring a [`GeoJsonParser`] instance.
+///
+/// This is the single source of truth for per-feature parsing: the sequential
+/// [`FeatureCollection`] loop and the optional `parallel` parser both delegate
+/// here, guaranteeing byte-identical output regardless of execution strategy.
+///
+/// Internally a default [`GeoJsonParser`] (lenient, `max_depth == 64`) is used,
+/// matching the behaviour of [`GeoJsonParser::parse`] for `FeatureCollection`
+/// documents.
+///
+/// When `coordinate_precision` is `Some(decimals)`, every coordinate value of
+/// the parsed geometry is rounded (half-away-from-zero) to that many decimal
+/// places.  When `None`, coordinates are preserved exactly as parsed — this is
+/// what the sequential collection loop passes, so its output is unchanged.
+///
+/// # Errors
+///
+/// Returns [`GeoJsonError`] on invalid feature structure or bad coordinates.
+pub(crate) fn parse_feature_value(
+    value: &serde_json::Value,
+    coordinate_precision: Option<u8>,
+) -> Result<GeoJsonFeature, GeoJsonError> {
+    let parser = GeoJsonParser::new();
+    let mut feature = parser.parse_feature(value)?;
+    if let Some(decimals) = coordinate_precision
+        && let Some(geometry) = feature.geometry.as_mut()
+    {
+        round_geometry_in_place(geometry, decimals);
+    }
+    Ok(feature)
+}
+
+/// Round a coordinate to `decimals` decimal places (half away from zero),
+/// matching the rounding semantics of Rust's `{:.*}` formatting used by the
+/// writer.  Non-finite values are returned unchanged.
+fn round_coordinate(value: f64, decimals: u8) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    let factor = 10_f64.powi(i32::from(decimals));
+    (value * factor).round() / factor
+}
+
+/// Recursively round every coordinate of a geometry in place.
+fn round_geometry_in_place(geometry: &mut GeoJsonGeometry, decimals: u8) {
+    match geometry {
+        GeoJsonGeometry::Null => {}
+        GeoJsonGeometry::Point(c) => round_pos_2d(c, decimals),
+        GeoJsonGeometry::PointZ(c) => round_pos_3d(c, decimals),
+        GeoJsonGeometry::LineString(pts) | GeoJsonGeometry::MultiPoint(pts) => {
+            for c in pts.iter_mut() {
+                round_pos_2d(c, decimals);
+            }
+        }
+        GeoJsonGeometry::LineStringZ(pts) | GeoJsonGeometry::MultiPointZ(pts) => {
+            for c in pts.iter_mut() {
+                round_pos_3d(c, decimals);
+            }
+        }
+        GeoJsonGeometry::Polygon(rings) | GeoJsonGeometry::MultiLineString(rings) => {
+            for ring in rings.iter_mut() {
+                for c in ring.iter_mut() {
+                    round_pos_2d(c, decimals);
+                }
+            }
+        }
+        GeoJsonGeometry::PolygonZ(rings) | GeoJsonGeometry::MultiLineStringZ(rings) => {
+            for ring in rings.iter_mut() {
+                for c in ring.iter_mut() {
+                    round_pos_3d(c, decimals);
+                }
+            }
+        }
+        GeoJsonGeometry::MultiPolygon(polys) => {
+            for poly in polys.iter_mut() {
+                for ring in poly.iter_mut() {
+                    for c in ring.iter_mut() {
+                        round_pos_2d(c, decimals);
+                    }
+                }
+            }
+        }
+        GeoJsonGeometry::MultiPolygonZ(polys) => {
+            for poly in polys.iter_mut() {
+                for ring in poly.iter_mut() {
+                    for c in ring.iter_mut() {
+                        round_pos_3d(c, decimals);
+                    }
+                }
+            }
+        }
+        GeoJsonGeometry::GeometryCollection(geoms) => {
+            for g in geoms.iter_mut() {
+                round_geometry_in_place(g, decimals);
+            }
+        }
+    }
+}
+
+#[inline]
+fn round_pos_2d(c: &mut [f64; 2], decimals: u8) {
+    c[0] = round_coordinate(c[0], decimals);
+    c[1] = round_coordinate(c[1], decimals);
+}
+
+#[inline]
+fn round_pos_3d(c: &mut [f64; 3], decimals: u8) {
+    c[0] = round_coordinate(c[0], decimals);
+    c[1] = round_coordinate(c[1], decimals);
+    c[2] = round_coordinate(c[2], decimals);
+}
+
+/// Build a [`FeatureCollection`] from already-parsed features plus the
+/// top-level members (`bbox`, 3-D bbox, `crs`, `name`) read from the original
+/// `FeatureCollection` JSON value.
+///
+/// This mirrors exactly the collection construction performed by the
+/// sequential `GeoJsonParser::parse_feature_collection_value`, so callers that
+/// parse features through an alternative strategy (e.g. the optional parallel
+/// parser) still produce a structurally identical [`FeatureCollection`].
+#[cfg(feature = "parallel")]
+pub(crate) fn feature_collection_from_parts(
+    features: Vec<GeoJsonFeature>,
+    value: &serde_json::Value,
+) -> FeatureCollection {
+    let bbox = parse_bbox(value.get("bbox"));
+    let bbox_3d = parse_bbox_3d(value.get("bbox"));
+    let crs = parse_crs(value.get("crs"));
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    FeatureCollection {
+        features,
+        bbox,
+        bbox_3d,
+        crs,
+        name,
     }
 }
 
@@ -517,126 +829,7 @@ impl<'a> Iterator for StreamingFeatureReader<'a> {
     }
 }
 
-// ─── Private coordinate helpers ─────────────────────────────────────────────
-
-fn parse_coord_2d(v: &serde_json::Value) -> Result<[f64; 2], GeoJsonError> {
-    let arr = v
-        .as_array()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("coordinate must be array".into()))?;
-    if arr.len() < 2 {
-        return Err(GeoJsonError::InvalidCoordinates(
-            "coordinate needs at least 2 elements".into(),
-        ));
-    }
-    let x = arr[0]
-        .as_f64()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("x is not a number".into()))?;
-    let y = arr[1]
-        .as_f64()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("y is not a number".into()))?;
-    Ok([x, y])
-}
-
-fn parse_coord_3d(v: &serde_json::Value) -> Result<[f64; 3], GeoJsonError> {
-    let arr = v
-        .as_array()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("coordinate must be array".into()))?;
-    if arr.len() < 3 {
-        return Err(GeoJsonError::InvalidCoordinates(
-            "Z coordinate needs at least 3 elements".into(),
-        ));
-    }
-    let x = arr[0]
-        .as_f64()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("x is not a number".into()))?;
-    let y = arr[1]
-        .as_f64()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("y is not a number".into()))?;
-    let z = arr[2]
-        .as_f64()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("z is not a number".into()))?;
-    Ok([x, y, z])
-}
-
-fn parse_point_coords(value: &serde_json::Value) -> Result<GeoJsonGeometry, GeoJsonError> {
-    let arr = value
-        .as_array()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-    if arr.is_empty() {
-        return Err(GeoJsonError::EmptyCoordinates);
-    }
-    if arr.len() >= 3 {
-        let c = parse_coord_3d(value)?;
-        Ok(GeoJsonGeometry::PointZ(c))
-    } else {
-        let c = parse_coord_2d(value)?;
-        Ok(GeoJsonGeometry::Point(c))
-    }
-}
-
-fn parse_linestring_coords(value: &serde_json::Value) -> Result<GeoJsonGeometry, GeoJsonError> {
-    let arr = value
-        .as_array()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-    if arr.is_empty() {
-        return Err(GeoJsonError::EmptyCoordinates);
-    }
-    // Detect Z by peeking at first coordinate
-    let has_z = arr
-        .first()
-        .and_then(|c| c.as_array())
-        .map(|c| c.len() >= 3)
-        .unwrap_or(false);
-
-    if has_z {
-        let pts: Result<Vec<[f64; 3]>, GeoJsonError> = arr.iter().map(parse_coord_3d).collect();
-        Ok(GeoJsonGeometry::LineStringZ(pts?))
-    } else {
-        let pts: Result<Vec<[f64; 2]>, GeoJsonError> = arr.iter().map(parse_coord_2d).collect();
-        Ok(GeoJsonGeometry::LineString(pts?))
-    }
-}
-
-fn parse_polygon_coords(value: &serde_json::Value) -> Result<GeoJsonGeometry, GeoJsonError> {
-    let rings_arr = value
-        .as_array()
-        .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-    if rings_arr.is_empty() {
-        return Err(GeoJsonError::EmptyCoordinates);
-    }
-    // Detect Z by peeking at first position of first ring
-    let has_z = rings_arr
-        .first()
-        .and_then(|r| r.as_array())
-        .and_then(|r| r.first())
-        .and_then(|c| c.as_array())
-        .map(|c| c.len() >= 3)
-        .unwrap_or(false);
-
-    if has_z {
-        let rings: Result<Vec<Vec<[f64; 3]>>, GeoJsonError> = rings_arr
-            .iter()
-            .map(|ring| {
-                let ring_arr = ring
-                    .as_array()
-                    .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-                ring_arr.iter().map(parse_coord_3d).collect()
-            })
-            .collect();
-        Ok(GeoJsonGeometry::PolygonZ(rings?))
-    } else {
-        let rings: Result<Vec<Vec<[f64; 2]>>, GeoJsonError> = rings_arr
-            .iter()
-            .map(|ring| {
-                let ring_arr = ring
-                    .as_array()
-                    .ok_or_else(|| GeoJsonError::InvalidCoordinates("expected array".into()))?;
-                ring_arr.iter().map(parse_coord_2d).collect()
-            })
-            .collect();
-        Ok(GeoJsonGeometry::Polygon(rings?))
-    }
-}
+// ─── Private coordinate helpers (bbox, crs, feature-id) ────────────────────
 
 fn parse_bbox(value: Option<&serde_json::Value>) -> Option<[f64; 4]> {
     let arr = value?.as_array()?;
@@ -683,6 +876,53 @@ fn parse_feature_id(value: Option<&serde_json::Value>) -> Option<FeatureId> {
         return Some(FeatureId::Number(n));
     }
     None
+}
+
+/// Parse a GeoJSON `FeatureCollection` string and reproject all coordinates
+/// to `target_crs`.
+///
+/// The source CRS is detected from the (deprecated) `crs` member embedded in
+/// the JSON; if no such member is present, WGS 84 (EPSG:4326) is assumed.
+///
+/// # Errors
+///
+/// Returns [`GeoJsonError::ParseError`] for malformed JSON,
+/// [`GeoJsonError::ReprojectError`] when the CRS pair is unsupported, or
+/// any other variant from the underlying parser.
+#[cfg(feature = "reproject")]
+pub fn parse_feature_collection_with_reprojection(
+    s: &str,
+    target_crs: &str,
+) -> Result<FeatureCollection, crate::error::GeoJsonError> {
+    use crate::reproject::{ReprojectOptions, Reprojector, extract_crs_from_geojson_value};
+
+    // Detect source CRS from the raw JSON before parsing geometries.
+    let raw: serde_json::Value =
+        serde_json::from_str(s).map_err(crate::error::GeoJsonError::ParseError)?;
+    let source_crs =
+        extract_crs_from_geojson_value(&raw).unwrap_or_else(|| "EPSG:4326".to_string());
+
+    // Parse the full feature collection.
+    let mut fc = GeoJsonParser::new()
+        .parse(s.as_bytes())
+        .and_then(|doc| match doc {
+            GeoJsonDocument::FeatureCollection(fc) => Ok(fc),
+            _ => Err(crate::error::GeoJsonError::InvalidType {
+                expected: "FeatureCollection".into(),
+                got: "other".into(),
+            }),
+        })?;
+
+    // Apply reprojection in-place.
+    let opts = ReprojectOptions {
+        source_crs,
+        target_crs: target_crs.to_string(),
+        ..ReprojectOptions::default()
+    };
+    let reproj = Reprojector::new(opts)?;
+    reproj.reproject_feature_collection(&mut fc)?;
+
+    Ok(fc)
 }
 
 #[cfg(test)]

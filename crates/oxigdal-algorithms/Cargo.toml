@@ -24,9 +24,11 @@ neon = ["simd"]  # NEON optimizations (ARM)
 parallel = ["dep:rayon"]
 arrow = ["dep:arrow-array", "dep:arrow-buffer", "std"]
 dsl = ["dep:pest", "dep:pest_derive", "std"]  # Advanced DSL for raster algebra
+crs-transform = ["dep:oxigdal-proj", "std"]  # Real CRS transformation via oxigdal-proj/proj4rs
 
 [dependencies]
 oxigdal-core = { workspace = true }
+oxigdal-proj = { workspace = true, optional = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 

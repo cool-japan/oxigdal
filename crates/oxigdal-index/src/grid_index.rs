@@ -76,6 +76,37 @@ impl<T: Clone> GridIndex<T> {
         results
     }
 
+    /// Like [`search`](Self::search) but deduplicated by a caller-supplied key function.
+    ///
+    /// Iterates the raw (possibly duplicated) results of `search` and keeps only
+    /// the first occurrence of each distinct key produced by `key_fn`.  Order of
+    /// results follows the iteration order of `search`.
+    pub fn search_dedup_by<K, F>(&self, query: &Bbox2D, key_fn: F) -> Vec<&T>
+    where
+        K: std::hash::Hash + Eq,
+        F: Fn(&T) -> K,
+    {
+        use std::collections::HashSet;
+        let mut seen: HashSet<K> = HashSet::new();
+        let mut results: Vec<&T> = Vec::new();
+        for value in self.search(query) {
+            let key = key_fn(value);
+            if seen.insert(key) {
+                results.push(value);
+            }
+        }
+        results
+    }
+
+    /// Like [`search`](Self::search) but deduplicated by pointer identity.
+    ///
+    /// Each distinct object (by memory address) appears at most once, so
+    /// entries that were placed into multiple cells due to spanning appear only
+    /// once in the result.
+    pub fn search_dedup_by_ptr(&self, query: &Bbox2D) -> Vec<&T> {
+        self.search_dedup_by(query, |v| v as *const T as usize)
+    }
+
     /// Find all values whose bbox contains the point `(x, y)`.
     pub fn contains_point(&self, x: f64, y: f64) -> Vec<&T> {
         let pt = Bbox2D::point(x, y);
@@ -152,5 +183,133 @@ mod unit_tests {
     fn grid_zero_rows_errors() {
         let extent = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("valid 10x10 bbox");
         assert!(GridIndex::<u32>::new(extent, 5, 0).is_err());
+    }
+
+    /// A small bbox that fits entirely inside one grid cell must not introduce
+    /// duplicates even via the dedup variant — both methods should agree.
+    #[test]
+    fn test_search_dedup_no_duplicates_when_single_cell_span() {
+        // 10×10 grid, 10 cols × 10 rows → each cell is 1×1.
+        let extent = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("valid 10x10 bbox");
+        let mut idx = GridIndex::<u32>::new(extent, 10, 10).expect("valid 10×10 grid");
+
+        // Insert a 0.5×0.5 entry — well inside the cell at (0,0).
+        let small = Bbox2D::new(0.1, 0.1, 0.4, 0.4).expect("small bbox");
+        idx.insert(small, 42_u32);
+
+        let query = Bbox2D::new(0.0, 0.0, 0.5, 0.5).expect("query bbox");
+        let raw = idx.search(&query);
+        let deduped = idx.search_dedup_by_ptr(&query);
+
+        assert_eq!(
+            raw.len(),
+            deduped.len(),
+            "single-cell entry should not produce duplicates"
+        );
+        assert_eq!(deduped.len(), 1, "exactly one result expected");
+    }
+
+    /// An entry that spans multiple cells appears multiple times in `search`.
+    /// `search_dedup_by` with a key derived from the stored value collapses all
+    /// copies of the same logical entry to a single result.
+    #[test]
+    fn test_search_dedup_removes_duplicates_when_multi_cell_span() {
+        // 10×10 grid with 10 cols × 10 rows → each cell is 1×1.
+        let extent = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("valid 10x10 bbox");
+        let mut idx = GridIndex::<u32>::new(extent, 10, 10).expect("valid 10×10 grid");
+
+        // A bbox spanning columns 0–4 and rows 0–4 touches 5×5 = 25 cells.
+        // `insert` clones the value into every touched cell, so `search` returns
+        // 25 references — one per cell — all holding value `99`.
+        let large = Bbox2D::new(0.0, 0.0, 4.9, 4.9).expect("large spanning bbox");
+        idx.insert(large, 99_u32);
+
+        let query = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("full-extent query");
+        let raw = idx.search(&query);
+        let deduped = idx.search_dedup_by(&query, |v| *v);
+
+        assert!(
+            raw.len() > 1,
+            "spanning entry must appear more than once in raw search (got {})",
+            raw.len()
+        );
+        assert_eq!(
+            deduped.len(),
+            1,
+            "dedup by value must collapse all copies of value 99 to a single result"
+        );
+        assert_eq!(
+            *deduped[0], 99_u32,
+            "the single result must be the inserted value"
+        );
+    }
+
+    /// Deduplication by a custom key function (a String field) retains only the
+    /// first occurrence of each distinct key.
+    #[test]
+    fn test_search_dedup_custom_key_fn() {
+        #[derive(Clone)]
+        struct Tagged {
+            label: String,
+            id: i32,
+        }
+
+        let extent = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("valid 10x10 bbox");
+        let mut idx = GridIndex::<Tagged>::new(extent, 5, 5).expect("valid 5×5 grid");
+
+        // This large bbox spans multiple cells — same label "alpha" appears
+        // multiple times in raw search results.
+        let large = Bbox2D::new(0.0, 0.0, 9.9, 9.9).expect("large bbox");
+        idx.insert(
+            large,
+            Tagged {
+                label: "alpha".into(),
+                id: 1,
+            },
+        );
+
+        // A small bbox in one cell — label "beta".
+        let small = Bbox2D::new(0.1, 0.1, 0.3, 0.3).expect("small bbox");
+        idx.insert(
+            small,
+            Tagged {
+                label: "beta".into(),
+                id: 2,
+            },
+        );
+
+        let query = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("full query");
+        let deduped = idx.search_dedup_by(&query, |t| t.label.clone());
+
+        // Exactly two distinct labels.
+        assert_eq!(deduped.len(), 2, "two distinct labels expected");
+        let labels: Vec<&str> = deduped.iter().map(|t| t.label.as_str()).collect();
+        assert!(labels.contains(&"alpha"), "alpha must be present");
+        assert!(labels.contains(&"beta"), "beta must be present");
+        // Verify ids are accessible (ensures id field is used).
+        let ids: Vec<i32> = deduped.iter().map(|t| t.id).collect();
+        assert!(
+            ids.contains(&1) && ids.contains(&2),
+            "both ids must be reachable"
+        );
+    }
+
+    /// Querying outside all inserted bboxes produces an empty dedup result.
+    #[test]
+    fn test_search_dedup_by_ptr_empty_results() {
+        let extent = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("valid 10x10 bbox");
+        let mut idx = GridIndex::<u32>::new(extent, 4, 4).expect("valid 4×4 grid");
+
+        let entry = Bbox2D::new(0.0, 0.0, 2.0, 2.0).expect("entry bbox");
+        idx.insert(entry, 7_u32);
+
+        // Query entirely outside the grid extent (and therefore outside the entry).
+        let outside = Bbox2D::new(20.0, 20.0, 30.0, 30.0).expect("outside query bbox");
+        let deduped = idx.search_dedup_by_ptr(&outside);
+
+        assert!(
+            deduped.is_empty(),
+            "query outside all entries must return empty vec"
+        );
     }
 }

@@ -25,7 +25,7 @@ full = [
 geotiff = ["dep:oxigdal-geotiff"]
 geojson = ["dep:oxigdal-geojson"]
 shapefile = ["dep:oxigdal-shapefile"]
-geoparquet = ["dep:oxigdal-geoparquet"]
+geoparquet = ["dep:oxigdal-geoparquet", "dep:arrow-array", "dep:arrow-schema"]
 netcdf = ["dep:oxigdal-netcdf"]
 hdf5 = ["dep:oxigdal-hdf5"]
 zarr = ["dep:oxigdal-zarr"]
@@ -66,12 +66,15 @@ temporal = ["dep:oxigdal-temporal"]
 [dependencies]
 oxigdal-core = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 # Drivers (all optional)
 oxigdal-geotiff = { workspace = true, optional = true }
 oxigdal-geojson = { workspace = true, optional = true }
 oxigdal-shapefile = { workspace = true, optional = true }
 oxigdal-geoparquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 oxigdal-netcdf = { workspace = true, optional = true }
 oxigdal-hdf5 = { workspace = true, optional = true }
 oxigdal-zarr = { workspace = true, optional = true }
@@ -107,6 +110,11 @@ oxigdal-noalloc = { workspace = true, optional = true }
 
 # OGC web services (optional)
 oxigdal-services = { workspace = true, optional = true }
+
+[dev-dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true, default-features = false, features = ["arrow"] }
 
 [package.metadata.docs.rs]
 # Build docs with all features so every feature-gated item is documented.

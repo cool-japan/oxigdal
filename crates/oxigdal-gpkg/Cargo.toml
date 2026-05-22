@@ -16,12 +16,26 @@ categories = ["science", "parser-implementations", "encoding"]
 [features]
 default = ["std"]
 std = ["thiserror/std"]
+reproject = ["dep:oxigdal-proj"]
+flatgeobuf-export = ["dep:oxigdal-flatgeobuf", "dep:oxigdal-core"]
+mbtiles-export = ["dep:rusqlite"]
+change-tracking = ["dep:rusqlite"]
+file-locking = ["dep:libc"]
 
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
+oxigdal-geojson-stream = { workspace = true }
+serde_json = { workspace = true }
+oxigdal-proj = { workspace = true, optional = true }
+oxigdal-flatgeobuf = { workspace = true, optional = true }
+oxigdal-core = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true, features = ["bundled"] }
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
+libc = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

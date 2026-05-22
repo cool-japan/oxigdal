@@ -484,28 +484,21 @@ fn parse_crs_from_geokeys(
 
 /// Extract metadata from NetCDF.
 fn extract_from_netcdf<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
-    let path_str = path.as_ref().to_string_lossy().to_string();
-    let mut attributes = std::collections::HashMap::new();
-    attributes.insert("file_path".to_string(), path_str);
-
-    let metadata = ExtractedMetadata {
-        format: Some("NetCDF".to_string()),
-        attributes,
-        ..Default::default()
-    };
-
-    // In a real implementation, we would use the oxigdal-netcdf crate
-    // and parse CF (Climate and Forecast) conventions
-
-    // Placeholder for NetCDF-specific extraction
-    // This would include:
-    // - Reading global attributes (title, summary, keywords)
-    // - Extracting CF convention metadata
-    // - Reading coordinate variables
-    // - Extracting time bounds
-    // - Reading CRS from grid_mapping variable
-
-    Ok(metadata)
+    #[cfg(feature = "netcdf")]
+    {
+        crate::extractors::netcdf_cf::NetCdfCfExtractor::extract(path)
+    }
+    #[cfg(not(feature = "netcdf"))]
+    {
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        let mut attributes = std::collections::HashMap::new();
+        attributes.insert("file_path".to_string(), path_str);
+        Ok(ExtractedMetadata {
+            format: Some("NetCDF".to_string()),
+            attributes,
+            ..Default::default()
+        })
+    }
 }
 
 /// Extract metadata from HDF5.

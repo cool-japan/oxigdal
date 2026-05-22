@@ -107,6 +107,10 @@ pub enum GpuError {
     /// Internal error (should not happen).
     #[error("Internal GPU error: {0}")]
     Internal(String),
+
+    /// Unsupported texture format for storage-texture operations.
+    #[error("Unsupported storage texture format: {0}")]
+    UnsupportedFormat(String),
 }
 
 impl GpuError {

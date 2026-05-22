@@ -1,8 +1,8 @@
 //! Geometry operations on polygons and coordinate sequences.
 //!
 //! Provides area (shoelace), perimeter, centroid, point-in-polygon (ray
-//! casting), Douglas–Peucker simplification, Graham-scan convex hull, and
-//! bounding-box utilities.
+//! casting), Douglas–Peucker simplification, Visvalingam–Whyatt simplification,
+//! Graham-scan convex hull, and bounding-box utilities.
 
 use crate::validation::{Coord, Polygon};
 
@@ -214,6 +214,397 @@ fn perpendicular_distance(p: &Coord, a: &Coord, b: &Coord) -> f64 {
     }
     let numerator = ((dy * p.x) - (dx * p.y) + (b.x * a.y) - (b.y * a.x)).abs();
     numerator / len_sq.sqrt()
+}
+
+// ---------------------------------------------------------------------------
+// Visvalingam–Whyatt simplification
+// ---------------------------------------------------------------------------
+
+/// Triangle effective area for three consecutive vertices.
+///
+/// Returns the absolute area of the triangle formed by `p`, `q`, `r`.
+#[inline]
+fn triangle_area_vw(p: Coord, q: Coord, r: Coord) -> f64 {
+    ((q.x - p.x) * (r.y - p.y) - (r.x - p.x) * (q.y - p.y)).abs() * 0.5
+}
+
+/// Whether two coordinates are equal within floating-point epsilon.
+#[inline]
+fn coords_equal(a: Coord, b: Coord) -> bool {
+    (a.x - b.x).abs() < 1e-10 && (a.y - b.y).abs() < 1e-10
+}
+
+/// Doubly-linked-list state used by the VW heap algorithm.
+struct VwState {
+    /// Previous active vertex index (wraps for rings).
+    prev: Vec<usize>,
+    /// Next active vertex index (wraps for rings).
+    next: Vec<usize>,
+    /// Current effective area for each interior vertex.
+    /// For endpoints: f64::INFINITY (never removed).
+    areas: Vec<f64>,
+    /// Version counter — incremented whenever a vertex's area is recomputed.
+    versions: Vec<u64>,
+    /// Number of currently active vertices.
+    active: usize,
+}
+
+impl VwState {
+    fn new(n: usize, is_ring: bool) -> Self {
+        let prev: Vec<usize> = (0..n)
+            .map(|i| {
+                if i == 0 {
+                    if is_ring { n - 2 } else { 0 }
+                } else {
+                    i - 1
+                }
+            })
+            .collect();
+        let next: Vec<usize> = (0..n)
+            .map(|i| {
+                if i == n - 1 {
+                    if is_ring { 1 } else { n - 1 }
+                } else {
+                    i + 1
+                }
+            })
+            .collect();
+        // For a ring: last vertex is the duplicate of the first; treat vertex 0
+        // and vertex n-1 as the same seam.  We mark n-1 removed and let n-2
+        // link back to 1.  But it's simpler to just treat the ring as if the
+        // closing vertex is permanent and update the linked list accordingly.
+        VwState {
+            prev,
+            next,
+            areas: vec![0.0; n],
+            versions: vec![0; n],
+            active: n,
+        }
+    }
+
+    /// Compute the effective area for vertex `i` using its current neighbours.
+    fn compute_area(&self, coords: &[Coord], i: usize) -> f64 {
+        triangle_area_vw(coords[self.prev[i]], coords[i], coords[self.next[i]])
+    }
+
+    /// Remove vertex `i` from the linked list.
+    fn remove(&mut self, i: usize) {
+        let p = self.prev[i];
+        let n = self.next[i];
+        self.next[p] = n;
+        self.prev[n] = p;
+        self.active -= 1;
+    }
+}
+
+/// Min-heap entry for the VW algorithm.
+///
+/// We encode area as raw `u64` bits using `f64::to_bits()` for total ordering.
+/// This is correct for non-NaN, non-negative values: IEEE 754 positive floats
+/// sort the same way when their bits are compared as unsigned integers.
+#[derive(Debug, PartialEq, Eq)]
+struct VwHeapEntry {
+    /// Area encoded as u64 bits for Ord (valid for non-NaN non-negative f64).
+    area_bits: u64,
+    /// Index of the vertex this entry refers to.
+    idx: usize,
+    /// Version at the time this entry was pushed; stale if != state.versions[idx].
+    version: u64,
+}
+
+impl VwHeapEntry {
+    fn new(area: f64, idx: usize, version: u64) -> Self {
+        VwHeapEntry {
+            area_bits: area.to_bits(),
+            idx,
+            version,
+        }
+    }
+
+    fn area(&self) -> f64 {
+        f64::from_bits(self.area_bits)
+    }
+}
+
+// We want a min-heap, so reverse the natural ordering.
+impl PartialOrd for VwHeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for VwHeapEntry {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        // Smaller area_bits = smaller area = higher heap priority (min-heap via reverse).
+        other
+            .area_bits
+            .cmp(&self.area_bits)
+            .then(other.idx.cmp(&self.idx))
+    }
+}
+
+/// Run the Visvalingam–Whyatt removal loop.
+///
+/// `stop_at_area`: stop removing vertices whose area >= this value.
+/// `stop_at_count`: stop when active count would fall below this number.
+/// Returns the indices of surviving vertices in original order.
+fn vw_run(
+    coords: &[Coord],
+    is_ring: bool,
+    stop_at_area: Option<f64>,
+    stop_at_count: Option<usize>,
+) -> Vec<usize> {
+    use std::collections::BinaryHeap;
+
+    let n = coords.len();
+
+    // Effective stopping count: at minimum keep 2 (open line) or 3 (ring,
+    // because ring closing means first==last so 3 gives a triangle).
+    let min_keep = match stop_at_count {
+        Some(k) => k.max(if is_ring { 3 } else { 2 }),
+        None => {
+            if is_ring {
+                3
+            } else {
+                2
+            }
+        }
+    };
+
+    let mut state = VwState::new(n, is_ring);
+
+    // For a ring the closing vertex (index n-1) is a duplicate of index 0.
+    // We treat it as permanently inactive and let the doubly-linked list skip
+    // from index n-2 to index 1 (wrapping around the ring).
+    // Re-initialise the linked list for the ring case.
+    if is_ring && n >= 4 {
+        // Vertices: 0..=n-1 where coords[0] == coords[n-1] (by definition).
+        // Interior vertices: 1..=n-2.
+        // Treat vertex n-1 as already removed from the list — set prev/next
+        // so that index n-2 links forward to index 1, and index 1 links
+        // backward to index n-2.
+        for i in 0..n {
+            state.prev[i] = if i == 0 || i == n - 1 { n - 2 } else { i - 1 };
+            state.next[i] = if i == 0 || i == n - 1 { 1 } else { i + 1 };
+        }
+        state.prev[1] = n - 2;
+        state.next[n - 2] = 1;
+        // Vertex n-1 is a phantom; don't count it.
+        state.active = n - 1;
+    }
+
+    let mut heap: BinaryHeap<VwHeapEntry> = BinaryHeap::with_capacity(n);
+
+    // Initialise areas and push interior vertices.
+    // For open polyline: interior = 1..n-2.
+    // For ring: interior = 1..n-2 (vertex 0 and n-1 are seam endpoints).
+    // Endpoint vertices (0 and n-1 for open; 0 for ring) are never removed.
+    // Interior vertices are 1..=n-2 for both open polylines and rings.
+    // (For open polylines: 0 and n-1 are endpoints; for rings: 0 is the seam
+    // anchor and n-1 is the phantom duplicate, both kept permanently.)
+    let (first_interior, last_interior) = (1, n - 2);
+
+    for i in first_interior..=last_interior {
+        let area = state.compute_area(coords, i);
+        state.areas[i] = area;
+        heap.push(VwHeapEntry::new(area, i, 0));
+    }
+
+    // Track the maximum area removed so far (for monotonicity).
+    let mut max_removed_area = 0.0_f64;
+
+    loop {
+        // Check count stopping condition first.
+        let count_threshold = match stop_at_count {
+            Some(k) => state.active <= k.max(min_keep),
+            None => state.active <= min_keep,
+        };
+        if count_threshold {
+            break;
+        }
+
+        let entry = match heap.pop() {
+            Some(e) => e,
+            None => break,
+        };
+
+        // Stale entry (vertex was already removed or area was recomputed).
+        if entry.version != state.versions[entry.idx] {
+            continue;
+        }
+
+        let vertex_area = entry.area();
+
+        // Area stopping condition.
+        if let Some(threshold) = stop_at_area
+            && vertex_area >= threshold
+        {
+            break;
+        }
+
+        // Apply the monotonicity rule: effective removal area is the maximum
+        // of the vertex's own area and all previously removed areas.
+        let effective_area = vertex_area.max(max_removed_area);
+        max_removed_area = effective_area;
+
+        let idx = entry.idx;
+
+        // Retrieve neighbours before removing.
+        let prev_idx = state.prev[idx];
+        let next_idx = state.next[idx];
+
+        // Remove vertex from linked list.
+        state.remove(idx);
+
+        // Recompute neighbour areas, but only if they are interior vertices.
+        // For open polylines: vertex 0 and n-1 are endpoints — never recomputed.
+        // For rings: vertex 0 (and phantom n-1) are seam — never recomputed.
+        let update_endpoints = [prev_idx, next_idx];
+        for &nb in &update_endpoints {
+            let is_endpoint = if is_ring {
+                nb == 0
+            } else {
+                nb == 0 || nb == n - 1
+            };
+            if is_endpoint {
+                continue;
+            }
+            // The neighbour's prev and next have changed; recompute its area.
+            let new_area = state.compute_area(coords, nb);
+            // Monotonicity: never allow a neighbour's effective area to be
+            // less than the area of the vertex we just removed.
+            let monotone_area = new_area.max(effective_area);
+            state.areas[nb] = monotone_area;
+            state.versions[nb] += 1;
+            heap.push(VwHeapEntry::new(monotone_area, nb, state.versions[nb]));
+        }
+    }
+
+    // Collect surviving vertices in original order.
+    let mut result: Vec<usize> = (0..n)
+        .filter(|&i| {
+            if is_ring {
+                // Skip the phantom closing vertex (n-1); it will be re-added.
+                i != n - 1 && {
+                    // A vertex is alive if its next/prev links are consistent
+                    // (i.e., state.prev[state.next[i]] == i).
+                    state.prev[state.next[i]] == i
+                }
+            } else {
+                state.prev[state.next[i]] == i
+                    || i == 0  // always keep first
+                    || i == n - 1 // always keep last
+            }
+        })
+        .collect();
+    result.sort_unstable();
+
+    // Ensure first and last are always present (safety net for open polylines).
+    if !is_ring {
+        if result.first() != Some(&0) {
+            result.insert(0, 0);
+        }
+        if result.last() != Some(&(n - 1)) {
+            result.push(n - 1);
+        }
+    }
+
+    // For rings, ensure vertex 0 is present and re-add closing vertex.
+    if is_ring && result.first() != Some(&0) {
+        result.insert(0, 0);
+    }
+
+    result
+}
+
+/// Simplify a polyline using the Visvalingam–Whyatt algorithm.
+///
+/// VW removes the vertex that forms the triangle of smallest effective area
+/// with its immediate neighbours, repeating until no remaining vertex has an
+/// area smaller than `min_effective_area`.
+///
+/// Unlike Douglas–Peucker, VW better preserves the visual area of a polyline,
+/// making it preferable for cartographic generalisation.
+///
+/// The first and last points are always retained.  If the input forms a closed
+/// ring (`coords[0] == coords[n-1]`), the ring remains closed in the output.
+///
+/// # Parameters
+///
+/// * `coords` — input coordinate sequence (≥ 2 points).
+/// * `min_effective_area` — area threshold; vertices with effective area
+///   strictly below this value are removed.
+pub fn simplify_visvalingam(coords: &[Coord], min_effective_area: f64) -> Vec<Coord> {
+    let n = coords.len();
+    if n <= 2 {
+        return coords.to_vec();
+    }
+
+    // Detect whether the input is a closed ring.
+    let is_ring = n >= 4 && coords_equal(coords[0], coords[n - 1]);
+
+    let surviving = vw_run(coords, is_ring, Some(min_effective_area), None);
+
+    let mut result: Vec<Coord> = surviving.iter().map(|&i| coords[i]).collect();
+
+    // Re-append closing vertex for rings.
+    if is_ring {
+        result.push(coords[0]);
+    }
+
+    result
+}
+
+/// Simplify a polyline using Visvalingam–Whyatt, targeting an exact vertex count.
+///
+/// Removes vertices one at a time (smallest area first) until the result has
+/// exactly `target_count` vertices.  If `target_count >= coords.len()` the
+/// input is returned unchanged.
+///
+/// For closed rings, `target_count` refers to the total number of coordinates
+/// including the closing duplicate; the minimum is 4 (triangle + closure).
+///
+/// # Parameters
+///
+/// * `coords` — input coordinate sequence.
+/// * `target_count` — desired number of vertices in the output.
+pub fn simplify_visvalingam_to_count(coords: &[Coord], target_count: usize) -> Vec<Coord> {
+    let n = coords.len();
+    if target_count >= n {
+        return coords.to_vec();
+    }
+
+    let is_ring = n >= 4 && coords_equal(coords[0], coords[n - 1]);
+
+    // Clamp target so we always have at least a valid geometry.
+    let clamped_target = if is_ring {
+        target_count.max(4) // ring: min 3 unique points + closure
+    } else {
+        target_count.max(2)
+    };
+
+    if clamped_target >= n {
+        return coords.to_vec();
+    }
+
+    // For a ring the linked list tracks n-1 active vertices (phantom closing
+    // vertex excluded), so we stop when active == clamped_target - 1.
+    let linked_list_target = if is_ring {
+        clamped_target - 1 // subtract the phantom closing vertex
+    } else {
+        clamped_target
+    };
+
+    let surviving = vw_run(coords, is_ring, None, Some(linked_list_target));
+
+    let mut result: Vec<Coord> = surviving.iter().map(|&i| coords[i]).collect();
+
+    // Re-append closing vertex for rings.
+    if is_ring {
+        result.push(coords[0]);
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------

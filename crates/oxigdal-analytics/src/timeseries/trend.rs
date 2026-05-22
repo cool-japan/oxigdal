@@ -61,9 +61,7 @@ impl TrendDetector {
         match self.method {
             TrendMethod::MannKendall => self.mann_kendall(values),
             TrendMethod::LinearRegression => self.linear_regression(values),
-            TrendMethod::SeasonalDecomposition => Err(AnalyticsError::time_series_error(
-                "Seasonal decomposition not yet implemented",
-            )),
+            TrendMethod::SeasonalDecomposition => self.seasonal_decomposition_trend(values),
         }
     }
 
@@ -207,6 +205,36 @@ impl TrendDetector {
             confidence: self.confidence,
             significant: p_value < self.confidence,
         })
+    }
+
+    /// Detect trend via seasonal decomposition.
+    ///
+    /// Decomposes the series using a centered moving-average seasonal model, then
+    /// applies linear regression to the extracted trend component to produce a
+    /// `TrendResult`. The seasonality period is heuristically chosen as the
+    /// largest of {4, 7, 12} that still satisfies the minimum data requirement
+    /// (at least `2 * period` observations), falling back to `period = 2` for
+    /// very short series.
+    fn seasonal_decomposition_trend(&self, values: &ArrayView1<f64>) -> Result<TrendResult> {
+        let n = values.len();
+        if n < 4 {
+            return Err(AnalyticsError::insufficient_data(
+                "Seasonal decomposition trend requires at least 4 data points",
+            ));
+        }
+
+        // Choose the largest candidate period supported by the data length.
+        let period = [12_usize, 7, 4, 2]
+            .iter()
+            .copied()
+            .find(|&p| n >= 2 * p)
+            .unwrap_or(2);
+
+        let decomposed = seasonal_decompose(values, period)?;
+
+        // Run linear regression on the extracted trend component.
+        let trend_view = decomposed.trend.view();
+        self.linear_regression(&trend_view)
     }
 }
 
@@ -423,5 +451,45 @@ mod tests {
         assert_abs_diff_eq!(standard_normal_cdf(0.0), 0.5, epsilon = 1e-6);
         assert!(standard_normal_cdf(1.96) > 0.975);
         assert!(standard_normal_cdf(-1.96) < 0.025);
+    }
+
+    #[test]
+    fn test_seasonal_decomposition_trend_positive() {
+        // Trend + periodic component: trend should be detected as positive
+        let n = 24;
+        let period = 6;
+        let mut values = Array1::zeros(n);
+        for i in 0..n {
+            values[i] = (i as f64) * 2.0 + ((i % period) as f64);
+        }
+        let detector = TrendDetector::new(TrendMethod::SeasonalDecomposition, 0.05);
+        let result = detector
+            .detect(&values.view())
+            .expect("Seasonal decomposition trend should succeed");
+        assert_eq!(result.direction, 1, "should detect upward trend");
+        assert!(result.magnitude > 0.0, "slope should be positive");
+    }
+
+    #[test]
+    fn test_seasonal_decomposition_trend_negative() {
+        let n = 24;
+        let period = 4;
+        let mut values = Array1::zeros(n);
+        for i in 0..n {
+            values[i] = -(i as f64) * 1.5 + ((i % period) as f64) * 0.5;
+        }
+        let detector = TrendDetector::new(TrendMethod::SeasonalDecomposition, 0.05);
+        let result = detector
+            .detect(&values.view())
+            .expect("Seasonal decomposition trend should succeed for negative trend");
+        assert_eq!(result.direction, -1, "should detect downward trend");
+    }
+
+    #[test]
+    fn test_seasonal_decomposition_trend_too_short() {
+        let values = array![1.0, 2.0, 3.0];
+        let detector = TrendDetector::new(TrendMethod::SeasonalDecomposition, 0.05);
+        let result = detector.detect(&values.view());
+        assert!(result.is_err(), "should fail with fewer than 4 data points");
     }
 }

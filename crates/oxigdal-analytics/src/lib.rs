@@ -191,11 +191,13 @@ pub mod clustering;
 pub mod error;
 pub mod hotspot;
 pub mod interpolation;
+pub mod regression;
 pub mod timeseries;
 pub mod zonal;
 
 // Re-export commonly used items
 pub use error::{AnalyticsError, Result};
+pub use regression::{GwrBandwidth, GwrKernel, GwrOptions, GwrResult, gwr_fit};
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

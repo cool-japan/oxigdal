@@ -2,10 +2,13 @@
 
 pub mod cloud;
 pub mod creation_options;
+pub mod inspector;
 pub mod parallel;
 pub mod progress;
 pub mod raster;
 pub mod vector;
+
+pub use inspector::{InspectionReport, RasterSummary, VectorSummary, inspect_file};
 
 use std::path::Path;
 

@@ -28,6 +28,7 @@ async-trait = { workspace = true }
 # Arrow ecosystem
 arrow = { workspace = true }
 arrow-array = { workspace = true }
+arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-flight = { workspace = true }
 

@@ -213,6 +213,361 @@ impl GeoJsonGeometry {
             other => other.clone(),
         }
     }
+
+    // ── Area ─────────────────────────────────────────────────────────────────
+
+    /// Signed area of a 2-D ring via the shoelace formula (half the cross-product sum).
+    fn ring_signed_area(ring: &[[f64; 2]]) -> f64 {
+        let n = ring.len();
+        if n < 3 {
+            return 0.0;
+        }
+        let mut sum = 0.0;
+        for i in 0..n {
+            let [x0, y0] = ring[i];
+            let [x1, y1] = ring[(i + 1) % n];
+            sum += x0 * y1 - x1 * y0;
+        }
+        sum * 0.5
+    }
+
+    /// Area of a polygon defined by rings (first ring = exterior, rest = holes).
+    fn polygon_area(rings: &[Vec<[f64; 2]>]) -> f64 {
+        if rings.is_empty() {
+            return 0.0;
+        }
+        let exterior = Self::ring_signed_area(&rings[0]).abs();
+        let hole_area: f64 = rings[1..]
+            .iter()
+            .map(|r| Self::ring_signed_area(r).abs())
+            .sum();
+        exterior - hole_area
+    }
+
+    /// Planar area in square coordinate units (CRS-dependent).
+    ///
+    /// Returns `0.0` for non-areal geometries (points, lines, null).
+    /// For Z variants the Z coordinate is ignored; area is purely planimetric.
+    #[must_use]
+    pub fn area(&self) -> f64 {
+        match self {
+            Self::Polygon(rings) => Self::polygon_area(rings),
+            Self::PolygonZ(rings) => {
+                let rings_2d: Vec<Vec<[f64; 2]>> = rings
+                    .iter()
+                    .map(|r| r.iter().map(|[x, y, _]| [*x, *y]).collect())
+                    .collect();
+                Self::polygon_area(&rings_2d)
+            }
+            Self::MultiPolygon(polys) => polys.iter().map(|p| Self::polygon_area(p)).sum(),
+            Self::MultiPolygonZ(polys) => polys
+                .iter()
+                .map(|p| {
+                    let rings_2d: Vec<Vec<[f64; 2]>> = p
+                        .iter()
+                        .map(|r| r.iter().map(|[x, y, _]| [*x, *y]).collect())
+                        .collect();
+                    Self::polygon_area(&rings_2d)
+                })
+                .sum(),
+            Self::GeometryCollection(geoms) => geoms.iter().map(|g| g.area()).sum(),
+            _ => 0.0,
+        }
+    }
+
+    // ── Length ───────────────────────────────────────────────────────────────
+
+    /// Euclidean length of a 2-D polyline.
+    fn line_length_2d(coords: &[[f64; 2]]) -> f64 {
+        if coords.len() < 2 {
+            return 0.0;
+        }
+        coords
+            .windows(2)
+            .map(|w| {
+                let dx = w[1][0] - w[0][0];
+                let dy = w[1][1] - w[0][1];
+                dx.hypot(dy)
+            })
+            .sum()
+    }
+
+    /// Euclidean length of a 3-D polyline (full 3-D distance).
+    fn line_length_3d(coords: &[[f64; 3]]) -> f64 {
+        if coords.len() < 2 {
+            return 0.0;
+        }
+        coords
+            .windows(2)
+            .map(|w| {
+                let dx = w[1][0] - w[0][0];
+                let dy = w[1][1] - w[0][1];
+                let dz = w[1][2] - w[0][2];
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .sum()
+    }
+
+    /// Planar length in coordinate units.
+    ///
+    /// Returns the perimeter for polygons (sum of all ring lengths),
+    /// `0.0` for points and null geometry.
+    #[must_use]
+    pub fn length(&self) -> f64 {
+        match self {
+            Self::LineString(pts) => Self::line_length_2d(pts),
+            Self::LineStringZ(pts) => Self::line_length_3d(pts),
+            Self::MultiLineString(lines) => lines.iter().map(|l| Self::line_length_2d(l)).sum(),
+            Self::MultiLineStringZ(lines) => lines.iter().map(|l| Self::line_length_3d(l)).sum(),
+            Self::Polygon(rings) => rings.iter().map(|r| Self::line_length_2d(r)).sum(),
+            Self::PolygonZ(rings) => rings.iter().map(|r| Self::line_length_3d(r)).sum(),
+            Self::MultiPolygon(polys) => polys
+                .iter()
+                .flat_map(|p| p.iter())
+                .map(|r| Self::line_length_2d(r))
+                .sum(),
+            Self::MultiPolygonZ(polys) => polys
+                .iter()
+                .flat_map(|p| p.iter())
+                .map(|r| Self::line_length_3d(r))
+                .sum(),
+            Self::GeometryCollection(geoms) => geoms.iter().map(|g| g.length()).sum(),
+            _ => 0.0,
+        }
+    }
+
+    // ── Centroid ─────────────────────────────────────────────────────────────
+
+    /// Centroid of a 2-D polygon ring via the Bourke signed-area formula.
+    fn ring_centroid_weighted(ring: &[[f64; 2]]) -> (f64, f64, f64) {
+        let n = ring.len();
+        if n == 0 {
+            return (0.0, 0.0, 0.0);
+        }
+        if n == 1 {
+            return (ring[0][0], ring[0][1], 0.0);
+        }
+        let mut cx = 0.0_f64;
+        let mut cy = 0.0_f64;
+        let mut area = 0.0_f64;
+        for i in 0..n {
+            let [x0, y0] = ring[i];
+            let [x1, y1] = ring[(i + 1) % n];
+            let cross = x0 * y1 - x1 * y0;
+            cx += (x0 + x1) * cross;
+            cy += (y0 + y1) * cross;
+            area += cross;
+        }
+        area *= 0.5;
+        if area.abs() < f64::EPSILON {
+            // Degenerate ring — return arithmetic mean.
+            let mx: f64 = ring.iter().map(|p| p[0]).sum::<f64>() / n as f64;
+            let my: f64 = ring.iter().map(|p| p[1]).sum::<f64>() / n as f64;
+            return (mx, my, 0.0);
+        }
+        (cx / (6.0 * area), cy / (6.0 * area), area.abs())
+    }
+
+    /// Centroid of a polygon (exterior minus holes, area-weighted).
+    fn polygon_centroid_2d(rings: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
+        if rings.is_empty() {
+            return None;
+        }
+        let (cx, cy, _) = Self::ring_centroid_weighted(&rings[0]);
+        Some([cx, cy])
+    }
+
+    /// Length-weighted midpoint centroid for a 2-D line string.
+    fn linestring_centroid_2d(pts: &[[f64; 2]]) -> Option<[f64; 2]> {
+        if pts.is_empty() {
+            return None;
+        }
+        if pts.len() == 1 {
+            return Some(pts[0]);
+        }
+        let total_len = Self::line_length_2d(pts);
+        if total_len < f64::EPSILON {
+            let mx: f64 = pts.iter().map(|p| p[0]).sum::<f64>() / pts.len() as f64;
+            let my: f64 = pts.iter().map(|p| p[1]).sum::<f64>() / pts.len() as f64;
+            return Some([mx, my]);
+        }
+        let half = total_len * 0.5;
+        let mut acc = 0.0;
+        for w in pts.windows(2) {
+            let dx = w[1][0] - w[0][0];
+            let dy = w[1][1] - w[0][1];
+            let seg_len = dx.hypot(dy);
+            if acc + seg_len >= half {
+                let t = (half - acc) / seg_len;
+                return Some([w[0][0] + t * dx, w[0][1] + t * dy]);
+            }
+            acc += seg_len;
+        }
+        pts.last().copied()
+    }
+
+    /// Centroid of the geometry as `[x, y]`.
+    ///
+    /// - **Point / MultiPoint**: arithmetic mean of positions.
+    /// - **LineString / MultiLineString**: length-weighted midpoint.
+    /// - **Polygon / MultiPolygon**: area-weighted Bourke centroid of exterior ring(s).
+    /// - **GeometryCollection**: area-weighted mean if any areal members exist, else
+    ///   length-weighted, else point mean.
+    /// - Returns `None` for `Null` and empty geometries.
+    #[must_use]
+    pub fn centroid(&self) -> Option<[f64; 2]> {
+        match self {
+            Self::Point([x, y]) => Some([*x, *y]),
+            Self::PointZ([x, y, _]) => Some([*x, *y]),
+            Self::MultiPoint(pts) => {
+                if pts.is_empty() {
+                    return None;
+                }
+                let n = pts.len() as f64;
+                Some([
+                    pts.iter().map(|p| p[0]).sum::<f64>() / n,
+                    pts.iter().map(|p| p[1]).sum::<f64>() / n,
+                ])
+            }
+            Self::MultiPointZ(pts) => {
+                if pts.is_empty() {
+                    return None;
+                }
+                let n = pts.len() as f64;
+                Some([
+                    pts.iter().map(|p| p[0]).sum::<f64>() / n,
+                    pts.iter().map(|p| p[1]).sum::<f64>() / n,
+                ])
+            }
+            Self::LineString(pts) => Self::linestring_centroid_2d(pts),
+            Self::LineStringZ(pts) => {
+                let pts2d: Vec<[f64; 2]> = pts.iter().map(|[x, y, _]| [*x, *y]).collect();
+                Self::linestring_centroid_2d(&pts2d)
+            }
+            Self::MultiLineString(lines) => {
+                let mut sum_x = 0.0_f64;
+                let mut sum_y = 0.0_f64;
+                let mut total_w = 0.0_f64;
+                for l in lines {
+                    let w = Self::line_length_2d(l);
+                    if let Some([cx, cy]) = Self::linestring_centroid_2d(l) {
+                        sum_x += cx * w;
+                        sum_y += cy * w;
+                        total_w += w;
+                    }
+                }
+                if total_w < f64::EPSILON {
+                    return None;
+                }
+                Some([sum_x / total_w, sum_y / total_w])
+            }
+            Self::MultiLineStringZ(lines) => {
+                let mut sum_x = 0.0_f64;
+                let mut sum_y = 0.0_f64;
+                let mut total_w = 0.0_f64;
+                for l in lines {
+                    let pts2d: Vec<[f64; 2]> = l.iter().map(|[x, y, _]| [*x, *y]).collect();
+                    let w = Self::line_length_2d(&pts2d);
+                    if let Some([cx, cy]) = Self::linestring_centroid_2d(&pts2d) {
+                        sum_x += cx * w;
+                        sum_y += cy * w;
+                        total_w += w;
+                    }
+                }
+                if total_w < f64::EPSILON {
+                    return None;
+                }
+                Some([sum_x / total_w, sum_y / total_w])
+            }
+            Self::Polygon(rings) => Self::polygon_centroid_2d(rings),
+            Self::PolygonZ(rings) => {
+                let rings_2d: Vec<Vec<[f64; 2]>> = rings
+                    .iter()
+                    .map(|r| r.iter().map(|[x, y, _]| [*x, *y]).collect())
+                    .collect();
+                Self::polygon_centroid_2d(&rings_2d)
+            }
+            Self::MultiPolygon(polys) => {
+                let mut sum_x = 0.0_f64;
+                let mut sum_y = 0.0_f64;
+                let mut total_a = 0.0_f64;
+                for p in polys {
+                    let a = Self::polygon_area(p);
+                    if let Some([cx, cy]) = Self::polygon_centroid_2d(p) {
+                        sum_x += cx * a;
+                        sum_y += cy * a;
+                        total_a += a;
+                    }
+                }
+                if total_a < f64::EPSILON {
+                    return None;
+                }
+                Some([sum_x / total_a, sum_y / total_a])
+            }
+            Self::MultiPolygonZ(polys) => {
+                let mut sum_x = 0.0_f64;
+                let mut sum_y = 0.0_f64;
+                let mut total_a = 0.0_f64;
+                for p in polys {
+                    let rings_2d: Vec<Vec<[f64; 2]>> = p
+                        .iter()
+                        .map(|r| r.iter().map(|[x, y, _]| [*x, *y]).collect())
+                        .collect();
+                    let a = Self::polygon_area(&rings_2d);
+                    if let Some([cx, cy]) = Self::polygon_centroid_2d(&rings_2d) {
+                        sum_x += cx * a;
+                        sum_y += cy * a;
+                        total_a += a;
+                    }
+                }
+                if total_a < f64::EPSILON {
+                    return None;
+                }
+                Some([sum_x / total_a, sum_y / total_a])
+            }
+            Self::GeometryCollection(geoms) => {
+                // Prefer area-weighted if any areal member exists.
+                let total_area: f64 = geoms.iter().map(|g| g.area()).sum();
+                if total_area > f64::EPSILON {
+                    let mut sx = 0.0_f64;
+                    let mut sy = 0.0_f64;
+                    for g in geoms {
+                        let a = g.area();
+                        if let Some([cx, cy]) = g.centroid() {
+                            sx += cx * a;
+                            sy += cy * a;
+                        }
+                    }
+                    return Some([sx / total_area, sy / total_area]);
+                }
+                // Fall back to length-weighted.
+                let total_len: f64 = geoms.iter().map(|g| g.length()).sum();
+                if total_len > f64::EPSILON {
+                    let mut sx = 0.0_f64;
+                    let mut sy = 0.0_f64;
+                    for g in geoms {
+                        let l = g.length();
+                        if let Some([cx, cy]) = g.centroid() {
+                            sx += cx * l;
+                            sy += cy * l;
+                        }
+                    }
+                    return Some([sx / total_len, sy / total_len]);
+                }
+                // Point mean.
+                let valid: Vec<[f64; 2]> = geoms.iter().filter_map(|g| g.centroid()).collect();
+                if valid.is_empty() {
+                    return None;
+                }
+                let n = valid.len() as f64;
+                Some([
+                    valid.iter().map(|p| p[0]).sum::<f64>() / n,
+                    valid.iter().map(|p| p[1]).sum::<f64>() / n,
+                ])
+            }
+            Self::Null => None,
+        }
+    }
 }
 
 // ─── Feature ────────────────────────────────────────────────────────────────

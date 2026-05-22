@@ -48,6 +48,7 @@ blake3.workspace = true
 rstar.workspace = true
 geo-types.workspace = true
 geo.workspace = true
+wkt = { workspace = true }
 
 # Logging
 tracing.workspace = true

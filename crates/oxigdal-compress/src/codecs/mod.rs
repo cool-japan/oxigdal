@@ -3,22 +3,28 @@
 //! This module provides various compression codecs optimized for different
 //! types of geospatial data.
 
+pub mod blosc;
 pub mod brotli;
 pub mod deflate;
 pub mod delta;
 pub mod dictionary;
 pub mod lz4;
+pub mod pipeline;
 pub mod rle;
+pub mod shuffle;
 pub mod snappy;
 pub mod zstd;
 
 pub use self::{
+    blosc::{BloscBackend, BloscCodec, BloscFrame, Codec, ShuffleKind},
     brotli::{BrotliCodec, BrotliConfig, BrotliQuality},
     deflate::{DeflateCodec, DeflateConfig, DeflateFormat, DeflateLevel},
     delta::{DeltaCodec, DeltaConfig, DeltaDataType},
     dictionary::{DictionaryCodec, DictionaryConfig},
     lz4::{Lz4Codec, Lz4Config, Lz4Level},
+    pipeline::{CodecPipeline, PipelineStage},
     rle::{RleCodec, RleConfig},
+    shuffle::{byte_shuffle, byte_shuffle_in_place, byte_unshuffle, byte_unshuffle_in_place},
     snappy::{SnappyCodec, SnappyConfig},
     zstd::{ZstdCodec, ZstdConfig, ZstdLevel},
 };

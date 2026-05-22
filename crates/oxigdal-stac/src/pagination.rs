@@ -112,6 +112,69 @@ impl Paginator {
         Ok(all_items)
     }
 
+    /// Returns a lazy streaming iterator over all items across all pages.
+    ///
+    /// Unlike [`collect_all`][Self::collect_all], this does **not** buffer the entire result set in
+    /// memory.  Items are fetched one page at a time and yielded individually as they become
+    /// available.  This is the correct choice for large catalogs (e.g. sentinel-2-l2a 2024 with
+    /// >10⁶ items).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(all(feature = "reqwest", feature = "async"))]
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use futures::{StreamExt, pin_mut};
+    /// use oxigdal_stac::{SearchParams, StacClient};
+    ///
+    /// let client = StacClient::new("https://earth-search.aws.element84.com/v1")?;
+    /// let paginator = client.search().limit(100).paginate();
+    ///
+    /// let stream = paginator.stream();
+    /// pin_mut!(stream);
+    /// while let Some(result) = stream.next().await {
+    ///     let item = result?;
+    ///     println!("{}", item.id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "async")]
+    pub fn stream(self) -> impl futures::Stream<Item = Result<crate::item::Item>> {
+        futures::stream::unfold(
+            // State: (paginator, buffered items from current page, next index to yield)
+            (self, Vec::<crate::item::Item>::new(), 0usize),
+            |(mut pag, mut items, mut idx)| async move {
+                loop {
+                    // If there are items remaining in the current page buffer, yield one.
+                    if idx < items.len() {
+                        let item = items[idx].clone();
+                        idx += 1;
+                        return Some((Ok(item), (pag, items, idx)));
+                    }
+
+                    // Buffer exhausted — fetch the next page.
+                    match pag.next_page().await {
+                        Ok(Some(results)) => {
+                            items = results.features;
+                            idx = 0;
+                            // Loop back: either yield the first item of the new page,
+                            // or fetch yet another page if this one was empty.
+                        }
+                        Ok(None) => return None,
+                        Err(e) => {
+                            // Mark the paginator as exhausted so that if the caller
+                            // polls the stream again after an error we do not attempt
+                            // another HTTP request — we simply end the stream.
+                            pag.has_more = false;
+                            return Some((Err(e), (pag, Vec::new(), 0)));
+                        }
+                    }
+                }
+            },
+        )
+    }
+
     /// Resets the paginator to start from the beginning.
     pub fn reset(&mut self) {
         self.page_token = None;

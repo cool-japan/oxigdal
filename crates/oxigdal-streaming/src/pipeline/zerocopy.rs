@@ -33,7 +33,7 @@ impl ZeroCopyBuffer {
     pub fn slice(&self, start: usize, end: usize) -> Result<Self> {
         if end > self.length {
             return Err(StreamingError::InvalidOperation(
-                "Slice end exceeds buffer length".to_string()
+                "Slice end exceeds buffer length".to_string(),
             ));
         }
 
@@ -44,8 +44,8 @@ impl ZeroCopyBuffer {
         })
     }
 
-    /// Get a reference to the data.
-    pub fn as_ref(&self) -> &[u8] {
+    /// Get a byte slice view of the data.
+    pub fn as_slice(&self) -> &[u8] {
         &self.data[self.offset..self.offset + self.length]
     }
 
@@ -66,7 +66,7 @@ impl ZeroCopyBuffer {
 
     /// Clone the data into a new owned buffer.
     pub fn to_owned(&self) -> Vec<u8> {
-        self.as_ref().to_vec()
+        self.as_slice().to_vec()
     }
 }
 
@@ -111,14 +111,16 @@ impl SharedBuffer {
         let available = buffer.len() - *read_pos;
         if available < len {
             return Err(StreamingError::Other(
-                "Not enough data available".to_string()
+                "Not enough data available".to_string(),
             ));
         }
 
-        let data = buffer.slice(*read_pos..*read_pos + len);
+        // BytesMut does not expose `.slice()` directly; freeze to Bytes first.
+        let frozen = buffer.clone().freeze();
+        let data = frozen.slice(*read_pos..*read_pos + len);
         *read_pos += len;
 
-        Ok(ZeroCopyBuffer::new(data.freeze()))
+        Ok(ZeroCopyBuffer::new(data))
     }
 
     /// Get the number of bytes available to read.
@@ -160,12 +162,12 @@ mod tests {
         let buffer = ZeroCopyBuffer::new(data);
 
         assert_eq!(buffer.len(), 5);
-        assert_eq!(buffer.as_ref(), &[1, 2, 3, 4, 5]);
+        assert_eq!(buffer.as_slice(), &[1, 2, 3, 4, 5]);
 
         let slice = buffer.slice(1, 4).ok();
         assert!(slice.is_some());
         if let Some(slice) = slice {
-            assert_eq!(slice.as_ref(), &[2, 3, 4]);
+            assert_eq!(slice.as_slice(), &[2, 3, 4]);
         }
     }
 
@@ -183,7 +185,7 @@ mod tests {
         let read = buffer.read(3).await.ok();
         assert!(read.is_some());
         if let Some(read) = read {
-            assert_eq!(read.as_ref(), &[1, 2, 3]);
+            assert_eq!(read.as_slice(), &[1, 2, 3]);
         }
     }
 }

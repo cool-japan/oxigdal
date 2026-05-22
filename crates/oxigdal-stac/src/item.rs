@@ -3,6 +3,7 @@
 use crate::{
     asset::Asset,
     error::{Result, StacError},
+    version::StacVersion,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -310,8 +311,8 @@ impl Item {
             });
         }
 
-        // Check STAC version
-        if self.stac_version != "1.0.0" {
+        // Check STAC version — accept 1.0.0 and 1.1.0
+        if StacVersion::parse(&self.stac_version).is_err() {
             return Err(StacError::InvalidVersion(self.stac_version.clone()));
         }
 

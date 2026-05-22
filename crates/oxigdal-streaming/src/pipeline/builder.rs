@@ -24,7 +24,9 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_stages: num_cpus::get(),
+            max_concurrent_stages: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
             buffer_size: 100,
             enable_metrics: true,
             enable_profiling: false,
@@ -89,7 +91,7 @@ impl PipelineBuilder {
     pub async fn build(self) -> Result<PipelineExecutor> {
         if self.stages.is_empty() {
             return Err(StreamingError::ConfigError(
-                "Pipeline must have at least one stage".to_string()
+                "Pipeline must have at least one stage".to_string(),
             ));
         }
 
@@ -106,7 +108,6 @@ impl Default for PipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::stage::TransformStage;
 
     #[test]
     fn test_pipeline_builder() {
@@ -117,7 +118,7 @@ mod tests {
 
         assert_eq!(builder.config.max_concurrent_stages, 4);
         assert_eq!(builder.config.buffer_size, 50);
-        assert_eq!(builder.config.enable_metrics, true);
+        assert!(builder.config.enable_metrics);
     }
 
     #[tokio::test]

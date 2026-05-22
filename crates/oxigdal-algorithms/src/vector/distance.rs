@@ -427,6 +427,117 @@ fn ray_casting_test(point: &Coordinate, ring: &[Coordinate]) -> bool {
     inside
 }
 
+// ---------------------------------------------------------------------------
+// Polyline similarity metrics: Fréchet distance and Hausdorff distance
+// ---------------------------------------------------------------------------
+
+/// Euclidean distance between two raw 2-D coordinate tuples.
+#[inline(always)]
+fn point_dist(p: (f64, f64), q: (f64, f64)) -> f64 {
+    let dx = p.0 - q.0;
+    let dy = p.1 - q.1;
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Perpendicular (or endpoint-projected) distance from `p` to the segment `(a, b)`.
+fn point_to_segment_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let ab = (b.0 - a.0, b.1 - a.1);
+    let len2 = ab.0 * ab.0 + ab.1 * ab.1;
+    if len2 < 1e-14 {
+        return point_dist(p, a);
+    }
+    let t = ((p.0 - a.0) * ab.0 + (p.1 - a.1) * ab.1) / len2;
+    let t = t.clamp(0.0, 1.0);
+    point_dist(p, (a.0 + t * ab.0, a.1 + t * ab.1))
+}
+
+/// Computes the discrete Fréchet distance between two polylines.
+///
+/// Uses the Eiter & Mannila (1994) dynamic-programming algorithm.
+/// Time: O(n·m), Space: O(n·m).
+///
+/// For large inputs (n, m > ~3 000) the O(n·m) table can exhaust memory; callers
+/// should downsample or use an approximate method in that regime.
+///
+/// Returns `0.0` if either polyline is empty.
+pub fn discrete_frechet_distance(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let n = a.len();
+    let m = b.len();
+    let mut ca = vec![vec![f64::INFINITY; m]; n];
+    for i in 0..n {
+        for j in 0..m {
+            let d = point_dist(a[i], b[j]);
+            ca[i][j] = if i == 0 && j == 0 {
+                d
+            } else if i == 0 {
+                ca[0][j - 1].max(d)
+            } else if j == 0 {
+                ca[i - 1][0].max(d)
+            } else {
+                ca[i - 1][j].min(ca[i][j - 1]).min(ca[i - 1][j - 1]).max(d)
+            };
+        }
+    }
+    ca[n - 1][m - 1]
+}
+
+/// Directed Hausdorff distance from `a` to `b`.
+///
+/// For each point in `a` computes the minimum vertex-to-vertex distance to `b`,
+/// then returns the maximum of those minima.
+pub fn directed_hausdorff(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    a.iter()
+        .map(|&p| {
+            b.iter()
+                .map(|&q| point_dist(p, q))
+                .fold(f64::INFINITY, f64::min)
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+/// Symmetric Hausdorff distance between two point sets / polylines.
+///
+/// Defined as `max(directed_hausdorff(a, b), directed_hausdorff(b, a))`.
+/// Compares vertex-to-nearest-vertex distances (not segment distances);
+/// see [`hausdorff_distance_to_segments`] for segment-accurate variant.
+pub fn hausdorff_distance(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    directed_hausdorff(a, b).max(directed_hausdorff(b, a))
+}
+
+/// Directed Hausdorff from `from` points to the *segments* of `to`.
+fn directed_hausdorff_to_segs(from: &[(f64, f64)], to: &[(f64, f64)]) -> f64 {
+    if from.is_empty() || to.is_empty() {
+        return 0.0;
+    }
+    from.iter()
+        .map(|&p| {
+            if to.len() == 1 {
+                point_dist(p, to[0])
+            } else {
+                to.windows(2)
+                    .map(|seg| point_to_segment_dist(p, seg[0], seg[1]))
+                    .fold(f64::INFINITY, f64::min)
+            }
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+/// Hausdorff distance where each point is compared to the nearest *segment*
+/// in the opposing polyline rather than the nearest vertex.
+///
+/// More accurate than [`hausdorff_distance`] for sparse polylines because a
+/// point that projects orthogonally onto a long edge will return a shorter (and
+/// correct) distance instead of snapping to an endpoint.
+pub fn hausdorff_distance_to_segments(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    directed_hausdorff_to_segs(a, b).max(directed_hausdorff_to_segs(b, a))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

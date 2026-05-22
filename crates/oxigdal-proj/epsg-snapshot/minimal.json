@@ -1,0 +1,582 @@
+[
+  {
+    "code": 4324,
+    "name": "WGS 72BE",
+    "proj_string": "+proj=longlat +ellps=WGS72 +towgs84=0,0,1.9,0,0,0.814,-0.38 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "World",
+    "unit": "degree",
+    "datum": "WGS 72 Transit Broadcast Ephemeris"
+  },
+  {
+    "code": 4617,
+    "name": "NAD83(CSRS)",
+    "proj_string": "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Canada",
+    "unit": "degree",
+    "datum": "NAD83 Canadian Spatial Reference System"
+  },
+  {
+    "code": 4647,
+    "name": "ETRS89 / UTM zone 32N (zE-N)",
+    "proj_string": "+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Projected",
+    "area_of_use": "Europe - 6°E to 12°E",
+    "unit": "metre",
+    "datum": "European Terrestrial Reference System 1989"
+  },
+  {
+    "code": 3408,
+    "name": "NSIDC EASE-Grid North",
+    "proj_string": "+proj=laea +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +a=6371228 +b=6371228 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Projected",
+    "area_of_use": "Northern hemisphere",
+    "unit": "metre",
+    "datum": "Authalic Sphere (r=6371228)"
+  },
+  {
+    "code": 3409,
+    "name": "NSIDC EASE-Grid South",
+    "proj_string": "+proj=laea +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +a=6371228 +b=6371228 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Projected",
+    "area_of_use": "Southern hemisphere",
+    "unit": "metre",
+    "datum": "Authalic Sphere (r=6371228)"
+  },
+  {
+    "code": 6933,
+    "name": "WGS 84 / NSIDC EASE-Grid 2.0 North",
+    "proj_string": "+proj=laea +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Projected",
+    "area_of_use": "Northern hemisphere - north of 0°N",
+    "unit": "metre",
+    "datum": "World Geodetic System 1984"
+  },
+  {
+    "code": 6932,
+    "name": "WGS 84 / NSIDC EASE-Grid 2.0 South",
+    "proj_string": "+proj=laea +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Projected",
+    "area_of_use": "Southern hemisphere - south of 0°N",
+    "unit": "metre",
+    "datum": "World Geodetic System 1984"
+  },
+  {
+    "code": 6931,
+    "name": "WGS 84 / NSIDC EASE-Grid 2.0 Global",
+    "proj_string": "+proj=cea +lon_0=0 +lat_ts=30 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Projected",
+    "area_of_use": "World",
+    "unit": "metre",
+    "datum": "World Geodetic System 1984"
+  },
+  {
+    "code": 4978,
+    "name": "WGS 84 (geocentric)",
+    "proj_string": "+proj=geocent +datum=WGS84 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geocentric",
+    "area_of_use": "World",
+    "unit": "metre",
+    "datum": "World Geodetic System 1984"
+  },
+  {
+    "code": 4896,
+    "name": "ITRF2005 (geocentric)",
+    "proj_string": "+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geocentric",
+    "area_of_use": "World",
+    "unit": "metre",
+    "datum": "International Terrestrial Reference Frame 2005"
+  },
+  {
+    "code": 7656,
+    "name": "WGS 84 (G1762)",
+    "proj_string": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "World",
+    "unit": "degree",
+    "datum": "World Geodetic System 1984 (G1762)"
+  },
+  {
+    "code": 7659,
+    "name": "WGS 84 (G1762) (3D geographic)",
+    "proj_string": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "World",
+    "unit": "degree",
+    "datum": "World Geodetic System 1984 (G1762)"
+  },
+  {
+    "code": 4559,
+    "name": "RRAF 1991",
+    "proj_string": "+proj=longlat +ellps=WGS84 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "French Antilles",
+    "unit": "degree",
+    "datum": "Reseau de Reference des Antilles Francaises 1991"
+  },
+  {
+    "code": 4694,
+    "name": "WGS 84 (G1150)",
+    "proj_string": "+proj=longlat +ellps=WGS84 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "World",
+    "unit": "degree",
+    "datum": "World Geodetic System 1984 (G1150)"
+  },
+  {
+    "code": 4695,
+    "name": "WGS 84 (G1296)",
+    "proj_string": "+proj=longlat +ellps=WGS84 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "World",
+    "unit": "degree",
+    "datum": "World Geodetic System 1984 (G1296)"
+  },
+  {
+    "code": 4885,
+    "name": "RSRGD2000",
+    "proj_string": "+proj=longlat +ellps=GRS80 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Ross Sea region, Antarctica",
+    "unit": "degree",
+    "datum": "Ross Sea Region Geodetic Datum 2000"
+  },
+  {
+    "code": 4886,
+    "name": "RSRGD2000 (geocentric)",
+    "proj_string": "+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geocentric",
+    "area_of_use": "Ross Sea region, Antarctica",
+    "unit": "metre",
+    "datum": "Ross Sea Region Geodetic Datum 2000"
+  },
+  {
+    "code": 5469,
+    "name": "Panama-Colon 1911",
+    "proj_string": "+proj=longlat +ellps=clrk66 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Panama",
+    "unit": "degree",
+    "datum": "Panama-Colon 1911"
+  },
+  {
+    "code": 4906,
+    "name": "ITRF2008 (geocentric)",
+    "proj_string": "+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geocentric",
+    "area_of_use": "World",
+    "unit": "metre",
+    "datum": "International Terrestrial Reference Frame 2008"
+  },
+  {
+    "code": 7664,
+    "name": "WGS 84 (G1674)",
+    "proj_string": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "World",
+    "unit": "degree",
+    "datum": "World Geodetic System 1984 (G1674)"
+  },
+  {
+    "code": 5464,
+    "name": "Maupiti 83",
+    "proj_string": "+proj=longlat +ellps=intl +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "French Polynesia - Maupiti island",
+    "unit": "degree",
+    "datum": "Maupiti 83"
+  },
+  {
+    "code": 3299,
+    "name": "ITRF2000 (geocentric)",
+    "proj_string": "+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geocentric",
+    "area_of_use": "World",
+    "unit": "metre",
+    "datum": "International Terrestrial Reference Frame 2000"
+  },
+  {
+    "code": 4555,
+    "name": "New Beijing",
+    "proj_string": "+proj=longlat +ellps=krass +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "China",
+    "unit": "degree",
+    "datum": "New Beijing"
+  },
+  {
+    "code": 4214,
+    "name": "Beijing 1954",
+    "proj_string": "+proj=longlat +ellps=krass +towgs84=15.8,-154.4,-82.3,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "China",
+    "unit": "degree",
+    "datum": "Beijing 1954"
+  },
+  {
+    "code": 4216,
+    "name": "Bermuda 1957",
+    "proj_string": "+proj=longlat +ellps=clrk66 +towgs84=-73,213,296,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Bermuda",
+    "unit": "degree",
+    "datum": "Bermuda 1957"
+  },
+  {
+    "code": 4218,
+    "name": "Bogota 1975",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=307,304,-318,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Colombia",
+    "unit": "degree",
+    "datum": "Bogota 1975"
+  },
+  {
+    "code": 4220,
+    "name": "Camacupa 1948",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-50.9,-347.6,-231,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Angola",
+    "unit": "degree",
+    "datum": "Camacupa 1948"
+  },
+  {
+    "code": 4221,
+    "name": "Campo Inchauspe",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-148,136,90,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Argentina",
+    "unit": "degree",
+    "datum": "Campo Inchauspe"
+  },
+  {
+    "code": 4222,
+    "name": "Cape",
+    "proj_string": "+proj=longlat +ellps=clrk80 +towgs84=-136,-108,-292,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "South Africa (historic)",
+    "unit": "degree",
+    "datum": "Cape"
+  },
+  {
+    "code": 4223,
+    "name": "Carthage",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-263,6,431,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Tunisia",
+    "unit": "degree",
+    "datum": "Carthage"
+  },
+  {
+    "code": 4224,
+    "name": "Chua",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-134,229,-29,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Brazil / Paraguay",
+    "unit": "degree",
+    "datum": "Chua"
+  },
+  {
+    "code": 4225,
+    "name": "Corrego Alegre 1970-72",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-206,172,-6,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Brazil",
+    "unit": "degree",
+    "datum": "Corrego Alegre 1970-72"
+  },
+  {
+    "code": 4226,
+    "name": "Cote d'Ivoire",
+    "proj_string": "+proj=longlat +a=6378249.2 +b=6356515 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Ivory Coast",
+    "unit": "degree",
+    "datum": "Cote d'Ivoire"
+  },
+  {
+    "code": 4227,
+    "name": "Deir ez Zor",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-183.5,91.0,0.0,0.0,0.0,0.0,0.0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Syria / Lebanon",
+    "unit": "degree",
+    "datum": "Deir ez Zor"
+  },
+  {
+    "code": 4228,
+    "name": "Douala 1948",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-206.1,-174.7,-87.7,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Cameroon",
+    "unit": "degree",
+    "datum": "Douala 1948"
+  },
+  {
+    "code": 4230,
+    "name": "ED50",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-87,-98,-121,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Europe",
+    "unit": "degree",
+    "datum": "European Datum 1950"
+  },
+  {
+    "code": 4231,
+    "name": "ED87",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-83.11,-97.38,-117.22,0.005,0.006,-0.007,-0.29 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Europe",
+    "unit": "degree",
+    "datum": "European Datum 1987"
+  },
+  {
+    "code": 4232,
+    "name": "Fahud",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-346,-1,224,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Oman",
+    "unit": "degree",
+    "datum": "Fahud"
+  },
+  {
+    "code": 4233,
+    "name": "Gandajika 1970",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-133,-321,50,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Democratic Republic of Congo",
+    "unit": "degree",
+    "datum": "Gandajika 1970"
+  },
+  {
+    "code": 4234,
+    "name": "Garoua",
+    "proj_string": "+proj=longlat +a=6378249.2 +b=6356515 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Cameroon - north",
+    "unit": "degree",
+    "datum": "Garoua"
+  },
+  {
+    "code": 4235,
+    "name": "Guyane Francaise",
+    "proj_string": "+proj=longlat +a=6378249.2 +b=6356515 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "French Guiana",
+    "unit": "degree",
+    "datum": "Guyane Francaise"
+  },
+  {
+    "code": 4236,
+    "name": "Hu Tzu Shan 1950",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-637,-549,-203,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Taiwan",
+    "unit": "degree",
+    "datum": "Hu Tzu Shan 1950"
+  },
+  {
+    "code": 4238,
+    "name": "ID74",
+    "proj_string": "+proj=longlat +ellps=bessel +towgs84=-376,156,544,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Indonesia",
+    "unit": "degree",
+    "datum": "Indonesian Datum 1974"
+  },
+  {
+    "code": 4239,
+    "name": "Indian 1954",
+    "proj_string": "+proj=longlat +ellps=evrst30 +towgs84=217,823,299,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Thailand / Myanmar",
+    "unit": "degree",
+    "datum": "Indian 1954"
+  },
+  {
+    "code": 4240,
+    "name": "Indian 1975",
+    "proj_string": "+proj=longlat +ellps=evrst30 +towgs84=209,818,290,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Thailand",
+    "unit": "degree",
+    "datum": "Indian 1975"
+  },
+  {
+    "code": 4241,
+    "name": "Jamaica 1875",
+    "proj_string": "+proj=longlat +a=6378249.144 +b=6356514.966 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Jamaica",
+    "unit": "degree",
+    "datum": "Jamaica 1875"
+  },
+  {
+    "code": 4242,
+    "name": "JAD69",
+    "proj_string": "+proj=longlat +ellps=clrk66 +towgs84=70,207,389.5,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Jamaica",
+    "unit": "degree",
+    "datum": "Jamaica 1969"
+  },
+  {
+    "code": 4243,
+    "name": "Kalianpur 1880",
+    "proj_string": "+proj=longlat +a=6377299.36 +b=6356098.36 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Indian subcontinent",
+    "unit": "degree",
+    "datum": "Kalianpur 1880"
+  },
+  {
+    "code": 4244,
+    "name": "Kandawala",
+    "proj_string": "+proj=longlat +ellps=evrst30 +towgs84=-97,787,86,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Sri Lanka",
+    "unit": "degree",
+    "datum": "Kandawala"
+  },
+  {
+    "code": 4245,
+    "name": "Kertau 1968",
+    "proj_string": "+proj=longlat +a=6377304.063 +b=6356103.039 +towgs84=-11,851,5,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Malaysia / Singapore (peninsular)",
+    "unit": "degree",
+    "datum": "Kertau 1968"
+  },
+  {
+    "code": 4246,
+    "name": "KOC",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-294.7,-200.1,525.5,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Kuwait",
+    "unit": "degree",
+    "datum": "Kuwait Oil Company"
+  },
+  {
+    "code": 4247,
+    "name": "La Canoa",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=-273.5,110.6,-357.9,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Venezuela",
+    "unit": "degree",
+    "datum": "La Canoa"
+  },
+  {
+    "code": 4249,
+    "name": "Leigon",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-130,29,364,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Ghana",
+    "unit": "degree",
+    "datum": "Leigon"
+  },
+  {
+    "code": 4250,
+    "name": "Liberia 1964",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-90,40,88,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Liberia",
+    "unit": "degree",
+    "datum": "Liberia 1964"
+  },
+  {
+    "code": 4251,
+    "name": "Libyan Arab Jamahiriya",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-208.406,-109.878,-2.5764,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Libya",
+    "unit": "degree",
+    "datum": "Libyan Geodetic Datum 2006"
+  },
+  {
+    "code": 4252,
+    "name": "Lome",
+    "proj_string": "+proj=longlat +a=6378249.2 +b=6356515 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Togo",
+    "unit": "degree",
+    "datum": "Lome"
+  },
+  {
+    "code": 4253,
+    "name": "Luzon 1911",
+    "proj_string": "+proj=longlat +ellps=clrk66 +towgs84=-133,-77,-51,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Philippines",
+    "unit": "degree",
+    "datum": "Luzon 1911"
+  },
+  {
+    "code": 4254,
+    "name": "Hito XVIII 1963",
+    "proj_string": "+proj=longlat +ellps=intl +towgs84=16,196,93,0,0,0,0 +no_defs +type=crs",
+    "wkt": null,
+    "crs_type": "Geographic",
+    "area_of_use": "Chile - Tierra del Fuego",
+    "unit": "degree",
+    "datum": "Hito XVIII 1963"
+  }
+]

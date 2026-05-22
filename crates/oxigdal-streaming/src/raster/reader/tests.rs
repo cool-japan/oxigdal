@@ -696,8 +696,7 @@ fn test_format_detection_empty_file_magic() {
 
 #[test]
 fn test_format_detection_nonexistent_file_magic() {
-    let test_path = std::env::temp_dir()
-        .join("oxigdal_nonexistent_format_test_bx9f.bin");
+    let test_path = std::env::temp_dir().join("oxigdal_nonexistent_format_test_bx9f.bin");
     assert_eq!(detect_format_from_magic(&test_path), None);
 }
 
@@ -815,7 +814,7 @@ async fn test_writer_with_lzw_compression_roundtrip() {
 
     // Verify the compressed file is smaller than raw data
     let file_size = std::fs::metadata(&test_path).expect("file metadata").len();
-    let raw_size = (width * height) as u64;
+    let raw_size = width * height;
     // LZW-compressed banded data should be smaller than raw (this data is very compressible)
     assert!(
         file_size < raw_size * 2,

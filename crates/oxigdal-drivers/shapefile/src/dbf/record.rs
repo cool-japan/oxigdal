@@ -265,7 +265,16 @@ impl FieldValue {
                 }
                 Ok(Self::Date(trimmed))
             }
-            FieldType::Memo => Ok(Self::String(trimmed)),
+            FieldType::Memo => {
+                // The 10-byte memo cell is an ASCII pointer (right-justified,
+                // space-padded) into the sibling `.dbt` file.  We leave the
+                // trimmed pointer string in place here; if the caller attaches
+                // a `MemoFile` to the `DbfReader`, the post-parse pass in
+                // `DbfReader::resolve_memo_fields` will dereference this
+                // pointer into the actual memo text.  When the pointer is
+                // empty or unparseable, an empty string is returned instead.
+                Ok(Self::String(trimmed))
+            }
         }
     }
 

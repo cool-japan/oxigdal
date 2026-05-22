@@ -7,7 +7,11 @@ mod array;
 mod schema;
 
 pub use array::{GeometryArray, GeometryArrayBuilder};
-pub use schema::{GeoArrowField, SchemaBuilder, add_geometry_column, is_geometry_column};
+pub use schema::{
+    GeoArrowField, SchemaBuilder, add_geometry_column, create_geometry_field_for,
+    encoding_from_extension_name, extract_geometry_metadata, field_coord_dim, field_encoding,
+    geoarrow_extension_name, is_geometry_column,
+};
 
 use crate::error::Result;
 use arrow_schema::{DataType, Field, Schema};

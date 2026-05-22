@@ -26,7 +26,7 @@ futures = { workspace = true }
 parking_lot = { workspace = true }
 dashmap.workspace = true
 bytes.workspace = true
-oxicode = { version = "0.2", features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
+oxicode = { version = "0.2.3", features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
 crc32fast.workspace = true
 oxiarc-lz4.workspace = true
 oxiarc-archive = { workspace = true }

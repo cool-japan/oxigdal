@@ -9,12 +9,14 @@
 //! - Proper NoData handling
 
 mod ast;
+pub mod bytecode;
 mod evaluator;
 mod lexer;
 mod ops;
 mod optimizer;
 mod parser;
 
+pub use bytecode::{CompiledProgram, OpCode, estimate_stack_depth, eval_bytecode};
 pub use ops::{RasterCalculator, RasterExpression};
 
 #[cfg(test)]

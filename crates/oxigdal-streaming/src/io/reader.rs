@@ -1,13 +1,13 @@
 //! Chunked reader for efficient sequential reading.
 
-use super::buffer::{ChunkDescriptor, ChunkedBuffer};
+use super::buffer::ChunkedBuffer;
 use super::chunked::{ChunkStrategy, ChunkedIO, FileChunkedIO};
 use crate::error::{Result, StreamingError};
 use bytes::Bytes;
 use std::path::Path;
-use tokio::sync::Semaphore;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tokio::sync::Semaphore;
+use tracing::info;
 
 /// A reader that processes data in chunks.
 pub struct ChunkedReader {
@@ -79,7 +79,9 @@ impl ChunkedReader {
         }
 
         // Read directly
-        let descriptor = self.buffer.descriptor_for_index(self.current_index, self.total_size);
+        let descriptor = self
+            .buffer
+            .descriptor_for_index(self.current_index, self.total_size);
         let data = self.io.read_chunk(&descriptor).await?;
 
         self.current_index += 1;
@@ -108,7 +110,9 @@ impl ChunkedReader {
             }
 
             // Prefetch this chunk
-            let _permit = self.prefetch_semaphore.try_acquire()
+            let _permit = self
+                .prefetch_semaphore
+                .try_acquire()
                 .map_err(|_| StreamingError::Other("Failed to acquire permit".to_string()))?;
 
             let data = self.io.read_chunk(&descriptor).await?;
@@ -156,20 +160,15 @@ mod tests {
         let test_path = temp_dir.join("test_chunked_read.dat");
 
         // Create a test file
-        let mut file = File::create(&test_path).await.ok();
+        let file = File::create(&test_path).await.ok();
         if let Some(mut f) = file {
             let data = vec![42u8; 10240];
             f.write_all(&data).await.ok();
         }
 
         // Test reading
-        let result = ChunkedReader::from_file(
-            &test_path,
-            ChunkStrategy::FixedSize(1024),
-            10240,
-            2,
-        )
-        .await;
+        let result =
+            ChunkedReader::from_file(&test_path, ChunkStrategy::FixedSize(1024), 10240, 2).await;
 
         // Clean up
         tokio::fs::remove_file(&test_path).await.ok();

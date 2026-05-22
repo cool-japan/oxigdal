@@ -40,6 +40,9 @@ rayon = { workspace = true, optional = true }
 # Statistical operations
 approx = { workspace = true }
 
+# Ordered floats for priority queues
+ordered-float = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }

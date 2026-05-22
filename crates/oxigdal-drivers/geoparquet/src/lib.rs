@@ -1,12 +1,24 @@
 //! GeoParquet Driver for OxiGDAL
 //!
-//! This crate provides a pure Rust implementation of the GeoParquet 1.0 specification,
-//! enabling efficient reading and writing of geospatial vector data in Apache Parquet format.
+//! This crate provides a pure Rust implementation of the GeoParquet 1.1
+//! specification, enabling efficient reading and writing of geospatial vector
+//! data in Apache Parquet format.
+//!
+//! Files written by older OxiGDAL versions declaring GeoParquet `1.0.0` are
+//! still accepted on read — see [`metadata::GeoParquetMetadata::validate`] for
+//! the version compatibility policy.
 //!
 //! # Features
 //!
-//! - Full GeoParquet 1.0 specification support
-//! - WKB geometry encoding/decoding for all geometry types
+//! - Full GeoParquet 1.1 specification support
+//! - WKB geometry encoding/decoding for all geometry types (default writer path)
+//! - GeoArrow native encodings: Point, LineString, Polygon, MultiPoint,
+//!   MultiLineString, MultiPolygon (opt-in via
+//!   [`writer::GeoParquetWriterBuilder::encoding`])
+//! - GeoParquet 1.1 `covering.bbox` column detection + row-group pruning +
+//!   `ArrowPredicate` fast-path (skip WKB decode entirely when bbox cols exist)
+//! - Per-column / per-row-group statistics exposure via
+//!   [`statistics::ColumnStatistics`]
 //! - Spatial partitioning and indexing for efficient queries
 //! - Zero-copy operations using Apache Arrow
 //! - Compression support (Snappy, Gzip, Zstd, LZ4, Brotli)
@@ -59,6 +71,8 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 pub mod arrow_ext;
+#[cfg(feature = "std")]
+pub mod covering;
 pub mod error;
 #[cfg(feature = "std")]
 pub mod filter;
@@ -68,7 +82,11 @@ pub mod metadata;
 #[cfg(feature = "std")]
 pub mod partitioning;
 #[cfg(feature = "std")]
+pub mod predicate;
+#[cfg(feature = "std")]
 pub mod spatial;
+#[cfg(feature = "std")]
+pub mod statistics;
 
 #[cfg(feature = "std")]
 mod compression;
@@ -79,25 +97,31 @@ mod writer;
 
 #[cfg(feature = "std")]
 pub use compression::CompressionType;
+#[cfg(feature = "std")]
+pub use covering::BboxColumns;
 pub use error::{GeoParquetError, Result};
 #[cfg(feature = "std")]
 pub use filter::{AttributePredicates, ColumnCondition, CompareOp, LogicOp};
 #[cfg(feature = "std")]
-pub use metadata::{Crs, GeoParquetMetadata, GeometryColumnMetadata};
+pub use metadata::{CoordDim, Crs, EncodingType, GeoParquetMetadata, GeometryColumnMetadata};
+#[cfg(feature = "std")]
+pub use predicate::{AttributeFilter, ScalarValue};
 #[cfg(feature = "std")]
 pub use reader::GeoParquetReader;
 #[cfg(feature = "std")]
-pub use writer::GeoParquetWriter;
+pub use statistics::ColumnStatistics;
+#[cfg(feature = "std")]
+pub use writer::{GeoParquetWriter, GeoParquetWriterBuilder};
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// GeoParquet specification version
+/// GeoParquet specification version emitted by writers in this crate.
 #[cfg(feature = "std")]
 pub const GEOPARQUET_VERSION: &str = metadata::GEOPARQUET_VERSION;
 /// GeoParquet specification version (no_std)
 #[cfg(not(feature = "std"))]
-pub const GEOPARQUET_VERSION: &str = "1.0.0";
+pub const GEOPARQUET_VERSION: &str = "1.1.0";
 
 #[cfg(test)]
 mod tests {
@@ -106,6 +130,6 @@ mod tests {
     #[test]
     fn test_version() {
         assert!(!VERSION.is_empty());
-        assert_eq!(GEOPARQUET_VERSION, "1.0.0");
+        assert_eq!(GEOPARQUET_VERSION, "1.1.0");
     }
 }

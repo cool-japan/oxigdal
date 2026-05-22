@@ -497,6 +497,7 @@ fn convert_type(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!(
@@ -812,6 +813,7 @@ fn convert_to_type(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!(
@@ -1199,6 +1201,20 @@ impl<T: Pod + Zeroable> ComputePipeline<T> {
         let mut staging_mut = staging.clone();
         staging_mut.copy_from(&self.current_buffer)?;
         staging.read().await
+    }
+
+    /// Read the result to CPU memory asynchronously — explicit async entry-point.
+    ///
+    /// Delegates to [`ComputePipeline::read`] and surfaces the result through
+    /// the standard `Future` interface. Downstream services that cannot park a
+    /// thread should `await` this method instead of calling `read_blocking`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if staging-buffer creation, the GPU→CPU copy, or the
+    /// `MAP_READ` mapping fails.
+    pub async fn read_async(self) -> GpuResult<Vec<T>> {
+        self.read().await
     }
 
     /// Read the result to CPU memory synchronously.

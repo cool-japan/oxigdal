@@ -648,6 +648,313 @@ fn get_page_slice(file_data: &[u8], page_num: u32, page_size: usize) -> Result<&
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Paginated table scan
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Paginated B-tree scan: skip `offset` rows, return at most `limit` rows.
+///
+/// Rows are in B-tree order (ascending rowid). Returns `(rowid, columns)` pairs.
+/// If `limit == 0`, returns empty vec immediately (not an error).
+///
+/// Algorithm: DFS over B-tree pages (identical traversal order to `scan_table`),
+/// count rows as they are encountered, skip the first `offset`, collect the next
+/// `limit`, then stop early (no need to visit further pages once `limit` reached).
+///
+/// For interior pages the rightmost-child-first push order is the same as
+/// `scan_table` so leaf visitation order is preserved.
+pub fn scan_table_paginated(
+    file_data: &[u8],
+    root_page: u32,
+    page_size: usize,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<(i64, Vec<CellValue>)>, GpkgError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::with_capacity(limit.min(256));
+    let mut stack: Vec<u32> = vec![root_page];
+    let mut skipped: usize = 0;
+    let mut collected: usize = 0;
+
+    'outer: while let Some(page_num) = stack.pop() {
+        let page_data = get_page_slice(file_data, page_num, page_size)?;
+        let header_offset = if page_num == 1 { 100 } else { 0 };
+
+        if header_offset >= page_data.len() {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Page {page_num}: header offset {header_offset} beyond page"
+            )));
+        }
+
+        let page_type = page_data[header_offset];
+
+        match page_type {
+            13 => {
+                // Leaf table page — parse all rows, then apply offset/limit logic.
+                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                for (rowid, cols) in rows {
+                    if skipped < offset {
+                        skipped += 1;
+                        continue;
+                    }
+                    results.push((rowid, cols));
+                    collected += 1;
+                    if collected == limit {
+                        break 'outer;
+                    }
+                }
+            }
+            5 => {
+                // Interior table page — push children onto the stack in the same
+                // order as `scan_table` so leftmost leaf is processed first.
+                let (children, rightmost) =
+                    parse_interior_table_page(page_data, page_size, header_offset)?;
+
+                // Push rightmost child first (processed last due to LIFO stack).
+                stack.push(rightmost);
+                // Push left children in reverse order so they are visited in
+                // ascending key order (leftmost first).
+                for (child_page, _key) in children.iter().rev() {
+                    stack.push(*child_page);
+                }
+            }
+            other => {
+                return Err(GpkgError::InvalidFormat(format!(
+                    "Page {page_num}: unexpected B-tree page type {other} \
+                     (expected 5 for interior or 13 for leaf)"
+                )));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Filtered table scan
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scan a table B-tree, returning only rows that satisfy a `FilterExpr`.
+///
+/// Traversal order and page-access pattern are identical to [`scan_table`].
+/// The filter is applied after every leaf-page row is decoded; non-matching
+/// rows are discarded before being pushed into the result buffer.
+///
+/// `file_data` is the complete SQLite file bytes.
+/// `root_page` is the 1-indexed root page of the table.
+/// `page_size` is the page size in bytes (from the SQLite header).
+/// `expr` is the filter predicate tree evaluated against each decoded row.
+///
+/// Returns `(rowid, column_values)` for every row that matches `expr`.
+///
+/// # Errors
+/// Returns an error if `root_page` is out of range or any B-tree page is
+/// malformed.
+pub fn scan_table_filtered(
+    file_data: &[u8],
+    root_page: u32,
+    page_size: usize,
+    expr: &crate::filter::FilterExpr,
+) -> Result<Vec<(i64, Vec<CellValue>)>, GpkgError> {
+    let mut results = Vec::new();
+    let mut stack: Vec<u32> = vec![root_page];
+
+    while let Some(page_num) = stack.pop() {
+        let page_data = get_page_slice(file_data, page_num, page_size)?;
+        let header_offset = if page_num == 1 { 100 } else { 0 };
+
+        if header_offset >= page_data.len() {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Page {page_num}: header offset {header_offset} beyond page"
+            )));
+        }
+
+        let page_type = page_data[header_offset];
+
+        match page_type {
+            13 => {
+                // Leaf table page — decode all rows, push only those that match.
+                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                for (rowid, cols) in rows {
+                    if crate::filter::evaluate(expr, &cols) {
+                        results.push((rowid, cols));
+                    }
+                }
+            }
+            5 => {
+                // Interior page — push children in left-to-right visitation order.
+                let (children, rightmost) =
+                    parse_interior_table_page(page_data, page_size, header_offset)?;
+                stack.push(rightmost);
+                for (child_page, _key) in children.iter().rev() {
+                    stack.push(*child_page);
+                }
+            }
+            other => {
+                return Err(GpkgError::InvalidFormat(format!(
+                    "Page {page_num}: unexpected B-tree page type {other} \
+                     (expected 5 for interior or 13 for leaf)"
+                )));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Filtered B-tree scan with post-filter offset/limit pagination.
+///
+/// Rows are first filtered by `expr`, then `offset` matching rows are skipped,
+/// and at most `limit` matching rows are returned.  This means offset and limit
+/// apply to the **post-filter** result set, not to the raw row stream.
+///
+/// Traversal is short-circuited once `limit` matching rows have been collected.
+///
+/// If `limit == 0`, returns an empty vector immediately.
+///
+/// `file_data` is the complete SQLite file bytes.
+/// `root_page` is the 1-indexed root page of the table.
+/// `page_size` is the page size in bytes.
+/// `expr` is the filter predicate tree.
+/// `offset` is the number of post-filter rows to skip.
+/// `limit` is the maximum number of post-filter rows to return.
+///
+/// # Errors
+/// Returns an error if `root_page` is out of range or any B-tree page is
+/// malformed.
+pub fn scan_table_filtered_paginated(
+    file_data: &[u8],
+    root_page: u32,
+    page_size: usize,
+    expr: &crate::filter::FilterExpr,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<(i64, Vec<CellValue>)>, GpkgError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::with_capacity(limit.min(256));
+    let mut stack: Vec<u32> = vec![root_page];
+    let mut skipped: usize = 0;
+    let mut collected: usize = 0;
+
+    'outer: while let Some(page_num) = stack.pop() {
+        let page_data = get_page_slice(file_data, page_num, page_size)?;
+        let header_offset = if page_num == 1 { 100 } else { 0 };
+
+        if header_offset >= page_data.len() {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Page {page_num}: header offset {header_offset} beyond page"
+            )));
+        }
+
+        let page_type = page_data[header_offset];
+
+        match page_type {
+            13 => {
+                // Leaf table page — filter rows, then apply post-filter offset/limit.
+                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                for (rowid, cols) in rows {
+                    if !crate::filter::evaluate(expr, &cols) {
+                        continue;
+                    }
+                    if skipped < offset {
+                        skipped += 1;
+                        continue;
+                    }
+                    results.push((rowid, cols));
+                    collected += 1;
+                    if collected == limit {
+                        break 'outer;
+                    }
+                }
+            }
+            5 => {
+                // Interior page — push children in visitation order.
+                let (children, rightmost) =
+                    parse_interior_table_page(page_data, page_size, header_offset)?;
+                stack.push(rightmost);
+                for (child_page, _key) in children.iter().rev() {
+                    stack.push(*child_page);
+                }
+            }
+            other => {
+                return Err(GpkgError::InvalidFormat(format!(
+                    "Page {page_num}: unexpected B-tree page type {other} \
+                     (expected 5 for interior or 13 for leaf)"
+                )));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Count total rows in a B-tree table without materialising them.
+///
+/// More efficient than `scan_table(...).len()` for large tables because
+/// it reads only each leaf page's header (cell count field) rather than
+/// decoding individual cell payloads.
+pub fn count_table_rows(
+    file_data: &[u8],
+    root_page: u32,
+    page_size: usize,
+) -> Result<u64, GpkgError> {
+    let mut total: u64 = 0;
+    let mut stack: Vec<u32> = vec![root_page];
+
+    while let Some(page_num) = stack.pop() {
+        let page_data = get_page_slice(file_data, page_num, page_size)?;
+        let header_offset = if page_num == 1 { 100 } else { 0 };
+
+        if header_offset >= page_data.len() {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Page {page_num}: header offset {header_offset} beyond page"
+            )));
+        }
+
+        let page_type = page_data[header_offset];
+
+        match page_type {
+            13 => {
+                // Leaf page: read cell count from header bytes [3..5] (BE u16).
+                if header_offset + 5 > page_data.len() {
+                    return Err(GpkgError::InsufficientData {
+                        needed: header_offset + 5,
+                        available: page_data.len(),
+                    });
+                }
+                let cell_count = u16::from_be_bytes([
+                    page_data[header_offset + 3],
+                    page_data[header_offset + 4],
+                ]) as u64;
+                total += cell_count;
+            }
+            5 => {
+                // Interior page: push children in order (same as scan_table).
+                let (children, rightmost) =
+                    parse_interior_table_page(page_data, page_size, header_offset)?;
+                stack.push(rightmost);
+                for (child_page, _key) in children.iter().rev() {
+                    stack.push(*child_page);
+                }
+            }
+            other => {
+                return Err(GpkgError::InvalidFormat(format!(
+                    "Page {page_num}: unexpected B-tree page type {other} \
+                     (expected 5 for interior or 13 for leaf)"
+                )));
+            }
+        }
+    }
+
+    Ok(total)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // sqlite_master scan
 // ─────────────────────────────────────────────────────────────────────────────
 

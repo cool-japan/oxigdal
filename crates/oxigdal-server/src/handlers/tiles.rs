@@ -298,11 +298,7 @@ fn render_tile(
     let encoded = match format {
         ImageFormat::Png => encode_png(&img_buffer, tile_size, tile_size)?,
         ImageFormat::Jpeg => encode_jpeg(&img_buffer, tile_size, tile_size)?,
-        ImageFormat::Webp => {
-            return Err(TileError::UnsupportedFormat(
-                "WebP not yet supported".to_string(),
-            ));
-        }
+        ImageFormat::Webp => encode_webp(&img_buffer, tile_size, tile_size)?,
         ImageFormat::Geotiff => {
             return Err(TileError::UnsupportedFormat(
                 "GeoTIFF not supported for tiles".to_string(),
@@ -330,6 +326,19 @@ fn encode_png(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TileError
             .map_err(|e| TileError::Rendering(e.to_string()))?;
     }
 
+    Ok(output)
+}
+
+/// Encode RGBA data to lossless WebP format
+fn encode_webp(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TileError> {
+    use image::ExtendedColorType;
+    use image::codecs::webp::WebPEncoder;
+
+    let mut output = Vec::new();
+    let encoder = WebPEncoder::new_lossless(&mut output);
+    encoder
+        .encode(data, width, height, ExtendedColorType::Rgba8)
+        .map_err(|e| TileError::Rendering(e.to_string()))?;
     Ok(output)
 }
 

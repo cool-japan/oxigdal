@@ -16,9 +16,12 @@
 
 pub mod copc_reader;
 pub mod copc_vlr;
+pub mod crs_vlr;
 pub mod error;
+pub mod extended_vlr;
 pub mod hierarchy;
 pub mod las_header;
+pub mod laz;
 pub mod octree;
 pub mod point;
 pub mod point_format;
@@ -27,9 +30,14 @@ pub mod vlr_chain;
 
 pub use copc_reader::CopcReader;
 pub use copc_vlr::{CopcInfo, Vlr, VlrKey};
+pub use crs_vlr::{
+    CrsInfo, GeoKeyDirectory, GeoKeyEntry, extract_crs_info, parse_geo_key_directory,
+};
 pub use error::CopcError;
+pub use extended_vlr::{ExtendedVlr, parse_evlr_chain, version_supports_evlr};
 pub use hierarchy::{HierarchyEntry, VoxelKey};
 pub use las_header::{LasHeader, LasVersion};
+pub use laz::{LazItem, LazVlrInfo, decompress_chunk, detect_laszip_vlr, parse_laszip_vlr_data};
 pub use octree::{Octree, OctreeNode, PointCloudStats};
 pub use point::{BoundingBox3D, Point3D};
 pub use point_format::{deserialize_point, deserialize_points};

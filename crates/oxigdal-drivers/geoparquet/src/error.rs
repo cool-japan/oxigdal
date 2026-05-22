@@ -52,6 +52,18 @@ pub enum GeoParquetError {
         message: String,
     },
 
+    /// Invalid encoding for a typed (native GeoArrow) geometry column.
+    ///
+    /// Raised when a native geometry column contains data inconsistent with its
+    /// declared `EncodingType` (e.g. mixed geometry types in a column declared
+    /// `geoarrow.point`, or an Arrow array shape that does not match the
+    /// expected nested-list structure for the encoding).
+    #[error("Invalid encoding: {message}")]
+    InvalidEncoding {
+        /// Error message
+        message: String,
+    },
+
     /// Unsupported feature
     #[error("Unsupported feature: {feature}")]
     Unsupported {
@@ -131,6 +143,13 @@ impl GeoParquetError {
     /// Creates an invalid geometry error
     pub fn invalid_geometry(message: impl Into<String>) -> Self {
         Self::InvalidGeometry {
+            message: message.into(),
+        }
+    }
+
+    /// Creates an invalid encoding error.
+    pub fn invalid_encoding(message: impl Into<String>) -> Self {
+        Self::InvalidEncoding {
             message: message.into(),
         }
     }

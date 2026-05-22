@@ -20,8 +20,9 @@ oxigdal-algorithms.workspace = true
 oxigdal-geotiff.workspace = true
 oxigdal-geojson.workspace = true
 
-# Jupyter kernel
-evcxr.workspace = true
+# Jupyter kernel (optional: evcxr pulls in pathfinder_simd which requires
+# nightly ARM intrinsics; gate behind feature so default publish builds pass)
+evcxr = { workspace = true, optional = true }
 
 # Visualization
 plotters.workspace = true
@@ -54,6 +55,7 @@ tempfile.workspace = true
 [features]
 default = []
 async = ["tokio"]
+jupyter-kernel = ["evcxr"]
 
 [lints]
 workspace = true

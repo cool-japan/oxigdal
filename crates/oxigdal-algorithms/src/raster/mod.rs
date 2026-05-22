@@ -24,18 +24,25 @@ mod filters;
 mod focal;
 mod hillshade;
 pub mod hydrology;
-mod morphology;
+pub mod morphology;
+pub mod morphology_compound;
+pub mod point_cloud_thin;
 pub mod polygonize;
 mod reclassify;
 mod slope_aspect;
 mod statistics;
+pub mod streaming;
 mod terrain;
 mod texture;
+pub mod tin_interp;
 mod viewshed;
 mod zonal_stats;
 
 // Calculator
-pub use calculator::{RasterCalculator, RasterExpression};
+pub use calculator::{
+    CompiledProgram, OpCode, RasterCalculator, RasterExpression, estimate_stack_depth,
+    eval_bytecode,
+};
 
 // Classification
 pub use classify::{ClassificationMethod, ClassificationRule, classify, reclassify, threshold};
@@ -63,10 +70,20 @@ pub use hillshade::{
     hillshade, multidirectional_hillshade, swiss_hillshade,
 };
 
-// Morphology
+// Morphology (buffer-based, with `StructuringElement` shapes)
+//
+// The buffer-based `top_hat` / `black_hat` are re-exported under
+// `top_hat_buffer` / `black_hat_buffer` to leave the simple names free for
+// the slice-based compound operators in [`morphology_compound`].
 pub use morphology::{
-    StructuringElement, black_hat, close, dilate, erode, external_gradient, internal_gradient,
-    morphological_gradient, open, top_hat,
+    StructuringElement, black_hat as black_hat_buffer, close, dilate, erode, external_gradient,
+    internal_gradient, morphological_gradient, open, top_hat as top_hat_buffer,
+};
+
+// Morphology (compound operators on flat `&[f32]` rasters)
+pub use morphology_compound::{
+    BorderMode, MorphologyOptions, black_hat, black_hat_with, closing, closing_with, dilate_slice,
+    erode_slice, opening, opening_with, top_hat, top_hat_with,
 };
 
 // Reclassify (legacy)
@@ -122,6 +139,24 @@ pub use zonal_stats::{ZonalStatistics, compute_zonal_stats};
 pub use polygonize::{
     BoundaryMethod, Connectivity, PolygonFeature, PolygonizeOptions, PolygonizeResult, polygonize,
     polygonize_raster,
+};
+
+// TIN interpolation (Delaunay-based scattered-data rasterisation)
+pub use tin_interp::{
+    Tin, TinInterpMethod, TinPoint, build_tin, interpolate_idw_tin, interpolate_natural_neighbor,
+    rasterize_tin,
+};
+
+// Point-cloud thinning (grid/random/Poisson-disk)
+pub use point_cloud_thin::{
+    ThinPoint3, ThinningMethod, ThinningStats, thin_grid, thin_poisson_disk, thin_random,
+    thin_with_stats,
+};
+
+// Streaming chunked raster processing (out-of-core abstraction)
+pub use streaming::{
+    Chunk, ChunkIterator, ChunkedRaster, InMemoryRasterSource, RasterError, RasterSource,
+    extract_inner, process_streaming, streaming_focal_mean, streaming_hillshade, streaming_slope,
 };
 
 use crate::error::Result;

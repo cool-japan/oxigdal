@@ -1,10 +1,16 @@
 # OxiGDAL TODO
 
-> Version: 0.1.4 (2026-04-19) | 76 crates | 12,064 tests | ~580K Rust SLoC
+> Version: 0.1.5 (2026-05-22) | 78 crates | 14,605 tests | ~580K Rust SLoC
 
 ---
 
-## v0.1.4 — Current Release (2026-04-19) [COMPLETE]
+## v0.1.5 — Current Release (2026-05-22) [COMPLETE]
+
+- [x] `oxigdal-gpu`: WGSL `RayMarchUniforms` layout fix — removed stray `_pad1: f32` that shifted every field by 4 bytes and caused the Metal compute kernel to read `max_steps` ≈ 1.05×10⁹, hanging `device.poll(wait_indefinitely)` for 120s+. Previously-timing-out `test_ray_march_gpu_matches_cpu_when_backend_present` now passes in 0.127s.
+
+---
+
+## v0.1.4 — Previous Release (2026-04-19) [COMPLETE]
 
 - [x] Wave 1: Weiler-Atherton polygon clipping, Karney geodesic area, DE-9IM topology, marching squares contour extraction
 - [x] Wave 1: ML migration ort → oxionnx (Pure Rust ONNX runtime)
@@ -231,7 +237,7 @@
 - [ ] Maintain 0 clippy warnings, 0 rustdoc warnings
 - [ ] Maintain 0 unwrap() in production code
 - [ ] Maintain all files < 2,000 lines
-- [ ] Increase test count toward 10,000+ (currently 10,935)
+- [ ] Increase test count toward 10,000+ (currently 14,605)
 - [ ] Property-based testing (proptest) for core algorithms
 - [ ] Fuzzing (cargo-fuzz) for format parsers (GeoTIFF, JPEG2000, GRIB)
 
@@ -243,4 +249,4 @@
 
 ---
 
-*Last updated: 2026-03-21*
+*Last updated: 2026-05-22*

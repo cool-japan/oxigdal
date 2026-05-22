@@ -32,8 +32,14 @@ pub struct CopcReader {
     copc_info: CopcInfo,
     /// All VLRs from the file.
     vlrs: Vec<crate::copc_vlr::Vlr>,
+    /// Extended VLRs (LAS 1.4), parsed once from the header's EVLR locator.
+    extended_vlrs: Vec<crate::extended_vlr::ExtendedVlr>,
     /// The raw file bytes, kept for hierarchy + point data access.
     data: Vec<u8>,
+    /// Parsed LASzip VLR information, present iff the point data is LAZ
+    /// compressed.  When `None`, chunk bytes are treated as raw LAS records;
+    /// when `Some`, the chunk is routed through [`crate::laz::decompress_chunk`].
+    pub(crate) laz_info: Option<crate::laz::LazVlrInfo>,
 }
 
 impl CopcReader {
@@ -55,11 +61,31 @@ impl CopcReader {
         // Verify the hierarchy VLR exists (we don't need its payload yet).
         let _hierarchy_vlr = vlr_chain::find_copc_hierarchy_vlr(&vlrs)?;
 
+        // Detect and parse the optional LASzip VLR.  If present, chunks will
+        // be routed through the LAZ decompressor before deserialization.
+        let laz_info = if let Some(vlr) = crate::laz::detect_laszip_vlr(&vlrs) {
+            Some(crate::laz::parse_laszip_vlr_data(&vlr.data)?)
+        } else {
+            None
+        };
+
+        // Parse Extended VLRs (LAS 1.4) from the header's EVLR locator. EVLRs
+        // are advisory metadata, so a malformed/absent EVLR region degrades to
+        // an empty list rather than failing an otherwise-valid COPC read.
+        let extended_vlrs = crate::extended_vlr::parse_evlr_chain(
+            data,
+            header.start_of_first_evlr(),
+            header.number_of_evlrs(),
+        )
+        .unwrap_or_default();
+
         Ok(Self {
             header,
             copc_info,
             vlrs,
+            extended_vlrs,
             data: data.to_vec(),
+            laz_info,
         })
     }
 
@@ -76,6 +102,24 @@ impl CopcReader {
     /// Return a reference to the VLR list.
     pub fn vlrs(&self) -> &[crate::copc_vlr::Vlr] {
         &self.vlrs
+    }
+
+    /// Return a reference to the Extended VLR (EVLR) list.
+    ///
+    /// EVLRs are parsed once at construction from the LAS 1.4 header's EVLR
+    /// locator (`start_of_first_evlr` / `number_of_evlrs`). The slice is empty
+    /// for files without EVLRs or for pre-1.4 versions.
+    pub fn extended_vlrs(&self) -> &[crate::extended_vlr::ExtendedVlr] {
+        &self.extended_vlrs
+    }
+
+    /// Extract structural coordinate-reference-system metadata.
+    ///
+    /// Scans both the classic VLRs and the Extended VLRs for the GeoTIFF tags
+    /// (record IDs 34735/34736/34737) and the OGC WKT record (2112), returning
+    /// the parsed structures. No semantic CRS interpretation is performed.
+    pub fn crs(&self) -> crate::crs_vlr::CrsInfo {
+        crate::crs_vlr::extract_crs_info(&self.vlrs, &self.extended_vlrs)
     }
 
     /// Return the full octree bounding box as a [`BoundingBox3D`].
@@ -139,8 +183,28 @@ impl CopcReader {
 
             let chunk_data = &self.data[chunk_offset..chunk_offset + chunk_size];
 
+            // Route through the LAZ decompressor when the file carries a
+            // LASzip VLR, otherwise feed the raw bytes straight to the
+            // point-record deserializer.
+            let decompressed: Vec<u8>;
+            let bytes_for_deserialize: &[u8] = if self.laz_info.is_some() {
+                if format_id <= 1 {
+                    decompressed = crate::laz::decompress_chunk(
+                        chunk_data,
+                        point_count,
+                        record_length,
+                        format_id,
+                    )?;
+                    &decompressed
+                } else {
+                    return Err(CopcError::UnsupportedLazFormat { format_id });
+                }
+            } else {
+                chunk_data
+            };
+
             let points = point_format::deserialize_points(
-                chunk_data,
+                bytes_for_deserialize,
                 point_count,
                 record_length,
                 format_id,

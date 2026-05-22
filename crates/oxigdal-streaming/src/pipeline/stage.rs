@@ -75,10 +75,7 @@ where
 {
     /// Create a new transform stage.
     pub fn new(name: String, transform_fn: F) -> Self {
-        Self {
-            name,
-            transform_fn,
-        }
+        Self { name, transform_fn }
     }
 }
 
@@ -94,7 +91,7 @@ where
     async fn process(&self, input: ZeroCopyBuffer) -> Result<StageResult> {
         let start = Instant::now();
 
-        let output = (self.transform_fn)(input.as_ref())?;
+        let output = (self.transform_fn)(input.as_slice())?;
         let output_buffer = ZeroCopyBuffer::new(bytes::Bytes::from(output));
 
         let elapsed = start.elapsed().as_millis() as u64;
@@ -134,7 +131,7 @@ where
     async fn process(&self, input: ZeroCopyBuffer) -> Result<StageResult> {
         let start = Instant::now();
 
-        if (self.filter_fn)(input.as_ref()) {
+        if (self.filter_fn)(input.as_slice()) {
             let elapsed = start.elapsed().as_millis() as u64;
             Ok(StageResult::new(input, elapsed))
         } else {
@@ -150,26 +147,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_transform_stage() {
-        let stage = TransformStage::new(
-            "double".to_string(),
-            |data| Ok(data.iter().map(|&x| x * 2).collect()),
-        );
+        let stage = TransformStage::new("double".to_string(), |data| {
+            Ok(data.iter().map(|&x| x * 2).collect())
+        });
 
         let input = ZeroCopyBuffer::new(Bytes::from(vec![1, 2, 3]));
         let result = stage.process(input).await.ok();
 
         assert!(result.is_some());
         if let Some(result) = result {
-            assert_eq!(result.data.as_ref(), &[2, 4, 6]);
+            assert_eq!(result.data.as_slice(), &[2, 4, 6]);
         }
     }
 
     #[tokio::test]
     async fn test_filter_stage() {
-        let stage = FilterStage::new(
-            "non_empty".to_string(),
-            |data| !data.is_empty(),
-        );
+        let stage = FilterStage::new("non_empty".to_string(), |data| !data.is_empty());
 
         let input = ZeroCopyBuffer::new(Bytes::from(vec![1, 2, 3]));
         let result = stage.process(input).await;

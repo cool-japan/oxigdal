@@ -3,12 +3,16 @@
 //! This module provides WKB (Well-Known Binary) encoding and decoding
 //! for all geometry types supported by GeoParquet.
 
+#[cfg(feature = "std")]
+pub mod native;
 mod types;
 #[cfg(feature = "std")]
 mod wkb;
 #[cfg(feature = "std")]
 pub mod wkb_extended;
 
+#[cfg(feature = "std")]
+pub use native::{decode_native_array, decode_native_array_optional, encode_native_array};
 pub use types::{
     Coordinate, Geometry, GeometryCollection, GeometryType, LineString, MultiLineString,
     MultiPoint, MultiPolygon, Point, Polygon,

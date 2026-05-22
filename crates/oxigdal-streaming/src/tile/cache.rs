@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Configuration for tile cache.
 #[derive(Debug, Clone)]
@@ -110,17 +110,22 @@ impl TileCache {
     /// Put a tile in memory cache.
     async fn put_memory(&self, coord: &TileCoordinate, response: TileResponse) -> Result<()> {
         let mut cache = self.memory_cache.write().await;
-        cache.put(*coord, CachedTile {
-            response,
-            cached_at: std::time::Instant::now(),
-        });
+        cache.put(
+            *coord,
+            CachedTile {
+                response,
+                cached_at: std::time::Instant::now(),
+            },
+        );
         Ok(())
     }
 
     /// Put a tile in disk cache.
     async fn put_disk(&self, coord: &TileCoordinate, response: TileResponse) -> Result<()> {
-        let cache_dir = self.config.disk_cache_dir.as_ref()
-            .ok_or_else(|| StreamingError::ConfigError("Disk cache not configured".to_string()))?;
+        let cache_dir =
+            self.config.disk_cache_dir.as_ref().ok_or_else(|| {
+                StreamingError::ConfigError("Disk cache not configured".to_string())
+            })?;
 
         let path = self.tile_path(cache_dir, coord);
 
@@ -128,13 +133,13 @@ impl TileCache {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| StreamingError::Io(e))?;
+                .map_err(StreamingError::Io)?;
         }
 
         // Write tile data
         fs::write(&path, &response.data)
             .await
-            .map_err(|e| StreamingError::Io(e))?;
+            .map_err(StreamingError::Io)?;
 
         self.disk_cache_map.insert(*coord, path);
 
@@ -143,9 +148,7 @@ impl TileCache {
 
     /// Load a tile from disk cache.
     async fn load_from_disk(&self, coord: &TileCoordinate, path: &Path) -> Result<TileResponse> {
-        let data = fs::read(path)
-            .await
-            .map_err(|e| StreamingError::Io(e))?;
+        let data = fs::read(path).await.map_err(StreamingError::Io)?;
 
         Ok(TileResponse::new(
             *coord,
@@ -176,7 +179,7 @@ impl TileCache {
             if cache_dir.exists() {
                 fs::remove_dir_all(cache_dir)
                     .await
-                    .map_err(|e| StreamingError::Io(e))?;
+                    .map_err(StreamingError::Io)?;
             }
         }
 
@@ -224,11 +227,8 @@ mod tests {
 
         if let Some(cache) = cache {
             let coord = TileCoordinate::new(10, 512, 384);
-            let response = TileResponse::new(
-                coord,
-                Bytes::from(vec![0u8; 1024]),
-                "image/png".to_string(),
-            );
+            let response =
+                TileResponse::new(coord, Bytes::from(vec![0u8; 1024]), "image/png".to_string());
 
             cache.put(response).await.ok();
 

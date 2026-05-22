@@ -844,6 +844,130 @@ impl ItrfTransformParams {
         let rates = [0.0, -0.6e-4, -1.4e-4, 0.0, 0.0, 0.0, 0.01e-3];
         Self::new(bw, rates)
     }
+
+    /// Return an `ItrfTransformParams` with the sign of all Bursa-Wolf parameters
+    /// and their rates negated (i.e., the inverse transformation).
+    #[must_use]
+    pub fn inverse(&self) -> Self {
+        let bw = self.bursa_wolf;
+        let inverse_bw = BursaWolfParams {
+            tx: -bw.tx,
+            ty: -bw.ty,
+            tz: -bw.tz,
+            rx: -bw.rx,
+            ry: -bw.ry,
+            rz: -bw.rz,
+            ds: -bw.ds,
+        };
+        let inverse_rates = [
+            -self.rates[0],
+            -self.rates[1],
+            -self.rates[2],
+            -self.rates[3],
+            -self.rates[4],
+            -self.rates[5],
+            -self.rates[6],
+        ];
+        Self::new(inverse_bw, inverse_rates)
+    }
+}
+
+/// A registered ITRF preset: source frame name, target frame name, parameters,
+/// and the reference epoch at which the published parameters apply.
+#[derive(Debug, Clone, Copy)]
+pub struct ItrfPreset {
+    /// Name of the source ITRF frame (e.g. `"ITRF2014"`)
+    pub source_name: &'static str,
+    /// Name of the target ITRF frame (e.g. `"ITRF2008"`)
+    pub target_name: &'static str,
+    /// Published Bursa-Wolf parameters and their annual rates
+    pub params: ItrfTransformParams,
+    /// Reference epoch for the published parameters (decimal year)
+    pub ref_epoch: f64,
+}
+
+impl ItrfPreset {
+    /// Construct a new `ItrfPreset`.
+    #[must_use]
+    pub const fn new(
+        source_name: &'static str,
+        target_name: &'static str,
+        params: ItrfTransformParams,
+        ref_epoch: f64,
+    ) -> Self {
+        Self {
+            source_name,
+            target_name,
+            params,
+            ref_epoch,
+        }
+    }
+}
+
+/// Built-in table of published ITRF-to-ITRF transformation presets.
+///
+/// Each entry records: (source_frame, target_frame, params, reference_epoch).
+///
+/// The reference epoch is the published epoch at which the Bursa-Wolf values
+/// apply; `params_at_epoch` linearly extrapolates from this value.
+#[must_use]
+pub fn itrf_preset_table() -> [ItrfPreset; 3] {
+    [
+        ItrfPreset::new(
+            "ITRF2014",
+            "ITRF2008",
+            ItrfTransformParams::itrf2014_to_itrf2008(),
+            ItRfFrame::Itrf2014.reference_epoch(), // 2010.0
+        ),
+        ItrfPreset::new(
+            "ITRF2008",
+            "ITRF2005",
+            ItrfTransformParams::itrf2008_to_itrf2005(),
+            ItRfFrame::Itrf2008.reference_epoch(), // 2005.0
+        ),
+        ItrfPreset::new(
+            "ITRF2000",
+            "ITRF97",
+            ItrfTransformParams::itrf2000_to_itrf97(),
+            ItRfFrame::Itrf2000.reference_epoch(), // 1997.0
+        ),
+    ]
+}
+
+/// Find ITRF transformation parameters for a given source→target frame pair.
+///
+/// Searches the built-in preset table in the forward direction first; if no
+/// forward match is found, tries the reverse direction and returns the inverse
+/// parameters.
+///
+/// Returns `None` if no registered preset covers the requested pair.
+///
+/// # Parameters
+/// * `source_itrf` – source ITRF frame name, e.g. `"ITRF2014"`
+/// * `target_itrf` – target ITRF frame name, e.g. `"ITRF2008"`
+///
+/// # Returns
+/// `Some((params, ref_epoch))` where `ref_epoch` is the decimal year at which
+/// the published parameters apply, or `None` if the pair is not registered.
+#[must_use]
+pub fn find_itrf_params(
+    source_itrf: &str,
+    target_itrf: &str,
+) -> Option<(ItrfTransformParams, f64)> {
+    let table = itrf_preset_table();
+    // Forward lookup
+    for preset in &table {
+        if preset.source_name == source_itrf && preset.target_name == target_itrf {
+            return Some((preset.params, preset.ref_epoch));
+        }
+    }
+    // Inverse lookup
+    for preset in &table {
+        if preset.source_name == target_itrf && preset.target_name == source_itrf {
+            return Some((preset.params.inverse(), preset.ref_epoch));
+        }
+    }
+    None
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

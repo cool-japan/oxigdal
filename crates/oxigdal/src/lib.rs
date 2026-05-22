@@ -126,6 +126,18 @@ pub mod builder;
 /// Streaming / iterator API for large datasets.
 pub mod streaming;
 
+/// GeoPackage feature streaming helper (feature-gated: `gpkg`).
+#[cfg(feature = "gpkg")]
+pub(crate) mod streaming_geopackage;
+
+/// GeoParquet feature streaming helper (feature-gated: `geoparquet`).
+#[cfg(feature = "geoparquet")]
+pub(crate) mod streaming_geoparquet;
+
+/// STAC feature streaming helper (feature-gated: `stac`).
+#[cfg(feature = "stac")]
+pub(crate) mod streaming_stac;
+
 /// Format conversion planning and detection utilities.
 pub mod convert;
 

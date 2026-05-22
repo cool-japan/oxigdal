@@ -13,9 +13,15 @@
 pub mod object_store;
 pub mod retry;
 
+#[cfg(feature = "cloud-http")]
+pub mod http;
+
 pub use object_store::{
     ByteRangeRequest, CloudCredentials, CloudError, CloudRangeCoalescer, CloudScheme,
     CompletedPart, HttpMethod, MultipartUploadState, ObjectMetadata, ObjectUrl, PresignedUrlConfig,
     PresignedUrlGenerator, hex_encode, hmac_sha256, hmac_sha256_hex, sha256,
 };
 pub use retry::{RetryPolicy, RetryState};
+
+#[cfg(feature = "cloud-http")]
+pub use http::HttpObjectStore;

@@ -1,5 +1,9 @@
 # TODO: oxigdal (umbrella crate)
 
+> **Purpose:** Pure Rust geospatial data abstraction library — the Rust alternative to GDAL
+> **Status (2026-05-16):** 5,639 Rust LoC · 236 tests · 0 real-code stubs (all `stub/placeholder` mentions are benign doc/comment text)
+> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+
 ## High Priority
 - [x] Implement actual raster band reading in Dataset (currently returns stub metadata) (planned 2026-04-17)
 - [x] Wire Dataset::open() to real driver crates (TIFF IFD parsing wired into build_dataset_info() — reads width/height/bands/GeoTransform from TIFF headers; GeoJSON sniffing, 8 tests)
@@ -43,6 +47,22 @@
   - Added `[package.metadata.docs.rs]` to `Cargo.toml` with `features = [...]` covering all public features.
   - New items: `cloud_detect` module (no cfg annotation needed — always public), `gdal_compat` module (annotated), `vrt_builder` (always public), `ConversionOptions`, `BandIter`, `Compression`.
 - [x] Add Dataset::statistics() for quick raster min/max/mean/stddev (planned 2026-04-17)
+- [x] Wire real feature streaming for GeoPackage / GeoParquet / STAC in OpenedDataset::features() (planned 2026-05-07)
+  - **Goal:** Replace FeatureStream::empty() stub at streaming.rs:607 for OpenedDataset::{GeoPackage, GeoParquet, Stac, Unknown}. Make dataset.features() work for all 5+1 supported feature drivers, matching stream_geojson_features / stream_shapefile_features / stream_flatgeobuf_features siblings.
+  - **Design:**
+    1. GeoPackage: use oxigdal-gpkg OxiGpkgReader; iterate gpkg_contents feature tables; SELECT geom + attrs; decode GPKG WKB header + body; honour FeatureStreamConfig::chunk_size.
+    2. GeoParquet: build on Item 1 pushdown reader; iterate ParquetRecordBatchReaderBuilder::build() over RecordBatches; decode WKB column per row; build Feature.
+    3. STAC: walk links[rel=item] via oxigdal-stac reader; each Item → Feature (geometry from item.geometry, properties from item.properties + flattened assets).
+    4. Unknown: emit tracing::warn! once, return FeatureStream::empty().
+    5. Pattern: per-driver streaming_<driver>.rs module, feature-gated; dispatch from streaming.rs.
+  - **Files:**
+    - `crates/oxigdal/src/streaming.rs` (replace stub arms ~line 607)
+    - `crates/oxigdal/src/streaming_geopackage.rs` (new, feature-gate geopackage)
+    - `crates/oxigdal/src/streaming_geoparquet.rs` (new, feature-gate geoparquet)
+    - `crates/oxigdal/src/streaming_stac.rs` (new, feature-gate stac)
+    - `crates/oxigdal/src/lib.rs` (mod declarations with #[cfg(feature)])
+  - **Tests:** test_stream_geopackage_basic, test_stream_geopackage_multi_table, test_stream_geoparquet_basic, test_stream_geoparquet_with_pushdown_filter, test_stream_stac_item_collection, test_stream_stac_catalog_with_collection_items, test_stream_unknown_returns_empty, test_features_dispatch_exhaustive
+  - **Risk:** GeoPackage/STAC readers may be eager (Vec-returning) — accept "lazily chunked" streaming, document, note as future refinement. Do NOT refactor reader APIs in this slice.
 
 ## Low Priority / Future
 - [x] Add GDAL compatibility shim (GDALOpen, GDALClose function aliases) (completed 2026-04-18)
@@ -57,3 +77,10 @@
 - [ ] Add dataset comparison (semantic diff between two datasets)
 - [ ] Implement plugin system for user-defined format drivers
 - [ ] Add comprehensive migration guide from GDAL C/Python to OxiGDAL
+
+## Cross-crate dependencies
+- **Blocks:** None (umbrella crate — downstream consumers re-export from here)
+- **Blocked by:** `oxigdal-core`, every driver crate (`oxigdal-geotiff`, `oxigdal-geojson`, `oxigdal-shapefile`, `oxigdal-geoparquet`, `oxigdal-gpkg`, `oxigdal-pmtiles`, `oxigdal-mbtiles`, `oxigdal-stac`, `oxigdal-flatgeobuf`, `oxigdal-jpeg2000`, `oxigdal-vrt`, `oxigdal-netcdf`, `oxigdal-hdf5`, `oxigdal-zarr`, `oxigdal-grib`, `oxigdal-terrain`, `oxigdal-copc`, `oxigdal-index`), advanced crates (`oxigdal-cloud`, `oxigdal-proj`, `oxigdal-algorithms`, `oxigdal-analytics`, `oxigdal-streaming`, `oxigdal-ml`, `oxigdal-gpu`, `oxigdal-server`, `oxigdal-temporal`, `oxigdal-services`)
+
+---
+*Last audited: 2026-05-16*

@@ -8,7 +8,7 @@ pub mod chunked;
 pub mod reader;
 pub mod writer;
 
-pub use buffer::{ChunkedBuffer, ChunkDescriptor};
+pub use buffer::{ChunkDescriptor, ChunkedBuffer};
 pub use chunked::{ChunkStrategy, ChunkedIO};
 pub use reader::ChunkedReader;
 pub use writer::ChunkedWriter;

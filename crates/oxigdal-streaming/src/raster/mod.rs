@@ -8,5 +8,5 @@ pub mod stream;
 pub mod writer;
 
 pub use reader::RasterStreamReader;
-pub use stream::{RasterStream, RasterStreamConfig, RasterChunk};
+pub use stream::{ChunkStats, RasterChunk, RasterStream, RasterStreamConfig, RasterStreaming};
 pub use writer::RasterStreamWriter;

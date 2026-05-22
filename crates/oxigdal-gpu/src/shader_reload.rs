@@ -234,6 +234,66 @@ impl ShaderWatcher {
         }
     }
 
+    /// Poll the native filesystem backend and apply any on-disk shader changes
+    /// to the in-memory sources.
+    ///
+    /// For every [`crate::shader_reload_native::PolledChange`] reported by
+    /// `poller` that is a modification or creation, the path is mapped to a
+    /// registered source **label** by its string form (the convention used by
+    /// [`Self::add_path`], which keys a source by its path string).  When a
+    /// matching label exists the file is re-read via
+    /// [`crate::shader_reload_native::read_shader_source`] and applied through
+    /// [`Self::update_source`], bumping the source version and producing a
+    /// [`ShaderChangeEvent`].
+    ///
+    /// Polled paths with no matching label, deletions, and files that fail to
+    /// re-read are skipped gracefully (no event, no panic).  The returned list
+    /// is ordered to match the poller's deterministic change ordering.
+    #[cfg(feature = "shader-hot-reload")]
+    pub fn poll_filesystem(
+        &mut self,
+        poller: &mut crate::shader_reload_native::FilesystemPoller,
+    ) -> Vec<ShaderChangeEvent> {
+        use crate::shader_reload_native::{PolledChangeKind, read_shader_source};
+
+        let mut events = Vec::new();
+
+        for change in poller.poll() {
+            // Only modifications and (re-)creations carry new content to apply.
+            match change.kind {
+                PolledChangeKind::Modified | PolledChangeKind::Created => {}
+                PolledChangeKind::Deleted => continue,
+            }
+
+            // Map the path to a registered source label by its string form.
+            let label = change.path.to_string_lossy().into_owned();
+            let old_version = match self.sources.get(&label) {
+                Some(src) => src.version,
+                // No source registered under this path string — skip gracefully.
+                None => continue,
+            };
+
+            // Re-read the file; skip silently if it cannot be read (e.g. it was
+            // removed between the poll and this read, or is not valid UTF-8).
+            let new_wgsl = match read_shader_source(&change.path) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+
+            if self.update_source(&label, new_wgsl) {
+                if let Some(src) = self.sources.get(&label) {
+                    events.push(ShaderChangeEvent {
+                        label,
+                        old_version,
+                        new_version: src.version,
+                    });
+                }
+            }
+        }
+
+        events
+    }
+
     /// Look up a source by label.
     pub fn get_source(&self, label: &str) -> Option<&ShaderSource> {
         self.sources.get(label)

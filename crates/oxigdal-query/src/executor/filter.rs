@@ -141,6 +141,16 @@ impl Filter {
                 let val = self.evaluate_expr(expr, batch, row_idx)?;
                 Ok(Value::Boolean(!matches!(val, Value::Null)))
             }
+            Expr::Function { name, args } => {
+                // Evaluate each argument first.
+                let arg_values: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.evaluate_expr(a, batch, row_idx))
+                    .collect::<Result<Vec<_>>>()?;
+                // Dispatch to the spatial-function evaluator. The coordinate
+                // dimension is 2-D for the current row-based interpreter.
+                crate::executor::spatial_funcs::evaluate_spatial_function(name, &arg_values, 2)
+            }
             _ => Err(QueryError::unsupported(
                 OxiGdalError::not_supported_builder("Unsupported expression type in filter")
                     .with_operation("filter_evaluation")
@@ -368,6 +378,8 @@ pub enum Value {
     Float64(f64),
     /// String value.
     String(String),
+    /// Geometry value (constructed by spatial functions or parsed from WKT).
+    Geometry(geo::Geometry<f64>),
 }
 
 impl Value {

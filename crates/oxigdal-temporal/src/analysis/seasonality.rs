@@ -195,10 +195,44 @@ impl SeasonalityAnalyzer {
 
     /// STL decomposition (Seasonal-Trend using Loess)
     fn stl_decomposition(ts: &TimeSeriesRaster, period: usize) -> Result<SeasonalityResult> {
-        // For now, use additive decomposition as a placeholder
-        // Full STL implementation would require Loess smoothing
-        info!("STL decomposition using additive approximation");
-        Self::additive_decomposition(ts, period)
+        use crate::analysis::stl::{StlOptions, stl_decompose};
+
+        if ts.len() < period * 2 {
+            return Err(TemporalError::insufficient_data(
+                "STL needs at least 2 full periods",
+            ));
+        }
+
+        let (height, width, n_bands) = ts
+            .expected_shape()
+            .ok_or_else(|| TemporalError::insufficient_data("No shape information"))?;
+
+        let mut trend = Array3::zeros((height, width, n_bands));
+        let mut seasonal = Array3::zeros((height, width, n_bands));
+        let mut residual = Array3::zeros((height, width, n_bands));
+
+        let options = StlOptions::new(period);
+
+        for i in 0..height {
+            for j in 0..width {
+                for k in 0..n_bands {
+                    let values = ts.extract_pixel_timeseries(i, j, k)?;
+                    let result = stl_decompose(&values, &options)?;
+
+                    // Reduce to a single scalar per pixel/band the same way
+                    // additive_decomposition does (mean of each component).
+                    let n = result.trend.len() as f64;
+                    if n > 0.0 {
+                        trend[[i, j, k]] = result.trend.iter().sum::<f64>() / n;
+                        seasonal[[i, j, k]] = result.seasonal.iter().sum::<f64>() / n;
+                        residual[[i, j, k]] = result.residual.iter().sum::<f64>() / n;
+                    }
+                }
+            }
+        }
+
+        info!("Completed STL decomposition (period = {period})");
+        Ok(SeasonalityResult::new(trend, seasonal, residual).with_period(period))
     }
 
     /// Moving average smoothing

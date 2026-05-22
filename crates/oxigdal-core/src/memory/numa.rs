@@ -284,8 +284,8 @@ pub fn get_current_node() -> Result<NumaNode> {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            if name_str.starts_with("node") {
-                if let Ok(node_id) = name_str[4..].parse::<i32>() {
+            if let Some(suffix) = name_str.strip_prefix("node") {
+                if let Ok(node_id) = suffix.parse::<i32>() {
                     return Ok(NumaNode(node_id));
                 }
             }

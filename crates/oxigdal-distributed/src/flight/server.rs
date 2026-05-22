@@ -6,10 +6,11 @@
 use crate::error::{DistributedError, Result};
 use arrow::record_batch::RecordBatch;
 use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
-    HandshakeRequest, HandshakeResponse, PutResult, SchemaResult, Ticket,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc, SchemaResult, Ticket,
     flight_service_server::{FlightService, FlightServiceServer},
 };
+use arrow_ipc::writer::IpcWriteOptions;
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use std::collections::HashMap;
@@ -160,18 +161,85 @@ impl FlightService for FlightServer {
         let descriptor = request.into_inner();
         debug!("Get flight info request: {:?}", descriptor);
 
-        Err(tonic::Status::unimplemented(
-            "get_flight_info not implemented",
-        ))
+        // Resolve ticket key from descriptor: prefer first path segment, fall back to cmd bytes.
+        let ticket_key = if !descriptor.path.is_empty() {
+            descriptor.path[0].clone()
+        } else if !descriptor.cmd.is_empty() {
+            String::from_utf8(descriptor.cmd.to_vec())
+                .map_err(|e| tonic::Status::invalid_argument(format!("Invalid cmd: {}", e)))?
+        } else {
+            return Err(tonic::Status::invalid_argument(
+                "FlightDescriptor must have a path or cmd",
+            ));
+        };
+
+        let data = self
+            .get_data(&ticket_key)
+            .map_err(|e| tonic::Status::internal(e.to_string()))?
+            .ok_or_else(|| tonic::Status::not_found(format!("Flight not found: {}", ticket_key)))?;
+
+        let schema = data.schema();
+        let ipc_opts = IpcWriteOptions::default();
+        let schema_bytes: arrow_flight::IpcMessage = SchemaAsIpc::new(schema.as_ref(), &ipc_opts)
+            .try_into()
+            .map_err(|e: arrow_schema::ArrowError| {
+                tonic::Status::internal(format!("Schema encode error: {}", e))
+            })?;
+
+        let endpoint = FlightEndpoint {
+            ticket: Some(Ticket {
+                ticket: Bytes::from(ticket_key),
+            }),
+            location: vec![],
+            expiration_time: None,
+            app_metadata: Bytes::new(),
+        };
+
+        let flight_info = FlightInfo {
+            schema: schema_bytes.0,
+            flight_descriptor: Some(descriptor),
+            endpoint: vec![endpoint],
+            total_records: data.num_rows() as i64,
+            total_bytes: -1,
+            ordered: false,
+            app_metadata: Bytes::new(),
+        };
+
+        Ok(Response::new(flight_info))
     }
 
     async fn get_schema(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<SchemaResult>, tonic::Status> {
+        let descriptor = request.into_inner();
         debug!("Get schema request received");
 
-        Err(tonic::Status::unimplemented("get_schema not implemented"))
+        let ticket_key = if !descriptor.path.is_empty() {
+            descriptor.path[0].clone()
+        } else if !descriptor.cmd.is_empty() {
+            String::from_utf8(descriptor.cmd.to_vec())
+                .map_err(|e| tonic::Status::invalid_argument(format!("Invalid cmd: {}", e)))?
+        } else {
+            return Err(tonic::Status::invalid_argument(
+                "FlightDescriptor must have a path or cmd",
+            ));
+        };
+
+        let data = self
+            .get_data(&ticket_key)
+            .map_err(|e| tonic::Status::internal(e.to_string()))?
+            .ok_or_else(|| tonic::Status::not_found(format!("Flight not found: {}", ticket_key)))?;
+
+        let schema = data.schema();
+        let ipc_opts = IpcWriteOptions::default();
+        let schema_result: SchemaResult = SchemaAsIpc::new(schema.as_ref(), &ipc_opts)
+            .try_into()
+            .map_err(|e: arrow_schema::ArrowError| {
+            tonic::Status::internal(format!("Schema encode error: {}", e))
+        })?;
+
+        Ok(Response::new(schema_result))
     }
 
     async fn do_get(
@@ -279,6 +347,33 @@ impl FlightService for FlightServer {
                 let stream = stream::once(async { Ok(result) });
                 Ok(Response::new(Box::pin(stream)))
             }
+            "list_actions" => {
+                // Reflection action: return JSON array of supported action descriptors.
+                let actions = vec![
+                    serde_json::json!({"type": "list_tickets", "description": "List all available tickets"}),
+                    serde_json::json!({"type": "remove_ticket", "description": "Remove a ticket from the server"}),
+                    serde_json::json!({"type": "list_actions", "description": "List all supported actions (reflection)"}),
+                    serde_json::json!({"type": "ping", "description": "Health check — returns 'pong'"}),
+                ];
+
+                let result = arrow_flight::Result {
+                    body: serde_json::to_vec(&actions)
+                        .map_err(|e| {
+                            tonic::Status::internal(format!("Serialization error: {}", e))
+                        })?
+                        .into(),
+                };
+
+                let stream = stream::once(async { Ok(result) });
+                Ok(Response::new(Box::pin(stream)))
+            }
+            "ping" => {
+                let result = arrow_flight::Result {
+                    body: Bytes::from_static(b"pong"),
+                };
+                let stream = stream::once(async { Ok(result) });
+                Ok(Response::new(Box::pin(stream)))
+            }
             _ => Err(tonic::Status::unimplemented(format!(
                 "Action not implemented: {}",
                 action.r#type
@@ -309,23 +404,101 @@ impl FlightService for FlightServer {
 
     async fn do_exchange(
         &self,
-        _request: Request<Streaming<FlightData>>,
+        request: Request<Streaming<FlightData>>,
     ) -> std::result::Result<Response<Self::DoExchangeStream>, tonic::Status> {
-        debug!("DoExchange request received");
+        debug!("DoExchange request received — echo/passthrough mode");
 
-        Err(tonic::Status::unimplemented("do_exchange not implemented"))
+        let mut incoming = request.into_inner();
+        let mut echo_items: Vec<std::result::Result<FlightData, tonic::Status>> = Vec::new();
+
+        while let Some(item) = incoming.next().await {
+            match item {
+                Ok(flight_data) => {
+                    echo_items.push(Ok(flight_data));
+                }
+                Err(status) => {
+                    // Propagate the first error as the terminal item.
+                    echo_items.push(Err(status));
+                    break;
+                }
+            }
+        }
+
+        info!("DoExchange echoing {} items", echo_items.len());
+        let stream = stream::iter(echo_items);
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn poll_flight_info(
         &self,
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<arrow_flight::PollInfo>, tonic::Status> {
-        let _descriptor = request.into_inner();
+        let descriptor = request.into_inner();
         debug!("Poll flight info request received");
 
-        Err(tonic::Status::unimplemented(
-            "poll_flight_info not implemented",
-        ))
+        // Resolve the ticket key from the descriptor (same logic as get_flight_info).
+        let ticket_key = if !descriptor.path.is_empty() {
+            descriptor.path[0].clone()
+        } else if !descriptor.cmd.is_empty() {
+            String::from_utf8(descriptor.cmd.to_vec())
+                .map_err(|e| tonic::Status::invalid_argument(format!("Invalid cmd: {}", e)))?
+        } else {
+            return Err(tonic::Status::invalid_argument(
+                "FlightDescriptor must have a path or cmd",
+            ));
+        };
+
+        let data_opt = self
+            .get_data(&ticket_key)
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        // If data is ready, return complete FlightInfo (no pending descriptor, progress = 1.0).
+        // If data is still pending, echo the descriptor back (client should retry), progress = None.
+        if let Some(data) = data_opt {
+            let schema = data.schema();
+            let ipc_opts = IpcWriteOptions::default();
+            let schema_bytes: arrow_flight::IpcMessage =
+                SchemaAsIpc::new(schema.as_ref(), &ipc_opts)
+                    .try_into()
+                    .map_err(|e: arrow_schema::ArrowError| {
+                        tonic::Status::internal(format!("Schema encode error: {}", e))
+                    })?;
+
+            let endpoint = FlightEndpoint {
+                ticket: Some(Ticket {
+                    ticket: Bytes::from(ticket_key),
+                }),
+                location: vec![],
+                expiration_time: None,
+                app_metadata: Bytes::new(),
+            };
+
+            let flight_info = FlightInfo {
+                schema: schema_bytes.0,
+                flight_descriptor: Some(descriptor),
+                endpoint: vec![endpoint],
+                total_records: data.num_rows() as i64,
+                total_bytes: -1,
+                ordered: false,
+                app_metadata: Bytes::new(),
+            };
+
+            Ok(Response::new(arrow_flight::PollInfo {
+                info: Some(flight_info),
+                // flight_descriptor is None -> indicates the query is complete.
+                flight_descriptor: None,
+                progress: Some(1.0),
+                expiration_time: None,
+            }))
+        } else {
+            // Data not yet ready; client should poll again using the same descriptor.
+            Ok(Response::new(arrow_flight::PollInfo {
+                info: None,
+                flight_descriptor: Some(descriptor),
+                progress: None,
+                expiration_time: None,
+            }))
+        }
     }
 }
 

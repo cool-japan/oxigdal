@@ -2,8 +2,6 @@
 
 use anyhow::Result;
 use clap::Args;
-// Note: oxigdal_dev_tools is currently disabled due to build errors
-// use oxigdal_dev_tools::inspector::FileInspector;
 
 /// Inspect a geospatial file
 #[derive(Args, Debug)]
@@ -19,34 +17,92 @@ pub struct InspectArgs {
 
 /// Execute inspect command
 pub fn execute(_args: InspectArgs, _output_format: crate::OutputFormat) -> Result<()> {
-    anyhow::bail!(
-        "Inspect command is not yet implemented. oxigdal_dev_tools crate is currently disabled."
-    );
+    let report = crate::util::inspect_file(&_args.input, _args.detailed)?;
 
-    // Placeholder for when oxigdal_dev_tools is available:
-    // let inspector = FileInspector::new(&args.input)?;
-    //
-    // match output_format {
-    //     crate::OutputFormat::Json => {
-    //         let json = inspector.export_json()?;
-    //         println!("{}", json);
-    //     }
-    //     _ => {
-    //         println!("{}", inspector.summary());
-    //
-    //         if args.detailed {
-    //             println!("\nDetailed Information:");
-    //             println!("  Path: {}", inspector.path().display());
-    //             println!("  Size: {} bytes", inspector.info().size);
-    //             if let Some(ref ext) = inspector.info().extension {
-    //                 println!("  Extension: {}", ext);
-    //             }
-    //             if let Some(format) = inspector.info().format {
-    //                 println!("  Format: {:?}", format);
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // Ok(())
+    match _output_format {
+        crate::OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&report)?;
+            println!("{json}");
+        }
+        crate::OutputFormat::Text => {
+            print_text_report(&report, _args.detailed);
+        }
+    }
+
+    Ok(())
+}
+
+/// Renders an `InspectionReport` as a human-readable multi-line summary.
+fn print_text_report(report: &crate::util::InspectionReport, detailed: bool) {
+    use crate::util::format_size;
+    use console::style;
+
+    println!("{}", style("File Inspection").bold().cyan());
+    println!("  Path:      {}", report.path);
+    println!("  Format:    {}", report.format);
+    println!("  Extension: {}", report.extension);
+    if report.is_cloud {
+        println!("  Location:  cloud URI");
+        println!("  Size:      unknown (cloud)");
+    } else {
+        println!("  Location:  local file");
+        println!("  Size:      {}", format_size(report.file_size));
+    }
+    if let Some(ref crs) = report.crs {
+        println!("  CRS:       {crs}");
+    }
+
+    if let Some(ref raster) = report.raster {
+        print_raster_section(raster, detailed);
+    }
+
+    if let Some(ref vector) = report.vector {
+        print_vector_section(vector, detailed);
+    }
+}
+
+/// Renders the raster portion of an inspection report.
+fn print_raster_section(raster: &crate::util::RasterSummary, detailed: bool) {
+    use console::style;
+
+    println!();
+    println!("{}", style("Raster Structure").bold().cyan());
+    println!("  Dimensions: {} x {}", raster.width, raster.height);
+    println!("  Bands:      {}", raster.band_count);
+    if !raster.data_types.is_empty() {
+        println!("  Data Types: {}", raster.data_types.join(", "));
+    }
+    if detailed {
+        if let Some(gt) = raster.geo_transform {
+            println!(
+                "  GeoTransform: [{}, {}, {}, {}, {}, {}]",
+                gt[0], gt[1], gt[2], gt[3], gt[4], gt[5]
+            );
+        }
+        match raster.nodata {
+            Some(nd) => println!("  NoData:     {nd}"),
+            None => println!("  NoData:     (none)"),
+        }
+    }
+}
+
+/// Renders the vector portion of an inspection report.
+fn print_vector_section(vector: &crate::util::VectorSummary, detailed: bool) {
+    use console::style;
+
+    println!();
+    println!("{}", style("Vector Structure").bold().cyan());
+    match vector.feature_count {
+        Some(count) => println!("  Features:   {count}"),
+        None => println!("  Features:   (unknown)"),
+    }
+    if detailed {
+        println!("  Layers:     {}", vector.layer_count);
+    }
+    if let Some(bounds) = vector.bounds {
+        println!(
+            "  Bounds:     [{}, {}, {}, {}]",
+            bounds[0], bounds[1], bounds[2], bounds[3]
+        );
+    }
 }

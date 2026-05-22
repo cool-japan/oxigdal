@@ -10,7 +10,13 @@ mod projected;
 mod types;
 mod utm;
 
+#[cfg(feature = "proj-db")]
+pub mod proj_db;
+
 pub use types::*;
+
+#[cfg(feature = "proj-db")]
+pub use proj_db::{ProjDb, ProjDbEntry, default_proj_db_paths, populate_from_proj_db};
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]

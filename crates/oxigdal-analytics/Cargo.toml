@@ -42,6 +42,9 @@ rayon = { workspace = true, optional = true }
 # Statistical operations
 approx = { workspace = true }
 
+# Spatial indexing for OPTICS, DBSCAN-style k-NN queries
+rstar = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }

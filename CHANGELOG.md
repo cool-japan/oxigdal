@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-05-22
+
+### Fixed
+
+- **oxigdal-gpu**: WGSL uniform layout in `RayMarchUniforms` — removed stray `_pad1: f32` that shifted every field by 4 bytes and caused the compute kernel to read `max_steps` ≈ 1.05×10⁹, hanging `device.poll(wait_indefinitely)` indefinitely on macOS Metal. The previously-timing-out `test_ray_march_gpu_matches_cpu_when_backend_present` now passes in 0.127s.
+
 ## [0.1.4] - 2026-04-19
 
 ### Added
@@ -514,7 +520,8 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigdal>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigdal/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/cool-japan/oxigdal/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/cool-japan/oxigdal/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/cool-japan/oxigdal/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/cool-japan/oxigdal/compare/v0.1.1...v0.1.2

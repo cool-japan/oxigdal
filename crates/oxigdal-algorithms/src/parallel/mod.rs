@@ -78,6 +78,9 @@ pub use raster::{
     ChunkConfig, ReduceOp, parallel_focal_mean, parallel_focal_median, parallel_map_raster,
     parallel_map_raster_with_config, parallel_reduce_raster, parallel_transform_raster,
 };
+
+#[cfg(feature = "parallel")]
+pub use raster::{FocalOp, focal_parallel, hillshade_parallel, slope_parallel};
 pub use tiles::{TileConfig, TileProcessor, parallel_generate_overviews, parallel_process_tiles};
 
 /// Configuration for parallel processing

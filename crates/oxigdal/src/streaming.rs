@@ -600,11 +600,16 @@ impl StreamingExt for OpenedDataset {
             OpenedDataset::GeoJson(info) => stream_geojson_features(info),
             OpenedDataset::Shapefile(info) => stream_shapefile_features(info),
             OpenedDataset::FlatGeobuf(info) => stream_flatgeobuf_features(info),
-            OpenedDataset::GeoPackage(_)
-            | OpenedDataset::GeoParquet(_)
-            | OpenedDataset::Stac(_)
-            | OpenedDataset::Unknown(_) => {
-                // TODO: wire real feature streaming for GeoPackage / GeoParquet / STAC
+            OpenedDataset::GeoPackage(info) => stream_geopackage_features_dispatch(info),
+            OpenedDataset::GeoParquet(info) => stream_geoparquet_features_dispatch(info),
+            OpenedDataset::Stac(info) => stream_stac_features_dispatch(info),
+            OpenedDataset::Unknown(info) => {
+                // Format detection failed at open time; nothing can be streamed.
+                let path = info.path.as_deref().unwrap_or("<unknown>");
+                tracing::warn!(
+                    "OpenedDataset::Unknown — features() returns empty stream; \
+                     format detection failed for '{path}'"
+                );
                 Ok(FeatureStream::empty())
             }
             other => Err(OxiGdalError::NotSupported {
@@ -633,6 +638,44 @@ impl StreamingExt for OpenedDataset {
                 ),
             }),
         }
+    }
+}
+
+// ── Feature-gated streaming dispatch helpers ──────────────────────────────────
+
+fn stream_geopackage_features_dispatch(info: &crate::DatasetInfo) -> Result<FeatureStream> {
+    #[cfg(feature = "gpkg")]
+    {
+        crate::streaming_geopackage::stream_geopackage_features(info)
+    }
+    #[cfg(not(feature = "gpkg"))]
+    {
+        let _ = info;
+        Ok(FeatureStream::empty())
+    }
+}
+
+fn stream_geoparquet_features_dispatch(info: &crate::DatasetInfo) -> Result<FeatureStream> {
+    #[cfg(feature = "geoparquet")]
+    {
+        crate::streaming_geoparquet::stream_geoparquet_features(info)
+    }
+    #[cfg(not(feature = "geoparquet"))]
+    {
+        let _ = info;
+        Ok(FeatureStream::empty())
+    }
+}
+
+fn stream_stac_features_dispatch(info: &crate::DatasetInfo) -> Result<FeatureStream> {
+    #[cfg(feature = "stac")]
+    {
+        crate::streaming_stac::stream_stac_features(info)
+    }
+    #[cfg(not(feature = "stac"))]
+    {
+        let _ = info;
+        Ok(FeatureStream::empty())
     }
 }
 

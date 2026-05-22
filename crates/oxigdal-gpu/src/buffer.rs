@@ -13,6 +13,132 @@ use wgpu::{
     Buffer, BufferAsyncError, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT, MapMode,
 };
 
+// ---------------------------------------------------------------------------
+// BufferElementType
+// ---------------------------------------------------------------------------
+
+/// Describes the scalar element type stored in a GPU buffer.
+///
+/// Used to select the correct WGSL type string and to compute byte-level
+/// buffer sizes without depending on Rust's generic type system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferElementType {
+    /// 32-bit IEEE-754 single-precision float.
+    F32,
+    /// 16-bit IEEE-754 half-precision float (requires `SHADER_F16` feature).
+    F16,
+    /// Unsigned 8-bit integer.
+    U8,
+    /// Unsigned 16-bit integer.
+    U16,
+    /// Unsigned 32-bit integer.
+    U32,
+    /// Signed 32-bit integer.
+    I32,
+}
+
+impl BufferElementType {
+    /// Number of bytes per element.
+    pub fn byte_size(self) -> usize {
+        match self {
+            Self::F32 | Self::I32 | Self::U32 => 4,
+            Self::F16 | Self::U16 => 2,
+            Self::U8 => 1,
+        }
+    }
+
+    /// The WGSL type name for this element type.
+    ///
+    /// Note: WGSL does not have `u8` or `u16` native types — those map to
+    /// `u32` (the caller is responsible for packing/unpacking if necessary).
+    pub fn wgsl_type(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F16 => "f16",
+            Self::U32 => "u32",
+            Self::I32 => "i32",
+            Self::U8 => "u32",  // WGSL has no u8; caller must pack
+            Self::U16 => "u32", // WGSL has no u16; caller must pack
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// f16 conversion helpers (free functions)
+// ---------------------------------------------------------------------------
+
+/// Convert a slice of `half::f16` values to a `Vec<f32>` by widening.
+///
+/// Every `f16` value is exactly representable as `f32`, so this conversion
+/// is lossless.
+pub fn f16_to_f32_slice(data: &[half::f16]) -> Vec<f32> {
+    data.iter().map(|h| f32::from(*h)).collect()
+}
+
+/// Convert a slice of `f32` values to a `Vec<half::f16>` by narrowing.
+///
+/// Values that are not exactly representable in half precision are rounded
+/// to the nearest `f16` using the default round-to-nearest-even mode
+/// provided by the `half` crate.
+pub fn f32_to_f16_slice(data: &[f32]) -> Vec<half::f16> {
+    data.iter().map(|f| half::f16::from_f32(*f)).collect()
+}
+
+// ---------------------------------------------------------------------------
+// f16-specific GpuBuffer constructors and read-back helpers
+// ---------------------------------------------------------------------------
+
+/// Upload a `half::f16` slice to the GPU by widening each element to `f32`.
+///
+/// This path works on all adapters regardless of whether they expose the
+/// `SHADER_F16` feature.  The buffer element type on the GPU is `f32`.
+///
+/// # Errors
+///
+/// Returns an error if buffer creation fails (e.g. out-of-memory).
+pub fn from_f16_slice_widening(
+    context: &GpuContext,
+    data: &[half::f16],
+) -> GpuResult<GpuBuffer<f32>> {
+    let f32_data = f16_to_f32_slice(data);
+    GpuBuffer::<f32>::from_data(
+        context,
+        &f32_data,
+        BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+    )
+}
+
+/// Upload a `half::f16` slice to the GPU as raw bytes (`u8` buffer).
+///
+/// This is the *native* path — each `f16` occupies exactly 2 bytes on the
+/// GPU.  To use this buffer in a WGSL shader, the shader source must begin
+/// with `enable f16;` and the adapter must expose `wgpu::Features::SHADER_F16`.
+///
+/// # Errors
+///
+/// Returns an error if buffer creation fails.
+pub fn from_f16_slice_native(context: &GpuContext, data: &[half::f16]) -> GpuResult<GpuBuffer<u8>> {
+    let bytes: &[u8] = bytemuck::cast_slice(data);
+    GpuBuffer::<u8>::from_data(
+        context,
+        bytes,
+        BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+    )
+}
+
+/// Read back a `GpuBuffer<f32>` and narrow each element to `half::f16`.
+///
+/// This is the counterpart of [`from_f16_slice_widening`] — it performs the
+/// inverse narrowing conversion after the GPU computation has completed.
+///
+/// # Errors
+///
+/// Returns an error if the blocking read fails.
+pub fn read_f16_from_f32_buffer(buf: &GpuBuffer<f32>) -> GpuResult<Vec<half::f16>> {
+    let f32_vals = buf.read_blocking()?;
+    Ok(f32_to_f16_slice(&f32_vals))
+}
+
 /// GPU buffer wrapper with type safety.
 ///
 /// This struct wraps a WGPU buffer and provides type-safe operations
@@ -161,6 +287,26 @@ impl<T: Pod> GpuBuffer<T> {
 
         debug!("Read {} elements from GPU buffer", result.len());
         Ok(result)
+    }
+
+    /// Read data from the GPU buffer asynchronously using a `Future`.
+    ///
+    /// This is the primary async entry-point for GPU→CPU readback. It uses a
+    /// `futures::channel::oneshot` channel so the mapping callback resolves
+    /// the returned `Future` without blocking any thread.
+    ///
+    /// Equivalent to calling `.read().await`, but named explicitly so downstream
+    /// code can refer to the async path by a stable, unambiguous name when both
+    /// `read_blocking` and the async variant need to co-exist in the same scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer doesn't support reads (`MAP_READ` usage
+    /// must be set), if the oneshot channel is dropped before resolution
+    /// (`GpuError::BufferMapping("Channel closed")`), or if `wgpu` reports a
+    /// mapping failure.
+    pub async fn read_async(&self) -> GpuResult<Vec<T>> {
+        self.read().await
     }
 
     /// Read data from the GPU buffer synchronously (blocking).

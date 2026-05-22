@@ -194,6 +194,22 @@ pub enum BandExpression {
     Abs(Box<BandExpression>),
     /// Negation: `-A`
     Neg(Box<BandExpression>),
+    /// Element-wise minimum: `min(A, B)`
+    Min(Box<BandExpression>, Box<BandExpression>),
+    /// Element-wise maximum: `max(A, B)`
+    Max(Box<BandExpression>, Box<BandExpression>),
+    /// Power: `A ^ B` (uses `pow(A, B)` in WGSL).
+    Pow(Box<BandExpression>, Box<BandExpression>),
+    /// Natural logarithm: `ln(A)`.
+    Log(Box<BandExpression>),
+    /// Exponential: `exp(A)`.
+    Exp(Box<BandExpression>),
+    /// Clamp: `clamp(A, lo, hi)` — equivalent to `min(max(A, lo), hi)`.
+    Clamp {
+        value: Box<BandExpression>,
+        lo: Box<BandExpression>,
+        hi: Box<BandExpression>,
+    },
 }
 
 impl BandExpression {
@@ -229,6 +245,17 @@ impl BandExpression {
             BandExpression::Sqrt(a) => Ok(a.evaluate(bands)?.max(0.0).sqrt()),
             BandExpression::Abs(a) => Ok(a.evaluate(bands)?.abs()),
             BandExpression::Neg(a) => Ok(-a.evaluate(bands)?),
+            BandExpression::Min(a, b) => Ok(a.evaluate(bands)?.min(b.evaluate(bands)?)),
+            BandExpression::Max(a, b) => Ok(a.evaluate(bands)?.max(b.evaluate(bands)?)),
+            BandExpression::Pow(a, b) => Ok(a.evaluate(bands)?.powf(b.evaluate(bands)?)),
+            BandExpression::Log(a) => Ok(a.evaluate(bands)?.ln()),
+            BandExpression::Exp(a) => Ok(a.evaluate(bands)?.exp()),
+            BandExpression::Clamp { value, lo, hi } => {
+                let v = value.evaluate(bands)?;
+                let l = lo.evaluate(bands)?;
+                let h = hi.evaluate(bands)?;
+                Ok(v.clamp(l, h))
+            }
         }
     }
 }

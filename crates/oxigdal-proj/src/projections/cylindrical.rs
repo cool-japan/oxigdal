@@ -247,8 +247,6 @@ pub fn tmerc_forward(
     let sin_lat = lat.sin();
     let cos_lat = lat.cos();
     let tan_lat = lat.tan();
-    let eta = (e2 * sin_lat * sin_lat).sqrt() * 0.0; // placeholder
-    let _ = eta;
 
     // Radius of curvature in prime vertical
     let n_val = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
@@ -258,6 +256,7 @@ pub fn tmerc_forward(
 
     let t = tan_lat;
     let t2 = t * t;
+    // c = e'² · cos²φ = η² (Snyder 1987, eq. 8-12)
     let c = e_prime2 * cos_lat * cos_lat;
     let dlon = lon - lon_0;
     let a_coef = cos_lat * dlon;

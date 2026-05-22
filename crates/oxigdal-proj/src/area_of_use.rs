@@ -33,11 +33,20 @@ impl AreaOfUse {
     }
 
     /// Check if a point (lon_deg, lat_deg) falls within this area of use.
+    ///
+    /// Handles antimeridian crossing where `west > east` (the region wraps the
+    /// antimeridian, i.e. it occupies `[west, 180] ∪ [-180, east]`).
     pub fn contains(&self, lon_deg: f64, lat_deg: f64) -> bool {
-        lon_deg >= self.west
-            && lon_deg <= self.east
-            && lat_deg >= self.south
-            && lat_deg <= self.north
+        let lat_ok = lat_deg >= self.south && lat_deg <= self.north;
+        if !lat_ok {
+            return false;
+        }
+        if self.west <= self.east {
+            lon_deg >= self.west && lon_deg <= self.east
+        } else {
+            // Antimeridian crossing: lon ∈ [west, 180] ∪ [-180, east]
+            lon_deg >= self.west || lon_deg <= self.east
+        }
     }
 
     /// Check if a point is within this area with a tolerance margin (degrees).

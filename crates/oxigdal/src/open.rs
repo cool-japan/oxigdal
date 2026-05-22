@@ -96,6 +96,23 @@ fn read_magic_bytes(path: &Path, n: usize) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Return `true` when a `.json` file looks like a STAC document.
+///
+/// STAC Items, ItemCollections, Catalogs, and Collections all carry the
+/// `"stac_version"` field.  We read a small prefix (4 KiB) of the file and
+/// look for that key without full JSON parsing — cheap and allocation-light.
+fn is_stac_json(path: &Path) -> bool {
+    use std::io::Read as _;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; 4096];
+    let n = file.read(&mut buf).unwrap_or(0);
+    buf.truncate(n);
+    let text = std::str::from_utf8(&buf).unwrap_or("");
+    text.contains("\"stac_version\"") || text.contains("\"stac_extensions\"")
+}
+
 /// Attempt to detect the dataset format by inspecting magic bytes.
 ///
 /// This is a thin wrapper around [`DatasetFormat::detect_from_magic_bytes`].
@@ -313,14 +330,19 @@ pub fn open(path: impl AsRef<Path>) -> Result<OpenedDataset> {
             // 4 — Fall back to extension
             let ext_fmt = DatasetFormat::from_extension(&path_str);
             if ext_fmt == DatasetFormat::Unknown {
-                // Special-case: .json might be GeoJSON or STAC
+                // Special-case: .json might be GeoJSON or STAC.
+                // Peek at content: STAC items/collections carry "stac_version".
                 let ext = path_ref
                     .extension()
                     .and_then(|e| e.to_str())
                     .map(str::to_lowercase)
                     .unwrap_or_default();
                 if ext == "json" {
-                    DatasetFormat::GeoJson
+                    if is_stac_json(path_ref) {
+                        DatasetFormat::Stac
+                    } else {
+                        DatasetFormat::GeoJson
+                    }
                 } else {
                     DatasetFormat::Unknown
                 }

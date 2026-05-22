@@ -3,11 +3,14 @@
 //! This module provides functionality to write features to PostGIS tables.
 
 use crate::connection::ConnectionPool;
+use crate::copy_binary::{CopyBinaryEncoder, ewkb_from_wkb};
 use crate::error::{QueryError, Result};
 use crate::sql::{ColumnName, TableName};
 use crate::types::to_postgis;
+use crate::wkb::WkbEncoder;
+use futures::SinkExt;
 use oxigdal_core::vector::feature::Feature;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// PostGIS feature writer
 pub struct PostGisWriter {
@@ -148,7 +151,14 @@ impl PostGisWriter {
         self.batch.push(feature);
     }
 
-    /// Flushes the batch to the database
+    /// Flushes the batch to the database.
+    ///
+    /// The fast path streams the whole batch through the PostgreSQL binary COPY
+    /// protocol (`COPY ... FROM STDIN WITH (FORMAT binary)`), which avoids one
+    /// round-trip per feature. If the server rejects the binary COPY for any
+    /// reason the writer transparently degrades to the per-row INSERT path via
+    /// `flush_via_inserts`, guaranteeing no data
+    /// loss. On success the batch is cleared.
     pub async fn flush(&mut self) -> Result<usize> {
         if self.batch.is_empty() {
             return Ok(0);
@@ -158,22 +168,120 @@ impl PostGisWriter {
             self.ensure_table().await?;
         }
 
+        debug!("Flushing batch of {} features", self.batch.len());
+
+        // Fast path: stream the batch through the binary COPY protocol.
+        match self.flush_via_binary_copy().await {
+            Ok(count) => {
+                self.batch.clear();
+                Ok(count)
+            }
+            Err(e) => {
+                // Graceful degradation: a server that rejects binary COPY must
+                // not cause data loss — replay the batch with per-row INSERTs.
+                warn!("binary COPY failed ({e}); falling back to per-row INSERT");
+                let count = self.flush_via_inserts().await?;
+                self.batch.clear();
+                Ok(count)
+            }
+        }
+    }
+
+    /// Streams the current batch to the database using the PostgreSQL binary
+    /// COPY protocol.
+    ///
+    /// Builds a single binary-COPY payload for every feature that carries a
+    /// geometry — field 1 is the geometry as EWKB (WKB with the SRID flag set),
+    /// field 2 is the feature's properties serialised as a JSON document. The
+    /// payload is sent to a `COPY ... FROM STDIN WITH (FORMAT binary)` sink.
+    async fn flush_via_binary_copy(&self) -> Result<usize> {
         let client = self.pool.get().await?;
 
         let table = TableName::new(&self.table_name)?;
         let geom_col = ColumnName::new(&self.geometry_column)?;
 
-        // Build COPY statement
-        let _copy_sql = format!(
+        let copy_sql = format!(
             "COPY {} ({}, properties) FROM STDIN WITH (FORMAT binary)",
             table.qualified(),
             geom_col.quoted()
         );
 
-        debug!("Flushing batch of {} features", self.batch.len());
+        // Build the full binary-COPY payload for every feature that has a
+        // geometry. PostGIS accepts EWKB for a `geometry` column and accepts
+        // the UTF-8 text bytes of a JSON document for a `jsonb` column.
+        let mut encoder = CopyBinaryEncoder::new();
+        let mut count = 0usize;
+        for feature in &self.batch {
+            let Some(ref geometry) = feature.geometry else {
+                continue;
+            };
 
-        // For simplicity, we'll use individual INSERTs
-        // A real implementation would use the COPY protocol for better performance
+            // `WkbEncoder::new()` emits plain WKB; promote it to EWKB so the
+            // SRID travels with the geometry. When `self.srid` is `None` we
+            // still emit plain WKB (PostGIS will assume SRID 0).
+            let mut wkb_encoder = WkbEncoder::new();
+            let wkb = wkb_encoder.encode(geometry)?;
+            let geom_field = match self.srid {
+                Some(srid) => ewkb_from_wkb(&wkb, srid)?,
+                None => wkb,
+            };
+
+            let properties = serde_json::to_value(&feature.properties).map_err(|e| {
+                QueryError::ExecutionFailed {
+                    message: e.to_string(),
+                }
+            })?;
+            let properties_bytes =
+                serde_json::to_vec(&properties).map_err(|e| QueryError::ExecutionFailed {
+                    message: e.to_string(),
+                })?;
+
+            encoder.begin_row(2);
+            encoder.write_field_bytes(&geom_field);
+            encoder.write_field_bytes(&properties_bytes);
+            count += 1;
+        }
+
+        let payload = encoder.finish();
+
+        // `CopyInSink` is `!Unpin` — pin it on the stack before driving the
+        // `Sink`. `bytes::Bytes` implements `Buf`, the bound `copy_in`
+        // requires for the streamed item type.
+        let sink = client
+            .copy_in::<str, bytes::Bytes>(&copy_sql)
+            .await
+            .map_err(|e| QueryError::ExecutionFailed {
+                message: e.to_string(),
+            })?;
+        tokio::pin!(sink);
+
+        sink.as_mut()
+            .send(bytes::Bytes::from(payload))
+            .await
+            .map_err(|e| QueryError::ExecutionFailed {
+                message: e.to_string(),
+            })?;
+
+        sink.finish()
+            .await
+            .map_err(|e| QueryError::ExecutionFailed {
+                message: e.to_string(),
+            })?;
+
+        Ok(count)
+    }
+
+    /// Flushes the current batch with one parameterised `INSERT` per feature.
+    ///
+    /// This is the graceful-degradation fallback used by [`flush`](Self::flush)
+    /// when the binary COPY path fails. It does not clear `self.batch`; the
+    /// caller is responsible for that.
+    async fn flush_via_inserts(&self) -> Result<usize> {
+        let client = self.pool.get().await?;
+
+        let table = TableName::new(&self.table_name)?;
+        let geom_col = ColumnName::new(&self.geometry_column)?;
+
         let mut count = 0;
         for feature in &self.batch {
             if let Some(ref geometry) = feature.geometry {
@@ -201,7 +309,6 @@ impl PostGisWriter {
             }
         }
 
-        self.batch.clear();
         Ok(count)
     }
 

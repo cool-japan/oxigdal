@@ -13,16 +13,34 @@ use std::collections::HashMap;
 #[cfg(feature = "reqwest")]
 use reqwest::Client as HttpClient;
 
+/// Result of a successful STAC Transaction API HTTP operation.
+///
+/// Returned by `StacClient::create_item`, `StacClient::update_item`,
+/// `StacClient::upsert_item`, and `StacClient::delete_item` (all
+/// feature-gated behind `reqwest` + `async`).
+#[cfg(feature = "reqwest")]
+#[derive(Debug, Clone)]
+pub struct HttpTransactionResult {
+    /// HTTP status code returned by the server.
+    pub status: u16,
+    /// Value of the `Location` header, if present (typically the created item URL).
+    pub location: Option<String>,
+}
+
 /// STAC API client for searching catalogs.
 #[cfg(feature = "reqwest")]
 #[derive(Debug, Clone)]
 pub struct StacClient {
     /// Base URL of the STAC API.
-    #[allow(dead_code)]
     base_url: String,
     /// HTTP client.
-    #[allow(dead_code)]
     client: HttpClient,
+    /// Cached conformance classes from the server's landing page.
+    ///
+    /// `None` means `with_conformance()` has not yet been called.
+    /// `Some(set)` contains the classes declared by the server.
+    conformance_classes:
+        std::sync::Arc<std::sync::Mutex<Option<std::collections::HashSet<String>>>>,
 }
 
 #[cfg(feature = "reqwest")]
@@ -47,7 +65,11 @@ impl StacClient {
             .build()
             .map_err(|e| StacError::Http(e.to_string()))?;
 
-        Ok(Self { base_url, client })
+        Ok(Self {
+            base_url,
+            client,
+            conformance_classes: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        })
     }
 
     /// Creates a new search query builder.
@@ -116,6 +138,220 @@ impl StacClient {
 
         let item: Item = response.json().await?;
         Ok(item)
+    }
+
+    // ── W4: HTTP-backed Transaction Extension ─────────────────────────────────
+
+    /// Create a STAC item in a collection (POST).
+    ///
+    /// # Errors
+    ///
+    /// Returns error on HTTP failure, serialization error, or network error.
+    #[cfg(all(feature = "reqwest", feature = "async"))]
+    pub async fn create_item(
+        &self,
+        collection_id: &str,
+        item: &serde_json::Value,
+    ) -> Result<HttpTransactionResult> {
+        let url = format!("{}/collections/{}/items", self.base_url, collection_id);
+        let response = self
+            .client
+            .post(&url)
+            .json(item)
+            .send()
+            .await
+            .map_err(StacError::from)?;
+
+        let status = response.status().as_u16();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        match status {
+            200 | 201 => Ok(HttpTransactionResult { status, location }),
+            404 => Err(StacError::NotFound(format!(
+                "Collection {collection_id} not found"
+            ))),
+            409 => Err(StacError::AlreadyExists(format!(
+                "Item already exists in {collection_id}"
+            ))),
+            _ => {
+                let body = response.text().await.unwrap_or_default();
+                let snippet = body.chars().take(200).collect::<String>();
+                Err(StacError::ApiResponse(format!("{status} {snippet}")))
+            }
+        }
+    }
+
+    /// Update a STAC item in a collection (PUT).
+    ///
+    /// # Errors
+    ///
+    /// Returns error on HTTP failure or network error.
+    #[cfg(all(feature = "reqwest", feature = "async"))]
+    pub async fn update_item(
+        &self,
+        collection_id: &str,
+        item_id: &str,
+        item: &serde_json::Value,
+    ) -> Result<HttpTransactionResult> {
+        let url = format!(
+            "{}/collections/{}/items/{}",
+            self.base_url, collection_id, item_id
+        );
+        let response = self
+            .client
+            .put(&url)
+            .json(item)
+            .send()
+            .await
+            .map_err(StacError::from)?;
+
+        let status = response.status().as_u16();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        match status {
+            200 | 204 => Ok(HttpTransactionResult { status, location }),
+            404 => Err(StacError::NotFound(format!(
+                "Item {item_id} not found in {collection_id}"
+            ))),
+            _ => {
+                let body = response.text().await.unwrap_or_default();
+                Err(StacError::ApiResponse(format!(
+                    "{status} {}",
+                    body.chars().take(200).collect::<String>()
+                )))
+            }
+        }
+    }
+
+    /// Create or update a STAC item (upsert).
+    ///
+    /// Tries create first; if server returns 409 Conflict, falls back to update.
+    ///
+    /// # Errors
+    ///
+    /// Returns error on network failure, or when the item JSON has no `"id"` field.
+    #[cfg(all(feature = "reqwest", feature = "async"))]
+    pub async fn upsert_item(
+        &self,
+        collection_id: &str,
+        item: &serde_json::Value,
+    ) -> Result<HttpTransactionResult> {
+        match self.create_item(collection_id, item).await {
+            Ok(r) => Ok(r),
+            Err(StacError::AlreadyExists(_)) => {
+                let item_id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| StacError::MissingField("id".to_string()))?;
+                self.update_item(collection_id, item_id, item).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Delete a STAC item from a collection (DELETE).
+    ///
+    /// # Errors
+    ///
+    /// Returns error on HTTP failure or network error.
+    #[cfg(all(feature = "reqwest", feature = "async"))]
+    pub async fn delete_item(
+        &self,
+        collection_id: &str,
+        item_id: &str,
+    ) -> Result<HttpTransactionResult> {
+        let url = format!(
+            "{}/collections/{}/items/{}",
+            self.base_url, collection_id, item_id
+        );
+        let response = self
+            .client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(StacError::from)?;
+
+        let status = response.status().as_u16();
+        match status {
+            200 | 204 => Ok(HttpTransactionResult {
+                status,
+                location: None,
+            }),
+            404 => Err(StacError::NotFound(format!(
+                "Item {item_id} not found in {collection_id}"
+            ))),
+            _ => {
+                let body = response.text().await.unwrap_or_default();
+                Err(StacError::ApiResponse(format!(
+                    "{status} {}",
+                    body.chars().take(200).collect::<String>()
+                )))
+            }
+        }
+    }
+
+    // ── W5: Conformance-class auto-detection ──────────────────────────────────
+
+    /// Fetch the server's landing page and cache its `conformsTo` classes.
+    ///
+    /// Tolerates fetch failures — if the landing page is not available, the
+    /// conformance cache remains empty and [`supports()`] returns `false` for
+    /// all URIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on serialization issues (malformed JSON); never
+    /// on HTTP 404 or network timeout.
+    ///
+    /// [`supports()`]: StacClient::supports
+    #[cfg(all(feature = "reqwest", feature = "async"))]
+    pub async fn with_conformance(self) -> Result<Self> {
+        let url = format!("{}/", self.base_url.trim_end_matches('/'));
+        match self.client.get(&url).send().await {
+            Err(_) => {}
+            Ok(response) => {
+                if response.status().is_success() {
+                    if let Ok(body) = response.text().await {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                            let classes: std::collections::HashSet<String> = json
+                                .get("conformsTo")
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if let Ok(mut guard) = self.conformance_classes.lock() {
+                                *guard = Some(classes);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    /// Check whether the server declared a specific conformance class URI.
+    ///
+    /// Returns `false` if `with_conformance()` (feature-gated behind
+    /// `reqwest` + `async`) has not been called or if the server did not
+    /// declare this class.
+    pub fn supports(&self, class_uri: &str) -> bool {
+        self.conformance_classes
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|set| set.contains(class_uri)))
+            .unwrap_or(false)
     }
 }
 

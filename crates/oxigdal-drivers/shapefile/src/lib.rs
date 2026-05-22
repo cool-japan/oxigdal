@@ -130,7 +130,8 @@
 //! - Currently only Point geometries are fully supported for conversion to OxiGDAL
 //! - PolyLine, Polygon, and MultiPoint parsing is implemented but conversion pending
 //! - MultiPatch (3D surfaces) support is limited
-//! - No support for memo fields (.dbt files)
+//! - Memo fields (`.dbt`) support is limited to dBase IV; dBase III and FoxPro
+//!   `.fpt` files are not yet implemented.
 //!
 //! # References
 //!
@@ -179,7 +180,7 @@ pub use shp::shapes::{
 pub use shp::{Shape, ShapeRecord};
 
 // Re-export DBF types
-pub use dbf::{FieldDescriptor, FieldType, FieldValue};
+pub use dbf::{FieldDescriptor, FieldType, FieldValue, MemoError, MemoFile, MemoVersion};
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

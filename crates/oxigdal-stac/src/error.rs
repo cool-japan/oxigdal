@@ -110,6 +110,10 @@ pub enum StacError {
     #[error("Invalid item: {0}")]
     InvalidItem(String),
 
+    /// Server does not declare the required conformance class.
+    #[error("Server does not declare conformance class: {0}")]
+    ConformanceMissing(String),
+
     /// Other error.
     #[error("{0}")]
     Other(String),

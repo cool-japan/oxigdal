@@ -1,15 +1,18 @@
 //! GeoParquet file writer implementation
 
-use crate::arrow_ext::{GeometryArrayBuilder, add_geoparquet_metadata, create_geometry_field};
+use crate::arrow_ext::{
+    GeometryArrayBuilder, add_geoparquet_metadata, create_geometry_field, create_geometry_field_for,
+};
 use crate::compression::CompressionType;
 use crate::error::{GeoParquetError, Result};
-use crate::geometry::Geometry;
-use crate::metadata::{GeoParquetMetadata, GeometryColumnMetadata, GeometryStatistics};
+use crate::geometry::{Geometry, encode_native_array};
+use crate::metadata::{
+    CoordDim, EncodingType, GeoParquetMetadata, GeometryColumnMetadata, GeometryStatistics,
+};
 use crate::spatial::PartitionStrategy;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema, SchemaRef};
 use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::fs::File;
 use std::path::Path;
@@ -37,10 +40,16 @@ pub struct GeoParquetWriter {
     additional_fields: Vec<Field>,
     /// Additional field data
     additional_data: Vec<Vec<ArrayRef>>,
+    /// Geometry column encoding selected at construction.
+    encoding: EncodingType,
+    /// Coordinate dimensionality used for native encodings.
+    coord_dim: CoordDim,
 }
 
 impl GeoParquetWriter {
-    /// Creates a new GeoParquet writer
+    /// Creates a new GeoParquet writer with uncompressed output.
+    ///
+    /// Use [`GeoParquetWriterBuilder`] when you need a specific compression codec.
     ///
     /// # Arguments
     /// * `path` - Output file path
@@ -54,10 +63,80 @@ impl GeoParquetWriter {
         geometry_column: impl Into<String>,
         metadata: GeometryColumnMetadata,
     ) -> Result<Self> {
+        Self::new_with_compression(
+            path,
+            geometry_column,
+            metadata,
+            CompressionType::Uncompressed,
+        )
+    }
+
+    /// Creates a new GeoParquet writer with the given compression codec.
+    ///
+    /// Defaults to WKB encoding with 2-D coordinates.  For native (GeoArrow)
+    /// encodings, use [`Self::new_with_encoding`] or the
+    /// [`GeoParquetWriterBuilder`] API.
+    ///
+    /// # Arguments
+    /// * `path` - Output file path
+    /// * `geometry_column` - Name of the geometry column
+    /// * `metadata` - Geometry column metadata
+    /// * `compression` - Compression codec to use
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be created
+    pub fn new_with_compression<P: AsRef<Path>>(
+        path: P,
+        geometry_column: impl Into<String>,
+        metadata: GeometryColumnMetadata,
+        compression: CompressionType,
+    ) -> Result<Self> {
+        let encoding = metadata.encoding;
+        Self::new_with_encoding(
+            path,
+            geometry_column,
+            metadata,
+            compression,
+            encoding,
+            CoordDim::Xy,
+        )
+    }
+
+    /// Creates a new GeoParquet writer with explicit encoding and coordinate
+    /// dimensionality.
+    ///
+    /// `encoding` *must* match the encoding declared in `metadata.encoding`;
+    /// passing different values is an error.  When `encoding` is a native
+    /// GeoArrow shape, `coord_dim` selects the per-coordinate arity (2 / 3 /
+    /// 4) and the schema is built via [`create_geometry_field_for`] rather
+    /// than the legacy `Binary` field.
+    pub fn new_with_encoding<P: AsRef<Path>>(
+        path: P,
+        geometry_column: impl Into<String>,
+        metadata: GeometryColumnMetadata,
+        compression: CompressionType,
+        encoding: EncodingType,
+        coord_dim: CoordDim,
+    ) -> Result<Self> {
+        if metadata.encoding != encoding {
+            return Err(GeoParquetError::invalid_encoding(format!(
+                "metadata.encoding ({:?}) and writer encoding ({:?}) must match",
+                metadata.encoding, encoding
+            )));
+        }
         let geometry_column = geometry_column.into();
 
-        // Create schema with geometry column
-        let geom_field = create_geometry_field(&geometry_column, true);
+        // Build the appropriate Arrow field for this encoding.
+        let geom_field = match encoding {
+            EncodingType::Wkb => create_geometry_field(&geometry_column, true),
+            _ => create_geometry_field_for(
+                &geometry_column,
+                encoding,
+                coord_dim,
+                true,
+                metadata.crs.as_ref(),
+            ),
+        };
         let schema = Arc::new(Schema::new(vec![geom_field]));
 
         // Create GeoParquet metadata
@@ -72,7 +151,7 @@ impl GeoParquetWriter {
         // Create file and writer
         let file = File::create(path.as_ref())?;
         let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
+            .set_compression(compression.to_parquet())
             .build();
 
         let writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
@@ -88,17 +167,9 @@ impl GeoParquetWriter {
             partition_strategy: None,
             additional_fields: Vec::new(),
             additional_data: Vec::new(),
+            encoding,
+            coord_dim,
         })
-    }
-
-    /// Sets the compression type
-    ///
-    /// Note: This method currently cannot change compression after writer creation.
-    /// Compression must be set at creation time through the builder pattern.
-    pub fn with_compression(self, _compression: CompressionType) -> Result<Self> {
-        // Note: Changing compression after writer creation is not supported
-        // Compression is set during writer creation
-        Ok(self)
     }
 
     /// Sets the batch size (number of rows per row group)
@@ -156,18 +227,39 @@ impl GeoParquetWriter {
         self.add_geometry(geometry)
     }
 
-    /// Flushes the current batch to a row group
+    /// Flushes the current batch to a row group.
+    ///
+    /// Dispatches on the writer's `encoding`:
+    ///
+    /// * [`EncodingType::Wkb`] — encodes each geometry to WKB and stores the
+    ///   bytes in a `BinaryArray`.
+    /// * Native GeoArrow encodings — validates that every buffered geometry
+    ///   matches `encoding` (mixed types in a native column are forbidden by
+    ///   spec) and emits a structured Arrow array via
+    ///   [`encode_native_array`].
     fn flush_batch(&mut self) -> Result<()> {
         if self.current_batch.is_empty() {
             return Ok(());
         }
 
-        // Build geometry array
-        let mut geom_builder = GeometryArrayBuilder::with_capacity(self.current_batch.len());
-        for geom in &self.current_batch {
-            geom_builder.append_geometry(geom)?;
-        }
-        let geom_array = geom_builder.finish_arc();
+        let geom_array: ArrayRef = match self.encoding {
+            EncodingType::Wkb => {
+                let mut geom_builder =
+                    GeometryArrayBuilder::with_capacity(self.current_batch.len());
+                for geom in &self.current_batch {
+                    geom_builder.append_geometry(geom)?;
+                }
+                geom_builder.finish_arc()
+            }
+            _ => {
+                // Native encoding: validate uniformity then encode through
+                // `encode_native_array`.  The encoder itself returns
+                // `InvalidEncoding` for mixed types — this guard provides a
+                // clearer error tied to the writer's column metadata.
+                validate_uniform_native_types(self.encoding, &self.current_batch)?;
+                encode_native_array(&self.current_batch, self.encoding, self.coord_dim)?
+            }
+        };
 
         // Create record batch
         let batch = RecordBatch::try_new(self.schema.clone(), vec![geom_array])?;
@@ -222,6 +314,30 @@ impl GeoParquetWriter {
     }
 }
 
+/// Validates that every geometry in `batch` is compatible with the declared
+/// native `encoding`.  Mixed types in a native column are forbidden by the
+/// GeoParquet 1.1 spec.
+fn validate_uniform_native_types(encoding: EncodingType, batch: &[Geometry]) -> Result<()> {
+    let expected_name = match encoding {
+        EncodingType::Wkb => return Ok(()),
+        EncodingType::Point => "Point",
+        EncodingType::LineString => "LineString",
+        EncodingType::Polygon => "Polygon",
+        EncodingType::MultiPoint => "MultiPoint",
+        EncodingType::MultiLineString => "MultiLineString",
+        EncodingType::MultiPolygon => "MultiPolygon",
+    };
+    for (i, g) in batch.iter().enumerate() {
+        if g.type_name() != expected_name {
+            return Err(GeoParquetError::invalid_encoding(format!(
+                "row {i}: native column declared as {expected_name} but geometry is {}",
+                g.type_name()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Builder for creating a GeoParquet writer with advanced options
 pub struct GeoParquetWriterBuilder {
     geometry_column: String,
@@ -230,11 +346,18 @@ pub struct GeoParquetWriterBuilder {
     compression: CompressionType,
     partition_strategy: Option<PartitionStrategy>,
     additional_fields: Vec<Field>,
+    encoding: EncodingType,
+    coord_dim: CoordDim,
 }
 
 impl GeoParquetWriterBuilder {
-    /// Creates a new writer builder
+    /// Creates a new writer builder.
+    ///
+    /// The encoding defaults to whatever is declared in `metadata.encoding`
+    /// (typically [`EncodingType::Wkb`] for back-compat).  Coordinate
+    /// dimensionality defaults to [`CoordDim::Xy`].
     pub fn new(geometry_column: impl Into<String>, metadata: GeometryColumnMetadata) -> Self {
+        let encoding = metadata.encoding;
         Self {
             geometry_column: geometry_column.into(),
             metadata,
@@ -242,6 +365,8 @@ impl GeoParquetWriterBuilder {
             compression: CompressionType::default(),
             partition_strategy: None,
             additional_fields: Vec::new(),
+            encoding,
+            coord_dim: CoordDim::Xy,
         }
     }
 
@@ -269,9 +394,33 @@ impl GeoParquetWriterBuilder {
         self
     }
 
+    /// Selects the geometry column encoding (WKB or one of the GeoArrow
+    /// native shapes).  Updates the embedded
+    /// [`GeometryColumnMetadata::encoding`] in lockstep so the file's `geo`
+    /// metadata blob reflects the choice.
+    pub fn encoding(mut self, e: EncodingType) -> Self {
+        self.encoding = e;
+        self.metadata.encoding = e;
+        self
+    }
+
+    /// Selects the coordinate dimensionality used by native encodings.
+    /// Ignored when the writer encoding is WKB.
+    pub fn coord_dim(mut self, d: CoordDim) -> Self {
+        self.coord_dim = d;
+        self
+    }
+
     /// Builds the writer
     pub fn build<P: AsRef<Path>>(self, path: P) -> Result<GeoParquetWriter> {
-        let mut writer = GeoParquetWriter::new(path, self.geometry_column, self.metadata)?;
+        let mut writer = GeoParquetWriter::new_with_encoding(
+            path,
+            self.geometry_column,
+            self.metadata,
+            self.compression,
+            self.encoding,
+            self.coord_dim,
+        )?;
         writer = writer.with_batch_size(self.batch_size);
 
         if let Some(strategy) = self.partition_strategy {

@@ -170,25 +170,70 @@
 
 pub mod algebra;
 pub mod backends;
+pub mod band_math;
 pub mod buffer;
 pub mod compositing;
 pub mod compute;
 pub mod context;
+pub mod convolution_fft;
+pub mod cooperative_matrix;
+pub mod cpu_fallback;
+pub mod device_lost_test;
 pub mod error;
+pub mod fft;
+pub mod indirect_dispatch;
 pub mod kernels;
 pub mod memory;
 pub mod multi_gpu;
+pub mod pipeline_cache;
+pub mod profiling;
+pub mod push_constants;
+pub mod ray_march;
 pub mod reprojection;
+pub mod shader_helpers;
 pub mod shader_reload;
+#[cfg(feature = "shader-hot-reload")]
+pub mod shader_reload_native;
 pub mod shaders;
+pub mod storage_texture;
+pub mod texture_compress;
+pub mod texture_resample;
+pub mod tiled;
 pub mod webgpu_compat;
+pub mod workgroup_tuner;
 
 // Re-export commonly used items
 pub use algebra::{AlgebraOp, BandExpression, GpuAlgebra};
-pub use buffer::{GpuBuffer, GpuRasterBuffer};
+pub use band_math::{BandMathError, band_expression_to_wgsl, parse_band_expression};
+pub use buffer::{
+    BufferElementType, GpuBuffer, GpuRasterBuffer, f16_to_f32_slice, f32_to_f16_slice,
+    from_f16_slice_native, from_f16_slice_widening, read_f16_from_f32_buffer,
+};
 pub use compute::{ComputePipeline, MultibandPipeline};
 pub use context::{BackendPreference, GpuContext, GpuContextConfig, GpuPowerPreference};
+pub use convolution_fft::{
+    FftConvolution, MAX_FFT_CONVOLUTION_SIZE, complex_multiply, convolve_reference,
+};
+pub use cooperative_matrix::{
+    CoopMatrixComponentType, CoopMatrixDescriptor, CoopMatrixDim, CoopMatrixGemmConfig,
+    CoopMatrixUse, build_cooperative_matrix_gemm_pipeline, dispatch_cooperative_gemm,
+    make_gemm_wgsl, make_gemm_wgsl_fallback, max_cooperative_matrix_dim,
+    supports_cooperative_matrix,
+};
+pub use cpu_fallback::cpu;
+pub use cpu_fallback::{
+    ExecutionPath, FallbackConfig, FallbackContext, FallbackResult, execute_with_fallback,
+    execute_with_fallback_timed,
+};
 pub use error::{GpuError, GpuResult};
+pub use fft::{Fft1d, bit_reverse, make_fft_shader_source, twiddle_factor, validate_size};
+/// Re-export `half` so callers can use `oxigdal_gpu::half::f16` without
+/// an explicit dependency on the `half` crate.
+pub use half;
+pub use indirect_dispatch::{
+    DispatchIndirectArgs, IndirectDispatchBuffer, args_for_elements, dispatch_indirect_on_pass,
+    workgroup_count_1d, workgroup_count_2d, workgroup_count_3d,
+};
 pub use kernels::{
     convolution::{Filters, gaussian_blur},
     raster::{ElementWiseOp, RasterKernel, ScalarOp, UnaryOp},
@@ -199,8 +244,45 @@ pub use memory::{MemoryPool, MemoryPoolConfig, StagingBufferManager, VramBudgetM
 pub use multi_gpu::{
     DistributionStrategy, InterGpuTransfer, MultiGpuConfig, MultiGpuManager, WorkDistributor,
 };
+pub use pipeline_cache::{
+    PipelineCache, PipelineCacheKey, SharedPipelineCache, fnv1a_64, new_shared_pipeline_cache,
+};
+pub use profiling::{GpuTimestampProfiler, PassTiming};
+pub use push_constants::{
+    MAX_PUSH_CONSTANTS_SIZE_BYTES, PushConstantRange, PushConstantRangeDesc, PushConstantsBuffer,
+    PushConstantsLayout, build_push_constants_pipeline, dispatch_with_push_constants,
+    make_push_constants_shader_source, max_push_constants_size, supports_push_constants,
+};
+pub use ray_march::{
+    DemRayMarcher, RayMarchConfig, RayMarchResult, make_ray_march_shader_source, normalize3,
+    ray_march_cpu, sample_dem_bilinear,
+};
 pub use reprojection::{GpuReprojector, ReprojectionConfig, ResampleMethod};
+pub use shader_helpers::make_element_wise_shader_source;
+pub use storage_texture::{
+    StorageTextureBinding, StorageTextureKernel, build_storage_texture_kernel,
+    is_supported_storage_format, make_storage_texture_shader_source, new_storage_texture,
+    read_texture_to_vec_f32,
+};
+pub use texture_compress::{
+    TextureCompressor, TextureFormat, compress_bc1_block_cpu, compress_bc4_block_cpu,
+    dequantize_rgb565, nearest_index_4, quantize_rgb565, validate_texture_dimensions,
+};
+pub use texture_resample::{
+    TextureFilterMethod, TextureResampler, make_texture_resample_shader_source,
+    new_input_texture_r32float, texture_filter_for_resampling,
+};
+pub use tiled::{
+    RasterTile, TiledConfig, auto_tile_size, execute_tiled, split_into_tiles, stitch_tiles,
+    vram_per_tile,
+};
 pub use webgpu_compat::{GpuCapabilities, ShaderRegistry};
+pub use workgroup_tuner::WorkgroupTuner;
+
+#[cfg(feature = "shader-hot-reload")]
+pub use shader_reload_native::{
+    FilesystemPoller, PolledChange, PolledChangeKind, read_shader_source,
+};
 
 /// Library version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

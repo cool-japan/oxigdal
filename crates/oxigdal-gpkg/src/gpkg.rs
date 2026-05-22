@@ -5,6 +5,8 @@
 
 use crate::btree::{self, CellValue, MasterEntry};
 use crate::error::GpkgError;
+use crate::filter;
+use crate::metadata::{GpkgMetadata, GpkgMetadataReference, MetadataScope, ReferenceScope};
 use crate::sqlite_reader::SqliteReader;
 
 /// A full-table scan result: one `(rowid, column_values)` tuple per row.
@@ -125,6 +127,16 @@ impl GeoPackage {
         })
     }
 
+    /// Open a GeoPackage from a main database file and an optional WAL file.
+    pub fn from_files(main: Vec<u8>, wal: Option<Vec<u8>>) -> Result<Self, GpkgError> {
+        let data = if let Some(wal_bytes) = wal {
+            crate::wal::overlay_wal(&main, &wal_bytes)?
+        } else {
+            main
+        };
+        Self::from_bytes(data)
+    }
+
     /// Return `true` when the file appears to be a well-formed GeoPackage.
     ///
     /// Accepts files whose application_id matches `"GPKG"` *or* whose SQLite
@@ -199,6 +211,144 @@ impl GeoPackage {
         Ok(None)
     }
 
+    /// Scan a named table with offset/limit pagination.
+    ///
+    /// Returns `(rowid, columns)` pairs in B-tree (rowid ascending) order.
+    /// Returns `Ok(None)` when the table is not found in `sqlite_master`.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal fails.
+    pub fn scan_table_paginated(
+        &self,
+        table_name: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<TableScanRows>, GpkgError> {
+        let master = btree::scan_sqlite_master(
+            self.reader.raw_data(),
+            self.reader.header.page_size as usize,
+        )?;
+        for entry in master {
+            if entry.entry_type == "table" && entry.name == table_name {
+                if entry.rootpage == 0 || limit == 0 {
+                    return Ok(Some(Vec::new()));
+                }
+                let rows = btree::scan_table_paginated(
+                    self.reader.raw_data(),
+                    entry.rootpage,
+                    self.reader.header.page_size as usize,
+                    offset,
+                    limit,
+                )?;
+                return Ok(Some(rows));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Scan a named table, returning only rows that satisfy a [`filter::FilterExpr`].
+    ///
+    /// The filter is evaluated against each decoded row after the leaf-page is
+    /// parsed; non-matching rows are discarded before being included in the
+    /// result.  Rows are returned in B-tree (rowid ascending) order.
+    ///
+    /// Returns `Ok(None)` when the table is not found in `sqlite_master`.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal fails.
+    pub fn scan_table_filtered(
+        &self,
+        table_name: &str,
+        expr: &filter::FilterExpr,
+    ) -> Result<Option<TableScanRows>, GpkgError> {
+        let master = btree::scan_sqlite_master(
+            self.reader.raw_data(),
+            self.reader.header.page_size as usize,
+        )?;
+        for entry in master {
+            if entry.entry_type == "table" && entry.name == table_name {
+                if entry.rootpage == 0 {
+                    return Ok(Some(Vec::new()));
+                }
+                let rows = btree::scan_table_filtered(
+                    self.reader.raw_data(),
+                    entry.rootpage,
+                    self.reader.header.page_size as usize,
+                    expr,
+                )?;
+                return Ok(Some(rows));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Scan a named table with a filter and post-filter offset/limit pagination.
+    ///
+    /// Rows are first matched against `expr`, then `offset` matching rows are
+    /// skipped, and at most `limit` matching rows are returned.  Both `offset`
+    /// and `limit` are relative to the post-filter row stream.
+    ///
+    /// Returns `Ok(None)` when the table is not found in `sqlite_master`.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal fails.
+    pub fn scan_table_filtered_paginated(
+        &self,
+        table_name: &str,
+        expr: &filter::FilterExpr,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<TableScanRows>, GpkgError> {
+        let master = btree::scan_sqlite_master(
+            self.reader.raw_data(),
+            self.reader.header.page_size as usize,
+        )?;
+        for entry in master {
+            if entry.entry_type == "table" && entry.name == table_name {
+                if entry.rootpage == 0 || limit == 0 {
+                    return Ok(Some(Vec::new()));
+                }
+                let rows = btree::scan_table_filtered_paginated(
+                    self.reader.raw_data(),
+                    entry.rootpage,
+                    self.reader.header.page_size as usize,
+                    expr,
+                    offset,
+                    limit,
+                )?;
+                return Ok(Some(rows));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Count total rows in a named table.
+    ///
+    /// Returns `Ok(None)` when the table is not found in `sqlite_master`.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal fails.
+    pub fn count_table_rows(&self, table_name: &str) -> Result<Option<u64>, GpkgError> {
+        let master = btree::scan_sqlite_master(
+            self.reader.raw_data(),
+            self.reader.header.page_size as usize,
+        )?;
+        for entry in master {
+            if entry.entry_type == "table" && entry.name == table_name {
+                if entry.rootpage == 0 {
+                    return Ok(Some(0));
+                }
+                let count = btree::count_table_rows(
+                    self.reader.raw_data(),
+                    entry.rootpage,
+                    self.reader.header.page_size as usize,
+                )?;
+                return Ok(Some(count));
+            }
+        }
+        Ok(None)
+    }
+
     /// Populate `self.contents` by scanning the `gpkg_contents` system table.
     ///
     /// The canonical column layout of `gpkg_contents` is:
@@ -259,6 +409,283 @@ impl GeoPackage {
         self.contents = contents;
         Ok(count)
     }
+
+    /// Load all rows from the `gpkg_extensions` system table.
+    ///
+    /// Returns an empty vector when the table is absent.
+    pub fn load_extensions(&mut self) -> Result<Vec<crate::extensions::GpkgExtension>, GpkgError> {
+        let rows = match self.scan_table_by_name("gpkg_extensions")? {
+            Some(r) => r,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut exts = Vec::with_capacity(rows.len());
+        for (_rowid, values) in rows {
+            if values.len() < 5 {
+                continue;
+            }
+            let table_name = cell_to_optional_string(&values[0]);
+            let column_name = cell_to_optional_string(&values[1]);
+            let extension_name = cell_to_string(&values[2]);
+            let definition = cell_to_string(&values[3]);
+            let scope_str = cell_to_string(&values[4]);
+            let scope = scope_str
+                .parse::<crate::extensions::ExtensionScope>()
+                .unwrap_or(crate::extensions::ExtensionScope::ReadWrite);
+            exts.push(crate::extensions::GpkgExtension {
+                table_name,
+                column_name,
+                extension_name,
+                definition,
+                scope,
+            });
+        }
+        Ok(exts)
+    }
+
+    /// Load all rows from the `gpkg_metadata` system table (OGC §10.8, Table 16).
+    ///
+    /// Returns an empty vector when the `gpkg_metadata` table is absent from
+    /// the GeoPackage (the table is optional per the OGC specification).
+    ///
+    /// Column layout expected in the B-tree (positions are 0-based):
+    ///
+    /// | # | Column            | SQLite type |
+    /// |---|-------------------|-------------|
+    /// | 0 | `id`              | INTEGER     |
+    /// | 1 | `md_scope`        | TEXT        |
+    /// | 2 | `md_standard_uri` | TEXT        |
+    /// | 3 | `mime_type`       | TEXT        |
+    /// | 4 | `metadata`        | TEXT        |
+    ///
+    /// Rows with fewer than 5 columns are silently skipped to defend against
+    /// schema version mismatches.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal
+    /// of `gpkg_metadata` fails for reasons other than a missing table.
+    pub fn load_metadata(&self) -> Result<Vec<GpkgMetadata>, GpkgError> {
+        let rows = match self.scan_table_by_name("gpkg_metadata")? {
+            Some(r) => r,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut result = Vec::with_capacity(rows.len());
+        for (_rowid, values) in rows {
+            if values.len() < 5 {
+                // Malformed or schema-version-mismatched row — skip gracefully.
+                continue;
+            }
+
+            let id = cell_to_i64(&values[0]);
+            let md_scope = cell_to_string(&values[1])
+                .parse::<MetadataScope>()
+                .unwrap_or(MetadataScope::Undefined);
+            let md_standard_uri = cell_to_string(&values[2]);
+            let mime_type = cell_to_string(&values[3]);
+            let metadata = cell_to_string(&values[4]);
+
+            result.push(GpkgMetadata {
+                id,
+                md_scope,
+                md_standard_uri,
+                mime_type,
+                metadata,
+            });
+        }
+
+        Ok(result)
+    }
+
+    /// Load all rows from `gpkg_relations` (OGC GPKG-RTE §2.4).
+    ///
+    /// Returns an empty vector when the `gpkg_relations` table is absent from
+    /// the GeoPackage (the table is present only when the Related Tables
+    /// Extension is in use).
+    ///
+    /// Column layout expected in the B-tree (positions are 0-based):
+    ///
+    /// | # | Column                   | SQLite type |
+    /// |---|--------------------------|-------------|
+    /// | 0 | `id`                     | INTEGER     |
+    /// | 1 | `base_table_name`        | TEXT        |
+    /// | 2 | `base_primary_column`    | TEXT        |
+    /// | 3 | `related_table_name`     | TEXT        |
+    /// | 4 | `related_primary_column` | TEXT        |
+    /// | 5 | `relation_name`          | TEXT        |
+    /// | 6 | `mapping_table_name`     | TEXT        |
+    ///
+    /// Rows with fewer than 6 columns are silently skipped to defend against
+    /// schema version mismatches.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal
+    /// of `gpkg_relations` fails for reasons other than a missing table.
+    pub fn load_relations(&self) -> Result<Vec<crate::related_tables::GpkgRelation>, GpkgError> {
+        let rows = match self.scan_table_by_name("gpkg_relations")? {
+            Some(r) => r,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (rowid, values) in rows {
+            // We need at least 6 columns; with the INTEGER `id` as column 0
+            // that means 7 values total.  With only 6 values the `id` column
+            // must have been omitted (non-standard) so we fall back to the
+            // rowid from the B-tree.
+            let has_id_col = values.len() >= 7;
+
+            // Need at least 6 meaningful text columns.
+            if values.len() < 6 {
+                continue;
+            }
+
+            let id = if has_id_col {
+                cell_to_i64(&values[0])
+            } else {
+                rowid
+            };
+            let base_off: usize = if has_id_col { 1 } else { 0 };
+
+            let base_table_name = cell_to_string(&values[base_off]);
+            let base_primary_column = cell_to_string(&values[base_off + 1]);
+            let related_table_name = cell_to_string(&values[base_off + 2]);
+            let related_primary_column = cell_to_string(&values[base_off + 3]);
+            // FromStr for RelationType is infallible (Err = Infallible).
+            let relation_name = cell_to_string(&values[base_off + 4])
+                .parse::<crate::related_tables::RelationType>()
+                .unwrap_or_else(|e| match e {});
+            let mapping_table_name = cell_to_string(&values[base_off + 5]);
+
+            out.push(crate::related_tables::GpkgRelation {
+                id,
+                base_table_name,
+                base_primary_column,
+                related_table_name,
+                related_primary_column,
+                relation_name,
+                mapping_table_name,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Load all rows from a GPKG-RTE mapping table.
+    ///
+    /// Mapping tables store `(base_id, related_id)` pairs that implement the
+    /// many-to-many join described by a [`crate::related_tables::GpkgRelation`].
+    /// The table name to pass is the `mapping_table_name` field of the relevant
+    /// relation row.
+    ///
+    /// Returns an empty vector when the named table is absent from the
+    /// GeoPackage.
+    ///
+    /// Expected column layout (0-based):
+    ///
+    /// | # | Column       | SQLite type |
+    /// |---|--------------|-------------|
+    /// | 0 | `id`         | INTEGER     |
+    /// | 1 | `base_id`    | INTEGER     |
+    /// | 2 | `related_id` | INTEGER     |
+    ///
+    /// When only two columns are found the B-tree rowid is used as the `id`,
+    /// and the two columns are treated as `base_id` and `related_id`.
+    /// Rows with fewer than 2 columns are silently skipped.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or B-tree traversal fails
+    /// for reasons other than a missing table.
+    pub fn load_mapping_table(
+        &self,
+        table_name: &str,
+    ) -> Result<Vec<crate::related_tables::MappingRow>, GpkgError> {
+        let rows = match self.scan_table_by_name(table_name)? {
+            Some(r) => r,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (rowid, values) in rows {
+            let (id, base_id, related_id) = if values.len() >= 3 {
+                (
+                    cell_to_i64(&values[0]),
+                    cell_to_i64(&values[1]),
+                    cell_to_i64(&values[2]),
+                )
+            } else if values.len() == 2 {
+                (rowid, cell_to_i64(&values[0]), cell_to_i64(&values[1]))
+            } else {
+                // Fewer than 2 value columns — cannot form a valid mapping row.
+                continue;
+            };
+            out.push(crate::related_tables::MappingRow {
+                id,
+                base_id,
+                related_id,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Load all rows from the `gpkg_metadata_reference` system table
+    /// (OGC §10.8.5, Table 18).
+    ///
+    /// Returns an empty vector when the table is absent (the table is optional
+    /// per the OGC specification).
+    ///
+    /// Column layout expected in the B-tree (positions are 0-based):
+    ///
+    /// | # | Column            | SQLite type |
+    /// |---|-------------------|-------------|
+    /// | 0 | `reference_scope` | TEXT        |
+    /// | 1 | `table_name`      | TEXT NULL   |
+    /// | 2 | `column_name`     | TEXT NULL   |
+    /// | 3 | `row_id_value`    | INTEGER NULL|
+    /// | 4 | `timestamp`       | TEXT        |
+    /// | 5 | `md_file_id`      | INTEGER     |
+    /// | 6 | `md_parent_id`    | INTEGER NULL|
+    ///
+    /// Rows with fewer than 7 columns are silently skipped.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the B-tree traversal
+    /// of `gpkg_metadata_reference` fails for reasons other than a missing table.
+    pub fn load_metadata_references(&self) -> Result<Vec<GpkgMetadataReference>, GpkgError> {
+        let rows = match self.scan_table_by_name("gpkg_metadata_reference")? {
+            Some(r) => r,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut result = Vec::with_capacity(rows.len());
+        for (_rowid, values) in rows {
+            if values.len() < 7 {
+                // Malformed or schema-version-mismatched row — skip gracefully.
+                continue;
+            }
+
+            let reference_scope = cell_to_string(&values[0])
+                .parse::<ReferenceScope>()
+                .unwrap_or(ReferenceScope::GeoPackage);
+            let table_name = cell_to_optional_string(&values[1]);
+            let column_name = cell_to_optional_string(&values[2]);
+            let row_id_value = cell_to_optional_i64(&values[3]);
+            let timestamp = cell_to_string(&values[4]);
+            let md_file_id = cell_to_i64(&values[5]);
+            let md_parent_id = cell_to_optional_i64(&values[6]);
+
+            result.push(GpkgMetadataReference {
+                reference_scope,
+                table_name,
+                column_name,
+                row_id_value,
+                timestamp,
+                md_file_id,
+                md_parent_id,
+            });
+        }
+
+        Ok(result)
+    }
 }
 
 // ── Cell-value coercion helpers ─────────────────────────────────────────────
@@ -301,5 +728,24 @@ fn cell_to_i32(v: &CellValue) -> i32 {
             }
         }
         _ => 0,
+    }
+}
+
+/// Coerce a [`CellValue`] to `i64`, returning 0 for non-integer types.
+pub(crate) fn cell_to_i64(v: &CellValue) -> i64 {
+    match v {
+        CellValue::Integer(i) => *i,
+        CellValue::Float(f) => *f as i64,
+        _ => 0,
+    }
+}
+
+/// Coerce a [`CellValue`] to `Option<i64>`, returning `None` for SQL NULL.
+pub(crate) fn cell_to_optional_i64(v: &CellValue) -> Option<i64> {
+    match v {
+        CellValue::Null => None,
+        CellValue::Integer(i) => Some(*i),
+        CellValue::Float(f) => Some(*f as i64),
+        _ => None,
     }
 }

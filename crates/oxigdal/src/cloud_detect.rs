@@ -41,8 +41,8 @@ pub fn is_cloud_uri(path: &str) -> bool {
 ///
 /// When the `cloud` feature is enabled this function constructs a `Dataset`
 /// whose metadata is inferred from the URL path extension (e.g. `"*.tif"` →
-/// [`DatasetFormat::GeoTiff`]).  Actual pixel/feature data must be fetched
-/// via the `oxigdal-cloud` streaming interface.
+/// `DatasetFormat::GeoTiff`, feature-gated).  Actual pixel/feature data must
+/// be fetched via the `oxigdal-cloud` streaming interface.
 ///
 /// When the `cloud` feature is **not** enabled, always returns
 /// [`OxiGdalError::NotSupported`].

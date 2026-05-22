@@ -1,5 +1,9 @@
 # TODO: oxigdal-geotiff
 
+> **Purpose:** GeoTIFF/COG driver for OxiGDAL — Pure Rust GDAL reimplementation with cloud-optimized reading and writing
+> **Status (2026-05-16):** 12,091 Rust LoC · 460 tests · 1 real-code stub (`CogConverter::convert` returns placeholder result), plus 2 documented partial features (FloatingPoint predictor branch, JPEG/WebP codecs already in TODO)
+> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+
 ## High Priority
 - [ ] Implement JPEG compression codec (currently placeholder, `jpeg` feature)
 - [ ] Implement WebP compression codec (currently placeholder, `webp` feature)
@@ -18,6 +22,31 @@
 - [ ] Implement parallel tile encoding in `CogWriter` using rayon
 - [ ] Add LERC codec full decoding (currently scaffolding in `lerc_codec.rs`)
 - [ ] Implement proper GeoKey writing (ModelTiepointTag, ModelPixelScaleTag)
+- [x] Wire `CogConverter::convert` to real input read + COG writer pipeline (audit-discovered 2026-05-16)
+  - **Goal:** Public API `CogConverter::convert(&mut self) -> Result<ConversionResult>` at `src/cog/converter.rs` currently returns a fabricated `ConversionResult` without reading input data or writing output bytes. Replace placeholders with an end-to-end read-analyze-write pipeline that yields a valid COG on disk.
+  - **Verified gap:** Two literal placeholder annotations in the same method:
+    1. `// For now, we'll use placeholder data for analysis` (cog/converter.rs:217) followed by `let sample_data = vec![0u8; sample_size];` — analysis runs on synthetic zeros rather than real input bytes.
+    2. `// For now, return a placeholder result // In a real implementation, we would: // 1. Read the input data // 2. Create a CogWriter // 3. Write tiles and overviews // 4. Validate the output` (cog/converter.rs:305-310), and `let output_size = (input_size as f64 * 0.8) as u64; // Placeholder` (cog/converter.rs:313) — the synthesized 80%-of-input figure is not a real measurement.
+    The struct is publicly exposed via `cog/mod.rs:39-40` (`pub use converter::{BatchConversionConfig, BatchConversionResult, CogConverter, ConversionConfig, ...}`) and consumed by `cog/tools.rs:42,54` (`convert_to_cog`, `convert_to_cog_with_config` free functions). All callers are silently broken.
+  - **Design:**
+    1. Replace lines 217-225 with `read_tile_samples(&source, &tiff, width, height, sample_dtype, samples_per_pixel, photometric)?` — read a representative sub-grid of real tile data from the input TIFF for `analyze_for_cog` to inspect. Reuse existing tile-read infrastructure (`crates/oxigdal-drivers/geotiff/src/cog/reader.rs` if present, or factor a helper from there).
+    2. Detect `data_type`, `samples_per_pixel`, `photometric` from IFD tags (`SampleFormat`, `BitsPerSample`, `SamplesPerPixel`, `PhotometricInterpretation`) instead of hard-coding `UInt8` / `1` / `BlackIsZero`.
+    3. Replace lines 295-320 with: open a fresh `CogWriter` at `_output_path` using resolved `tile_width`, `tile_height`, `compression`, `overview_levels`; iterate over input tiles (via existing `RasterReader::read_tile` or strip-decoder); write to `CogWriter`; flush; then `std::fs::metadata` to get the real `output_size`.
+    4. `ConversionResult` populated with measured `input_size`, `output_size`, `compression_ratio = input_size / output_size`, overview count, validation status.
+    5. Optional final `validate_cog(&output_path)?` call using existing `crates/oxigdal-drivers/geotiff/src/cog/mod.rs:validate_cog` (note: that function has its own "simplified check" at line 146 — leave for a follow-up).
+  - **Files:**
+    - `crates/oxigdal-drivers/geotiff/src/cog/converter.rs` (replace lines 217-225 + 295-320, ~150 LoC net).
+    - `crates/oxigdal-drivers/geotiff/src/cog/mod.rs` (no API change; re-exports stay).
+    - `crates/oxigdal-drivers/geotiff/src/cog/tools.rs` (no API change; uses `CogConverter` already).
+    - `crates/oxigdal-drivers/geotiff/tests/cog_converter_integration.rs` (new, ~200 LoC).
+  - **Tests:** `test_cog_converter_classic_tiff_to_cog_roundtrip`, `test_cog_converter_auto_optimize_chooses_settings`, `test_cog_converter_explicit_tile_size_honoured`, `test_cog_converter_output_validates_as_cog`, `test_cog_converter_compression_deflate_actually_compresses`, `test_cog_converter_progress_callback_invoked_in_order`.
+  - **Prerequisites:** `CogWriter::create` must accept all resolved options (verify; should be done — see existing `cog_writer.rs`). `analyze_for_cog` must accept real sampled data (already does — current placeholder feeds zeros).
+  - **Risk:**
+    - Large inputs: reading a 10 GB input synchronously would OOM. Stream tile-by-tile; never `Vec<u8>` the whole input.
+    - Reader/writer compression mismatch: input may be `Lzw` and output must transcode to `Deflate`. Decompress on read, recompress on write.
+  - **Done:** 2026-05-22 (Slice 27). `src/cog/converter.rs` rewritten (+114/-24, 569 LoC total): `CogConverter::convert` now runs a real pipeline — opens the input TIFF via `GeoTiffReader::open(FileDataSource)`, decodes the full band once via `read_band`, detects data-type / samples-per-pixel / photometric from real IFD tags (`crate::tiff::ImageInfo`), feeds REAL sampled data to `analyze_for_cog`, writes a genuine COG via `CogWriter::create` + `.write` with resolved tile size / compression / overview levels / geo-referencing, and reports the MEASURED `output_size` from `fs::metadata` (no more `input_size * 0.8` placeholder). `compression_ratio` is real input/output; `overview_count` from the written file's IFD count; validation status from the `CogValidation` returned by the writer. `report_progress` callbacks preserved in order; `convert` public signature byte-for-byte unchanged; `cog/mod.rs` re-exports untouched. Note: `CogWriter` takes the full image buffer (no tile-streaming API) — converter hands it the once-decoded band. `analyze_for_cog` errors on images too small to generate an overview (pre-existing constraint; tiny-image tests pass explicit settings to skip analysis).
+  - **Tests:** 10 in `crates/oxigdal-drivers/geotiff/tests/cog_converter_test.rs` (classic-TIFF→COG round trip; output exists+nonempty; output_size measured not fabricated; compression_ratio reflects real sizes; explicit tile size honoured; auto-optimize path; progress callbacks in order; output validates as COG; Float32 input data-type detection; nonexistent-input error). Full crate suite 489/489.
+    - Tile-grid mismatch: input may be striped, output is tiled. Re-tile via row-aligned decode buffer.
 
 ## Medium Priority
 - [ ] Add async tile reading for cloud-native COG access via HTTP range requests
@@ -38,3 +67,10 @@
 - [ ] Implement 12-bit and 1-bit sample format support
 - [ ] Add TIFF strip layout writer (not just tiled)
 - [ ] Implement GDAL PAM (.aux.xml) sidecar metadata reading
+
+## Cross-crate dependencies
+- **Blocks:** `oxigdal` (re-exported via `geotiff` default feature), `oxigdal-cli` (translate/warp/convert/info/stats subcommands), `oxigdal-pmtiles` (tile encoding consumers), `oxigdal-mbtiles` (raster tile producers), `oxigdal-services` (OGC tile endpoints)
+- **Blocked by:** `oxigdal-core` (RasterBuffer, DataSource, GeoTransform); `oxiarc-deflate`/`oxiarc-lzw`/`oxiarc-zstd` (decompression — already wired via per-codec features)
+
+---
+*Last audited: 2026-05-16*

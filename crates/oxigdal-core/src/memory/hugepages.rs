@@ -247,7 +247,7 @@ impl HugePageAllocator {
             use std::ptr::null_mut;
 
             let page_size = self.config.page_size.bytes();
-            let aligned_size = ((size + page_size - 1) / page_size) * page_size;
+            let aligned_size = size.div_ceil(page_size) * page_size;
 
             let mut flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
 
@@ -346,13 +346,13 @@ impl HugePageAllocator {
         #[cfg(target_os = "linux")]
         {
             let page_size = self.config.page_size.bytes();
-            let aligned_size = ((size + page_size - 1) / page_size) * page_size;
+            let aligned_size = size.div_ceil(page_size) * page_size;
 
             unsafe {
                 libc::munmap(ptr as *mut libc::c_void, aligned_size);
             }
 
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(target_os = "linux"))]

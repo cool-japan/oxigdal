@@ -6,6 +6,8 @@
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
+use std::hash::{Hash, Hasher};
+
 /// Token types for expression lexer
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Token {
@@ -43,6 +45,11 @@ pub(super) enum Token {
 }
 
 /// Expression AST node
+///
+/// `PartialEq`, `Eq`, and `Hash` are implemented manually so that `Number(f64)` variants
+/// are compared and hashed via their bit-level representation (`f64::to_bits`), which
+/// provides a total order and makes `Expr` suitable as a `HashMap` key required by the
+/// common subexpression elimination pass.
 #[derive(Debug, Clone)]
 pub(super) enum Expr {
     /// Number literal
@@ -65,10 +72,105 @@ pub(super) enum Expr {
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
     },
+    /// Cache slot reference — inserted by the CSE optimizer.
+    ///
+    /// During evaluation the slot index is used to look up (and lazily populate) a
+    /// per-pixel memoisation table held in `Evaluator`, so each common sub-expression
+    /// is computed at most once per pixel.
+    CacheRef(u32),
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Expr::Number(a), Expr::Number(b)) => a.to_bits() == b.to_bits(),
+            (Expr::Band(a), Expr::Band(b)) => a == b,
+            (
+                Expr::BinaryOp {
+                    left: ll,
+                    op: lo,
+                    right: lr,
+                },
+                Expr::BinaryOp {
+                    left: rl,
+                    op: ro,
+                    right: rr,
+                },
+            ) => lo == ro && ll == rl && lr == rr,
+            (Expr::UnaryOp { op: lo, expr: le }, Expr::UnaryOp { op: ro, expr: re }) => {
+                lo == ro && le == re
+            }
+            (Expr::Function { name: ln, args: la }, Expr::Function { name: rn, args: ra }) => {
+                ln == rn && la == ra
+            }
+            (
+                Expr::Conditional {
+                    condition: lc,
+                    then_expr: lt,
+                    else_expr: le,
+                },
+                Expr::Conditional {
+                    condition: rc,
+                    then_expr: rt,
+                    else_expr: re,
+                },
+            ) => lc == rc && lt == rt && le == re,
+            (Expr::CacheRef(a), Expr::CacheRef(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Expr {}
+
+impl Hash for Expr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Discriminant tag — keep in sync with enum variant ordering.
+        match self {
+            Expr::Number(n) => {
+                0u8.hash(state);
+                n.to_bits().hash(state);
+            }
+            Expr::Band(b) => {
+                1u8.hash(state);
+                b.hash(state);
+            }
+            Expr::BinaryOp { left, op, right } => {
+                2u8.hash(state);
+                op.hash(state);
+                left.hash(state);
+                right.hash(state);
+            }
+            Expr::UnaryOp { op, expr } => {
+                3u8.hash(state);
+                op.hash(state);
+                expr.hash(state);
+            }
+            Expr::Function { name, args } => {
+                4u8.hash(state);
+                name.hash(state);
+                args.hash(state);
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                5u8.hash(state);
+                condition.hash(state);
+                then_expr.hash(state);
+                else_expr.hash(state);
+            }
+            Expr::CacheRef(i) => {
+                6u8.hash(state);
+                i.hash(state);
+            }
+        }
+    }
 }
 
 /// Binary operators
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum BinaryOp {
     Add,
     Subtract,
@@ -86,7 +188,7 @@ pub(super) enum BinaryOp {
 }
 
 /// Unary operators
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum UnaryOp {
     Negate,
 }

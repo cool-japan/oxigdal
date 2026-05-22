@@ -131,40 +131,99 @@ use alloc::format;
 use alloc::string::String;
 
 pub mod area_of_use;
+#[cfg(feature = "std")]
+pub mod cache;
 pub mod crs;
+#[cfg(feature = "std")]
+pub mod crs_identify;
 #[cfg(feature = "std")]
 pub mod crs_registry;
 pub mod datum_transform;
 pub mod epsg;
 pub mod error;
 #[cfg(feature = "std")]
+pub mod geocentric;
+pub mod geodesic;
+pub mod geoid;
+#[cfg(feature = "std")]
+pub mod geoid_formats;
+#[cfg(feature = "std")]
 pub mod grid_shift;
+pub mod operation_selection;
+#[cfg(feature = "std")]
+pub mod pipeline;
 #[cfg(feature = "std")]
 pub mod proj_string;
 #[cfg(feature = "std")]
 pub mod projections;
 pub mod transform;
+pub mod ups_projection;
 pub mod wkt;
 
 // Re-export commonly used types
 pub use area_of_use::{AreaOfUse, area_of_use_for_epsg};
+#[cfg(feature = "std")]
+pub use cache::{TransformerCache, TransformerKey};
 pub use crs::{Crs, CrsSource};
+#[cfg(feature = "std")]
+pub use crs_identify::{
+    CrsFingerprint, fingerprint_from_proj, fingerprint_from_wkt, identify_epsg_from_proj,
+    identify_epsg_from_wkt,
+};
 pub use epsg::{CrsType, EpsgDefinition};
+#[cfg(feature = "proj-db")]
+pub use epsg::{ProjDb, ProjDbEntry, default_proj_db_paths, populate_from_proj_db};
 #[cfg(feature = "std")]
 pub use epsg::{available_epsg_codes, contains_epsg, lookup_epsg};
 pub use error::{Error, Result};
 #[cfg(feature = "std")]
+pub use geocentric::{
+    EcefCoordinate, EcefTransformer, GeocentricCrs, GeocentricEllipsoid, ecef_to_geographic,
+    ecef_to_geographic_iterative, geographic_to_ecef, geographic_to_geographic_via_ecef,
+};
+pub use geodesic::{
+    GeodesicError, GeodesicParams, VincentyDirectResult, VincentyResult, haversine_distance_m,
+    vincenty_direct, vincenty_inverse, wgs84_direct, wgs84_haversine_m, wgs84_inverse,
+};
+#[cfg(feature = "std")]
+pub use geoid::load_egm_grid;
+pub use geoid::{
+    GeoidGrid, GeoidModel, VerticalDatumKind, classify_vertical_datum, synthetic_grid,
+    synthetic_height_m,
+};
+#[cfg(feature = "std")]
+pub use geoid_formats::{
+    Egm96AsciiHeader, Egm2008BinaryHeader, load_geoid_auto, parse_egm96_ascii_file,
+    parse_egm96_ascii_header, parse_egm96_ascii_str, parse_egm2008_binary_25,
+    parse_egm2008_binary_25_file, parse_egm2008_binary_25_header,
+};
+#[cfg(feature = "std")]
 pub use grid_shift::{
-    DHDN_TO_ETRS89, Helmert7Params, NAD27_TO_NAD83, NTF_TO_RGF93, OSGB36_TO_ETRS89,
+    DHDN_TO_ETRS89, Helmert7Params, NAD27_TO_NAD83, NTF_TO_RGF93, NtV2Grid, OSGB36_TO_ETRS89,
     dhdn_etrs89_helmert, helmert_3d, helmert_7param, nad27_nad83_poly, ostn15_approx, rgf93_approx,
+};
+pub use operation_selection::{
+    CandidateOperation, OperationRanking, area_coverage_fraction, operation_score, rank_operations,
+    select_best_operation,
+};
+#[cfg(feature = "std")]
+pub use pipeline::{
+    EllipsoidParams, HelmertConvention, HelmertParams, HelmertRateParams, ParsedStep, Pipeline,
+    PipelineStep, ShiftDirection, StepKind, Unit, parse_pipeline,
 };
 #[cfg(feature = "std")]
 pub use transform::{
-    AzimuthalEquidistant, CassineSoldner, EckertIV, EckertVI, EquidistantConic, GaussKruger,
-    Gnomonic, LambertAzimuthalEqualArea, LambertConformalConic, Mollweide, Robinson, Sinusoidal,
-    Transformer, TransverseMercator, transform_coordinate, transform_epsg,
+    AreaOfUseCheck, AreaOfUseWarning, AzimuthalEquidistant, CassineSoldner, EckertIV, EckertVI,
+    EquidistantConic, GaussKruger, Gnomonic, LambertAzimuthalEqualArea, LambertConformalConic,
+    Mollweide, Robinson, Sinusoidal, Transformer, TransverseMercator, transform_coordinate,
+    transform_epsg,
 };
 pub use transform::{BoundingBox, Coordinate, Coordinate3D};
+pub use ups_projection::{
+    PolarStereographicParams, UpsCoordinate, UpsHemisphere, polar_stereo_w,
+    polar_stereographic_forward, polar_stereographic_inverse, ups_from_geographic,
+    ups_to_geographic, ups_zone_letter,
+};
 pub use wkt::{WktNode, WktParser, parse_wkt};
 
 /// Library version

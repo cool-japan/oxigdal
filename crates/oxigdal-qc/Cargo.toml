@@ -29,6 +29,9 @@ chrono = { workspace = true }
 # Internal dependencies
 oxigdal-core = { workspace = true }
 oxigdal-algorithms = { workspace = true }
+oxigdal-index = { workspace = true }
+oxigdal-geotiff = { workspace = true }
+oxigdal-proj = { workspace = true }
 
 # TOML parsing for rules
 toml = { workspace = true }

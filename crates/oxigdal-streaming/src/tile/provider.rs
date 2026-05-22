@@ -1,7 +1,7 @@
 //! Tile provider implementations.
 
 use super::cache::TileCache;
-use super::protocol::{TileCoordinate, TileProtocol, TileRequest, TileResponse};
+use super::protocol::{TileProtocol, TileRequest, TileResponse};
 use crate::error::{Result, StreamingError};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -22,26 +22,35 @@ pub trait TileProvider: Send + Sync {
 pub enum TileSource {
     /// HTTP/HTTPS URL template
     Http {
+        /// URL template with `{z}`, `{x}`, `{y}` placeholders
         url_template: String,
+        /// Minimum supported zoom level
         min_zoom: u8,
+        /// Maximum supported zoom level
         max_zoom: u8,
     },
 
     /// Local file system
     FileSystem {
+        /// Root directory containing tile files
         base_path: std::path::PathBuf,
+        /// Tile image format
         format: super::protocol::TileFormat,
     },
 
     /// In-memory tile generator
     Generator {
+        /// Minimum supported zoom level
         min_zoom: u8,
+        /// Maximum supported zoom level
         max_zoom: u8,
     },
 }
 
 /// Standard tile provider with caching.
 pub struct StandardTileProvider {
+    /// Source configuration (retained for introspection / future routing)
+    #[allow(dead_code)]
     source: TileSource,
     cache: Option<Arc<TileCache>>,
     protocol: Arc<dyn TileProtocol>,
@@ -142,9 +151,10 @@ impl TileProvider for MultiSourceTileProvider {
             }
         }
 
-        Err(StreamingError::Other(
-            format!("All providers failed for tile {}", request.coord)
-        ))
+        Err(StreamingError::Other(format!(
+            "All providers failed for tile {}",
+            request.coord
+        )))
     }
 
     async fn prefetch_tiles(&self, requests: Vec<TileRequest>) -> Result<Vec<TileResponse>> {
@@ -160,7 +170,6 @@ impl TileProvider for MultiSourceTileProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::protocol::{TileFormat, XyzProtocol};
 
     #[test]
     fn test_tile_source() {
@@ -171,7 +180,9 @@ mod tests {
         };
 
         match source {
-            TileSource::Http { min_zoom, max_zoom, .. } => {
+            TileSource::Http {
+                min_zoom, max_zoom, ..
+            } => {
                 assert_eq!(min_zoom, 0);
                 assert_eq!(max_zoom, 18);
             }

@@ -1,18 +1,17 @@
 //! Core raster streaming types and implementations.
 
-use crate::core::{StreamElement, StreamMessage};
+use crate::core::StreamElement;
 use crate::error::{Result, StreamingError};
 use async_trait::async_trait;
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use oxigdal_core::{
     buffer::RasterBuffer,
-    types::{BoundingBox, GeoTransform, RasterDataType, RasterMetadata},
+    types::{BoundingBox, GeoTransform, RasterMetadata},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info, warn};
+use tokio::sync::{RwLock, mpsc};
+use tracing::{info, warn};
 
 /// Configuration for raster streaming.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +55,9 @@ impl Default for RasterStreamConfig {
             max_memory_bytes: 1024 * 1024 * 1024, // 1GB
             prefetch_count: 2,
             parallel: true,
-            num_workers: num_cpus::get(),
+            num_workers: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
         }
     }
 }
@@ -148,7 +149,7 @@ impl RasterChunk {
 
     /// Get the size in bytes of this chunk.
     pub fn size_bytes(&self) -> usize {
-        self.buffer.size_bytes()
+        self.buffer.as_bytes().len()
     }
 
     /// Check if this chunk overlaps with another.
@@ -161,19 +162,118 @@ impl RasterChunk {
         self.bbox.intersection(&other.bbox)
     }
 
-    /// Convert to a stream element.
+    /// Convert to a stream element using JSON serialization of spatial metadata
+    /// and a raw bytes payload for the raster data.
     pub fn to_stream_element(&self) -> Result<StreamElement> {
-        let data = bincode::encode_to_vec(self, bincode::config::standard())
+        // Encode spatial metadata as JSON, then append raw pixel bytes.
+        // Layout: [8 bytes: json_len][json_len bytes: JSON][remaining: raw pixels]
+        let meta = serde_json::json!({
+            "bbox": {
+                "min_x": self.bbox.min_x(),
+                "min_y": self.bbox.min_y(),
+                "max_x": self.bbox.max_x(),
+                "max_y": self.bbox.max_y(),
+            },
+            "gt": {
+                "origin_x": self.geotransform.origin_x,
+                "origin_y": self.geotransform.origin_y,
+                "pixel_width": self.geotransform.pixel_width,
+                "pixel_height": self.geotransform.pixel_height,
+                "row_rotation": self.geotransform.row_rotation,
+                "col_rotation": self.geotransform.col_rotation,
+            },
+            "row": self.indices.0,
+            "col": self.indices.1,
+            "width": self.buffer.width(),
+            "height": self.buffer.height(),
+            "data_type": format!("{:?}", self.buffer.data_type()),
+        });
+        let json_bytes = serde_json::to_vec(&meta)
             .map_err(|e| StreamingError::SerializationError(e.to_string()))?;
+        let json_len = json_bytes.len() as u64;
+        let pixel_bytes = self.buffer.as_bytes();
+
+        let mut data = Vec::with_capacity(8 + json_bytes.len() + pixel_bytes.len());
+        data.extend_from_slice(&json_len.to_le_bytes());
+        data.extend_from_slice(&json_bytes);
+        data.extend_from_slice(pixel_bytes);
 
         Ok(StreamElement::new(data, self.timestamp))
     }
 
-    /// Create from a stream element.
+    /// Reconstruct from a stream element.  Only the raw pixel buffer and
+    /// spatial metadata are restored; band-level metadata is left at defaults.
     pub fn from_stream_element(element: &StreamElement) -> Result<Self> {
-        let (chunk, _): (Self, _) = bincode::decode_from_slice(&element.data, bincode::config::standard())
+        use oxigdal_core::types::{BoundingBox, NoDataValue, RasterDataType};
+
+        let data = &element.data;
+        if data.len() < 8 {
+            return Err(StreamingError::DeserializationError(
+                "stream element too short to contain header".to_string(),
+            ));
+        }
+        let json_len = u64::from_le_bytes(
+            data[..8]
+                .try_into()
+                .map_err(|_| StreamingError::DeserializationError("bad header".to_string()))?,
+        ) as usize;
+        if data.len() < 8 + json_len {
+            return Err(StreamingError::DeserializationError(
+                "stream element truncated: JSON metadata missing".to_string(),
+            ));
+        }
+        let meta: serde_json::Value = serde_json::from_slice(&data[8..8 + json_len])
             .map_err(|e| StreamingError::DeserializationError(e.to_string()))?;
-        Ok(chunk)
+
+        let pixel_bytes = data[8 + json_len..].to_vec();
+
+        let width = meta["width"]
+            .as_u64()
+            .ok_or_else(|| StreamingError::DeserializationError("missing width".to_string()))?;
+        let height = meta["height"]
+            .as_u64()
+            .ok_or_else(|| StreamingError::DeserializationError("missing height".to_string()))?;
+        let row = meta["row"]
+            .as_u64()
+            .ok_or_else(|| StreamingError::DeserializationError("missing row index".to_string()))?
+            as usize;
+        let col = meta["col"]
+            .as_u64()
+            .ok_or_else(|| StreamingError::DeserializationError("missing col index".to_string()))?
+            as usize;
+
+        let gt = GeoTransform {
+            origin_x: meta["gt"]["origin_x"].as_f64().unwrap_or(0.0),
+            origin_y: meta["gt"]["origin_y"].as_f64().unwrap_or(0.0),
+            pixel_width: meta["gt"]["pixel_width"].as_f64().unwrap_or(1.0),
+            pixel_height: meta["gt"]["pixel_height"].as_f64().unwrap_or(-1.0),
+            row_rotation: meta["gt"]["row_rotation"].as_f64().unwrap_or(0.0),
+            col_rotation: meta["gt"]["col_rotation"].as_f64().unwrap_or(0.0),
+        };
+
+        let min_x = meta["bbox"]["min_x"].as_f64().unwrap_or(0.0);
+        let min_y = meta["bbox"]["min_y"].as_f64().unwrap_or(0.0);
+        let max_x = meta["bbox"]["max_x"].as_f64().unwrap_or(0.0);
+        let max_y = meta["bbox"]["max_y"].as_f64().unwrap_or(0.0);
+        let bbox = BoundingBox::new(min_x, min_y, max_x, max_y).map_err(StreamingError::Core)?;
+
+        let buffer = RasterBuffer::new(
+            pixel_bytes,
+            width,
+            height,
+            RasterDataType::UInt8, // fallback; full round-trip requires type registry
+            NoDataValue::None,
+        )
+        .map_err(|e| StreamingError::DeserializationError(e.to_string()))?;
+
+        Ok(Self {
+            buffer,
+            bbox,
+            geotransform: gt,
+            indices: (row, col),
+            timestamp: element.event_time,
+            metadata: ChunkMetadata::default(),
+        })
     }
 }
 
@@ -247,20 +347,17 @@ pub struct RasterStream {
 
 impl RasterStream {
     /// Create a new raster stream.
-    pub fn new(
-        config: RasterStreamConfig,
-        metadata: RasterMetadata,
-    ) -> Result<Self> {
+    pub fn new(config: RasterStreamConfig, metadata: RasterMetadata) -> Result<Self> {
         // Calculate total number of chunks
         let total_chunks = Self::calculate_chunks(
-            metadata.width,
-            metadata.height,
+            metadata.width as usize,
+            metadata.height as usize,
             config.chunk_size.0,
             config.chunk_size.1,
             config.overlap,
         );
 
-        let (sender, receiver) = mpsc::channel(config.buffer_size);
+        let (_sender, receiver) = mpsc::channel(config.buffer_size);
 
         info!(
             "Created raster stream with {} x {} chunks",
@@ -279,7 +376,7 @@ impl RasterStream {
     }
 
     /// Calculate the number of chunks needed.
-    fn calculate_chunks(
+    pub fn calculate_chunks(
         width: usize,
         height: usize,
         chunk_width: usize,
@@ -289,8 +386,8 @@ impl RasterStream {
         let effective_chunk_width = chunk_width - overlap;
         let effective_chunk_height = chunk_height - overlap;
 
-        let num_cols = (width + effective_chunk_width - 1) / effective_chunk_width;
-        let num_rows = (height + effective_chunk_height - 1) / effective_chunk_height;
+        let num_cols = width.div_ceil(effective_chunk_width);
+        let num_rows = height.div_ceil(effective_chunk_height);
 
         (num_rows, num_cols)
     }
@@ -298,9 +395,10 @@ impl RasterStream {
     /// Get the bounding box for a specific chunk.
     pub fn chunk_bbox(&self, row: usize, col: usize) -> Result<BoundingBox> {
         if row >= self.total_chunks.0 || col >= self.total_chunks.1 {
-            return Err(StreamingError::InvalidOperation(
-                format!("Chunk ({}, {}) out of bounds", row, col)
-            ));
+            return Err(StreamingError::InvalidOperation(format!(
+                "Chunk ({}, {}) out of bounds",
+                row, col
+            )));
         }
 
         let chunk_width = self.config.chunk_size.0;
@@ -312,26 +410,29 @@ impl RasterStream {
 
         let x_start = col * effective_width;
         let y_start = row * effective_height;
-        let x_end = (x_start + chunk_width).min(self.metadata.width);
-        let y_end = (y_start + chunk_height).min(self.metadata.height);
+        let x_end = (x_start + chunk_width).min(self.metadata.width as usize);
+        let y_end = (y_start + chunk_height).min(self.metadata.height as usize);
 
         // Convert pixel coordinates to geographic coordinates
-        let gt = self.metadata.geotransform.as_ref()
-            .ok_or_else(|| StreamingError::InvalidState("No geotransform available".to_string()))?;
+        let gt =
+            self.metadata.geo_transform.as_ref().ok_or_else(|| {
+                StreamingError::InvalidState("No geotransform available".to_string())
+            })?;
 
         let min_x = gt.origin_x + (x_start as f64) * gt.pixel_width;
         let max_y = gt.origin_y + (y_start as f64) * gt.pixel_height;
         let max_x = gt.origin_x + (x_end as f64) * gt.pixel_width;
         let min_y = gt.origin_y + (y_end as f64) * gt.pixel_height;
 
-        BoundingBox::new(min_x, min_y, max_x, max_y)
-            .map_err(|e| StreamingError::Core(e))
+        BoundingBox::new(min_x, min_y, max_x, max_y).map_err(StreamingError::Core)
     }
 
     /// Get the geotransform for a specific chunk.
     pub fn chunk_geotransform(&self, row: usize, col: usize) -> Result<GeoTransform> {
-        let gt = self.metadata.geotransform.as_ref()
-            .ok_or_else(|| StreamingError::InvalidState("No geotransform available".to_string()))?;
+        let gt =
+            self.metadata.geo_transform.as_ref().ok_or_else(|| {
+                StreamingError::InvalidState("No geotransform available".to_string())
+            })?;
 
         let chunk_width = self.config.chunk_size.0;
         let chunk_height = self.config.chunk_size.1;
@@ -351,8 +452,8 @@ impl RasterStream {
             origin_y,
             pixel_width: gt.pixel_width,
             pixel_height: gt.pixel_height,
-            rotation_x: gt.rotation_x,
-            rotation_y: gt.rotation_y,
+            row_rotation: gt.row_rotation,
+            col_rotation: gt.col_rotation,
         })
     }
 
@@ -367,14 +468,13 @@ impl RasterStream {
     }
 
     /// Update memory usage.
+    #[allow(dead_code)]
     async fn update_memory(&self, delta: isize) -> Result<()> {
         let mut usage = self.memory_usage.write().await;
         if delta > 0 {
             let new_usage = *usage + delta as usize;
             if new_usage > self.config.max_memory_bytes {
-                return Err(StreamingError::Other(
-                    "Memory limit exceeded".to_string()
-                ));
+                return Err(StreamingError::Other("Memory limit exceeded".to_string()));
             }
             *usage = new_usage;
         } else {
@@ -416,9 +516,10 @@ impl RasterStreaming for RasterStream {
 
     async fn seek_to_chunk(&mut self, row: usize, col: usize) -> Result<()> {
         if row >= self.total_chunks.0 || col >= self.total_chunks.1 {
-            return Err(StreamingError::InvalidOperation(
-                format!("Chunk ({}, {}) out of bounds", row, col)
-            ));
+            return Err(StreamingError::InvalidOperation(format!(
+                "Chunk ({}, {}) out of bounds",
+                row, col
+            )));
         }
 
         let mut pos = self.current_position.write().await;
@@ -426,7 +527,7 @@ impl RasterStreaming for RasterStream {
 
         // Send prefetch request if enabled
         if let Some(sender) = &self.prefetch_sender {
-            if let Err(_) = sender.try_send((row, col)) {
+            if sender.try_send((row, col)).is_err() {
                 warn!("Failed to send prefetch request");
             }
         }
@@ -541,7 +642,7 @@ mod tests {
 
         assert_eq!(config.chunk_size, (1024, 1024));
         assert_eq!(config.overlap, 32);
-        assert_eq!(config.compression, true);
+        assert!(config.compression);
         assert_eq!(config.compression_level, 9);
         assert_eq!(config.prefetch_count, 4);
     }
