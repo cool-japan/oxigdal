@@ -45,6 +45,7 @@ pub mod bbox;
 pub mod bbox3d;
 pub mod bounding_circle;
 pub mod clustering;
+pub mod delaunay;
 pub mod error;
 pub mod geo_distance;
 pub mod grid_index;
@@ -71,6 +72,7 @@ pub use clustering::dbscan::{
     ClusterLabel, DbscanOptions, DbscanResult, NOISE, UNVISITED, dbscan_rtree, dbscan_with_rtree,
     range_query_eps,
 };
+pub use delaunay::{Triangulation, triangulate};
 pub use error::IndexError;
 pub use geo_distance::{
     GeoNearestResult, GeoPoint, VincentyGeoResult, WGS84_A, WGS84_B, WGS84_INV_F,

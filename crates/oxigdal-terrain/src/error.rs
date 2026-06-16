@@ -119,6 +119,13 @@ pub enum TerrainError {
         message: String,
     },
 
+    /// No path exists from any source to the destination cell.
+    #[error("No path: {message}")]
+    NoPath {
+        /// Error message
+        message: String,
+    },
+
     /// Core library error
     #[error("Core error: {0}")]
     CoreError(#[from] oxigdal_core::error::OxiGdalError),

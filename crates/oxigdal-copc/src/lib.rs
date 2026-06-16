@@ -7,7 +7,7 @@
 //! - [`las_header`] parses the LAS public header block.
 //! - [`copc_vlr`] defines the VLR / COPC info binary layout.
 //! - [`vlr_chain`] walks the VLR sequence and locates COPC records.
-//! - [`point_format`] deserializes LAS point records (formats 0-3, 6-8).
+//! - [`point_format`] deserializes LAS point records (formats 0-3, 6-10).
 //! - [`hierarchy`] parses COPC octree hierarchy pages and traverses them.
 //! - [`copc_reader`] ties everything together behind the [`CopcReader`] API.
 //!
@@ -39,7 +39,7 @@ pub use hierarchy::{HierarchyEntry, VoxelKey};
 pub use las_header::{LasHeader, LasVersion};
 pub use laz::{LazItem, LazVlrInfo, decompress_chunk, detect_laszip_vlr, parse_laszip_vlr_data};
 pub use octree::{Octree, OctreeNode, PointCloudStats};
-pub use point::{BoundingBox3D, Point3D};
+pub use point::{BoundingBox3D, Point3D, WaveformPacket};
 pub use point_format::{deserialize_point, deserialize_points};
 pub use profile::{GroundFilter, HeightProfile, ProfileSegment};
 pub use vlr_chain::{find_copc_hierarchy_vlr, find_copc_info, parse_vlrs};

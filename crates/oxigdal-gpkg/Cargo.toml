@@ -18,8 +18,9 @@ default = ["std"]
 std = ["thiserror/std"]
 reproject = ["dep:oxigdal-proj"]
 flatgeobuf-export = ["dep:oxigdal-flatgeobuf", "dep:oxigdal-core"]
-mbtiles-export = ["dep:rusqlite"]
-change-tracking = ["dep:rusqlite"]
+# mbtiles-export uses the Pure-Rust OxiSQL engine (no C/FFI).
+mbtiles-export = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio"]
+change-tracking = ["dep:oxisql-sqlite-compat", "dep:oxisql-core", "dep:tokio"]
 file-locking = ["dep:libc"]
 
 [dependencies]
@@ -30,12 +31,18 @@ serde_json = { workspace = true }
 oxigdal-proj = { workspace = true, optional = true }
 oxigdal-flatgeobuf = { workspace = true, optional = true }
 oxigdal-core = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true, features = ["bundled"] }
+# Pure-Rust SQLite engine (mbtiles-export feature only)
+oxisql-core = { workspace = true, optional = true }
+oxisql-sqlite-compat = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 libc = { workspace = true }
 tempfile = { workspace = true }
+oxisql-core = { workspace = true }
+oxisql-sqlite-compat = { workspace = true, features = ["blocking"] }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

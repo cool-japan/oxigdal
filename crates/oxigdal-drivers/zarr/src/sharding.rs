@@ -518,12 +518,81 @@ pub fn parse_sharding_config(config: &ShardingConfig) -> Result<(CodecChain, Cod
     Ok((chunk_codec_chain, index_codec_chain))
 }
 
-/// Builds a codec from metadata
-fn build_codec_from_metadata(_metadata: &CodecMetadata) -> Result<Box<dyn Codec>> {
-    // This is a placeholder - actual implementation would use the codec registry
-    // For now, return a simple codec based on the name
+/// Builds a codec from metadata by dispatching to the appropriate codec implementation
+fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<dyn Codec>> {
     use crate::codecs::NullCodec;
-    Ok(Box::new(NullCodec))
+    use crate::error::CodecError;
+
+    match metadata {
+        CodecMetadata::Gzip { configuration } => {
+            #[cfg(feature = "gzip")]
+            {
+                use crate::codecs::gzip::GzipCodec;
+                let level = configuration.as_ref().and_then(|c| c.level).unwrap_or(6);
+                Ok(Box::new(GzipCodec::new(level)?))
+            }
+            #[cfg(not(feature = "gzip"))]
+            {
+                let _ = configuration;
+                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                    codec: "gzip".to_string(),
+                }))
+            }
+        }
+        CodecMetadata::Zstd { configuration } => {
+            #[cfg(feature = "zstd")]
+            {
+                use crate::codecs::zstd_codec::ZstdCodec;
+                let level = configuration.as_ref().and_then(|c| c.level).unwrap_or(3);
+                Ok(Box::new(ZstdCodec::new(level)?))
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                let _ = configuration;
+                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                    codec: "zstd".to_string(),
+                }))
+            }
+        }
+        CodecMetadata::Blosc { configuration } => {
+            #[cfg(feature = "blosc")]
+            {
+                use crate::codecs::blosc::BloscCodec;
+                Ok(Box::new(BloscCodec::new(
+                    configuration.cname.clone(),
+                    configuration.clevel,
+                    configuration.shuffle,
+                    configuration.blocksize,
+                )?))
+            }
+            #[cfg(not(feature = "blosc"))]
+            {
+                let _ = configuration;
+                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                    codec: "blosc".to_string(),
+                }))
+            }
+        }
+        // Transpose is an array-to-array codec; treat as identity in byte pipeline
+        CodecMetadata::Transpose { .. } => Ok(Box::new(NullCodec)),
+        // Bytes and Endian codecs perform byte-order transformations;
+        // treated as identity here since chunk data is already serialised
+        CodecMetadata::Bytes { .. } | CodecMetadata::Endian { .. } => Ok(Box::new(NullCodec)),
+        // Checksum-only codecs: pass through without verification (warn so callers are aware)
+        CodecMetadata::Crc32c { .. } => {
+            tracing::warn!(
+                "crc32c checksum codec is not fully implemented in sharding pipeline; \
+                 using passthrough (NullCodec)"
+            );
+            Ok(Box::new(NullCodec))
+        }
+        // Sharding-indexed is handled at a higher level; treat as identity here
+        CodecMetadata::ShardingIndexed { .. } => Ok(Box::new(NullCodec)),
+        // Unknown / unrecognised codec
+        CodecMetadata::Generic => Err(ZarrError::Codec(CodecError::UnknownCodec {
+            codec: "unknown (Generic)".to_string(),
+        })),
+    }
 }
 
 #[cfg(test)]

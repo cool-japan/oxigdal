@@ -6,41 +6,34 @@
 
 ## High Priority (next slice — verified gaps)
 
-- [ ] Add STAC item/collection schema validation
-  - **Verified gap:** `src/lib.rs:51-57` module list — `pub mod error; pub mod fix; pub mod metadata; pub mod raster; pub mod report; pub mod rules; pub mod vector;` — no `stac` module; `src/metadata/completeness.rs` validates ISO 19115 only.
-  - **Goal:** New `StacValidator` checking STAC Item / Collection / Catalog conformance against the SpatioTemporal Asset Catalog 1.0.0 spec. Emits `QcIssue` for missing required fields (`stac_version`, `id`, `geometry`, `bbox`, `properties.datetime`, `assets`), invalid JSON schema (assets MIME types, link rel values), and broken cross-references.
-  - **Design:** Reuse `oxigdal-stac` (workspace member) for the parsed types — add as a dep. Validation stages: (1) JSON-schema-conformance via `serde_json` errors on `oxigdal_stac::Item::deserialize`; (2) spec-conformance pass: `stac_version` is "1.0.0", `geometry` is GeoJSON `Polygon`/`MultiPolygon`, `bbox` length is 4 or 6 and matches `geometry`, `properties.datetime` parses as RFC 3339 or both `start_datetime` & `end_datetime` set; (3) extension validation: if `eo:cloud_cover` present, must be 0-100; (4) link/asset reachability (opt-in, network).
-  - **Files:** `(new) src/stac.rs` (~500 LoC); `src/lib.rs` (declare `pub mod stac;`, re-export `StacValidator` from prelude); `Cargo.toml` (add `oxigdal-stac = { workspace = true }`)
-  - **Tests:** `(proposed)` test_stac_item_minimal_valid, test_stac_item_missing_geometry_critical, test_stac_item_invalid_datetime_format_major, test_stac_collection_missing_extent_critical, test_stac_eo_cloud_cover_out_of_range_warns, test_stac_bbox_length_mismatch_geometry_major
-  - **Risk:** STAC extension schemas are external JSON; ship a curated subset (`eo`, `proj`, `view`) and accept user-supplied JSON schemas via `StacValidator::with_extension_schema(name, schema)`.
-  - **Prerequisites:** `oxigdal-stac` already a workspace member (`crates/oxigdal-stac/`).
+- [x] Add STAC item/collection schema validation (planned 2026-06-06)
+  - **Goal:** `StacValidator` struct in `src/stac.rs` implementing `check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<StacValidationResult>`. Result holds `issues: Vec<QcIssue>` + `is_valid()`.
+  - **Design:** Read file bytes → sniff JSON `"type"` field to determine Item/Collection/Catalog → `serde_json::from_slice::<oxigdal_stac::Item>` (or Collection) → call `.validate()` → translate errors to QcIssue (Critical: missing required fields, wrong type, unsupported version; Major: datetime/bbox issues). Extra checks: bbox length 4 or 6, bbox↔geometry consistency, RFC3339 datetime format, `eo:cloud_cover ∈ [0,100]` from additional_fields. Add dep `oxigdal-stac` to Cargo.toml. Map foreign errors manually (no `#[from]` for stac errors in QcError). Register `pub mod stac;` in `src/lib.rs`.
+  - **Files:** new `src/stac.rs`; update `src/lib.rs` (add pub mod + pub use); update `Cargo.toml` (add oxigdal-stac dep).
+  - **Tests:** minimal valid item → no issues; item missing geometry → Critical; item with bad datetime → Major; collection missing extent → Critical; eo:cloud_cover out of range → Warning; bbox/geometry length mismatch → Major. (~6 tests)
+  - **Risk:** Low — serde_json deserialization is robust; STAC schema is well-defined.
 
-- [ ] Add batch QC mode for processing entire directories
-  - **Verified gap:** `src/lib.rs:60-80` prelude — no `BatchRunner`/`DirectoryScanner` exports; all checkers operate on a single file/buffer.
-  - **Goal:** `BatchRunner::new(rules).run(&Path)` walks a directory tree, dispatches each file to the right validator based on extension (`.tif`/`.tiff` → `CogComplianceChecker` + `CompletenessChecker`; `.shp`/`.geojson`/`.gpkg` → `TopologyChecker` + `AttributionChecker`; `.json` → `StacValidator` if matches STAC fingerprint), aggregates `QcIssue`s into a single `BatchReport`.
-  - **Design:** `walkdir` for traversal (already a workspace dep). Configurable parallelism via `rayon` feature: `par_iter` over found files. `BatchReport` aggregates per-file issue counts by `Severity`; render via existing `report::QualityReport`. Streaming output mode flushes each file's report as soon as available (useful for CI).
-  - **Files:** `(new) src/batch.rs` (~350 LoC); `src/lib.rs` (declare module, re-export from prelude); `Cargo.toml` (add `walkdir = { workspace = true }`, gate `rayon` behind a `parallel` feature)
-  - **Tests:** `(proposed)` test_batch_walks_directory_tree, test_batch_dispatches_by_extension, test_batch_aggregates_severities, test_batch_skips_non_geospatial_files, test_batch_parallel_matches_sequential
-  - **Risk:** STAC fingerprint detection (`{"stac_version": ...}` in first 4 KiB) may misclassify random JSON; mirror the umbrella crate's `is_stac_json()` helper from `oxigdal/src/open.rs`.
-  - **Prerequisites:** Item 1 (STAC validator) for full coverage; can ship with raster + vector only as v0.1.5 minimum.
+- [x] Add batch QC mode for processing entire directories (planned 2026-06-06)
+  - **Goal:** `BatchRunner` struct in `src/batch.rs` with `new(cfg: BatchConfig) -> Self` and `run<P: AsRef<Path>>(&self, dir: P) -> QcResult<BatchReport>`. BatchReport: `per_file: Vec<FileQcResult>`, `severity_counts: SeverityCounts`, `total_files`, `total_issues`.
+  - **Design:** Recursive directory walk using `std::fs::read_dir` (no walkdir dep); dispatch by file extension: .tif/.tiff → CogValidator + CompletenessChecker + RadiometricValidator; .shp/.geojson → TopologyChecker + AttributionChecker; .gpkg → GpkgValidator + TopologyChecker; .json → check via local `is_stac_json` fingerprint (read 4 KiB, look for `"stac_version"` or `"stac_extensions"`, use `unwrap_or`) → StacValidator if STAC. Aggregate all QcIssues into BatchReport with SeverityCounts per severity level.
+  - **Files:** new `src/batch.rs`; update `src/lib.rs` (add pub mod + pub use).
+  - **Prerequisites:** StacValidator (#8) and GpkgValidator (#9) and RadiometricValidator (#10) must be implemented first.
+  - **Tests:** walk a temp directory tree; dispatch by extension routes correctly; severity counts aggregate correctly; non-geospatial files skipped. (~5 tests)
+  - **Risk:** Low — pure file dispatch logic; no new deps needed.
 
-- [ ] Add GeoPackage compliance validation (OGC GeoPackage 1.4 spec)
-  - **Verified gap:** `src/raster/` lists `cog.rs`, `nodata.rs`, `crs_extent.rs`, `completeness.rs`, `consistency.rs`, `accuracy.rs` — no `gpkg.rs`. `src/lib.rs:65-70` prelude has no `GpkgComplianceChecker`.
-  - **Goal:** `GpkgComplianceChecker` opens a `.gpkg` file via `oxigdal-gpkg` and verifies (OGC 12-128r19): (R1) SQLite header magic `SQLite format 3\0`; (R2) `application_id = 0x47504B47` ("GPKG") at offset 68; (R3) `user_version` ≥ 10300 for v1.3; (R4) presence of mandatory tables `gpkg_spatial_ref_sys`, `gpkg_contents`, `gpkg_geometry_columns`, `gpkg_extensions`; (R5) every entry in `gpkg_contents` has matching SRS row; (R6) feature tables declared in `gpkg_geometry_columns` actually exist and have the declared geometry column; (R7) WKB blobs parse and match declared `geometry_type_name`.
-  - **Design:** Wrap `oxigdal-gpkg::Database` for SQL access. Each requirement → `QcIssue` with severity per OGC mandate (Section 1.1 lists 161 normative requirements; map "shall" → Critical, "should" → Major, "may" → Warning).
-  - **Files:** `(new) src/raster/gpkg.rs` (~600 LoC — despite vector content, GPKG can also be raster tiles; place under raster/ for now or create `(new) src/gpkg.rs` at top level); `src/lib.rs` (declare + re-export); `Cargo.toml` (add `oxigdal-gpkg = { workspace = true }`)
-  - **Tests:** `(proposed)` test_gpkg_valid_minimal_passes, test_gpkg_missing_application_id_critical, test_gpkg_missing_gpkg_contents_critical, test_gpkg_orphan_feature_table_major, test_gpkg_wkb_type_mismatch_major, test_gpkg_invalid_srs_reference_critical
-  - **Risk:** OGC spec has 161 numbered requirements; phase delivery — R1-R30 (header + core tables) in 0.1.5, R31-R161 (extensions, tiles, geopackage attributes) in 0.2.0.
-  - **Prerequisites:** `oxigdal-gpkg` already a workspace member.
+- [x] Add GeoPackage compliance validation (OGC GeoPackage 1.4 spec) (planned 2026-06-06)
+  - **Goal:** `GpkgValidator` struct in `src/gpkg.rs` implementing `check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<GpkgValidationResult>`. Result holds `issues: Vec<QcIssue>` + `is_valid()`.
+  - **Design:** `std::fs::read(path)` → `GeoPackage::from_bytes(bytes)` → `load_contents()` → wrap `check_integrity()` (translate `IntegrityIssue` → `QcIssue` manually). Additional 1.4 checks: SQLite magic bytes check, `application_id == 0x47504B47` (Critical if wrong), `user_version >= 10400` (Major if < 10400, targeting GeoPackage 1.4.0), `gpkg_contents` table existence via `scan_table_by_name` (Critical if missing), geometry columns table presence. Use pure-Rust default (no rusqlite feature). Add dep `oxigdal-gpkg` to Cargo.toml. Register `pub mod gpkg;` in `src/lib.rs`.
+  - **Files:** new `src/gpkg.rs`; update `src/lib.rs`; update `Cargo.toml` (add oxigdal-gpkg dep).
+  - **Tests:** valid minimal GPKG bytes → passes; wrong application_id → Critical; missing gpkg_contents → Critical; user_version < 10400 → Major; orphan feature table → Major. Construct minimal SQLite byte sequences for testing. (~6 tests)
+  - **Risk:** Medium — need to construct valid minimal SQLite byte sequences for tests; IntegrityIssue translation requires reading oxigdal-gpkg API.
 
-- [ ] Implement raster radiometric range validation per sensor type
-  - **Verified gap:** `src/raster/nodata.rs` checks NoData consistency but not value plausibility against sensor-specific dynamic range. No `radiometric.rs` exists.
-  - **Goal:** `RadiometricValidator` rejects rasters whose pixel statistics violate the sensor's declared dynamic range. E.g. Landsat 8 SR Band 1 (Coastal Aerosol) reflectance must fall in [0, 1] after gain/offset; Sentinel-2 L2A reflectance in [0, 10000] (×10⁴ scale). Reports `OutOfRangeBelowMin`/`OutOfRangeAboveMax` per band with pixel count + percentage.
-  - **Design:** `SensorProfile` enum: Landsat8_SR, Landsat9_SR, Sentinel2_L2A, Sentinel2_L1C, MODIS_Surface_Reflectance, ASTER_RadianceAtSensor, custom (user-supplied min/max per band). For each band: sample N pixels (default 100k random with stable seed), compute min/max/mean/p99, compare to profile. Critical if >0.1% pixels out of range; Major if any out-of-range pixel found; Warning if mean drifts >2σ from expected.
-  - **Files:** `(new) src/raster/radiometric.rs` (~400 LoC); `src/lib.rs` (declare + re-export); profile registry in `src/raster/radiometric/profiles.rs`
-  - **Tests:** `(proposed)` test_radiometric_landsat8_sr_in_range_passes, test_radiometric_sentinel2_l2a_overflow_critical, test_radiometric_custom_profile_user_supplied, test_radiometric_mean_drift_warning, test_radiometric_sampling_deterministic_seed
-  - **Risk:** Sensor profile registry must be updated as new missions launch; document as a "best-effort, not authoritative" check.
-  - **Prerequisites:** None — `oxigdal-geotiff` already a workspace dep.
+- [x] Implement raster radiometric range validation per sensor type (planned 2026-06-06)
+  - **Goal:** `RadiometricValidator` struct in `src/raster/radiometric.rs` with `SensorProfile` enum and `check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<RadiometricValidationResult>`. Result: `per_band: Vec<BandRadiometricResult>`, `issues: Vec<QcIssue>`, `is_valid()`.
+  - **Design:** SensorProfile enum: Landsat8_SR, Landsat9_SR, Sentinel2_L2A, Sentinel2_L1C, MODIS_SR, Custom { per_band_ranges: Vec<(f64, f64)> }. Open raster via `oxigdal_geotiff::cog::CogReader` (mirror pattern from `src/raster/nodata.rs`). Deterministic stride sampling — every Nth pixel based on raster size (no `rand`, no SciRS2 random). Per-band: compute min/max/mean/p99 from samples; compare against profile expected ranges → Critical if >0.1% of samples out of range, Major if any out of range, Warning if mean drifts >2σ from expected center.
+  - **Files:** new `src/raster/radiometric.rs`; register in `src/raster/mod.rs`; update `src/lib.rs`.
+  - **Tests:** in-range values → no issues; overflow values → Critical; Custom profile with specific ranges; mean-drift → Warning; verify stride sampling is deterministic (same result on two calls). (~5 tests)
+  - **Risk:** Low — mirrors existing nodata.rs pattern; sensor ranges are hard-coded constants.
 
 ## Medium Priority (planned — design sketched)
 

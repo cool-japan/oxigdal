@@ -9,8 +9,8 @@
 //! # Feature flag
 //!
 //! All items in this module are compiled only when the `change-tracking` Cargo
-//! feature is enabled.  The feature activates the `rusqlite` dependency that
-//! is also used by the `mbtiles-export` feature.
+//! feature is enabled.  The feature activates the `oxisql-sqlite-compat`
+//! dependency which provides a pure-Rust blocking SQLite API.
 //!
 //! # SQL-injection mitigation
 //!
@@ -25,7 +25,10 @@
 use std::path::Path;
 
 #[cfg(feature = "change-tracking")]
-use rusqlite::{Connection, params};
+use oxisql_core::{Row, ToSqlValue};
+
+#[cfg(feature = "change-tracking")]
+use oxisql_sqlite_compat::blocking::SqliteConnectionBlocking;
 
 #[cfg(feature = "change-tracking")]
 use crate::error::GpkgError;
@@ -66,6 +69,36 @@ fn validate_identifier(name: &str) -> Result<(), GpkgError> {
         }
     }
     Ok(())
+}
+
+// ─── row helper ──────────────────────────────────────────────────────────────
+
+/// Parse a single row from the `gpkg_changes` table into a [`ChangeLogEntry`].
+#[cfg(feature = "change-tracking")]
+fn parse_change_log_row(row: &Row) -> Result<ChangeLogEntry, GpkgError> {
+    let id = row
+        .try_get_by_index::<i64>(0)
+        .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+    let table_name = row
+        .try_get_by_index::<String>(1)
+        .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+    let op_int = row
+        .try_get_by_index::<i64>(2)
+        .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+    let feature_id = row
+        .try_get_by_index::<i64>(3)
+        .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+    let committed_at = row
+        .try_get_by_index::<String>(4)
+        .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+    let operation = ChangeOperation::from_int(op_int)?;
+    Ok(ChangeLogEntry {
+        id,
+        table_name,
+        operation,
+        feature_id,
+        committed_at,
+    })
 }
 
 // ─── ChangeOperation ─────────────────────────────────────────────────────────
@@ -129,12 +162,12 @@ pub struct ChangeLogEntry {
 
 /// Manages trigger-based change tracking for one GeoPackage (SQLite) database.
 ///
-/// The tracker owns the [`rusqlite::Connection`] so that all trigger DDL and
+/// The tracker owns the [`SqliteConnectionBlocking`] so that all trigger DDL and
 /// DML share the same connection handle — this is critical for in-memory
 /// databases where each connection sees a separate database.
 #[cfg(feature = "change-tracking")]
 pub struct ChangeTracker {
-    conn: Connection,
+    conn: SqliteConnectionBlocking,
 }
 
 #[cfg(feature = "change-tracking")]
@@ -143,8 +176,12 @@ impl ChangeTracker {
 
     /// Open (or create) a GeoPackage database at the given file-system path.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, GpkgError> {
-        let conn =
-            Connection::open(path).map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| GpkgError::ChangeTrackingError("path is not valid UTF-8".to_owned()))?;
+        let conn = SqliteConnectionBlocking::open(path_str)
+            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
         Ok(Self { conn })
     }
 
@@ -153,19 +190,19 @@ impl ChangeTracker {
     /// All DML and queries must go through the same [`ChangeTracker`] instance
     /// because an in-memory database is private to its connection.
     pub fn open_in_memory() -> Result<Self, GpkgError> {
-        let conn = Connection::open_in_memory()
+        let conn = SqliteConnectionBlocking::open_memory()
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
         Ok(Self { conn })
     }
 
     // ── accessor ─────────────────────────────────────────────────────────────
 
-    /// Return a shared reference to the underlying [`rusqlite::Connection`].
+    /// Return a shared reference to the underlying [`SqliteConnectionBlocking`].
     ///
     /// Useful in tests to perform DML (INSERT / UPDATE / DELETE) on the same
     /// connection that owns the triggers, which is mandatory when the database
     /// is in-memory.
-    pub fn connection(&self) -> &Connection {
+    pub fn connection(&self) -> &SqliteConnectionBlocking {
         &self.conn
     }
 
@@ -195,6 +232,7 @@ impl ChangeTracker {
                     committed_at TEXT    NOT NULL DEFAULT (datetime('now'))
                 );",
             )
+            .map(|_| ())
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))
     }
 
@@ -215,34 +253,48 @@ impl ChangeTracker {
 
         self.create_changes_table()?;
 
-        // Trigger names and the table / column references are embedded directly
-        // into the DDL because SQLite does not support binding identifiers.
-        // Both inputs have been validated above.
-        let ddl = format!(
-            "CREATE TRIGGER IF NOT EXISTS gpkg_track_{table}_insert
-             AFTER INSERT ON {table}
-             BEGIN
-                 INSERT INTO gpkg_changes (table_name, operation, feature_id)
-                 VALUES ('{table}', 1, NEW.{fid_column});
-             END;
-
-             CREATE TRIGGER IF NOT EXISTS gpkg_track_{table}_update
-             AFTER UPDATE ON {table}
-             BEGIN
-                 INSERT INTO gpkg_changes (table_name, operation, feature_id)
-                 VALUES ('{table}', 2, NEW.{fid_column});
-             END;
-
-             CREATE TRIGGER IF NOT EXISTS gpkg_track_{table}_delete
-             AFTER DELETE ON {table}
-             BEGIN
-                 INSERT INTO gpkg_changes (table_name, operation, feature_id)
-                 VALUES ('{table}', 3, OLD.{fid_column});
-             END;"
+        // Each trigger is issued as a separate `execute` call because the
+        // oxisqlite `execute_batch` statement splitter splits on every `;`,
+        // including those inside `BEGIN ... END` trigger bodies, which would
+        // corrupt the DDL.  Trigger names and table / column references are
+        // embedded directly (no parameter binding for identifiers); both inputs
+        // have been validated above.
+        let insert_ddl = format!(
+            "CREATE TRIGGER IF NOT EXISTS gpkg_track_{table}_insert \
+             AFTER INSERT ON {table} \
+             BEGIN \
+                 INSERT INTO gpkg_changes (table_name, operation, feature_id) \
+                 VALUES ('{table}', 1, NEW.{fid_column}); \
+             END"
+        );
+        let update_ddl = format!(
+            "CREATE TRIGGER IF NOT EXISTS gpkg_track_{table}_update \
+             AFTER UPDATE ON {table} \
+             BEGIN \
+                 INSERT INTO gpkg_changes (table_name, operation, feature_id) \
+                 VALUES ('{table}', 2, NEW.{fid_column}); \
+             END"
+        );
+        let delete_ddl = format!(
+            "CREATE TRIGGER IF NOT EXISTS gpkg_track_{table}_delete \
+             AFTER DELETE ON {table} \
+             BEGIN \
+                 INSERT INTO gpkg_changes (table_name, operation, feature_id) \
+                 VALUES ('{table}', 3, OLD.{fid_column}); \
+             END"
         );
 
         self.conn
-            .execute_batch(&ddl)
+            .execute(&insert_ddl, &[])
+            .map(|_| ())
+            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+        self.conn
+            .execute(&update_ddl, &[])
+            .map(|_| ())
+            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+        self.conn
+            .execute(&delete_ddl, &[])
+            .map(|_| ())
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))
     }
 
@@ -254,15 +306,16 @@ impl ChangeTracker {
     pub fn disable_tracking(&self, table: &str) -> Result<(), GpkgError> {
         validate_identifier(table)?;
 
-        let ddl = format!(
-            "DROP TRIGGER IF EXISTS gpkg_track_{table}_insert;
-             DROP TRIGGER IF EXISTS gpkg_track_{table}_update;
-             DROP TRIGGER IF EXISTS gpkg_track_{table}_delete;"
-        );
-
-        self.conn
-            .execute_batch(&ddl)
-            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))
+        // Issue each DROP separately to avoid the execute_batch semicolon-
+        // splitting issue with multi-statement batches.
+        for suffix in ["insert", "update", "delete"] {
+            let ddl = format!("DROP TRIGGER IF EXISTS gpkg_track_{table}_{suffix}");
+            self.conn
+                .execute(&ddl, &[])
+                .map(|_| ())
+                .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Return `true` when the three tracking triggers for `table` are
@@ -274,13 +327,20 @@ impl ChangeTracker {
         // always created / dropped together.
         let trigger_name = format!("gpkg_track_{table}_insert");
 
-        let count: i64 = self
+        let rows = self
             .conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1",
-                params![trigger_name],
-                |row| row.get(0),
+            .query(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=$1",
+                &[&trigger_name as &dyn ToSqlValue],
             )
+            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+
+        let count = rows
+            .first()
+            .ok_or_else(|| {
+                GpkgError::ChangeTrackingError("no row returned from COUNT(*) query".to_owned())
+            })?
+            .try_get_by_index::<i64>(0)
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
 
         Ok(count > 0)
@@ -290,42 +350,18 @@ impl ChangeTracker {
 
     /// Retrieve every change log entry for `table` in ascending order of `id`.
     pub fn get_all_changes(&self, table: &str) -> Result<Vec<ChangeLogEntry>, GpkgError> {
-        let mut stmt = self
+        let rows = self
             .conn
-            .prepare(
+            .query(
                 "SELECT id, table_name, operation, feature_id, committed_at
                  FROM gpkg_changes
-                 WHERE table_name = ?1
+                 WHERE table_name = $1
                  ORDER BY id ASC",
+                &[&table as &dyn ToSqlValue],
             )
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
 
-        let entries = stmt
-            .query_map(params![table], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?
-            .map(|result| {
-                let (id, table_name, op_int, feature_id, committed_at) =
-                    result.map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
-                let operation = ChangeOperation::from_int(op_int)?;
-                Ok(ChangeLogEntry {
-                    id,
-                    table_name,
-                    operation,
-                    feature_id,
-                    committed_at,
-                })
-            })
-            .collect::<Result<Vec<_>, GpkgError>>()?;
-
-        Ok(entries)
+        rows.iter().map(parse_change_log_row).collect()
     }
 
     /// Retrieve change log entries for `table` whose `id` is strictly greater
@@ -338,42 +374,18 @@ impl ChangeTracker {
         table: &str,
         since_id: i64,
     ) -> Result<Vec<ChangeLogEntry>, GpkgError> {
-        let mut stmt = self
+        let rows = self
             .conn
-            .prepare(
+            .query(
                 "SELECT id, table_name, operation, feature_id, committed_at
                  FROM gpkg_changes
-                 WHERE table_name = ?1 AND id > ?2
+                 WHERE table_name = $1 AND id > $2
                  ORDER BY id ASC",
+                &[&table as &dyn ToSqlValue, &since_id as &dyn ToSqlValue],
             )
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
 
-        let entries = stmt
-            .query_map(params![table, since_id], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?
-            .map(|result| {
-                let (id, table_name, op_int, feature_id, committed_at) =
-                    result.map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
-                let operation = ChangeOperation::from_int(op_int)?;
-                Ok(ChangeLogEntry {
-                    id,
-                    table_name,
-                    operation,
-                    feature_id,
-                    committed_at,
-                })
-            })
-            .collect::<Result<Vec<_>, GpkgError>>()?;
-
-        Ok(entries)
+        rows.iter().map(parse_change_log_row).collect()
     }
 
     // ── housekeeping ─────────────────────────────────────────────────────────
@@ -381,24 +393,24 @@ impl ChangeTracker {
     /// Delete all change log entries for `table` and return the number of rows
     /// removed.
     pub fn clear_changes(&self, table: &str) -> Result<usize, GpkgError> {
-        let rows = self
+        let rows_affected = self
             .conn
             .execute(
-                "DELETE FROM gpkg_changes WHERE table_name = ?1",
-                params![table],
+                "DELETE FROM gpkg_changes WHERE table_name = $1",
+                &[&table as &dyn ToSqlValue],
             )
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
-        Ok(rows)
+        Ok(rows_affected as usize)
     }
 
     /// Delete every row from `gpkg_changes` regardless of table name and
     /// return the total number of rows removed.
     pub fn clear_all_changes(&self) -> Result<usize, GpkgError> {
-        let rows = self
+        let rows_affected = self
             .conn
-            .execute("DELETE FROM gpkg_changes", [])
+            .execute("DELETE FROM gpkg_changes", &[])
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
-        Ok(rows)
+        Ok(rows_affected as usize)
     }
 
     /// Return the names of all feature tables that currently have tracking
@@ -408,20 +420,20 @@ impl ChangeTracker {
     /// names match the pattern `gpkg_track_%_insert` and stripping the
     /// surrounding prefix / suffix.
     pub fn tracked_tables(&self) -> Result<Vec<String>, GpkgError> {
-        let mut stmt = self
+        let rows = self
             .conn
-            .prepare(
+            .query(
                 "SELECT name FROM sqlite_master
                  WHERE type = 'trigger' AND name LIKE 'gpkg_track_%_insert'",
+                &[],
             )
             .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
 
-        let names = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?
-            .map(|result| {
-                let trigger_name =
-                    result.map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
+        rows.iter()
+            .map(|row| {
+                let trigger_name = row
+                    .try_get_by_index::<String>(0)
+                    .map_err(|e| GpkgError::ChangeTrackingError(e.to_string()))?;
                 // Strip "gpkg_track_" prefix (11 chars) and "_insert" suffix (7 chars).
                 let inner = trigger_name
                     .strip_prefix("gpkg_track_")
@@ -433,8 +445,6 @@ impl ChangeTracker {
                     })?;
                 Ok(inner.to_owned())
             })
-            .collect::<Result<Vec<_>, GpkgError>>()?;
-
-        Ok(names)
+            .collect()
     }
 }

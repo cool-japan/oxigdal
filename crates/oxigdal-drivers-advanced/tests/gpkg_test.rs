@@ -1,5 +1,7 @@
 //! GeoPackage format tests.
 
+#![cfg(feature = "geopackage")]
+
 use oxigdal_drivers_advanced::Result;
 use oxigdal_drivers_advanced::gpkg::*;
 use std::str::FromStr;

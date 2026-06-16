@@ -34,7 +34,7 @@ oxigdal-kinesis = "0.1"
 
 ### Minimum Supported Rust Version
 
-Requires Rust 1.85 or later.
+Requires Rust 1.89 or later.
 
 ## Quick Start
 

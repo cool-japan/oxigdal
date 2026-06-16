@@ -126,7 +126,7 @@ Significant speedup for large rasters (>= 2048x2048). For small rasters, CPU ove
 
 ## Requirements
 
-- Rust 1.85+
+- Rust 1.89+
 - GPU with Vulkan 1.0+ (Linux/Windows), Metal (macOS), or DX12 (Windows)
 - WebGPU (optional WASM target)
 

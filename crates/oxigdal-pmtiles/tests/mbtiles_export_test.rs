@@ -2,13 +2,16 @@
 //!
 //! All tests are gated on `#[cfg(feature = "mbtiles")]` so that the test
 //! suite compiles cleanly without the feature enabled.
+//!
+//! Database verification queries use [`MbTilesConn`]'s helper methods
+//! (`query_count`, `query_text`, `query_blob`) backed by the Pure-Rust
+//! OxiSQL engine — no C/FFI, no `libsqlite3`.
 
 #![cfg(feature = "mbtiles")]
 #![allow(clippy::expect_used)]
 
 use oxigdal_pmtiles::writer::PmTilesBuilder;
-use oxigdal_pmtiles::{MbTilesExportStats, MbTilesExporter, PmTilesReader, TileType};
-use rusqlite::Connection;
+use oxigdal_pmtiles::{MbTilesConn, MbTilesExportStats, MbTilesExporter, PmTilesReader, TileType};
 
 // ---------------------------------------------------------------------------
 // Helper builders
@@ -39,14 +42,14 @@ fn three_tile_archive() -> PmTilesReader {
 fn test_export_to_memory_creates_schema() {
     let reader = empty_archive(TileType::Png, 0, 2);
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
     // Verify `metadata` table exists and has at least the required keys.
-    let metadata_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM metadata", [], |row| row.get(0))
+    let metadata_count = db
+        .query_count("SELECT COUNT(*) FROM metadata", &[])
         .expect("query metadata count");
     assert!(
         metadata_count >= 5,
@@ -54,8 +57,8 @@ fn test_export_to_memory_creates_schema() {
     );
 
     // Verify `tiles` table exists (query returns 0 rows for empty archive).
-    let tile_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tiles", [], |row| row.get(0))
+    let tile_count = db
+        .query_count("SELECT COUNT(*) FROM tiles", &[])
         .expect("query tile count");
     assert_eq!(tile_count, 0, "empty archive should produce 0 tile rows");
 }
@@ -68,9 +71,9 @@ fn test_export_to_memory_creates_schema() {
 fn test_export_empty_archive_writes_no_tiles() {
     let reader = empty_archive(TileType::Png, 0, 4);
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     let stats: MbTilesExportStats = exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
     assert_eq!(
@@ -94,15 +97,15 @@ fn test_export_empty_archive_writes_no_tiles() {
 fn test_export_three_tiles_writes_three_rows() {
     let reader = three_tile_archive();
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     let stats = exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
     assert_eq!(stats.tiles_written, 3, "expected 3 tile rows written");
 
-    let db_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tiles", [], |row| row.get(0))
+    let db_count = db
+        .query_count("SELECT COUNT(*) FROM tiles", &[])
         .expect("query tile count");
     assert_eq!(db_count, 3, "database should contain exactly 3 tile rows");
 }
@@ -115,19 +118,16 @@ fn test_export_three_tiles_writes_three_rows() {
 fn test_export_metadata_includes_required_fields() {
     let reader = empty_archive(TileType::Png, 2, 8);
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
     let required_keys = ["name", "format", "bounds", "minzoom", "maxzoom"];
     for key in &required_keys {
-        let found: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM metadata WHERE name = ?1",
-                [key],
-                |row| row.get(0),
-            )
+        let key_str: &str = key;
+        let found = db
+            .query_count("SELECT COUNT(*) FROM metadata WHERE name = $1", &[&key_str])
             .expect("query metadata key");
         assert_eq!(
             found, 1,
@@ -144,18 +144,15 @@ fn test_export_metadata_includes_required_fields() {
 fn test_export_metadata_format_png_when_tile_type_png() {
     let reader = empty_archive(TileType::Png, 0, 2);
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
-    let format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE name = 'format'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("query format metadata");
+    let format = db
+        .query_text("SELECT value FROM metadata WHERE name = 'format'", &[])
+        .expect("query format metadata")
+        .expect("format metadata should be present");
     assert_eq!(format, "png", "PNG tile type should produce format = 'png'");
 }
 
@@ -167,18 +164,15 @@ fn test_export_metadata_format_png_when_tile_type_png() {
 fn test_export_metadata_format_pbf_when_tile_type_mvt() {
     let reader = empty_archive(TileType::Mvt, 0, 14);
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
-    let format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE name = 'format'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("query format metadata");
+    let format = db
+        .query_text("SELECT value FROM metadata WHERE name = 'format'", &[])
+        .expect("query format metadata")
+        .expect("format metadata should be present");
     assert_eq!(format, "pbf", "MVT tile type should produce format = 'pbf'");
 }
 
@@ -234,9 +228,9 @@ fn test_export_to_file_creates_valid_sqlite() {
     assert_eq!(stats.tiles_written, 2);
 
     // Re-open the file with a new connection and verify the tile count.
-    let conn = Connection::open(&tmp_path).expect("re-open exported file");
-    let db_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tiles", [], |row| row.get(0))
+    let verify_db = MbTilesConn::open(&tmp_path).expect("re-open exported file");
+    let db_count = verify_db
+        .query_count("SELECT COUNT(*) FROM tiles", &[])
         .expect("query tile count");
     assert_eq!(db_count, 2, "exported file should contain 2 tile rows");
 
@@ -258,23 +252,23 @@ fn test_export_round_trip_tile_data_byte_exact() {
     let reader = PmTilesReader::from_bytes(bytes).expect("parse archive");
 
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
     let stats = exporter
-        .export_to_connection(&conn)
+        .export_to_connection(&db)
         .expect("export should succeed");
 
     assert_eq!(stats.tiles_written, 1);
     assert_eq!(stats.bytes_written, png_magic.len() as u64);
 
     // TMS row for z=0, y=0 is 0.
-    let stored: Vec<u8> = conn
-        .query_row(
+    let stored = db
+        .query_blob(
             "SELECT tile_data FROM tiles \
              WHERE zoom_level = 0 AND tile_column = 0 AND tile_row = 0",
-            [],
-            |row| row.get(0),
+            &[],
         )
-        .expect("query tile data");
+        .expect("query tile data")
+        .expect("tile data should be present");
 
     assert_eq!(
         stored, png_magic,
@@ -316,14 +310,11 @@ fn test_export_to_path_overwrites_existing() {
     );
 
     // Verify the overwritten file reflects the second export's content.
-    let conn = Connection::open(&tmp_path).expect("open overwritten file");
-    let format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE name = 'format'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("query format from overwritten db");
+    let verify_db = MbTilesConn::open(&tmp_path).expect("open overwritten file");
+    let format = verify_db
+        .query_text("SELECT value FROM metadata WHERE name = 'format'", &[])
+        .expect("query format from overwritten db")
+        .expect("format metadata should be present");
     assert_eq!(
         format, "pbf",
         "overwritten file should reflect second archive's tile type (MVT → pbf)"
@@ -345,8 +336,8 @@ fn test_export_stats_zoom_range_reflects_tiles() {
     let reader = PmTilesReader::from_bytes(bytes).expect("parse");
 
     let exporter = MbTilesExporter::new(&reader);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
-    let stats = exporter.export_to_connection(&conn).expect("export");
+    let db = MbTilesConn::open_memory().expect("open in-memory db");
+    let stats = exporter.export_to_connection(&db).expect("export");
 
     assert_eq!(stats.tiles_written, 2);
     assert_eq!(stats.min_zoom, 1, "min_zoom should be 1");

@@ -5,7 +5,8 @@
 > **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Implement scheduler state persistence (save/load to disk)
+- [x] Implement scheduler state persistence (save/load to disk)
+  - Done: 2026-05-31 (Slice 28). Tests: 9 new (scheduler_persist_test) + 150 existing = 159 total.
   - **Verified gap:** `src/scheduler/mod.rs:413-417` — `if let Some(_path) = &self.config.persistence_path { /* Persistence implementation would go here */ /* For now, this is a placeholder */ }`. Same pattern at `:422-428` for `load_state`.
   - **Goal:** Persist `Schedule` collection + `execution_history` to JSON file under `persistence_path`; on `Scheduler::start()`, reload pending/in-flight schedules so crash-recovery resumes within the next tick.
   - **Design:** `persist_state` serializes `DashMap<ScheduleId, Schedule>` snapshot via `tokio::fs::write` with `<path>.tmp` rename (atomic). Format: JSON-Lines, one `Schedule` per line for incremental updates. `load_state` reads file, repopulates map. Trigger save on `add_schedule`/`remove_schedule`/`record_execution` (debounced via `tokio::time::interval` to reduce write amplification).
@@ -14,14 +15,9 @@
   - **Risk:** Race between in-flight `update_execution_status` and snapshot read — take a clone-snapshot under lock before flushing.
   - **Prerequisites:** None.
 
-- [ ] Replace HMAC-SHA256 placeholder in external WebhookTrigger with real crypto
-  - **Verified gap:** `src/integrations/external.rs:1057` — `// Simple HMAC-SHA256 validation (placeholder - would use actual crypto lib)`; also `:1081` — `// Placeholder implementation` in `hex_encode` which truncates payload to 32 bytes and ignores the key.
-  - **Goal:** Replace `hex_encode(payload, key)` with real `hmac::Hmac<Sha256>` from RustCrypto, producing a hex-encoded 64-char digest. Match GitHub-style `sha256=<digest>` signature header semantics.
-  - **Design:** `use hmac::{Hmac, Mac}; use sha2::Sha256;` — `type HmacSha256 = Hmac<Sha256>; let mut mac = HmacSha256::new_from_slice(key)?; mac.update(payload); let result = mac.finalize().into_bytes();`. Hex-encode 32 bytes → 64 chars. Compare via `subtle::ConstantTimeEq` (already present logic at `:1068-1077` but on str — keep) or `mac.verify_slice(expected)`.
-  - **Files:** `src/integrations/external.rs:1079-1087` (replace `hex_encode`), `src/integrations/external.rs:1052-1064` (use `mac.verify_slice` instead of string compare); add `hmac.workspace = true` and `sha2.workspace = true` to `Cargo.toml`.
-  - **Tests:** *(proposed)* `test_webhook_valid_signature_accepted`, `test_webhook_tampered_payload_rejected`, `test_webhook_no_secret_skips_validation`, `test_webhook_constant_time_compare_no_timing_leak`.
-  - **Risk:** Hex case mismatch (some servers send uppercase) — normalize before compare. Header format compatibility: GitHub uses `sha256=` prefix; document.
-  - **Prerequisites:** None.
+- [x] Replace HMAC-SHA256 placeholder in external WebhookTrigger with real crypto
+  - Done: 2026-05-31 (Slice 29). Tests: 9 new (webhook_hmac_test) + 174 existing = 183 total.
+  - Real `hmac::Hmac<Sha256>` (RustCrypto 0.13/0.11). `hex_encode` → `hmac_sha256_hex`; uppercase normalization; RFC 4231 KAT pinned. Also fixed orphaned `pub mod external;` in `integrations/mod.rs`.
 
 - [ ] Implement workflow import for Airflow, Prefect, Temporal
   - **Verified gap:** `src/integrations/airflow.rs:62` — `"Import from Airflow not yet implemented"`; `src/integrations/prefect.rs:45` — `"Import from Prefect not yet implemented"`; `src/integrations/temporal.rs:65` — `"Import from Temporal not yet implemented"`; `src/integrations/temporal.rs:27` — `go_code.push_str("    // TODO: Implement activity logic\n");` (TODO emitted into exported Go).

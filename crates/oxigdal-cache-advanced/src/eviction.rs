@@ -12,6 +12,11 @@ use chrono::{DateTime, Duration, Utc};
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
+pub mod cms;
+pub mod wtinylfu;
+pub use cms::CountMinSketch;
+pub use wtinylfu::WTinyLfuEviction;
+
 /// Eviction policy trait
 pub trait EvictionPolicy<K: Clone + Hash + Eq>: Send + Sync {
     /// Record access to a key
@@ -530,6 +535,8 @@ pub enum EvictionPolicyType {
     Ttl,
     /// Cost-aware
     CostAware,
+    /// Window TinyLFU (Einziger et al. 2017)
+    WTinyLfu,
 }
 
 #[cfg(test)]

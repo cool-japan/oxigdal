@@ -2,7 +2,7 @@
 # Full development environment with all tools
 # Author: COOLJAPAN OU (Team Kitasan)
 
-FROM rust:1.85-bookworm
+FROM rust:1.89-bookworm
 
 # Install development dependencies
 RUN apt-get update && apt-get install -y \

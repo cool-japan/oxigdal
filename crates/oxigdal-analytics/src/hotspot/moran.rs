@@ -316,6 +316,180 @@ impl LocalMoransI {
     }
 }
 
+impl LocalMoransI {
+    /// Compute local Moran's I with conditional permutation inference (Anselin 1995).
+    ///
+    /// For each location i, holds z_i fixed while randomly permuting the other n-1
+    /// standardized values, computing I_i^(perm) each time. Pseudo p-value =
+    /// (C + 1) / (M + 1) where C = #{|I_i^(perm)| >= |I_i^(obs)|}.
+    ///
+    /// Z-score is derived from the permutation null distribution:
+    /// z_i = (I_i^(obs) - mean_perm) / sd_perm; guarded: sd_perm < 1e-12 -> z=0, p=1.
+    ///
+    /// # Parameters
+    /// - `n_permutations`: number of random permutations per location (suggested: 999)
+    /// - `seed`: LCG seed for deterministic reproducibility
+    ///
+    /// # Errors
+    /// Returns error if n < 3, n_permutations == 0, or dimensions mismatch.
+    pub fn calculate_with_permutations(
+        &self,
+        values: &ArrayView1<f64>,
+        weights: &SpatialWeights,
+        n_permutations: usize,
+        seed: u64,
+    ) -> Result<LocalMoransIResult> {
+        let n = values.len();
+
+        if n != weights.weights.nrows() {
+            return Err(AnalyticsError::dimension_mismatch(
+                format!("{}", n),
+                format!("{}", weights.weights.nrows()),
+            ));
+        }
+
+        if n < 3 {
+            return Err(AnalyticsError::insufficient_data(
+                "Need at least 3 observations for Local Moran's I with permutations",
+            ));
+        }
+
+        if n_permutations == 0 {
+            return Err(AnalyticsError::insufficient_data(
+                "n_permutations must be at least 1",
+            ));
+        }
+
+        // Step 1: Standardize values z = (x - mean) / std
+        let mean = values.sum() / (n as f64);
+        let variance = values.iter().map(|&x| (x - mean) * (x - mean)).sum::<f64>() / (n as f64);
+
+        if variance < f64::EPSILON {
+            return Err(AnalyticsError::numerical_instability(
+                "Variance is too small for permutation inference",
+            ));
+        }
+
+        let std_dev = variance.sqrt();
+        let z_vals: Vec<f64> = values.iter().map(|&x| (x - mean) / std_dev).collect();
+
+        // Step 2: Compute observed local I_i^(obs) = z[i] * sum_j(w_ij * z[j])
+        let mut local_i_obs: Vec<f64> = vec![0.0; n];
+        for i in 0..n {
+            let mut sum_wij_zj = 0.0;
+            for j in 0..n {
+                if i != j {
+                    sum_wij_zj += weights.weights[[i, j]] * z_vals[j];
+                }
+            }
+            local_i_obs[i] = z_vals[i] * sum_wij_zj;
+        }
+
+        // Compute spatial lag for quadrant classification (using raw values as in calculate)
+        let spatial_lag = weights.spatial_lag(values)?;
+
+        let mut z_scores_out = Array1::zeros(n);
+        let mut p_values_out = Array1::zeros(n);
+        let mut classifications = Array1::from_elem(n, LisaClass::NotSignificant);
+
+        // Step 3: Per-location conditional permutation
+        // We use independent LCG states per location seeded from seed + i
+        // to maintain reproducibility without correlating adjacent runs.
+        for i in 0..n {
+            // Build the "other" buffer: z values for all j != i
+            let others: Vec<f64> = (0..n).filter(|&j| j != i).map(|j| z_vals[j]).collect();
+            // Row i's weights for positions in `others` (j != i in order)
+            let row_weights: Vec<f64> = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| weights.weights[[i, j]])
+                .collect();
+
+            let obs_i = local_i_obs[i];
+            let obs_abs = obs_i.abs();
+
+            // LCG state seeded per location for independence + reproducibility
+            let mut rng_state: u64 = seed.wrapping_add(i as u64).wrapping_add(1);
+
+            let mut perm_buf = others.clone();
+            let mut count_extreme: usize = 0;
+            let mut perm_sum = 0.0;
+            let mut perm_sum_sq = 0.0;
+
+            for _ in 0..n_permutations {
+                permutation_fisher_yates(&mut perm_buf, &mut rng_state);
+                // Compute I_i^(perm) = z[i] * sum_j w_ij * permuted_z[j]
+                let lag_perm: f64 = row_weights
+                    .iter()
+                    .zip(perm_buf.iter())
+                    .map(|(&w, &z)| w * z)
+                    .sum();
+                let i_perm = z_vals[i] * lag_perm;
+
+                perm_sum += i_perm;
+                perm_sum_sq += i_perm * i_perm;
+
+                if i_perm.abs() >= obs_abs {
+                    count_extreme += 1;
+                }
+            }
+
+            // Pseudo p-value per Anselin 1995: (C + 1) / (M + 1)
+            let pseudo_pvalue = (count_extreme as f64 + 1.0) / (n_permutations as f64 + 1.0);
+            p_values_out[i] = pseudo_pvalue;
+
+            // Z-score from permutation null distribution
+            let perm_mean = perm_sum / (n_permutations as f64);
+            let perm_var = (perm_sum_sq / (n_permutations as f64)) - perm_mean * perm_mean;
+            let perm_sd = perm_var.max(0.0).sqrt();
+
+            z_scores_out[i] = if perm_sd < 1e-12 {
+                0.0
+            } else {
+                (obs_i - perm_mean) / perm_sd
+            };
+
+            // Quadrant classification gated by pseudo p-value < confidence
+            if pseudo_pvalue < self.confidence {
+                let lag_val = spatial_lag[i];
+                classifications[i] = match (values[i] > mean, lag_val > mean) {
+                    (true, true) => LisaClass::HH,
+                    (false, false) => LisaClass::LL,
+                    (true, false) => LisaClass::HL,
+                    (false, true) => LisaClass::LH,
+                };
+            }
+        }
+
+        let local_i_array = Array1::from_vec(local_i_obs);
+
+        Ok(LocalMoransIResult {
+            local_i: local_i_array,
+            z_scores: z_scores_out,
+            p_values: p_values_out,
+            classifications,
+            confidence: self.confidence,
+        })
+    }
+}
+
+/// Knuth MMIX LCG step — advances the state and returns the new value.
+#[inline]
+fn lcg_next(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *state
+}
+
+/// Fisher-Yates in-place shuffle driven by the Knuth MMIX LCG.
+fn permutation_fisher_yates(buf: &mut [f64], state: &mut u64) {
+    let n = buf.len();
+    for i in (1..n).rev() {
+        let j = (lcg_next(state) as usize) % (i + 1);
+        buf.swap(i, j);
+    }
+}
+
 /// Standard normal CDF
 fn standard_normal_cdf(x: f64) -> f64 {
     0.5 * (1.0 + erf(x / 2_f64.sqrt()))

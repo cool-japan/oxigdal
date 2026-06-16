@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxigdal-postgis.svg)](https://crates.io/crates/oxigdal-postgis)
 [![Documentation](https://docs.rs/oxigdal-postgis/badge.svg)](https://docs.rs/oxigdal-postgis)
 [![License](https://img.shields.io/crates/l/oxigdal-postgis.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org)
 
 PostgreSQL/PostGIS integration for OxiGDAL, enabling powerful spatial database workflows with async/await, connection pooling, and type-safe spatial operations.
 
@@ -26,7 +26,7 @@ PostgreSQL/PostGIS integration for OxiGDAL, enabling powerful spatial database w
 
 - PostgreSQL 12 or later
 - PostGIS 3.0 or later
-- Rust 1.85 or later
+- Rust 1.89 or later
 
 ## Installation
 

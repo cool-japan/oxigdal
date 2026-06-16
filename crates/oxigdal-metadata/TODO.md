@@ -45,14 +45,9 @@
   - **Risk:** HDF5 bindings require C; gate accordingly.
   - **Prerequisites:** `oxigdal-hdf5` reader available.
 
-- [ ] Replace DataCite/INSPIRE transform placeholders that emit literal `"PLACEHOLDER"` / silently no-op.
-  - **Verified gap:** `src/transform.rs:121` — `// This is a placeholder - in practice would extract from ISO` (in `iso19115_to_inspire`), and `src/transform.rs:147` — `.identifier("10.0000/PLACEHOLDER", IdentifierType::Doi) // Would need actual DOI`. The DOI placeholder is a real string baked into output.
-  - **Goal:** `iso19115_to_datacite` extracts the actual DOI from `iso.identification_info[0].citation.identifier` (or via `linkage` URLs matching `https://doi.org/`); `iso19115_to_inspire` populates `resource_locator` from ISO `online_resource` entries, not by asserting on an empty list.
-  - **Design:** ISO 19115 `MD_Identifier` carries the DOI in `code` field with `codeSpace = "https://doi.org/"` per ISO 19139 XML encoding. In our typed model, walk `ident.citation.identifiers: Vec<Identifier>` (verify exists at `src/iso19115/core.rs`); first match with codespace doi → DataCite. Same for INSPIRE: walk `ident.distribution.online_resources: Vec<OnlineResource>` → `inspire.resource_locator`.
-  - **Files:** `src/transform.rs:113-160` (rewrite two transforms), `src/iso19115/core.rs:830 LoC` (verify `Identifier` and `OnlineResource` types).
-  - **Tests:** (proposed) `test_iso_to_datacite_extracts_real_doi`, `test_iso_to_datacite_no_doi_returns_error`, `test_iso_to_inspire_extracts_resource_locator`, `test_iso_to_inspire_no_online_resource_errors`.
-  - **Risk:** If `iso19115::core::Identifier` lacks `codespace` field, add it (small API extension).
-  - **Prerequisites:** None.
+- [x] Replace DataCite/INSPIRE transform placeholders that emit literal `"PLACEHOLDER"` / silently no-op.
+  - Done: 2026-05-31 (Slice 29). Tests: 14 new (transform_doi_locator_test) + 108 existing = 122 total.
+  - `iso19115_to_datacite`: private `extract_doi` matches bare `10.x/y` and `doi.org/` URLs from `Citation.identifier: Vec<String>`; publisher from `organization_name`/`individual_name`; `"Unknown Publisher"` only as last resort. `iso19115_to_inspire`: walks `distribution_info → transfer_options → online` → `Vec<ResourceLocator>`; `OnlineFunction` mapped to `ResourceLocatorFunction`.
 
 ## Medium Priority
 - [ ] FGDC ↔ ISO 19115 bidirectional transformation.

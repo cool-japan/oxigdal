@@ -8,7 +8,9 @@ pub mod key_management;
 // Re-export commonly used types
 pub use at_rest::{AtRestEncryptor, FieldEncryptor};
 pub use envelope::EnvelopeEncryptor;
+#[cfg(feature = "tls")]
 pub use in_transit::TlsConfigBuilder;
+pub use in_transit::{CertificateValidation, TlsVersion};
 pub use key_management::KeyManager;
 
 use crate::error::{Result, SecurityError};
@@ -151,16 +153,14 @@ pub fn derive_key(
                 .iterations
                 .ok_or_else(|| SecurityError::key_derivation("iterations required for PBKDF2"))?;
 
-            use ring::pbkdf2;
+            if iterations == 0 {
+                return Err(SecurityError::key_derivation("iterations must be non-zero"));
+            }
+
+            use pbkdf2::pbkdf2_hmac;
+            use sha2::Sha256;
             let mut key = vec![0u8; key_length];
-            pbkdf2::derive(
-                pbkdf2::PBKDF2_HMAC_SHA256,
-                std::num::NonZeroU32::new(iterations)
-                    .ok_or_else(|| SecurityError::key_derivation("invalid iterations"))?,
-                &params.salt,
-                password,
-                &mut key,
-            );
+            pbkdf2_hmac::<Sha256>(password, &params.salt, iterations, &mut key);
             Ok(key)
         }
         KeyDerivationFunction::Argon2id => {

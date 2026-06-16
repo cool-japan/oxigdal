@@ -85,13 +85,13 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 
 # GPU backend detection (Pure Rust - COOLJAPAN compliant)
-libloading = { version = "0.9", optional = true }  # Dynamic library loading for CUDA/ROCm detection
-ash = { version = "0.38", optional = true }        # Vulkan bindings
-opencl3 = { version = "0.12", optional = true }     # OpenCL bindings
+libloading = { workspace = true, optional = true }  # Dynamic library loading for CUDA/ROCm detection
+ash = { workspace = true, optional = true }        # Vulkan bindings
+opencl3 = { workspace = true, optional = true }     # OpenCL bindings
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = { version = "0.33", optional = true }      # Metal framework bindings for macOS
-objc = { version = "0.2", optional = true }        # Objective-C runtime for Metal
+metal = { workspace = true, optional = true }      # Metal framework bindings for macOS
+objc = { workspace = true, optional = true }        # Objective-C runtime for Metal
 
 # TensorFlow Lite support (Safe C bindings - TEMPORARILY DISABLED)
 # ISSUE: tflitec requires Bazel 6.5.0 but modern systems have Bazel 8.x+, causing build failures
@@ -106,9 +106,9 @@ objc = { version = "0.2", optional = true }        # Objective-C runtime for Met
 # objc2-foundation = { version = "0.3", optional = true }        # Foundation framework bindings
 
 # WebGPU support (Pure Rust - COOLJAPAN compliant)
-wasm-bindgen = { version = "0.2", optional = true }            # WebAssembly JavaScript bindings
-web-sys = { version = "0.3", optional = true, features = ["Window", "Navigator"] }  # Browser APIs
-js-sys = { version = "0.3", optional = true }                  # JavaScript types and operations
+wasm-bindgen = { workspace = true, optional = true }            # WebAssembly JavaScript bindings
+web-sys = { workspace = true, optional = true, features = ["Window", "Navigator"] }  # Browser APIs
+js-sys = { workspace = true, optional = true }                  # JavaScript types and operations
 
 # SciRS2 subcrates for advanced features (Pure Rust - COOLJAPAN compliant)
 # scirs2-core dependency moved to direct ndarray/rand imports due to workspace dependency resolution issues

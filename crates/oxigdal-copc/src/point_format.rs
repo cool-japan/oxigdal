@@ -1,13 +1,13 @@
 //! LAS point record binary deserialization.
 //!
-//! Supports point data record formats 0-3 (LAS 1.0-1.3 legacy) and 6-8
+//! Supports point data record formats 0-3 (LAS 1.0-1.3 legacy) and 6-10
 //! (LAS 1.4 extended).  Each format has a fixed-size base record plus optional
-//! trailing fields (GPS time, RGB colour, NIR).
+//! trailing fields (GPS time, RGB colour, NIR, waveform packet).
 //!
 //! Reference: ASPRS LAS Specification 1.4 R15, Tables 6-22.
 
 use crate::error::CopcError;
-use crate::point::Point3D;
+use crate::point::{Point3D, WaveformPacket};
 
 /// Shared base fields extracted from a point record by `parse_legacy_base` /
 /// `parse_extended_base`.
@@ -18,15 +18,17 @@ type BaseFields = (u8, u8, u8, i8, u8, u16, Option<f64>, Option<usize>);
 
 /// Minimum record sizes per point data format ID.
 ///
-/// | Format | Base | GPS time | RGB | NIR | Total |
-/// |--------|------|----------|-----|-----|-------|
-/// | 0      | 20   |          |     |     | 20    |
-/// | 1      | 20   | 8        |     |     | 28    |
-/// | 2      | 20   |          | 6   |     | 26    |
-/// | 3      | 20   | 8        | 6   |     | 34    |
-/// | 6      | 30   | (incl)   |     |     | 30    |
-/// | 7      | 30   | (incl)   | 6   |     | 36    |
-/// | 8      | 30   | (incl)   | 6   | 2   | 38    |
+/// | Format | Base | GPS time | RGB | NIR | Waveform | Total |
+/// |--------|------|----------|-----|-----|----------|-------|
+/// | 0      | 20   |          |     |     |          | 20    |
+/// | 1      | 20   | 8        |     |     |          | 28    |
+/// | 2      | 20   |          | 6   |     |          | 26    |
+/// | 3      | 20   | 8        | 6   |     |          | 34    |
+/// | 6      | 30   | (incl)   |     |     |          | 30    |
+/// | 7      | 30   | (incl)   | 6   |     |          | 36    |
+/// | 8      | 30   | (incl)   | 6   | 2   |          | 38    |
+/// | 9      | 30   | (incl)   |     |     | 29       | 59    |
+/// | 10     | 30   | (incl)   | 6   | 2   | 29       | 67    |
 pub fn min_record_size(format_id: u8) -> Result<usize, CopcError> {
     match format_id {
         0 => Ok(20),
@@ -36,6 +38,8 @@ pub fn min_record_size(format_id: u8) -> Result<usize, CopcError> {
         6 => Ok(30),
         7 => Ok(36),
         8 => Ok(38),
+        9 => Ok(59),
+        10 => Ok(67),
         other => Err(CopcError::InvalidFormat(format!(
             "Unsupported point data format ID: {other}"
         ))),
@@ -115,6 +119,15 @@ pub fn deserialize_point(
         (None, None, None)
     };
 
+    // Parse waveform packet for formats 9 and 10.
+    // Format 9: waveform at byte 30 (immediately after the 30-byte extended base, no RGB).
+    // Format 10: waveform at byte 38 (after 30-byte base + 6 RGB + 2 NIR).
+    let waveform = match format_id {
+        9 => Some(parse_waveform_packet(record, 30)?),
+        10 => Some(parse_waveform_packet(record, 38)?),
+        _ => None,
+    };
+
     Ok(Point3D {
         x,
         y,
@@ -130,6 +143,7 @@ pub fn deserialize_point(
         red,
         green,
         blue,
+        waveform,
     })
 }
 
@@ -221,8 +235,8 @@ fn parse_extended_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcE
 
     // RGB offset depends on format
     let rgb_offset = match format_id {
-        6 => None,         // No RGB
-        7 | 8 => Some(30), // RGB at byte 30 (NIR at 36 for format 8, but Point3D has no NIR field)
+        6 | 9 => None,          // No RGB
+        7 | 8 | 10 => Some(30), // RGB at byte 30 (NIR at 36 for format 8/10, Point3D has no NIR field)
         _ => {
             return Err(CopcError::InvalidFormat(format!(
                 "Unsupported extended format: {format_id}"
@@ -282,6 +296,36 @@ pub fn deserialize_points(
         points.push(point);
     }
     Ok(points)
+}
+
+/// Parse a 29-byte waveform packet starting at `offset` within `record`.
+///
+/// The waveform packet layout (per ASPRS LAS 1.4 R15 Tables 17-18):
+/// - Byte 0      : descriptor_index (u8)
+/// - Bytes 1-8   : byte_offset_to_waveform_data (u64 LE)
+/// - Bytes 9-12  : waveform_packet_size (u32 LE)
+/// - Bytes 13-16 : return_point_waveform_location (f32 LE)
+/// - Bytes 17-20 : X(t) parametric displacement (f32 LE)
+/// - Bytes 21-24 : Y(t) parametric displacement (f32 LE)
+/// - Bytes 25-28 : Z(t) parametric displacement (f32 LE)
+fn parse_waveform_packet(record: &[u8], offset: usize) -> Result<WaveformPacket, CopcError> {
+    if record.len() < offset + 29 {
+        return Err(CopcError::InvalidFormat(format!(
+            "Record too short for waveform packet at offset {offset}: need {}, got {}",
+            offset + 29,
+            record.len()
+        )));
+    }
+    let w = &record[offset..offset + 29];
+    Ok(WaveformPacket {
+        descriptor_index: w[0],
+        byte_offset: u64::from_le_bytes([w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]]),
+        packet_size: u32::from_le_bytes([w[9], w[10], w[11], w[12]]),
+        return_point_loc: f32::from_le_bytes([w[13], w[14], w[15], w[16]]),
+        x_t: f32::from_le_bytes([w[17], w[18], w[19], w[20]]),
+        y_t: f32::from_le_bytes([w[21], w[22], w[23], w[24]]),
+        z_t: f32::from_le_bytes([w[25], w[26], w[27], w[28]]),
+    })
 }
 
 /// Read an f64 from `data` at byte offset `off` in little-endian order.
@@ -646,13 +690,15 @@ mod tests {
         assert_eq!(min_record_size(6).expect("f6"), 30);
         assert_eq!(min_record_size(7).expect("f7"), 36);
         assert_eq!(min_record_size(8).expect("f8"), 38);
+        assert_eq!(min_record_size(9).expect("f9"), 59);
+        assert_eq!(min_record_size(10).expect("f10"), 67);
     }
 
     #[test]
     fn test_min_record_size_unsupported() {
         assert!(min_record_size(4).is_err());
         assert!(min_record_size(5).is_err());
-        assert!(min_record_size(9).is_err());
+        assert!(min_record_size(11).is_err());
         assert!(min_record_size(255).is_err());
     }
 
@@ -696,7 +742,7 @@ mod tests {
         let rec = vec![0u8; 50];
         assert!(deserialize_point(&rec, 4, [1.0; 3], [0.0; 3]).is_err());
         assert!(deserialize_point(&rec, 5, [1.0; 3], [0.0; 3]).is_err());
-        assert!(deserialize_point(&rec, 10, [1.0; 3], [0.0; 3]).is_err());
+        assert!(deserialize_point(&rec, 11, [1.0; 3], [0.0; 3]).is_err());
     }
 
     #[test]

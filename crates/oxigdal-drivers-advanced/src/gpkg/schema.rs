@@ -2,6 +2,7 @@
 
 use super::connection::GpkgConnection;
 use crate::error::Result;
+use oxisql_core::ToSqlValue;
 
 /// GeoPackage table type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,41 +67,59 @@ pub fn initialize_schema(conn: &GpkgConnection) -> Result<()> {
 /// Insert required SRS definitions.
 fn insert_required_srs(conn: &GpkgConnection) -> Result<()> {
     // EPSG:4326 (WGS 84)
+    let srs_name = "WGS 84".to_string();
+    let srs_id: i64 = 4326;
+    let org_epsg = "EPSG".to_string();
+    let coord_id: i64 = 4326;
+    let def_wgs84 = "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]".to_string();
+    let desc_wgs84 = "WGS 84 geographic coordinate system".to_string();
     conn.execute(
-        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, organization_coordsys_id, definition, description) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, organization_coordsys_id, definition, description) VALUES ($1, $2, $3, $4, $5, $6)",
         &[
-            &"WGS 84" as &dyn rusqlite::ToSql,
-            &4326,
-            &"EPSG",
-            &4326,
-            &"GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-            &"WGS 84 geographic coordinate system",
+            &srs_name as &dyn ToSqlValue,
+            &srs_id,
+            &org_epsg,
+            &coord_id,
+            &def_wgs84,
+            &desc_wgs84,
         ],
     )?;
 
     // Undefined Cartesian SRS
+    let name_cart = "Undefined Cartesian SRS".to_string();
+    let id_cart: i64 = -1;
+    let org_none = "NONE".to_string();
+    let coord_none: i64 = -1;
+    let def_undef = "undefined".to_string();
+    let desc_cart = "undefined cartesian coordinate reference system".to_string();
     conn.execute(
-        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, organization_coordsys_id, definition, description) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, organization_coordsys_id, definition, description) VALUES ($1, $2, $3, $4, $5, $6)",
         &[
-            &"Undefined Cartesian SRS" as &dyn rusqlite::ToSql,
-            &-1,
-            &"NONE",
-            &-1,
-            &"undefined",
-            &"undefined cartesian coordinate reference system",
+            &name_cart as &dyn ToSqlValue,
+            &id_cart,
+            &org_none,
+            &coord_none,
+            &def_undef,
+            &desc_cart,
         ],
     )?;
 
     // Undefined Geographic SRS
+    let name_geo = "Undefined Geographic SRS".to_string();
+    let id_geo: i64 = 0;
+    let org_none2 = "NONE".to_string();
+    let coord_none2: i64 = 0;
+    let def_undef2 = "undefined".to_string();
+    let desc_geo = "undefined geographic coordinate reference system".to_string();
     conn.execute(
-        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, organization_coordsys_id, definition, description) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, organization_coordsys_id, definition, description) VALUES ($1, $2, $3, $4, $5, $6)",
         &[
-            &"Undefined Geographic SRS" as &dyn rusqlite::ToSql,
-            &0,
-            &"NONE",
-            &0,
-            &"undefined",
-            &"undefined geographic coordinate reference system",
+            &name_geo as &dyn ToSqlValue,
+            &id_geo,
+            &org_none2,
+            &coord_none2,
+            &def_undef2,
+            &desc_geo,
         ],
     )?;
 
@@ -110,7 +129,7 @@ fn insert_required_srs(conn: &GpkgConnection) -> Result<()> {
 const GPKG_SPATIAL_REF_SYS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS gpkg_spatial_ref_sys (
     srs_name TEXT NOT NULL,
-    srs_id INTEGER NOT NULL PRIMARY KEY,
+    srs_id INTEGER PRIMARY KEY,
     organization TEXT NOT NULL,
     organization_coordsys_id INTEGER NOT NULL,
     definition TEXT NOT NULL,

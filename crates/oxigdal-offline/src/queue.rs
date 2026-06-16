@@ -163,7 +163,9 @@ mod tests {
     use bytes::Bytes;
 
     async fn create_test_queue() -> SyncQueue {
-        let mut backend = SqliteBackend::in_memory().expect("failed to create backend");
+        let mut backend = SqliteBackend::in_memory()
+            .await
+            .expect("failed to create backend");
         backend.initialize().await.expect("failed to initialize");
 
         let storage: Arc<RwLock<Box<dyn StorageBackend>>> =
@@ -193,12 +195,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_queue_capacity() {
-        let queue = SyncQueue::new(
-            Arc::new(RwLock::new(Box::new(
-                SqliteBackend::in_memory().expect("failed"),
-            ))),
-            2,
-        );
+        let backend = SqliteBackend::in_memory().await.expect("failed");
+        let queue = SyncQueue::new(Arc::new(RwLock::new(Box::new(backend))), 2);
 
         let record1 = Record::new("test1".to_string(), Bytes::from("data1"));
         let record2 = Record::new("test2".to_string(), Bytes::from("data2"));

@@ -6,7 +6,7 @@
 
 ## High Priority
 - [ ] Implement JPEG compression codec (currently placeholder, `jpeg` feature)
-- [ ] Implement WebP compression codec (currently placeholder, `webp` feature)
+- [x] Implement WebP compression codec (TIFF tag 50001) — pure Rust via `image-webp`; decoder handles VP8/VP8L, encoder produces lossless VP8L; closes #6 (2026-05-22)
 - [x] BigTIFF format writer — 64-bit offsets, >4GB output support (planned 2026-04-18)
   - **Goal:** GeoTIFF writer produces valid BigTIFF (magic `0x002B`, 8-byte offsets) when output would exceed the 4GB classic-TIFF limit or the caller explicitly requests it. Round-trippable via existing reader.
   - **Design:**

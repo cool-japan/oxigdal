@@ -18,14 +18,9 @@
   - **Slice 25 follow-up:** PF6/PF7/PF8 (LASzip Item Compressor v3 — layered context architecture, ~1500 LoC). The current `UnsupportedLazFormat` path means real-world `.copc.laz` files using the COPC 1.0 PF6/7/8 mandate are NOT yet decodable; only research/legacy PF0/PF1 archives work end-to-end today.
   - **Tests:** 18 integration tests in `crates/oxigdal-copc/tests/laz_test.rs` + 16 inline unit tests in `crates/oxigdal-copc/src/laz/*.rs` modules. Coverage: arithmetic round-trip (bits + 2-symbol + integer compressor); chunk table parse + truncation; VLR detection + items field parse; XYZ/intensity/classification/user_data predictors; PF0/PF1 decode round-trip; PF6 typed-error path; end-to-end CopcReader routing.
 
-- [ ] LAS point data record formats 9 and 10 (LAS 1.4 waveform variants)
-  - **Verified gap:** `src/point_format.rs:31-43` `min_record_size()` returns `InvalidFormat` for any `format_id > 8`; doc table on lines 21-29 lists only formats 0-8; line 56 says `"format (0, 1, 2, 3, 6, 7, 8)"`.
-  - **Goal:** Add format 9 (PDRF6 + waveform packet, 59 bytes) and format 10 (PDRF8 + waveform packet, 67 bytes) so LiDAR producers using full-waveform LAS 1.4 can be ingested.
-  - **Design:** Extend `min_record_size` table and `parse_extended_base` byte map. New tuple field `wave_packet: Option<WaveformPacket>` carrying `{ descriptor_index: u8, byte_offset: u64, packet_size: u32, return_point_loc: f32, x_t: f32, y_t: f32, z_t: f32 }` (ASPRS LAS 1.4 R15 Tables 17-18). `Point3D` gains optional `waveform: Option<WaveformPacket>`.
-  - **Files:** `src/point_format.rs` (extend dispatch), `src/point.rs` (add `WaveformPacket`), `src/lib.rs` (re-export).
-  - **Tests:** `(proposed)` test_format9_min_record_size_59, test_format10_min_record_size_67, test_format9_waveform_offset_decoded, test_format10_rgb_plus_waveform
-  - **Risk:** Waveform packet bytes can point into the EVLR area; out-of-range offsets must surface as `CopcError::InvalidFormat` rather than panic.
-  - **Prerequisites:** EVLR parser (next item) for cross-validation only — decoder is independent.
+- [x] LAS point data record formats 9 and 10 (LAS 1.4 waveform variants)
+  - Done: 2026-05-31 (Slice 29). Tests: 14 new (waveform_test) + 264 existing = 278 total.
+  - New `WaveformPacket` struct (ASPRS LAS 1.4 R15 Tables 17-18, 29 bytes), `Point3D.waveform: Option<WaveformPacket>`, `min_record_size` 9→59/10→67, WKB parse at byte 30 (PF9) / 38 (PF10), bounds-checked. `WaveformPacket` re-exported from `lib.rs`.
 
 - [x] Extended VLR (EVLR) chain parsing
   - **Verified gap:** `crates/oxigdal-copc/src/lib.rs` exposes no EVLR module; `rg "EVLR|extended_vlr|extended_byte_count"` returns 0 matches across `src/`.

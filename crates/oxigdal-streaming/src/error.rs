@@ -54,10 +54,10 @@ pub enum StreamingError {
     #[error("Deserialization error: {0}")]
     DeserializationError(String),
 
-    /// RocksDB error
-    #[cfg(feature = "rocksdb-backend")]
-    #[error("RocksDB error: {0}")]
-    RocksDB(#[from] rocksdb::Error),
+    /// OxiStore key-value backend error
+    #[cfg(feature = "kv-store")]
+    #[error("KV store error: {0}")]
+    Store(#[from] oxistore_core::StoreError),
 
     /// IO error
     #[cfg(feature = "std")]

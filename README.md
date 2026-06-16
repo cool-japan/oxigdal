@@ -4,22 +4,22 @@
 
 [![Crates.io](https://img.shields.io/crates/v/oxigdal.svg)](https://crates.io/crates/oxigdal)
 [![Documentation](https://docs.rs/oxigdal/badge.svg)](https://docs.rs/oxigdal)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![COOLJAPAN](https://img.shields.io/badge/COOLJAPAN-Ecosystem-brightgreen.svg)](https://github.com/cool-japan)
 
-OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.5** on 2026-05-22, it delivers ~580K Rust SLoC across **78 workspace crates**, covering 15 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.6** on 2026-06-15, it delivers ~580K Rust SLoC across **78 workspace crates**, covering 18 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.1.5 (released 2026-05-22) |
+| **Version** | 0.1.6 (released 2026-06-15) |
 | **Rust SLoC** | ~580K across 1,934 `.rs` files |
 | **Total SLoC** | 565,681 (all languages) |
 | **Workspace crates** | 78 |
 | **Tests** | 14,605 passing (58 skipped), 0 failures; 405 doc tests passing |
-| **Format drivers** | 15 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles) |
+| **Format drivers** | 18 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles, GPX, KML, TopoJSON) |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
@@ -376,6 +376,7 @@ oxigdal warp --t_srs EPSG:32654 input.tif output.tif
 | **v0.1.3** | 2026-03-21 (released) | wgpu 29 API fixes, libsqlite3-sys compat, macOS rpath fix, oxiarc-brotli 6-bug patch, 76 crates, 10,939 tests |
 | **v0.1.4** | 2026-04-19 (released) | Wave 1 algorithms (Weiler-Atherton clipping, Karney geodesic, DE-9IM, marching squares), Wave 2 R-tree+SIMD+NoAlloc+PMTiles reader+COPC+GeoPackage B-tree, ort→oxionnx ML migration, pyo3 0.28, 12,064 tests |
 | **v0.1.5** | 2026-05-22 (released) | oxigdal-gpu WGSL RayMarchUniforms layout fix eliminated 120s GPU test hang (Metal compute kernel), 78 crates, 14,605 tests |
+| **v0.1.6** | 2026-06-15 (released) | Pure-Rust SQLite migration (rusqlite → oxisql-sqlite-compat), non-UTF-8 DBF encoding via encoding_rs, WKT→PROJ string conversion, W-TinyLFU + Count-Min Sketch cache eviction, HDF5 v2/v3 superblock, Delaunay triangulation, batch QC runner + GPKG/STAC/radiometric validators, Gaussian MLC sensor classification, terrain GLCM textures/TPI/geomorphons/cost-distance, Whittaker + Savitzky-Golay time-series smoothers, GPX/KML/TopoJSON vector formats, 14,605 tests |
 | **v0.2.0** | Q2 2026 | 100+ projections, GPU expansion, advanced ML pipelines, JPEG2000 tier-2 |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |

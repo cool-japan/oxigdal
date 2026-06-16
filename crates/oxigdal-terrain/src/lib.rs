@@ -52,6 +52,9 @@ pub mod morphometry;
 #[cfg(feature = "derivatives")]
 pub mod radiation;
 
+#[cfg(feature = "mesh")]
+pub mod mesh;
+
 // Re-exports
 pub use error::{Result, TerrainError};
 
@@ -87,3 +90,6 @@ pub use radiation::{
     SolarOptions, SolarPosition, SolarRadiationResult, hillshade_at, solar_position,
     solar_radiation,
 };
+
+#[cfg(feature = "mesh")]
+pub use mesh::{TerrainTin, tin_from_dem};

@@ -2,7 +2,7 @@
 # Multi-stage build for minimal final image
 
 # Build stage
-FROM rust:1.85 as builder
+FROM rust:1.89 as builder
 
 WORKDIR /build
 

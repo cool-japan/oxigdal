@@ -25,7 +25,7 @@ This cookbook contains 10 complete end-to-end examples covering the most common 
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.89+
 - OxiGDAL workspace compiled
 - Optional: PostGIS, S3 bucket for cloud examples
 

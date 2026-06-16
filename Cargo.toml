@@ -138,10 +138,12 @@ default-members = [
     "crates/oxigdal-kinesis",
     "crates/oxigdal-mqtt",
     "crates/oxigdal-streaming",
-    "crates/oxigdal-kafka",
+    # oxigdal-kafka excluded from default build: rdkafka-sys (C FFI) violates Pure Rust Policy.
+    # Build explicitly with: cargo build -p oxigdal-kafka
     "crates/oxigdal-mobile-enhanced",
     "crates/oxigdal-edge",
-    "crates/oxigdal-offline",
+    # oxigdal-offline excluded from default build: previously used rusqlite; now uses oxisql-sqlite-compat (Pure Rust).
+    # Build explicitly with: cargo build -p oxigdal-offline
     "crates/oxigdal-embedded",
     "crates/oxigdal-pwa",
     "crates/oxigdal-sync",
@@ -157,9 +159,9 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
 license = "Apache-2.0"
 repository = "https://github.com/cool-japan/oxigdal"
@@ -174,8 +176,9 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 serde_json = "1"
 bytes = { version = "1", features = ["serde"] }
 byteorder = "1"
+encoding_rs = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-time = { version = "0.3.47", default-features = false, features = ["formatting", "parsing", "macros", "serde"] }
+time = { version = "0.3", default-features = false, features = ["formatting", "parsing", "macros", "serde"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -184,30 +187,31 @@ async-trait = "0.1"
 async-stream = "0.3"
 
 # Arrow ecosystem
-arrow = { version = "58", default-features = false }
-arrow-array = "58"
-arrow-buffer = "58"
-arrow-ipc = "58"
-arrow-schema = "58"
-parquet = { version = "58", default-features = false }
+arrow = { version = "59", default-features = false }
+arrow-array = "59"
+arrow-buffer = "59"
+arrow-ipc = "59"
+arrow-schema = "59"
+parquet = { version = "59", default-features = false }
 
 # Compression - COOLJAPAN Pure Rust Policy (oxiarc ecosystem)
 # Use oxiarc-* crates instead of C-based compression libraries
 # Updated to 0.2.8: rs3gw 0.2.1 requires oxiarc-deflate/lz4 ^0.2.8 which in turn
 # needs oxiarc-core 0.2.8 for OutputRingBuffer::{ring_snapshot,drain_output,restore_ring}
-oxiarc-archive = "0.3.0"  # ZIP, TAR, GZIP, LZH, XZ archive formats
-oxiarc-core = "0.3.0"     # Core components for OxiArc
-oxiarc-deflate = "0.3.0"  # Pure Rust DEFLATE (replacement for flate2)
-oxiarc-lzw = "0.3.0"      # Pure Rust LZW compression
-oxiarc-lz4 = "0.3.0"      # Pure Rust LZ4 compression
-oxiarc-zstd = "0.3.0"     # Pure Rust Zstandard compression
-oxiarc-bzip2 = "0.3.0"    # Pure Rust BZip2 compression
-oxiarc-lzhuf = "0.3.0"    # Pure Rust LZH compression
-oxiarc-snappy = "0.3.0"   # Pure Rust Snappy compression (replacement for snap)
-oxiarc-brotli = "0.3.0"   # Pure Rust Brotli compression (replacement for brotli)
+oxiarc-archive = "0.3.3"  # ZIP, TAR, GZIP, LZH, XZ archive formats
+oxiarc-core = "0.3.3"     # Core components for OxiArc
+oxiarc-deflate = "0.3.3"  # Pure Rust DEFLATE (replacement for flate2)
+oxiarc-lzw = "0.3.3"      # Pure Rust LZW compression
+oxiarc-lz4 = "0.3.3"      # Pure Rust LZ4 compression
+oxiarc-zstd = "0.3.3"     # Pure Rust Zstandard compression
+oxiarc-bzip2 = "0.3.3"    # Pure Rust BZip2 compression
+oxiarc-lzhuf = "0.3.3"    # Pure Rust LZH compression
+oxiarc-snappy = "0.3.3"   # Pure Rust Snappy compression (replacement for snap)
+oxiarc-brotli = "0.3.3"   # Pure Rust Brotli compression (replacement for brotli)
 
 jpeg-decoder = "0.3"
 jpeg-encoder = "0.7"
+image-webp = "0.2"
 
 # Serialization formats
 apache-avro = { version = "0.21", default-features = false }
@@ -219,7 +223,7 @@ toml = "1.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking", "json"] }
 
 # Storage backend
-rs3gw = "0.2.1"
+rs3gw = "0.2"
 
 # WASM support
 wasm-bindgen = "0.2"
@@ -266,10 +270,10 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # COOLJAPAN ecosystem
-scirs2-core = "0.4.4"
+scirs2-core = "0.5.0"
 # numrs2 = { version = "0.1", optional = true }
 # oxiblas = { version = "0.1", optional = true }
-oxicode = "0.2.3"
+oxicode = "0.2.4"
 
 # Logging
 tracing = "0.1"
@@ -294,14 +298,14 @@ rayon = "1"
 clap_mangen = "0.3"
 clap_complete_nushell = "4.6"
 # lz4 replaced by oxiarc-lz4 (Pure Rust)
-lru = "0.17.0"
+lru = "0.18"
 tempfile = "3"
-quick-xml = "0.39"
+quick-xml = "0.40"
 bytemuck = "1"
-half = { version = "2.7.1", features = ["bytemuck"] }
+half = { version = "2", features = ["bytemuck"] }
 dashmap = "6"
-ordered-float = "5.0"
-sysinfo = "0.38"
+ordered-float = "5.3"
+sysinfo = "0.39"
 tinytemplate = "1"
 
 # Cloud storage
@@ -315,12 +319,15 @@ rumqttc = { version = "0.25", default-features = false }
 # Low risk: optional features, stable code. Consider redb for future major version.
 sled = "0.34"
 
-# Database - SQLite (constrained by proj-sys requirement: >=0.28, <0.36)
-rusqlite = "0.37"  # Uses libsqlite3-sys ^0.35, compatible with proj-sys constraint (<0.36)
-libsqlite3-sys = "0.35"  # Must be >=0.28, <0.36 for proj-sys compatibility
+# Pure-Rust SQLite engine (COOLJAPAN noffi ecosystem)
+oxisql-core = "0.1.3"
+oxisql-sqlite-compat = { version = "0.1.5", features = ["blocking"] }
 
 # Scheduling
 cron = "0.16"
+
+# Async caching
+moka = { version = "0.12", features = ["future"] }
 
 # Pattern matching
 regex = "1"
@@ -333,82 +340,82 @@ console_error_panic_hook = "0.1"
 serde-wasm-bindgen = "0.6"
 
 # Internal crates - core
-oxigdal-core = { path = "crates/oxigdal-core", version = "0.1.5" }
-oxigdal-algorithms = { path = "crates/oxigdal-algorithms", version = "0.1.5" }
-oxigdal-proj = { path = "crates/oxigdal-proj", version = "0.1.5" }
-oxigdal-qc = { path = "crates/oxigdal-qc", version = "0.1.5" }
+oxigdal-core = { path = "crates/oxigdal-core", version = "0.1.6" }
+oxigdal-algorithms = { path = "crates/oxigdal-algorithms", version = "0.1.6" }
+oxigdal-proj = { path = "crates/oxigdal-proj", version = "0.1.6" }
+oxigdal-qc = { path = "crates/oxigdal-qc", version = "0.1.6" }
 
 # Driver crates
-oxigdal-geotiff = { path = "crates/oxigdal-drivers/geotiff", version = "0.1.5" }
-oxigdal-geojson = { path = "crates/oxigdal-drivers/geojson", version = "0.1.5" }
-oxigdal-geojson-stream = { path = "crates/oxigdal-geojson", version = "0.1.5" }
-oxigdal-zarr = { path = "crates/oxigdal-drivers/zarr", version = "0.1.5" }
-oxigdal-flatgeobuf = { path = "crates/oxigdal-drivers/flatgeobuf", version = "0.1.5" }
-oxigdal-shapefile = { path = "crates/oxigdal-drivers/shapefile", version = "0.1.5" }
-oxigdal-netcdf = { path = "crates/oxigdal-drivers/netcdf", version = "0.1.5" }
-oxigdal-geoparquet = { path = "crates/oxigdal-drivers/geoparquet", version = "0.1.5" }
-oxigdal-hdf5 = { path = "crates/oxigdal-drivers/hdf5", version = "0.1.5" }
-oxigdal-vrt = { path = "crates/oxigdal-drivers/vrt", version = "0.1.5" }
-oxigdal-grib = { path = "crates/oxigdal-drivers/grib", version = "0.1.5" }
-oxigdal-jpeg2000 = { path = "crates/oxigdal-drivers/jpeg2000", version = "0.1.5" }
+oxigdal-geotiff = { path = "crates/oxigdal-drivers/geotiff", version = "0.1.6" }
+oxigdal-geojson = { path = "crates/oxigdal-drivers/geojson", version = "0.1.6" }
+oxigdal-geojson-stream = { path = "crates/oxigdal-geojson", version = "0.1.6" }
+oxigdal-zarr = { path = "crates/oxigdal-drivers/zarr", version = "0.1.6" }
+oxigdal-flatgeobuf = { path = "crates/oxigdal-drivers/flatgeobuf", version = "0.1.6" }
+oxigdal-shapefile = { path = "crates/oxigdal-drivers/shapefile", version = "0.1.6" }
+oxigdal-netcdf = { path = "crates/oxigdal-drivers/netcdf", version = "0.1.6" }
+oxigdal-geoparquet = { path = "crates/oxigdal-drivers/geoparquet", version = "0.1.6" }
+oxigdal-hdf5 = { path = "crates/oxigdal-drivers/hdf5", version = "0.1.6" }
+oxigdal-vrt = { path = "crates/oxigdal-drivers/vrt", version = "0.1.6" }
+oxigdal-grib = { path = "crates/oxigdal-drivers/grib", version = "0.1.6" }
+oxigdal-jpeg2000 = { path = "crates/oxigdal-drivers/jpeg2000", version = "0.1.6" }
 
 # Feature-specific crates
-oxigdal-wasm = { path = "crates/oxigdal-wasm", version = "0.1.5" }
-oxigdal-mobile = { path = "crates/oxigdal-mobile", version = "0.1.5" }
-oxigdal-cloud = { path = "crates/oxigdal-cloud", version = "0.1.5" }
-oxigdal-3d = { path = "crates/oxigdal-3d", version = "0.1.5" }
-oxigdal-server = { path = "crates/oxigdal-server", version = "0.1.5" }
-oxigdal-postgis = { path = "crates/oxigdal-postgis", version = "0.1.5" }
-oxigdal-analytics = { path = "crates/oxigdal-analytics", version = "0.1.5" }
-oxigdal-temporal = { path = "crates/oxigdal-temporal", version = "0.1.5" }
-oxigdal-terrain = { path = "crates/oxigdal-terrain", version = "0.1.5" }
-oxigdal-rs3gw = { path = "crates/oxigdal-rs3gw", version = "0.1.5" }
-oxigdal-distributed = { path = "crates/oxigdal-distributed", version = "0.1.5" }
-oxigdal-python = { path = "crates/oxigdal-python", version = "0.1.5" }
-oxigdal-stac = { path = "crates/oxigdal-stac", version = "0.1.5" }
-oxigdal-ml = { path = "crates/oxigdal-ml", version = "0.1.5" }
-oxigdal-ml-foundation = { path = "crates/oxigdal-ml-foundation", version = "0.1.5" }
-oxigdal-metadata = { path = "crates/oxigdal-metadata", version = "0.1.5" }
-oxigdal-sensors = { path = "crates/oxigdal-sensors", version = "0.1.5" }
-oxigdal-gpu = { path = "crates/oxigdal-gpu", version = "0.1.5" }
-oxigdal-gpu-advanced = { path = "crates/oxigdal-gpu-advanced", version = "0.1.5" }
-oxigdal-bench = { path = "crates/oxigdal-bench", version = "0.1.5" }
-oxigdal-ws = { path = "crates/oxigdal-ws", version = "0.1.5" }
-oxigdal-websocket = { path = "crates/oxigdal-websocket", version = "0.1.5" }
-oxigdal-etl = { path = "crates/oxigdal-etl", version = "0.1.5" }
-oxigdal-services = { path = "crates/oxigdal-services", version = "0.1.5" }
-oxigdal-cache-advanced = { path = "crates/oxigdal-cache-advanced", version = "0.1.5" }
-oxigdal-cluster = { path = "crates/oxigdal-cluster", version = "0.1.5" }
-oxigdal-query = { path = "crates/oxigdal-query", version = "0.1.5" }
-oxigdal-compress = { path = "crates/oxigdal-compress", version = "0.1.5" }
-oxigdal-observability = { path = "crates/oxigdal-observability", version = "0.1.5" }
-oxigdal-security = { path = "crates/oxigdal-security", version = "0.1.5" }
-oxigdal-ha = { path = "crates/oxigdal-ha", version = "0.1.5" }
-oxigdal-gateway = { path = "crates/oxigdal-gateway", version = "0.1.5" }
-oxigdal-workflow = { path = "crates/oxigdal-workflow", version = "0.1.5" }
-oxigdal-cloud-enhanced = { path = "crates/oxigdal-cloud-enhanced", version = "0.1.5" }
-oxigdal-db-connectors = { path = "crates/oxigdal-db-connectors", version = "0.1.5" }
-oxigdal-drivers-advanced = { path = "crates/oxigdal-drivers-advanced", version = "0.1.5" }
-oxigdal-jupyter = { path = "crates/oxigdal-jupyter", version = "0.1.5" }
-oxigdal-dev-tools = { path = "crates/oxigdal-dev-tools", version = "0.1.5" }
-oxigdal-kinesis = { path = "crates/oxigdal-kinesis", version = "0.1.5" }
-oxigdal-mqtt = { path = "crates/oxigdal-mqtt", version = "0.1.5" }
-oxigdal-pubsub = { path = "crates/oxigdal-pubsub", version = "0.1.5" }
-oxigdal-streaming = { path = "crates/oxigdal-streaming", version = "0.1.5" }
-oxigdal-kafka = { path = "crates/oxigdal-kafka", version = "0.1.5" }
-oxigdal-mobile-enhanced = { path = "crates/oxigdal-mobile-enhanced", version = "0.1.5" }
-oxigdal-pwa = { path = "crates/oxigdal-pwa", version = "0.1.5" }
-oxigdal-sync = { path = "crates/oxigdal-sync", version = "0.1.5" }
-oxigdal-edge = { path = "crates/oxigdal-edge", version = "0.1.5" }
-oxigdal-offline = { path = "crates/oxigdal-offline", version = "0.1.5" }
-oxigdal-embedded = { path = "crates/oxigdal-embedded", version = "0.1.5" }
-oxigdal-node = { path = "crates/oxigdal-node", version = "0.1.5" }
-oxigdal-gpkg = { path = "crates/oxigdal-gpkg", version = "0.1.5" }
-oxigdal-mbtiles = { path = "crates/oxigdal-mbtiles", version = "0.1.5" }
-oxigdal-copc = { path = "crates/oxigdal-copc", version = "0.1.5" }
-oxigdal-pmtiles = { path = "crates/oxigdal-pmtiles", version = "0.1.5" }
-oxigdal-noalloc = { path = "crates/oxigdal-noalloc", version = "0.1.5" }
-oxigdal-index = { path = "crates/oxigdal-index", version = "0.1.5" }
+oxigdal-wasm = { path = "crates/oxigdal-wasm", version = "0.1.6" }
+oxigdal-mobile = { path = "crates/oxigdal-mobile", version = "0.1.6" }
+oxigdal-cloud = { path = "crates/oxigdal-cloud", version = "0.1.6" }
+oxigdal-3d = { path = "crates/oxigdal-3d", version = "0.1.6" }
+oxigdal-server = { path = "crates/oxigdal-server", version = "0.1.6" }
+oxigdal-postgis = { path = "crates/oxigdal-postgis", version = "0.1.6" }
+oxigdal-analytics = { path = "crates/oxigdal-analytics", version = "0.1.6" }
+oxigdal-temporal = { path = "crates/oxigdal-temporal", version = "0.1.6" }
+oxigdal-terrain = { path = "crates/oxigdal-terrain", version = "0.1.6" }
+oxigdal-rs3gw = { path = "crates/oxigdal-rs3gw", version = "0.1.6" }
+oxigdal-distributed = { path = "crates/oxigdal-distributed", version = "0.1.6" }
+oxigdal-python = { path = "crates/oxigdal-python", version = "0.1.6" }
+oxigdal-stac = { path = "crates/oxigdal-stac", version = "0.1.6" }
+oxigdal-ml = { path = "crates/oxigdal-ml", version = "0.1.6" }
+oxigdal-ml-foundation = { path = "crates/oxigdal-ml-foundation", version = "0.1.6" }
+oxigdal-metadata = { path = "crates/oxigdal-metadata", version = "0.1.6" }
+oxigdal-sensors = { path = "crates/oxigdal-sensors", version = "0.1.6" }
+oxigdal-gpu = { path = "crates/oxigdal-gpu", version = "0.1.6" }
+oxigdal-gpu-advanced = { path = "crates/oxigdal-gpu-advanced", version = "0.1.6" }
+oxigdal-bench = { path = "crates/oxigdal-bench", version = "0.1.6" }
+oxigdal-ws = { path = "crates/oxigdal-ws", version = "0.1.6" }
+oxigdal-websocket = { path = "crates/oxigdal-websocket", version = "0.1.6" }
+oxigdal-etl = { path = "crates/oxigdal-etl", version = "0.1.6" }
+oxigdal-services = { path = "crates/oxigdal-services", version = "0.1.6" }
+oxigdal-cache-advanced = { path = "crates/oxigdal-cache-advanced", version = "0.1.6" }
+oxigdal-cluster = { path = "crates/oxigdal-cluster", version = "0.1.6" }
+oxigdal-query = { path = "crates/oxigdal-query", version = "0.1.6" }
+oxigdal-compress = { path = "crates/oxigdal-compress", version = "0.1.6" }
+oxigdal-observability = { path = "crates/oxigdal-observability", version = "0.1.6" }
+oxigdal-security = { path = "crates/oxigdal-security", version = "0.1.6" }
+oxigdal-ha = { path = "crates/oxigdal-ha", version = "0.1.6" }
+oxigdal-gateway = { path = "crates/oxigdal-gateway", version = "0.1.6" }
+oxigdal-workflow = { path = "crates/oxigdal-workflow", version = "0.1.6" }
+oxigdal-cloud-enhanced = { path = "crates/oxigdal-cloud-enhanced", version = "0.1.6" }
+oxigdal-db-connectors = { path = "crates/oxigdal-db-connectors", version = "0.1.6" }
+oxigdal-drivers-advanced = { path = "crates/oxigdal-drivers-advanced", version = "0.1.6" }
+oxigdal-jupyter = { path = "crates/oxigdal-jupyter", version = "0.1.6" }
+oxigdal-dev-tools = { path = "crates/oxigdal-dev-tools", version = "0.1.6" }
+oxigdal-kinesis = { path = "crates/oxigdal-kinesis", version = "0.1.6" }
+oxigdal-mqtt = { path = "crates/oxigdal-mqtt", version = "0.1.6" }
+oxigdal-pubsub = { path = "crates/oxigdal-pubsub", version = "0.1.6" }
+oxigdal-streaming = { path = "crates/oxigdal-streaming", version = "0.1.6" }
+oxigdal-kafka = { path = "crates/oxigdal-kafka", version = "0.1.6" }
+oxigdal-mobile-enhanced = { path = "crates/oxigdal-mobile-enhanced", version = "0.1.6" }
+oxigdal-pwa = { path = "crates/oxigdal-pwa", version = "0.1.6" }
+oxigdal-sync = { path = "crates/oxigdal-sync", version = "0.1.6" }
+oxigdal-edge = { path = "crates/oxigdal-edge", version = "0.1.6" }
+oxigdal-offline = { path = "crates/oxigdal-offline", version = "0.1.6" }
+oxigdal-embedded = { path = "crates/oxigdal-embedded", version = "0.1.6" }
+oxigdal-node = { path = "crates/oxigdal-node", version = "0.1.6" }
+oxigdal-gpkg = { path = "crates/oxigdal-gpkg", version = "0.1.6" }
+oxigdal-mbtiles = { path = "crates/oxigdal-mbtiles", version = "0.1.6" }
+oxigdal-copc = { path = "crates/oxigdal-copc", version = "0.1.6" }
+oxigdal-pmtiles = { path = "crates/oxigdal-pmtiles", version = "0.1.6" }
+oxigdal-noalloc = { path = "crates/oxigdal-noalloc", version = "0.1.6" }
+oxigdal-index = { path = "crates/oxigdal-index", version = "0.1.6" }
 
 # Node.js bindings dependencies
 napi = "3"
@@ -420,6 +427,7 @@ cbindgen = "0.29"
 
 # Connection pooling
 bb8 = "0.9"
+deadpool = "0.13"
 
 # WKB/WKT serialization
 wkt = "0.14"
@@ -428,7 +436,7 @@ wkt = "0.14"
 crc32fast = "1"
 
 # SQL parsing
-sqlparser = "0.61"
+sqlparser = "0.62"
 
 # Embedded-specific dependencies
 critical-section = "1"
@@ -441,7 +449,7 @@ libm = "0.2"
 hostname = "0.4"
 
 # Geodesic computations (Pure Rust)
-geographiclib-rs = "0.2.7"
+geographiclib-rs = "0.2"
 
 # URL and GeoJSON support
 url = { version = "2", features = ["serde"] }
@@ -469,7 +477,7 @@ clap_complete = "4"
 
 # GPU compute
 encase = "0.12"
-glam = { version = "0.32", features = ["bytemuck"] }
+glam = { version = "0.33", features = ["bytemuck"] }
 naga = { version = "29", features = ["wgsl-in", "wgsl-out"] }
 pollster = "0.4"
 wgpu = { version = "29", default-features = false, features = ["wgsl", "metal"] }
@@ -478,7 +486,7 @@ wgpu = { version = "29", default-features = false, features = ["wgsl", "metal"] 
 gltf = { version = "1", features = ["import"] }
 gltf-json = "1"
 delaunator = "1"
-rstar = "0.12"
+rstar = "0.13"
 las = "0.9"
 laz = { version = "0.12", default-features = false }
 base64 = "0.22"
@@ -487,11 +495,16 @@ base64 = "0.22"
 getrandom = "0.4"
 hmac = "0.13"
 sha2 = "0.11"
-ring = "0.17"
+pbkdf2 = { version = "0.13", features = ["hmac"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 webpki-roots = "1.0"
+
+# OxiTLS — pure-Rust TLS stack (patched via [patch.crates-io] to local checkouts)
+oxitls-core = "0.1.2"
+oxitls-adapter-rustls-rustcrypto = { version = "0.1.2", default-features = false }
+oxitls-webpki-roots = "0.1.2"
 
 # OAuth2
 oauth2 = { version = "5", default-features = false }
@@ -501,13 +514,13 @@ oauth2 = { version = "5", default-features = false }
 azure_storage = "0.21"
 azure_storage_blobs = "0.21"
 azure_storage_datalake = "0.21"
-azure_core = "0.34"
-azure_identity = "0.34"
+azure_core = "1.0"
+azure_identity = "1.0"
 # Google Cloud SDK - using latest stable versions (reduces tonic/axum duplication)
 google-cloud-storage = "1"  # Upgraded from 0.22
 google-cloud-auth = "1"     # Upgraded from 0.18
 google-cloud-bigquery = "0.15"
-google-cloud-pubsub = "0.33"  # Upgraded from 0.29 to use latest tonic/axum
+google-cloud-pubsub = "1.1"  # Upgraded from 0.29 to use latest tonic/axum
 
 # AWS extended SDK
 aws-sdk-athena = "1"
@@ -518,34 +531,38 @@ aws-sdk-sagemaker = "1"
 aws-sdk-sagemakerruntime = "1"
 aws-sdk-cloudwatch = "1"
 aws-sdk-costexplorer = "1"
+aws-sdk-kinesis = "1"
+aws-sdk-firehose = "1"
+aws-sdk-kinesisanalyticsv2 = "1"
+aws-sdk-dynamodb = "1"
 
 # Scientific computing
 # scirs2-core already defined above in COOLJAPAN ecosystem section
-oxionnx = { version = "0.1.3", features = ["ndarray"] }
+oxionnx = { version = "0.1.4", features = ["ndarray"] }
 ndarray = "0.17"
 
 # Python bindings
-numpy = "0.28"
-pyo3-build-config = "0.28"
+numpy = "0.29"
+pyo3-build-config = "0.29"
 
 # SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant)
-scirs2-neural = "0.4.4"
-scirs2-autograd = "0.4.4"
-scirs2-optimize = "0.4.4"
-scirs2-datasets = "0.4.4"
-scirs2-metrics = "0.4.4"
-scirs2-linalg = "0.4.4"
-scirs2-vision = "0.4.4"
-scirs2-series = "0.4.4"
+scirs2-neural = "0.5.0"
+scirs2-autograd = "0.5.0"
+scirs2-optimize = "0.5.0"
+scirs2-datasets = "0.5.0"
+scirs2-metrics = "0.5.0"
+scirs2-linalg = "0.5.0"
+scirs2-vision = "0.5.0"
+scirs2-series = "0.5.0"
 
 # PostgreSQL
 tokio-postgres = "0.7"
 postgres-types = "0.2"
 deadpool-postgres = "0.14"
-tokio-postgres-rustls = "0.13"
+tokio-postgres-rustls = "0.14"
 
 # Distributed computing
-arrow-flight = "58"
+arrow-flight = "59"
 tonic = "0.14"
 prost = "0.14"
 parking_lot = "0.12"
@@ -553,7 +570,7 @@ crossbeam = "0.8"
 crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
 blake3 = "1"
-mimalloc = "0.1"
+mimalloc = { version = "0.1", default-features = false }
 libc = "0.2"
 ahash = { version = "0.8", features = ["serde"] }
 
@@ -561,8 +578,11 @@ ahash = { version = "0.8", features = ["serde"] }
 aws-credential-types = "1"
 
 # Observability (OpenTelemetry ecosystem)
-opentelemetry = "0.31"
-tracing-opentelemetry = "0.32"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-stdout = { version = "0.32", features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.32", features = ["metrics", "trace", "grpc-tonic"] }
+tracing-opentelemetry = "0.33"
 prometheus = "0.14"
 statrs = "0.18"
 
@@ -579,6 +599,8 @@ governor = "0.10"
 # Workflow dependencies
 petgraph = "0.8"
 num_cpus = "1"
+pest = "2"
+pest_derive = "2"
 
 # Jupyter and dev tools dependencies
 jupyter = "0.2"
@@ -594,6 +616,43 @@ colored = "3"
 walkdir = "2"
 notify = "8"
 diff = "0.1"
+
+# Projection libraries
+proj4rs = "0.1"
+proj = { version = "0.31", default-features = false }
+
+# Python bindings runtime
+pyo3 = { version = "0.29", default-features = false }
+
+# NetCDF-3 Pure Rust
+netcdf3 = "0.6"
+
+# State backend (OxiStore LSM via fjall — Pure Rust, feature-gated)
+oxistore-core = { version = "0.1", default-features = false }
+oxistore-kv-fjall = { version = "0.1", default-features = false }
+
+# Mobile / Android
+jni = { version = "0.22", default-features = false }
+
+# ML GPU/compute backends (optional, feature-gated)
+libloading = "0.9"
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+opencl3 = "0.12"
+metal = { version = "0.33", default-features = false, features = ["link"] }
+objc = "0.2"
+
+# Database connectors
+mysql_async = "0.37"
+mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "bson-3", "rustls-tls"] }
+bson = { version = "3", default-features = false, features = ["compat-3-0-0", "serde"] }
+clickhouse = "0.15"
+scylla = { version = "1", default-features = false }
+
+# Protobuf types (companion to prost)
+prost-types = "0.14"
+
+# Google Cloud (extended)
+google-cloud-googleapis = { version = "0.16", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "warn"
@@ -635,8 +694,8 @@ opt-level = 3
 inherits = "release"
 
 [patch.crates-io]
-# Interim: nightly Rust removed simd_minimum_number_nsz/simd_maximum_number_nsz
-# intrinsics that pathfinder_simd 0.5.6 still uses. Remove this patch when the
-# COOLJAPAN font crate replaces plotters in oxigdal-jupyter (and criterion's
-# html_reports path no longer matters).
-pathfinder_simd = { path = "vendor/pathfinder_simd" }
+# OxiTLS local checkouts (not yet published to crates.io at 0.1.1)
+oxitls-core = { path = "../oxitls/crates/oxitls-core" }
+oxitls-adapter-rustls-rustcrypto = { path = "../oxitls/crates/oxitls-adapter-rustls-rustcrypto" }
+oxitls-webpki-roots = { path = "../oxitls/crates/oxitls-webpki-roots" }
+

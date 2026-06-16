@@ -99,8 +99,8 @@ impl From<mysql_async::Error> for Error {
 }
 
 #[cfg(feature = "sqlite")]
-impl From<rusqlite::Error> for Error {
-    fn from(err: rusqlite::Error) -> Self {
+impl From<oxisql_core::OxiSqlError> for Error {
+    fn from(err: oxisql_core::OxiSqlError) -> Self {
         Error::SQLite(err.to_string())
     }
 }

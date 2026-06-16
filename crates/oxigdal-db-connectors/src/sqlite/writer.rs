@@ -3,8 +3,8 @@
 use crate::error::{Error, Result};
 use crate::sqlite::{SqliteConnector, geometry_to_wkb};
 use geo_types::Geometry;
-use rusqlite::params_from_iter;
-use serde_json::Value;
+use oxisql_core::ToSqlValue;
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 /// SQLite spatial data writer.
@@ -36,18 +36,18 @@ impl SqliteWriter {
     pub fn insert(
         &self,
         geometry: &Geometry<f64>,
-        properties: &HashMap<String, Value>,
+        properties: &HashMap<String, JsonValue>,
     ) -> Result<i64> {
         let wkb = geometry_to_wkb(geometry)?;
-        let conn = self.connector.conn();
-
         let mut columns = vec![self.geometry_column.clone()];
-        let mut placeholders = vec!["?".to_string()];
+        let mut prop_keys: Vec<String> = properties.keys().cloned().collect();
+        prop_keys.sort(); // deterministic order
 
-        for key in properties.keys() {
+        for key in &prop_keys {
             columns.push(key.clone());
-            placeholders.push("?".to_string());
         }
+
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
@@ -56,20 +56,48 @@ impl SqliteWriter {
             placeholders.join(", ")
         );
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(wkb)];
-        for value in properties.values() {
-            params.push(json_to_sqlite_param(value)?);
+        // Build values as owned Vec<OxiSqlParam>
+        let mut params: Vec<OxiSqlParam> = vec![OxiSqlParam::Blob(wkb)];
+        for key in &prop_keys {
+            if let Some(val) = properties.get(key) {
+                params.push(json_to_param(val)?);
+            }
         }
 
-        conn.execute(&sql, params_from_iter(params.iter().map(|p| p.as_ref())))?;
+        let param_refs: Vec<&dyn ToSqlValue> =
+            params.iter().map(|p| p as &dyn ToSqlValue).collect();
 
-        Ok(conn.last_insert_rowid())
+        self.connector
+            .blocking_conn()
+            .execute(&sql, &param_refs)
+            .map_err(|e| Error::Query(e.to_string()))?;
+
+        // Get last inserted rowid
+        let rows = self
+            .connector
+            .blocking_conn()
+            .query("SELECT last_insert_rowid()", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
+
+        let last_id = rows
+            .first()
+            .and_then(|row| row.get_by_index(0))
+            .and_then(|v| {
+                if let oxisql_core::Value::I64(n) = v {
+                    Some(*n)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        Ok(last_id)
     }
 
-    /// Insert multiple features in batch.
+    /// Insert multiple features in batch using transaction SQL statements.
     pub fn insert_batch(
         &self,
-        features: &[(Geometry<f64>, HashMap<String, Value>)],
+        features: &[(Geometry<f64>, HashMap<String, JsonValue>)],
     ) -> Result<Vec<i64>> {
         if features.is_empty() {
             return Ok(Vec::new());
@@ -78,14 +106,14 @@ impl SqliteWriter {
         let mut ids = Vec::with_capacity(features.len());
         self.connector.begin_transaction()?;
 
-        let result = (|| {
+        let result = (|| -> std::result::Result<(), Error> {
             for chunk in features.chunks(self.batch_size) {
                 for (geometry, properties) in chunk {
                     let id = self.insert(geometry, properties)?;
                     ids.push(id);
                 }
             }
-            Ok::<_, Error>(())
+            Ok(())
         })();
 
         match result {
@@ -94,7 +122,7 @@ impl SqliteWriter {
                 Ok(ids)
             }
             Err(e) => {
-                self.connector.rollback_transaction()?;
+                let _ = self.connector.rollback_transaction();
                 Err(e)
             }
         }
@@ -105,75 +133,119 @@ impl SqliteWriter {
         &self,
         id: i64,
         geometry: &Geometry<f64>,
-        properties: &HashMap<String, Value>,
+        properties: &HashMap<String, JsonValue>,
     ) -> Result<()> {
         let wkb = geometry_to_wkb(geometry)?;
-        let conn = self.connector.conn();
 
-        let mut set_clauses = vec![format!("{} = ?", self.geometry_column)];
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(wkb)];
+        let mut set_clauses = vec![format!("{} = $1", self.geometry_column)];
+        let mut params: Vec<OxiSqlParam> = vec![OxiSqlParam::Blob(wkb)];
 
-        for (key, value) in properties {
-            set_clauses.push(format!("{} = ?", key));
-            params.push(json_to_sqlite_param(value)?);
+        let mut prop_keys: Vec<String> = properties.keys().cloned().collect();
+        prop_keys.sort();
+
+        for (i, key) in prop_keys.iter().enumerate() {
+            set_clauses.push(format!("{} = ${}", key, i + 2));
+            if let Some(val) = properties.get(key) {
+                params.push(json_to_param(val)?);
+            }
         }
 
-        params.push(Box::new(id));
+        // id is the last parameter
+        let id_param_idx = params.len() + 1;
+        params.push(OxiSqlParam::I64(id));
 
         let sql = format!(
-            "UPDATE {} SET {} WHERE id = ?",
+            "UPDATE {} SET {} WHERE id = ${}",
             self.table_name,
-            set_clauses.join(", ")
+            set_clauses.join(", "),
+            id_param_idx
         );
 
-        conn.execute(&sql, params_from_iter(params.iter().map(|p| p.as_ref())))?;
+        let param_refs: Vec<&dyn ToSqlValue> =
+            params.iter().map(|p| p as &dyn ToSqlValue).collect();
+
+        self.connector
+            .blocking_conn()
+            .execute(&sql, &param_refs)
+            .map_err(|e| Error::Query(e.to_string()))?;
 
         Ok(())
     }
 
     /// Delete a feature by ID.
     pub fn delete(&self, id: i64) -> Result<()> {
-        let conn = self.connector.conn();
-        let sql = format!("DELETE FROM {} WHERE id = ?", self.table_name);
-        conn.execute(&sql, [id])?;
+        let sql = format!("DELETE FROM {} WHERE id = $1", self.table_name);
+        let id_ref: &i64 = &id;
+        self.connector
+            .blocking_conn()
+            .execute(&sql, &[id_ref as &dyn ToSqlValue])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 
     /// Delete features matching a WHERE clause.
     pub fn delete_where(&self, where_clause: &str) -> Result<usize> {
-        let conn = self.connector.conn();
         let sql = format!("DELETE FROM {} WHERE {}", self.table_name, where_clause);
-        let rows = conn.execute(&sql, [])?;
-        Ok(rows)
+        let affected = self
+            .connector
+            .blocking_conn()
+            .execute(&sql, &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
+        Ok(affected as usize)
     }
 
     /// Truncate the table.
     pub fn truncate(&self) -> Result<()> {
-        let conn = self.connector.conn();
         let sql = format!("DELETE FROM {}", self.table_name);
-        conn.execute(&sql, [])?;
+        self.connector
+            .blocking_conn()
+            .execute(&sql, &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 }
 
-/// Convert JSON value to SQLite parameter.
-fn json_to_sqlite_param(value: &Value) -> Result<Box<dyn rusqlite::ToSql>> {
+/// An owned parameter value for dynamic SQL binding.
+enum OxiSqlParam {
+    Null,
+    I64(i64),
+    F64(f64),
+    Text(String),
+    Blob(Vec<u8>),
+    Bool(bool),
+}
+
+impl ToSqlValue for OxiSqlParam {
+    fn to_value(&self) -> oxisql_core::Value {
+        match self {
+            OxiSqlParam::Null => oxisql_core::Value::Null,
+            OxiSqlParam::I64(n) => oxisql_core::Value::I64(*n),
+            OxiSqlParam::F64(f) => oxisql_core::Value::F64(*f),
+            OxiSqlParam::Text(s) => oxisql_core::Value::Text(s.clone()),
+            OxiSqlParam::Blob(b) => oxisql_core::Value::Blob(b.clone()),
+            OxiSqlParam::Bool(b) => oxisql_core::Value::Bool(*b),
+        }
+    }
+}
+
+/// Convert JSON value to an owned OxiSqlParam.
+fn json_to_param(value: &JsonValue) -> Result<OxiSqlParam> {
     match value {
-        Value::Null => Ok(Box::new(rusqlite::types::Null)),
-        Value::Bool(b) => Ok(Box::new(*b as i64)),
-        Value::Number(n) => {
+        JsonValue::Null => Ok(OxiSqlParam::Null),
+        JsonValue::Bool(b) => Ok(OxiSqlParam::Bool(*b)),
+        JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(Box::new(i))
+                Ok(OxiSqlParam::I64(i))
             } else if let Some(f) = n.as_f64() {
-                Ok(Box::new(f))
+                Ok(OxiSqlParam::F64(f))
             } else {
                 Err(Error::TypeConversion("Invalid number".to_string()))
             }
         }
-        Value::String(s) => Ok(Box::new(s.clone())),
-        Value::Array(_) | Value::Object(_) => {
+        JsonValue::String(s) => Ok(OxiSqlParam::Text(s.clone())),
+        JsonValue::Array(_) | JsonValue::Object(_) => {
             let json_str = serde_json::to_string(value)?;
-            Ok(Box::new(json_str))
+            Ok(OxiSqlParam::Text(json_str))
         }
     }
 }

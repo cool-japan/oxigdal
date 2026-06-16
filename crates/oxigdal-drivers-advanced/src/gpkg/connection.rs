@@ -1,7 +1,8 @@
 //! GeoPackage database connection management.
 
 use crate::error::{Error, Result};
-use rusqlite::{Connection, OpenFlags, Transaction};
+use oxisql_core::ToSqlValue;
+use oxisql_sqlite_compat::blocking::{SqliteBlockingTransaction, SqliteConnectionBlocking};
 use std::path::Path;
 
 /// Connection mode for GeoPackage.
@@ -17,31 +18,30 @@ pub enum ConnectionMode {
 
 /// GeoPackage database connection wrapper.
 pub struct GpkgConnection {
-    conn: Connection,
+    conn: SqliteConnectionBlocking,
     mode: ConnectionMode,
 }
 
 impl GpkgConnection {
     /// Open an existing GeoPackage.
     pub fn open<P: AsRef<Path>>(path: P, mode: ConnectionMode) -> Result<Self> {
-        let flags = match mode {
-            ConnectionMode::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
-            ConnectionMode::ReadWrite => {
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            }
-            ConnectionMode::Create => {
-                return Err(Error::geopackage("Use create() to create new GeoPackage"));
-            }
-        };
+        if mode == ConnectionMode::Create {
+            return Err(Error::geopackage("Use create() to create new GeoPackage"));
+        }
 
-        let conn = Connection::open_with_flags(path, flags)?;
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| Error::geopackage("path contains non-UTF-8 characters"))?;
 
-        // Enable foreign keys
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let conn = SqliteConnectionBlocking::open(path_str)?;
 
-        // Set journal mode to WAL for better concurrency
+        // Enable foreign keys (best-effort; Limbo may not support this pragma)
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+
+        // Set journal mode to WAL for better concurrency (best-effort; Limbo defaults to WAL internally)
         if mode == ConnectionMode::ReadWrite {
-            conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+            let _ = conn.execute_batch("PRAGMA journal_mode = WAL;");
         }
 
         Ok(Self { conn, mode })
@@ -49,13 +49,18 @@ impl GpkgConnection {
 
     /// Create a new GeoPackage file.
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| Error::geopackage("path contains non-UTF-8 characters"))?;
 
-        // Enable foreign keys
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let conn = SqliteConnectionBlocking::open(path_str)?;
 
-        // Set journal mode to WAL
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // Enable foreign keys (best-effort; Limbo may not support this pragma)
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+
+        // Set journal mode to WAL (best-effort; Limbo defaults to WAL internally)
+        let _ = conn.execute_batch("PRAGMA journal_mode = WAL;");
 
         // Set application ID for GeoPackage
         conn.execute_batch("PRAGMA application_id = 0x47503130;")?;
@@ -67,53 +72,64 @@ impl GpkgConnection {
     }
 
     /// Get underlying SQLite connection.
-    pub fn connection(&self) -> &Connection {
+    pub fn connection(&self) -> &SqliteConnectionBlocking {
         &self.conn
     }
 
     /// Execute a query.
-    pub fn execute(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<usize> {
+    pub fn execute(&self, sql: &str, params: &[&dyn ToSqlValue]) -> Result<u64> {
         Ok(self.conn.execute(sql, params)?)
     }
 
     /// Execute a batch of SQL statements.
     pub fn execute_batch(&self, sql: &str) -> Result<()> {
-        Ok(self.conn.execute_batch(sql)?)
+        self.conn.execute_batch(sql)?;
+        Ok(())
     }
 
     /// Begin a transaction.
-    pub fn transaction(&mut self) -> Result<Transaction<'_>> {
+    pub fn transaction(&self) -> Result<SqliteBlockingTransaction<'_>> {
         Ok(self.conn.transaction()?)
     }
 
     /// List tables by type.
     pub fn list_tables(&self, table_type: super::schema::TableType) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT table_name FROM gpkg_contents WHERE data_type = ?1 ORDER BY table_name",
+        let type_str = table_type.as_str().to_string();
+        let rows = self.conn.query(
+            "SELECT table_name FROM gpkg_contents WHERE data_type = $1 ORDER BY table_name",
+            &[&type_str as &dyn ToSqlValue],
         )?;
 
-        let type_str = table_type.as_str();
-        let tables: rusqlite::Result<Vec<String>> =
-            stmt.query_map([type_str], |row| row.get(0))?.collect();
-
-        Ok(tables?)
+        rows.into_iter()
+            .map(|row| {
+                row.try_get_by_index::<String>(0)
+                    .map_err(|e| Error::geopackage(format!("column 0: {e}")))
+            })
+            .collect()
     }
 
     /// Check if table exists.
     pub fn table_exists(&self, table_name: &str) -> Result<bool> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-            [table_name],
-            |row| row.get(0),
+        let table_name_owned = table_name.to_string();
+        let rows = self.conn.query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$1",
+            &[&table_name_owned as &dyn ToSqlValue],
         )?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage("table_exists: no row returned"))?;
+        let count: i64 = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
         Ok(count > 0)
     }
 
     /// Flush changes to disk.
     pub fn flush(&mut self) -> Result<()> {
-        // Checkpoint the WAL file
         if self.mode != ConnectionMode::ReadOnly {
-            self.conn.execute_batch("PRAGMA wal_checkpoint(FULL);")?;
+            // Checkpoint: Limbo only supports Passive mode; ignore unsupported modes
+            let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
         }
         Ok(())
     }
@@ -129,9 +145,14 @@ impl GpkgConnection {
 
     /// Check database integrity.
     pub fn check_integrity(&self) -> Result<bool> {
-        let result: String = self
-            .conn
-            .query_row("PRAGMA integrity_check;", [], |row| row.get(0))?;
+        let rows = self.conn.query("PRAGMA integrity_check;", &[])?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage("integrity_check: no row returned"))?;
+        let result: String = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
         Ok(result == "ok")
     }
 
@@ -147,12 +168,24 @@ impl GpkgConnection {
 
     /// Get database size in bytes.
     pub fn size(&self) -> Result<i64> {
-        let page_count: i64 = self
-            .conn
-            .query_row("PRAGMA page_count;", [], |row| row.get(0))?;
-        let page_size: i64 = self
-            .conn
-            .query_row("PRAGMA page_size;", [], |row| row.get(0))?;
+        let rows = self.conn.query("PRAGMA page_count;", &[])?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage("page_count: no row returned"))?;
+        let page_count: i64 = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
+
+        let rows = self.conn.query("PRAGMA page_size;", &[])?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage("page_size: no row returned"))?;
+        let page_size: i64 = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
+
         Ok(page_count * page_size)
     }
 }

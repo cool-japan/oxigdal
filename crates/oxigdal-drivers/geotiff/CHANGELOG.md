@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - Unreleased
+
+### Added
+
+- **WebP compression codec** (TIFF tag 50001) under the `webp` feature flag, backed by the pure Rust `image-webp` crate. The decoder reads both VP8 (lossy) and VP8L (lossless) WebP payloads; the encoder produces lossless VP8L, which preserves raster values bit-exact and is the right default for COG bands. Lossy VP8 encoding requires the C `libwebp` library and is therefore excluded by COOLJAPAN's Pure Rust Policy.
+  - New public API: `compression::compress_webp_with_params(data, width, height, color_type)` and re-exported `compression::WebpColorType`.
+  - Dispatch in `compression::decompress` now recognises `Compression::WebP`; `compression::compress` directs callers to the `compress_webp_with_params` helper because WebP requires explicit dimensions.
+  - 3 new regression tests (`test_issue_6_webp_compression`, `test_issue_6_webp_dispatch_recognises_tag_50001`, `test_issue_6_webp_encoder_validates_input_length`).
+  - Closes [#6](https://github.com/cool-japan/oxigdal/issues/6).
+
 ## [0.1.0] - 2025-01-25
 
 ### Added

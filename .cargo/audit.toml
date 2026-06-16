@@ -61,4 +61,24 @@ ignore = [
     # Transitive dependency via rumqttc (latest stable 0.25.1 still pins the affected line).
     # Cannot be fixed upstream by us — same pattern as RUSTSEC-2025-0134.
     "RUSTSEC-2026-0104",
+
+    # RUSTSEC-2026-0173: `proc-macro-error2` - unmaintained
+    # Transitive dependency via mysql_async/mysql-common. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0173",
+
+    # RUSTSEC-2026-0174: `http-types` - Authorization::value ASCII invariant violation
+    # Transitive dependency via azure_core. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0174",
+
+    # RUSTSEC-2026-0178: `tokio-postgres` - Panic on DataRow with fewer columns
+    # Transitive dependency via oxigdal-postgis. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0178",
+
+    # RUSTSEC-2026-0179: `postgres-protocol` - Unbounded SCRAM iteration CPU DoS
+    # Transitive dependency via tokio-postgres/oxigdal-postgis. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0179",
+
+    # RUSTSEC-2026-0180: `postgres-protocol` - Panic decoding malformed hstore
+    # Transitive dependency via tokio-postgres/oxigdal-postgis. Cannot be fixed upstream by us.
+    "RUSTSEC-2026-0180",
 ]

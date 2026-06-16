@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxigdal-jupyter.svg)](https://crates.io/crates/oxigdal-jupyter)
 [![Documentation](https://docs.rs/oxigdal-jupyter/badge.svg)](https://docs.rs/oxigdal-jupyter)
 [![License](https://img.shields.io/crates/l/oxigdal-jupyter.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.89+-orange.svg)](https://www.rust-lang.org)
 
 Jupyter kernel integration for OxiGDAL with rich display capabilities, interactive widgets, and magic commands for geospatial data analysis in Jupyter notebooks.
 

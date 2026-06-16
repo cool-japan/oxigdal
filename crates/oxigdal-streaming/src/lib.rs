@@ -7,7 +7,7 @@
 //! - Windowing and watermarking for event-time processing
 //! - Rich set of transformations (map, filter, join, etc.)
 //! - Stateful operations with checkpointing
-//! - State backends (RocksDB) for fault tolerance
+//! - State backends (Pure-Rust LSM via OxiStore/fjall) for fault tolerance
 //!
 //! # Example
 //!

@@ -61,7 +61,7 @@ crossbeam-utils.workspace = true
 glam = { workspace = true }
 
 # Memory tracking
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { workspace = true, default-features = false }
 
 # Hash and crypto for shader caching
 blake3.workspace = true

@@ -107,7 +107,7 @@ npm run deploy:vercel
 - **Map Library:** Leaflet 1.9.4
 - **WASM:** wasm-bindgen + wasm-pack
 - **Styling:** Modern CSS with Grid & Flexbox
-- **Build:** Rust 1.85 + wasm-opt
+- **Build:** Rust 1.89 + wasm-opt
 - **Deploy:** GitHub Actions, Netlify, Vercel
 
 ### File Structure

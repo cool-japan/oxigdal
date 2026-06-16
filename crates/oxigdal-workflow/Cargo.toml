@@ -57,6 +57,10 @@ ahash = { workspace = true }
 bytes = { workspace = true }
 num_cpus.workspace = true
 
+# Cryptography
+hmac = { workspace = true }
+sha2 = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }
@@ -64,9 +68,11 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [features]
-default = ["full"]
-full = ["integrations", "server"]
-integrations = ["reqwest", "rdkafka"]
+default = ["server", "http-client"]
+full = ["http-client", "kafka", "server"]
+http-client = ["reqwest"]
+kafka = ["rdkafka"]
+integrations = ["http-client", "kafka"]
 server = ["axum", "tower", "tower-http"]
 
 [[bench]]

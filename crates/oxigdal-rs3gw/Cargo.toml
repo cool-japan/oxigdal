@@ -50,14 +50,14 @@ async-trait = { workspace = true, optional = true }
 futures = { workspace = true }
 
 # LRU cache for tile caching
-moka = { version = "0.12", features = ["future"] }
+moka = { workspace = true }
 
 # Serialization
 serde_json = { workspace = true }
 
 # Encryption dependencies (optional)
 getrandom = { workspace = true, optional = true }
-hmac = { version = "0.13", optional = true }
+hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -127,7 +127,7 @@ See platform-specific guides:
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.89+
 - For iOS: Xcode 15.0+
 - For Android: Android NDK 26+
 

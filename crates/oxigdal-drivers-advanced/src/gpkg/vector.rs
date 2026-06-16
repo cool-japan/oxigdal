@@ -2,10 +2,8 @@
 
 use super::{connection::GpkgConnection, metadata::Extent};
 use crate::error::{Error, Result};
+use oxisql_core::ToSqlValue;
 use std::str::FromStr;
-
-/// Type alias for extent bounds tuple (min_x, min_y, max_x, max_y).
-type ExtentBounds = Option<(Option<f64>, Option<f64>, Option<f64>, Option<f64>)>;
 
 /// Geometry type enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,13 +98,23 @@ impl FeatureTable {
     /// Open an existing feature table.
     pub fn open(conn: &GpkgConnection, table_name: &str) -> Result<Self> {
         // Query geometry columns table
-        let (geometry_column, geometry_type_str, srs_id): (String, String, i32) = conn
-            .connection()
-            .query_row(
-                "SELECT column_name, geometry_type_name, srs_id FROM gpkg_geometry_columns WHERE table_name = ?1",
-                [table_name],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
+        let table_name_owned = table_name.to_string();
+        let rows = conn.connection().query(
+            "SELECT column_name, geometry_type_name, srs_id FROM gpkg_geometry_columns WHERE table_name = $1",
+            &[&table_name_owned as &dyn ToSqlValue],
+        )?;
+        let row = rows.into_iter().next().ok_or_else(|| {
+            Error::geopackage(format!("no geometry columns for table '{table_name}'"))
+        })?;
+        let geometry_column: String = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
+        let geometry_type_str: String = row
+            .try_get_by_index(1)
+            .map_err(|e| Error::geopackage(format!("column 1: {e}")))?;
+        let srs_id: i32 = row
+            .try_get_by_index(2)
+            .map_err(|e| Error::geopackage(format!("column 2: {e}")))?;
 
         let geometry_type = GeometryType::from_str(&geometry_type_str)?;
 
@@ -135,24 +143,29 @@ impl FeatureTable {
         conn.execute_batch(&create_sql)?;
 
         // Register in gpkg_contents
+        let tname = table_name.to_string();
+        let features_str = "features".to_string();
+        let srs_id_i64: i64 = i64::from(srs_id);
         conn.execute(
-            "INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id) VALUES ($1, $2, $3, $4)",
             &[
-                &table_name as &dyn rusqlite::ToSql,
-                &"features",
-                &table_name,
-                &srs_id,
+                &tname as &dyn ToSqlValue,
+                &features_str,
+                &tname,
+                &srs_id_i64,
             ],
         )?;
 
         // Register in gpkg_geometry_columns
+        let geom_col_str = geometry_column.to_string();
+        let geom_type_str2 = geometry_type.as_str().to_string();
         conn.execute(
-            "INSERT INTO gpkg_geometry_columns (table_name, column_name, geometry_type_name, srs_id, z, m) VALUES (?1, ?2, ?3, ?4, 0, 0)",
+            "INSERT INTO gpkg_geometry_columns (table_name, column_name, geometry_type_name, srs_id, z, m) VALUES ($1, $2, $3, $4, 0, 0)",
             &[
-                &table_name as &dyn rusqlite::ToSql,
-                &geometry_column,
-                &geometry_type.as_str(),
-                &srs_id,
+                &tname as &dyn ToSqlValue,
+                &geom_col_str,
+                &geom_type_str2,
+                &srs_id_i64,
             ],
         )?;
 
@@ -186,24 +199,44 @@ impl FeatureTable {
 
     /// Count features.
     pub fn count(&self, conn: &GpkgConnection) -> Result<i64> {
-        let count: i64 = conn.connection().query_row(
-            &format!("SELECT COUNT(*) FROM {}", self.table_name),
-            [],
-            |row| row.get(0),
-        )?;
+        let rows = conn
+            .connection()
+            .query(&format!("SELECT COUNT(*) FROM {}", self.table_name), &[])?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage("count: no row returned"))?;
+        let count: i64 = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
         Ok(count)
     }
 
     /// Get extent.
     pub fn extent(&self, conn: &GpkgConnection) -> Result<Option<Extent>> {
-        let result: ExtentBounds = conn
-            .connection()
-            .query_row(
-                "SELECT min_x, min_y, max_x, max_y FROM gpkg_contents WHERE table_name = ?1",
-                [&self.table_name],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .ok();
+        let tname = self.table_name.clone();
+        let rows = conn.connection().query(
+            "SELECT min_x, min_y, max_x, max_y FROM gpkg_contents WHERE table_name = $1",
+            &[&tname as &dyn ToSqlValue],
+        )?;
+        let result: Option<(Option<f64>, Option<f64>, Option<f64>, Option<f64>)> =
+            if let Some(row) = rows.into_iter().next() {
+                let min_x: Option<f64> = row
+                    .try_get_by_index(0)
+                    .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
+                let min_y: Option<f64> = row
+                    .try_get_by_index(1)
+                    .map_err(|e| Error::geopackage(format!("column 1: {e}")))?;
+                let max_x: Option<f64> = row
+                    .try_get_by_index(2)
+                    .map_err(|e| Error::geopackage(format!("column 2: {e}")))?;
+                let max_y: Option<f64> = row
+                    .try_get_by_index(3)
+                    .map_err(|e| Error::geopackage(format!("column 3: {e}")))?;
+                Some((min_x, min_y, max_x, max_y))
+            } else {
+                None
+            };
 
         match result {
             Some((Some(min_x), Some(min_y), Some(max_x), Some(max_y))) => {

@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxigdal-dev-tools.svg)](https://crates.io/crates/oxigdal-dev-tools)
 [![Documentation](https://docs.rs/oxigdal-dev-tools/badge.svg)](https://docs.rs/oxigdal-dev-tools)
 [![License](https://img.shields.io/crates/l/oxigdal-dev-tools.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.89+-orange.svg)](https://www.rust-lang.org/)
 
 Comprehensive development tools for OxiGDAL: profiling, debugging, validation, and testing utilities for geospatial data processing in Rust.
 

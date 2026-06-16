@@ -8,9 +8,40 @@ use crate::datacite::{Creator, DataCiteMetadata, IdentifierType, ResourceTypeGen
 use crate::dcat::Dataset as DcatDataset;
 use crate::error::{MetadataError, Result};
 use crate::fgdc::{FgdcMetadata, Keywords, TimeInfo};
-use crate::inspire::InspireMetadata;
-use crate::iso19115::{DataIdentification, Iso19115Metadata, ResponsibleParty, Role};
+use crate::inspire::{InspireMetadata, ResourceLocator, ResourceLocatorFunction};
+use crate::iso19115::{
+    DataIdentification, Iso19115Metadata, OnlineFunction, ResponsibleParty, Role,
+};
 use chrono::Datelike;
+
+/// Extract a DOI from a list of identifier strings.
+/// Matches bare DOI (`10.NNNN/suffix`) or a `doi.org/` URL.
+fn extract_doi(ids: &[String]) -> Option<String> {
+    for id in ids {
+        let s = id.trim();
+        if s.starts_with("10.") && s.contains('/') {
+            return Some(s.to_string());
+        }
+        if let Some(pos) = s.find("doi.org/") {
+            let after = &s[pos + "doi.org/".len()..];
+            if after.starts_with("10.") {
+                return Some(after.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Map an ISO 19115 `OnlineFunction` variant to an INSPIRE `ResourceLocatorFunction`.
+fn map_online_function(f: &OnlineFunction) -> ResourceLocatorFunction {
+    match f {
+        OnlineFunction::Download => ResourceLocatorFunction::Download,
+        OnlineFunction::Information => ResourceLocatorFunction::Information,
+        OnlineFunction::OfflineAccess => ResourceLocatorFunction::OfflineAccess,
+        OnlineFunction::Order => ResourceLocatorFunction::Order,
+        OnlineFunction::Search => ResourceLocatorFunction::Search,
+    }
+}
 
 /// Transform ISO 19115 metadata to FGDC.
 pub fn iso19115_to_fgdc(iso: &Iso19115Metadata) -> Result<FgdcMetadata> {
@@ -112,19 +143,33 @@ pub fn fgdc_to_iso19115(fgdc: &FgdcMetadata) -> Result<Iso19115Metadata> {
 
 /// Transform ISO 19115 metadata to INSPIRE.
 pub fn iso19115_to_inspire(iso: &Iso19115Metadata) -> Result<InspireMetadata> {
-    let inspire = InspireMetadata {
+    let mut inspire = InspireMetadata {
         base: iso.clone(),
         ..Default::default()
     };
 
+    // Populate resource_locator by walking distribution_info → transfer_options → online
+    let mut locators: Vec<ResourceLocator> = Vec::new();
+    if let Some(ref dist) = iso.distribution_info {
+        for to in &dist.transfer_options {
+            for res in &to.online {
+                locators.push(ResourceLocator {
+                    url: res.linkage.clone(),
+                    description: res.description.clone(),
+                    function: map_online_function(&res.function),
+                });
+            }
+        }
+    }
+
     // INSPIRE requires at least one resource locator
-    // This is a placeholder - in practice would extract from ISO
-    if inspire.resource_locator.is_empty() {
+    if locators.is_empty() {
         return Err(MetadataError::TransformError(
             "ISO 19115 metadata lacks resource locator for INSPIRE".to_string(),
         ));
     }
 
+    inspire.resource_locator = locators;
     Ok(inspire)
 }
 
@@ -143,11 +188,43 @@ pub fn iso19115_to_datacite(iso: &Iso19115Metadata) -> Result<DataCiteMetadata> 
 
     let ident = &iso.identification_info[0];
 
+    // Extract a real DOI from citation.identifier; fail if none is present.
+    let doi = extract_doi(&ident.citation.identifier).ok_or_else(|| {
+        MetadataError::TransformError("ISO 19115 metadata lacks a DOI for DataCite".to_string())
+    })?;
+
+    // Extract publisher: first point_of_contact with an organization_name, then
+    // individual_name as fallback, then a hard fallback when neither is present.
+    let publisher: String = ident
+        .point_of_contact
+        .iter()
+        .find_map(|p| p.organization_name.clone())
+        .or_else(|| {
+            ident
+                .point_of_contact
+                .iter()
+                .find_map(|p| p.individual_name.clone())
+        })
+        // fallback: no organization/individual in ISO record
+        .unwrap_or_else(|| "Unknown Publisher".to_string());
+
+    // Publication year: use the first citation date that carries a year,
+    // preferring Publication-typed dates, then any date available.
+    let publication_year: u16 = ident
+        .citation
+        .date
+        .iter()
+        .find(|cd| matches!(cd.date_type, crate::iso19115::DateType::Publication))
+        .or_else(|| ident.citation.date.first())
+        .map(|cd| cd.date.year() as u16)
+        // fallback: ISO record carries no publication date
+        .unwrap_or_else(|| chrono::Utc::now().year() as u16);
+
     let mut builder = DataCiteMetadata::builder()
-        .identifier("10.0000/PLACEHOLDER", IdentifierType::Doi) // Would need actual DOI
+        .identifier(doi, IdentifierType::Doi)
         .title(ident.citation.title.clone())
-        .publisher("Unknown Publisher") // Would need to extract
-        .publication_year(chrono::Utc::now().year() as u16) // Would need to extract
+        .publisher(publisher)
+        .publication_year(publication_year)
         .resource_type(ResourceTypeGeneral::Dataset);
 
     // Add creators from responsible parties

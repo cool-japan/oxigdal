@@ -126,6 +126,9 @@ fn convert_select_item(item: &sql_ast::SelectItem) -> Result<SelectItem> {
         sql_ast::SelectItem::QualifiedWildcard(obj_name, _) => {
             Ok(SelectItem::QualifiedWildcard(obj_name.to_string()))
         }
+        sql_ast::SelectItem::ExprWithAliases { .. } => Err(crate::error::QueryError::Unsupported(
+            "ExprWithAliases SELECT items are not supported".into(),
+        )),
     }
 }
 

@@ -3,6 +3,30 @@
 //! Implements [`Point3D`] following the ASPRS LAS 1.4 specification (R15, November 2019)
 //! and [`BoundingBox3D`] for spatial queries.
 
+/// Waveform packet data per ASPRS LAS 1.4 R15 Tables 17-18.
+/// Present in point data record formats 9 and 10.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaveformPacket {
+    /// Index into the Waveform Packet Descriptor lookup table (1-255).
+    pub descriptor_index: u8,
+    /// Byte offset in the waveform data packets section (or external file).
+    pub byte_offset: u64,
+    /// Size in bytes of the waveform data packet.
+    pub packet_size: u32,
+    /// Return point waveform location: parametric t value at which the associated
+    /// return pulse was detected, measured in picoseconds.
+    pub return_point_loc: f32,
+    /// X(t) parametric displacement in the direction of the laser pulse
+    /// (metres per picosecond).
+    pub x_t: f32,
+    /// Y(t) parametric displacement in the direction of the laser pulse
+    /// (metres per picosecond).
+    pub y_t: f32,
+    /// Z(t) parametric displacement in the direction of the laser pulse
+    /// (metres per picosecond).
+    pub z_t: f32,
+}
+
 /// A single LAS/LAZ point record.
 ///
 /// Covers the core fields present in all LAS point data format IDs (0–10).
@@ -38,6 +62,8 @@ pub struct Point3D {
     pub green: Option<u16>,
     /// Blue channel colour value (present in formats 2, 3, 5, 7, 8).
     pub blue: Option<u16>,
+    /// Full-waveform packet data (present in formats 9 and 10 only).
+    pub waveform: Option<WaveformPacket>,
 }
 
 impl Point3D {
@@ -59,6 +85,7 @@ impl Point3D {
             red: None,
             green: None,
             blue: None,
+            waveform: None,
         }
     }
 

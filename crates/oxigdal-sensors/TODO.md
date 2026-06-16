@@ -5,7 +5,8 @@
 > **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace stub `MaximumLikelihood::classify` with a real Gaussian maximum-likelihood classifier
+- [x] Replace stub `MaximumLikelihood::classify` with a real Gaussian maximum-likelihood classifier
+  - Done: 2026-05-31 (Slice 28). Tests: 9 new (mlc_test) + 70 existing = 79 total.
   - **Verified gap:** `src/classification/supervised.rs:16-24` — literal:
     `pub fn classify(&self, data: &ArrayView2<f64>, _training_data: &ArrayView2<f64>, _training_labels: &ArrayView1<usize>) -> Result<Array1<usize>> { // Simplified: assign all to class 0  Ok(Array1::zeros(data.nrows())) }`
   - **Goal:** Per-pixel class assignment using the standard Gaussian Maximum-Likelihood Classifier (GMLC, Richards 1999 "Remote Sensing Digital Image Analysis" §8.3): for each class compute mean vector μ_c and covariance Σ_c from training data, classify each pixel x to `argmax_c [-0.5·ln|Σ_c| - 0.5·(x-μ_c)ᵀ Σ_c⁻¹ (x-μ_c) + ln(P(c))]`.

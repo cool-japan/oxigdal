@@ -307,7 +307,7 @@ Update status bar with results
 **Configuration:**
 - Build command: `wasm-pack build`
 - Publish directory: `.`
-- Environment: `RUST_VERSION=1.85`
+- Environment: `RUST_VERSION=1.89`
 - Headers: WASM MIME type, caching
 - Redirects: SPA support
 

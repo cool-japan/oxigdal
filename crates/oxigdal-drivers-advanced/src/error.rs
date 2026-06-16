@@ -37,8 +37,9 @@ pub enum Error {
     XmlParse(#[from] quick_xml::Error),
 
     /// SQLite database error
+    #[cfg(feature = "geopackage")]
     #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(#[from] oxisql_core::OxiSqlError),
 
     /// ZIP archive error
     #[error("ZIP error: {0}")]

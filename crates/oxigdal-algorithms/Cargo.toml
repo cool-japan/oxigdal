@@ -50,8 +50,8 @@ fastrand = { workspace = true }
 tracing = { workspace = true }
 
 # DSL parser
-pest = { version = "2", optional = true }
-pest_derive = { version = "2", optional = true }
+pest = { workspace = true, optional = true }
+pest_derive = { workspace = true, optional = true }
 
 # Spatial indexing and triangulation
 rstar = { workspace = true }

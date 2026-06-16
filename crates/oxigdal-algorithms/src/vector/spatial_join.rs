@@ -159,7 +159,7 @@ pub fn spatial_join_points(
                     );
 
                     rtree
-                        .locate_in_envelope(&envelope)
+                        .locate_in_envelope(envelope)
                         .filter(|indexed| {
                             point_distance(left_point, &indexed.point) <= options.distance
                         })
@@ -169,8 +169,7 @@ pub fn spatial_join_points(
                 SpatialJoinPredicate::Intersects => {
                     // For points, intersects means exactly coincident
                     let mut matches = Vec::new();
-                    for indexed in rtree.locate_at_point(&[left_point.coord.x, left_point.coord.y])
-                    {
+                    for indexed in rtree.locate_at_point([left_point.coord.x, left_point.coord.y]) {
                         matches.push(indexed.index);
                     }
                     matches
@@ -243,7 +242,7 @@ pub fn nearest_neighbor(query: &Point, points: &[Point]) -> Option<(usize, f64)>
     }
 
     let rtree = RTree::bulk_load(indexed_points);
-    let nearest = rtree.nearest_neighbor(&[query.coord.x, query.coord.y])?;
+    let nearest = rtree.nearest_neighbor([query.coord.x, query.coord.y])?;
 
     let distance = point_distance(query, &nearest.point);
 
@@ -268,7 +267,7 @@ pub fn k_nearest_neighbors(query: &Point, points: &[Point], k: usize) -> Vec<(us
     let rtree = RTree::bulk_load(indexed_points);
 
     rtree
-        .nearest_neighbor_iter(&[query.coord.x, query.coord.y])
+        .nearest_neighbor_iter([query.coord.x, query.coord.y])
         .take(k)
         .map(|indexed| {
             let dist = point_distance(query, &indexed.point);

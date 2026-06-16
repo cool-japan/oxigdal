@@ -401,7 +401,7 @@ fn neighbours_within(
     } else {
         // `locate_within_distance` requires a finite radius, so for
         // unbounded queries we walk the iterator of nearest neighbours.
-        for candidate in tree.nearest_neighbor_iter(&query) {
+        for candidate in tree.nearest_neighbor_iter(query) {
             let dx = candidate.x - query[0];
             let dy = candidate.y - query[1];
             let dist = (dx * dx + dy * dy).sqrt();

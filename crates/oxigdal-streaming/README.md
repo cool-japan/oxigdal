@@ -32,7 +32,7 @@ Real-time data processing and streaming pipelines for OxiGDAL.
 - **Keyed State**: Value, list, map, reducing, and aggregating state
 - **Operator State**: Broadcast and union list state
 - **Checkpointing**: Periodic checkpointing for fault tolerance
-- **State Backends**: In-memory and RocksDB backends
+- **State Backends**: In-memory and persistent Pure-Rust LSM (OxiStore/fjall) backends
 - **Recovery**: Automatic state recovery from checkpoints
 
 ## Installation
@@ -44,11 +44,11 @@ Add this to your `Cargo.toml`:
 oxigdal-streaming = "0.1.5"
 ```
 
-For RocksDB backend support:
+For the persistent LSM key-value state backend (Pure-Rust, via OxiStore/fjall):
 
 ```toml
 [dependencies]
-oxigdal-streaming = { version = "0.1.5", features = ["rocksdb-backend"] }
+oxigdal-streaming = { version = "0.1.5", features = ["kv-store"] }
 ```
 
 ## Usage
@@ -163,7 +163,7 @@ The streaming framework is designed for high performance:
 - Lock-free data structures where possible
 - Efficient buffer management with adaptive backpressure
 - Configurable parallelism for distributed processing
-- RocksDB backend for persistent state with minimal overhead
+- Pure-Rust LSM (OxiStore/fjall) backend for persistent state with minimal overhead
 
 ## COOLJAPAN Compliance
 

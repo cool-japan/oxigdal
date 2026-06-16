@@ -40,7 +40,7 @@ oxigdal-analytics = { workspace = true, optional = true }
 criterion.workspace = true
 
 # Profiling
-pprof = { version = "0.15", default-features = false, features = ["flamegraph", "prost-codec"] }
+pprof = { workspace = true }
 
 # Parallel processing
 rayon.workspace = true

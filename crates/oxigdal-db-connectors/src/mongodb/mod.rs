@@ -92,7 +92,7 @@ impl MongoDbConnector {
             .await
             .map_err(|e| Error::MongoDB(e.to_string()))?;
 
-        Ok(result.get_i32("ok") == Ok(1))
+        Ok(result.get_i32("ok").is_ok_and(|v| v == 1))
     }
 
     /// Get database version.

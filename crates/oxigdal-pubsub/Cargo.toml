@@ -57,14 +57,14 @@ async-trait = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 
 # Google Cloud Pub/Sub - Pure Rust SDK
-google-cloud-pubsub = { version = "0.33", optional = true }
-google-cloud-googleapis = { version = "0.16", features = ["pubsub"], optional = true }
+google-cloud-pubsub = { workspace = true, optional = true }
+google-cloud-googleapis = { workspace = true, features = ["pubsub"], optional = true }
 google-cloud-auth = { workspace = true }
 
 # Schema support - Pure Rust
 apache-avro = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
-prost-types = { version = "0.14", optional = true }
+prost-types = { workspace = true, optional = true }
 
 # Error handling
 anyhow = { workspace = true }

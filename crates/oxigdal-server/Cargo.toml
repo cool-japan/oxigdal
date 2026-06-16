@@ -24,7 +24,7 @@ oxigdal-geotiff.workspace = true
 axum.workspace = true
 tower = { workspace = true, features = ["util", "timeout", "load-shed", "limit"] }
 tower-http = { workspace = true, features = ["fs", "trace", "cors", "compression-full"] }
-hyper = { version = "1", features = ["full"] }
+hyper.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 
@@ -43,7 +43,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 
 # Image processing
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image.workspace = true
 png.workspace = true
 jpeg-encoder.workspace = true
 
@@ -64,7 +64,7 @@ chrono.workspace = true
 url.workspace = true
 
 # XML generation
-quick-xml = { version = "0.39", features = ["serialize"] }
+quick-xml = { workspace = true, features = ["serialize"] }
 
 # Compression
 oxiarc-archive = { workspace = true }

@@ -540,7 +540,7 @@ Planned for future phases:
 - OxiGDAL WASM (built from source)
 
 ### Development Dependencies
-- Rust 1.85+
+- Rust 1.89+
 - wasm-pack
 - http-server (Node.js, optional)
 

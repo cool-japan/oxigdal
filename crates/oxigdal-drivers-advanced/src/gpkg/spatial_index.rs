@@ -1,7 +1,9 @@
 //! GeoPackage spatial indexing with R-tree.
 
 use super::connection::GpkgConnection;
+use super::geom_envelope::read_envelope_from_blob;
 use crate::error::Result;
+use oxisql_core::ToSqlValue;
 use rstar::{AABB, RTree};
 
 /// Spatial index interface.
@@ -75,16 +77,32 @@ impl SpatialIndex for RTreeIndex {
     fn build(&mut self, conn: &GpkgConnection, table_name: &str) -> Result<()> {
         self.clear();
 
-        // Query all features with their bounding boxes
-        // This is a simplified version - in practice you'd extract bounds from WKB geometry
-        let sql = format!("SELECT fid FROM {} WHERE geom IS NOT NULL", table_name);
+        let sql = format!(
+            "SELECT fid, geom FROM {} WHERE geom IS NOT NULL",
+            table_name
+        );
+        let connection = conn.connection();
+        let raw_rows = connection.query(&sql, &[])?;
 
-        let mut stmt = conn.connection().prepare(&sql)?;
-        let _rows = stmt.query_map([], |row| {
-            let fid: i64 = row.get(0)?;
-            // Placeholder bounds - real implementation would calculate from geometry
-            Ok((fid, 0.0, 0.0, 1.0, 1.0))
-        })?;
+        let rows: Vec<(i64, Vec<u8>)> = raw_rows
+            .into_iter()
+            .filter_map(|row| {
+                let fid: i64 = row.try_get_by_index(0).ok()?;
+                let geom: Vec<u8> = row.try_get_by_index(1).ok()?;
+                Some((fid, geom))
+            })
+            .collect();
+
+        for (fid, blob) in rows {
+            match read_envelope_from_blob(&blob) {
+                Ok((min_x, min_y, max_x, max_y)) => {
+                    self.insert(fid, min_x, min_y, max_x, max_y);
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping fid {} due to geometry parse error: {}", fid, e);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -92,7 +110,7 @@ impl SpatialIndex for RTreeIndex {
     fn query(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Vec<i64> {
         let bounds = AABB::from_corners([min_x, min_y], [max_x, max_y]);
         self.tree
-            .locate_in_envelope_intersecting(&bounds)
+            .locate_in_envelope_intersecting(bounds)
             .map(|entry| entry.fid)
             .collect()
     }
@@ -134,15 +152,20 @@ pub fn create_rtree_extension(conn: &GpkgConnection, table_name: &str) -> Result
     conn.execute_batch(&create_sql)?;
 
     // Register extension
+    let tname = table_name.to_string();
+    let geom_col = "geom".to_string();
+    let ext_name = "gpkg_rtree_index".to_string();
+    let ext_def = "GeoPackage 1.0 Specification Annex L".to_string();
+    let ext_scope = "write-only".to_string();
     conn.execute(
         "INSERT INTO gpkg_extensions (table_name, column_name, extension_name, definition, scope)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+         VALUES ($1, $2, $3, $4, $5)",
         &[
-            &table_name as &dyn rusqlite::ToSql,
-            &"geom",
-            &"gpkg_rtree_index",
-            &"GeoPackage 1.0 Specification Annex L",
-            &"write-only",
+            &tname as &dyn ToSqlValue,
+            &geom_col,
+            &ext_name,
+            &ext_def,
+            &ext_scope,
         ],
     )?;
 

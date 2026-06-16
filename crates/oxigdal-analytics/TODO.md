@@ -44,13 +44,9 @@
   - **Done:** 2026-05-22 (Slice 25). New `src/regression/{mod,gwr}.rs` (gwr.rs ~855 LoC): `GwrKernel { Gaussian, Bisquare, Exponential }`, `GwrBandwidth { Fixed(f64), AdaptiveKnn(usize) }`, `GwrOptions`, `GwrResult { coefficients, predicted, residuals, local_r2, bandwidth, aicc }`, `gwr_fit`. Per-location weighted-least-squares via the same Gauss-Jordan inversion path `kriging.rs` uses (no new deps); golden-section AICc bandwidth optimization driven by trace-of-hat-matrix; rank-deficiency → `AnalyticsError` (never panics). Per-location loop parallelized behind the existing `parallel` feature.
   - **Tests:** 10 in `crates/oxigdal-analytics/tests/gwr_test.rs` (constant-data global intercept; OLS recovery with huge bandwidth; bisquare zero beyond bandwidth; gaussian weights decrease with distance; local coefficients track spatial trend; adaptive-knn bandwidth; AICc optimization selects reasonable bandwidth; rank-deficient error; predicted+residual=y; single-predictor slope recovery).
 
-- [ ] Local Moran's I scatterplot classification (HH / HL / LH / LL)
-  - **Goal:** Extend the existing local Moran's I implementation to classify each observation into `{HighHigh, HighLow, LowHigh, LowLow, NotSignificant}` based on its standardized value and the spatially lagged mean of neighbours, then return classes alongside the local I statistic.
-  - **Design:** For each location `i`: `z_i = (x_i - μ)/σ`; `lag_i = Σ_j w_ij·z_j`; classify by quadrant of `(z_i, lag_i)` with significance gate from existing permutation p-value (already in `hotspot`).
-  - **Files:** `crates/oxigdal-analytics/src/hotspot/local_moran.rs` (extend).
-  - **Tests:** (proposed) `test_local_moran_hh_quadrant_when_high_value_surrounded_by_high`, `test_local_moran_ll_quadrant_when_low_value_surrounded_by_low`, `test_local_moran_outlier_hl_classification`, `test_local_moran_pvalue_threshold_marks_nonsignificant`.
-  - **Risk:** Quadrant boundary at exactly zero — assign deterministically to `NotSignificant`.
-  - **Prerequisites:** None.
+- [x] Local Moran's I permutation inference + LisaClass re-export
+  - Done: 2026-05-31 (Slice 29). Tests: 13 new (local_moran_permutation_test) + 115 existing = 128 total.
+  - **Correction:** HH/HL/LH/LL quadrant classification was ALREADY implemented (moran.rs:43-56,297-306). The real gap was the `variance_i=1.0` significance placeholder (moran.rs:289-295) and missing `LisaClass` re-export from `hotspot/mod.rs`. Closed with: new `LocalMoransI::calculate_with_permutations` (Anselin 1995 conditional permutation, Knuth MMIX LCG Fisher-Yates, deterministic `seed` param); `LisaClass` added to `pub use moran::{...}` in `mod.rs`.
 
 - [ ] Parallel zonal statistics for large rasters
   - **Goal:** Rayon-parallel zonal aggregator that streams the raster in row-blocks, accumulates per-zone running statistics (count, sum, sum-of-squares, min, max), and merges thread-local accumulators at the end.

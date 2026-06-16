@@ -45,8 +45,9 @@ byteorder = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
-# State backend (RocksDB) - C FFI, feature-gated
-rocksdb = { version = "0.24", default-features = false, features = ["snappy"], optional = true }
+# State backend (OxiStore LSM via fjall) - Pure Rust, feature-gated
+oxistore-core = { workspace = true, optional = true }
+oxistore-kv-fjall = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -111,7 +112,8 @@ cloud-http = [
     "dep:reqwest",
 ]
 
-rocksdb-backend = ["dep:rocksdb"]
+# LSM key-value state backend (OxiStore + fjall, Pure Rust). Opt-in, non-default.
+kv-store = ["dep:oxistore-core", "dep:oxistore-kv-fjall"]
 
 [lib]
 doctest = false

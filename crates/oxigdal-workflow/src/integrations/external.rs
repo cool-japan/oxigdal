@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+#[cfg(feature = "integrations")]
+use tracing::debug;
+use tracing::{error, info, warn};
 
 // =============================================================================
 // HTTP/REST API Integration
@@ -61,13 +63,29 @@ impl Default for HttpClientConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HttpAuth {
     /// Bearer token authentication.
-    Bearer { token: String },
+    Bearer {
+        /// The bearer token value.
+        token: String,
+    },
     /// Basic authentication.
-    Basic { username: String, password: String },
+    Basic {
+        /// Username for basic auth.
+        username: String,
+        /// Password for basic auth.
+        password: String,
+    },
     /// API key authentication.
-    ApiKey { header_name: String, key: String },
+    ApiKey {
+        /// Header name to use for the API key (e.g. `X-API-Key`).
+        header_name: String,
+        /// API key value.
+        key: String,
+    },
     /// Custom header authentication.
-    Custom { headers: HashMap<String, String> },
+    Custom {
+        /// Map of header name → header value pairs.
+        headers: HashMap<String, String>,
+    },
 }
 
 /// HTTP request builder for REST API calls.
@@ -153,6 +171,27 @@ impl HttpResponse {
     }
 }
 
+/// Helper: appends query parameters to a URL string.
+///
+/// Returns the URL with query params appended, or the original URL unchanged if parsing fails.
+/// Defined separately to avoid method-resolution ambiguity with the local
+/// `DatabaseConnection::query` and `DatabaseTransaction::query` traits.
+#[cfg(feature = "integrations")]
+fn url_with_query_params(base_url: &str, params: &HashMap<String, String>) -> String {
+    match reqwest::Url::parse(base_url) {
+        Ok(mut url) => {
+            {
+                let mut pairs = url.query_pairs_mut();
+                for (k, v) in params {
+                    pairs.append_pair(k, v);
+                }
+            }
+            url.to_string()
+        }
+        Err(_) => base_url.to_owned(),
+    }
+}
+
 /// REST API client for external integrations.
 #[cfg(feature = "integrations")]
 pub struct RestApiClient {
@@ -167,7 +206,9 @@ impl RestApiClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
-            .map_err(|e| WorkflowError::integration("rest", format!("Failed to create client: {}", e)))?;
+            .map_err(|e| {
+                WorkflowError::integration("rest", format!("Failed to create client: {}", e))
+            })?;
 
         Ok(Self { config, client })
     }
@@ -180,7 +221,6 @@ impl RestApiClient {
             format!("{}{}", self.config.base_url, request.path)
         };
 
-        let start_time = std::time::Instant::now();
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
@@ -222,14 +262,25 @@ impl RestApiClient {
     async fn do_request(&self, url: &str, request: &HttpRequest) -> Result<HttpResponse> {
         let start_time = std::time::Instant::now();
 
+        // Incorporate query parameters into the URL before building the reqwest builder,
+        // so we never call `.query()` on `RequestBuilder` (which would be ambiguous with
+        // the local `DatabaseConnection::query` / `DatabaseTransaction::query` traits).
+        let effective_url;
+        let request_url = if request.query_params.is_empty() {
+            url
+        } else {
+            effective_url = url_with_query_params(url, &request.query_params);
+            effective_url.as_str()
+        };
+
         let mut req_builder = match request.method {
-            HttpMethod::Get => self.client.get(url),
-            HttpMethod::Post => self.client.post(url),
-            HttpMethod::Put => self.client.put(url),
-            HttpMethod::Patch => self.client.patch(url),
-            HttpMethod::Delete => self.client.delete(url),
-            HttpMethod::Head => self.client.head(url),
-            HttpMethod::Options => self.client.request(reqwest::Method::OPTIONS, url),
+            HttpMethod::Get => self.client.get(request_url),
+            HttpMethod::Post => self.client.post(request_url),
+            HttpMethod::Put => self.client.put(request_url),
+            HttpMethod::Patch => self.client.patch(request_url),
+            HttpMethod::Delete => self.client.delete(request_url),
+            HttpMethod::Head => self.client.head(request_url),
+            HttpMethod::Options => self.client.request(reqwest::Method::OPTIONS, request_url),
         };
 
         // Add default headers
@@ -240,11 +291,6 @@ impl RestApiClient {
         // Add request-specific headers
         for (key, value) in &request.headers {
             req_builder = req_builder.header(key, value);
-        }
-
-        // Add query parameters
-        if !request.query_params.is_empty() {
-            req_builder = req_builder.query(&request.query_params);
         }
 
         // Add authentication
@@ -288,10 +334,7 @@ impl RestApiClient {
             }
         }
 
-        let body = response
-            .json::<serde_json::Value>()
-            .await
-            .ok();
+        let body = response.json::<serde_json::Value>().await.ok();
 
         let response_time_ms = start_time.elapsed().as_millis() as u64;
 
@@ -459,13 +502,35 @@ pub enum MessageQueueType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueueAuth {
     /// Username/password authentication.
-    Credentials { username: String, password: String },
+    Credentials {
+        /// Username.
+        username: String,
+        /// Password.
+        password: String,
+    },
     /// API key authentication.
-    ApiKey { key: String },
+    ApiKey {
+        /// API key value.
+        key: String,
+    },
     /// OAuth2 authentication.
-    OAuth2 { client_id: String, client_secret: String, token_url: String },
+    OAuth2 {
+        /// OAuth2 client identifier.
+        client_id: String,
+        /// OAuth2 client secret.
+        client_secret: String,
+        /// Token endpoint URL.
+        token_url: String,
+    },
     /// TLS/mTLS authentication.
-    Tls { cert_path: String, key_path: String, ca_path: Option<String> },
+    Tls {
+        /// Path to the TLS certificate file.
+        cert_path: String,
+        /// Path to the TLS private key file.
+        key_path: String,
+        /// Optional path to the CA certificate file.
+        ca_path: Option<String>,
+    },
 }
 
 // =============================================================================
@@ -639,14 +704,22 @@ pub enum StorageEncryption {
     /// Server-managed keys.
     ServerManaged,
     /// Customer-managed keys.
-    CustomerManaged { key_id: String },
+    CustomerManaged {
+        /// Key identifier for the customer-managed key.
+        key_id: String,
+    },
 }
 
 /// Cloud storage trait.
 #[async_trait]
 pub trait CloudStorage: Send + Sync {
     /// Upload data to storage.
-    async fn upload(&self, key: &str, data: &[u8], options: UploadOptions) -> Result<ObjectMetadata>;
+    async fn upload(
+        &self,
+        key: &str,
+        data: &[u8],
+        options: UploadOptions,
+    ) -> Result<ObjectMetadata>;
 
     /// Download data from storage.
     async fn download(&self, key: &str) -> Result<Vec<u8>>;
@@ -704,9 +777,17 @@ pub enum StorageProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StorageCredentials {
     /// Access key credentials.
-    AccessKey { access_key: String, secret_key: String },
+    AccessKey {
+        /// Access key identifier.
+        access_key: String,
+        /// Secret access key.
+        secret_key: String,
+    },
     /// Service account credentials.
-    ServiceAccount { key_file: String },
+    ServiceAccount {
+        /// Path to the service account key file.
+        key_file: String,
+    },
     /// Instance profile (AWS) or managed identity (Azure).
     InstanceProfile,
 }
@@ -889,7 +970,9 @@ impl HttpCallbackHandler {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(|e| WorkflowError::integration("callback", format!("Failed to create client: {}", e)))?;
+            .map_err(|e| {
+                WorkflowError::integration("callback", format!("Failed to create client: {}", e))
+            })?;
 
         Ok(Self { config, client })
     }
@@ -911,7 +994,9 @@ impl CallbackHandler for HttpCallbackHandler {
             HttpMethod::Patch => self.client.patch(&self.config.url),
             HttpMethod::Delete => self.client.delete(&self.config.url),
             HttpMethod::Head => self.client.head(&self.config.url),
-            HttpMethod::Options => self.client.request(reqwest::Method::OPTIONS, &self.config.url),
+            HttpMethod::Options => self
+                .client
+                .request(reqwest::Method::OPTIONS, &self.config.url),
         };
 
         // Add headers
@@ -949,9 +1034,9 @@ impl CallbackHandler for HttpCallbackHandler {
             }
 
             // Clone request for retry
-            let req = request.try_clone().ok_or_else(|| {
-                WorkflowError::integration("callback", "Failed to clone request")
-            })?;
+            let req = request
+                .try_clone()
+                .ok_or_else(|| WorkflowError::integration("callback", "Failed to clone request"))?;
 
             match req.json(&payload).send().await {
                 Ok(response) => {
@@ -1044,20 +1129,23 @@ impl WebhookTrigger {
     }
 
     /// Add parameter mapping.
-    pub fn with_parameter(mut self, webhook_field: impl Into<String>, workflow_param: impl Into<String>) -> Self {
-        self.parameter_mapping.insert(webhook_field.into(), workflow_param.into());
+    pub fn with_parameter(
+        mut self,
+        webhook_field: impl Into<String>,
+        workflow_param: impl Into<String>,
+    ) -> Self {
+        self.parameter_mapping
+            .insert(webhook_field.into(), workflow_param.into());
         self
     }
 
     /// Validate HMAC signature.
     pub fn validate_signature(&self, payload: &[u8], signature: &str) -> bool {
-        use std::fmt::Write;
-
         if let Some(secret) = &self.secret {
-            // Simple HMAC-SHA256 validation (placeholder - would use actual crypto lib)
-            // In production, use ring or similar for proper HMAC
-            let expected = format!("sha256={}", hex_encode(payload, secret.as_bytes()));
-            constant_time_compare(&expected, signature)
+            let expected = format!("sha256={}", hmac_sha256_hex(payload, secret.as_bytes()));
+            // Normalize to lowercase — some webhook providers send uppercase hex
+            let signature_lower = signature.to_lowercase();
+            constant_time_compare(&expected, &signature_lower)
         } else {
             true // No secret configured, skip validation
         }
@@ -1076,14 +1164,25 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
     result == 0
 }
 
-/// Simple hex encoding for signature validation.
-fn hex_encode(data: &[u8], _key: &[u8]) -> String {
-    // Placeholder implementation
-    // In production, use proper HMAC-SHA256
-    data.iter()
-        .take(32)
-        .map(|b| format!("{:02x}", b))
-        .collect()
+/// HMAC-SHA256 hex digest for webhook signature validation.
+///
+/// Returns an empty string in the astronomically unlikely case that `KeyInit::new_from_slice`
+/// returns an error (HMAC is defined for keys of any length; this branch is unreachable).
+fn hmac_sha256_hex(data: &[u8], key: &[u8]) -> String {
+    use hmac::KeyInit;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    match <Hmac<Sha256>>::new_from_slice(key) {
+        Ok(mut mac) => {
+            mac.update(data);
+            mac.finalize()
+                .into_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        }
+        Err(_) => String::new(),
+    }
 }
 
 /// Webhook registry for managing webhook endpoints.
@@ -1172,7 +1271,11 @@ pub struct ExternalEvent {
 
 impl ExternalEvent {
     /// Create a new external event.
-    pub fn new(event_type: impl Into<String>, source: impl Into<String>, data: serde_json::Value) -> Self {
+    pub fn new(
+        event_type: impl Into<String>,
+        source: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             event_type: event_type.into(),
@@ -1211,7 +1314,11 @@ impl ExternalEvent {
     }
 
     /// Create from task state.
-    pub fn from_task_state(workflow_id: &str, task: &TaskState, event_type: impl Into<String>) -> Self {
+    pub fn from_task_state(
+        workflow_id: &str,
+        task: &TaskState,
+        event_type: impl Into<String>,
+    ) -> Self {
         Self::new(
             event_type,
             format!("workflow/{}/task/{}", workflow_id, task.task_id),
@@ -1276,11 +1383,22 @@ pub enum EventEmitterType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EmitterAuth {
     /// Bearer token.
-    Bearer { token: String },
+    Bearer {
+        /// The bearer token value.
+        token: String,
+    },
     /// API key.
-    ApiKey { key: String },
+    ApiKey {
+        /// API key value.
+        key: String,
+    },
     /// OAuth2.
-    OAuth2 { client_id: String, client_secret: String },
+    OAuth2 {
+        /// OAuth2 client identifier.
+        client_id: String,
+        /// OAuth2 client secret.
+        client_secret: String,
+    },
 }
 
 /// Multi-emitter that broadcasts events to multiple targets.
@@ -1446,7 +1564,8 @@ impl ExternalIntegrationRegistry {
             &state.workflow_id,
             &state.execution_id,
             serde_json::json!({"status": "completed"}),
-        ).with_state_snapshot(state);
+        )
+        .with_state_snapshot(state);
 
         let _ = self.emit_event(event).await;
         let _ = self.dispatch_callback(callback).await;
@@ -1463,7 +1582,8 @@ impl ExternalIntegrationRegistry {
             &state.workflow_id,
             &state.execution_id,
             serde_json::json!({"status": "failed", "error": error}),
-        ).with_state_snapshot(state);
+        )
+        .with_state_snapshot(state);
 
         let _ = self.emit_event(event).await;
         let _ = self.dispatch_callback(callback).await;
@@ -1613,7 +1733,10 @@ mod tests {
 
     #[test]
     fn test_callback_event_type_as_str() {
-        assert_eq!(CallbackEventType::WorkflowStarted.as_str(), "workflow.started");
+        assert_eq!(
+            CallbackEventType::WorkflowStarted.as_str(),
+            "workflow.started"
+        );
         assert_eq!(CallbackEventType::TaskCompleted.as_str(), "task.completed");
         assert_eq!(CallbackEventType::Custom.as_str(), "custom");
     }

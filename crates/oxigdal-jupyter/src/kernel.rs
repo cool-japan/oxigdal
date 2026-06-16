@@ -91,7 +91,7 @@ impl Default for KernelConfig {
             kernel_name: "oxigdal".to_string(),
             display_name: "OxiGDAL".to_string(),
             language: "rust".to_string(),
-            language_version: "1.85".to_string(),
+            language_version: "1.89".to_string(),
             file_extension: ".rs".to_string(),
             mimetype: "text/x-rustsrc".to_string(),
         }

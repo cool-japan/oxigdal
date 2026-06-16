@@ -207,10 +207,33 @@ pub enum FieldValue {
 }
 
 impl FieldValue {
-    /// Parses a field value from raw bytes
+    /// Parses a field value from raw bytes, decoding text as UTF-8 (lossy).
+    ///
+    /// This is a thin wrapper over [`FieldValue::parse_with_encoding`] kept for
+    /// backwards compatibility; new code should pass the table's encoding.
     pub fn parse(bytes: &[u8], field_type: FieldType, decimal_count: u8) -> Result<Self> {
-        // Trim whitespace
-        let trimmed = String::from_utf8_lossy(bytes).trim().to_string();
+        Self::parse_with_encoding(
+            bytes,
+            field_type,
+            decimal_count,
+            crate::dbf::encoding::DEFAULT,
+        )
+    }
+
+    /// Parses a field value from raw bytes, transcoding text via `encoding`.
+    ///
+    /// Numeric/logical/date fields are ASCII regardless of code page, so the
+    /// encoding only affects `Character` (and dereferenced memo) content.
+    pub fn parse_with_encoding(
+        bytes: &[u8],
+        field_type: FieldType,
+        decimal_count: u8,
+        encoding: &'static ::encoding_rs::Encoding,
+    ) -> Result<Self> {
+        // Transcode to UTF-8, then trim padding whitespace.
+        let trimmed = crate::dbf::encoding::decode(bytes, encoding)
+            .trim()
+            .to_string();
 
         if trimmed.is_empty() {
             return Ok(Self::Null);

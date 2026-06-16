@@ -13,7 +13,7 @@
 
 [build.environment]
   # Rust version
-  RUST_VERSION = "1.85"
+  RUST_VERSION = "1.89"
 
   # Node version
   NODE_VERSION = "18"

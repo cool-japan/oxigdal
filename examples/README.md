@@ -19,7 +19,7 @@ This directory contains 5 complete example applications covering the most common
 ### Prerequisites
 
 ```bash
-# Rust 1.85+
+# Rust 1.89+
 rustup update
 
 # Optional: PostGIS for vector example

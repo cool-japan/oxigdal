@@ -87,12 +87,7 @@ pub enum Error {
     Internal(String),
 }
 
-#[cfg(feature = "native")]
-impl From<rusqlite::Error> for Error {
-    fn from(err: rusqlite::Error) -> Self {
-        Error::Database(err.to_string())
-    }
-}
+// No rusqlite From impl — the native backend now uses the Pure-Rust OxiSQL engine.
 
 #[cfg(feature = "wasm")]
 impl From<wasm_bindgen::JsValue> for Error {

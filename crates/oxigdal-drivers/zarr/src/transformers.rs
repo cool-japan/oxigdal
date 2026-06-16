@@ -204,16 +204,13 @@ impl Sha256Transformer {
         Self { append }
     }
 
-    /// Computes SHA256 hash (simplified implementation)
+    /// Computes SHA256 hash per FIPS 180-4
     #[must_use]
     fn compute_hash(data: &[u8]) -> [u8; 32] {
-        // This is a placeholder - in production, use a proper SHA256 implementation
-        // like the `sha2` crate
-        let mut hash = [0u8; 32];
-        for (i, &byte) in data.iter().enumerate() {
-            hash[i % 32] ^= byte;
-        }
-        hash
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(data);
+        h.finalize().into()
     }
 }
 
@@ -295,24 +292,49 @@ impl AesGcmTransformer {
         })
     }
 
-    /// Encrypts data (placeholder implementation)
+    /// Encrypts data using NIST SP 800-38D AES-256-GCM.
+    ///
+    /// On-disk format: `nonce(12 bytes) || ciphertext_with_16_byte_tag`.
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // This is a placeholder - in production, use a proper AES-GCM implementation
-        // like the `aes-gcm` crate
-
-        // Simple XOR cipher for demonstration (NOT SECURE!)
-        let mut result = data.to_vec();
-        for (i, byte) in result.iter_mut().enumerate() {
-            *byte ^= self.key[i % self.key.len()];
-        }
-
-        Ok(result)
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|e| ZarrError::Internal {
+            message: e.to_string(),
+        })?;
+        // OS CSPRNG via getrandom — this is aes-gcm's own entropy provider,
+        // NOT the forbidden rand/rand_distr crate (SCIRS2 Policy).
+        let mut nb = [0u8; 12];
+        getrandom::fill(&mut nb).map_err(|e| ZarrError::Internal {
+            message: format!("entropy: {e}"),
+        })?;
+        let ct = cipher
+            .encrypt(Nonce::from_slice(&nb), data)
+            .map_err(|_| ZarrError::Internal {
+                message: "AES-GCM encrypt failed".into(),
+            })?;
+        let mut out = nb.to_vec();
+        out.extend_from_slice(&ct);
+        Ok(out)
     }
 
-    /// Decrypts data (placeholder implementation)
+    /// Decrypts data using NIST SP 800-38D AES-256-GCM.
+    ///
+    /// Expects the on-disk format: `nonce(12 bytes) || ciphertext_with_16_byte_tag`.
     fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // XOR cipher is symmetric
-        self.encrypt(data)
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+        if data.len() < 12 {
+            return Err(ZarrError::Internal {
+                message: "AES-GCM ciphertext too short (no nonce)".into(),
+            });
+        }
+        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|e| ZarrError::Internal {
+            message: e.to_string(),
+        })?;
+        let (nb, ct) = data.split_at(12);
+        cipher
+            .decrypt(Nonce::from_slice(nb), ct)
+            .map_err(|_| ZarrError::Internal {
+                message: "AES-GCM decrypt failed (authentication error)".into(),
+            })
     }
 }
 

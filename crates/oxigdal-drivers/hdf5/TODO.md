@@ -6,7 +6,8 @@
 
 ## High Priority (next slice - verified gaps)
 
-- [ ] Implement Superblock Version 2 / Version 3 parsing for modern HDF5 files
+- [x] Implement Superblock Version 2 / Version 3 parsing for modern HDF5 files
+  - Done: 2026-05-31 (Slice 28). Tests: 9 new (superblock_v2_test) + 120 existing = 129 total.
   - **Verified gap:** `src/reader.rs:144-149` - `SuperblockVersion::V2 | SuperblockVersion::V3 => { Err(Hdf5Error::feature_not_available(format!("Superblock version {:?} (requires hdf5_sys feature)", version))) }`. The `SuperblockVersion` enum (`src/reader.rs:34`) declares V0/V1/V2/V3 but only V0/V1 are parsed in the `match` block. NetCDF-4 and most modern HDF5 files (HDF5 library >= 1.10) use V2 or V3 by default, so this is the dominant compatibility gap.
   - **Goal:** Open and read HDF5 files produced by HDF5 library 1.10+ which uses Superblock V2/V3 by default.
   - **Design:** Per HDF5 File Format Spec §III.A.1 ("Disk Format Level 1A2 - Superblock Version 2"): V2 layout is `[magic(8) || version(1) || size_of_offsets(1) || size_of_lengths(1) || flags(1) || base_address(o) || superblock_extension_address(o) || end_of_file_address(o) || root_group_object_header_address(o) || checksum(4)]` (where `o` = size_of_offsets). V3 adds File Consistency Flags but keeps the layout. Read the fields, locate the root group's object header by `root_group_object_header_address`; the existing V0/V1 path reads root via Symbol Table Entry, V2/V3 reads via Object Header directly. The 32-bit Jenkins checksum at the end must validate.

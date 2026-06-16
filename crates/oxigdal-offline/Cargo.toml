@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["native"]
-native = ["rusqlite", "dep:tokio", "dep:futures"]
+native = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio", "dep:futures"]
 wasm = ["wasm-bindgen", "js-sys", "web-sys", "wasm-bindgen-futures"]
 serde = ["dep:serde", "dep:serde_json"]
 
@@ -37,8 +37,9 @@ async-trait = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
-# SQLite storage (native)
-rusqlite = { workspace = true, features = ["bundled"], optional = true }
+# Pure-Rust SQLite engine (native; replaces rusqlite / libsqlite3)
+oxisql-core = { workspace = true, optional = true }
+oxisql-sqlite-compat = { workspace = true, optional = true }
 
 # WASM support
 wasm-bindgen = { workspace = true, optional = true }

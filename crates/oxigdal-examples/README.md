@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxigdal-examples.svg)](https://crates.io/crates/oxigdal-examples)
 [![Documentation](https://docs.rs/oxigdal-examples/badge.svg)](https://docs.rs/oxigdal-examples)
 [![License](https://img.shields.io/crates/l/oxigdal-examples.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![COOLJAPAN](https://img.shields.io/badge/COOLJAPAN-Ecosystem-brightgreen.svg)](https://github.com/cool-japan)
 
 Collection of example programs demonstrating OxiGDAL usage for geospatial data processing. Learn how to work with raster data, Cloud Optimized GeoTIFF (COG), geospatial metadata, and cloud-native workflows using pure Rust.

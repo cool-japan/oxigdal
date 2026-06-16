@@ -400,8 +400,9 @@ pub fn find_all_intersections(segments: &[Segment]) -> Vec<IntersectionPoint> {
         // Collect all events at `batch_x` from the heap.
         while let Some(Reverse(ev)) = heap.peek() {
             if (ev.x - batch_x).abs() < 1e-12 {
-                let Reverse(ev) = heap.pop().unwrap();
-                pending.push(ev);
+                if let Some(Reverse(ev)) = heap.pop() {
+                    pending.push(ev);
+                }
             } else {
                 break;
             }
@@ -442,7 +443,9 @@ pub fn find_all_intersections(segments: &[Segment]) -> Vec<IntersectionPoint> {
                         }
                     } else {
                         // Normal segment: check adjacent neighbours only.
-                        let pos = status.position_of(ev.seg_a).unwrap();
+                        let Some(pos) = status.position_of(ev.seg_a) else {
+                            continue;
+                        };
                         if let Some(pred) = status.predecessor_at(pos) {
                             maybe_schedule_cross(
                                 ev.seg_a,

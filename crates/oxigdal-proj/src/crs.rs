@@ -424,9 +424,7 @@ impl Crs {
                 Ok(def.proj_string.clone())
             }
             CrsSource::Proj(proj_string) => Ok(proj_string.clone()),
-            CrsSource::Wkt(_) => Err(Error::unsupported_crs(
-                "WKT to PROJ conversion not yet implemented",
-            )),
+            CrsSource::Wkt(wkt) => crate::wkt_to_proj::wkt_to_proj_string(wkt),
             CrsSource::Custom { definition, .. } => Ok(definition.clone()),
             CrsSource::Compound { horizontal, .. } => horizontal.to_proj_string(),
         }

@@ -284,7 +284,9 @@ mod tests {
     }
 
     async fn create_test_engine(max_failures: usize) -> SyncEngine {
-        let mut backend = SqliteBackend::in_memory().expect("failed to create backend");
+        let mut backend = SqliteBackend::in_memory()
+            .await
+            .expect("failed to create backend");
         backend.initialize().await.expect("failed to initialize");
 
         let storage: Arc<RwLock<Box<dyn StorageBackend>>> =

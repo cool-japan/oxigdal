@@ -15,7 +15,7 @@ Quick start guide to get you up and running with OxiGDAL in minutes.
 
 ### Prerequisites
 
-- Rust 1.85 or later
+- Rust 1.89 or later
 - Cargo package manager
 - Git (optional, for examples)
 

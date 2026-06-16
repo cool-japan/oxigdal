@@ -5,7 +5,8 @@
 > **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] L1 (memory) cache with LRU + LFU + ARC + W-TinyLFU eviction policies
+- [x] L1 (memory) cache with LRU + LFU + ARC + W-TinyLFU eviction policies
+  - Done: 2026-05-31 (Slice 28). Tests: 19 new (wtinylfu_test) + 136 existing = 155 total.
   - **Verified gap:** Previous TODO Item 1 + clean source tree: `src/eviction.rs` (16 KB) exists with skeleton but tests count = 31 across whole crate suggests no end-to-end policy regression coverage.
   - **Goal:** All four canonical policies implemented behind a common `EvictionPolicy` trait, with crisp asymptotic complexity guarantees:
     - LRU: doubly-linked list + `HashMap`, O(1) get/put.

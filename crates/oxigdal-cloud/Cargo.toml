@@ -52,17 +52,17 @@ futures = { workspace = true, optional = true }
 # AWS S3
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
-aws-credential-types = { version = "1", optional = true }
+aws-credential-types = { workspace = true, optional = true }
 
 # Azure Blob Storage - Pure Rust SDK
-azure_storage = { version = "0.21", optional = true }
-azure_storage_blobs = { version = "0.21", optional = true }
-azure_core = { version = "0.34", optional = true }
-azure_identity = { version = "0.34", optional = true }
+azure_storage = { workspace = true, optional = true }
+azure_storage_blobs = { workspace = true, optional = true }
+azure_core = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
 
 # Google Cloud Storage - Pure Rust SDK
-google-cloud-storage = { version = "1.11", optional = true }
-google-cloud-auth = { version = "1.9", optional = true }
+google-cloud-storage = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
 
 # HTTP
 reqwest = { workspace = true, optional = true, features = ["stream", "json"] }
@@ -79,7 +79,7 @@ sha2 = { workspace = true, optional = true }
 oxiarc-archive = { workspace = true, optional = true }
 
 # OAuth2
-oauth2 = { version = "5", optional = true, default-features = false }
+oauth2 = { workspace = true, optional = true }
 
 # Time handling
 chrono = { workspace = true }

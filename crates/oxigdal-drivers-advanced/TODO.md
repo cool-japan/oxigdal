@@ -18,7 +18,8 @@
   - **Risk:** Full decoder is multi-thousand-LoC; consider scoping to Profile-0 (simple JP2) for v0.2 and full Part-1 for v1.0. Cross-check output against `openjpeg` reference outputs (host-side only; never linked in Pure-Rust build).
   - **Prerequisites:** None.
 
-- [ ] GeoPackage RTree spatial index from real geometry bounds
+- [x] GeoPackage RTree spatial index from real geometry bounds
+  - Done: 2026-05-31 (Slice 28). Tests: 6 new (spatial_index_test) + 117 existing = 123 total.
   - **Verified gap:** `src/gpkg/spatial_index.rs:78-87` — `// Query all features with their bounding boxes / // This is a simplified version - in practice you'd extract bounds from WKB geometry / … // Placeholder bounds - real implementation would calculate from geometry / Ok((fid, 0.0, 0.0, 1.0, 1.0))`
   - **Goal:** Build the `rstar::RTree<GeomEntry>` from real per-feature envelopes decoded from the GeoPackage WKB geometry column (GPKG binary header per OGC GeoPackage 1.4 §2.1.3, followed by ISO 13249-3 WKB).
   - **Design:** Replace the `query_map` placeholder with `SELECT fid, geom FROM {table} WHERE geom IS NOT NULL`; for each row, parse the GPKG binary header (4-byte magic `GP`, version, flags, srs_id, optional 32/64-byte envelope), then read the WKB body. If the envelope flag is set, use the embedded envelope; else compute bounds by streaming WKB coordinates. Output `(fid, min_x, min_y, max_x, max_y)`.

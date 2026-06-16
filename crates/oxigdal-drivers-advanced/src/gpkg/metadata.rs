@@ -20,7 +20,11 @@ impl GpkgMetadata {
     pub fn read(conn: &GpkgConnection) -> Result<Self> {
         let user_version: i32 = conn
             .connection()
-            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .query("PRAGMA user_version;", &[])
+            .ok()
+            .and_then(|rows| rows.into_iter().next())
+            .and_then(|row| row.try_get_by_index::<i64>(0).ok())
+            .map(|v| v as i32)
             .unwrap_or(0);
 
         let size = conn.size().ok();
@@ -145,28 +149,38 @@ impl Srs {
 
     /// Load SRS from database.
     pub fn load(conn: &GpkgConnection, srs_id: i32) -> Result<Self> {
-        let row: (String, String, i32, String, Option<String>) = conn.connection().query_row(
+        use oxisql_core::ToSqlValue;
+        let srs_id_i64 = i64::from(srs_id);
+        let rows = conn.connection().query(
             "SELECT srs_name, organization, organization_coordsys_id, definition, description
-             FROM gpkg_spatial_ref_sys WHERE srs_id = ?1",
-            [srs_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+             FROM gpkg_spatial_ref_sys WHERE srs_id = $1",
+            &[&srs_id_i64 as &dyn ToSqlValue],
         )?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::error::Error::geopackage(format!("SRS {srs_id} not found")))?;
+        let name: String = row
+            .try_get_by_index(0)
+            .map_err(|e| crate::error::Error::geopackage(format!("srs_name: {e}")))?;
+        let organization: String = row
+            .try_get_by_index(1)
+            .map_err(|e| crate::error::Error::geopackage(format!("organization: {e}")))?;
+        let organization_id: i64 = row.try_get_by_index(2).map_err(|e| {
+            crate::error::Error::geopackage(format!("organization_coordsys_id: {e}"))
+        })?;
+        let definition: String = row
+            .try_get_by_index(3)
+            .map_err(|e| crate::error::Error::geopackage(format!("definition: {e}")))?;
+        let description: Option<String> = row.try_get_by_index(4).ok();
 
         Ok(Self {
-            name: row.0,
+            name,
             id: srs_id,
-            organization: row.1,
-            organization_id: row.2,
-            definition: row.3,
-            description: row.4,
+            organization,
+            organization_id: organization_id as i32,
+            definition,
+            description,
         })
     }
 }

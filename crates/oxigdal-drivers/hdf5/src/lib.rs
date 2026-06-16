@@ -209,6 +209,7 @@ pub mod error;
 pub mod filters;
 pub mod group;
 pub mod reader;
+pub mod superblock_v2;
 pub mod writer;
 
 // Re-exports

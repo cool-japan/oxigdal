@@ -47,7 +47,7 @@ tracing = { workspace = true }
 num-traits = { workspace = true }
 
 # Pure Rust NetCDF-3 implementation (now enabled with v0.6 API)
-netcdf3 = { version = "0.6", optional = true }
+netcdf3 = { workspace = true, optional = true }
 
 # Pure Rust compression for NetCDF-4
 oxiarc-deflate = { workspace = true }
@@ -59,7 +59,7 @@ oxiarc-deflate = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
 
 # Date/time support for CF conventions
-chrono = { version = "0.4", optional = true, features = ["serde"] }
+chrono = { workspace = true, optional = true, features = ["serde"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

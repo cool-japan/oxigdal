@@ -159,6 +159,8 @@ pub mod projections;
 pub mod transform;
 pub mod ups_projection;
 pub mod wkt;
+#[cfg(feature = "std")]
+pub mod wkt_to_proj;
 
 // Re-export commonly used types
 pub use area_of_use::{AreaOfUse, area_of_use_for_epsg};

@@ -123,6 +123,13 @@ pub enum SensorError {
     #[error("SciRS2 error: {0}")]
     SciRS2Error(String),
 
+    /// Singular covariance matrix during MLC training
+    #[error("Singular covariance matrix for class {class_id}: matrix is not positive definite")]
+    SingularCovariance {
+        /// The class index whose covariance matrix is singular
+        class_id: usize,
+    },
+
     /// I/O error
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
@@ -228,6 +235,11 @@ impl SensorError {
     /// Create a SciRS2 error
     pub fn scirs2_error(msg: impl Into<String>) -> Self {
         Self::SciRS2Error(msg.into())
+    }
+
+    /// Create a singular covariance error for a given class
+    pub fn singular_covariance(class_id: usize) -> Self {
+        Self::SingularCovariance { class_id }
     }
 }
 

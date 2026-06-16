@@ -1,24 +1,24 @@
 //! SQLite/SpatiaLite spatial database connector.
 //!
 //! Provides support for reading and writing spatial data to SQLite databases
-//! with SpatiaLite extension.
+//! using the pure-Rust oxisql-sqlite-compat (limbo engine).
 
 pub mod reader;
 pub mod writer;
 
 use crate::error::{Error, Result};
 use geo_types::Geometry;
-use parking_lot::Mutex;
-use rusqlite::{Connection, OpenFlags};
+use oxisql_core::Value;
+use oxisql_sqlite_compat::blocking::SqliteConnectionBlocking;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// SQLite connector configuration.
 #[derive(Debug, Clone)]
 pub struct SqliteConfig {
-    /// Database file path.
+    /// Database file path (`:memory:` for in-memory).
     pub path: PathBuf,
-    /// Enable SpatiaLite extension.
+    /// Enable SpatiaLite extension (no-op in pure-Rust mode — always false).
     pub spatialite: bool,
     /// Open read-only.
     pub read_only: bool,
@@ -34,18 +34,19 @@ impl Default for SqliteConfig {
     fn default() -> Self {
         Self {
             path: PathBuf::from(":memory:"),
-            spatialite: true,
+            spatialite: false,
             read_only: false,
             create: true,
             wal_mode: true,
-            cache_size: 10240, // 10MB
+            cache_size: 10240,
         }
     }
 }
 
-/// SQLite spatial database connector.
+/// SQLite spatial database connector backed by the pure-Rust limbo engine.
+#[derive(Clone)]
 pub struct SqliteConnector {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<SqliteConnectionBlocking>,
     #[allow(dead_code)]
     config: SqliteConfig,
 }
@@ -53,43 +54,15 @@ pub struct SqliteConnector {
 impl SqliteConnector {
     /// Create a new SQLite connector.
     pub fn new(config: SqliteConfig) -> Result<Self> {
-        let mut flags = OpenFlags::empty();
-
-        if config.read_only {
-            flags.insert(OpenFlags::SQLITE_OPEN_READ_ONLY);
-        } else {
-            flags.insert(OpenFlags::SQLITE_OPEN_READ_WRITE);
-            if config.create {
-                flags.insert(OpenFlags::SQLITE_OPEN_CREATE);
-            }
-        }
-
-        let conn = Connection::open_with_flags(&config.path, flags)?;
-
-        // Enable WAL mode only for file-based databases (not in-memory)
-        // WAL mode doesn't work with in-memory databases and causes deadlocks
-        let is_memory = config.path.to_str() == Some(":memory:");
-        if config.wal_mode && !config.read_only && !is_memory {
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-        }
-
-        // Set cache size
-        conn.pragma_update(None, "cache_size", -config.cache_size)?;
-
-        // Enable foreign keys
-        conn.pragma_update(None, "foreign_keys", true)?;
-
-        // Load SpatiaLite extension if requested
-        if config.spatialite {
-            // Try to load SpatiaLite extension
-            // Note: This may fail if SpatiaLite is not installed
-            // We ignore errors since SpatiaLite might not be available
-            let _ =
-                conn.query_row::<i32, _, _>("SELECT InitSpatialMetadata(1)", [], |row| row.get(0));
-        }
+        let path_str = config
+            .path
+            .to_str()
+            .ok_or_else(|| Error::Configuration("Non-UTF-8 path".to_string()))?;
+        let conn = SqliteConnectionBlocking::open(path_str)
+            .map_err(|e| Error::Connection(e.to_string()))?;
 
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(conn),
             config,
         })
     }
@@ -108,60 +81,63 @@ impl SqliteConnector {
         Self::new(config)
     }
 
-    /// Get a connection lock.
-    pub fn conn(&self) -> parking_lot::MutexGuard<'_, Connection> {
-        self.conn.lock()
-    }
-
     /// Check if the connection is healthy.
     pub fn health_check(&self) -> Result<bool> {
-        let conn = self.conn();
-        let result: i32 = conn.query_row("SELECT 1", [], |row| row.get(0))?;
-        Ok(result == 1)
+        self.conn
+            .ping()
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        Ok(true)
     }
 
     /// Get database version.
     pub fn version(&self) -> Result<String> {
-        let conn = self.conn();
-        let version: String = conn.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
+        let rows = self
+            .conn
+            .query("SELECT sqlite_version()", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
+        let version = rows
+            .first()
+            .and_then(|row| row.get_by_index(0))
+            .and_then(|v| {
+                if let Value::Text(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string());
         Ok(version)
     }
 
     /// Check if SpatiaLite is loaded.
+    ///
+    /// Always returns `false` in pure-Rust mode (no SpatiaLite extension support).
     pub fn has_spatialite(&self) -> Result<bool> {
-        let conn = self.conn();
-        let result = conn.query_row("SELECT spatialite_version()", [], |row| {
-            let version: String = row.get(0)?;
-            Ok(version)
-        });
-
-        Ok(result.is_ok())
+        Ok(false)
     }
 
     /// Initialize spatial metadata.
+    ///
+    /// No-op in pure-Rust mode (SpatiaLite not available).
     pub fn init_spatial_metadata(&self) -> Result<()> {
-        let conn = self.conn();
-        // InitSpatialMetadata returns a result, so use query_row instead of execute
-        let _: i32 = conn.query_row("SELECT InitSpatialMetadata(1)", [], |row| row.get(0))?;
-        Ok(())
+        Err(Error::Configuration(
+            "SpatiaLite is not available in pure-Rust mode".to_string(),
+        ))
     }
 
-    /// Create a spatial table.
+    /// Create a spatial table (pure-Rust fallback without SpatiaLite).
     pub fn create_spatial_table(
         &self,
         table_name: &str,
         geometry_column: &str,
-        geometry_type: &str,
-        srid: i32,
+        _geometry_type: &str,
+        _srid: i32,
         additional_columns: &[(String, String)],
     ) -> Result<()> {
-        // Check for SpatiaLite availability BEFORE acquiring the lock
-        let has_spatialite = self.has_spatialite()?;
-
-        let conn = self.conn();
-
-        // Create the main table
-        let mut columns = vec!["id INTEGER PRIMARY KEY AUTOINCREMENT".to_string()];
+        let mut columns = vec![
+            "id INTEGER PRIMARY KEY AUTOINCREMENT".to_string(),
+            format!("{} BLOB", geometry_column),
+        ];
         for (col_name, col_type) in additional_columns {
             columns.push(format!("{} {}", col_name, col_type));
         }
@@ -172,132 +148,135 @@ impl SqliteConnector {
             columns.join(", ")
         );
 
-        conn.execute(&create_sql, [])?;
-
-        // Add geometry column using SpatiaLite function
-        if has_spatialite {
-            let add_geom_sql = format!(
-                "SELECT AddGeometryColumn('{}', '{}', {}, '{}', 'XY')",
-                table_name, geometry_column, srid, geometry_type
-            );
-
-            // AddGeometryColumn returns a result, so use query_row instead of execute
-            let _: i32 = conn.query_row(&add_geom_sql, [], |row| row.get(0))?;
-
-            // Create spatial index
-            let create_index_sql = format!(
-                "SELECT CreateSpatialIndex('{}', '{}')",
-                table_name, geometry_column
-            );
-
-            // CreateSpatialIndex returns a result, so use query_row instead of execute
-            let _: i32 = conn.query_row(&create_index_sql, [], |row| row.get(0))?;
-        } else {
-            // Fallback without SpatiaLite
-            let alter_sql = format!(
-                "ALTER TABLE {} ADD COLUMN {} BLOB",
-                table_name, geometry_column
-            );
-            conn.execute(&alter_sql, [])?;
-        }
+        self.conn
+            .execute(&create_sql, &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
 
         Ok(())
     }
 
     /// Drop a table.
     pub fn drop_table(&self, table_name: &str) -> Result<()> {
-        // Check for SpatiaLite availability BEFORE acquiring the lock
-        let has_spatialite = self.has_spatialite()?;
-
-        let conn = self.conn();
-
-        // Drop spatial index if it exists
-        if has_spatialite {
-            // DisableSpatialIndex returns a result, so use query_row instead of execute
-            let _: std::result::Result<i32, _> = conn.query_row(
-                &format!("SELECT DisableSpatialIndex('{}', 'geometry')", table_name),
-                [],
-                |row| row.get(0),
-            );
-        }
-
         let sql = format!("DROP TABLE IF EXISTS {}", table_name);
-        conn.execute(&sql, [])?;
-
+        self.conn
+            .execute(&sql, &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 
     /// List all tables.
     pub fn list_tables(&self) -> Result<Vec<String>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-        )?;
+        let rows = self
+            .conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                &[],
+            )
+            .map_err(|e| Error::Query(e.to_string()))?;
 
-        let tables = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<String>, _>>()?;
+        let tables = rows
+            .iter()
+            .filter_map(|row| {
+                row.get_by_index(0).and_then(|v| {
+                    if let Value::Text(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
 
         Ok(tables)
     }
 
-    /// Get table schema.
+    /// Get table schema as (column_name, type) pairs.
     pub fn table_schema(&self, table_name: &str) -> Result<Vec<(String, String)>> {
-        let conn = self.conn();
-        let sql = format!("PRAGMA table_info({})", table_name);
+        let sql = format!("PRAGMA table_info(\"{}\")", table_name);
+        let rows = self
+            .conn
+            .query(&sql, &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
 
-        let mut stmt = conn.prepare(&sql)?;
-        let schema = stmt
-            .query_map([], |row| {
-                let name: String = row.get(1)?;
-                let type_: String = row.get(2)?;
-                Ok((name, type_))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let schema = rows
+            .iter()
+            .filter_map(|row| {
+                let name = row.get_by_index(1).and_then(|v| {
+                    if let Value::Text(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })?;
+                let type_str = row
+                    .get_by_index(2)
+                    .and_then(|v| {
+                        if let Value::Text(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                Some((name, type_str))
+            })
+            .collect();
 
         Ok(schema)
     }
 
     /// Execute raw SQL.
     pub fn execute(&self, sql: &str) -> Result<usize> {
-        let conn = self.conn();
-        let rows = conn.execute(sql, [])?;
-        Ok(rows)
+        let affected = self
+            .conn
+            .execute(sql, &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
+        Ok(affected as usize)
     }
 
     /// Begin a transaction.
     pub fn begin_transaction(&self) -> Result<()> {
-        let conn = self.conn();
-        conn.execute("BEGIN TRANSACTION", [])?;
+        self.conn
+            .execute("BEGIN", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 
     /// Commit a transaction.
     pub fn commit_transaction(&self) -> Result<()> {
-        let conn = self.conn();
-        conn.execute("COMMIT", [])?;
+        self.conn
+            .execute("COMMIT", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 
     /// Rollback a transaction.
     pub fn rollback_transaction(&self) -> Result<()> {
-        let conn = self.conn();
-        conn.execute("ROLLBACK", [])?;
+        self.conn
+            .execute("ROLLBACK", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 
     /// Vacuum the database.
     pub fn vacuum(&self) -> Result<()> {
-        let conn = self.conn();
-        conn.execute("VACUUM", [])?;
+        self.conn
+            .execute("VACUUM", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
     }
 
     /// Analyze the database for query optimization.
     pub fn analyze(&self) -> Result<()> {
-        let conn = self.conn();
-        conn.execute("ANALYZE", [])?;
+        self.conn
+            .execute("ANALYZE", &[])
+            .map_err(|e| Error::Query(e.to_string()))?;
         Ok(())
+    }
+
+    /// Access the underlying blocking connection.
+    pub fn blocking_conn(&self) -> &SqliteConnectionBlocking {
+        &self.conn
     }
 }
 
@@ -313,7 +292,6 @@ pub fn geometry_to_wkb(geom: &Geometry<f64>) -> Result<Vec<u8>> {
 
     match geom {
         Geometry::Point(p) => {
-            // WKB type for Point
             wkb.write_all(&1u32.to_le_bytes())
                 .map_err(|e| Error::TypeConversion(e.to_string()))?;
             wkb.write_all(&p.x().to_le_bytes())
@@ -322,7 +300,6 @@ pub fn geometry_to_wkb(geom: &Geometry<f64>) -> Result<Vec<u8>> {
                 .map_err(|e| Error::TypeConversion(e.to_string()))?;
         }
         Geometry::LineString(ls) => {
-            // WKB type for LineString
             wkb.write_all(&2u32.to_le_bytes())
                 .map_err(|e| Error::TypeConversion(e.to_string()))?;
             wkb.write_all(&(ls.coords().count() as u32).to_le_bytes())
@@ -335,15 +312,11 @@ pub fn geometry_to_wkb(geom: &Geometry<f64>) -> Result<Vec<u8>> {
             }
         }
         Geometry::Polygon(poly) => {
-            // WKB type for Polygon
             wkb.write_all(&3u32.to_le_bytes())
                 .map_err(|e| Error::TypeConversion(e.to_string()))?;
-
             let num_rings = 1 + poly.interiors().len();
             wkb.write_all(&(num_rings as u32).to_le_bytes())
                 .map_err(|e| Error::TypeConversion(e.to_string()))?;
-
-            // Exterior ring
             let exterior = poly.exterior();
             wkb.write_all(&(exterior.coords().count() as u32).to_le_bytes())
                 .map_err(|e| Error::TypeConversion(e.to_string()))?;
@@ -353,8 +326,6 @@ pub fn geometry_to_wkb(geom: &Geometry<f64>) -> Result<Vec<u8>> {
                 wkb.write_all(&coord.y.to_le_bytes())
                     .map_err(|e| Error::TypeConversion(e.to_string()))?;
             }
-
-            // Interior rings
             for interior in poly.interiors() {
                 wkb.write_all(&(interior.coords().count() as u32).to_le_bytes())
                     .map_err(|e| Error::TypeConversion(e.to_string()))?;
@@ -389,19 +360,16 @@ pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
 
     let mut cursor = Cursor::new(wkb);
 
-    // Read byte order
     let _byte_order = cursor
         .read_u8()
         .map_err(|e| Error::GeometryParsing(e.to_string()))?;
 
-    // Read geometry type
     let geom_type = cursor
         .read_u32::<LittleEndian>()
         .map_err(|e| Error::GeometryParsing(e.to_string()))?;
 
     match geom_type {
         1 => {
-            // Point
             let x = cursor
                 .read_f64::<LittleEndian>()
                 .map_err(|e| Error::GeometryParsing(e.to_string()))?;
@@ -411,11 +379,9 @@ pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
             Ok(Geometry::Point(point!(x: x, y: y)))
         }
         2 => {
-            // LineString
             let num_points = cursor
                 .read_u32::<LittleEndian>()
                 .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-
             let mut coords = Vec::with_capacity(num_points as usize);
             for _ in 0..num_points {
                 let x = cursor
@@ -426,24 +392,18 @@ pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
                     .map_err(|e| Error::GeometryParsing(e.to_string()))?;
                 coords.push(Coord { x, y });
             }
-
             Ok(Geometry::LineString(LineString::from(coords)))
         }
         3 => {
-            // Polygon
             let num_rings = cursor
                 .read_u32::<LittleEndian>()
                 .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-
             if num_rings == 0 {
                 return Err(Error::GeometryParsing("Polygon has no rings".to_string()));
             }
-
-            // Exterior ring
             let num_points = cursor
                 .read_u32::<LittleEndian>()
                 .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-
             let mut exterior_coords = Vec::with_capacity(num_points as usize);
             for _ in 0..num_points {
                 let x = cursor
@@ -454,18 +414,14 @@ pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
                     .map_err(|e| Error::GeometryParsing(e.to_string()))?;
                 exterior_coords.push(Coord { x, y });
             }
-
             let exterior = LineString::from(exterior_coords);
             let mut interiors = Vec::new();
-
-            // Interior rings
             for _ in 1..num_rings {
-                let num_points = cursor
+                let ring_points = cursor
                     .read_u32::<LittleEndian>()
                     .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-
-                let mut interior_coords = Vec::with_capacity(num_points as usize);
-                for _ in 0..num_points {
+                let mut interior_coords = Vec::with_capacity(ring_points as usize);
+                for _ in 0..ring_points {
                     let x = cursor
                         .read_f64::<LittleEndian>()
                         .map_err(|e| Error::GeometryParsing(e.to_string()))?;
@@ -474,10 +430,8 @@ pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
                         .map_err(|e| Error::GeometryParsing(e.to_string()))?;
                     interior_coords.push(Coord { x, y });
                 }
-
                 interiors.push(LineString::from(interior_coords));
             }
-
             Ok(Geometry::Polygon(Polygon::new(exterior, interiors)))
         }
         _ => Err(Error::GeometryParsing(format!(

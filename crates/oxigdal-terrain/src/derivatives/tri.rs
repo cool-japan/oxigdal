@@ -1,7 +1,8 @@
 //! Terrain Ruggedness Index (TRI) calculation.
 //!
-//! TRI measures terrain heterogeneity by calculating the sum of absolute
-//! differences between a center cell and its neighbors.
+//! TRI measures terrain heterogeneity. Two variants are provided:
+//! - `tri`: RMS of differences between center and neighbors (default).
+//! - `tri_riley`: Riley et al. (1999) — sqrt(Σ(zᵢ − z_c)²).
 
 use crate::error::{Result, TerrainError};
 use num_traits::Float;
@@ -80,7 +81,14 @@ where
     Ok(tri_result)
 }
 
-/// Calculate TRI using Riley's original method (sum of absolute differences).
+/// Calculate TRI using Riley's original method.
+///
+/// Riley et al. (1999): TRI = sqrt(Σ(zᵢ − z_center)²)
+///
+/// Sums the squared differences between each of the (up to) 8 neighbours and
+/// the centre cell, then takes the square root.  This is **not** the mean of
+/// squared differences — it is the direct square-root of the sum, matching the
+/// original publication.
 pub fn tri_riley<T>(dem: &Array2<T>, nodata: Option<T>) -> Result<Array2<f64>>
 where
     T: Float + Into<f64> + Copy,
@@ -101,9 +109,9 @@ where
                 }
             }
 
-            let center_val = center.into();
-            let mut sum_abs_diff = 0.0;
-            let mut count = 0;
+            let center_val: f64 = center.into();
+            let mut sum_sq_diff = 0.0_f64;
+            let mut count = 0_usize;
 
             for dy in -1..=1_isize {
                 for dx in -1..=1_isize {
@@ -123,18 +131,14 @@ where
                             }
                         }
 
-                        let diff = (neighbor.into() - center_val).abs();
-                        sum_abs_diff += diff;
+                        let diff: f64 = neighbor.into() - center_val;
+                        sum_sq_diff += diff * diff;
                         count += 1;
                     }
                 }
             }
 
-            if count > 0 {
-                tri_result[[y, x]] = sum_abs_diff;
-            } else {
-                tri_result[[y, x]] = 0.0;
-            }
+            tri_result[[y, x]] = if count > 0 { sum_sq_diff.sqrt() } else { 0.0 };
         }
     }
 
@@ -271,6 +275,33 @@ mod tests {
         // Both should detect ruggedness but with different values
         assert!(tri_std[[2, 2]] > 0.0);
         assert!(tri_ril[[2, 2]] > 0.0);
+
+        // Riley formula: sqrt(Σ(zᵢ − z_c)²) — NOT mean, NOT sum of abs
+        // 8 neighbours each differ from center by 10.
+        // Expected: sqrt(8 * 10^2) = sqrt(800) ≈ 28.284
+        assert_relative_eq!(
+            tri_ril[[2, 2]],
+            (8.0_f64 * 100.0_f64).sqrt(),
+            epsilon = 1e-10
+        );
+        // tri (RMS) gives sqrt(800/8) = 10.0 — the two methods must differ
+        assert_relative_eq!(tri_std[[2, 2]], 10.0_f64, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tri_riley_formula_correctness() {
+        // 3×3 DEM: center = 10, all 8 neighbours = 8 (diff = 2)
+        // Riley (1999): TRI = sqrt(Σ(zᵢ − z_c)²) = sqrt(8 * 4) = sqrt(32) ≈ 5.657
+        // (NOT 8*2 = 16, which would be sum of absolute differences)
+        let dem = Array2::from_shape_vec(
+            (3, 3),
+            vec![8.0_f64, 8.0, 8.0, 8.0, 10.0, 8.0, 8.0, 8.0, 8.0],
+        )
+        .expect("shape_vec");
+
+        let result = tri_riley(&dem, None).expect("tri_riley failed");
+        let expected = (8.0_f64 * 4.0_f64).sqrt(); // sqrt(32) ≈ 5.6568…
+        assert_relative_eq!(result[[1, 1]], expected, epsilon = 1e-10);
     }
 
     #[test]

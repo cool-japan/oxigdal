@@ -72,17 +72,47 @@ pub struct ShapefileReader {
     index_entries: Option<Vec<IndexEntry>>,
     /// CRS as WKT string from .prj file (if present)
     pub crs: Option<String>,
-    /// Character encoding from .cpg file (if present)
+    /// Character encoding label from .cpg file (if present)
     pub encoding: Option<String>,
+    /// Resolved encoding used to transcode DBF text fields.
+    ///
+    /// Chosen by priority: an explicit override → the `.cpg` label → the DBF
+    /// header code page (LDID byte) → UTF-8.
+    resolved_encoding: &'static ::encoding_rs::Encoding,
 }
 
 impl ShapefileReader {
     /// Opens a Shapefile from a base path (without extension)
     ///
-    /// Reads the .shp, .dbf, and optionally .shx, .prj, and .cpg files.
+    /// Reads the .shp, .dbf, and optionally .shx, .prj, and .cpg files. The DBF
+    /// text encoding is auto-detected from the `.cpg` file or the DBF header
+    /// code page; use [`ShapefileReader::open_with_encoding`] to force one.
     pub fn open<P: AsRef<Path>>(base_path: P) -> Result<Self> {
-        let base_path = base_path.as_ref();
+        Self::open_impl(base_path.as_ref(), None)
+    }
 
+    /// Opens a Shapefile, forcing a specific DBF text encoding.
+    ///
+    /// `encoding_label` is any label `encoding_rs` accepts (e.g. `"UTF-8"`,
+    /// `"windows-1252"`, `"GBK"`) or a numeric code page (e.g. `"1252"`,
+    /// `"65001"`). This overrides both the `.cpg` file and the header code page,
+    /// which is useful when those are absent or wrong.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `encoding_label` is not a recognised encoding, or if
+    /// the shapefile cannot be opened.
+    pub fn open_with_encoding<P: AsRef<Path>>(base_path: P, encoding_label: &str) -> Result<Self> {
+        let encoding = crate::dbf::resolve_cpg(encoding_label).ok_or_else(|| {
+            ShapefileError::encoding_error(format!("unknown encoding label: '{encoding_label}'"))
+        })?;
+        Self::open_impl(base_path.as_ref(), Some(encoding))
+    }
+
+    fn open_impl(
+        base_path: &Path,
+        encoding_override: Option<&'static ::encoding_rs::Encoding>,
+    ) -> Result<Self> {
         // Construct file paths
         let shp_path = Self::with_extension(base_path, "shp");
         let dbf_path = Self::with_extension(base_path, "dbf");
@@ -104,6 +134,7 @@ impl ShapefileReader {
         })?;
         let dbf_reader = BufReader::new(dbf_file);
         let mut dbf_reader = DbfReader::new(dbf_reader)?;
+        let header_code_page = dbf_reader.header().code_page;
         // Discover and attach the sibling memo file (`.dbt` / `.DBT`) if present.
         if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
             if let Ok(memo) = MemoFile::open(&memo_path) {
@@ -136,10 +167,7 @@ impl ShapefileReader {
             None
         };
 
-        // Read .cpg file (optional) — contains character encoding name
-        // NOTE: Encoding information is stored but DBF string fields currently use
-        // String::from_utf8_lossy as a fallback for non-UTF-8 data. Full encoding
-        // transcoding via encoding_rs is a follow-up item.
+        // Read .cpg file (optional) — contains the character-encoding label.
         let encoding = if cpg_path.exists() {
             std::fs::read_to_string(&cpg_path)
                 .ok()
@@ -149,6 +177,13 @@ impl ShapefileReader {
             None
         };
 
+        // Resolve the DBF text encoding: explicit override → .cpg label →
+        // DBF header code page (LDID) → UTF-8.
+        let resolved_encoding = encoding_override
+            .or_else(|| encoding.as_deref().and_then(crate::dbf::resolve_cpg))
+            .or_else(|| crate::dbf::resolve_ldid(header_code_page))
+            .unwrap_or(::encoding_rs::UTF_8);
+
         Ok(Self {
             base_path: base_path.to_path_buf(),
             header,
@@ -156,6 +191,7 @@ impl ShapefileReader {
             index_entries,
             crs,
             encoding,
+            resolved_encoding,
         })
     }
 
@@ -179,13 +215,23 @@ impl ShapefileReader {
         self.crs.as_deref()
     }
 
-    /// Returns the character encoding name from the .cpg file, if present
+    /// Returns the character encoding label from the .cpg file, if present.
     ///
-    /// Common values: `"UTF-8"`, `"CP1252"`, `"ISO-8859-1"`.
-    /// NOTE: Non-UTF-8 encodings are not yet transcoded; DBF fields use
-    /// `String::from_utf8_lossy` as a fallback.
+    /// Common values: `"UTF-8"`, `"CP1252"`, `"ISO-8859-1"`. This is the raw
+    /// label; for the encoding actually used to decode DBF text (which also
+    /// considers the DBF header code page and any override) see
+    /// [`ShapefileReader::resolved_encoding`].
     pub fn encoding(&self) -> Option<&str> {
         self.encoding.as_deref()
+    }
+
+    /// Returns the encoding used to transcode DBF text fields.
+    ///
+    /// Resolved by priority: an explicit override (see
+    /// [`ShapefileReader::open_with_encoding`]) → the `.cpg` label → the DBF
+    /// header code page → UTF-8. Use `.name()` for its canonical label.
+    pub fn resolved_encoding(&self) -> &'static ::encoding_rs::Encoding {
+        self.resolved_encoding
     }
 
     /// Returns features whose bounding box intersects the given query bbox.
@@ -263,6 +309,7 @@ impl ShapefileReader {
                 dbf_reader.set_memo_file(memo);
             }
         }
+        dbf_reader.set_encoding(self.resolved_encoding);
 
         Ok(FeatureIter {
             shp_reader,
@@ -329,6 +376,7 @@ impl ShapefileReader {
                 dbf_reader.set_memo_file(memo);
             }
         }
+        dbf_reader.set_encoding(self.resolved_encoding);
 
         // Read all shape records
         let shape_records = shp_reader.read_all_records()?;

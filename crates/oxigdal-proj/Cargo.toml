@@ -17,7 +17,7 @@ categories = ["science", "algorithms"]
 default = ["std"]
 std = ["thiserror/std", "serde/std", "dep:serde_json", "dep:once_cell", "dep:proj4rs"]
 proj-sys = ["dep:proj"]  # Optional C bindings to PROJ library
-proj-db = ["dep:rusqlite"]  # Enable PROJ.db SQLite reader for ~7500 EPSG codes
+proj-db = ["dep:oxisql-sqlite-compat", "dep:oxisql-core"]  # Enable PROJ.db SQLite reader for ~7500 EPSG codes
 
 [dependencies]
 thiserror = { workspace = true }
@@ -30,18 +30,20 @@ serde_json = { workspace = true, optional = true }
 once_cell = { workspace = true, optional = true }
 
 # Pure Rust projection implementation (std only — proj4rs requires std)
-proj4rs = { version = "0.1.10", optional = true }
+proj4rs = { workspace = true, optional = true }
 
 # Optional C bindings to PROJ library
-proj = { version = "0.31", optional = true }
+proj = { workspace = true, optional = true }
 
 # Optional SQLite reader for system PROJ.db
-rusqlite = { workspace = true, optional = true, features = ["bundled"] }
+oxisql-sqlite-compat = { workspace = true, optional = true }
+oxisql-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 proptest = { workspace = true }
-rusqlite = { workspace = true, features = ["bundled"] }
+oxisql-core = { workspace = true }
+oxisql-sqlite-compat = { workspace = true }
 
 [build-dependencies]
 serde = { workspace = true, features = ["derive"] }

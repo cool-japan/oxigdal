@@ -3,7 +3,7 @@
 # Author: COOLJAPAN OU (Team Kitasan)
 
 # Stage 1: Builder with full Rust toolchain
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.89-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -80,7 +80,7 @@ ENV RUST_LOG=info \
     RUST_BACKTRACE=1
 
 # Stage 3: Development base (includes build tools)
-FROM rust:1.85-bookworm AS dev-base
+FROM rust:1.89-bookworm AS dev-base
 
 # Install development dependencies
 RUN apt-get update && apt-get install -y \

@@ -32,6 +32,8 @@ oxigdal-algorithms = { workspace = true }
 oxigdal-index = { workspace = true }
 oxigdal-geotiff = { workspace = true }
 oxigdal-proj = { workspace = true }
+oxigdal-stac = { workspace = true }
+oxigdal-gpkg = { workspace = true }
 
 # TOML parsing for rules
 toml = { workspace = true }

@@ -26,6 +26,9 @@ pub mod warming;
 pub mod write_policy;
 
 pub use error::{CacheError, Result};
+pub use eviction::{
+    CountMinSketch, EvictionPolicy, EvictionPolicyType, EvictionStats, WTinyLfuEviction,
+};
 pub use multi_tier::{CacheKey, CacheTier, CacheValue, MultiTierCache};
 
 /// Cache statistics

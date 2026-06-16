@@ -96,6 +96,8 @@ pub struct MemoFile {
     block_size: u32,
     version: MemoVersion,
     next_block: u32,
+    /// Encoding used to transcode memo payloads (defaults to UTF-8).
+    encoding: &'static encoding_rs::Encoding,
 }
 
 impl std::fmt::Debug for MemoFile {
@@ -156,7 +158,13 @@ impl MemoFile {
             block_size,
             version,
             next_block,
+            encoding: encoding_rs::UTF_8,
         })
+    }
+
+    /// Overrides the encoding used to transcode memo payloads.
+    pub fn set_encoding(&mut self, encoding: &'static encoding_rs::Encoding) {
+        self.encoding = encoding;
     }
 
     /// Returns the block size declared in the header (default 512).
@@ -219,7 +227,11 @@ impl MemoFile {
             payload.pop();
         }
 
-        Ok(String::from_utf8_lossy(&payload).into_owned())
+        Ok(self
+            .encoding
+            .decode_without_bom_handling(&payload)
+            .0
+            .into_owned())
     }
 
     /// Legacy fallback: scan forward from the current file position for the
@@ -236,7 +248,11 @@ impl MemoFile {
 
             if let Some(pos) = buf.windows(2).position(|w| w == [0x1A, 0x1A]) {
                 buf.truncate(pos);
-                return Ok(String::from_utf8_lossy(&buf).into_owned());
+                return Ok(self
+                    .encoding
+                    .decode_without_bom_handling(&buf)
+                    .0
+                    .into_owned());
             }
 
             if buf.len() > TERMINATOR_SEARCH_BOUND {

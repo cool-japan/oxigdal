@@ -57,6 +57,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 once_cell.workspace = true
+sha2 = { workspace = true }
+aes-gcm = { workspace = true }
+getrandom = { workspace = true }
 
 # Compression
 oxiarc-archive = { workspace = true, optional = true }
@@ -73,8 +76,8 @@ async-trait = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 
 # S3
-aws-sdk-s3 = { version = "1", optional = true }
-aws-config = { version = "1", optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
 
 # HTTP
 reqwest = { workspace = true, optional = true, features = ["stream"] }
@@ -83,7 +86,7 @@ reqwest = { workspace = true, optional = true, features = ["stream"] }
 rayon = { workspace = true, optional = true }
 
 # Caching
-lru = { version = "0.17", optional = true }
+lru = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -6,25 +6,16 @@
 
 ## High Priority (next slice - verified gaps)
 
-- [ ] Replace placeholder SHA256 with real implementation in checksum transformer
-  - **Verified gap:** `src/transformers.rs:210` - `// This is a placeholder - in production, use a proper SHA256 implementation` and `src/transformers.rs:213-215` - `for (i, &byte) in data.iter().enumerate() { hash[i % 32] ^= byte; }`. This is an XOR fold, not a hash.
-  - **Goal:** Zarr v3 `c2c` checksum codec produces real FIPS 180-4 SHA-256 digests so integrity verification works against files written by zarr-python / numcodecs.
-  - **Design:** Use the `sha2` workspace crate (Pure Rust, RustCrypto). Replace the body of `Sha256Transformer::compute_hash` with `sha2::Sha256::digest(data).into()`. Spec: FIPS PUB 180-4 §6.2. Zarr v3 ZEP-0007 names this codec `sha256`.
-  - **Files:** `src/transformers.rs`, `Cargo.toml` (add `sha2 = { workspace = true }` if not already)
-  - **Tests:** (proposed) `test_sha256_empty_string_matches_fips_kat`, `test_sha256_known_input_abc`, `test_sha256_append_round_trip`, `test_sha256_prepend_round_trip`, `test_sha256_corruption_detected`
-  - **Risk:** Existing zarr files written with the XOR placeholder will fail to verify; this is a breaking change for data written by previous oxigdal-zarr versions, but since the placeholder never matched any other implementation, no real interop is lost. Document in CHANGELOG.
-  - **Prerequisites:** None.
+- [x] Replace placeholder SHA256 with real implementation in checksum transformer
+  - Done: 2026-05-31 (Slice 29). Tests: 12 new (crypto_transformers_test) + 243 existing = 255 total.
+  - Real FIPS 180-4 SHA-256 via `sha2::Sha256` (RustCrypto). `compute_hash` is now a one-liner; on-disk format unchanged (32-byte append/prepend).
 
-- [ ] Replace placeholder XOR cipher with real AES-256-GCM in encryption transformer
-  - **Verified gap:** `src/transformers.rs:300` - `// This is a placeholder - in production, use a proper AES-GCM implementation` and `src/transformers.rs:303-307` - XOR loop with comment `// Simple XOR cipher for demonstration (NOT SECURE!)`.
-  - **Goal:** `AesGcmTransformer::encrypt`/`decrypt` perform authenticated encryption per NIST SP 800-38D so data-at-rest encryption is actually secure.
-  - **Design:** Use `aes-gcm` workspace crate (Pure Rust, RustCrypto, AEAD-compliant). Inputs: 32-byte key (already validated), generate 12-byte nonce via `rand_core::OsRng` for each encrypt, prepend nonce to ciphertext (`nonce || ct_with_tag`). Decrypt: split nonce off, verify 128-bit GCM tag. Spec: NIST SP 800-38D §7-8.
-  - **Files:** `src/transformers.rs`, `Cargo.toml` (add `aes-gcm = { workspace = true }` and `rand_core` if needed)
-  - **Tests:** (proposed) `test_aesgcm_round_trip_short_payload`, `test_aesgcm_round_trip_large_payload_1mb`, `test_aesgcm_wrong_key_rejected`, `test_aesgcm_tampered_ciphertext_rejected`, `test_aesgcm_nonce_uniqueness_across_encrypts`
-  - **Risk:** Same backward-compat concern as SHA256: any encrypted data written with the XOR placeholder is unrecoverable, but it was never secure in the first place.
-  - **Prerequisites:** None.
+- [x] Replace placeholder XOR cipher with real AES-256-GCM in encryption transformer
+  - Done: 2026-05-31 (Slice 29). Tests: included in crypto_transformers_test above.
+  - Real NIST SP 800-38D AES-256-GCM via `aes-gcm` (RustCrypto). On-disk frame: `nonce(12)||ct_with_tag`. Nonce from `getrandom::fill` (OS CSPRNG).
 
-- [ ] Replace `build_codec_from_metadata` stub that always returns `NullCodec`
+- [x] Replace `build_codec_from_metadata` stub that always returns `NullCodec`
+  - Done: 2026-05-31 (Slice 28). Tests: 19 new (codec_registry_test) + 224 existing = 243 total.
   - **Verified gap:** `src/sharding.rs:522-527` - `// This is a placeholder - actual implementation would use the codec registry` followed by `Ok(Box::new(NullCodec))`. This means sharded chunks always go through a no-op codec even if metadata names gzip/zstd/blosc.
   - **Goal:** Sharded reads/writes correctly dispatch to gzip/zstd/lz4/blosc/transpose/bytes codecs based on `CodecMetadata`.
   - **Design:** Build a registry keyed on `codec_meta.name` (`"gzip"`, `"zstd"`, `"lz4"`, `"blosc"`, `"transpose"`, `"bytes"`, `"crc32c"`, `"sha256"`, `"null"`). Each arm consults configuration JSON in `codec_meta.configuration` for level / shuffle / endian / etc. Return `Err(ZarrError::UnsupportedCodec { name })` for unknown names. Spec: Zarr v3 ZEP-0001 codec system.

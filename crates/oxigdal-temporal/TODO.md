@@ -63,15 +63,13 @@
   - **Files:** as above (5 files, ~35 LoC total).
   - **Why deferred:** Existing functionality lives in parent `mod.rs` (compositing/mod.rs is 503 LoC, gap_filling/mod.rs is 474 LoC); skeleton is harmless but noisy.
 
-- [ ] Whittaker smoother for noisy NDVI time series
-  - **Goal:** Penalised least-squares smoother per Eilers (2003) — solve (I + λD'D)Z = Y for smoothed Z, where D is second-difference matrix.
-  - **Files:** `src/gap_filling/mod.rs` (existing, 474 LoC).
-  - **Why deferred:** Bandwidth-of-λ tuning is non-trivial; existing linear/spline gap-fillers cover most cases.
+- [x] Whittaker smoother for noisy NDVI time series
+  - Done: 2026-05-31 (Slice 29). Tests: 28 new (smoothing_test + inline in whittaker.rs + savgol.rs) + 116 existing = 144 total.
+  - Eilers 2003 `(W + λ·Dᵀ·D)·z = W·y` via `solve_ndarray` (dense, O(n³), fine for NDVI-length n≤100). Weights 0 at NaN. New `src/gap_filling/whittaker.rs`, `GapFillMethod::Whittaker`, `GapFillParams::{whittaker_lambda=100.0, whittaker_order=2}`.
 
-- [ ] Savitzky-Golay filter for vegetation index time series
-  - **Goal:** Window-based polynomial smoothing; complements Whittaker.
-  - **Files:** `src/gap_filling/mod.rs`.
-  - **Why deferred:** Linear interpolation gap-fill is adequate baseline.
+- [x] Savitzky-Golay filter for vegetation index time series
+  - Done: 2026-05-31 (Slice 29). Tests: included in smoothing_test above.
+  - Vandermonde normal-equation kernel (`(AᵀA)⁻¹ e_{center}` via `solve_ndarray`), asymmetric edge windows, NaN pre-interpolation. New `src/gap_filling/savgol.rs`, `GapFillMethod::SavitzkyGolay`, `GapFillParams::{savgol_window=7, savgol_poly_order=2}`.
 
 - [ ] Harmonic regression for phenology extraction
   - **Goal:** Fourier model Yt = β0 + Σ(α_i·sin + γ_i·cos) → green-up/peak/senescence dates.

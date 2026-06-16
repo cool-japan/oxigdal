@@ -35,4 +35,9 @@ pub enum IndexError {
     /// The entry was not found in the R-tree during removal.
     #[error("entry not found in R-tree")]
     EntryNotFound,
+
+    /// The input geometry or point set is degenerate and the operation cannot
+    /// proceed (e.g. all points collinear, fewer than 3 distinct points).
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }

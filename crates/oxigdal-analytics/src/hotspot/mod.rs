@@ -9,7 +9,7 @@ pub mod getis_ord;
 pub mod moran;
 
 pub use getis_ord::{GetisOrdGiStar, GetisOrdResult};
-pub use moran::{LocalMoransI, LocalMoransIResult, MoransI, MoransIResult};
+pub use moran::{LisaClass, LocalMoransI, LocalMoransIResult, MoransI, MoransIResult};
 
 use crate::error::{AnalyticsError, Result};
 use scirs2_core::ndarray::{Array1, Array2, ArrayView1, ArrayView2};

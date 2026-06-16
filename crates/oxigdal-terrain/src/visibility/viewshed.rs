@@ -148,6 +148,71 @@ where
     Ok(cumulative)
 }
 
+#[cfg(feature = "parallel")]
+/// Parallel version of `viewshed_cumulative` using rayon.
+///
+/// Produces identical results to [`viewshed_cumulative`] but processes each observer
+/// concurrently using a rayon parallel iterator and then sums the individual viewsheds
+/// element-wise.
+///
+/// # Arguments
+/// * `dem` - Elevation raster.
+/// * `cell_size` - Pixel size in map units.
+/// * `observers` - Slice of `(y, x, height)` tuples.
+/// * `target_height` - Height above terrain for target cells.
+/// * `max_distance` - Optional maximum analysis radius in map units.
+/// * `nodata` - Optional nodata value.
+///
+/// # Errors
+/// Returns an error if any observer position is invalid (propagated from
+/// [`viewshed_binary`]).
+pub fn viewshed_cumulative_parallel<T>(
+    dem: &Array2<T>,
+    cell_size: f64,
+    observers: &[(usize, usize, f64)],
+    target_height: f64,
+    max_distance: Option<f64>,
+    nodata: Option<T>,
+) -> Result<Array2<u32>>
+where
+    T: Float + Into<f64> + Copy + Sync + Send,
+{
+    use rayon::prelude::*;
+
+    let (height, width) = dem.dim();
+
+    // Compute one viewshed per observer in parallel, collecting into a Vec of Results.
+    let viewsheds: Result<Vec<Array2<u8>>> = observers
+        .par_iter()
+        .map(|(obs_y, obs_x, obs_height)| {
+            viewshed_binary(
+                dem,
+                cell_size,
+                *obs_y,
+                *obs_x,
+                *obs_height,
+                target_height,
+                max_distance,
+                nodata,
+            )
+        })
+        .collect();
+
+    let viewsheds = viewsheds?;
+
+    // Sum all viewsheds element-wise.
+    let mut cumulative = Array2::<u32>::zeros((height, width));
+    for vs in viewsheds {
+        for y in 0..height {
+            for x in 0..width {
+                cumulative[[y, x]] += vs[[y, x]] as u32;
+            }
+        }
+    }
+
+    Ok(cumulative)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +226,31 @@ mod tests {
         for y in 0..10 {
             for x in 0..10 {
                 assert_eq!(vs[[y, x]], 1);
+            }
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_cumulative_parallel_matches_sequential() {
+        // 5×5 flat DEM; two observers at different corners.
+        let dem = Array2::from_elem((5, 5), 50.0_f64);
+        let observers: Vec<(usize, usize, f64)> = vec![(0, 0, 2.0), (4, 4, 2.0), (2, 2, 2.0)];
+
+        let seq = viewshed_cumulative(&dem, 10.0, &observers, 0.0, None, None::<f64>).expect("seq");
+        let par = viewshed_cumulative_parallel(&dem, 10.0, &observers, 0.0, None, None::<f64>)
+            .expect("par");
+
+        assert_eq!(seq.dim(), par.dim());
+        for y in 0..5 {
+            for x in 0..5 {
+                assert_eq!(
+                    seq[[y, x]],
+                    par[[y, x]],
+                    "mismatch at ({y}, {x}): seq={}, par={}",
+                    seq[[y, x]],
+                    par[[y, x]]
+                );
             }
         }
     }

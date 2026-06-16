@@ -150,7 +150,7 @@ Benchmarked on NVIDIA RTX 4090:
 
 ## Requirements
 
-- Rust 1.85+
+- Rust 1.89+
 - GPU with compute shader support (Vulkan 1.1+, Metal 2+, or DX12)
 - WGPU 28+
 

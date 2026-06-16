@@ -8,6 +8,7 @@
 //! - Extensions support
 
 mod connection;
+pub(crate) mod geom_envelope;
 mod metadata;
 mod raster;
 mod schema;

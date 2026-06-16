@@ -11,7 +11,7 @@
 //! - `lzw` (default) - LZW compression
 //! - `zstd` - ZSTD compression
 //! - `jpeg` - JPEG compression (planned)
-//! - `webp` - WebP compression (planned)
+//! - `webp` - WebP compression (pure Rust via `image-webp`; encoder is lossless VP8L only)
 //!
 //! # Example
 //!

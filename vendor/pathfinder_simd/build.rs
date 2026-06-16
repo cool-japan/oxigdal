@@ -14,13 +14,21 @@ use rustc_version::Channel;
 
 fn main() {
     // Assert we haven't travelled back in time
-    assert!(rustc_version::version().unwrap().major >= 1);
+    assert!(
+        rustc_version::version()
+            .expect("rustc_version::version() failed")
+            .major
+            >= 1
+    );
 
     // Declare the custom cfg so rustc's --check-cfg doesn't warn about it
     println!("cargo:rustc-check-cfg=cfg(pf_rustc_nightly)");
 
     // Set cfg flags depending on release channel
-    match rustc_version::version_meta().unwrap().channel {
+    match rustc_version::version_meta()
+        .expect("rustc_version::version_meta() failed")
+        .channel
+    {
         Channel::Nightly => {
             println!("cargo:rustc-cfg=pf_rustc_nightly");
         }

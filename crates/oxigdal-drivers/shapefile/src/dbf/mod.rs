@@ -3,11 +3,15 @@
 //! This module handles reading and writing dBase III/IV (.dbf) files,
 //! which contain the attribute data for Shapefile features.
 
+pub mod encoding;
 pub mod memo;
 pub mod record;
 
+pub use encoding::{resolve_cpg, resolve_ldid};
 pub use memo::{MemoError, MemoFile, MemoVersion};
 pub use record::{FieldDescriptor, FieldType, FieldValue};
+
+use ::encoding_rs::Encoding;
 
 use crate::error::{Result, ShapefileError};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -196,8 +200,17 @@ impl DbfRecord {
         }
     }
 
-    /// Reads a DBF record from a reader
+    /// Reads a DBF record from a reader, decoding text as UTF-8 (lossy).
     pub fn read<R: Read>(reader: &mut R, field_descriptors: &[FieldDescriptor]) -> Result<Self> {
+        Self::read_with_encoding(reader, field_descriptors, encoding::DEFAULT)
+    }
+
+    /// Reads a DBF record from a reader, transcoding text fields via `encoding`.
+    pub fn read_with_encoding<R: Read>(
+        reader: &mut R,
+        field_descriptors: &[FieldDescriptor],
+        encoding: &'static Encoding,
+    ) -> Result<Self> {
         // Read deletion marker (1 byte)
         let mut marker = [0u8; 1];
         reader
@@ -214,7 +227,12 @@ impl DbfRecord {
                 .read_exact(&mut field_bytes)
                 .map_err(|_| ShapefileError::unexpected_eof("reading field value"))?;
 
-            let value = FieldValue::parse(&field_bytes, field.field_type, field.decimal_count)?;
+            let value = FieldValue::parse_with_encoding(
+                &field_bytes,
+                field.field_type,
+                field.decimal_count,
+                encoding,
+            )?;
             values.push(value);
         }
 
@@ -278,6 +296,10 @@ pub struct DbfReader<R: Read> {
     /// One-shot guard: emit the "memo field without .dbt" warning at most
     /// once per `DbfReader` to avoid flooding logs on large tables.
     missing_memo_warned: AtomicBool,
+    /// Encoding used to transcode `Character`/memo fields. Defaults to the
+    /// table's header code page (LDID byte) or UTF-8; can be overridden via
+    /// [`DbfReader::set_encoding`] (e.g. from a sibling `.cpg`).
+    encoding: &'static Encoding,
 }
 
 impl<R: Read> DbfReader<R> {
@@ -312,18 +334,37 @@ impl<R: Read> DbfReader<R> {
             });
         }
 
+        // Default encoding from the header's language-driver byte, else UTF-8.
+        let encoding = encoding::resolve_ldid(header.code_page).unwrap_or(encoding::DEFAULT);
+
         Ok(Self {
             reader,
             header,
             field_descriptors,
             memo: None,
             missing_memo_warned: AtomicBool::new(false),
+            encoding,
         })
     }
 
     /// Returns the header
     pub fn header(&self) -> &DbfHeader {
         &self.header
+    }
+
+    /// Returns the encoding used to transcode `Character`/memo fields.
+    pub fn encoding(&self) -> &'static Encoding {
+        self.encoding
+    }
+
+    /// Overrides the encoding used to transcode `Character`/memo fields.
+    ///
+    /// Propagates to any attached memo file so memo text uses the same code page.
+    pub fn set_encoding(&mut self, encoding: &'static Encoding) {
+        self.encoding = encoding;
+        if let Some(memo) = self.memo.as_mut() {
+            memo.set_encoding(encoding);
+        }
     }
 
     /// Returns the field descriptors
@@ -340,7 +381,8 @@ impl<R: Read> DbfReader<R> {
     /// is returned as an empty string (`FieldValue::String(String::new())`).
     ///
     /// Replaces any previously attached memo handle.
-    pub fn set_memo_file(&mut self, memo: MemoFile) {
+    pub fn set_memo_file(&mut self, mut memo: MemoFile) {
+        memo.set_encoding(self.encoding);
         self.memo = Some(memo);
     }
 
@@ -436,7 +478,11 @@ impl<R: Read> DbfReader<R> {
 
     /// Reads the next record
     pub fn read_record(&mut self) -> Result<Option<DbfRecord>> {
-        let raw = match DbfRecord::read(&mut self.reader, &self.field_descriptors) {
+        let raw = match DbfRecord::read_with_encoding(
+            &mut self.reader,
+            &self.field_descriptors,
+            self.encoding,
+        ) {
             Ok(record) => record,
             Err(ShapefileError::Io(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 return Ok(None);

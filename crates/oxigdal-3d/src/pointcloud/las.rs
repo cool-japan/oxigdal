@@ -504,7 +504,7 @@ impl SpatialIndex {
             [bounds.min_x, bounds.min_y, bounds.min_z],
             [bounds.max_x, bounds.max_y, bounds.max_z],
         );
-        self.tree.locate_in_envelope(&aabb).collect()
+        self.tree.locate_in_envelope(aabb).collect()
     }
 }
 

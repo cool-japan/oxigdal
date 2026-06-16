@@ -17,7 +17,7 @@ Complete guide for deploying the OxiGDAL COG Viewer to various platforms.
 
 ### Required Tools
 
-1. **Rust** (1.85 or later)
+1. **Rust** (1.89 or later)
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    rustup target add wasm32-unknown-unknown
@@ -151,7 +151,7 @@ netlify deploy --prod --dir=demo/cog-viewer
    - **Publish directory:** `demo/cog-viewer`
    - **Environment variables:**
      ```
-     RUST_VERSION=1.85
+     RUST_VERSION=1.89
      ```
 
 3. Deploy:
@@ -181,7 +181,7 @@ The included `netlify.toml`:
   publish = "."
 
 [build.environment]
-  RUST_VERSION = "1.85"
+  RUST_VERSION = "1.89"
 
 [[redirects]]
   from = "/*"
@@ -227,7 +227,7 @@ vercel --prod
 
 3. Add environment variables:
    ```
-   RUST_VERSION=1.85
+   RUST_VERSION=1.89
    ```
 
 ### Vercel Configuration

@@ -10,6 +10,10 @@ use crate::tiff::{Compression, Predictor};
 #[cfg(feature = "jpeg")]
 pub use jpeg_encoder::ColorType;
 
+// Re-export WebP color type for public API
+#[cfg(feature = "webp")]
+pub use image_webp::ColorType as WebpColorType;
+
 /// Decompresses data using the specified compression scheme
 pub fn decompress(data: &[u8], compression: Compression, expected_size: usize) -> Result<Vec<u8>> {
     match compression {
@@ -28,6 +32,9 @@ pub fn decompress(data: &[u8], compression: Compression, expected_size: usize) -
 
         #[cfg(feature = "jpeg")]
         Compression::Jpeg => decompress_jpeg(data),
+
+        #[cfg(feature = "webp")]
+        Compression::WebP => decompress_webp(data),
 
         _ => Err(OxiGdalError::Compression(CompressionError::UnknownMethod {
             method: compression as u16,
@@ -53,6 +60,15 @@ pub fn compress(data: &[u8], compression: Compression) -> Result<Vec<u8>> {
 
         #[cfg(feature = "jpeg")]
         Compression::Jpeg => compress_jpeg(data, 85),
+
+        #[cfg(feature = "webp")]
+        Compression::WebP => Err(OxiGdalError::Compression(
+            CompressionError::CompressionFailed {
+                message: "WebP compression requires image dimensions and color type. \
+                          Use compress_webp_with_params instead."
+                    .to_string(),
+            },
+        )),
 
         _ => Err(OxiGdalError::Compression(CompressionError::UnknownMethod {
             method: compression as u16,
@@ -280,6 +296,122 @@ pub fn compress_jpeg_with_params(
         .map_err(|e| {
             OxiGdalError::Compression(CompressionError::CompressionFailed {
                 message: format!("JPEG compression failed: {}", e),
+            })
+        })?;
+
+    Ok(output)
+}
+
+/// Decompresses a WebP-encoded TIFF strip or tile.
+///
+/// Handles both lossy (VP8) and lossless (VP8L) WebP. The decoder returns
+/// interleaved bytes — 3 bytes per pixel (RGB) for opaque images, 4 bytes
+/// per pixel (RGBA) for images carrying an alpha channel. The caller is
+/// responsible for matching this layout against the TIFF tile/strip
+/// geometry and `SamplesPerPixel`/`PhotometricInterpretation` tags.
+///
+/// TIFF compression tag value for WebP is **50001**, registered as part of
+/// the LERC/WebP draft extension and now widely produced by GDAL's COG
+/// driver.
+///
+/// # Errors
+/// Returns a [`CompressionError`] if the WebP stream is malformed or the
+/// pure Rust `image-webp` decoder rejects the bitstream.
+#[cfg(feature = "webp")]
+fn decompress_webp(data: &[u8]) -> Result<Vec<u8>> {
+    use image_webp::WebPDecoder;
+    use std::io::Cursor;
+
+    if data.is_empty() {
+        return Err(OxiGdalError::Compression(
+            CompressionError::DecompressionFailed {
+                message: "WebP strip/tile data is empty".to_string(),
+            },
+        ));
+    }
+
+    let mut decoder = WebPDecoder::new(Cursor::new(data)).map_err(|e| {
+        OxiGdalError::Compression(CompressionError::DecompressionFailed {
+            message: format!("WebP decoder init failed: {}", e),
+        })
+    })?;
+
+    let buf_size = decoder.output_buffer_size().ok_or_else(|| {
+        OxiGdalError::Compression(CompressionError::DecompressionFailed {
+            message: "WebP output buffer size overflows usize".to_string(),
+        })
+    })?;
+
+    let mut buf = vec![0_u8; buf_size];
+    decoder.read_image(&mut buf).map_err(|e| {
+        OxiGdalError::Compression(CompressionError::DecompressionFailed {
+            message: format!("WebP decode failed: {}", e),
+        })
+    })?;
+
+    Ok(buf)
+}
+
+/// WebP compression with explicit image parameters.
+///
+/// `color_type` chooses the byte layout: `L8` (grayscale), `La8`
+/// (grayscale + alpha), `Rgb8`, or `Rgba8`. The pure Rust `image-webp`
+/// encoder currently emits **lossless VP8L** only, which is exact (perfect
+/// roundtrip) and well suited to integer raster bands and discrete-class
+/// imagery. Lossy VP8 encoding would require linking the C `libwebp`
+/// library and is therefore disallowed by COOLJAPAN's Pure Rust Policy.
+///
+/// # Errors
+/// Returns a [`CompressionError`] if `data.len()` does not match the
+/// expected size for `width * height * bytes_per_pixel` or if the encoder
+/// fails internally.
+#[cfg(feature = "webp")]
+pub fn compress_webp_with_params(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    color_type: image_webp::ColorType,
+) -> Result<Vec<u8>> {
+    use image_webp::{ColorType as WebpColor, WebPEncoder};
+
+    let bytes_per_pixel = match color_type {
+        WebpColor::L8 => 1,
+        WebpColor::La8 => 2,
+        WebpColor::Rgb8 => 3,
+        WebpColor::Rgba8 => 4,
+    };
+
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(bytes_per_pixel))
+        .ok_or_else(|| {
+            OxiGdalError::Compression(CompressionError::CompressionFailed {
+                message: "WebP input dimensions overflow usize".to_string(),
+            })
+        })?;
+
+    if data.len() != expected {
+        return Err(OxiGdalError::Compression(
+            CompressionError::CompressionFailed {
+                message: format!(
+                    "WebP input length {} does not match expected {} ({}x{}x{} bytes)",
+                    data.len(),
+                    expected,
+                    width,
+                    height,
+                    bytes_per_pixel
+                ),
+            },
+        ));
+    }
+
+    let mut output = Vec::new();
+    let encoder = WebPEncoder::new(&mut output);
+    encoder
+        .encode(data, width, height, color_type)
+        .map_err(|e| {
+            OxiGdalError::Compression(CompressionError::CompressionFailed {
+                message: format!("WebP encoding failed: {}", e),
             })
         })?;
 
@@ -612,5 +744,86 @@ mod tests {
         let cmyk = vec![0, 0, 255, 0];
         let rgb = cmyk_to_rgb(&cmyk).expect("conversion should work");
         assert_eq!(rgb, vec![255, 255, 0]);
+    }
+
+    /// Regression test for cool-japan/oxigdal#6 — WebP compression codec
+    /// (TIFF compression tag 50001) must round-trip via the public
+    /// `compress`/`decompress` dispatch.
+    ///
+    /// VP8L (lossless) is exact, so we assert byte-for-byte equality.
+    #[cfg(feature = "webp")]
+    #[test]
+    fn test_issue_6_webp_compression() {
+        use image_webp::ColorType as WebpColor;
+
+        // 8x8 RGB tile — small enough to encode quickly, large enough to
+        // exercise the VP8L Huffman + transform pipeline.
+        let width: u32 = 8;
+        let height: u32 = 8;
+        let mut original = Vec::with_capacity((width * height * 3) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                original.push((x as u8) * 32);
+                original.push((y as u8) * 32);
+                original.push(((x + y) as u8) * 16);
+            }
+        }
+
+        // Encode via the explicit-parameter API (mirrors JPEG).
+        let compressed = compress_webp_with_params(&original, width, height, WebpColor::Rgb8)
+            .expect("WebP VP8L encoding should succeed");
+
+        // WebP-encoded payloads start with the RIFF/WEBP container magic.
+        assert_eq!(&compressed[0..4], b"RIFF");
+        assert_eq!(&compressed[8..12], b"WEBP");
+
+        // Decode through the public dispatch entry point — this is the
+        // path a TIFF reader takes when it encounters compression=50001.
+        let decompressed = decompress(&compressed, Compression::WebP, original.len())
+            .expect("WebP decompress dispatch should succeed");
+
+        // VP8L is lossless — exact equality is the right assertion.
+        assert_eq!(decompressed, original);
+    }
+
+    /// Verifies that `Compression::WebP` (TIFF tag 50001) is recognised by
+    /// the dispatch table and produces a decoder-initialisation error
+    /// (not `UnknownMethod`) when fed invalid bytes.
+    #[cfg(feature = "webp")]
+    #[test]
+    fn test_issue_6_webp_dispatch_recognises_tag_50001() {
+        // Confirm the tag value is 50001 as per the LERC/WebP TIFF draft.
+        assert_eq!(Compression::WebP as u16, 50001);
+
+        // Invalid input should reach the WebP decoder (and fail there),
+        // not bounce off the dispatch table as `UnknownMethod`.
+        let invalid = b"not a webp stream";
+        let err = decompress(invalid, Compression::WebP, 64)
+            .expect_err("invalid WebP bytes must fail decode");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("WebP") || msg.contains("webp") || msg.contains("RIFF"),
+            "expected WebP-specific decode error, got: {}",
+            msg
+        );
+    }
+
+    /// Verifies that the WebP encoder validates input length against
+    /// declared dimensions before invoking the underlying encoder.
+    #[cfg(feature = "webp")]
+    #[test]
+    fn test_issue_6_webp_encoder_validates_input_length() {
+        use image_webp::ColorType as WebpColor;
+
+        // Claim 4x4 RGB (48 bytes) but provide only 10 bytes.
+        let bogus = vec![0_u8; 10];
+        let err = compress_webp_with_params(&bogus, 4, 4, WebpColor::Rgb8)
+            .expect_err("length mismatch must be rejected");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("does not match expected"),
+            "expected length-mismatch message, got: {}",
+            msg
+        );
     }
 }

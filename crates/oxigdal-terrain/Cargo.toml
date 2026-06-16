@@ -21,7 +21,8 @@ derivatives = []
 hydrology = []
 visibility = []
 geomorphometry = []
-all_features = ["derivatives", "hydrology", "visibility", "geomorphometry", "parallel"]
+mesh = ["dep:oxigdal-index"]
+all_features = ["derivatives", "hydrology", "visibility", "geomorphometry", "parallel", "mesh"]
 
 [dependencies]
 oxigdal-core = { workspace = true }
@@ -42,6 +43,9 @@ approx = { workspace = true }
 
 # Ordered floats for priority queues
 ordered-float = { workspace = true }
+
+# Spatial indexing (Delaunay triangulation for mesh feature)
+oxigdal-index = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

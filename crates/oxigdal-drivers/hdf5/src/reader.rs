@@ -7,6 +7,7 @@ use crate::dataset::Dataset;
 use crate::datatype::{Datatype, TypeConverter};
 use crate::error::{Hdf5Error, Result};
 use crate::group::{Group, PathUtils};
+use crate::superblock_v2::{read_superblock_v2, validate_superblock_checksum};
 use byteorder::{LittleEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -142,10 +143,23 @@ impl Superblock {
                 })
             }
             SuperblockVersion::V2 | SuperblockVersion::V3 => {
-                Err(Hdf5Error::feature_not_available(format!(
-                    "Superblock version {:?} (requires hdf5_sys feature)",
-                    version
-                )))
+                // Build a byte accumulator that already contains the bytes
+                // read so far (signature + version) so that checksum
+                // validation can cover the full superblock prefix.
+                let mut header_bytes: Vec<u8> = Vec::with_capacity(64);
+                header_bytes.extend_from_slice(HDF5_SIGNATURE);
+                header_bytes.push(version_num);
+
+                let v2 = read_superblock_v2(reader, &mut header_bytes)?;
+                validate_superblock_checksum(&header_bytes)?;
+
+                Ok(Self {
+                    version,
+                    size_of_offsets: v2.size_of_offsets,
+                    size_of_lengths: v2.size_of_lengths,
+                    base_address: v2.base_address,
+                    root_group_address: v2.root_group_object_header_address,
+                })
             }
         }
     }

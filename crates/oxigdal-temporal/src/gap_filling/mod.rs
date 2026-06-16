@@ -12,6 +12,8 @@ use tracing::info;
 
 pub mod harmonic;
 pub mod interpolation;
+pub mod savgol;
+pub mod whittaker;
 
 /// Gap filling method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,10 @@ pub enum GapFillMethod {
     ForwardFill,
     /// Backward fill (propagate next valid value)
     BackwardFill,
+    /// Whittaker smoother (Eilers 2003, Anal. Chem. 75:3631)
+    Whittaker,
+    /// Savitzky-Golay polynomial smoothing filter (Savitzky & Golay 1964)
+    SavitzkyGolay,
 }
 
 /// Gap filling result
@@ -89,6 +95,16 @@ impl GapFiller {
             }
             GapFillMethod::ForwardFill => Self::forward_fill(ts),
             GapFillMethod::BackwardFill => Self::backward_fill(ts),
+            GapFillMethod::Whittaker => {
+                let lambda = params.map_or(100.0, |p| p.whittaker_lambda);
+                let order = params.map_or(2, |p| p.whittaker_order);
+                Self::whittaker_smooth(ts, lambda, order)
+            }
+            GapFillMethod::SavitzkyGolay => {
+                let win = params.map_or(7, |p| p.savgol_window);
+                let poly = params.map_or(2, |p| p.savgol_poly_order);
+                Self::savitzky_golay_smooth(ts, win, poly)
+            }
         }
     }
 
@@ -450,6 +466,76 @@ impl GapFiller {
         info!("Completed backward fill");
         Ok(filled_ts)
     }
+
+    /// Whittaker smoother gap filling (Eilers 2003).
+    fn whittaker_smooth(
+        ts: &TimeSeriesRaster,
+        lambda: f64,
+        order: usize,
+    ) -> Result<TimeSeriesRaster> {
+        if ts.is_empty() {
+            return Err(TemporalError::insufficient_data("Empty time series"));
+        }
+
+        let (height, width, n_bands) = ts
+            .expected_shape()
+            .ok_or_else(|| TemporalError::insufficient_data("No shape information"))?;
+
+        let mut filled_ts = ts.clone();
+
+        for i in 0..height {
+            for j in 0..width {
+                for k in 0..n_bands {
+                    let values = ts.extract_pixel_timeseries(i, j, k)?;
+                    let smoothed = whittaker::smooth_whittaker(&values, lambda, order);
+
+                    for (t, entry) in filled_ts.entries_mut().values_mut().enumerate() {
+                        if let Some(data) = &mut entry.data {
+                            data[[i, j, k]] = smoothed[t];
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Completed Whittaker smoother gap filling (lambda={lambda}, order={order})");
+        Ok(filled_ts)
+    }
+
+    /// Savitzky-Golay smoothing filter gap filling.
+    fn savitzky_golay_smooth(
+        ts: &TimeSeriesRaster,
+        window: usize,
+        poly_order: usize,
+    ) -> Result<TimeSeriesRaster> {
+        if ts.is_empty() {
+            return Err(TemporalError::insufficient_data("Empty time series"));
+        }
+
+        let (height, width, n_bands) = ts
+            .expected_shape()
+            .ok_or_else(|| TemporalError::insufficient_data("No shape information"))?;
+
+        let mut filled_ts = ts.clone();
+
+        for i in 0..height {
+            for j in 0..width {
+                for k in 0..n_bands {
+                    let values = ts.extract_pixel_timeseries(i, j, k)?;
+                    let smoothed = savgol::smooth_savgol(&values, window, poly_order);
+
+                    for (t, entry) in filled_ts.entries_mut().values_mut().enumerate() {
+                        if let Some(data) = &mut entry.data {
+                            data[[i, j, k]] = smoothed[t];
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Completed Savitzky-Golay smoothing (window={window}, poly_order={poly_order})");
+        Ok(filled_ts)
+    }
 }
 
 /// Gap filling parameters
@@ -461,6 +547,20 @@ pub struct GapFillParams {
     pub harmonic_period: usize,
     /// Maximum gap size to fill
     pub max_gap_size: Option<usize>,
+    /// Smoothness penalty weight λ for the Whittaker smoother.
+    /// Larger values produce a smoother (less data-faithful) estimate.
+    /// Typical range for NDVI: 10–10000. Default: 100.0.
+    pub whittaker_lambda: f64,
+    /// Order of the finite-difference penalty for the Whittaker smoother.
+    /// 1 = penalise first differences (roughness), 2 = penalise second
+    /// differences (curvature). Default: 2.
+    pub whittaker_order: usize,
+    /// Window size for the Savitzky-Golay filter (must be odd; if even it is
+    /// incremented by one). Default: 7.
+    pub savgol_window: usize,
+    /// Polynomial order for the Savitzky-Golay filter (must be < window).
+    /// Default: 2.
+    pub savgol_poly_order: usize,
 }
 
 impl Default for GapFillParams {
@@ -469,6 +569,10 @@ impl Default for GapFillParams {
             window_size: 3,
             harmonic_period: 12,
             max_gap_size: None,
+            whittaker_lambda: 100.0,
+            whittaker_order: 2,
+            savgol_window: 7,
+            savgol_poly_order: 2,
         }
     }
 }

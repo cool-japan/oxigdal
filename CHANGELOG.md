@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-15
+
+### Added
+
+- **oxigdal-shapefile**: Non-UTF-8 DBF encoding support via `encoding_rs` — `resolve_cpg()` maps CPG file labels, `resolve_ldid()` maps LDID byte to IANA encoding, `decode()` transcodes byte slices; `ShapefileReader::open_with_encoding()` and `DbfReader::read_with_encoding()` accept an explicit encoding override (PR #10)
+- **oxigdal-proj**: `wkt_to_proj_string()` — converts an OGC WKT-1/WKT-2 CRS string to a PROJ string, enabling `from_wkt` CRS objects to work directly with `Transformer` (PR #9)
+- **oxigdal-analytics**: `LocalMoranI::calculate_with_permutations()` — permutation-based significance testing for Local Moran's I spatial autocorrelation (pseudo-p-values under conditional randomisation)
+- **oxigdal-cache-advanced**: W-TinyLFU eviction policy — `WTinyLfuEviction<K>` (window + protected/probationary segmented LRU) backed by `CountMinSketch` frequency estimator for O(1) admit decisions
+- **oxigdal-copc**: `WaveformPacket` — LiDAR point-format 9 and 10 full-waveform data types (byte-offset, packet-size, return-point-waveform-location, XYZ(t) parametric vector)
+- **oxigdal-drivers/hdf5**: HDF5 v2/v3 superblock parser — `SuperblockV2`, `read_superblock_v2()`, `validate_superblock_checksum()` (Jenkins lookup3 hash), enabling full HDF5 V2/V3 file support
+- **oxigdal-index**: Delaunay triangulation — `triangulate(points)` (Bowyer-Watson), `Triangulation::convex_hull()` returning vertex indices in CCW order
+- **oxigdal-qc**: `BatchRunner` / `BatchReport` / `SeverityCounts` — batch QC over directories; `GpkgValidator` / `GpkgValidationResult` — structural GeoPackage validation; `StacValidator` / `StacValidationResult` — STAC item/collection schema validation; `RadiometricValidator` / `RadiometricValidationResult` / `BandRange` / `SensorProfile` — per-band range validation against sensor profiles (Sentinel-2, Landsat-8/9, custom)
+- **oxigdal-sensors**: `MaximumLikelihood` classifier — Gaussian MLC with per-class prior support and `singular_covariance` error variant for degenerate covariance matrices
+- **oxigdal-streaming**: `KvStateBackend` — OxiStore-backed persistent state backend for stateful streaming pipelines (replaces in-memory HashMap state)
+- **oxigdal-terrain**: GLCM texture derivatives — `glcm_texture()`, `GlcmTextures` (contrast, dissimilarity, homogeneity, energy, correlation, ASM), `GlcmOffset` direction enum; TPI variants — `tpi_annulus()`, `tpi_standardized()`, `landform_classification_tpi()`, parallel editions `tpi_annulus_parallel()` / `tpi_standardized_parallel()`; geomorphons landform classifier — `geomorphons()` (Jasiewicz & Stepinski 2013, 10-class); cost distance / least-cost path — `cost_distance()`, `least_cost_path()`
+- **oxigdal-temporal**: Whittaker smoother and Savitzky-Golay filter for time-series gap filling (`WhittakerSmoother`, `SavitzkyGolay`), completing the `gap_filling` module
+- **oxigdal-metadata**: DOI/INSPIRE metadata transform support — `transform_doi_locator()`, enabling ISO 19115 locator URIs to be mapped to DOI/INSPIRE-compliant identifiers
+- **oxigdal-algorithms**: Viewshed curvature/refraction constants extracted — `EARTH_RADIUS_M` (IUGG 2015, 6 371 000 m) and `REFRACTION_COEFF` (k = 0.13, standard atmosphere) replace magic numbers in viewshed analysis
+- **oxigdal (umbrella)**: GPX, KML, and TopoJSON formats now supported in `open()` / vector streaming — detected by file extension and routed to the appropriate parser
+- **oxigdal-drivers/geotiff**: `compress_webp_with_params()` — WebP compression with explicit quality/lossless parameters; `image-webp 0.2` added as workspace dep
+- **oxigdal-pmtiles**: `MbTilesConn` — OxiSQL-backed MBTiles adapter (`open()`, `open_memory()`, `query_count()`, `query_text()`, `query_blob()`) used internally by PMTiles MBTiles export
+
+### Changed
+
+- **SQLite backend**: `rusqlite` and `libsqlite3-sys` (C FFI) fully eliminated from the entire workspace; all SQLite access now goes through `oxisql-sqlite-compat 0.1.5` (pure-Rust Limbo engine). Affected crates: `oxigdal-db-connectors`, `oxigdal-gpkg`, `oxigdal-drivers-advanced`, `oxigdal-mbtiles`, `oxigdal-pmtiles`
+- **oxigdal-security**: TLS stack migrated from `ring`/`webpki-roots` to `oxitls-core` + `oxitls-adapter-rustls-rustcrypto` + `oxitls-webpki-roots` — 100% Pure Rust by default; `tls` feature gating maintained; PBKDF2 key derivation moved from `ring::pbkdf2` to `pbkdf2::pbkdf2_hmac::<sha2::Sha256>`
+- **oxigdal-security**: `ring = "0.17"` replaced with `pbkdf2 = "0.13"` in workspace dependencies; `argon2`, `aes-gcm`, `chacha20poly1305` retained as pure-Rust alternatives
+- **oxigdal-drivers-advanced**: `rusqlite`/`geopackage` feature made optional (removed from `default` closure); GeoPackage connection now uses `SqliteConnectionBlocking`
+- **oxigdal-workflow**: `rdkafka` moved behind `kafka` feature; new `http-client`, `kafka`, `integrations`, and `full` feature flags
+- `scirs2-core` / `scirs2-neural` / `scirs2-autograd` / `scirs2-optimize` / `scirs2-datasets` / `scirs2-metrics` / `scirs2-linalg` / `scirs2-vision` / `scirs2-series` updated 0.4.4 → 0.5.0
+- `oxionnx` updated 0.1.3 → 0.1.4
+- `oxiarc-*` suite updated 0.3.0 → 0.3.3 (archive, core, deflate, lzw, lz4, zstd, bzip2, lzhuf, snappy, brotli)
+- `oxicode` updated 0.2.3 → 0.2.4
+- Workspace: ~35 inline dependency declarations migrated to `*.workspace = true` (workspace policy compliance)
+- `oxigdal-kafka` and `oxigdal-offline` removed from `default-members` (C FFI crates excluded from default workspace builds per Pure Rust Policy)
+- `mimalloc` changed to `default-features = false` to avoid C dependency in default build
+- Workspace `[patch.crates-io]`: added `oxitls-core`, `oxitls-adapter-rustls-rustcrypto`, `oxitls-webpki-roots` local checkout paths
+- **MSRV**: minimum supported Rust version raised 1.85 → 1.89 — the `time 0.3.49` dependency requires Rust ≥1.88; standardized on 1.89 to align with the active oxi-ecosystem cluster
+
+### Fixed
+
+- Pure Rust Policy: `ring`, `rusqlite`/`libsqlite3-sys`, `rdkafka-sys` removed from default feature closure — workspace default build is now 100% C/FFI-free
+- `oxigdal-gpkg` change-tracking tests: 11 tests `#[ignore]`ed with explanation comment noting Limbo does not yet fire `AFTER INSERT/UPDATE/DELETE` triggers; remaining test verifies schema creation path
+
+### Security
+
+- Replaced `ring 0.17` (RUSTSEC-2023-advisory dependent) with pure-Rust `pbkdf2 0.13` + existing `argon2`/`aes-gcm`/`chacha20poly1305` alternatives
+- `aws-lc-sys`, `rustls-webpki`, `rsa` advisories (RUSTSEC-2026-0044/0048/0049/0097-0099/0104, RUSTSEC-2023-0071) remain in `.cargo/audit.toml` allowlist — all transitive via AWS SDK / rumqttc / azure_core, not directly controllable
+
 ## [0.1.5] - 2026-05-22
 
 ### Fixed
@@ -520,7 +569,8 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigdal>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigdal/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.6
 [0.1.5]: https://github.com/cool-japan/oxigdal/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/cool-japan/oxigdal/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/cool-japan/oxigdal/compare/v0.1.2...v0.1.3

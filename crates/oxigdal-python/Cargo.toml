@@ -34,7 +34,7 @@ oxigdal-cloud = { workspace = true, optional = true }
 
 # PyO3 for Python bindings
 # Note: Using 0.24.x for stability. 0.28+ requires significant API migrations.
-pyo3 = { version = "0.28", features = ["abi3-py39", "num-bigint"] }
+pyo3 = { workspace = true, features = ["abi3-py39", "num-bigint"] }
 numpy.workspace = true
 
 # TODO: Add async support when pyo3-asyncio 0.23 is released

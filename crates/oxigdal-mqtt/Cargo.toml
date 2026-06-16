@@ -48,7 +48,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 
 # MQTT client (Pure Rust implementation - COOLJAPAN Policy)
-rumqttc = { version = "0.25", default-features = false, features = ["url"] }
+rumqttc = { workspace = true, features = ["url"] }
 
 # Persistence (optional)
 # SECURITY NOTE: sled 0.34.7 uses unmaintained dependencies:
@@ -56,7 +56,7 @@ rumqttc = { version = "0.25", default-features = false, features = ["url"] }
 #   - RUSTSEC-2024-0384 (instant 0.1.13 via parking_lot 0.11)
 # Risk: Low (optional feature, stable code, no known vulnerabilities)
 # Future: Consider migrating to redb (maintained, better performance)
-sled = { version = "0.34", optional = true }
+sled = { workspace = true, optional = true }
 
 # Compression (optional)
 oxiarc-archive = { workspace = true, optional = true }

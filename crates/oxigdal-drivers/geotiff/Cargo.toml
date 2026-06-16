@@ -21,7 +21,7 @@ deflate = ["dep:oxiarc-deflate"]
 lzw = ["dep:oxiarc-lzw"]
 zstd = ["dep:oxiarc-zstd"]
 jpeg = ["dep:jpeg-decoder", "dep:jpeg-encoder"]
-webp = []
+webp = ["dep:image-webp"]
 
 [dependencies]
 oxigdal-core = { workspace = true }
@@ -37,6 +37,7 @@ oxiarc-lzw = { workspace = true, optional = true }
 oxiarc-zstd = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
 jpeg-encoder = { workspace = true, optional = true }
+image-webp = { workspace = true, optional = true }
 
 # Async
 tokio = { workspace = true, optional = true, features = ["io-util"] }

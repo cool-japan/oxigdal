@@ -16,7 +16,7 @@ This example demonstrates a complete, production-ready satellite data processing
 
 ## Requirements
 
-- Rust 1.85+
+- Rust 1.89+
 - AWS credentials (optional, for S3 upload)
 
 ## Sample Data

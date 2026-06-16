@@ -405,7 +405,7 @@ try {
 ## Building from Source
 
 Requirements:
-- Rust 1.85+
+- Rust 1.89+
 - Node.js 16+
 
 ```bash

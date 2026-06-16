@@ -92,7 +92,7 @@ impl PipelineBuilder {
     /// Enable checkpointing
     pub fn with_checkpointing(mut self) -> Self {
         self.config.stream.checkpointing = true;
-        self.config.checkpoint_dir = Some(PathBuf::from("/tmp/oxigdal-checkpoints"));
+        self.config.checkpoint_dir = Some(std::env::temp_dir().join("oxigdal-checkpoints"));
         self
     }
 

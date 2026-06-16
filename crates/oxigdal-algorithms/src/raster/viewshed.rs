@@ -45,6 +45,24 @@ use oxigdal_core::types::RasterDataType;
 use rayon::prelude::*;
 
 // ===========================================================================
+// Constants
+// ===========================================================================
+
+/// Mean radius of the Earth in metres (IUGG 2015 best estimate).
+const EARTH_RADIUS_M: f64 = 6_371_000.0;
+
+/// Standard atmospheric refraction coefficient for standard atmosphere (ICAO/ITU-R, k ≈ 0.13).
+///
+/// The refraction coefficient `k` reduces the apparent elevation of distant terrain by bending
+/// radio/optical rays downward toward Earth's surface. A combined curvature–refraction correction
+/// is applied as `offset = d² / (2 · R_eff)` where `R_eff = R / (1 − k)`.  For standard
+/// atmosphere (ISA, sea-level, 15 °C, 1013.25 hPa) k ≈ 0.13; some authorities quote 0.12–0.14.
+/// ITU-R P.526 uses an effective Earth-radius factor k_e = 4/3, corresponding to k = 0.25 for
+/// radio propagation; the geodetic/surveying default here follows ICAO Annex 15 / standard
+/// atmospheric tables (k = 0.13).
+const REFRACTION_COEFF: f64 = 0.13;
+
+// ===========================================================================
 // Configuration types
 // ===========================================================================
 
@@ -68,16 +86,18 @@ pub struct CurvatureCorrection {
     /// Earth radius in same units as cell_size (e.g., 6371000.0 for meters)
     pub earth_radius: f64,
 
-    /// Atmospheric refraction coefficient (typically 0.13 for standard atmosphere)
-    /// Effective radius = earth_radius / (1 - k)
+    /// Atmospheric refraction coefficient `k` (standard atmosphere value: 0.13, per ICAO/ITU-R).
+    ///
+    /// The effective Earth radius used for correction is `R_eff = earth_radius / (1 − k)`.
+    /// Default: 0.13 (ICAO/ITU-R standard atmosphere, geodetic/surveying convention).
     pub refraction_coefficient: f64,
 }
 
 impl Default for CurvatureCorrection {
     fn default() -> Self {
         Self {
-            earth_radius: 6_371_000.0,
-            refraction_coefficient: 0.13,
+            earth_radius: EARTH_RADIUS_M,
+            refraction_coefficient: REFRACTION_COEFF,
         }
     }
 }
@@ -818,11 +838,16 @@ fn viewshed_r3(dem: &RasterBuffer, config: &ViewshedConfig) -> Result<ViewshedRe
 // Earth curvature correction
 // ===========================================================================
 
-/// Computes the elevation offset due to Earth curvature and atmospheric refraction
+/// Computes the combined elevation offset due to Earth curvature and atmospheric refraction.
 ///
-/// offset = distance^2 / (2 * R_eff)
+/// `offset = distance² / (2 · R_eff)`
 ///
-/// where R_eff = R / (1 - k), R = earth radius, k = refraction coefficient
+/// where `R_eff = R / (1 − k)`, `R` = Earth radius (default [`EARTH_RADIUS_M`] = 6 371 000 m),
+/// and `k` = refraction coefficient (default [`REFRACTION_COEFF`] = 0.13).
+///
+/// Positive offset means the terrain at `distance` appears *lower* than on a flat Earth
+/// (i.e., the visible horizon is further away when refraction is included).  The correction
+/// is subtracted from the terrain elevation before computing elevation angles.
 fn earth_curvature_offset(distance: f64, correction: &CurvatureCorrection) -> f64 {
     let effective_radius = correction.earth_radius / (1.0 - correction.refraction_coefficient);
     (distance * distance) / (2.0 * effective_radius)

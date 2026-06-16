@@ -406,24 +406,142 @@ impl Scheduler {
             }
         }
 
+        // Release the DashMap lock before async I/O.
+        drop(schedule);
+
+        if self.config.enable_persistence {
+            if let Err(e) = self.persist_state().await {
+                tracing::warn!(
+                    "scheduler: failed to persist state after status update: {}",
+                    e
+                );
+            }
+        }
+
         Ok(())
     }
 
-    /// Persist scheduler state.
+    /// Persist scheduler state atomically using write-to-tmp-then-rename.
+    ///
+    /// Each `ScheduledWorkflow` is serialized as a single JSON line (JSON-Lines format).
+    /// The write is crash-safe: data is first written to a `.tmp` sibling file, then
+    /// atomically renamed into place, so a mid-write crash never leaves a corrupt file.
     async fn persist_state(&self) -> Result<()> {
-        if let Some(_path) = &self.config.persistence_path {
-            // Persistence implementation would go here
-            // For now, this is a placeholder
+        let path_str = match &self.config.persistence_path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        let path = std::path::PathBuf::from(&path_str);
+
+        // Ensure the parent directory exists.
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
         }
+
+        // Snapshot the DashMap into a sorted Vec for deterministic output.
+        let mut snapshot: Vec<ScheduledWorkflow> = self
+            .schedules
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        snapshot.sort_by(|a, b| a.schedule_id.cmp(&b.schedule_id));
+
+        // Build JSON-Lines payload: one compact JSON object per line.
+        let mut payload = String::with_capacity(snapshot.len() * 256);
+        for workflow in &snapshot {
+            let line = serde_json::to_string(workflow)?;
+            payload.push_str(&line);
+            payload.push('\n');
+        }
+
+        // Atomic write: write to a `.tmp` sibling, then rename into place.
+        let tmp_path = {
+            let mut p = path.clone();
+            let ext = match p.extension() {
+                Some(e) => format!("{}.tmp", e.to_string_lossy()),
+                None => "tmp".to_string(),
+            };
+            p.set_extension(ext);
+            p
+        };
+
+        tokio::fs::write(&tmp_path, payload.as_bytes()).await?;
+        tokio::fs::rename(&tmp_path, &path).await?;
+
+        tracing::debug!(
+            "scheduler::persist_state: wrote {} schedules to {}",
+            snapshot.len(),
+            path.display()
+        );
+
         Ok(())
     }
 
-    /// Load scheduler state from persistence.
+    /// Load scheduler state from the persistence file.
+    ///
+    /// Reads the JSON-Lines file written by `persist_state`.  Corrupt or
+    /// unparseable lines are skipped with a `warn!` log; the method still
+    /// returns `Ok(())` so that a partially-corrupt file does not prevent
+    /// the scheduler from starting.
     pub async fn load_state(&self) -> Result<()> {
-        if let Some(_path) = &self.config.persistence_path {
-            // Load implementation would go here
-            // For now, this is a placeholder
+        let path_str = match &self.config.persistence_path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        let path = std::path::PathBuf::from(&path_str);
+
+        // First startup — no persistence file exists yet.
+        if !path.exists() {
+            return Ok(());
         }
+
+        let content = tokio::fs::read_to_string(&path).await?;
+        let mut loaded_count = 0usize;
+        let mut failed_count = 0usize;
+
+        for (line_no, raw_line) in content.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<ScheduledWorkflow>(line) {
+                Ok(workflow) => {
+                    self.schedules
+                        .insert(workflow.schedule_id.clone(), workflow);
+                    loaded_count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "scheduler::load_state: skipping corrupt line {} in {}: {}",
+                        line_no + 1,
+                        path.display(),
+                        e
+                    );
+                    failed_count += 1;
+                }
+            }
+        }
+
+        if failed_count > 0 {
+            tracing::warn!(
+                "scheduler::load_state: {}/{} lines failed to parse in {}",
+                failed_count,
+                loaded_count + failed_count,
+                path.display()
+            );
+        }
+
+        tracing::debug!(
+            "scheduler::load_state: loaded {} schedules from {}",
+            loaded_count,
+            path.display()
+        );
+
         Ok(())
     }
 }

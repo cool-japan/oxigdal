@@ -1,19 +1,40 @@
 //! TLS/mTLS configuration for data in transit.
+//!
+//! The [`TlsConfigBuilder::build_client`] and [`TlsConfigBuilder::build_server`] methods
+//! are only available when the `tls` feature is enabled.  After the migration to
+//! `oxitls-adapter-rustls-rustcrypto` the `tls` feature is 100% Pure Rust — no
+//! `ring` / C / ASM code is required.
+//!
+//! [`TlsVersion`] and [`CertificateValidation`] are always available (pure Rust).
 
+#[cfg(feature = "tls")]
 use crate::error::{Result, SecurityError};
+#[cfg(feature = "tls")]
 use rustls::{ClientConfig, ServerConfig};
+#[cfg(feature = "tls")]
 use std::io::BufReader;
+#[cfg(feature = "tls")]
 use std::sync::Arc;
 
 /// TLS configuration builder.
+///
+/// The builder itself is always available.  The `build_client` and `build_server`
+/// methods that produce rustls configs are gated behind the `tls` feature.
 pub struct TlsConfigBuilder {
-    server_name: Option<String>,
-    ca_cert: Option<Vec<u8>>,
-    client_cert: Option<Vec<u8>>,
-    client_key: Option<Vec<u8>>,
-    server_cert: Option<Vec<u8>>,
-    server_key: Option<Vec<u8>>,
-    verify_peer: bool,
+    /// SNI server name (informational; SNI is set at connect-time by the caller).
+    pub server_name: Option<String>,
+    /// CA certificate in PEM format.
+    pub ca_cert: Option<Vec<u8>>,
+    /// Client certificate in PEM format.
+    pub client_cert: Option<Vec<u8>>,
+    /// Client private key in PEM format.
+    pub client_key: Option<Vec<u8>>,
+    /// Server certificate in PEM format.
+    pub server_cert: Option<Vec<u8>>,
+    /// Server private key in PEM format.
+    pub server_key: Option<Vec<u8>>,
+    /// Whether to verify the peer certificate.
+    pub verify_peer: bool,
 }
 
 impl Default for TlsConfigBuilder {
@@ -36,7 +57,7 @@ impl TlsConfigBuilder {
         }
     }
 
-    /// Set the server name for SNI.
+    /// Set the server name for SNI (stored for documentation; SNI is passed at connect-time).
     pub fn server_name(mut self, name: String) -> Self {
         self.server_name = Some(name);
         self
@@ -68,123 +89,146 @@ impl TlsConfigBuilder {
         self
     }
 
-    /// Build a client configuration.
+    /// Build a rustls [`ClientConfig`] using the pure-Rust OxiTLS RustCrypto provider.
+    ///
+    /// Only available with the `tls` Cargo feature.
+    ///
+    /// Behaviour:
+    /// - If `ca_cert` is set, trusts only that CA.  Otherwise uses the Mozilla CA bundle.
+    /// - If `client_cert` + `client_key` are set, enables mutual TLS (mTLS).
+    /// - `verify_peer = false` is not supported for clients (always verifies the server).
+    #[cfg(feature = "tls")]
     pub fn build_client(self) -> Result<Arc<ClientConfig>> {
-        let mut root_store = rustls::RootCertStore::empty();
+        use oxitls_adapter_rustls_rustcrypto::RustcryptoClientConfigBuilder;
+        use oxitls_webpki_roots::webpki_root_certs;
+        use rustls::RootCertStore;
 
-        if let Some(ca_cert) = self.ca_cert {
-            let mut reader = BufReader::new(ca_cert.as_slice());
-            let certs = rustls_pemfile::certs(&mut reader)
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    SecurityError::certificate(format!("Failed to parse CA cert: {}", e))
-                })?;
-
-            for cert in certs {
-                root_store.add(cert).map_err(|e| {
-                    SecurityError::certificate(format!("Failed to add CA cert: {}", e))
+        // ── Root store ────────────────────────────────────────────────────────
+        let root_store: RootCertStore = if let Some(ca_pem) = self.ca_cert {
+            let mut store = RootCertStore::empty();
+            let mut reader = BufReader::new(ca_pem.as_slice());
+            let ca_certs: Vec<_> = rustls_pemfile::certs(&mut reader)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|e| SecurityError::certificate(format!("Failed to parse CA cert: {e}")))?;
+            for cert in ca_certs {
+                store.add(cert).map_err(|e| {
+                    SecurityError::certificate(format!("Failed to add CA cert: {e}"))
                 })?;
             }
+            store
         } else {
-            // Use system root certificates
-            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        }
+            webpki_root_certs()
+        };
 
-        // Build client config with or without client authentication
-        let config = if let (Some(cert), Some(key)) = (self.client_cert, self.client_key) {
-            let mut cert_reader = BufReader::new(cert.as_slice());
-            let certs = rustls_pemfile::certs(&mut cert_reader)
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    SecurityError::certificate(format!("Failed to parse client cert: {}", e))
-                })?;
-
-            let mut key_reader = BufReader::new(key.as_slice());
-            let key = rustls_pemfile::private_key(&mut key_reader)
-                .map_err(|e| {
-                    SecurityError::certificate(format!("Failed to parse private key: {}", e))
-                })?
-                .ok_or_else(|| SecurityError::certificate("No private key found"))?;
-
-            ClientConfig::builder()
+        // ── mTLS vs anonymous client ──────────────────────────────────────────
+        let config = if let (Some(cert_pem), Some(key_pem)) = (self.client_cert, self.client_key) {
+            // mTLS: parse client cert chain + private key and inject via the
+            // raw rustls builder (RustcryptoClientConfigBuilder always uses
+            // with_no_client_auth; drop down to the provider-aware raw API).
+            let certs: Vec<_> = {
+                let mut reader = BufReader::new(cert_pem.as_slice());
+                rustls_pemfile::certs(&mut reader)
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(|e| {
+                        SecurityError::certificate(format!("Failed to parse client cert: {e}"))
+                    })?
+            };
+            let private_key = {
+                let mut reader = BufReader::new(key_pem.as_slice());
+                rustls_pemfile::private_key(&mut reader)
+                    .map_err(|e| {
+                        SecurityError::certificate(format!("Failed to parse private key: {e}"))
+                    })?
+                    .ok_or_else(|| SecurityError::certificate("No private key found"))?
+            };
+            let provider = oxitls_adapter_rustls_rustcrypto::pure_provider();
+            ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|e| SecurityError::tls(format!("Protocol version error: {e}")))?
                 .with_root_certificates(root_store)
-                .with_client_auth_cert(certs, key)
+                .with_client_auth_cert(certs, private_key)
                 .map_err(|e| {
-                    SecurityError::certificate(format!("Failed to set client auth: {}", e))
+                    SecurityError::certificate(format!("Failed to set client auth: {e}"))
                 })?
         } else {
-            ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth()
+            // Anonymous client — use the fluent OxiTLS builder.
+            RustcryptoClientConfigBuilder::new()
+                .with_roots(root_store)
+                .build()
+                .map_err(|e| SecurityError::tls(e.to_string()))?
         };
 
         Ok(Arc::new(config))
     }
 
-    /// Build a server configuration.
+    /// Build a rustls [`ServerConfig`] using the pure-Rust OxiTLS RustCrypto provider.
+    ///
+    /// Only available with the `tls` Cargo feature.
+    ///
+    /// Behaviour:
+    /// - `server_cert` + `server_key` (PEM) are required.
+    /// - If `ca_cert` is set and `verify_peer = true`, enables mutual TLS (mTLS) requiring
+    ///   client certificates validated against the supplied CA.
+    /// - If `verify_peer = false`, no client certificate is required.
+    #[cfg(feature = "tls")]
     pub fn build_server(self) -> Result<Arc<ServerConfig>> {
-        let cert = self
+        use oxitls_adapter_rustls_rustcrypto::RustcryptoServerConfigBuilder;
+        use rustls::RootCertStore;
+
+        let cert_pem = self
             .server_cert
             .ok_or_else(|| SecurityError::certificate("Server certificate required"))?;
-        let key = self
+        let key_pem = self
             .server_key
             .ok_or_else(|| SecurityError::certificate("Server private key required"))?;
 
-        let mut cert_reader = BufReader::new(cert.as_slice());
-        let certs = rustls_pemfile::certs(&mut cert_reader)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| {
-                SecurityError::certificate(format!("Failed to parse server cert: {}", e))
-            })?;
-
-        let mut key_reader = BufReader::new(key.as_slice());
-        let private_key = rustls_pemfile::private_key(&mut key_reader)
-            .map_err(|e| SecurityError::certificate(format!("Failed to parse private key: {}", e)))?
-            .ok_or_else(|| SecurityError::certificate("No private key found"))?;
-
-        let config = if self.verify_peer {
-            // mTLS - require client certificate
-            if let Some(ca_cert) = self.ca_cert {
-                let mut root_store = rustls::RootCertStore::empty();
-                let mut reader = BufReader::new(ca_cert.as_slice());
-                let ca_certs = rustls_pemfile::certs(&mut reader)
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(|e| {
-                        SecurityError::certificate(format!("Failed to parse CA cert: {}", e))
-                    })?;
-
-                for cert in ca_certs {
-                    root_store.add(cert).map_err(|e| {
-                        SecurityError::certificate(format!("Failed to add CA cert: {}", e))
-                    })?;
-                }
-
-                let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
-                    .build()
-                    .map_err(|e| {
-                        SecurityError::certificate(format!("Failed to build verifier: {}", e))
-                    })?;
-
-                ServerConfig::builder()
-                    .with_client_cert_verifier(verifier)
-                    .with_single_cert(certs, private_key)
-                    .map_err(|e| {
-                        SecurityError::certificate(format!("Failed to build server config: {}", e))
-                    })?
-            } else {
-                return Err(SecurityError::certificate(
-                    "CA certificate required for client verification",
-                ));
-            }
-        } else {
-            // TLS only - no client certificate required
-            ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(certs, private_key)
+        // ── Parse server cert chain ──────────────────────────────────────────
+        let certs: Vec<_> = {
+            let mut reader = BufReader::new(cert_pem.as_slice());
+            rustls_pemfile::certs(&mut reader)
+                .collect::<std::result::Result<_, _>>()
                 .map_err(|e| {
-                    SecurityError::certificate(format!("Failed to build server config: {}", e))
+                    SecurityError::certificate(format!("Failed to parse server cert: {e}"))
                 })?
         };
+
+        // ── Parse private key ────────────────────────────────────────────────
+        let private_key = {
+            let mut reader = BufReader::new(key_pem.as_slice());
+            rustls_pemfile::private_key(&mut reader)
+                .map_err(|e| {
+                    SecurityError::certificate(format!("Failed to parse private key: {e}"))
+                })?
+                .ok_or_else(|| SecurityError::certificate("No private key found"))?
+        };
+
+        // ── Build server config via OxiTLS fluent builder ────────────────────
+        let mut builder =
+            RustcryptoServerConfigBuilder::new().with_cert_and_key(certs, private_key);
+
+        if self.verify_peer {
+            // mTLS: require client certificates validated against the supplied CA.
+            let ca_pem = self.ca_cert.ok_or_else(|| {
+                SecurityError::certificate("CA certificate required for client verification")
+            })?;
+            let mut root_store = RootCertStore::empty();
+            let mut reader = BufReader::new(ca_pem.as_slice());
+            let ca_certs: Vec<_> = rustls_pemfile::certs(&mut reader)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|e| SecurityError::certificate(format!("Failed to parse CA cert: {e}")))?;
+            for cert in ca_certs {
+                root_store.add(cert).map_err(|e| {
+                    SecurityError::certificate(format!("Failed to add CA cert: {e}"))
+                })?;
+            }
+            // required = true: clients without a certificate are rejected.
+            builder = builder.with_client_auth(true, root_store);
+        }
+        // When verify_peer = false, no client_auth is configured (no-client-auth is the default).
+
+        let config = builder
+            .build()
+            .map_err(|e| SecurityError::tls(e.to_string()))?;
 
         Ok(Arc::new(config))
     }

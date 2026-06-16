@@ -25,8 +25,8 @@ parallel = ["dep:rayon", "compression"]
 http-range = ["dep:oxigdal-streaming", "dep:tokio", "oxigdal-streaming/cloud-http"]
 # Enable async reader backed by tokio::io::AsyncRead + AsyncSeek.
 async = ["dep:tokio"]
-# Enable PMTiles → MBTiles export via SQLite (rusqlite bundled).
-mbtiles = ["dep:rusqlite"]
+# Enable PMTiles → MBTiles export via SQLite (Pure-Rust OxiSQL engine).
+mbtiles = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio"]
 # Enable cloud-storage (S3 / GCS / Azure Blob) range-request reader.
 cloud-storage = ["dep:url", "dep:reqwest", "dep:tokio"]
 
@@ -41,7 +41,8 @@ oxiarc-archive = { workspace = true, optional = true }
 # HTTP range-request reader (feature-gated): powered by oxigdal-streaming.
 oxigdal-streaming = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true, features = ["bundled"] }
+oxisql-core = { workspace = true, optional = true }
+oxisql-sqlite-compat = { workspace = true, optional = true }
 # Parallel tile encoding (feature-gated): data-parallel compression via rayon.
 rayon = { workspace = true, optional = true }
 # Cloud-storage range-request reader (feature-gated).
@@ -50,6 +51,8 @@ reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
 
 [lints]
 workspace = true

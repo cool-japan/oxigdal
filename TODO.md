@@ -1,10 +1,34 @@
 # OxiGDAL TODO
 
-> Version: 0.1.5 (2026-05-22) | 78 crates | 14,605 tests | ~580K Rust SLoC
+> Version: 0.1.6 (2026-06-15) | 78 crates | 14,605 tests | ~580K Rust SLoC
 
 ---
 
-## v0.1.5 — Current Release (2026-05-22) [COMPLETE]
+## v0.1.6 — Current Release (2026-06-15) [DONE]
+
+- [x] Pure-Rust SQLite migration: `rusqlite`/`libsqlite3-sys` (C FFI) fully replaced by `oxisql-sqlite-compat 0.1.5` (Limbo engine) across db-connectors, gpkg, drivers-advanced, mbtiles, pmtiles
+- [x] Policy fixes: `ring`, `rusqlite`, `rdkafka-sys` removed from default feature closure
+- [x] native-tls → oxitls migration (pure Rust TLS stack)
+- [x] ~35 inline deps migrated to `*.workspace = true`
+- [x] `oxigdal-shapefile`: non-UTF-8 DBF encoding via `encoding_rs` (CPG/LDID support, PR #10)
+- [x] `oxigdal-proj`: `wkt_to_proj_string()` — WKT→PROJ conversion (PR #9)
+- [x] `oxigdal-cache-advanced`: W-TinyLFU + Count-Min Sketch cache eviction
+- [x] `oxigdal-copc`: LiDAR waveform point formats 9/10 (`WaveformPacket`)
+- [x] `oxigdal-drivers/hdf5`: HDF5 v2/v3 superblock parser + Jenkins hash
+- [x] `oxigdal-index`: Delaunay triangulation (`triangulate()`, `Triangulation::convex_hull()`)
+- [x] `oxigdal-qc`: Batch QC runner, GPKG/STAC/radiometric validators, per-sensor band ranges
+- [x] `oxigdal-sensors`: Gaussian Maximum Likelihood Classifier
+- [x] `oxigdal-streaming`: OxiStore-backed persistent `KvStateBackend`
+- [x] `oxigdal-terrain`: GLCM texture derivatives, TPI variants, geomorphons, cost-distance/least-cost-path
+- [x] `oxigdal-temporal`: Whittaker smoother + Savitzky-Golay filter for gap filling
+- [x] `oxigdal-analytics`: permutation significance testing for Local Moran's I
+- [x] `oxigdal-metadata`: DOI/INSPIRE metadata transform
+- [x] Umbrella: GPX, KML, TopoJSON format support in `open()` / vector streaming
+- [x] Dependency upgrades: scirs2 0.4.4→0.5.0, oxionnx 0.1.3→0.1.4, oxiarc 0.3.0→0.3.3, oxicode 0.2.3→0.2.4
+
+---
+
+## v0.1.5 — Previous Release (2026-05-22) [COMPLETE]
 
 - [x] `oxigdal-gpu`: WGSL `RayMarchUniforms` layout fix — removed stray `_pad1: f32` that shifted every field by 4 bytes and caused the Metal compute kernel to read `max_steps` ≈ 1.05×10⁹, hanging `device.poll(wait_indefinitely)` for 120s+. Previously-timing-out `test_ray_march_gpu_matches_cpu_when_backend_present` now passes in 0.127s.
 
@@ -250,3 +274,26 @@
 ---
 
 *Last updated: 2026-05-22*
+
+## Stubs to implement (added 2026-06-12 by /cooljapan-stub-check)
+
+- [ ] `oxigdal-wasm`: `crates/oxigdal-wasm/src/tests/functions_3.rs:542` — implement full Huffman codec for wasm decompression path (or wire oxiarc equivalent)
+  - Priority: P2 | Scope: medium | Hint: oxiarc
+- [ ] `oxigdal-wasm`: `crates/oxigdal-wasm/src/tests/functions_4.rs:249` — implement decompression roundtrip test
+  - Priority: P2 | Scope: small | Hint: oxiarc
+- [ ] `oxigdal-python`: `crates/oxigdal-python/src/numpy.rs:586` — implement proper complex dtype mapping when pyo3 supports it
+  - Priority: P2 | Scope: small | Hint: none
+- [ ] `oxigdal-algorithms`: `crates/oxigdal-algorithms/tests/texture_analysis_test.rs:212` — investigate GLCM computation on uniform rasters (empty matrix bug) and re-enable ignored test
+  - Priority: P2 | Scope: small | Hint: none
+- [ ] `oxigdal-workflow`: `crates/oxigdal-workflow/src/integrations/temporal.rs:27` — replace generated activity-logic TODO placeholder with real Temporal workflow activity bodies
+  - Priority: P2 | Scope: medium | Hint: none
+- [ ] `oxigdal-drivers/jpeg2000`: `crates/oxigdal-drivers/jpeg2000/src/lib.rs:154` — implement JPEG2000 driver (tracked as TODO in module doc)
+  - Priority: P2 | Scope: large | Hint: none
+
+## Policy follow-ups (added 2026-06-13 by /policy-check)
+
+### #1 No-unwrap purge — production code only (tests on infallible paths are policy-allowed)
+- [x] **oxigdal**: 0 production `.unwrap()` (clean)
+  - Verified: 36 src/ files scanned; all `.unwrap()` calls are inside `#[cfg(test)]` blocks.
+    Cross-confirmed by checking every `.rs` file for unwraps before the first `#[cfg(test)]`
+    annotation — result: zero hits. `oxigdal` is fully policy-compliant on #1.

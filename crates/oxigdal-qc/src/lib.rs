@@ -48,13 +48,20 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 
+pub mod batch;
 pub mod error;
 pub mod fix;
+pub mod gpkg;
 pub mod metadata;
 pub mod raster;
 pub mod report;
 pub mod rules;
+pub mod stac;
 pub mod vector;
+
+pub use batch::{BatchConfig, BatchReport, BatchRunner, FileQcResult, SeverityCounts};
+pub use gpkg::{GpkgValidationResult, GpkgValidator};
+pub use stac::{StacValidationResult, StacValidator};
 
 /// Prelude module for convenient imports.
 pub mod prelude {
@@ -63,10 +70,12 @@ pub mod prelude {
     pub use crate::fix::{FixResult, FixStrategy, TopologyFixer};
     pub use crate::metadata::{MetadataChecker, MetadataConfig, MetadataResult, MetadataStandard};
     pub use crate::raster::{
-        AccuracyChecker, AccuracyConfig, AccuracyResult, CogComplianceChecker, CogComplianceResult,
-        CompletenessChecker, CompletenessConfig, CompletenessResult, ConsistencyChecker,
-        ConsistencyConfig, ConsistencyResult, CrsAndExtentValidator, CrsExtentValidationResult,
-        NoDataBandStats, NoDataValidationResult, NoDataValidator, StrictMode,
+        AccuracyChecker, AccuracyConfig, AccuracyResult, BandRadiometricResult, BandRange,
+        CogComplianceChecker, CogComplianceResult, CompletenessChecker, CompletenessConfig,
+        CompletenessResult, ConsistencyChecker, ConsistencyConfig, ConsistencyResult,
+        CrsAndExtentValidator, CrsExtentValidationResult, NoDataBandStats, NoDataValidationResult,
+        NoDataValidator, RadiometricValidationResult, RadiometricValidator, SensorProfile,
+        StrictMode,
     };
     pub use crate::report::{QualityAssessment, QualityReport, ReportSection};
     pub use crate::rules::{

@@ -39,7 +39,7 @@ pub struct JsonExporterConfig {
 impl Default for JsonExporterConfig {
     fn default() -> Self {
         Self {
-            output_dir: PathBuf::from("/tmp/oxigdal-metrics"),
+            output_dir: std::env::temp_dir().join("oxigdal-metrics"),
             file_prefix: "metrics".to_string(),
             pretty_print: false,
             max_file_size: 100 * 1024 * 1024, // 100MB

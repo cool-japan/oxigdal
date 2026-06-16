@@ -1,7 +1,8 @@
 //! GeoPackage raster tile support.
 
 use super::{connection::GpkgConnection, metadata::Extent};
-use crate::error::Result;
+use crate::error::{Error, Result};
+use oxisql_core::ToSqlValue;
 
 /// Tile matrix set for raster data.
 pub struct TileMatrixSet {
@@ -15,13 +16,29 @@ pub struct TileMatrixSet {
 impl TileMatrixSet {
     /// Open existing tile matrix set.
     pub fn open(conn: &GpkgConnection, table_name: &str) -> Result<Self> {
-        let (srs_id, min_x, min_y, max_x, max_y): (i32, f64, f64, f64, f64) = conn
-            .connection()
-            .query_row(
-                "SELECT srs_id, min_x, min_y, max_x, max_y FROM gpkg_tile_matrix_set WHERE table_name = ?1",
-                [table_name],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            )?;
+        let tname = table_name.to_string();
+        let rows = conn.connection().query(
+            "SELECT srs_id, min_x, min_y, max_x, max_y FROM gpkg_tile_matrix_set WHERE table_name = $1",
+            &[&tname as &dyn ToSqlValue],
+        )?;
+        let row = rows.into_iter().next().ok_or_else(|| {
+            Error::geopackage(format!("no tile matrix set for table '{table_name}'"))
+        })?;
+        let srs_id: i32 = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
+        let min_x: f64 = row
+            .try_get_by_index(1)
+            .map_err(|e| Error::geopackage(format!("column 1: {e}")))?;
+        let min_y: f64 = row
+            .try_get_by_index(2)
+            .map_err(|e| Error::geopackage(format!("column 2: {e}")))?;
+        let max_x: f64 = row
+            .try_get_by_index(3)
+            .map_err(|e| Error::geopackage(format!("column 3: {e}")))?;
+        let max_y: f64 = row
+            .try_get_by_index(4)
+            .map_err(|e| Error::geopackage(format!("column 4: {e}")))?;
 
         let extent = Extent::new(min_x, min_y, max_x, max_y);
         let matrices = Self::load_matrices(conn, table_name)?;
@@ -56,13 +73,16 @@ impl TileMatrixSet {
         conn.execute_batch(&create_sql)?;
 
         // Register in gpkg_contents
+        let tname = table_name.to_string();
+        let tiles_str = "tiles".to_string();
+        let srs_id_i64: i64 = i64::from(srs_id);
         conn.execute(
-            "INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id, min_x, min_y, max_x, max_y) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id, min_x, min_y, max_x, max_y) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             &[
-                &table_name as &dyn rusqlite::ToSql,
-                &"tiles",
-                &table_name,
-                &srs_id,
+                &tname as &dyn ToSqlValue,
+                &tiles_str,
+                &tname,
+                &srs_id_i64,
                 &extent.min_x,
                 &extent.min_y,
                 &extent.max_x,
@@ -72,10 +92,10 @@ impl TileMatrixSet {
 
         // Register in gpkg_tile_matrix_set
         conn.execute(
-            "INSERT INTO gpkg_tile_matrix_set (table_name, srs_id, min_x, min_y, max_x, max_y) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO gpkg_tile_matrix_set (table_name, srs_id, min_x, min_y, max_x, max_y) VALUES ($1, $2, $3, $4, $5, $6)",
             &[
-                &table_name as &dyn rusqlite::ToSql,
-                &srs_id,
+                &tname as &dyn ToSqlValue,
+                &srs_id_i64,
                 &extent.min_x,
                 &extent.min_y,
                 &extent.max_x,
@@ -93,40 +113,67 @@ impl TileMatrixSet {
 
     /// Load tile matrices.
     fn load_matrices(conn: &GpkgConnection, table_name: &str) -> Result<Vec<TileMatrix>> {
-        let mut stmt = conn.connection().prepare(
+        let tname = table_name.to_string();
+        let rows = conn.connection().query(
             "SELECT zoom_level, matrix_width, matrix_height, tile_width, tile_height, pixel_x_size, pixel_y_size
-             FROM gpkg_tile_matrix WHERE table_name = ?1 ORDER BY zoom_level"
+             FROM gpkg_tile_matrix WHERE table_name = $1 ORDER BY zoom_level",
+            &[&tname as &dyn ToSqlValue],
         )?;
 
-        let matrices = stmt
-            .query_map([table_name], |row| {
+        rows.into_iter()
+            .map(|row| {
+                let zoom_level: i32 = row
+                    .try_get_by_index(0)
+                    .map_err(|e| Error::geopackage(format!("zoom_level: {e}")))?;
+                let matrix_width: i32 = row
+                    .try_get_by_index(1)
+                    .map_err(|e| Error::geopackage(format!("matrix_width: {e}")))?;
+                let matrix_height: i32 = row
+                    .try_get_by_index(2)
+                    .map_err(|e| Error::geopackage(format!("matrix_height: {e}")))?;
+                let tile_width: i32 = row
+                    .try_get_by_index(3)
+                    .map_err(|e| Error::geopackage(format!("tile_width: {e}")))?;
+                let tile_height: i32 = row
+                    .try_get_by_index(4)
+                    .map_err(|e| Error::geopackage(format!("tile_height: {e}")))?;
+                let pixel_x_size: f64 = row
+                    .try_get_by_index(5)
+                    .map_err(|e| Error::geopackage(format!("pixel_x_size: {e}")))?;
+                let pixel_y_size: f64 = row
+                    .try_get_by_index(6)
+                    .map_err(|e| Error::geopackage(format!("pixel_y_size: {e}")))?;
                 Ok(TileMatrix {
-                    zoom_level: row.get(0)?,
-                    matrix_width: row.get(1)?,
-                    matrix_height: row.get(2)?,
-                    tile_width: row.get(3)?,
-                    tile_height: row.get(4)?,
-                    pixel_x_size: row.get(5)?,
-                    pixel_y_size: row.get(6)?,
+                    zoom_level,
+                    matrix_width,
+                    matrix_height,
+                    tile_width,
+                    tile_height,
+                    pixel_x_size,
+                    pixel_y_size,
                 })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-
-        Ok(matrices)
+            })
+            .collect()
     }
 
     /// Add tile matrix for a zoom level.
     pub fn add_matrix(&mut self, conn: &GpkgConnection, matrix: TileMatrix) -> Result<()> {
+        let tname = self.table_name.clone();
+        let zoom_level_i64: i64 = i64::from(matrix.zoom_level);
+        let matrix_width_i64: i64 = i64::from(matrix.matrix_width);
+        let matrix_height_i64: i64 = i64::from(matrix.matrix_height);
+        let tile_width_i64: i64 = i64::from(matrix.tile_width);
+        let tile_height_i64: i64 = i64::from(matrix.tile_height);
         conn.execute(
             "INSERT INTO gpkg_tile_matrix (table_name, zoom_level, matrix_width, matrix_height, tile_width, tile_height, pixel_x_size, pixel_y_size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             &[
-                &self.table_name as &dyn rusqlite::ToSql,
-                &matrix.zoom_level,
-                &matrix.matrix_width,
-                &matrix.matrix_height,
-                &matrix.tile_width,
-                &matrix.tile_height,
+                &tname as &dyn ToSqlValue,
+                &zoom_level_i64,
+                &matrix_width_i64,
+                &matrix_height_i64,
+                &tile_width_i64,
+                &tile_height_i64,
                 &matrix.pixel_x_size,
                 &matrix.pixel_y_size,
             ],
@@ -153,14 +200,21 @@ impl TileMatrixSet {
 
     /// Get tile count for zoom level.
     pub fn tile_count(&self, conn: &GpkgConnection, zoom_level: i32) -> Result<i64> {
-        let count: i64 = conn.connection().query_row(
+        let zoom_level_i64: i64 = i64::from(zoom_level);
+        let rows = conn.connection().query(
             &format!(
-                "SELECT COUNT(*) FROM {} WHERE zoom_level = ?1",
+                "SELECT COUNT(*) FROM {} WHERE zoom_level = $1",
                 self.table_name
             ),
-            [zoom_level],
-            |row| row.get(0),
+            &[&zoom_level_i64 as &dyn ToSqlValue],
         )?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage("tile_count: no row returned"))?;
+        let count: i64 = row
+            .try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
         Ok(count)
     }
 }

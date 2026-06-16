@@ -11,17 +11,78 @@
 //! [`xyz_to_tms_row`].
 //!
 //! All code in this module is compiled only when the `mbtiles-export` Cargo
-//! feature is enabled.
+//! feature is enabled.  The feature uses the Pure-Rust OxiSQL engine
+//! (`oxisql-sqlite-compat`) — no C/FFI, no `libsqlite3`.
+//!
+//! # Sync ↔ async bridge
+//!
+//! The OxiSQL engine is async-only.  The exporter builds a dedicated
+//! current-thread Tokio runtime for each export operation.
+//!
+//! # Schema notes
+//!
+//! * `WITHOUT ROWID` tables are not yet supported by the OxiSQL / Limbo
+//!   engine; the `tiles` table therefore has an implicit rowid column
+//!   alongside the composite primary key.  This does not affect MBTiles spec
+//!   compliance.
+//! * `PRAGMA journal_mode=OFF` and `PRAGMA synchronous=OFF` are removed;
+//!   the engine operates in WAL mode only.
 
 #![cfg(feature = "mbtiles-export")]
 
-use rusqlite::{Connection, params};
 use std::path::Path;
+
+use oxisql_core::{Connection, ToSqlValue};
+use oxisql_sqlite_compat::SqliteConnection;
 
 use crate::error::GpkgError;
 use crate::gpkg::GeoPackage;
 use crate::tile_matrix::TileMatrix;
 use crate::tile_pyramid::TilePyramidReader;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal sync bridge
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Map any `Display` error to [`GpkgError::MbTilesExportError`].
+fn mbt_err(e: impl std::fmt::Display) -> GpkgError {
+    GpkgError::MbTilesExportError(e.to_string())
+}
+
+/// A synchronous handle to an OxiSQL-backed MBTiles SQLite database used
+/// during export.  Owns both the async connection and the Tokio runtime needed
+/// to drive it from synchronous callers.
+struct MbConn {
+    conn: SqliteConnection,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl MbConn {
+    fn open<P: AsRef<Path>>(path: P) -> Result<Self, GpkgError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| mbt_err(format!("tokio runtime build failed: {e}")))?;
+        let path_str = path.as_ref().to_string_lossy().into_owned();
+        let conn = runtime
+            .block_on(SqliteConnection::open(&path_str))
+            .map_err(mbt_err)?;
+        Ok(Self { conn, runtime })
+    }
+
+    fn exec(&self, sql: &str, params: &[&dyn ToSqlValue]) -> Result<u64, GpkgError> {
+        self.runtime
+            .block_on(self.conn.execute(sql, params))
+            .map_err(mbt_err)
+    }
+
+    fn exec_batch(&self, sql: &str) -> Result<(), GpkgError> {
+        self.runtime
+            .block_on(self.conn.execute_batch(sql))
+            .map_err(mbt_err)?;
+        Ok(())
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -93,39 +154,32 @@ impl<'a> GpkgMbTilesExporter<'a> {
     /// Creates or overwrites the file at `path`.  The file is a valid SQLite
     /// database with `tiles` and `metadata` tables conforming to MBTiles 1.3.
     ///
+    /// After all tiles are written a `PRAGMA wal_checkpoint` is issued so
+    /// that the WAL sidecar is merged back into the main database file.
+    ///
     /// # Errors
     /// - [`GpkgError::MbTilesExportError`] if the SQLite file cannot be
     ///   opened or if any write fails.
     /// - Propagates any [`GpkgError`] from reading the source GeoPackage.
     pub fn export_to_path<P: AsRef<Path>>(&self, path: P) -> Result<GpkgMbTilesStats, GpkgError> {
-        let conn = Connection::open(path.as_ref())
-            .map_err(|e| GpkgError::MbTilesExportError(e.to_string()))?;
-        self.export_to_connection(&conn)
+        let db = MbConn::open(path.as_ref())?;
+        let stats = self.export_to_conn(&db)?;
+        // Checkpoint WAL so the output is self-contained for external readers.
+        db.exec_batch("PRAGMA wal_checkpoint")?;
+        Ok(stats)
     }
 
-    /// Export to an already-open rusqlite [`Connection`].
-    ///
-    /// Creates the `tiles` and `metadata` tables (if they do not exist), then
-    /// iterates over every `(zoom, col, row)` slot defined in
-    /// `gpkg_tile_matrix`, reads each tile blob, converts the row index from
-    /// XYZ to TMS convention, and inserts it.
-    ///
-    /// Tiles absent from the GeoPackage (sparse pyramids) are silently skipped.
-    ///
-    /// # Errors
-    /// - [`GpkgError::MbTilesExportError`] if any SQLite operation fails.
-    /// - Propagates any [`GpkgError`] from reading the source GeoPackage.
-    pub fn export_to_connection(&self, conn: &Connection) -> Result<GpkgMbTilesStats, GpkgError> {
+    /// Internal: perform the export into an already-open [`MbConn`].
+    fn export_to_conn(&self, db: &MbConn) -> Result<GpkgMbTilesStats, GpkgError> {
         // ── 1. Create MBTiles schema ──────────────────────────────────────────
-        create_schema(conn)?;
+        create_schema(db)?;
 
         // ── 2. Open tile pyramid reader ───────────────────────────────────────
         let reader = TilePyramidReader::open(self.gpkg, &self.table_name)?;
         let zoom_levels = reader.zoom_levels();
 
         if zoom_levels.is_empty() {
-            // No tile matrix rows — return zero-filled stats.
-            let metadata_keys = write_metadata(conn, &self.table_name, 0, 0, "png")?;
+            let metadata_keys = write_metadata(db, &self.table_name, 0, 0, "png")?;
             return Ok(GpkgMbTilesStats {
                 tiles_written: 0,
                 min_zoom: 0,
@@ -140,20 +194,11 @@ impl<'a> GpkgMbTilesExporter<'a> {
         let min_zoom = zoom_levels[0];
         let max_zoom = zoom_levels[zoom_levels.len() - 1];
 
-        // ── 3. Prepare tile insertion statement ───────────────────────────────
-        let mut insert_stmt = conn
-            .prepare(
-                "INSERT OR REPLACE INTO tiles \
-                 (zoom_level, tile_column, tile_row, tile_data) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )
-            .map_err(|e| GpkgError::MbTilesExportError(e.to_string()))?;
-
         let mut tiles_written: u64 = 0;
         let mut bytes_written: u64 = 0;
         let mut detected_format: Option<String> = None;
 
-        // ── 4. Iterate all (zoom, col, row) slots defined in tile_matrix ──────
+        // ── 3. Iterate all (zoom, col, row) slots defined in tile_matrix ──────
         for zoom in &zoom_levels {
             let matrix: &TileMatrix = match reader.tile_matrix(*zoom) {
                 Some(m) => m,
@@ -178,20 +223,27 @@ impl<'a> GpkgMbTilesExporter<'a> {
                     let tms_row = xyz_to_tms_row(*zoom, gpkg_row);
                     bytes_written += blob.len() as u64;
 
-                    insert_stmt
-                        .execute(params![*zoom, col, tms_row, blob.as_slice()])
-                        .map_err(|e| GpkgError::MbTilesExportError(e.to_string()))?;
+                    let zoom_i = *zoom as i64;
+                    let col_i = col as i64;
+                    let tms_row_i = tms_row as i64;
+                    // BLOB: bind as Vec<u8> (ToSqlValue not impl'd for &[u8])
+                    let blob_vec: Vec<u8> = blob;
+
+                    db.exec(
+                        "INSERT OR REPLACE INTO tiles \
+                         (zoom_level, tile_column, tile_row, tile_data) \
+                         VALUES ($1, $2, $3, $4)",
+                        &[&zoom_i, &col_i, &tms_row_i, &blob_vec],
+                    )?;
 
                     tiles_written += 1;
                 }
             }
         }
 
-        drop(insert_stmt);
-
-        // ── 5. Write metadata ─────────────────────────────────────────────────
+        // ── 4. Write metadata ─────────────────────────────────────────────────
         let format = detected_format.unwrap_or_else(|| "png".to_string());
-        let metadata_keys = write_metadata(conn, &self.table_name, min_zoom, max_zoom, &format)?;
+        let metadata_keys = write_metadata(db, &self.table_name, min_zoom, max_zoom, &format)?;
 
         Ok(GpkgMbTilesStats {
             tiles_written,
@@ -208,16 +260,18 @@ impl<'a> GpkgMbTilesExporter<'a> {
 // Schema creation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Create the MBTiles 1.3 schema in `conn`.
+/// Create the MBTiles 1.3 schema in `db`.
 ///
-/// Uses `PRAGMA journal_mode=OFF` and `PRAGMA synchronous=OFF` to maximise
-/// write throughput during bulk export.  `tiles` is a `WITHOUT ROWID` table
-/// with a composite primary key for efficient lookup after export.
-pub fn create_schema(conn: &Connection) -> Result<(), GpkgError> {
-    conn.execute_batch(
+/// Notes:
+/// * `WITHOUT ROWID` is intentionally omitted — it is not yet supported by
+///   the OxiSQL / Limbo engine.  The tiles table therefore has an implicit
+///   rowid column alongside the composite primary key; this does not affect
+///   MBTiles spec compliance.
+/// * `PRAGMA journal_mode=OFF` and `PRAGMA synchronous=OFF` are omitted — the
+///   OxiSQL engine operates in WAL mode only and does not support these PRAGMAs.
+fn create_schema(db: &MbConn) -> Result<(), GpkgError> {
+    db.exec_batch(
         "
-        PRAGMA journal_mode=OFF;
-        PRAGMA synchronous=OFF;
         CREATE TABLE IF NOT EXISTS metadata (
             name  TEXT NOT NULL,
             value TEXT
@@ -228,10 +282,9 @@ pub fn create_schema(conn: &Connection) -> Result<(), GpkgError> {
             tile_row    INTEGER NOT NULL,
             tile_data   BLOB    NOT NULL,
             PRIMARY KEY (zoom_level, tile_column, tile_row)
-        ) WITHOUT ROWID;
+        );
         ",
     )
-    .map_err(|e| GpkgError::MbTilesExportError(e.to_string()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,7 +298,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), GpkgError> {
 ///
 /// Returns the count of rows inserted.
 fn write_metadata(
-    conn: &Connection,
+    db: &MbConn,
     table_name: &str,
     min_zoom: u32,
     max_zoom: u32,
@@ -265,11 +318,12 @@ fn write_metadata(
     ];
 
     for (k, v) in rows {
-        conn.execute(
-            "INSERT INTO metadata (name, value) VALUES (?1, ?2)",
-            params![k, v],
-        )
-        .map_err(|e| GpkgError::MbTilesExportError(e.to_string()))?;
+        let k_ref: &str = k;
+        let v_ref: &str = v.as_str();
+        db.exec(
+            "INSERT INTO metadata (name, value) VALUES ($1, $2)",
+            &[&k_ref, &v_ref],
+        )?;
     }
 
     Ok(rows.len())
@@ -314,7 +368,7 @@ pub fn xyz_to_tms_row(zoom: u32, xyz_row: u32) -> u32 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit tests (private helpers)
+// Unit tests (private helpers only — no live DB in unit tests)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

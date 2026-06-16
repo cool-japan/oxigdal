@@ -32,9 +32,4 @@ pub enum MbTilesError {
     InvalidMetadata(String),
 }
 
-#[cfg(feature = "sqlite")]
-impl From<rusqlite::Error> for MbTilesError {
-    fn from(err: rusqlite::Error) -> Self {
-        Self::Sqlite(err.to_string())
-    }
-}
+// No rusqlite From impl — the sqlite backend now uses the Pure-Rust OxiSQL engine.

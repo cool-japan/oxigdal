@@ -13,14 +13,33 @@ keywords = ["security", "encryption", "access-control", "compliance", "audit"]
 categories = ["cryptography", "authentication", "science"]
 description = "Enterprise security features for OxiGDAL: encryption, access control, compliance"
 
+[features]
+# Default now includes `tls` — the oxitls stack is 100% Pure Rust (no ring/C/ASM).
+default = ["tls"]
+tls = [
+    "dep:rustls",
+    "dep:rustls-pemfile",
+    "dep:oxitls-core",
+    "dep:oxitls-adapter-rustls-rustcrypto",
+    "dep:oxitls-webpki-roots",
+]
+
 [dependencies]
-# Crypto primitives
-ring.workspace = true
-rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+# Crypto primitives — Pure Rust only
+pbkdf2.workspace = true
 argon2.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 aes-gcm.workspace = true
 chacha20poly1305.workspace = true
+
+# TLS support — pure-Rust via OxiTLS + rustls (feature-gated)
+# rustls is still needed for the public Arc<ClientConfig>/Arc<ServerConfig> return types.
+rustls = { workspace = true, features = ["std", "tls12"], optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+oxitls-core = { workspace = true, optional = true }
+oxitls-adapter-rustls-rustcrypto = { workspace = true, optional = true }
+oxitls-webpki-roots = { workspace = true, optional = true }
 
 # UUID and time
 uuid = { workspace = true }
@@ -55,10 +74,6 @@ base64.workspace = true
 
 # Pattern matching
 regex.workspace = true
-
-# TLS support
-webpki-roots.workspace = true
-rustls-pemfile.workspace = true
 
 # Concurrency
 parking_lot.workspace = true

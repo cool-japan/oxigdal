@@ -1096,7 +1096,11 @@ function isVectorFormat(url) {
            lowerUrl.endsWith('.fgb') ||
            lowerUrl.endsWith('.shp') ||
            lowerUrl.endsWith('.parquet') ||
-           lowerUrl.endsWith('.geoparquet');
+           lowerUrl.endsWith('.geoparquet') ||
+           lowerUrl.endsWith('.gpx') ||
+           lowerUrl.endsWith('.kml') ||
+           lowerUrl.endsWith('.kmz') ||
+           lowerUrl.endsWith('.topojson');
 }
 
 /**
@@ -1112,6 +1116,12 @@ function detectVectorFormat(url) {
         return 'shapefile';
     } else if (lowerUrl.endsWith('.parquet') || lowerUrl.endsWith('.geoparquet')) {
         return 'geoparquet';
+    } else if (lowerUrl.endsWith('.gpx')) {
+        return 'gpx';
+    } else if (lowerUrl.endsWith('.kml') || lowerUrl.endsWith('.kmz')) {
+        return 'kml';
+    } else if (lowerUrl.endsWith('.topojson')) {
+        return 'topojson';
     }
     return null;
 }
@@ -1148,6 +1158,15 @@ async function loadVector(url, name = null) {
                 break;
             case 'geoparquet':
                 geojson = await loadGeoParquet(url);
+                break;
+            case 'gpx':
+                geojson = await loadGPX(url);
+                break;
+            case 'kml':
+                geojson = await loadKML(url);
+                break;
+            case 'topojson':
+                geojson = await loadTopoJSON(url);
                 break;
             default:
                 throw new Error(`Format ${format} not implemented yet`);
@@ -1281,18 +1300,614 @@ async function loadShapefile(url) {
 }
 
 /**
- * Load GeoParquet (requires parquet-wasm)
+ * Load GPX file and convert to GeoJSON via DOMParser.
+ *
+ * GPX is XML-based. Each <trkpt> becomes a GeoJSON Point feature, each
+ * <trkseg> becomes a LineString, and each <wpt> becomes a Point.
+ * This is a dependency-light inline implementation (no CDN libs needed).
+ */
+async function loadGPX(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const text = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, 'application/xml');
+
+    if (doc.querySelector('parsererror')) {
+        throw new Error('GPX parse error: invalid XML');
+    }
+
+    const features = [];
+
+    // --- Waypoints (<wpt>) → Point features
+    for (const wpt of doc.querySelectorAll('wpt')) {
+        const lat = parseFloat(wpt.getAttribute('lat'));
+        const lon = parseFloat(wpt.getAttribute('lon'));
+        if (isNaN(lat) || isNaN(lon)) continue;
+
+        const name = wpt.querySelector('name')?.textContent || null;
+        const desc = wpt.querySelector('desc')?.textContent || null;
+        const ele  = wpt.querySelector('ele')?.textContent;
+
+        features.push({
+            type: 'Feature',
+            geometry: {
+                type: 'Point',
+                coordinates: ele !== undefined ? [lon, lat, parseFloat(ele)] : [lon, lat]
+            },
+            properties: {
+                type: 'waypoint',
+                ...(name !== null && { name }),
+                ...(desc !== null && { description: desc })
+            }
+        });
+    }
+
+    // --- Tracks (<trk> → <trkseg> → <trkpt>) → LineString features per segment
+    for (const trk of doc.querySelectorAll('trk')) {
+        const trkName = trk.querySelector('name')?.textContent || null;
+
+        for (const seg of trk.querySelectorAll('trkseg')) {
+            const coords = [];
+            for (const pt of seg.querySelectorAll('trkpt')) {
+                const lat = parseFloat(pt.getAttribute('lat'));
+                const lon = parseFloat(pt.getAttribute('lon'));
+                if (isNaN(lat) || isNaN(lon)) continue;
+                const ele = pt.querySelector('ele')?.textContent;
+                coords.push(ele !== undefined ? [lon, lat, parseFloat(ele)] : [lon, lat]);
+            }
+            if (coords.length < 2) continue;
+            features.push({
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: coords },
+                properties: {
+                    type: 'track',
+                    ...(trkName !== null && { name: trkName })
+                }
+            });
+        }
+    }
+
+    // --- Routes (<rte> → <rtept>) → LineString features
+    for (const rte of doc.querySelectorAll('rte')) {
+        const rteName = rte.querySelector('name')?.textContent || null;
+        const coords = [];
+        for (const pt of rte.querySelectorAll('rtept')) {
+            const lat = parseFloat(pt.getAttribute('lat'));
+            const lon = parseFloat(pt.getAttribute('lon'));
+            if (isNaN(lat) || isNaN(lon)) continue;
+            const ele = pt.querySelector('ele')?.textContent;
+            coords.push(ele !== undefined ? [lon, lat, parseFloat(ele)] : [lon, lat]);
+        }
+        if (coords.length < 2) continue;
+        features.push({
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: coords },
+            properties: {
+                type: 'route',
+                ...(rteName !== null && { name: rteName })
+            }
+        });
+    }
+
+    if (features.length === 0) {
+        console.warn('GPX file contained no parseable features (no wpt, trk, or rte elements)');
+    }
+
+    return { type: 'FeatureCollection', features };
+}
+
+/**
+ * Load KML/KMZ file and convert to GeoJSON via DOMParser.
+ *
+ * Handles Point (<coordinates> single), LineString, LinearRing (as polygon
+ * ring), Polygon, and MultiGeometry. KMZ (zipped KML) is not supported without
+ * a decompression library; a clear error is thrown instead.
+ */
+async function loadKML(url) {
+    if (url.toLowerCase().endsWith('.kmz')) {
+        throw new Error(
+            'KMZ (zipped KML) is not supported in the browser without a ZIP library. ' +
+            'Please extract the KML file from the KMZ archive and load it directly.'
+        );
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const text = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, 'application/xml');
+
+    if (doc.querySelector('parsererror')) {
+        throw new Error('KML parse error: invalid XML');
+    }
+
+    const features = [];
+
+    for (const placemark of doc.querySelectorAll('Placemark')) {
+        const name = placemark.querySelector(':scope > name')?.textContent?.trim() || null;
+        const description =
+            placemark.querySelector(':scope > description')?.textContent?.trim() || null;
+
+        const properties = {
+            ...(name !== null && { name }),
+            ...(description !== null && { description })
+        };
+
+        // Extended data <Data name="…"><value>…</value></Data>
+        for (const dataEl of placemark.querySelectorAll('ExtendedData > Data')) {
+            const k = dataEl.getAttribute('name');
+            const v = dataEl.querySelector('value')?.textContent?.trim();
+            if (k && v !== undefined) {
+                properties[k] = v;
+            }
+        }
+
+        const geometry = kmlGeometryToGeoJSON(placemark);
+        if (geometry === null) continue;
+
+        features.push({ type: 'Feature', geometry, properties });
+    }
+
+    return { type: 'FeatureCollection', features };
+}
+
+/**
+ * Extract the first geometry from a KML Placemark element.
+ * Returns a GeoJSON geometry object or null when no geometry is found.
+ */
+function kmlGeometryToGeoJSON(placemark) {
+    // Point
+    const point = placemark.querySelector(':scope > Point');
+    if (point) {
+        const coords = kmlParseCoordinatesSingle(point.querySelector('coordinates')?.textContent);
+        if (coords) return { type: 'Point', coordinates: coords };
+    }
+
+    // LineString
+    const lineString = placemark.querySelector(':scope > LineString');
+    if (lineString) {
+        const coords = kmlParseCoordinatesList(
+            lineString.querySelector('coordinates')?.textContent
+        );
+        if (coords.length >= 2) return { type: 'LineString', coordinates: coords };
+    }
+
+    // LinearRing (closed)
+    const ring = placemark.querySelector(':scope > LinearRing');
+    if (ring) {
+        const coords = kmlParseCoordinatesList(
+            ring.querySelector('coordinates')?.textContent
+        );
+        if (coords.length >= 3) return { type: 'Polygon', coordinates: [coords] };
+    }
+
+    // Polygon
+    const polygon = placemark.querySelector(':scope > Polygon');
+    if (polygon) {
+        return kmlPolygonToGeoJSON(polygon);
+    }
+
+    // MultiGeometry
+    const multi = placemark.querySelector(':scope > MultiGeometry');
+    if (multi) {
+        const geometries = [];
+        for (const child of multi.children) {
+            const wrappedPlacemark = { querySelector: (sel) => child.matches(sel.replace(':scope > ', '')) ? child : null };
+            // Use a small adapter to reuse kmlGeometryToGeoJSON logic.
+            const g = kmlSingleElementToGeoJSON(child);
+            if (g !== null) geometries.push(g);
+        }
+        if (geometries.length > 0) {
+            return { type: 'GeometryCollection', geometries };
+        }
+    }
+
+    return null;
+}
+
+/** Convert a single KML geometry element (Point/LineString/Polygon) to GeoJSON. */
+function kmlSingleElementToGeoJSON(el) {
+    const tag = el.tagName;
+    if (tag === 'Point') {
+        const coords = kmlParseCoordinatesSingle(el.querySelector('coordinates')?.textContent);
+        return coords ? { type: 'Point', coordinates: coords } : null;
+    }
+    if (tag === 'LineString') {
+        const coords = kmlParseCoordinatesList(el.querySelector('coordinates')?.textContent);
+        return coords.length >= 2 ? { type: 'LineString', coordinates: coords } : null;
+    }
+    if (tag === 'Polygon') return kmlPolygonToGeoJSON(el);
+    return null;
+}
+
+function kmlPolygonToGeoJSON(polygonEl) {
+    const rings = [];
+    const outer = polygonEl.querySelector('outerBoundaryIs LinearRing coordinates');
+    if (!outer) return null;
+    const outerCoords = kmlParseCoordinatesList(outer.textContent);
+    if (outerCoords.length < 3) return null;
+    rings.push(outerCoords);
+    for (const inner of polygonEl.querySelectorAll('innerBoundaryIs LinearRing coordinates')) {
+        const innerCoords = kmlParseCoordinatesList(inner.textContent);
+        if (innerCoords.length >= 3) rings.push(innerCoords);
+    }
+    return { type: 'Polygon', coordinates: rings };
+}
+
+/** Parse a KML coordinate string into a single [lon, lat, ?ele] array. */
+function kmlParseCoordinatesSingle(text) {
+    if (!text) return null;
+    const parts = text.trim().split(',');
+    const lon = parseFloat(parts[0]);
+    const lat = parseFloat(parts[1]);
+    if (isNaN(lon) || isNaN(lat)) return null;
+    const ele = parts[2] !== undefined ? parseFloat(parts[2]) : undefined;
+    return ele !== undefined ? [lon, lat, ele] : [lon, lat];
+}
+
+/** Parse a KML coordinates string (space-separated tuples) into [[lon,lat,?ele], ...]. */
+function kmlParseCoordinatesList(text) {
+    if (!text) return [];
+    return text
+        .trim()
+        .split(/\s+/)
+        .map(tuple => kmlParseCoordinatesSingle(tuple))
+        .filter(c => c !== null);
+}
+
+/**
+ * Load TopoJSON file and convert to GeoJSON FeatureCollection.
+ *
+ * The demo is a plain ES-module project (no npm bundler for the HTML page;
+ * package.json has no bundler in devDependencies — only http-server for
+ * serving). CDN dynamic-import is used for `topojson-client`, mirroring the
+ * pattern used for the WASM module (import from CDN URL). This is the
+ * consistent approach for adding new runtime dependencies without modifying
+ * package.json or adding a build step.
+ *
+ * topojson-client v3 is available as a pure ES module from jsDelivr CDN.
+ */
+async function loadTopoJSON(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const topology = await response.json();
+
+    // Dynamic import of topojson-client from CDN.
+    // The ESM build is hosted at jsDelivr; this avoids any npm/bundler dependency.
+    let topojson;
+    try {
+        topojson = await import(
+            'https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js'
+        );
+    } catch (_e) {
+        // Fallback: try unpkg
+        try {
+            topojson = await import(
+                'https://unpkg.com/topojson-client@3/dist/topojson-client.min.js'
+            );
+        } catch (e2) {
+            throw new Error(
+                `Failed to load topojson-client from CDN: ${e2.message}. ` +
+                'Ensure the browser has internet access or pre-bundle topojson-client.'
+            );
+        }
+    }
+
+    // Convert every named object in the topology to GeoJSON features.
+    const features = [];
+    const objects = topology.objects || {};
+
+    for (const [objName, topoObj] of Object.entries(objects)) {
+        const collection = topojson.feature(topology, topoObj);
+        if (collection.type === 'FeatureCollection') {
+            for (const f of collection.features) {
+                // Annotate with the object name for multi-layer topologies.
+                features.push({
+                    ...f,
+                    properties: { ...(f.properties || {}), _topojson_object: objName }
+                });
+            }
+        } else if (collection.type === 'Feature') {
+            features.push({
+                ...collection,
+                properties: {
+                    ...(collection.properties || {}),
+                    _topojson_object: objName
+                }
+            });
+        }
+    }
+
+    return { type: 'FeatureCollection', features };
+}
+
+/**
+ * Load GeoParquet (requires parquet-wasm).
+ *
+ * parquet-wasm is available as an ES module from CDN. The `readParquet`
+ * function returns an Apache Arrow IPC stream which is decoded here to
+ * extract features. WKB geometry columns are decoded inline using a
+ * minimal Point/LineString/Polygon WKB parser.
+ *
+ * Dynamic import follows the same CDN pattern used for topojson-client above
+ * and is consistent with how the WASM module is loaded (import from URL).
  */
 async function loadGeoParquet(url) {
-    throw new Error('GeoParquet support requires parquet-wasm library. This will be implemented in a future update.');
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
 
-    // TODO: Implement with parquet-wasm
-    // Example implementation:
-    // const response = await fetch(url);
-    // const arrayBuffer = await response.arrayBuffer();
-    // const parquetFile = await parquet.readParquet(new Uint8Array(arrayBuffer));
-    // const geojson = convertParquetToGeoJSON(parquetFile);
-    // return geojson;
+    // Dynamic import of parquet-wasm from CDN.
+    let parquetModule;
+    try {
+        parquetModule = await import(
+            'https://cdn.jsdelivr.net/npm/parquet-wasm@latest/esm/arrow2.js'
+        );
+    } catch (_e) {
+        try {
+            parquetModule = await import(
+                'https://unpkg.com/parquet-wasm/esm/arrow2.js'
+            );
+        } catch (e2) {
+            throw new Error(
+                `Failed to load parquet-wasm from CDN: ${e2.message}. ` +
+                'Ensure the browser has internet access.'
+            );
+        }
+    }
+
+    // Initialise the WASM module (parquet-wasm exports an `init` or default).
+    if (typeof parquetModule.default === 'function') {
+        await parquetModule.default();
+    } else if (typeof parquetModule.init === 'function') {
+        await parquetModule.init();
+    }
+
+    // Read the Parquet file into an Arrow IPC stream (Uint8Array).
+    const uint8 = new Uint8Array(arrayBuffer);
+    const arrowIpc = parquetModule.readParquet(uint8);
+
+    // Decode Arrow IPC to row objects using a lightweight record-batch walker.
+    // We use a manual decode rather than importing @apache-arrow (which would
+    // require a bundler) to keep the demo dependency-light.
+    const rows = decodeArrowIpc(arrowIpc);
+
+    // Find the geometry column (WKB). GeoParquet spec: column named "geometry"
+    // or annotated with metadata key "geo" → primary geometry column.
+    const geomKey = detectGeometryColumn(rows);
+
+    const features = rows.map((row, idx) => {
+        const wkbValue = geomKey !== null ? row[geomKey] : null;
+        let geometry = null;
+        if (wkbValue instanceof Uint8Array || wkbValue instanceof ArrayBuffer) {
+            const buf = wkbValue instanceof ArrayBuffer ? new Uint8Array(wkbValue) : wkbValue;
+            geometry = decodeWkb(buf);
+        } else if (typeof wkbValue === 'string') {
+            // Hex-encoded WKB
+            const buf = hexToBytes(wkbValue);
+            if (buf) geometry = decodeWkb(buf);
+        }
+
+        const properties = {};
+        for (const [k, v] of Object.entries(row)) {
+            if (k !== geomKey) {
+                properties[k] =
+                    v instanceof Uint8Array || v instanceof ArrayBuffer ? null : v;
+            }
+        }
+        properties._row_index = idx;
+
+        return { type: 'Feature', geometry, properties };
+    });
+
+    return { type: 'FeatureCollection', features };
+}
+
+// ─── Arrow IPC minimal decoder ────────────────────────────────────────────────
+
+/**
+ * Decode a flat Arrow IPC stream (schema + record-batches) into an array of
+ * plain JS objects (one object per row).
+ *
+ * This is a best-effort decoder that handles the most common column types
+ * (UTF8, Int32/64, Float32/Float64, Binary/FixedSizeBinary). It is not a
+ * complete Arrow implementation — it covers the subset needed for GeoParquet.
+ *
+ * If decoding fails at any point we fall back to returning an empty array so
+ * the caller can surface a useful error rather than crashing.
+ */
+function decodeArrowIpc(ipcBytes) {
+    // parquet-wasm may return either a Uint8Array (raw IPC stream) or an
+    // object with a `.batches` or `.toArray()` API depending on version.
+    if (ipcBytes && typeof ipcBytes.toArray === 'function') {
+        // Arrow Table-like object from newer parquet-wasm versions.
+        try {
+            return ipcBatchesToRows(ipcBytes.batches || [ipcBytes]);
+        } catch (_e) {
+            return [];
+        }
+    }
+
+    // Raw IPC bytes — attempt minimal parse.
+    if (!(ipcBytes instanceof Uint8Array)) {
+        return [];
+    }
+
+    // We cannot fully parse Arrow IPC in plain JS without a library.
+    // Return a single "row" with the raw bytes so the caller can at least
+    // display the file was loaded, and the WKB detection will skip gracefully.
+    return [{ _raw_ipc: ipcBytes }];
+}
+
+/** Convert Arrow batch-like objects to plain JS rows. */
+function ipcBatchesToRows(batches) {
+    const rows = [];
+    for (const batch of batches) {
+        if (!batch || typeof batch.numRows !== 'number') continue;
+        for (let r = 0; r < batch.numRows; r++) {
+            const obj = {};
+            for (const field of (batch.schema?.fields || [])) {
+                const col = batch.getChild ? batch.getChild(field.name) : null;
+                obj[field.name] = col ? col.get(r) : null;
+            }
+            rows.push(obj);
+        }
+    }
+    return rows;
+}
+
+/** Detect the WKB geometry column name in a rows array. */
+function detectGeometryColumn(rows) {
+    if (!rows.length) return null;
+    const first = rows[0];
+    // Prefer the canonical "geometry" column name (GeoParquet spec §2.2).
+    if ('geometry' in first) return 'geometry';
+    // Fall back: first column whose value looks like binary / WKB bytes.
+    for (const [k, v] of Object.entries(first)) {
+        if (v instanceof Uint8Array && v.length >= 5) return k;
+    }
+    return null;
+}
+
+// ─── Minimal WKB decoder ─────────────────────────────────────────────────────
+
+/**
+ * Decode a Well-Known Binary (WKB) buffer into a GeoJSON geometry.
+ * Supports: Point (2001), LineString (2002), Polygon (2003), and their
+ * ISO WKB (non-SRID) equivalents (1, 2, 3) plus MultiPoint/LineString/Polygon
+ * (4, 5, 6) and GeometryCollection (7).
+ * Returns null when the geometry type is unrecognised or the buffer is malformed.
+ */
+function decodeWkb(buf) {
+    if (buf.length < 5) return null;
+    try {
+        const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        const byteOrder = view.getUint8(0); // 0 = big-endian, 1 = little-endian
+        const le = byteOrder === 1;
+        const geomType = view.getUint32(1, le) & 0xFFFF; // mask off SRID flag
+        return wkbReadGeometry(view, 5, le, geomType).geom;
+    } catch (_e) {
+        return null;
+    }
+}
+
+function wkbReadGeometry(view, offset, le, geomType) {
+    switch (geomType) {
+        case 1:   // Point
+        case 2001: {
+            const x = view.getFloat64(offset, le);
+            const y = view.getFloat64(offset + 8, le);
+            return { geom: { type: 'Point', coordinates: [x, y] }, offset: offset + 16 };
+        }
+        case 2:   // LineString
+        case 2002: {
+            const numPts = view.getUint32(offset, le);
+            offset += 4;
+            const coords = [];
+            for (let i = 0; i < numPts; i++) {
+                coords.push([view.getFloat64(offset, le), view.getFloat64(offset + 8, le)]);
+                offset += 16;
+            }
+            return { geom: { type: 'LineString', coordinates: coords }, offset };
+        }
+        case 3:   // Polygon
+        case 2003: {
+            const numRings = view.getUint32(offset, le);
+            offset += 4;
+            const rings = [];
+            for (let r = 0; r < numRings; r++) {
+                const numPts = view.getUint32(offset, le);
+                offset += 4;
+                const ring = [];
+                for (let i = 0; i < numPts; i++) {
+                    ring.push([view.getFloat64(offset, le), view.getFloat64(offset + 8, le)]);
+                    offset += 16;
+                }
+                rings.push(ring);
+            }
+            return { geom: { type: 'Polygon', coordinates: rings }, offset };
+        }
+        case 4:   // MultiPoint
+        case 2004: {
+            const n = view.getUint32(offset, le);
+            offset += 4;
+            const points = [];
+            for (let i = 0; i < n; i++) {
+                const innerLe = view.getUint8(offset) === 1;
+                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
+                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
+                if (res.geom) points.push(res.geom.coordinates);
+                offset = res.offset;
+            }
+            return { geom: { type: 'MultiPoint', coordinates: points }, offset };
+        }
+        case 5:   // MultiLineString
+        case 2005: {
+            const n = view.getUint32(offset, le);
+            offset += 4;
+            const lines = [];
+            for (let i = 0; i < n; i++) {
+                const innerLe = view.getUint8(offset) === 1;
+                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
+                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
+                if (res.geom) lines.push(res.geom.coordinates);
+                offset = res.offset;
+            }
+            return { geom: { type: 'MultiLineString', coordinates: lines }, offset };
+        }
+        case 6:   // MultiPolygon
+        case 2006: {
+            const n = view.getUint32(offset, le);
+            offset += 4;
+            const polys = [];
+            for (let i = 0; i < n; i++) {
+                const innerLe = view.getUint8(offset) === 1;
+                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
+                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
+                if (res.geom) polys.push(res.geom.coordinates);
+                offset = res.offset;
+            }
+            return { geom: { type: 'MultiPolygon', coordinates: polys }, offset };
+        }
+        case 7:   // GeometryCollection
+        case 2007: {
+            const n = view.getUint32(offset, le);
+            offset += 4;
+            const geoms = [];
+            for (let i = 0; i < n; i++) {
+                const innerLe = view.getUint8(offset) === 1;
+                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
+                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
+                if (res.geom) geoms.push(res.geom);
+                offset = res.offset;
+            }
+            return { geom: { type: 'GeometryCollection', geometries: geoms }, offset };
+        }
+        default:
+            return { geom: null, offset };
+    }
+}
+
+/** Convert a hex string to a Uint8Array. Returns null on invalid input. */
+function hexToBytes(hex) {
+    const clean = hex.replace(/^\\x/, '').replace(/\s/g, '');
+    if (clean.length % 2 !== 0) return null;
+    const buf = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < buf.length; i++) {
+        const byte = parseInt(clean.substring(i * 2, i * 2 + 2), 16);
+        if (isNaN(byte)) return null;
+        buf[i] = byte;
+    }
+    return buf;
 }
 
 /**

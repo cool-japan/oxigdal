@@ -68,7 +68,10 @@ impl Default for ExecutorConfig {
         Self {
             max_concurrent_tasks: 10,
             enable_persistence: true,
-            state_dir: "/tmp/oxigdal-workflow".to_string(),
+            state_dir: std::env::temp_dir()
+                .join("oxigdal-workflow")
+                .to_string_lossy()
+                .into_owned(),
             resource_pool: ResourcePool::default(),
             retry_on_failure: true,
             stop_on_failure: false,

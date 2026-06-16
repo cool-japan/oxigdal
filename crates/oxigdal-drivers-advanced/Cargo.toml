@@ -32,8 +32,9 @@ oxiarc-archive = { workspace = true }
 oxiarc-zstd = { workspace = true }
 oxiarc-core = { workspace = true }
 
-# SQLite (for GeoPackage)
-rusqlite = { workspace = true, features = ["bundled", "blob", "serde_json"] }
+# SQLite (for GeoPackage) — optional: only included when the `geopackage` feature is enabled
+oxisql-sqlite-compat = { workspace = true, optional = true, features = ["blocking"] }
+oxisql-core = { workspace = true, optional = true }
 
 # Geometry
 geo-types = { workspace = true }
@@ -58,10 +59,11 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 criterion = { workspace = true }
 proptest = { workspace = true }
 
+
 [features]
-default = ["jpeg2000", "geopackage", "kml", "gml"]
+default = ["jpeg2000", "kml", "gml"]
 jpeg2000 = []
-geopackage = []
+geopackage = ["dep:oxisql-sqlite-compat", "dep:oxisql-core"]
 kml = []
 gml = []
 async = ["tokio"]

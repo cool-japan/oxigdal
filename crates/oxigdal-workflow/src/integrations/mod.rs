@@ -7,6 +7,8 @@
 //! - Webhooks
 //! - Message queues (Kafka, RabbitMQ)
 
+pub mod external;
+
 #[cfg(feature = "integrations")]
 pub mod airflow;
 #[cfg(feature = "integrations")]
@@ -168,6 +170,7 @@ impl IntegrationManager {
     }
 
     /// Export workflow to external format.
+    #[cfg_attr(not(feature = "integrations"), allow(unused_variables))]
     pub fn export_workflow(
         &self,
         workflow: &WorkflowDefinition,

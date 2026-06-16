@@ -6,7 +6,7 @@ OxiGDAL is a Pure Rust geospatial data abstraction library providing high-perfor
 
 ## Prerequisites
 
-- Rust 1.85 or later
+- Rust 1.89 or later
 - Basic understanding of geospatial concepts
 - Familiarity with Rust async programming
 

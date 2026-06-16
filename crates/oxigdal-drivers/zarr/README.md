@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxigdal-zarr.svg)](https://crates.io/crates/oxigdal-zarr)
 [![Documentation](https://docs.rs/oxigdal-zarr/badge.svg)](https://docs.rs/oxigdal-zarr)
 [![License](https://img.shields.io/crates/l/oxigdal-zarr.svg)](LICENSE)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org/)
+[![Rust 1.89+](https://img.shields.io/badge/rust-1.89+-orange.svg)](https://www.rust-lang.org/)
 
 Pure Rust implementation of the Zarr v2/v3 storage specification for cloud-optimized, chunked, N-dimensional arrays. Support for multiple storage backends (filesystem, S3, HTTP, memory) and compression codecs (Zstd, Gzip, LZ4). Part of the [OxiGDAL](https://github.com/cool-japan/oxigdal) geospatial data access library.
 

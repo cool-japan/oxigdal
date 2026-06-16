@@ -18,70 +18,102 @@
 //! need XYZ coordinates can use [`crate::tms_to_xyz`].
 //!
 //! This module is gated behind the `sqlite` cargo feature — see the crate
-//! root for the wiring.  The implementation:
-//!
-//! 1. Opens the SQLite file **read-only** (`SQLITE_OPEN_READ_ONLY`).
-//! 2. Verifies that both required tables (`metadata`, `tiles`) exist.
-//! 3. Eagerly loads the `metadata` rows via [`MBTilesMetadata::from_map_strict`]
-//!    so malformed `bounds` / `center` / `minzoom` / `maxzoom` values fail
-//!    fast with a typed [`MbTilesError::InvalidMetadata`].
-//! 4. Exposes lazy accessors for tile data; the database stays open for the
-//!    lifetime of the [`MBTilesReader`].
+//! root for the wiring.  The implementation uses the Pure-Rust
+//! [`oxisql_sqlite_compat::SqliteConnection`] engine (no C/FFI, no `libsqlite3`).
 //!
 //! ## In-memory archives
 //!
 //! [`MBTilesReader::open_in_memory`] accepts a `&[u8]` containing an entire
-//! SQLite database image.  rusqlite supports `:memory:` databases natively
-//! but cannot deserialize a byte buffer into one without the `serialize`
-//! feature; to stay on the workspace-pinned dependency set we instead spill
-//! the bytes to a temporary file inside [`std::env::temp_dir`] and open it
-//! read-only.  The temp file is deleted as soon as the reader is dropped.
+//! SQLite database image.  The bytes are spilled to a temporary file inside
+//! [`std::env::temp_dir`] and opened read-write (the engine doesn't have an
+//! OpenFlags API, but only SELECTs are issued so the file is never mutated in
+//! practice).  The temp file is deleted as soon as the reader is dropped.
+//!
+//! ## Sync ↔ async bridge
+//!
+//! The OxiSQL engine is async-only.  Each [`MBTilesReader`] therefore owns a
+//! dedicated current-thread Tokio runtime and drives every database operation
+//! through `runtime.block_on(...)`.
+//!
+//! ## Parameter placeholders
+//!
+//! OxiSQL uses `$1`, `$2`, … positional placeholders.  All SQL in this module
+//! uses the `$N` form.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use oxisql_core::{Connection, Value};
+use oxisql_sqlite_compat::SqliteConnection;
 
 use crate::error::MbTilesError;
 use crate::mbtiles::{MBTiles, MBTilesMetadata};
 use crate::tile_coords::TileCoord;
 
+// ---------------------------------------------------------------------------
+// Error-mapping helper
+// ---------------------------------------------------------------------------
+
+fn sqlite_err(e: impl std::fmt::Display) -> MbTilesError {
+    MbTilesError::Sqlite(e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// MBTilesReader
+// ---------------------------------------------------------------------------
+
 /// Read-only handle to an on-disk MBTiles SQLite database.
 ///
-/// The connection is opened with `SQLITE_OPEN_READ_ONLY`, so the underlying
-/// file is never mutated.  Metadata is loaded eagerly at construction time;
-/// tile bytes are fetched lazily on every [`Self::get_tile`] call.
-#[derive(Debug)]
+/// The OxiSQL engine opens files read-write but only SELECTs are issued.
+/// Metadata is loaded eagerly at construction time; tile bytes are fetched
+/// lazily on every [`Self::get_tile`] call.
 pub struct MBTilesReader {
-    conn: Connection,
+    conn: SqliteConnection,
+    runtime: tokio::runtime::Runtime,
     metadata: MBTilesMetadata,
     /// Path to a temp file created by [`Self::open_in_memory`], if any.
     /// Deleted on drop.
     owned_temp_path: Option<PathBuf>,
 }
 
+impl std::fmt::Debug for MBTilesReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MBTilesReader")
+            .field("owned_temp_path", &self.owned_temp_path)
+            .finish()
+    }
+}
+
 impl MBTilesReader {
-    /// Open an existing `.mbtiles` file at `path` for read-only access.
+    fn build_runtime() -> Result<tokio::runtime::Runtime, MbTilesError> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| sqlite_err(format!("tokio runtime build failed: {e}")))
+    }
+
+    /// Open an existing `.mbtiles` file at `path`.
     ///
     /// # Errors
     ///
     /// * [`MbTilesError::Sqlite`] — the file is not a valid SQLite database
-    ///   or cannot be opened for reading.
+    ///   or cannot be opened.
     /// * [`MbTilesError::InvalidFormat`] — one of the mandatory MBTiles tables
     ///   (`metadata`, `tiles`) is missing.
-    /// * [`MbTilesError::InvalidMetadata`] — a canonical metadata field
-    ///   (`bounds`, `center`, `minzoom`, `maxzoom`) is malformed.
+    /// * [`MbTilesError::InvalidMetadata`] — a canonical metadata field is malformed.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, MbTilesError> {
-        let conn = Connection::open_with_flags(
-            path.as_ref(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        require_table(&conn, "metadata")?;
-        require_table(&conn, "tiles")?;
-        let metadata = load_metadata(&conn)?;
+        let runtime = Self::build_runtime()?;
+        let path_str = path.as_ref().to_string_lossy().into_owned();
+        let conn = runtime
+            .block_on(SqliteConnection::open(&path_str))
+            .map_err(sqlite_err)?;
+        require_table_rt(&conn, &runtime, "metadata")?;
+        require_table_rt(&conn, &runtime, "tiles")?;
+        let metadata = load_metadata_rt(&conn, &runtime)?;
         Ok(Self {
             conn,
+            runtime,
             metadata,
             owned_temp_path: None,
         })
@@ -90,8 +122,8 @@ impl MBTilesReader {
     /// Open a `.mbtiles` archive supplied as an in-memory byte buffer.
     ///
     /// Spills `bytes` to a uniquely named temp file inside
-    /// [`std::env::temp_dir`] and opens it read-only.  The temp file is
-    /// removed when the returned [`MBTilesReader`] is dropped.
+    /// [`std::env::temp_dir`] and opens it.  The temp file is removed when
+    /// the returned [`MBTilesReader`] is dropped.
     ///
     /// # Errors
     ///
@@ -101,35 +133,38 @@ impl MBTilesReader {
         let temp_path = unique_temp_path();
         fs::write(&temp_path, bytes)?;
 
-        // Open via the standard read-only path; on success take ownership of
-        // the temp file so Drop can clean up.  On any error we delete the
-        // temp file ourselves and propagate.
-        let conn_result = Connection::open_with_flags(
-            &temp_path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        );
-        let conn = match conn_result {
+        let runtime = match Self::build_runtime() {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(e);
+            }
+        };
+
+        let path_str = temp_path.to_string_lossy().into_owned();
+        let conn = match runtime.block_on(SqliteConnection::open(&path_str)) {
             Ok(c) => c,
             Err(e) => {
                 let _ = fs::remove_file(&temp_path);
-                return Err(MbTilesError::from(e));
+                return Err(sqlite_err(e));
             }
         };
 
         let validate = (|| -> Result<MBTilesMetadata, MbTilesError> {
-            require_table(&conn, "metadata")?;
-            require_table(&conn, "tiles")?;
-            load_metadata(&conn)
+            require_table_rt(&conn, &runtime, "metadata")?;
+            require_table_rt(&conn, &runtime, "tiles")?;
+            load_metadata_rt(&conn, &runtime)
         })();
 
         match validate {
             Ok(metadata) => Ok(Self {
                 conn,
+                runtime,
                 metadata,
                 owned_temp_path: Some(temp_path),
             }),
             Err(e) => {
-                drop(conn);
+                // conn will be dropped here; temp file cleanup follows
                 let _ = fs::remove_file(&temp_path);
                 Err(e)
             }
@@ -146,20 +181,21 @@ impl MBTilesReader {
     ///
     /// `tile_row` is returned **as stored** (TMS convention).
     pub fn list_tiles(&self) -> Result<Vec<TileCoord>, MbTilesError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT zoom_level, tile_column, tile_row
-             FROM tiles
-             ORDER BY zoom_level ASC, tile_column ASC, tile_row ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let z: i64 = row.get(0)?;
-            let x: i64 = row.get(1)?;
-            let y: i64 = row.get(2)?;
-            Ok((z, x, y))
-        })?;
-        let mut coords = Vec::new();
-        for row in rows {
-            let (z, x, y) = row?;
+        let rows = self
+            .runtime
+            .block_on(self.conn.query(
+                "SELECT zoom_level, tile_column, tile_row
+                 FROM tiles
+                 ORDER BY zoom_level ASC, tile_column ASC, tile_row ASC",
+                &[],
+            ))
+            .map_err(sqlite_err)?;
+
+        let mut coords = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let z = get_i64(row, 0, "zoom_level")?;
+            let x = get_i64(row, 1, "tile_column")?;
+            let y = get_i64(row, 2, "tile_row")?;
             coords.push(coord_from_row(z, x, y)?);
         }
         Ok(coords)
@@ -171,31 +207,49 @@ impl MBTilesReader {
     /// `coord.y` is interpreted in the **TMS** convention to match the
     /// on-disk layout.
     pub fn get_tile(&self, coord: &TileCoord) -> Result<Option<Vec<u8>>, MbTilesError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT tile_data
-             FROM tiles
-             WHERE zoom_level = ?1 AND tile_column = ?2 AND tile_row = ?3
-             LIMIT 1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![
-            coord.z as i64,
-            coord.x as i64,
-            coord.y as i64,
-        ])?;
-        match rows.next()? {
+        let z = coord.z as i64;
+        let x = coord.x as i64;
+        let y = coord.y as i64;
+
+        let rows = self
+            .runtime
+            .block_on(self.conn.query(
+                "SELECT tile_data
+                 FROM tiles
+                 WHERE zoom_level = $1 AND tile_column = $2 AND tile_row = $3
+                 LIMIT 1",
+                &[&z, &x, &y],
+            ))
+            .map_err(sqlite_err)?;
+
+        match rows.first() {
+            None => Ok(None),
             Some(row) => {
-                let blob: Vec<u8> = row.get(0)?;
+                let blob = match row.get_by_index(0) {
+                    Some(Value::Blob(b)) => b.clone(),
+                    Some(Value::Null) | None => return Ok(None),
+                    Some(other) => {
+                        return Err(MbTilesError::Sqlite(format!(
+                            "tile_data: expected BLOB, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
                 Ok(Some(blob))
             }
-            None => Ok(None),
         }
     }
 
     /// Total number of tile rows in the archive.
     pub fn tile_count(&self) -> Result<usize, MbTilesError> {
-        let count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM tiles", [], |row| row.get(0))?;
+        let rows = self
+            .runtime
+            .block_on(self.conn.query("SELECT COUNT(*) FROM tiles", &[]))
+            .map_err(sqlite_err)?;
+        let count = match rows.first().and_then(|r| r.get_by_index(0)) {
+            Some(Value::I64(n)) => *n,
+            _ => 0i64,
+        };
         usize::try_from(count).map_err(|_| {
             MbTilesError::InvalidFormat(format!("tile count out of usize range: {count}"))
         })
@@ -203,16 +257,17 @@ impl MBTilesReader {
 
     /// Distinct zoom levels present in the archive, sorted ascending.
     pub fn zoom_levels(&self) -> Result<Vec<u8>, MbTilesError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level ASC")?;
-        let rows = stmt.query_map([], |row| {
-            let z: i64 = row.get(0)?;
-            Ok(z)
-        })?;
-        let mut zooms = Vec::new();
-        for row in rows {
-            let z = row?;
+        let rows = self
+            .runtime
+            .block_on(self.conn.query(
+                "SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level ASC",
+                &[],
+            ))
+            .map_err(sqlite_err)?;
+
+        let mut zooms = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let z = get_i64(row, 0, "zoom_level")?;
             let z_u8 = u8::try_from(z).map_err(|_| {
                 MbTilesError::InvalidFormat(format!("zoom level {z} out of u8 range"))
             })?;
@@ -222,25 +277,26 @@ impl MBTilesReader {
     }
 
     /// Eagerly load every tile into a new in-memory [`MBTiles`] store.
-    ///
-    /// Convenient for small archives or tests; for large pyramids prefer the
-    /// lazy [`Self::get_tile`] / [`Self::list_tiles`] accessors.
     pub fn into_mbtiles(self) -> Result<MBTiles, MbTilesError> {
         let mut store = MBTiles::new(self.metadata.clone());
-        let mut stmt = self.conn.prepare(
-            "SELECT zoom_level, tile_column, tile_row, tile_data
-             FROM tiles
-             ORDER BY zoom_level ASC, tile_column ASC, tile_row ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let z: i64 = row.get(0)?;
-            let x: i64 = row.get(1)?;
-            let y: i64 = row.get(2)?;
-            let data: Vec<u8> = row.get(3)?;
-            Ok((z, x, y, data))
-        })?;
-        for row in rows {
-            let (z, x, y, data) = row?;
+        let rows = self
+            .runtime
+            .block_on(self.conn.query(
+                "SELECT zoom_level, tile_column, tile_row, tile_data
+                 FROM tiles
+                 ORDER BY zoom_level ASC, tile_column ASC, tile_row ASC",
+                &[],
+            ))
+            .map_err(sqlite_err)?;
+
+        for row in &rows {
+            let z = get_i64(row, 0, "zoom_level")?;
+            let x = get_i64(row, 1, "tile_column")?;
+            let y = get_i64(row, 2, "tile_row")?;
+            let data = match row.get_by_index(3) {
+                Some(Value::Blob(b)) => b.clone(),
+                _ => Vec::new(),
+            };
             let coord = coord_from_row(z, x, y)?;
             store.insert_tile(coord, data);
         }
@@ -256,17 +312,40 @@ impl Drop for MBTilesReader {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Confirm that a table with `name` exists in the schema, otherwise return
-/// [`MbTilesError::InvalidFormat`].
-fn require_table(conn: &Connection, name: &str) -> Result<(), MbTilesError> {
-    let exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        [name],
-        |row| row.get(0),
-    )?;
-    if exists == 0 {
+/// Extract an `i64` value from column `idx` of `row`.
+fn get_i64(row: &oxisql_core::Row, idx: usize, col_name: &str) -> Result<i64, MbTilesError> {
+    match row.get_by_index(idx) {
+        Some(Value::I64(n)) => Ok(*n),
+        other => Err(MbTilesError::InvalidFormat(format!(
+            "column {col_name}: expected I64, got {:?}",
+            other
+        ))),
+    }
+}
+
+/// Confirm that a table with `name` exists in the schema via a runtime-owned
+/// connection, otherwise return [`MbTilesError::InvalidFormat`].
+fn require_table_rt(
+    conn: &SqliteConnection,
+    rt: &tokio::runtime::Runtime,
+    name: &str,
+) -> Result<(), MbTilesError> {
+    let name_ref: &str = name;
+    let rows = rt
+        .block_on(conn.query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+            &[&name_ref],
+        ))
+        .map_err(sqlite_err)?;
+
+    let count = match rows.first().and_then(|r| r.get_by_index(0)) {
+        Some(Value::I64(n)) => *n,
+        _ => 0i64,
+    };
+
+    if count == 0 {
         return Err(MbTilesError::InvalidFormat(format!(
             "missing mandatory MBTiles table: {name}"
         )));
@@ -276,17 +355,26 @@ fn require_table(conn: &Connection, name: &str) -> Result<(), MbTilesError> {
 
 /// Read every `(name, value)` row from the `metadata` table and feed it
 /// through [`MBTilesMetadata::from_map_strict`].
-fn load_metadata(conn: &Connection) -> Result<MBTilesMetadata, MbTilesError> {
-    let mut stmt = conn.prepare("SELECT name, value FROM metadata")?;
-    let rows = stmt.query_map([], |row| {
-        let key: String = row.get(0)?;
-        let value: String = row.get(1)?;
-        Ok((key, value))
-    })?;
+fn load_metadata_rt(
+    conn: &SqliteConnection,
+    rt: &tokio::runtime::Runtime,
+) -> Result<MBTilesMetadata, MbTilesError> {
+    let rows = rt
+        .block_on(conn.query("SELECT name, value FROM metadata", &[]))
+        .map_err(sqlite_err)?;
+
     let mut map: HashMap<String, String> = HashMap::new();
-    for row in rows {
-        let (k, v) = row?;
-        map.insert(k, v);
+    for row in &rows {
+        let key = match row.get_by_index(0) {
+            Some(Value::Text(s)) => s.clone(),
+            _ => continue,
+        };
+        let value = match row.get_by_index(1) {
+            Some(Value::Text(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            _ => continue,
+        };
+        map.insert(key, value);
     }
     MBTilesMetadata::from_map_strict(map)
 }

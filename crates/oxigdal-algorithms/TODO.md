@@ -52,9 +52,10 @@
   - **Done:** New `src/vector/min_bounds.rs`. `RotatedRect { center, width, height, angle_rad }` with `corners() -> [(f64,f64);4]` and `area()`. `Circle { center, radius }` with `contains()` (1e-10 epsilon). `aabb(points) -> Option<(f64,f64,f64,f64)>`. `min_area_rotated_rect(points) -> Option<RotatedRect>` — rotating calipers on convex hull: for each hull edge, project all hull vertices onto `(u,v)` frame, compute AABB extent, track minimum-area orientation, reconstruct world-space center as `c_u * u_hat + c_v * v_hat`. `smallest_enclosing_circle(points) -> Circle` — recursive Welzl with `lcg_shuffle` (Knuth MMIX LCG, deterministic seed from XOR of coordinate bits, no `rand` crate). Base cases: 0=zero, 1=point, 2=diameter, 3=circumcircle (falls back to diameter on collinear). Re-exported from `src/vector/mod.rs` and `src/lib.rs`.
   - **Tests added (7):** test_min_rect_axis_aligned_square_returns_square, test_min_rect_rotated_45deg_recovers_orientation, test_min_rect_random_hull_area_no_greater_than_aabb, test_welzl_circle_three_collinear_points_is_diameter, test_welzl_circle_unit_square_radius_sqrt_half, test_welzl_circle_large_random_point_set_contains_all_points, test_welzl_empty_input_returns_zero_circle. Total: 1463 tests pass.
 
-- [ ] Add viewshed analysis with Earth curvature and refraction correction
-  - **Files:** `src/raster/viewshed.rs` (file exists but basic line-of-sight only)
-  - **Why deferred:** Atmospheric refraction model selection requires user input; document IACA-like default.
+- [x] Viewshed curvature/refraction verification and documentation (completed 2026-06-06)
+  - **Goal:** Verify that the existing viewshed implementation correctly applies Earth curvature and atmospheric refraction; add a doc comment on the refraction coefficient constant labelling it as the standard ICAO/ITU-R k=0.13 coefficient; mark done.
+  - **Done:** Read `src/raster/viewshed.rs`. Earth-curvature formula `offset = d²/(2·R_eff)` where `R_eff = R/(1−k)` is correct (combines curvature and refraction in one effective-radius, equivalent to `d²/(2R) − k·d²/(2R)`). Added two named constants `EARTH_RADIUS_M` and `REFRACTION_COEFF` (replacing magic literals 6_371_000.0 / 0.13), both with full doc comments citing IUGG 2015 / ICAO Annex 15 / ITU-R P.526. Updated `CurvatureCorrection::default()` to use these constants. Updated `earth_curvature_offset()` doc comment to reference both constants. Existing 14 viewshed tests pass unchanged.
+  - **Files:** `src/raster/viewshed.rs` (doc comments + constants only; no algorithmic change).
 
 ## Low Priority / Future (speculative — one-liners only)
 

@@ -4,7 +4,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/oxigdal.svg)](https://crates.io/crates/oxigdal)
 [![Documentation](https://docs.rs/oxigdal/badge.svg)](https://docs.rs/oxigdal)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/crates/l/oxigdal.svg)](LICENSE)
 
 Umbrella crate for OxiGDAL — open any supported geospatial format with a single

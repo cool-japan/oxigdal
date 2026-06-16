@@ -71,9 +71,9 @@ impl OfflineManager {
         let path = config.storage_path.as_deref().unwrap_or(":memory:");
 
         let mut backend = if path == ":memory:" {
-            SqliteBackend::in_memory()?
+            SqliteBackend::in_memory().await?
         } else {
-            SqliteBackend::new(path)?
+            SqliteBackend::new(path).await?
         };
 
         backend.initialize().await?;

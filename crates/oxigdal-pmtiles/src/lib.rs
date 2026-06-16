@@ -79,7 +79,7 @@ pub use async_reader::AsyncPmTilesReader;
 pub use cloud_reader::{CloudCredentials, CloudObjectUri, CloudPmTilesReader, CloudProvider};
 
 #[cfg(feature = "mbtiles")]
-pub use mbtiles_export::{MbTilesExportStats, MbTilesExporter};
+pub use mbtiles_export::{MbTilesConn, MbTilesExportStats, MbTilesExporter};
 
 pub use header_v2::{
     PMTILES_V2_MAGIC, PmTilesV2Entry, PmTilesV2Header, parse_v2_header, read_v2_entry,
