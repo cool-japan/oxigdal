@@ -1,7 +1,7 @@
 /**
  * GeoSentinel — application bootstrap and orchestration.
  *
- * In-browser Sentinel-2 change detection on the OxiGDAL WASM stack:
+ * In-browser Sentinel-2 change detection on the OxiGeo WASM stack:
  * STAC pair search, COG range reads, NDVI differencing, polygonization and
  * geodesic areas all execute client-side. The only network traffic is the
  * Earth Search catalog POSTs and sentinel-cogs HTTP range reads — counted
@@ -9,7 +9,7 @@
  * server of ours learns which place is being watched.
  */
 
-import init, { GeoSentinel, WasmStacClient, version } from './pkg/oxigdal_wasm.js';
+import init, { GeoSentinel, WasmStacClient, version } from './pkg/oxigeo_wasm.js';
 import { SentinelMap } from './map.js';
 import {
     friendlyError,
@@ -56,7 +56,7 @@ const app = {
  *     are never transferred) — counting it would wreck the honest tally.
  */
 function installFetchAccounting() {
-    if (typeof window === 'undefined' || window.__oxigdalFetchWrapped) {
+    if (typeof window === 'undefined' || window.__oxigeoFetchWrapped) {
         return;
     }
     const originalFetch = window.fetch.bind(window);
@@ -88,7 +88,7 @@ function installFetchAccounting() {
         }
         return response;
     };
-    window.__oxigdalFetchWrapped = true;
+    window.__oxigeoFetchWrapped = true;
 }
 
 /** True for app assets and OSM base tiles (excluded from the imagery tally). */

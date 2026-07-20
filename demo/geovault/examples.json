@@ -6,7 +6,7 @@
       "description": "512×512 Float32 DEM, procedurally generated — an excavation pit, a linear trench and a spike cluster are planted for the anomaly workbench. SYNTHETIC DATA: no real location is depicted.",
       "bands": 1,
       "resolution": "~30 m nominal",
-      "source": "oxigdal-geotiff example geovault_scene (seeded, deterministic)"
+      "source": "oxigeo-geotiff example geovault_scene (seeded, deterministic)"
     }
   ],
   "metadata": {

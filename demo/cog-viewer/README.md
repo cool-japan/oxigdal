@@ -1,10 +1,10 @@
-# OxiGDAL Advanced COG Viewer
+# OxiGeo Advanced COG Viewer
 
-An interactive, feature-rich web application for viewing Cloud Optimized GeoTIFFs (COGs) in the browser using OxiGDAL's WebAssembly bindings and Leaflet.
+An interactive, feature-rich web application for viewing Cloud Optimized GeoTIFFs (COGs) in the browser using OxiGeo's WebAssembly bindings and Leaflet.
 
 ## Overview
 
-This demo showcases the capabilities of OxiGDAL in the browser environment, demonstrating:
+This demo showcases the capabilities of OxiGeo in the browser environment, demonstrating:
 
 - **Pure Client-Side Processing**: All geospatial processing happens in the browser via WebAssembly
 - **Interactive Map Interface**: Leaflet-powered map with pan, zoom, and tile-based rendering
@@ -85,8 +85,8 @@ Before running the demo, ensure you have:
 From the project root:
 
 ```bash
-# Navigate to oxigdal-wasm crate
-cd crates/oxigdal-wasm
+# Navigate to oxigeo-wasm crate
+cd crates/oxigeo-wasm
 
 # Build for web target (development)
 wasm-pack build --target web --out-dir ../../demo/pkg
@@ -247,7 +247,7 @@ For the demo to work with remote COG files, the hosting server must:
    - Branch: main, folder: `/demo/cog-viewer`
    - Save
 
-4. Access at: `https://your-username.github.io/oxigdal/cog-viewer/`
+4. Access at: `https://your-username.github.io/oxigeo/cog-viewer/`
 
 ### Netlify
 
@@ -334,8 +334,8 @@ CMD ["nginx", "-g", "daemon off;"]
 
 Build and run:
 ```bash
-docker build -t oxigdal-cog-viewer .
-docker run -p 8080:80 oxigdal-cog-viewer
+docker build -t oxigeo-cog-viewer .
+docker run -p 8080:80 oxigeo-cog-viewer
 ```
 
 ## Architecture
@@ -359,8 +359,8 @@ demo/cog-viewer/
 └── README.md           # This file
 
 demo/pkg/               # Generated WASM package
-├── oxigdal_wasm.js     # JavaScript bindings
-├── oxigdal_wasm_bg.wasm # WebAssembly binary
+├── oxigeo_wasm.js     # JavaScript bindings
+├── oxigeo_wasm_bg.wasm # WebAssembly binary
 └── ...                 # TypeScript definitions, etc.
 ```
 
@@ -426,7 +426,7 @@ demo/pkg/               # Generated WASM package
 **Solution**:
 1. Ensure you built the WASM package:
    ```bash
-   cd crates/oxigdal-wasm
+   cd crates/oxigeo-wasm
    wasm-pack build --target web --out-dir ../../demo/pkg
    ```
 2. Verify `demo/pkg/` directory exists with `.wasm` file
@@ -483,13 +483,13 @@ demo/pkg/               # Generated WASM package
 
 1. Clone repository:
    ```bash
-   git clone https://github.com/cool-japan/oxigdal.git
-   cd oxigdal
+   git clone https://github.com/cool-japan/oxigeo.git
+   cd oxigeo
    ```
 
 2. Build WASM:
    ```bash
-   cd crates/oxigdal-wasm
+   cd crates/oxigeo-wasm
    wasm-pack build --target web --dev --out-dir ../../demo/pkg
    ```
 
@@ -577,17 +577,17 @@ Contributions are welcome! To contribute:
 
 ## License
 
-This demo is part of the OxiGDAL project and is licensed under the Apache-2.0 License.
+This demo is part of the OxiGeo project and is licensed under the Apache-2.0 License.
 
 See the main repository for full license text.
 
 ## Links & Resources
 
-### OxiGDAL
+### OxiGeo
 
-- **Repository**: https://github.com/cool-japan/oxigdal
+- **Repository**: https://github.com/cool-japan/oxigeo
 - **Documentation**: (Link to docs when available)
-- **Issues**: https://github.com/cool-japan/oxigdal/issues
+- **Issues**: https://github.com/cool-japan/oxigeo/issues
 
 ### COOLJAPAN Ecosystem
 
@@ -626,6 +626,6 @@ For questions, issues, or feature requests:
 
 ---
 
-**Built with OxiGDAL** | Part of the **COOLJAPAN Pure Rust Ecosystem**
+**Built with OxiGeo** | Part of the **COOLJAPAN Pure Rust Ecosystem**
 
 Copyright (c) 2025 COOLJAPAN OU (Team Kitasan)

@@ -1,5 +1,5 @@
-# OxiGDAL Google Cloud Deployment Manager Configuration
-# Deploys OxiGDAL on GCP with Cloud Run and Cloud SQL
+# OxiGeo Google Cloud Deployment Manager Configuration
+# Deploys OxiGeo on GCP with Cloud Run and Cloud SQL
 # Author: COOLJAPAN OU (Team Kitasan)
 
 imports:
@@ -11,22 +11,22 @@ imports:
 
 resources:
 # VPC Network
-- name: oxigdal-network
+- name: oxigeo-network
   type: compute.v1.network
   properties:
     autoCreateSubnetworks: false
 
 # Subnet
-- name: oxigdal-subnet
+- name: oxigeo-subnet
   type: compute.v1.subnetwork
   properties:
-    network: $(ref.oxigdal-network.selfLink)
+    network: $(ref.oxigeo-network.selfLink)
     ipCidrRange: 10.0.0.0/24
     region: us-central1
     privateIpGoogleAccess: true
 
 # Cloud SQL PostgreSQL Instance
-- name: oxigdal-postgres
+- name: oxigeo-postgres
   type: sqladmin.v1beta4.instance
   properties:
     region: us-central1
@@ -38,7 +38,7 @@ resources:
         authorizedNetworks:
         - name: allow-all
           value: 0.0.0.0/0  # TODO: Restrict in production
-        privateNetwork: $(ref.oxigdal-network.selfLink)
+        privateNetwork: $(ref.oxigeo-network.selfLink)
       backupConfiguration:
         enabled: true
         startTime: "03:00"
@@ -55,35 +55,35 @@ resources:
       dataDiskSizeGb: 20
 
 # Cloud SQL Database
-- name: oxigdal-database
+- name: oxigeo-database
   type: sqladmin.v1beta4.database
   properties:
-    instance: $(ref.oxigdal-postgres.name)
-    name: oxigdal
+    instance: $(ref.oxigeo-postgres.name)
+    name: oxigeo
     charset: UTF8
 
 # Cloud SQL User
-- name: oxigdal-db-user
+- name: oxigeo-db-user
   type: sqladmin.v1beta4.user
   properties:
-    instance: $(ref.oxigdal-postgres.name)
-    name: oxigdal
+    instance: $(ref.oxigeo-postgres.name)
+    name: oxigeo
     password: CHANGE_ME  # Use Secret Manager in production
 
 # Memorystore Redis Instance
-- name: oxigdal-redis
+- name: oxigeo-redis
   type: redis.v1.instance
   properties:
     tier: STANDARD_HA
     memorySizeGb: 2
     region: us-central1
     redisVersion: REDIS_7_0
-    authorizedNetwork: $(ref.oxigdal-network.selfLink)
+    authorizedNetwork: $(ref.oxigeo-network.selfLink)
     redisConfigs:
       maxmemory-policy: allkeys-lru
 
 # Cloud Storage Bucket
-- name: oxigdal-data-bucket
+- name: oxigeo-data-bucket
   type: storage.v1.bucket
   properties:
     location: US
@@ -107,29 +107,29 @@ resources:
         enabled: true
 
 # Service Account for Cloud Run
-- name: oxigdal-service-account
+- name: oxigeo-service-account
   type: iam.v1.serviceAccount
   properties:
-    accountId: oxigdal-server
-    displayName: OxiGDAL Server Service Account
+    accountId: oxigeo-server
+    displayName: OxiGeo Server Service Account
 
 # IAM Policy Bindings
-- name: oxigdal-storage-access
+- name: oxigeo-storage-access
   type: storage.v1.bucket
   properties:
-    bucket: $(ref.oxigdal-data-bucket.name)
+    bucket: $(ref.oxigeo-data-bucket.name)
   accessControl:
-    entity: serviceAccount:$(ref.oxigdal-service-account.email)
+    entity: serviceAccount:$(ref.oxigeo-service-account.email)
     role: READER
 
 # Cloud Run Service
-- name: oxigdal-server
+- name: oxigeo-server
   type: run.v1.service
   properties:
     apiVersion: serving.knative.dev/v1
     kind: Service
     metadata:
-      name: oxigdal-server
+      name: oxigeo-server
       namespace: PROJECT_ID  # Replace with actual project ID
       annotations:
         run.googleapis.com/ingress: all
@@ -140,44 +140,44 @@ resources:
           annotations:
             autoscaling.knative.dev/minScale: "2"
             autoscaling.knative.dev/maxScale: "20"
-            run.googleapis.com/vpc-access-connector: oxigdal-connector
+            run.googleapis.com/vpc-access-connector: oxigeo-connector
             run.googleapis.com/vpc-access-egress: private-ranges-only
             run.googleapis.com/execution-environment: gen2
         spec:
-          serviceAccountName: $(ref.oxigdal-service-account.email)
+          serviceAccountName: $(ref.oxigeo-service-account.email)
           containerConcurrency: 80
           timeoutSeconds: 300
           containers:
-          - image: ghcr.io/cool-japan/oxigdal-server:latest
+          - image: ghcr.io/cool-japan/oxigeo-server:latest
             ports:
             - containerPort: 8080
               protocol: TCP
             env:
             - name: RUST_LOG
               value: info
-            - name: OXIGDAL_HOST
+            - name: OXIGEO_HOST
               value: "0.0.0.0"
-            - name: OXIGDAL_PORT
+            - name: OXIGEO_PORT
               value: "8080"
             - name: POSTGRES_HOST
-              value: /cloudsql/PROJECT_ID:us-central1:oxigdal-postgres
+              value: /cloudsql/PROJECT_ID:us-central1:oxigeo-postgres
             - name: POSTGRES_PORT
               value: "5432"
             - name: POSTGRES_DB
-              value: oxigdal
+              value: oxigeo
             - name: POSTGRES_USER
-              value: oxigdal
+              value: oxigeo
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: oxigdal-db-password
+                  name: oxigeo-db-password
                   key: password
             - name: REDIS_HOST
-              value: $(ref.oxigdal-redis.host)
+              value: $(ref.oxigeo-redis.host)
             - name: REDIS_PORT
-              value: $(ref.oxigdal-redis.port)
+              value: $(ref.oxigeo-redis.port)
             - name: GCS_BUCKET
-              value: $(ref.oxigdal-data-bucket.name)
+              value: $(ref.oxigeo-data-bucket.name)
             resources:
               limits:
                 cpu: "2000m"
@@ -197,20 +197,20 @@ resources:
               failureThreshold: 30
 
 # VPC Access Connector
-- name: oxigdal-connector
+- name: oxigeo-connector
   type: vpcaccess.v1.connector
   properties:
-    network: $(ref.oxigdal-network.name)
+    network: $(ref.oxigeo-network.name)
     ipCidrRange: 10.8.0.0/28
     region: us-central1
     minThroughput: 200
     maxThroughput: 1000
 
 # Cloud Monitoring Alert Policy
-- name: oxigdal-cpu-alert
+- name: oxigeo-cpu-alert
   type: monitoring.v3.alertPolicy
   properties:
-    displayName: OxiGDAL High CPU Usage
+    displayName: OxiGeo High CPU Usage
     combiner: OR
     conditions:
     - displayName: CPU Utilization above 80%
@@ -218,7 +218,7 @@ resources:
         filter: |
           metric.type="run.googleapis.com/container/cpu/utilizations"
           resource.type="cloud_run_revision"
-          resource.label.service_name="oxigdal-server"
+          resource.label.service_name="oxigeo-server"
         comparison: COMPARISON_GT
         thresholdValue: 0.8
         duration: 300s
@@ -226,10 +226,10 @@ resources:
     enabled: true
 
 # Cloud Monitoring Dashboard
-- name: oxigdal-dashboard
+- name: oxigeo-dashboard
   type: monitoring.v1.dashboard
   properties:
-    displayName: OxiGDAL Monitoring Dashboard
+    displayName: OxiGeo Monitoring Dashboard
     dashboardFilters: []
     gridLayout:
       columns: 12
@@ -242,7 +242,7 @@ resources:
                 filter: |
                   metric.type="run.googleapis.com/container/cpu/utilizations"
                   resource.type="cloud_run_revision"
-                  resource.label.service_name="oxigdal-server"
+                  resource.label.service_name="oxigeo-server"
               unitOverride: "1"
           timeshiftDuration: 0s
           yAxis:
@@ -256,7 +256,7 @@ resources:
                 filter: |
                   metric.type="run.googleapis.com/container/memory/utilizations"
                   resource.type="cloud_run_revision"
-                  resource.label.service_name="oxigdal-server"
+                  resource.label.service_name="oxigeo-server"
               unitOverride: "1"
           timeshiftDuration: 0s
           yAxis:
@@ -270,7 +270,7 @@ resources:
                 filter: |
                   metric.type="run.googleapis.com/request_count"
                   resource.type="cloud_run_revision"
-                  resource.label.service_name="oxigdal-server"
+                  resource.label.service_name="oxigeo-server"
           timeshiftDuration: 0s
           yAxis:
             label: y1Axis
@@ -278,14 +278,14 @@ resources:
 
 outputs:
 - name: cloud-run-url
-  value: $(ref.oxigdal-server.status.url)
+  value: $(ref.oxigeo-server.status.url)
 - name: postgres-connection
-  value: $(ref.oxigdal-postgres.connectionName)
+  value: $(ref.oxigeo-postgres.connectionName)
 - name: redis-host
-  value: $(ref.oxigdal-redis.host)
+  value: $(ref.oxigeo-redis.host)
 - name: redis-port
-  value: $(ref.oxigdal-redis.port)
+  value: $(ref.oxigeo-redis.port)
 - name: storage-bucket
-  value: $(ref.oxigdal-data-bucket.name)
+  value: $(ref.oxigeo-data-bucket.name)
 - name: service-account-email
-  value: $(ref.oxigdal-service-account.email)
+  value: $(ref.oxigeo-service-account.email)

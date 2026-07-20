@@ -1,0 +1,83 @@
+[package]
+name = "oxigeo-geoparquet"
+description = "GeoParquet driver for OxiGeo - Pure Rust GDAL reimplementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-geoparquet"
+readme = "README.md"
+keywords = ["geoparquet", "parquet", "arrow", "vector", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = [
+    "oxigeo-core/std",
+    "thiserror/std",
+    "serde/std",
+    "dep:serde_json",
+    "dep:tracing",
+    "dep:arrow",
+    "dep:arrow-array",
+    "dep:arrow-buffer",
+    "dep:arrow-schema",
+    "dep:parquet",
+]
+async = ["oxigeo-core/async", "dep:tokio", "dep:async-trait"]
+# Compression features.
+#
+# These forward to the upstream `parquet` crate's built-in codecs, which are
+# pure-Rust implementations (snap, miniz_oxide via flate2-rust_backened, brotli,
+# lz4_flex) and therefore satisfy the COOLJAPAN Pure-Rust policy.
+#
+# NOTE (Pure-Rust policy): the `zstd` codec is deliberately NOT exposed as a
+# feature. `parquet/zstd` pulls `zstd -> zstd-safe -> zstd-sys`, a C `libzstd`
+# FFI binding, which violates the workspace "compression must be pure Rust /
+# OxiARC" policy. Sibling drivers (geotiff, zarr) decompress zstd blocks
+# themselves via `oxiarc-zstd`, but the `parquet` crate performs page
+# (de)compression internally with no pluggable codec hook, so `oxiarc-zstd`
+# cannot be routed in without forking upstream `parquet`. Until such a
+# pure-Rust codec path exists, Parquet columns using Zstd compression are
+# unsupported (reads/writes of Zstd pages return a typed `parquet` error rather
+# than silently linking C code). Tracking: replace with an `oxiarc-zstd`-backed
+# `parquet::compression::Codec` shim when upstream exposes one.
+snappy = ["parquet/snap"]
+gzip = ["parquet/flate2", "parquet/flate2-rust_backened"]
+brotli = ["parquet/brotli"]
+lz4 = ["parquet/lz4"]
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+
+# Arrow ecosystem - core dependencies (std only)
+arrow = { workspace = true, features = ["ipc"], optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+parquet = { workspace = true, default-features = false, features = ["arrow"], optional = true }
+
+# Async support
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

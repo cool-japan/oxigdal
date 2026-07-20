@@ -1,4 +1,4 @@
-# OxiGDAL AWS Terraform Configuration
+# OxiGeo AWS Terraform Configuration
 # Main infrastructure configuration
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -13,11 +13,11 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "oxigdal-terraform-state"
-    key            = "oxigdal/terraform.tfstate"
+    bucket         = "oxigeo-terraform-state"
+    key            = "oxigeo/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
-    dynamodb_table = "oxigdal-terraform-locks"
+    dynamodb_table = "oxigeo-terraform-locks"
   }
 }
 
@@ -26,7 +26,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "OxiGDAL"
+      Project     = "OxiGeo"
       Environment = var.environment
       ManagedBy   = "Terraform"
       Owner       = "COOLJAPAN OU"
@@ -77,8 +77,8 @@ module "rds" {
   instance_class          = var.db_instance_class
   allocated_storage       = var.db_allocated_storage
   storage_encrypted       = true
-  db_name                 = "oxigdal"
-  username                = "oxigdal"
+  db_name                 = "oxigeo"
+  username                = "oxigeo"
   vpc_security_group_ids  = [module.security_groups.db_security_group_id]
   db_subnet_group_name    = module.vpc.database_subnet_group_name
   backup_retention_period = var.environment == "production" ? 7 : 1
@@ -161,15 +161,15 @@ module "ecs_service" {
   task_memory     = var.ecs_task_memory
 
   container_definitions = templatefile("${path.module}/templates/container-definitions.json", {
-    container_name   = "oxigdal-server"
+    container_name   = "oxigeo-server"
     container_image  = var.container_image
     container_port   = 8080
     log_group        = module.cloudwatch.log_group_name
     aws_region       = var.aws_region
     postgres_host    = module.rds.endpoint
     postgres_port    = 5432
-    postgres_db      = "oxigdal"
-    postgres_user    = "oxigdal"
+    postgres_db      = "oxigeo"
+    postgres_user    = "oxigeo"
     postgres_password_arn = module.rds.password_secret_arn
     redis_host       = module.redis.endpoint
     redis_port       = 6379

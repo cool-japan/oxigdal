@@ -1,4 +1,4 @@
-# OxiGDAL Production Deployment Workflow
+# OxiGeo Production Deployment Workflow
 # Deploys to production environment
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -21,9 +21,9 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECS_CLUSTER: oxigdal-production
-  ECS_SERVICE: oxigdal-server
-  CONTAINER_NAME: oxigdal-server
+  ECS_CLUSTER: oxigeo-production
+  ECS_SERVICE: oxigeo-server
+  CONTAINER_NAME: oxigeo-server
 
 jobs:
   deploy-aws:
@@ -52,10 +52,10 @@ jobs:
         run: |
           aws cloudformation deploy \
             --template-file deploy/aws/cloudformation.yaml \
-            --stack-name oxigdal-production \
+            --stack-name oxigeo-production \
             --parameter-overrides \
               Environment=production \
-              ContainerImage=ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ github.ref_name }} \
+              ContainerImage=ghcr.io/${{ github.repository_owner }}/oxigeo-server:${{ github.ref_name }} \
               DesiredCount=3 \
             --capabilities CAPABILITY_IAM \
             --no-fail-on-empty-changeset
@@ -77,7 +77,7 @@ jobs:
         id: service-url
         run: |
           ALB_DNS=$(aws cloudformation describe-stacks \
-            --stack-name oxigdal-production \
+            --stack-name oxigeo-production \
             --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerURL'].OutputValue" \
             --output text)
           echo "url=$ALB_DNS" >> $GITHUB_OUTPUT
@@ -109,18 +109,18 @@ jobs:
 
       - name: Update image in deployment
         run: |
-          kubectl set image deployment/oxigdal-server \
-            oxigdal-server=ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ github.ref_name }} \
-            -n oxigdal
+          kubectl set image deployment/oxigeo-server \
+            oxigeo-server=ghcr.io/${{ github.repository_owner }}/oxigeo-server:${{ github.ref_name }} \
+            -n oxigeo
 
       - name: Wait for rollout
         run: |
-          kubectl rollout status deployment/oxigdal-server -n oxigdal
+          kubectl rollout status deployment/oxigeo-server -n oxigeo
 
       - name: Verify deployment
         run: |
-          kubectl get pods -n oxigdal
-          kubectl get svc -n oxigdal
+          kubectl get pods -n oxigeo
+          kubectl get svc -n oxigeo
 
   deploy-cloud-run:
     name: Deploy to Google Cloud Run
@@ -142,8 +142,8 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          gcloud run deploy oxigdal-server \
-            --image ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ github.ref_name }} \
+          gcloud run deploy oxigeo-server \
+            --image ghcr.io/${{ github.repository_owner }}/oxigeo-server:${{ github.ref_name }} \
             --platform managed \
             --region us-central1 \
             --allow-unauthenticated \
@@ -212,7 +212,7 @@ jobs:
         with:
           payload: |
             {
-              "text": "OxiGDAL Production Deployment",
+              "text": "OxiGeo Production Deployment",
               "blocks": [
                 {
                   "type": "section",

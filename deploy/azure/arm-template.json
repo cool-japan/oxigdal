@@ -2,13 +2,13 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "OxiGDAL Azure Resource Manager Template",
+    "description": "OxiGeo Azure Resource Manager Template",
     "author": "COOLJAPAN OU (Team Kitasan)"
   },
   "parameters": {
     "projectName": {
       "type": "string",
-      "defaultValue": "oxigdal",
+      "defaultValue": "oxigeo",
       "metadata": {
         "description": "Project name prefix for resources"
       }
@@ -34,7 +34,7 @@
     },
     "containerImage": {
       "type": "string",
-      "defaultValue": "ghcr.io/cool-japan/oxigdal-server:latest",
+      "defaultValue": "ghcr.io/cool-japan/oxigeo-server:latest",
       "metadata": {
         "description": "Docker container image"
       }
@@ -82,7 +82,7 @@
     },
     "administratorLogin": {
       "type": "string",
-      "defaultValue": "oxigdal",
+      "defaultValue": "oxigeo",
       "metadata": {
         "description": "Administrator login for database"
       }
@@ -262,7 +262,7 @@
     {
       "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
       "apiVersion": "2023-03-01-preview",
-      "name": "[concat(variables('postgresServerName'), '/oxigdal')]",
+      "name": "[concat(variables('postgresServerName'), '/oxigeo')]",
       "dependsOn": [
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))]"
       ],
@@ -337,7 +337,7 @@
       "properties": {
         "containers": [
           {
-            "name": "oxigdal-server",
+            "name": "oxigeo-server",
             "properties": {
               "image": "[parameters('containerImage')]",
               "ports": [
@@ -352,11 +352,11 @@
                   "value": "info"
                 },
                 {
-                  "name": "OXIGDAL_HOST",
+                  "name": "OXIGEO_HOST",
                   "value": "0.0.0.0"
                 },
                 {
-                  "name": "OXIGDAL_PORT",
+                  "name": "OXIGEO_PORT",
                   "value": "8080"
                 },
                 {
@@ -369,7 +369,7 @@
                 },
                 {
                   "name": "POSTGRES_DB",
-                  "value": "oxigdal"
+                  "value": "oxigeo"
                 },
                 {
                   "name": "POSTGRES_USER",

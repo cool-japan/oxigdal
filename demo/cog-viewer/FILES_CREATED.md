@@ -1,6 +1,6 @@
-# OxiGDAL COG Viewer - Files Created/Modified
+# OxiGeo COG Viewer - Files Created/Modified
 
-This document lists all files created or modified for the OxiGDAL Phase 1 COG Viewer demo application.
+This document lists all files created or modified for the OxiGeo Phase 1 COG Viewer demo application.
 
 ## Newly Created Files
 
@@ -389,7 +389,7 @@ app.measurements = {
 ### Existing Dependencies
 
 - **Leaflet 1.9.4** - Map rendering
-- **OxiGDAL WASM** - Geospatial processing
+- **OxiGeo WASM** - Geospatial processing
 - **Modern Browser APIs** - Canvas, Fetch, Promises
 
 ## Performance Impact
@@ -450,7 +450,7 @@ Potential improvements (not in scope for Phase 1):
 
 ## Conclusion
 
-Successfully created and integrated all required components for the OxiGDAL Phase 1 COG Viewer demo application:
+Successfully created and integrated all required components for the OxiGeo Phase 1 COG Viewer demo application:
 
 ✅ **3 new documentation files** (2,080 lines)
 ✅ **1 new test file** (380 lines)

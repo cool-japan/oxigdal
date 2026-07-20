@@ -1,6 +1,6 @@
 # Failure Taxonomy for Test Auto-Fix System
 # Classifies test failures into categories with fix strategies
-# Based on real failure patterns from oxigdal codebase
+# Based on real failure patterns from oxigeo codebase
 
 version: "1.0"
 description: "Comprehensive taxonomy of test failure patterns with auto-fix strategies"
@@ -504,9 +504,9 @@ PRIORITY_LEVELS:
 metadata:
   created: "2026-02-13"
   version: "1.0"
-  author: "oxigdal fail-test detection system"
+  author: "oxigeo fail-test detection system"
   last_updated: "2026-02-13"
   total_categories: 6
   total_subcategories: 30
   total_fix_strategies: 8
-  patterns_source: "Real failures from oxigdal-gpu, oxigdal-kafka, and integration tests"
+  patterns_source: "Real failures from oxigeo-gpu, oxigeo-kafka, and integration tests"

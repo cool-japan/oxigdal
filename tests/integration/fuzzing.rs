@@ -15,12 +15,12 @@
 use std::error::Error;
 use std::io::Cursor;
 
-use oxigdal_algorithms::dsl::parse_expression;
-use oxigdal_algorithms::raster::RasterCalculator;
-use oxigdal_algorithms::{AlgorithmError, MAX_EXPRESSION_DEPTH};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
-use oxigdal_geojson::reader::GeoJsonReader;
+use oxigeo_algorithms::dsl::parse_expression;
+use oxigeo_algorithms::raster::RasterCalculator;
+use oxigeo_algorithms::{AlgorithmError, MAX_EXPRESSION_DEPTH};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
+use oxigeo_geojson::reader::GeoJsonReader;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -197,7 +197,7 @@ fn fuzz_wkt_empty_and_whitespace() -> Result<()> {
 }
 
 #[test]
-#[ignore = "real WKT geometry parser is not reachable from this test package: no oxigdal crate in oxigdal-dev-tools' (dev-)deps exposes a WKT reader; blocked on cross-lane dev-dep. Local stand-in removed rather than assert against a stub."]
+#[ignore = "real WKT geometry parser is not reachable from this test package: no oxigeo crate in oxigeo-dev-tools' (dev-)deps exposes a WKT reader; blocked on cross-lane dev-dep. Local stand-in removed rather than assert against a stub."]
 fn fuzz_wkt_unbalanced_parentheses() -> Result<()> {
     let inputs = vec![
         "POINT (0 0",
@@ -218,7 +218,7 @@ fn fuzz_wkt_unbalanced_parentheses() -> Result<()> {
 }
 
 #[test]
-#[ignore = "real WKT geometry parser is not reachable from this test package: no oxigdal crate in oxigdal-dev-tools' (dev-)deps exposes a WKT reader; blocked on cross-lane dev-dep. Local stand-in removed rather than assert against a stub."]
+#[ignore = "real WKT geometry parser is not reachable from this test package: no oxigeo crate in oxigeo-dev-tools' (dev-)deps exposes a WKT reader; blocked on cross-lane dev-dep. Local stand-in removed rather than assert against a stub."]
 fn fuzz_wkt_invalid_geometry_types() -> Result<()> {
     let inputs = vec![
         "INVALID (0 0)",
@@ -240,7 +240,7 @@ fn fuzz_wkt_invalid_geometry_types() -> Result<()> {
 }
 
 #[test]
-#[ignore = "real WKT geometry parser is not reachable from this test package: no oxigdal crate in oxigdal-dev-tools' (dev-)deps exposes a WKT reader; blocked on cross-lane dev-dep. Local stand-in removed rather than assert against a stub."]
+#[ignore = "real WKT geometry parser is not reachable from this test package: no oxigeo crate in oxigeo-dev-tools' (dev-)deps exposes a WKT reader; blocked on cross-lane dev-dep. Local stand-in removed rather than assert against a stub."]
 fn fuzz_wkt_malformed_coordinates() -> Result<()> {
     let inputs = vec![
         "POINT ()",
@@ -510,7 +510,7 @@ fn fuzz_raster_calculator_deeply_nested_expressions() -> Result<()> {
 // ============================================================================
 
 #[test]
-#[ignore = "real GML/KML XML parser lives in oxigdal-drivers-advanced, which is not a dev-dependency of oxigdal-dev-tools; blocked on cross-lane dev-dep addition. Not asserted against a local stub."]
+#[ignore = "real GML/KML XML parser lives in oxigeo-drivers-advanced, which is not a dev-dependency of oxigeo-dev-tools; blocked on cross-lane dev-dep addition. Not asserted against a local stub."]
 fn fuzz_xml_malformed_structure() -> Result<()> {
     let inputs = vec![
         "<",
@@ -534,7 +534,7 @@ fn fuzz_xml_malformed_structure() -> Result<()> {
 }
 
 #[test]
-#[ignore = "real GML/KML XML parser lives in oxigdal-drivers-advanced, which is not a dev-dependency of oxigdal-dev-tools; blocked on cross-lane dev-dep addition. Not asserted against a local stub."]
+#[ignore = "real GML/KML XML parser lives in oxigeo-drivers-advanced, which is not a dev-dependency of oxigeo-dev-tools; blocked on cross-lane dev-dep addition. Not asserted against a local stub."]
 fn fuzz_xml_invalid_characters() -> Result<()> {
     let inputs = vec![
         "<tag>\x00</tag>",          // Null byte
@@ -636,7 +636,7 @@ fn fuzz_binary_invalid_magic_numbers() -> Result<()> {
 }
 
 #[test]
-#[ignore = "real Shapefile header parser (oxigdal-shapefile ShapefileHeader::read) is not a dev-dependency of oxigdal-dev-tools; blocked on cross-lane dev-dep addition. Not asserted against a local stub."]
+#[ignore = "real Shapefile header parser (oxigeo-shapefile ShapefileHeader::read) is not a dev-dependency of oxigeo-dev-tools; blocked on cross-lane dev-dep addition. Not asserted against a local stub."]
 fn fuzz_binary_out_of_bounds_offsets() -> Result<()> {
     let mut data = vec![0u8; 100];
 
@@ -678,7 +678,7 @@ fn fuzz_binary_random_data() -> Result<()> {
 // Helper Functions (Placeholder Implementations)
 // ============================================================================
 
-/// Parses GeoJSON through the real `oxigdal-geojson` driver with validation
+/// Parses GeoJSON through the real `oxigeo-geojson` driver with validation
 /// enabled (the default for `GeoJsonReader::new`), so malformed JSON, missing
 /// `type`, unknown geometry types and structurally-invalid coordinates are all
 /// rejected by the production code path rather than a local stand-in.
@@ -714,7 +714,7 @@ fn parse_wkt(_input: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parses a raster-algebra DSL expression through the real `oxigdal-algorithms`
+/// Parses a raster-algebra DSL expression through the real `oxigeo-algorithms`
 /// Pest-based parser. Syntactically invalid input (empty, stray operators,
 /// unbalanced parentheses) is rejected by the production grammar.
 fn parse_dsl(input: &str) -> Result<()> {

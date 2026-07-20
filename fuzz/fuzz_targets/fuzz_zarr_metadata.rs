@@ -7,11 +7,11 @@
 //! could trigger a panic or out-of-bounds read in the decompressor.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use oxigdal_zarr::codecs::Codec;
-use oxigdal_zarr::codecs::gzip::GzipCodec;
-use oxigdal_zarr::codecs::zstd_codec::ZstdCodec;
-use oxigdal_zarr::metadata::v2::ArrayMetadataV2;
-use oxigdal_zarr::metadata::v3::ArrayMetadataV3;
+use oxigeo_zarr::codecs::Codec;
+use oxigeo_zarr::codecs::gzip::GzipCodec;
+use oxigeo_zarr::codecs::zstd_codec::ZstdCodec;
+use oxigeo_zarr::metadata::v2::ArrayMetadataV2;
+use oxigeo_zarr::metadata::v3::ArrayMetadataV3;
 
 fuzz_target!(|data: &[u8]| {
     // Zarr v2 `.zarray` metadata JSON.

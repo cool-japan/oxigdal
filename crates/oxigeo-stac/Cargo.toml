@@ -1,0 +1,66 @@
+[package]
+name = "oxigeo-stac"
+description = "STAC (SpatioTemporal Asset Catalog) support for OxiGeo - Pure Rust cloud-native geospatial catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-stac"
+readme = "README.md"
+keywords = ["stac", "science", "catalog", "cloud-native", "gis"]
+categories = ["science", "data-structures", "web-programming"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std", "serde/std"]
+# The async STAC API client (StacClient, SearchBuilder, Paginator, ...). This
+# is the feature that actually activates the `reqwest` HTTP dependency; code
+# that needs the client is gated on `cfg(feature = "async")` exclusively.
+async = ["dep:async-trait", "dep:tokio", "dep:futures", "dep:reqwest"]
+# Backwards-compat alias: some downstream crates historically requested
+# `features = ["reqwest"]` (relying on Cargo's now-removed implicit feature
+# for the optional `reqwest` dependency) to get the HTTP client. Forward it
+# to `async`, which is the feature that truly gates the client and its
+# `reqwest` dependency.
+reqwest = ["async"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+oxigeo-core = { workspace = true, default-features = true }
+
+# Async HTTP client for STAC API
+reqwest = { workspace = true, optional = true, features = ["json"] }
+async-trait = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# Date/time handling
+chrono = { workspace = true }
+
+# URL parsing
+url = { workspace = true }
+
+# GeoJSON for geometries
+geojson = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+futures = { workspace = true }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
+
+# NOTE: `async` (via `dep:reqwest`) is the only feature that pulls in
+# rustls -> aws-lc-sys (C/asm); `--all-features` enables it. `reqwest` is
+# kept only as a backwards-compat alias for `async` (see [features] above),
+# so it never independently gates any code path.
+[package.metadata.docs.rs]
+features = ["std", "async"]
+rustdoc-args = ["--cfg", "docsrs"]

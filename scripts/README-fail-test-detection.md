@@ -49,7 +49,7 @@ The system consists of three main scripts that work together:
 ### Arguments
 
 **Package Groups**:
-- `gpu` - GPU packages only (oxigdal-gpu, oxigdal-gpu-advanced)
+- `gpu` - GPU packages only (oxigeo-gpu, oxigeo-gpu-advanced)
 - `gpu-ml` - GPU + ML packages (default)
 - `external` - Packages with external dependencies
 - `all` - All workspace packages
@@ -65,7 +65,7 @@ The system consists of three main scripts that work together:
 ./scripts/detect-fail-tests.sh gpu
 
 # Detect in specific package
-./scripts/detect-fail-tests.sh oxigdal-gpu
+./scripts/detect-fail-tests.sh oxigeo-gpu
 
 # Detect in all packages
 ./scripts/detect-fail-tests.sh all
@@ -77,8 +77,8 @@ Creates files in `target/fail-test-detection/`:
 
 ```
 target/fail-test-detection/
-├── oxigdal-gpu.ndjson           # Test results for oxigdal-gpu
-├── oxigdal-gpu-advanced.ndjson  # Test results for oxigdal-gpu-advanced
+├── oxigeo-gpu.ndjson           # Test results for oxigeo-gpu
+├── oxigeo-gpu-advanced.ndjson  # Test results for oxigeo-gpu-advanced
 └── ...
 ```
 
@@ -91,7 +91,7 @@ Each line is a JSON object representing a test event:
   "type": "test",
   "event": "failed",
   "test_name": "test_gpu_buffer_creation",
-  "package": "oxigdal-gpu",
+  "package": "oxigeo-gpu",
   "duration": 0.523,
   "stdout": "...",
   "stderr": "thread 'test_gpu_buffer_creation' panicked at...",
@@ -195,7 +195,7 @@ Creates two files in output directory:
 [
   {
     "test_name": "test_gpu_buffer_creation",
-    "package": "oxigdal-gpu",
+    "package": "oxigeo-gpu",
     "file_path": "tests/gpu_test.rs",
     "duration": 0.523,
     "category": "HARDWARE_UNAVAILABLE",
@@ -231,7 +231,7 @@ Creates two files in output directory:
 
 ### HARDWARE_UNAVAILABLE > gpu_device_not_found (8 tests)
 
-#### oxigdal-gpu::test_gpu_buffer_creation
+#### oxigeo-gpu::test_gpu_buffer_creation
 - **File:** tests/gpu_test.rs:45
 - **Duration:** 0.523s
 - **Fix:** add_ignore_with_env_check
@@ -460,7 +460,7 @@ Output Dir:    target/fail-test-detection
 [STAGE 1] Test Detection
 ============================================================
 
-  → Running nextest on: oxigdal-gpu, oxigdal-gpu-advanced
+  → Running nextest on: oxigeo-gpu, oxigeo-gpu-advanced
   → Saving output to: target/fail-test-detection/
 
 [✓] Detection complete: 12 failures found
@@ -514,13 +514,13 @@ Next Steps:
 resolve_package_group() {
     case "$1" in
         "gpu")
-            PACKAGES="oxigdal-gpu oxigdal-gpu-advanced"
+            PACKAGES="oxigeo-gpu oxigeo-gpu-advanced"
             ;;
         "gpu-ml")
-            PACKAGES="oxigdal-gpu oxigdal-gpu-advanced oxigdal-ml-*"
+            PACKAGES="oxigeo-gpu oxigeo-gpu-advanced oxigeo-ml-*"
             ;;
         "external")
-            PACKAGES="oxigdal-streaming oxigdal-edge"
+            PACKAGES="oxigeo-streaming oxigeo-edge"
             ;;
         "all")
             PACKAGES="--workspace"
@@ -653,7 +653,7 @@ def parse_nextest_ndjson(ndjson_path: Path) -> List[TestStatus]:
 ```python
 from lib.nextest_parser import parse_nextest_ndjson
 
-tests = parse_nextest_ndjson(Path('target/fail-test-detection/oxigdal-gpu.ndjson'))
+tests = parse_nextest_ndjson(Path('target/fail-test-detection/oxigeo-gpu.ndjson'))
 failures = [t for t in tests if t.status == 'failed']
 ```
 
@@ -698,7 +698,7 @@ def generate_markdown_report(
 from lib.report_generator import estimate_test_location, generate_markdown_report
 
 # Estimate location
-file_path = estimate_test_location('test_gpu_buffer', 'oxigdal-gpu')
+file_path = estimate_test_location('test_gpu_buffer', 'oxigeo-gpu')
 # Returns: 'tests/gpu_test.rs'
 
 # Generate report
@@ -842,7 +842,7 @@ def generate_json_report(classifications, output_path):
 ```bash
 # Test detection script
 ./scripts/detect-fail-tests.sh gpu
-test -f target/fail-test-detection/oxigdal-gpu.ndjson || exit 1
+test -f target/fail-test-detection/oxigeo-gpu.ndjson || exit 1
 
 # Test analyzer
 python3 scripts/analyze-fail-tests.py
@@ -876,7 +876,7 @@ python3 -u scripts/analyze-fail-tests.py --verbose
 
 ```bash
 # NDJSON output
-cat target/fail-test-detection/oxigdal-gpu.ndjson | jq .
+cat target/fail-test-detection/oxigeo-gpu.ndjson | jq .
 
 # Classification JSON
 cat target/fail-test-detection/fail-tests.json | jq .
@@ -907,4 +907,4 @@ DEBUG=true ./scripts/auto-fix-fail-tests.sh gpu
 
 ## License
 
-Part of OxiGDAL project. See top-level LICENSE file.
+Part of OxiGeo project. See top-level LICENSE file.

@@ -1,0 +1,50 @@
+{
+  "format": "oxigeo-attestation",
+  "version": 1,
+  "session_id": "000102030405060708090a0b0c0d0e0f",
+  "app_name": "geovault",
+  "app_version": "0.1.7",
+  "started_at_ms": 1700000000000,
+  "ended_at_ms": 1700000002000,
+  "policy": "{\"csp\":\"default-src 'self'\",\"enforcement\":[\"csp-meta\",\"fetch-hook\"]}",
+  "bytes_egressed": 0,
+  "bytes_ingressed": 1052672,
+  "operations": [
+    {
+      "seq": 0,
+      "ts_ms": 1700000000000,
+      "op": "session.start",
+      "params": "{\"policy\":\"default-src 'self'\"}",
+      "prev_hash": "b56cc9f9220e385f45be6047685e679a6313bb70acfa9f6dae9a609153f9a069",
+      "entry_hash": "ccc568b32719f5010d06fd3674fd9ff5bc2772068ed37d5c6ec3b27e7f0746a3"
+    },
+    {
+      "seq": 1,
+      "ts_ms": 1700000000500,
+      "op": "file.open",
+      "params": "{\"name\":\"site-k7.tif\",\"size\":1048576}",
+      "prev_hash": "ccc568b32719f5010d06fd3674fd9ff5bc2772068ed37d5c6ec3b27e7f0746a3",
+      "entry_hash": "d495a7b01203d942743712d8dcd777abe349b3660b3d879a622e3e2b0e85fd17"
+    },
+    {
+      "seq": 2,
+      "ts_ms": 1700000001000,
+      "op": "terrain.hillshade",
+      "params": "{\"azimuth\":315,\"altitude\":45}",
+      "prev_hash": "d495a7b01203d942743712d8dcd777abe349b3660b3d879a622e3e2b0e85fd17",
+      "entry_hash": "92d11204d22feacab506a48d22090c5cb15027cd9613e082b390ddea410ceb21"
+    },
+    {
+      "seq": 3,
+      "ts_ms": 1700000001500,
+      "op": "anomaly.detect",
+      "params": "{\"method\":\"modified_zscore\",\"threshold\":3.5,\"count\":642}",
+      "prev_hash": "92d11204d22feacab506a48d22090c5cb15027cd9613e082b390ddea410ceb21",
+      "entry_hash": "2fd72008ce1704ca526b0fc2bda359ddeb33a236b215bae0bb44f74937facdd8"
+    }
+  ],
+  "merkle_root": "95884866c8c6f6c2c629ccd22ea5d224d1762c9d6ce830fb114f9cd3a908b88b",
+  "head_hash": "2fd72008ce1704ca526b0fc2bda359ddeb33a236b215bae0bb44f74937facdd8",
+  "public_key": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+  "signature": "c62919b6602738db0c8aa49677dbe558e1b451dca766eba17336605502ae542c76f7faffc9572d101e0ee50471f5ae82a2f27c57cba494cf6db7cf51a9f12804"
+}

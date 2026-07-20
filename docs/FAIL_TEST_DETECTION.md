@@ -20,7 +20,7 @@
 
 ## Overview
 
-The OxiGDAL Fail Test Detection System is a comprehensive, production-ready solution for automatically detecting, classifying, and fixing failing tests in the workspace. It combines intelligent pattern matching with safe AST manipulation to handle common test failure scenarios.
+The OxiGeo Fail Test Detection System is a comprehensive, production-ready solution for automatically detecting, classifying, and fixing failing tests in the workspace. It combines intelligent pattern matching with safe AST manipulation to handle common test failure scenarios.
 
 ### Key Features
 
@@ -73,7 +73,7 @@ cat target/fail-test-detection/fail-report.md
 ./scripts/auto-fix-fail-tests.sh gpu --apply
 
 # 4. Verify fixes worked
-cargo nextest run -p oxigdal-gpu
+cargo nextest run -p oxigeo-gpu
 ```
 
 ### Common Workflows
@@ -103,11 +103,11 @@ less target/fail-test-detection/fail-tests.json
 **Workflow 3: Specific Package**
 ```bash
 # Target a specific package
-./scripts/auto-fix-fail-tests.sh oxigdal-gpu --apply
+./scripts/auto-fix-fail-tests.sh oxigeo-gpu --apply
 
 # Or use the tool directly
 cd tools/auto-fix-tests
-cargo run -- --packages oxigdal-gpu --apply
+cargo run -- --packages oxigeo-gpu --apply
 ```
 
 **Workflow 4: Recovery from Backup**
@@ -304,11 +304,11 @@ The orchestration script supports predefined package groups:
 
 | Group | Packages | Use Case |
 |-------|----------|----------|
-| `gpu` | oxigdal-gpu, oxigdal-gpu-advanced | GPU tests only |
+| `gpu` | oxigeo-gpu, oxigeo-gpu-advanced | GPU tests only |
 | `gpu-ml` | GPU + ML packages | Default (GPU + ML) |
 | `external` | Packages with external deps | Redis, Kafka, S3, etc. |
 | `all` | All workspace packages | Full workspace |
-| `<name>` | Specific package | e.g., `oxigdal-gpu` |
+| `<name>` | Specific package | e.g., `oxigeo-gpu` |
 
 ### Orchestration Script Options
 
@@ -409,11 +409,11 @@ cargo run -- [OPTIONS]
 **Example 5: Specific Package**
 ```bash
 # Target single package
-./scripts/auto-fix-fail-tests.sh oxigdal-gpu --apply
+./scripts/auto-fix-fail-tests.sh oxigeo-gpu --apply
 
 # Or use tool directly
 cd tools/auto-fix-tests
-cargo run -- --packages oxigdal-gpu --apply
+cargo run -- --packages oxigeo-gpu --apply
 ```
 
 **Example 6: Analysis Only**
@@ -480,7 +480,7 @@ The system respects these environment variables:
 ### Directory Structure
 
 ```
-oxigdal/
+oxigeo/
 ├── scripts/
 │   ├── detect-fail-tests.sh          # Detection script
 │   ├── analyze-fail-tests.py         # Analysis script
@@ -665,11 +665,11 @@ cargo run -- --restore .auto-fix-backups/20260213_094523
 
 **Example Log**:
 ```
-[2026-02-13 09:45:23] START - Mode: APPLY, Confidence: HIGH, Packages: oxigdal-gpu
+[2026-02-13 09:45:23] START - Mode: APPLY, Confidence: HIGH, Packages: oxigeo-gpu
 [2026-02-13 09:45:28] BACKUP - Created: .auto-fix-backups/20260213_094523
-[2026-02-13 09:45:29] PRE_CHECK - Package: oxigdal-gpu, Status: PASS
+[2026-02-13 09:45:29] PRE_CHECK - Package: oxigeo-gpu, Status: PASS
 [2026-02-13 09:45:31] MODIFIED - File: tests/gpu_test.rs, Strategy: AddIgnore, Tests: 4
-[2026-02-13 09:45:33] POST_CHECK - Package: oxigdal-gpu, Status: PASS
+[2026-02-13 09:45:33] POST_CHECK - Package: oxigeo-gpu, Status: PASS
 [2026-02-13 09:45:35] SUMMARY - Status: SUCCESS, Files: 2, Tests: 8
 ```
 
@@ -715,7 +715,7 @@ cargo run -- --restore .auto-fix-backups/20260213_094523
 ┌─────────────────────────────────────────────┐
 │ Auto-Fix Summary                            │
 ├─────────────────────────────────────────────┤
-│ Packages:     oxigdal-gpu, oxigdal-gpu-adv. │
+│ Packages:     oxigeo-gpu, oxigeo-gpu-adv. │
 │ Tests:        12                            │
 │ Confidence:   HIGH                          │
 │ Backup Dir:   .auto-fix-backups/20260213... │
@@ -847,7 +847,7 @@ Edit `scripts/auto-fix-fail-tests.sh`:
 ```bash
 # Add custom group
 "my-group")
-    PACKAGES="oxigdal-package1 oxigdal-package2"
+    PACKAGES="oxigeo-package1 oxigeo-package2"
     ;;
 ```
 
@@ -1000,7 +1000,7 @@ A: Use `--dry-run --min-confidence MEDIUM` to preview without applying.
 - **[Scripts Guide](../scripts/README-fail-test-detection.md)** - Detailed script documentation
 - **[Taxonomy Reference](../scripts/TAXONOMY.md)** - Complete pattern reference
 - **[Tool README](../tools/auto-fix-tests/README.md)** - Auto-fix tool internals
-- **[Architecture](ARCHITECTURE.md)** - OxiGDAL architecture overview
+- **[Architecture](ARCHITECTURE.md)** - OxiGeo architecture overview
 
 ## Support
 
@@ -1017,4 +1017,4 @@ For issues or questions:
 
 ## License
 
-Part of OxiGDAL project. See top-level LICENSE file.
+Part of OxiGeo project. See top-level LICENSE file.

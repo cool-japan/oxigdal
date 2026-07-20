@@ -1,0 +1,83 @@
+[package]
+name = "oxigeo-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-python"
+readme = "README.md"
+description = "Python bindings for OxiGeo - Pure Rust geospatial data abstraction library"
+keywords = ["science", "gdal", "raster", "gis", "python"]
+categories = ["science", "api-bindings"]
+
+# Exclude from standard publishing - this should be published through Maturin/PyPI
+publish = false
+
+[lib]
+name = "oxigeo_python"
+crate-type = ["cdylib", "rlib"]
+doc = false  # Exclude from rustdoc to avoid collision with main oxigeo crates
+
+[dependencies]
+# OxiGeo ecosystem
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-algorithms = { workspace = true, default-features = true }
+oxigeo-geotiff.workspace = true
+oxigeo-geojson.workspace = true
+oxigeo-shapefile = { workspace = true, optional = true }
+oxigeo-zarr = { workspace = true, optional = true }
+oxigeo-proj.workspace = true
+oxigeo-cloud = { workspace = true, optional = true }
+
+# PyO3 for Python bindings
+# Note: Using 0.24.x for stability. 0.28+ requires significant API migrations.
+pyo3 = { workspace = true, features = ["abi3-py39", "num-bigint"] }
+numpy.workspace = true
+
+# TODO: Add async support when pyo3-asyncio 0.23 is released
+# pyo3-asyncio = { version = "0.23", features = ["tokio-runtime"], optional = true }
+# tokio = { workspace = true, optional = true }
+# futures = { workspace = true, optional = true }
+# async-trait = { workspace = true, optional = true }
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Numeric types
+num-traits.workspace = true
+
+# Utilities
+bytes.workspace = true
+bytemuck.workspace = true
+regex.workspace = true
+
+# Algorithms and image processing
+scirs2-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+
+[build-dependencies]
+pyo3-build-config.workspace = true
+
+[features]
+default = ["geotiff", "geojson", "algorithms"]
+# extension-module: Use this when building the Python extension (.so/.dylib).
+# Activated by maturin via pyproject.toml [tool.maturin] features.
+# Do NOT include in default features — it causes link failures in workspace tests.
+extension-module = ["pyo3/extension-module"]
+geotiff = []
+geojson = []
+shapefile = ["oxigeo-shapefile"]
+zarr = ["oxigeo-zarr"]
+algorithms = []
+cloud = ["oxigeo-cloud"]
+# async = ["pyo3-asyncio", "tokio", "futures"]  # TODO: Enable when pyo3-asyncio is updated

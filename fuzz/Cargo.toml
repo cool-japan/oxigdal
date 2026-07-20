@@ -1,5 +1,5 @@
 [package]
-name = "oxigdal-fuzz"
+name = "oxigeo-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -10,17 +10,17 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-oxigdal-geotiff = { path = "../crates/oxigdal-drivers/geotiff" }
-oxigdal-jpeg2000 = { path = "../crates/oxigdal-drivers/jpeg2000" }
-oxigdal-grib = { path = "../crates/oxigdal-drivers/grib" }
-oxigdal-geoparquet = { path = "../crates/oxigdal-drivers/geoparquet" }
-oxigdal-shapefile = { path = "../crates/oxigdal-drivers/shapefile" }
-oxigdal-flatgeobuf = { path = "../crates/oxigdal-drivers/flatgeobuf" }
-oxigdal-zarr = { path = "../crates/oxigdal-drivers/zarr" }
-oxigdal-gpkg = { path = "../crates/oxigdal-gpkg" }
-oxigdal-mbtiles = { path = "../crates/oxigdal-mbtiles", features = ["sqlite"] }
-oxigdal-pmtiles = { path = "../crates/oxigdal-pmtiles" }
-oxigdal-copc = { path = "../crates/oxigdal-copc" }
+oxigeo-geotiff = { path = "../crates/oxigeo-drivers/geotiff" }
+oxigeo-jpeg2000 = { path = "../crates/oxigeo-drivers/jpeg2000" }
+oxigeo-grib = { path = "../crates/oxigeo-drivers/grib" }
+oxigeo-geoparquet = { path = "../crates/oxigeo-drivers/geoparquet" }
+oxigeo-shapefile = { path = "../crates/oxigeo-drivers/shapefile" }
+oxigeo-flatgeobuf = { path = "../crates/oxigeo-drivers/flatgeobuf" }
+oxigeo-zarr = { path = "../crates/oxigeo-drivers/zarr" }
+oxigeo-gpkg = { path = "../crates/oxigeo-gpkg" }
+oxigeo-mbtiles = { path = "../crates/oxigeo-mbtiles", features = ["sqlite"] }
+oxigeo-pmtiles = { path = "../crates/oxigeo-pmtiles" }
+oxigeo-copc = { path = "../crates/oxigeo-copc" }
 
 # Prevent this crate from being included in normal workspace builds
 [workspace]

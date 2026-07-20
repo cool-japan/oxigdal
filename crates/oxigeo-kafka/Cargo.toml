@@ -1,0 +1,124 @@
+[package]
+name = "oxigeo-kafka"
+description = "Apache Kafka integration for OxiGeo - async producer/consumer with schema registry and transactions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-kafka"
+readme = "README.md"
+keywords = ["kafka", "messaging", "streaming", "science", "async"]
+categories = ["network-programming", "asynchronous", "science"]
+
+[features]
+default = ["std", "producer", "consumer"]
+std = ["thiserror/std", "serde/std"]
+# `producer`/`consumer`/`transactions` all touch rdkafka (C librdkafka FFI)
+# types directly, so they pull in the `backend-rdkafka` feature. Building
+# with `--no-default-features` (or with none of these three enabled) yields
+# a genuinely Pure Rust build containing only message/schema/config data
+# types, with no rdkafka symbol anywhere in the dependency graph.
+producer = ["backend-rdkafka"]
+consumer = ["backend-rdkafka"]
+schema-registry = ["dep:apache-avro", "dep:reqwest"]
+transactions = ["backend-rdkafka"]
+compression-all = ["compression-gzip", "compression-snappy", "compression-lz4", "compression-zstd"]
+compression-gzip = ["dep:oxiarc-archive"]
+compression-snappy = ["dep:oxiarc-snappy"]
+compression-lz4 = ["dep:oxiarc-lz4"]
+
+# Opt-in C-FFI backend: the only feature that activates the optional
+# `rdkafka` (librdkafka) dependency. Enabled transitively by
+# producer/consumer/transactions above; can also be enabled directly to
+# pull in rdkafka without any of the higher-level modules.
+backend-rdkafka = ["dep:rdkafka"]
+
+# Policy: Gate rdkafka's cmake-build behind a feature flag
+cmake-build = ["backend-rdkafka", "rdkafka/cmake-build"]
+compression-zstd = ["dep:oxiarc-zstd"]
+all = ["producer", "consumer", "schema-registry", "transactions", "compression-all", "cmake-build"]
+
+[dependencies]
+# Core dependencies
+oxigeo-core = { workspace = true, default-features = true }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time", "fs", "io-util", "rt"] }
+futures.workspace = true
+async-trait.workspace = true
+
+# Kafka client (C librdkafka via FFI, with tokio support). Optional: only
+# pulled in by the `backend-rdkafka` feature (see [features] above), so
+# `--no-default-features` gives a Pure Rust build.
+#
+# Enable cmake-build feature only if 'cmake-build' is enabled
+rdkafka = { workspace = true, features = [
+    "tokio",
+], default-features = false, optional = true }
+
+# Serialization
+apache-avro = { workspace = true, optional = true, features = ["snappy"] }
+
+# Compression
+oxiarc-archive = { workspace = true, optional = true }
+oxiarc-snappy = { workspace = true, optional = true }
+oxiarc-lz4 = { workspace = true, optional = true }
+oxiarc-zstd = { workspace = true, optional = true }
+
+# Concurrency
+dashmap.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Utilities
+chrono.workspace = true
+num-traits.workspace = true
+regex.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+# HTTP client for schema registry (only needed for schema-registry feature)
+reqwest = { workspace = true, features = ["json"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+criterion.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+
+[[bench]]
+name = "kafka_benchmarks"
+harness = false
+required-features = ["producer"]
+
+[[test]]
+name = "integration_tests"
+required-features = ["producer", "consumer"]
+
+[lints]
+workspace = true
+
+# `rdkafka` (C librdkafka) is now an optional dependency gated behind the
+# `backend-rdkafka` feature (see [features] above); `cargo build
+# --no-default-features` produces a genuinely Pure Rust build (message/
+# schema/config data types only). The docs.rs build below still opts into
+# `producer`/`consumer`/`transactions` (and therefore `backend-rdkafka`) for
+# full API documentation coverage. `schema-registry` (reqwest ->
+# aws-lc-sys) and `cmake-build` (extra system build-tool requirement) stay
+# excluded to avoid stacking more non-Pure-Rust surface on top of that.
+[package.metadata.docs.rs]
+features = ["std", "producer", "consumer", "transactions", "compression-all"]
+rustdoc-args = ["--cfg", "docsrs"]

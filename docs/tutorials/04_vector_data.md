@@ -1,4 +1,4 @@
-# Working with Vector Data in OxiGDAL
+# Working with Vector Data in OxiGeo
 
 ## Overview
 
@@ -9,7 +9,7 @@ This tutorial covers reading, writing, and processing vector geospatial data inc
 ### Opening a Vector Dataset
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn open_vector() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("cities.geojson").await?;
@@ -31,7 +31,7 @@ async fn open_vector() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading Features
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_features() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("boundaries.shp").await?;
@@ -60,7 +60,7 @@ async fn read_features() -> Result<(), Box<dyn std::error::Error>> {
 ### Filtering Features
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn filter_features() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("data.geojson").await?;
@@ -86,7 +86,7 @@ async fn filter_features() -> Result<(), Box<dyn std::error::Error>> {
 ### Working with Points
 
 ```rust
-use oxigdal_core::{Dataset, Geometry};
+use oxigeo_core::{Dataset, Geometry};
 use geo_types::Point;
 
 async fn process_points() -> Result<(), Box<dyn std::error::Error>> {
@@ -108,7 +108,7 @@ async fn process_points() -> Result<(), Box<dyn std::error::Error>> {
 ### Working with LineStrings
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn process_lines() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("roads.geojson").await?;
@@ -146,7 +146,7 @@ fn calculate_line_length(linestring: &geo_types::LineString<f64>) -> f64 {
 ### Working with Polygons
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use geo::Area;
 
 async fn process_polygons() -> Result<(), Box<dyn std::error::Error>> {
@@ -179,8 +179,8 @@ async fn process_polygons() -> Result<(), Box<dyn std::error::Error>> {
 ### Creating a GeoJSON File
 
 ```rust
-use oxigdal_core::{Dataset, Driver, FieldType};
-use oxigdal_geojson::GeoJsonDriver;
+use oxigeo_core::{Dataset, Driver, FieldType};
+use oxigeo_geojson::GeoJsonDriver;
 use geo_types::{Point, Geometry};
 
 async fn create_geojson() -> Result<(), Box<dyn std::error::Error>> {
@@ -223,9 +223,9 @@ async fn create_geojson() -> Result<(), Box<dyn std::error::Error>> {
 ### Creating a Shapefile
 
 ```rust
-use oxigdal_core::{Dataset, Driver};
-use oxigdal_shapefile::ShapefileDriver;
-use oxigdal_proj::SpatialRef;
+use oxigeo_core::{Dataset, Driver};
+use oxigeo_shapefile::ShapefileDriver;
+use oxigeo_proj::SpatialRef;
 use geo_types::{Polygon, Geometry};
 
 async fn create_shapefile() -> Result<(), Box<dyn std::error::Error>> {
@@ -268,7 +268,7 @@ async fn create_shapefile() -> Result<(), Box<dyn std::error::Error>> {
 ### Point in Polygon
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use geo::{Contains, Point};
 
 async fn point_in_polygon() -> Result<(), Box<dyn std::error::Error>> {
@@ -306,7 +306,7 @@ async fn point_in_polygon() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use geo::algorithm::Buffer;
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn buffer_geometries() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("roads.geojson").await?;
@@ -333,7 +333,7 @@ async fn buffer_geometries() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use geo::algorithm::Intersects;
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn find_intersections() -> Result<(), Box<dyn std::error::Error>> {
     let dataset1 = Dataset::open("layer1.geojson").await?;
@@ -365,7 +365,7 @@ async fn find_intersections() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading Attributes
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_attributes() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("data.geojson").await?;
@@ -415,7 +415,7 @@ async fn read_attributes() -> Result<(), Box<dyn std::error::Error>> {
 ### Updating Attributes
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn update_attributes() -> Result<(), Box<dyn std::error::Error>> {
     let mut dataset = Dataset::open_writable("data.geojson").await?;
@@ -448,8 +448,8 @@ async fn update_attributes() -> Result<(), Box<dyn std::error::Error>> {
 ### GeoJSON to Shapefile
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_shapefile::ShapefileDriver;
+use oxigeo_core::Dataset;
+use oxigeo_shapefile::ShapefileDriver;
 
 async fn geojson_to_shapefile() -> Result<(), Box<dyn std::error::Error>> {
     // Open source
@@ -486,7 +486,7 @@ async fn geojson_to_shapefile() -> Result<(), Box<dyn std::error::Error>> {
 ### Join by Location
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use geo::Contains;
 
 async fn spatial_join() -> Result<(), Box<dyn std::error::Error>> {
@@ -541,8 +541,8 @@ async fn spatial_join() -> Result<(), Box<dyn std::error::Error>> {
 ## Complete Example: Vector Analysis Workflow
 
 ```rust
-use oxigdal_core::{Dataset, FieldType};
-use oxigdal_geojson::GeoJsonDriver;
+use oxigeo_core::{Dataset, FieldType};
+use oxigeo_geojson::GeoJsonDriver;
 use geo::{Area, Contains, Point};
 
 #[tokio::main]

@@ -1,41 +1,41 @@
-# OxiGDAL
+# OxiGeo
 
 **Pure Rust Geospatial Data Abstraction Library — Production-Grade GDAL Alternative**
 
-[![Crates.io](https://img.shields.io/crates/v/oxigdal.svg)](https://crates.io/crates/oxigdal)
-[![Documentation](https://docs.rs/oxigdal/badge.svg)](https://docs.rs/oxigdal)
+[![Crates.io](https://img.shields.io/crates/v/oxigeo.svg)](https://crates.io/crates/oxigeo)
+[![Documentation](https://docs.rs/oxigeo/badge.svg)](https://docs.rs/oxigeo)
 [![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![COOLJAPAN](https://img.shields.io/badge/COOLJAPAN-Ecosystem-brightgreen.svg)](https://github.com/cool-japan)
 
-> **Note:** OxiGDAL is being renamed to **OxiGeo**. v0.1.7 is the final release under the OxiGDAL name; development continues as OxiGeo from v0.2.0. This project is an independent reimplementation and is not affiliated with the GDAL project.
+> **Note:** **OxiGeo** is the new name of **OxiGDAL**. v0.1.7 was the final release under the OxiGDAL name; development continues as OxiGeo from v0.2.0 with an otherwise identical codebase. This project is an independent reimplementation and is not affiliated with the GDAL project.
 
-[![OxiGDAL GeoSentinel — Sentinel-2 change detection running entirely in the browser in Pure-Rust WebAssembly: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
+[![OxiGeo GeoSentinel — Sentinel-2 change detection running entirely in the browser in Pure-Rust WebAssembly: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
 
 **GeoSentinel**: watch any place on Earth for change — and tell no one where you're looking. It searches the public Earth Search STAC API for a cloud-filtered Sentinel-2 scene pair, streams only the needed COG windows via HTTP range requests, and runs the whole change-detection pipeline — NDVI difference, thresholding, polygonization, geodesic areas, GeoJSON export — 100% client-side in Pure-Rust WebAssembly; your area of interest never leaves your machine. **[Try it live](https://cooljapan.tech/geosentinel/)** — one of **four** hosted [demos](#demos) below, alongside [GeoLab](#geolab--terrain-analysis-on-streamed-cogs), [GeoVault](#geovault--sovereign-clean-room-workstation), and [GeoParquet Live](#geoparquet-live--query-59-gb-with-no-database).
 
-OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. **v0.1.7** completed production-hardening validation on 2026-07-20 (v0.1.6 released 2026-06-15; 0.1.7 has not yet been published to crates.io — publication is a separate, not-yet-taken step), and delivers ~747K Rust SLoC across **76 workspace crates**, covering 17 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Development is now at **v0.2.0**, the first version under the OxiGeo name (v0.1.7 completed production-hardening validation on 2026-07-20; v0.1.6 released 2026-06-15; 0.1.7 has not yet been published to crates.io — publication is a separate, not-yet-taken step). The library delivers ~747K Rust SLoC across **76 workspace crates**, covering 17 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.1.7 (production-hardening validation complete 2026-07-20; not yet published — v0.1.6 released 2026-06-15) |
+| **Version** | 0.2.0 (in development; v0.1.7 production-hardening validation complete 2026-07-20, not yet published — v0.1.6 released 2026-06-15) |
 | **Rust SLoC** | ~747K across 2,448 `.rs` files (via `tokei`) |
 | **Total SLoC** | ~785K (all languages, via `tokei`) |
 | **Workspace crates** | 76 |
-| **Tests** | 16,909 passing (85 skipped), 0 failures; 409 doc tests passing |
+| **Tests** | 16,232 passing (76 skipped), 0 failures; 409 doc tests passing |
 | **Format drivers** | 17 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles, KML, TopoJSON) |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
 | **Estimated dev cost** | $29.59M equivalent (COCOMO) |
 
-## Why OxiGDAL?
+## Why OxiGeo?
 
-| | GDAL (C/C++) | OxiGDAL (Rust) |
+| | GDAL (C/C++) | OxiGeo (Rust) |
 |---|---|---|
-| **Dependencies** | C/C++ toolchain, PROJ, GEOS, libcurl, ... | `cargo add oxigdal` |
+| **Dependencies** | C/C++ toolchain, PROJ, GEOS, libcurl, ... | `cargo add oxigeo` |
 | **Cross-compilation** | Complex per-target | Trivial (WASM, iOS, Android, embedded) |
 | **Memory safety** | Manual management | Guaranteed by Rust |
 | **Concurrency** | Thread-unsafe APIs | Fearless concurrency |
@@ -48,16 +48,16 @@ OxiGDAL is a comprehensive, production-ready geospatial data abstraction library
 
 ```toml
 [dependencies]
-oxigdal = "0.1"  # GeoTIFF + GeoJSON + Shapefile by default
+oxigeo = "0.2"  # GeoTIFF + GeoJSON + Shapefile by default
 
 # Full feature set:
-oxigdal = { version = "0.1", features = ["full"] }
+oxigeo = { version = "0.2", features = ["full"] }
 ```
 
 ```rust
-use oxigdal::Dataset;
+use oxigeo::Dataset;
 
-fn main() -> oxigdal::Result<()> {
+fn main() -> oxigeo::Result<()> {
     let dataset = Dataset::open("world.tif")?;
     println!("Format : {}", dataset.format());
     println!("Size   : {}x{}", dataset.width(), dataset.height());
@@ -91,7 +91,7 @@ Hosted, nothing to install: **[cooljapan.tech/geolab](https://cooljapan.tech/geo
 Or run it locally (builds the WASM module, then serves the static demo):
 
 ```sh
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --scope cooljapan --target web --out-dir pkg --release
 cd ../../demo/cog-viewer
 python3 -m http.server 8080
@@ -130,11 +130,11 @@ San Francisco / Marin Headlands SRTM DEM:
 > demo galleries, and the four native renders above — is a real capture or
 > render produced by this repository's own code, not a mockup. Reproduce the
 > native gallery yourself with:
-> `cargo run -p oxigdal-server --example render_hero --release -- --mode all`
+> `cargo run -p oxigeo-server --example render_hero --release -- --mode all`
 
 ### GeoSentinel — in-browser Sentinel-2 change detection
 
-[![OxiGDAL GeoSentinel — Sentinel-2 change detection running entirely in the browser: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
+[![OxiGeo GeoSentinel — Sentinel-2 change detection running entirely in the browser: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
 
 **Watch any place on Earth for change — and tell no one where you're looking.**
 GeoSentinel searches the public Earth Search STAC API for a cloud-filtered
@@ -188,7 +188,7 @@ cd demo/geosentinel
 
 ### GeoVault — sovereign clean-room workstation
 
-[![OxiGDAL GeoVault — sovereign analysis workstation with a live tamper-evident session ledger and seal-session attestation](docs/media/geovault-hero.png)](https://cooljapan.tech/geovault/)
+[![OxiGeo GeoVault — sovereign analysis workstation with a live tamper-evident session ledger and seal-session attestation](docs/media/geovault-hero.png)](https://cooljapan.tech/geovault/)
 
 **Analyze sensitive terrain data in a browser clean-room that can prove its
 session log afterwards.** Every operation is appended to a blake3 hash chain,
@@ -205,7 +205,7 @@ Hosted, nothing to install: **[cooljapan.tech/geovault](https://cooljapan.tech/g
 Or run it locally (shares the GeoLab/GeoSentinel WASM package):
 
 ```sh
-wasm-pack build crates/oxigdal-wasm --target web --out-dir pkg   # once, from repo root
+wasm-pack build crates/oxigeo-wasm --target web --out-dir pkg   # once, from repo root
 cd demo/geovault
 python3 -m http.server 8080
 # open http://localhost:8080
@@ -244,7 +244,7 @@ python3 -m http.server 8080
 
 ### GeoParquet Live — query 5.9 GB with no database
 
-[![OxiGDAL GeoParquet Live — bounding-box and SQL queries against a 5.9 GB remote GeoParquet, pruned to a handful of row groups in the browser](docs/media/geoparquet-hero.png)](https://cooljapan.tech/geoparquet/)
+[![OxiGeo GeoParquet Live — bounding-box and SQL queries against a 5.9 GB remote GeoParquet, pruned to a handful of row groups in the browser](docs/media/geoparquet-hero.png)](https://cooljapan.tech/geoparquet/)
 
 **Query a dataset bigger than your laptop, over the network, with no
 database.** The browser points at the VIDA Japan building-footprints
@@ -263,7 +263,7 @@ stock `python3 -m http.server` does not):
 
 ```sh
 cd demo/geoparquet
-./build.sh              # wasm-pack build of crates/oxigdal-wasm-geoparquet (once)
+./build.sh              # wasm-pack build of crates/oxigeo-wasm-geoparquet (once)
 python3 serve.py 8080
 # open http://127.0.0.1:8080
 ```
@@ -301,12 +301,12 @@ python3 serve.py 8080
 
 ```
 Core & Algorithms
-  oxigdal                    Umbrella crate (unified API entry-point)
-  oxigdal-core               Types, traits, async I/O, Arrow buffers, no_std core
-  oxigdal-proj               Pure Rust PROJ: 20+ projections, 211+ EPSG, WKT2
-  oxigdal-algorithms         SIMD raster/vector algorithms (AVX2, AVX-512, NEON)
-  oxigdal-index              Spatial indexing (R-tree, grid, geometry validation/operations)
-  oxigdal-qc                 Data validation, anomaly detection, quality scoring
+  oxigeo                    Umbrella crate (unified API entry-point)
+  oxigeo-core               Types, traits, async I/O, Arrow buffers, no_std core
+  oxigeo-proj               Pure Rust PROJ: 20+ projections, 211+ EPSG, WKT2
+  oxigeo-algorithms         SIMD raster/vector algorithms (AVX2, AVX-512, NEON)
+  oxigeo-index              Spatial indexing (R-tree, grid, geometry validation/operations)
+  oxigeo-qc                 Data validation, anomaly detection, quality scoring
 
 Format Drivers (16 formats)
   geotiff      GeoTIFF/COG   BigTIFF, HTTP range, overviews, DEFLATE/LZW/ZSTD/JPEG
@@ -327,71 +327,71 @@ Format Drivers (16 formats)
   geojson-s    GeoJSON (streaming)  Streaming GeoJSON parser/writer/filter
 
 Cloud & Storage
-  oxigdal-cloud              S3 / GCS / Azure Blob backends with HTTP range support
-  oxigdal-cloud-enhanced     Multi-cloud orchestration, auto-tiering
-  oxigdal-drivers-advanced   Multi-part S3, ADLS, GCS optimized reads
-  oxigdal-compress           OxiArc compression: Deflate, LZ4, Zstd, BZip2, LZW
-  oxigdal-cache-advanced     Multi-tier: in-memory LRU -> disk -> Redis
-  oxigdal-rs3gw              Rust S3-compatible gateway
+  oxigeo-cloud              S3 / GCS / Azure Blob backends with HTTP range support
+  oxigeo-cloud-enhanced     Multi-cloud orchestration, auto-tiering
+  oxigeo-drivers-advanced   Multi-part S3, ADLS, GCS optimized reads
+  oxigeo-compress           OxiArc compression: Deflate, LZ4, Zstd, BZip2, LZW
+  oxigeo-cache-advanced     Multi-tier: in-memory LRU -> disk -> Redis
+  oxigeo-rs3gw              Rust S3-compatible gateway
 
 Domain Modules
-  oxigdal-3d                 3D Tiles 1.0 (B3DM, I3DM, PNTS), glTF, Delaunay
-  oxigdal-terrain            DEM, hydrology, viewshed, TRI/TPI, watershed
-  oxigdal-temporal           Time-series datacube, change detection, gap filling
-  oxigdal-analytics          Spatial stats, Getis-Ord Gi*, clustering, zonal ops
-  oxigdal-sensors            IoT sensor ingestion, calibration, SOS
-  oxigdal-metadata           ISO 19115:2014, ISO 19139 XML, FGDC CSDGM
-  oxigdal-stac               SpatioTemporal Asset Catalog 1.0.0 client
-  oxigdal-query              SQL-like geospatial query engine with optimizer
+  oxigeo-3d                 3D Tiles 1.0 (B3DM, I3DM, PNTS), glTF, Delaunay
+  oxigeo-terrain            DEM, hydrology, viewshed, TRI/TPI, watershed
+  oxigeo-temporal           Time-series datacube, change detection, gap filling
+  oxigeo-analytics          Spatial stats, Getis-Ord Gi*, clustering, zonal ops
+  oxigeo-sensors            IoT sensor ingestion, calibration, SOS
+  oxigeo-metadata           ISO 19115:2014, ISO 19139 XML, FGDC CSDGM
+  oxigeo-stac               SpatioTemporal Asset Catalog 1.0.0 client
+  oxigeo-query              SQL-like geospatial query engine with optimizer
 
 Enterprise & Infrastructure
-  oxigdal-server             OGC server: WMS 1.3.0, WFS 2.0.0
-  oxigdal-gateway            API gateway: JWT, OAuth2, rate limiting
-  oxigdal-security           AES-256-GCM, ChaCha20-Poly1305, Argon2id, RBAC/ABAC
-  oxigdal-observability      Prometheus metrics, OpenTelemetry tracing, alerting
-  oxigdal-services           WMS/WFS endpoints, health checks
-  oxigdal-workflow           Workflow automation and scheduling
-  oxigdal-distributed        Distributed partitioning and sharding
-  oxigdal-cluster            Raft consensus-based cluster coordination
-  oxigdal-ha                 High-availability failover and leader election
-  oxigdal-postgis            PostGIS connector
-  oxigdal-db-connectors      PostgreSQL, SQLite, DuckDB connectors
+  oxigeo-server             OGC server: WMS 1.3.0, WFS 2.0.0
+  oxigeo-gateway            API gateway: JWT, OAuth2, rate limiting
+  oxigeo-security           AES-256-GCM, ChaCha20-Poly1305, Argon2id, RBAC/ABAC
+  oxigeo-observability      Prometheus metrics, OpenTelemetry tracing, alerting
+  oxigeo-services           WMS/WFS endpoints, health checks
+  oxigeo-workflow           Workflow automation and scheduling
+  oxigeo-distributed        Distributed partitioning and sharding
+  oxigeo-cluster            Raft consensus-based cluster coordination
+  oxigeo-ha                 High-availability failover and leader election
+  oxigeo-postgis            PostGIS connector
+  oxigeo-db-connectors      PostgreSQL, SQLite, DuckDB connectors
 
 Streaming & Messaging
-  oxigdal-streaming          Real-time stream processing
-  oxigdal-kafka              Apache Kafka integration
-  oxigdal-kinesis            AWS Kinesis integration
-  oxigdal-pubsub             Google Pub/Sub integration
-  oxigdal-mqtt               MQTT IoT sensor messaging
-  oxigdal-websocket          WebSocket real-time updates
-  oxigdal-ws                 WS/WSS server
-  oxigdal-etl                ETL pipeline engine
-  oxigdal-sync               CRDT-based offline sync (OR-Set, Merkle tree, vector clocks)
+  oxigeo-streaming          Real-time stream processing
+  oxigeo-kafka              Apache Kafka integration
+  oxigeo-kinesis            AWS Kinesis integration
+  oxigeo-pubsub             Google Pub/Sub integration
+  oxigeo-mqtt               MQTT IoT sensor messaging
+  oxigeo-websocket          WebSocket real-time updates
+  oxigeo-ws                 WS/WSS server
+  oxigeo-etl                ETL pipeline engine
+  oxigeo-sync               CRDT-based offline sync (OR-Set, Merkle tree, vector clocks)
 
 Platform Bindings
-  oxigdal-wasm               WebAssembly: WasmCogViewer JS/TS API, < 1MB gzipped
-  oxigdal-pwa                Progressive Web App: Service Worker, offline-first
-  oxigdal-offline            Offline-first sync, operation queue, delta sync
-  oxigdal-node               Node.js N-API bindings (napi-rs, CJS + ESM)
-  oxigdal-python             Python bindings (PyO3/Maturin, NumPy, manylinux wheels)
-  oxigdal-jupyter            Jupyter kernel (evcxr + plotters rich display)
-  oxigdal-mobile             iOS (Swift FFI) and Android (Kotlin/JNI)
-  oxigdal-mobile-enhanced    Battery/network-aware mobile scheduling
-  oxigdal-embedded           no_std for microcontrollers (heapless, embedded-hal)
-  oxigdal-noalloc            no_std geospatial primitives (zero heap allocation)
-  oxigdal-edge               Edge computing, streaming sensor ingestion, local DB
+  oxigeo-wasm               WebAssembly: WasmCogViewer JS/TS API, < 1MB gzipped
+  oxigeo-pwa                Progressive Web App: Service Worker, offline-first
+  oxigeo-offline            Offline-first sync, operation queue, delta sync
+  oxigeo-node               Node.js N-API bindings (napi-rs, CJS + ESM)
+  oxigeo-python             Python bindings (PyO3/Maturin, NumPy, manylinux wheels)
+  oxigeo-jupyter            Jupyter kernel (evcxr + plotters rich display)
+  oxigeo-mobile             iOS (Swift FFI) and Android (Kotlin/JNI)
+  oxigeo-mobile-enhanced    Battery/network-aware mobile scheduling
+  oxigeo-embedded           no_std for microcontrollers (heapless, embedded-hal)
+  oxigeo-noalloc            no_std geospatial primitives (zero heap allocation)
+  oxigeo-edge               Edge computing, streaming sensor ingestion, local DB
 
 GPU & ML
-  oxigdal-gpu                GPU acceleration (wgpu compute shaders)
-  oxigdal-gpu-advanced       Advanced GPU kernels
-  oxigdal-ml                 ML pipeline integration
-  oxigdal-ml-foundation      Foundation model support
+  oxigeo-gpu                GPU acceleration (wgpu compute shaders)
+  oxigeo-gpu-advanced       Advanced GPU kernels
+  oxigeo-ml                 ML pipeline integration
+  oxigeo-ml-foundation      Foundation model support
 
 Tooling
-  oxigdal-cli                CLI: info, convert, dem, rasterize, warp (Clap)
-  oxigdal-dev-tools          File watching, progress bars (indicatif), diff utils
-  oxigdal-bench              Criterion benchmarks with pprof flamegraph profiling
-  oxigdal-examples           Runnable examples
+  oxigeo-cli                CLI: info, convert, dem, rasterize, warp (Clap)
+  oxigeo-dev-tools          File watching, progress bars (indicatif), diff utils
+  oxigeo-bench              Criterion benchmarks with pprof flamegraph profiling
+  oxigeo-examples           Runnable examples
 ```
 
 ## Format Support
@@ -445,8 +445,8 @@ Tooling
 ### GeoTIFF / COG
 
 ```rust
-use oxigdal_geotiff::GeoTiffReader;
-use oxigdal_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
 
 let source = FileDataSource::open("elevation.tif")?;
 let reader = GeoTiffReader::open(source)?;
@@ -460,7 +460,7 @@ let tile = reader.read_tile(0, 0, 0)?;
 ### CRS Transformation
 
 ```rust
-use oxigdal_proj::{Coordinate, Crs, Transformer};
+use oxigeo_proj::{Coordinate, Crs, Transformer};
 
 let wgs84  = Crs::from_epsg(4326)?;
 let utm54n = Crs::from_epsg(32654)?;   // UTM Zone 54N (Japan)
@@ -478,7 +478,7 @@ let batch  = tf.transform_batch(&points)?;
 
 // Reuse a cached, thread-safe Transformer across many calls instead of
 // rebuilding the PROJ pipeline every time:
-use oxigdal_proj::TransformerCache;
+use oxigeo_proj::TransformerCache;
 let cache   = TransformerCache::new(16);
 let cached  = cache.get_or_build(4326, 32654)?;
 let utm2    = cached.transform(&tokyo)?;
@@ -487,8 +487,8 @@ let utm2    = cached.transform(&tokyo)?;
 ### Raster Algorithms
 
 ```rust
-use oxigdal_algorithms::raster::{hillshade, HillshadeParams};
-use oxigdal_algorithms::{Resampler, ResamplingMethod};
+use oxigeo_algorithms::raster::{hillshade, HillshadeParams};
+use oxigeo_algorithms::{Resampler, ResamplingMethod};
 
 // SIMD hillshade (AVX2 / NEON auto-selected at runtime)
 let shaded = hillshade(&dem, HillshadeParams::standard())?;
@@ -496,17 +496,17 @@ let shaded = hillshade(&dem, HillshadeParams::standard())?;
 // SIMD-accelerated resampling (nearest / bilinear / bicubic / lanczos)
 let resized = Resampler::new(ResamplingMethod::Bilinear).resample(&dem, 512, 512)?;
 
-// Full CRS reprojection combines a `Transformer` (oxigdal-proj, per-pixel
-// coordinate mapping) with a `Resampler` — see `oxigdal-cli`'s `warp`
-// command (crates/oxigdal-cli/src/commands/warp.rs) for the reference
-// implementation, or invoke it directly: `oxigdal warp --t-srs EPSG:32654 in.tif out.tif`
+// Full CRS reprojection combines a `Transformer` (oxigeo-proj, per-pixel
+// coordinate mapping) with a `Resampler` — see `oxigeo-cli`'s `warp`
+// command (crates/oxigeo-cli/src/commands/warp.rs) for the reference
+// implementation, or invoke it directly: `oxigeo warp --t-srs EPSG:32654 in.tif out.tif`
 ```
 
 ### GeoParquet (Arrow)
 
 ```rust
-use oxigdal_core::types::BoundingBox;
-use oxigdal_geoparquet::GeoParquetReader;
+use oxigeo_core::types::BoundingBox;
+use oxigeo_geoparquet::GeoParquetReader;
 
 let mut reader = GeoParquetReader::open("buildings.parquet")?;
 let bbox       = BoundingBox::new(135.0, 34.0, 137.0, 36.0)?;
@@ -518,21 +518,21 @@ let batches = reader.read_filtered_exact(bbox)?;
 ### Python Bindings
 
 ```python
-import oxigdal
+import oxigeo
 
-ds   = oxigdal.open("satellite.tif")     # mode="r" by default
+ds   = oxigeo.open("satellite.tif")     # mode="r" by default
 data = ds.read_band(1)                   # returns a NumPy ndarray
 meta = ds.get_metadata()
 print(f"Size: {meta['width']}x{meta['height']}")
 
-result = oxigdal.calc("A * 2", A=data)   # raster algebra
-oxigdal.write("output.tif", result, metadata=meta)
+result = oxigeo.calc("A * 2", A=data)   # raster algebra
+oxigeo.write("output.tif", result, metadata=meta)
 ```
 
 ### WebAssembly
 
 ```javascript
-import init, { WasmCogViewer } from '@cooljapan/oxigdal';
+import init, { WasmCogViewer } from '@cooljapan/oxigeo';
 await init();
 
 const viewer = new WasmCogViewer();
@@ -545,15 +545,15 @@ ctx.putImageData(imageData, 0, 0);
 ### CLI
 
 ```bash
-oxigdal info world.tif
-oxigdal convert input.shp output.fgb
-oxigdal dem hillshade elevation.tif hillshade.tif --azimuth 315 --altitude 45
-oxigdal warp --t-srs EPSG:32654 input.tif output.tif
+oxigeo info world.tif
+oxigeo convert input.shp output.fgb
+oxigeo dem hillshade elevation.tif hillshade.tif --azimuth 315 --altitude 45
+oxigeo warp --t-srs EPSG:32654 input.tif output.tif
 ```
 
 ## Enterprise Features
 
-### Security (`oxigdal-security`, `oxigdal-gateway`)
+### Security (`oxigeo-security`, `oxigeo-gateway`)
 
 - Encryption at rest: AES-256-GCM and ChaCha20-Poly1305
 - Password hashing: Argon2id
@@ -564,26 +564,26 @@ oxigdal warp --t-srs EPSG:32654 input.tif output.tif
 - Message integrity: HMAC-SHA256
 - All crypto: pure Rust (`ring`, `rustls`, `aes-gcm`, `chacha20poly1305`, `argon2`)
 
-### High Availability (`oxigdal-ha`, `oxigdal-cluster`)
+### High Availability (`oxigeo-ha`, `oxigeo-cluster`)
 
 - Raft consensus-based cluster coordination
 - Automatic failover and leader election
-- Distributed partitioning and sharding (`oxigdal-distributed`)
-- Multi-tier cache: in-memory LRU -> on-disk -> Redis (`oxigdal-cache-advanced`)
-- CRDT-based offline sync with Merkle tree verification (`oxigdal-sync`)
+- Distributed partitioning and sharding (`oxigeo-distributed`)
+- Multi-tier cache: in-memory LRU -> on-disk -> Redis (`oxigeo-cache-advanced`)
+- CRDT-based offline sync with Merkle tree verification (`oxigeo-sync`)
 
 ### Streaming & Messaging
 
 | Crate | Integration |
 |-------|-------------|
-| `oxigdal-streaming` | Real-time stream processing |
-| `oxigdal-kafka` | Apache Kafka |
-| `oxigdal-kinesis` | AWS Kinesis |
-| `oxigdal-pubsub` | Google Pub/Sub |
-| `oxigdal-mqtt` | MQTT / IoT |
-| `oxigdal-websocket` | WebSocket real-time |
+| `oxigeo-streaming` | Real-time stream processing |
+| `oxigeo-kafka` | Apache Kafka |
+| `oxigeo-kinesis` | AWS Kinesis |
+| `oxigeo-pubsub` | Google Pub/Sub |
+| `oxigeo-mqtt` | MQTT / IoT |
+| `oxigeo-websocket` | WebSocket real-time |
 
-### OGC Services (`oxigdal-server`)
+### OGC Services (`oxigeo-server`)
 
 - WMS 1.3.0 tile server
 - WFS 2.0.0 feature service
@@ -639,9 +639,9 @@ oxigdal warp --t-srs EPSG:32654 input.tif output.tif
 | **v0.1.2** | 2026-03-17 (released) | Wave 7: ogc_features/epsg refactoring, PMTiles writer, geometry validation/operations, umbrella crate integration, 76 crates, 10,935 tests |
 | **v0.1.3** | 2026-03-21 (released) | wgpu 29 API fixes, libsqlite3-sys compat, macOS rpath fix, oxiarc-brotli 6-bug patch, 76 crates, 10,939 tests |
 | **v0.1.4** | 2026-04-19 (released) | Wave 1 algorithms (Weiler-Atherton clipping, Karney geodesic, DE-9IM, marching squares), Wave 2 R-tree+SIMD+NoAlloc+PMTiles reader+COPC+GeoPackage B-tree, ort→oxionnx ML migration, pyo3 0.28, 12,064 tests |
-| **v0.1.5** | 2026-05-22 (released) | oxigdal-gpu WGSL RayMarchUniforms layout fix eliminated 120s GPU test hang (Metal compute kernel), 78 crates, 14,605 tests |
+| **v0.1.5** | 2026-05-22 (released) | oxigeo-gpu WGSL RayMarchUniforms layout fix eliminated 120s GPU test hang (Metal compute kernel), 78 crates, 14,605 tests |
 | **v0.1.6** | 2026-06-15 (released) | Pure-Rust SQLite migration (rusqlite → oxisql-sqlite-compat), non-UTF-8 DBF encoding via encoding_rs, WKT→PROJ string conversion, W-TinyLFU + Count-Min Sketch cache eviction, HDF5 v2/v3 superblock, Delaunay triangulation, batch QC runner + GPKG/STAC/radiometric validators, Gaussian MLC sensor classification, terrain GLCM textures/TPI/geomorphons/cost-distance, Whittaker + Savitzky-Golay time-series smoothers, GPX/KML/TopoJSON vector formats, 14,605 tests |
-| **v0.1.7** | 2026-07-20 (validated; not yet published) | Production-hardening campaign: 233 verified defects fixed across 69 crates (GeoTIFF float-predictor silent-corruption fix, JPEG2000 MQ-decoder spec conformance + real Tier-2 packet/precinct decode, real FlatGeobuf FlatBuffers wire format, LERC2 bit-stuffed decoder, HDF5 ScaleOffset/N-Bit real filters, RBAC pattern-match bypass fix), 3 new hosted demos (GeoSentinel change detection, GeoVault attestation workstation, GeoParquet Live), security attestation module (blake3 chain → Merkle root → Ed25519 seal), multicloud S3/GCS/Azure `build_backend()` factory, pure-Rust ONNX export encoder, WFS-T/WCS real transactions, 76 crates, 16,909 tests |
+| **v0.1.7** | 2026-07-20 (final release under the OxiGDAL name) | Production-hardening campaign: 233 verified defects fixed across 69 crates (GeoTIFF float-predictor silent-corruption fix, JPEG2000 MQ-decoder spec conformance + real Tier-2 packet/precinct decode, real FlatGeobuf FlatBuffers wire format, LERC2 bit-stuffed decoder, HDF5 ScaleOffset/N-Bit real filters, RBAC pattern-match bypass fix), 3 new hosted demos (GeoSentinel change detection, GeoVault attestation workstation, GeoParquet Live), security attestation module (blake3 chain → Merkle root → Ed25519 seal), multicloud S3/GCS/Azure `build_backend()` factory, pure-Rust ONNX export encoder, WFS-T/WCS real transactions, 76 crates, 16,909 tests |
 | **v0.2.0** | Q2 2026 | 100+ projections, GPU expansion, advanced ML pipelines, JPEG2000 tier-2 |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |
@@ -655,13 +655,13 @@ cargo clippy --all-features -- -D warnings
 tokei .
 ```
 
-See `crates/oxigdal-examples/src/` for runnable examples.
+See `crates/oxigeo-examples/src/` for runnable examples.
 
 ## Documentation
 
 | Resource | Location |
 |---------|----------|
-| API Reference | https://docs.rs/oxigdal |
+| API Reference | https://docs.rs/oxigeo |
 | Getting Started | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
 | Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Drivers | [docs/DRIVERS.md](docs/DRIVERS.md) |

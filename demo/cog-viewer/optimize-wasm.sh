@@ -7,7 +7,7 @@
 set -e
 
 echo "================================================"
-echo "OxiGDAL WASM Optimization Script"
+echo "OxiGeo WASM Optimization Script"
 echo "================================================"
 echo ""
 
@@ -18,7 +18,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Directories
-WASM_CRATE_DIR="../../crates/oxigdal-wasm"
+WASM_CRATE_DIR="../../crates/oxigeo-wasm"
 PKG_DIR="../pkg"
 DEMO_DIR="."
 
@@ -29,7 +29,7 @@ wasm-pack build --target web --release --out-dir "$PKG_DIR"
 cd -
 
 # Check if build succeeded
-if [ ! -f "$PKG_DIR/oxigdal_wasm_bg.wasm" ]; then
+if [ ! -f "$PKG_DIR/oxigeo_wasm_bg.wasm" ]; then
     echo -e "${RED}Error: WASM build failed${NC}"
     exit 1
 fi
@@ -38,7 +38,7 @@ echo -e "${GREEN}✓ WASM build complete${NC}"
 echo ""
 
 # Get original size
-ORIGINAL_SIZE=$(du -h "$PKG_DIR/oxigdal_wasm_bg.wasm" | awk '{print $1}')
+ORIGINAL_SIZE=$(du -h "$PKG_DIR/oxigeo_wasm_bg.wasm" | awk '{print $1}')
 echo "Original WASM size: $ORIGINAL_SIZE"
 echo ""
 
@@ -49,13 +49,13 @@ echo "--------------------------------"
 if command -v wasm-opt &> /dev/null; then
     echo "Running wasm-opt with -Oz (optimize for size)..."
     wasm-opt -Oz \
-        -o "$PKG_DIR/oxigdal_wasm_bg.wasm.opt" \
-        "$PKG_DIR/oxigdal_wasm_bg.wasm"
+        -o "$PKG_DIR/oxigeo_wasm_bg.wasm.opt" \
+        "$PKG_DIR/oxigeo_wasm_bg.wasm"
 
     # Replace original with optimized
-    mv "$PKG_DIR/oxigdal_wasm_bg.wasm.opt" "$PKG_DIR/oxigdal_wasm_bg.wasm"
+    mv "$PKG_DIR/oxigeo_wasm_bg.wasm.opt" "$PKG_DIR/oxigeo_wasm_bg.wasm"
 
-    OPTIMIZED_SIZE=$(du -h "$PKG_DIR/oxigdal_wasm_bg.wasm" | awk '{print $1}')
+    OPTIMIZED_SIZE=$(du -h "$PKG_DIR/oxigeo_wasm_bg.wasm" | awk '{print $1}')
     echo -e "${GREEN}✓ WASM optimization complete${NC}"
     echo "Optimized WASM size: $OPTIMIZED_SIZE"
 else
@@ -73,10 +73,10 @@ echo "--------------------------------"
 
 if command -v gzip &> /dev/null; then
     # Create temporary gzipped version
-    gzip -k -9 "$PKG_DIR/oxigdal_wasm_bg.wasm"
-    GZIPPED_SIZE=$(du -h "$PKG_DIR/oxigdal_wasm_bg.wasm.gz" | awk '{print $1}')
+    gzip -k -9 "$PKG_DIR/oxigeo_wasm_bg.wasm"
+    GZIPPED_SIZE=$(du -h "$PKG_DIR/oxigeo_wasm_bg.wasm.gz" | awk '{print $1}')
     echo "Gzipped size: $GZIPPED_SIZE"
-    rm "$PKG_DIR/oxigdal_wasm_bg.wasm.gz"
+    rm "$PKG_DIR/oxigeo_wasm_bg.wasm.gz"
 else
     echo -e "${YELLOW}⚠ gzip not found, skipping compression test${NC}"
 fi
@@ -103,9 +103,9 @@ echo "-------------------"
 
 # Check if essential files exist
 REQUIRED_FILES=(
-    "oxigdal_wasm.js"
-    "oxigdal_wasm_bg.wasm"
-    "oxigdal_wasm.d.ts"
+    "oxigeo_wasm.js"
+    "oxigeo_wasm_bg.wasm"
+    "oxigeo_wasm.d.ts"
     "package.json"
 )
 

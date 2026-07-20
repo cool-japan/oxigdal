@@ -9,8 +9,8 @@
 //! acceptable; panics are not.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use oxigdal_copc::{CopcInfo, LasHeader};
-use oxigdal_copc::vlr_chain::{find_copc_hierarchy_vlr, find_copc_info, parse_vlrs};
+use oxigeo_copc::{CopcInfo, LasHeader};
+use oxigeo_copc::vlr_chain::{find_copc_hierarchy_vlr, find_copc_info, parse_vlrs};
 
 fuzz_target!(|data: &[u8]| {
     // Raw 160-byte COPC info VLR body decode, independent of any header.

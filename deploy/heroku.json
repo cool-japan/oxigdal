@@ -1,8 +1,8 @@
 {
-  "name": "oxigdal-server",
-  "description": "OxiGDAL Geospatial Server - Pure Rust GDAL alternative",
-  "repository": "https://github.com/cool-japan/oxigdal",
-  "logo": "https://github.com/cool-japan/oxigdal/raw/main/docs/logo.png",
+  "name": "oxigeo-server",
+  "description": "OxiGeo Geospatial Server - Pure Rust GDAL alternative",
+  "repository": "https://github.com/cool-japan/oxigeo",
+  "logo": "https://github.com/cool-japan/oxigeo/raw/main/docs/logo.png",
   "keywords": [
     "geospatial",
     "gdal",
@@ -41,22 +41,22 @@
       "value": "1",
       "required": false
     },
-    "OXIGDAL_HOST": {
+    "OXIGEO_HOST": {
       "description": "Server host address",
       "value": "0.0.0.0",
       "required": true
     },
-    "OXIGDAL_PORT": {
+    "OXIGEO_PORT": {
       "description": "Server port",
       "generator": "port",
       "required": true
     },
-    "OXIGDAL_DATA_DIR": {
+    "OXIGEO_DATA_DIR": {
       "description": "Data directory path",
       "value": "/app/data",
       "required": false
     },
-    "OXIGDAL_CACHE_DIR": {
+    "OXIGEO_CACHE_DIR": {
       "description": "Cache directory path",
       "value": "/app/cache",
       "required": false
@@ -84,7 +84,7 @@
     }
   },
   "scripts": {
-    "postdeploy": "echo 'OxiGDAL deployed successfully!'"
+    "postdeploy": "echo 'OxiGeo deployed successfully!'"
   },
   "image": "heroku/heroku:22"
 }

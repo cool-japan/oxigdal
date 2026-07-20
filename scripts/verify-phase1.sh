@@ -1,5 +1,5 @@
 #!/bin/bash
-# OxiGDAL Phase 1 Verification Script
+# OxiGeo Phase 1 Verification Script
 # Comprehensive verification of all Phase 1 deliverables
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -49,7 +49,7 @@ print_section() {
 
 # Header
 echo "================================================"
-echo "  OxiGDAL Phase 1 Verification"
+echo "  OxiGeo Phase 1 Verification"
 echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================"
 
@@ -64,22 +64,22 @@ else
     check_fail "Workspace Cargo.toml missing"
 fi
 
-if [ -d "crates/oxigdal-core" ]; then
-    check_pass "oxigdal-core crate exists"
+if [ -d "crates/oxigeo-core" ]; then
+    check_pass "oxigeo-core crate exists"
 else
-    check_fail "oxigdal-core crate missing"
+    check_fail "oxigeo-core crate missing"
 fi
 
-if [ -d "crates/oxigdal-drivers/geotiff" ]; then
-    check_pass "oxigdal-geotiff crate exists"
+if [ -d "crates/oxigeo-drivers/geotiff" ]; then
+    check_pass "oxigeo-geotiff crate exists"
 else
-    check_fail "oxigdal-geotiff crate missing"
+    check_fail "oxigeo-geotiff crate missing"
 fi
 
-if [ -d "crates/oxigdal-wasm" ]; then
-    check_pass "oxigdal-wasm crate exists"
+if [ -d "crates/oxigeo-wasm" ]; then
+    check_pass "oxigeo-wasm crate exists"
 else
-    check_fail "oxigdal-wasm crate missing"
+    check_fail "oxigeo-wasm crate missing"
 fi
 
 if [ -d "demo" ]; then
@@ -99,12 +99,12 @@ else
 fi
 
 echo -n "Building WASM package... "
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 if wasm-pack build --target web --quiet 2>/dev/null; then
     check_pass "WASM package builds successfully"
 
-    if [ -f "pkg/oxigdal_wasm_bg.wasm" ]; then
-        WASM_SIZE=$(stat -f%z pkg/oxigdal_wasm_bg.wasm 2>/dev/null || stat -c%s pkg/oxigdal_wasm_bg.wasm 2>/dev/null)
+    if [ -f "pkg/oxigeo_wasm_bg.wasm" ]; then
+        WASM_SIZE=$(stat -f%z pkg/oxigeo_wasm_bg.wasm 2>/dev/null || stat -c%s pkg/oxigeo_wasm_bg.wasm 2>/dev/null)
         WASM_SIZE_KB=$((WASM_SIZE / 1024))
 
         if [ $WASM_SIZE_KB -lt 512000 ]; then # Less than 500MB
@@ -122,22 +122,22 @@ cd "$PROJECT_ROOT"
 # 3. Test Verification
 print_section "3. Test Verification"
 
-echo -n "Testing oxigdal-core... "
-CORE_RESULT=$(cargo test --package oxigdal-core --lib --quiet 2>&1 | grep "test result:")
+echo -n "Testing oxigeo-core... "
+CORE_RESULT=$(cargo test --package oxigeo-core --lib --quiet 2>&1 | grep "test result:")
 if echo "$CORE_RESULT" | grep -q "ok"; then
     CORE_PASSED=$(echo "$CORE_RESULT" | grep -oP '\d+(?= passed)' || echo "0")
-    check_pass "oxigdal-core: $CORE_PASSED tests passed"
+    check_pass "oxigeo-core: $CORE_PASSED tests passed"
 else
-    check_fail "oxigdal-core: tests failed"
+    check_fail "oxigeo-core: tests failed"
 fi
 
-echo -n "Testing oxigdal-geotiff... "
-GEOTIFF_RESULT=$(cargo test --package oxigdal-geotiff --lib --quiet 2>&1 | grep "test result:")
+echo -n "Testing oxigeo-geotiff... "
+GEOTIFF_RESULT=$(cargo test --package oxigeo-geotiff --lib --quiet 2>&1 | grep "test result:")
 if echo "$GEOTIFF_RESULT" | grep -q "ok"; then
     GEOTIFF_PASSED=$(echo "$GEOTIFF_RESULT" | grep -oP '\d+(?= passed)' || echo "0")
-    check_pass "oxigdal-geotiff: $GEOTIFF_PASSED tests passed"
+    check_pass "oxigeo-geotiff: $GEOTIFF_PASSED tests passed"
 else
-    check_fail "oxigdal-geotiff: tests failed"
+    check_fail "oxigeo-geotiff: tests failed"
 fi
 
 # 4. Code Quality
@@ -187,10 +187,10 @@ else
     check_fail "COG viewer HTML missing"
 fi
 
-if [ -f "demo/pkg/oxigdal_wasm_bg.wasm" ]; then
+if [ -f "demo/pkg/oxigeo_wasm_bg.wasm" ]; then
     check_pass "WASM package in demo/pkg/"
 
-    DEMO_WASM_SIZE=$(stat -f%z demo/pkg/oxigdal_wasm_bg.wasm 2>/dev/null || stat -c%s demo/pkg/oxigdal_wasm_bg.wasm 2>/dev/null)
+    DEMO_WASM_SIZE=$(stat -f%z demo/pkg/oxigeo_wasm_bg.wasm 2>/dev/null || stat -c%s demo/pkg/oxigeo_wasm_bg.wasm 2>/dev/null)
     DEMO_WASM_SIZE_KB=$((DEMO_WASM_SIZE / 1024))
     echo "  Size: ${DEMO_WASM_SIZE_KB}KB"
 else

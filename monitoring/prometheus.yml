@@ -1,4 +1,4 @@
-# OxiGDAL Prometheus Configuration
+# OxiGeo Prometheus Configuration
 # Metrics collection and monitoring configuration
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -6,7 +6,7 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'oxigdal-production'
+    cluster: 'oxigeo-production'
     environment: 'production'
 
 # Alertmanager configuration
@@ -22,13 +22,13 @@ rule_files:
 
 # Scrape configurations
 scrape_configs:
-  # OxiGDAL Server metrics
-  - job_name: 'oxigdal-server'
+  # OxiGeo Server metrics
+  - job_name: 'oxigeo-server'
     scrape_interval: 10s
     metrics_path: '/metrics'
     static_configs:
       - targets:
-          - 'oxigdal-server:8081'
+          - 'oxigeo-server:8081'
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
@@ -41,7 +41,7 @@ scrape_configs:
       - role: pod
         namespaces:
           names:
-            - oxigdal
+            - oxigeo
     relabel_configs:
       - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
         action: keep
@@ -69,7 +69,7 @@ scrape_configs:
           - 'postgres-exporter:9187'
     relabel_configs:
       - target_label: database
-        replacement: oxigdal
+        replacement: oxigeo
 
   # Redis metrics (using redis_exporter)
   - job_name: 'redis'

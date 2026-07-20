@@ -1,4 +1,4 @@
-# PyPI Publishing Workflow for OxiGDAL
+# PyPI Publishing Workflow for OxiGeo
 # Builds and publishes Python wheels to PyPI using maturin
 
 name: PyPI Publish
@@ -47,13 +47,13 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
           manylinux: auto
-          working-directory: crates/oxigdal-python
+          working-directory: crates/oxigeo-python
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.target }}
-          path: crates/oxigdal-python/dist
+          path: crates/oxigeo-python/dist
 
   # Build wheels for macOS (x86_64 and arm64)
   macos:
@@ -73,13 +73,13 @@ jobs:
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
-          working-directory: crates/oxigdal-python
+          working-directory: crates/oxigeo-python
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
-          path: crates/oxigdal-python/dist
+          path: crates/oxigeo-python/dist
 
   # Build wheels for Windows
   windows:
@@ -92,13 +92,13 @@ jobs:
         with:
           target: x64
           args: --release --out dist --find-interpreter
-          working-directory: crates/oxigdal-python
+          working-directory: crates/oxigeo-python
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows
-          path: crates/oxigdal-python/dist
+          path: crates/oxigeo-python/dist
 
   # Build source distribution
   sdist:
@@ -111,13 +111,13 @@ jobs:
         with:
           command: sdist
           args: --out dist
-          working-directory: crates/oxigdal-python
+          working-directory: crates/oxigeo-python
 
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: crates/oxigdal-python/dist
+          path: crates/oxigeo-python/dist
 
   # Publish to PyPI
   publish:
@@ -127,7 +127,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     environment:
       name: pypi
-      url: https://pypi.org/project/oxigdal/
+      url: https://pypi.org/project/oxigeo/
     permissions:
       id-token: write
     steps:

@@ -2,14 +2,14 @@
 
 ## Overview
 
-This tutorial covers working with coordinate reference systems (CRS), spatial reference systems (SRS), and performing coordinate transformations in OxiGDAL.
+This tutorial covers working with coordinate reference systems (CRS), spatial reference systems (SRS), and performing coordinate transformations in OxiGeo.
 
 ## Understanding CRS
 
 ### Common Coordinate Systems
 
 ```rust
-use oxigdal_proj::SpatialRef;
+use oxigeo_proj::SpatialRef;
 
 async fn common_crs() -> Result<(), Box<dyn std::error::Error>> {
     // WGS84 Geographic (lat/lon)
@@ -31,7 +31,7 @@ async fn common_crs() -> Result<(), Box<dyn std::error::Error>> {
 ### Creating SRS from PROJ4
 
 ```rust
-use oxigdal_proj::SpatialRef;
+use oxigeo_proj::SpatialRef;
 
 async fn create_from_proj4() -> Result<(), Box<dyn std::error::Error>> {
     let proj4_str = "+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs";
@@ -46,7 +46,7 @@ async fn create_from_proj4() -> Result<(), Box<dyn std::error::Error>> {
 ### Creating SRS from WKT
 
 ```rust
-use oxigdal_proj::SpatialRef;
+use oxigeo_proj::SpatialRef;
 
 async fn create_from_wkt() -> Result<(), Box<dyn std::error::Error>> {
     let wkt = r#"
@@ -69,7 +69,7 @@ async fn create_from_wkt() -> Result<(), Box<dyn std::error::Error>> {
 ### Point Transformation
 
 ```rust
-use oxigdal_proj::{SpatialRef, Transformer};
+use oxigeo_proj::{SpatialRef, Transformer};
 
 async fn transform_point() -> Result<(), Box<dyn std::error::Error>> {
     let src_srs = SpatialRef::from_epsg(4326)?;  // WGS84
@@ -91,7 +91,7 @@ async fn transform_point() -> Result<(), Box<dyn std::error::Error>> {
 ### Batch Transformation
 
 ```rust
-use oxigdal_proj::{SpatialRef, Transformer};
+use oxigeo_proj::{SpatialRef, Transformer};
 
 async fn transform_batch() -> Result<(), Box<dyn std::error::Error>> {
     let src_srs = SpatialRef::from_epsg(4326)?;
@@ -120,8 +120,8 @@ async fn transform_batch() -> Result<(), Box<dyn std::error::Error>> {
 ### Raster Reprojection
 
 ```rust
-use oxigdal_core::{Dataset, ResampleAlg};
-use oxigdal_proj::{SpatialRef, ReprojectOptions};
+use oxigeo_core::{Dataset, ResampleAlg};
+use oxigeo_proj::{SpatialRef, ReprojectOptions};
 
 async fn reproject_raster() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("input_utm.tif").await?;
@@ -146,8 +146,8 @@ async fn reproject_raster() -> Result<(), Box<dyn std::error::Error>> {
 ### Vector Reprojection
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_proj::{SpatialRef, Transformer};
+use oxigeo_core::Dataset;
+use oxigeo_proj::{SpatialRef, Transformer};
 
 async fn reproject_vector() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("input.geojson").await?;
@@ -184,7 +184,7 @@ async fn reproject_vector() -> Result<(), Box<dyn std::error::Error>> {
 ### High-Accuracy Transformations
 
 ```rust
-use oxigdal_proj::{SpatialRef, Transformer, TransformOptions};
+use oxigeo_proj::{SpatialRef, Transformer, TransformOptions};
 
 async fn datum_transformation() -> Result<(), Box<dyn std::error::Error>> {
     // NAD83 to WGS84 (requires datum transformation)
@@ -246,8 +246,8 @@ fn get_utm_epsg(lon: f64, lat: f64) -> i32 {
 ### Auto UTM Projection
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_proj::SpatialRef;
+use oxigeo_core::Dataset;
+use oxigeo_proj::SpatialRef;
 
 async fn auto_utm_projection() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("wgs84_data.tif").await?;
@@ -276,7 +276,7 @@ async fn auto_utm_projection() -> Result<(), Box<dyn std::error::Error>> {
 ### Understanding Geotransform
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn analyze_geotransform() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("georeferenced.tif").await?;
@@ -330,7 +330,7 @@ fn world_to_pixel(gt: &[f64; 6], world_x: f64, world_y: f64) -> (isize, isize) {
 ### Getting Projection Details
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn get_projection_info() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("data.tif").await?;
@@ -368,9 +368,9 @@ async fn get_projection_info() -> Result<(), Box<dyn std::error::Error>> {
 ## Complete Example: Multi-Source Reprojection
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_proj::{SpatialRef, Transformer};
-use oxigdal_algorithms::mosaic::MosaicOptions;
+use oxigeo_core::Dataset;
+use oxigeo_proj::{SpatialRef, Transformer};
+use oxigeo_algorithms::mosaic::MosaicOptions;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

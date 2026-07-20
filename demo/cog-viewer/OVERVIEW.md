@@ -1,8 +1,8 @@
-# OxiGDAL Advanced COG Viewer - Overview
+# OxiGeo Advanced COG Viewer - Overview
 
 **Phase 1 Browser Breakthrough Showcase Demo**
 
-A production-ready, feature-rich web application demonstrating OxiGDAL's browser capabilities for viewing Cloud Optimized GeoTIFFs (COGs) using WebAssembly.
+A production-ready, feature-rich web application demonstrating OxiGeo's browser capabilities for viewing Cloud Optimized GeoTIFFs (COGs) using WebAssembly.
 
 ## Quick Facts
 
@@ -31,9 +31,9 @@ demo/cog-viewer/
 └── OVERVIEW.md          (this file)
 
 Shared WASM package (in parent demo/pkg/):
-├── oxigdal_wasm.js      24 KB  - JavaScript bindings
-├── oxigdal_wasm_bg.wasm 103 KB - WebAssembly binary
-├── oxigdal_wasm.d.ts    2.2 KB - TypeScript definitions
+├── oxigeo_wasm.js      24 KB  - JavaScript bindings
+├── oxigeo_wasm_bg.wasm 103 KB - WebAssembly binary
+├── oxigeo_wasm.d.ts    2.2 KB - TypeScript definitions
 └── package.json         688 B  - WASM package metadata
 ```
 
@@ -48,7 +48,7 @@ Shared WASM package (in parent demo/pkg/):
 
 2. **Interactive Map Interface**
    - Leaflet-powered mapping with smooth pan/zoom
-   - Custom tile layer using OxiGDAL WASM
+   - Custom tile layer using OxiGeo WASM
    - Fit to bounds, coordinate display
    - Zoom level tracking
 
@@ -106,8 +106,8 @@ Shared WASM package (in parent demo/pkg/):
 - **Rust**: Pure Rust implementation (no C/Fortran dependencies)
 - **wasm-bindgen**: Rust-JavaScript bridge
 - **WebAssembly**: Near-native performance in browser
-- **OxiGDAL Core**: Geospatial data processing
-- **OxiGDAL GeoTIFF**: COG reading and parsing
+- **OxiGeo Core**: Geospatial data processing
+- **OxiGeo GeoTIFF**: COG reading and parsing
 
 ### Build Tools
 
@@ -158,7 +158,7 @@ Leaflet Display (composite tiles to map)
 └─────────────────┬───────────────────────────┘
                   │
 ┌─────────────────▼───────────────────────────┐
-│      WASM Module (oxigdal_wasm)             │
+│      WASM Module (oxigeo_wasm)             │
 │  ┌──────────────┐  ┌────────────────────┐  │
 │  │ WasmCogViewer│  │  FetchBackend      │  │
 │  │  - open()    │  │  - HTTP Ranges     │  │
@@ -321,8 +321,8 @@ updatePerformanceDisplay()    // Update performance metrics
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/cool-japan/oxigdal.git
-cd oxigdal/demo/cog-viewer
+git clone https://github.com/cool-japan/oxigeo.git
+cd oxigeo/demo/cog-viewer
 
 # 2. Verify setup
 ./verify.sh
@@ -335,7 +335,7 @@ cd oxigdal/demo/cog-viewer
 
 ```bash
 # 1. Build WASM (production)
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 
 # 2. Test locally
@@ -416,7 +416,7 @@ git push  # (if using GitHub Pages)
 
 ### External Resources
 
-- [OxiGDAL Repository](https://github.com/cool-japan/oxigdal)
+- [OxiGeo Repository](https://github.com/cool-japan/oxigeo)
 - [COG Specification](https://www.cogeo.org/)
 - [Leaflet Documentation](https://leafletjs.com/reference.html)
 - [WebAssembly Concepts](https://webassembly.org/docs/use-cases/)
@@ -428,13 +428,13 @@ git push  # (if using GitHub Pages)
 - **Rust**: Programming language
 - **wasm-bindgen**: Rust-WASM bridge
 - **Leaflet**: Interactive maps
-- **OxiGDAL**: Pure Rust GDAL implementation
+- **OxiGeo**: Pure Rust GDAL implementation
 
 ### Team
 
 - **Author**: COOLJAPAN OU (Team Kitasan)
 - **License**: Apache-2.0
-- **Repository**: https://github.com/cool-japan/oxigdal
+- **Repository**: https://github.com/cool-japan/oxigeo
 
 ## Support
 
@@ -454,7 +454,7 @@ Contributions welcome! See main repository for guidelines.
 
 ## Summary
 
-The OxiGDAL Advanced COG Viewer is a **production-ready**, **feature-rich** web application that demonstrates the power of WebAssembly for geospatial data processing in the browser. With **zero backend dependencies**, it provides a smooth, interactive experience for viewing Cloud Optimized GeoTIFFs from any publicly accessible source.
+The OxiGeo Advanced COG Viewer is a **production-ready**, **feature-rich** web application that demonstrates the power of WebAssembly for geospatial data processing in the browser. With **zero backend dependencies**, it provides a smooth, interactive experience for viewing Cloud Optimized GeoTIFFs from any publicly accessible source.
 
 **Key Achievements:**
 - ✅ Pure client-side processing
@@ -470,6 +470,6 @@ The OxiGDAL Advanced COG Viewer is a **production-ready**, **feature-rich** web 
 
 ---
 
-**Built with OxiGDAL** | Part of the **COOLJAPAN Pure Rust Ecosystem**
+**Built with OxiGeo** | Part of the **COOLJAPAN Pure Rust Ecosystem**
 
 Copyright (c) 2025 COOLJAPAN OU (Team Kitasan)

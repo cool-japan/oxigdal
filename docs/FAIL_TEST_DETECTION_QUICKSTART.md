@@ -1,6 +1,6 @@
 # Quick Start: Automated Test Failure Detection & Fixing
 
-Get started with the OxiGDAL fail test detection system in 5 minutes.
+Get started with the OxiGeo fail test detection system in 5 minutes.
 
 ## What It Does
 
@@ -52,7 +52,7 @@ python3 -c "import yaml; print('PyYAML OK')"
 ============================================================
 
 [STAGE 1] Test Detection
-  → Running nextest on: oxigdal-gpu, oxigdal-gpu-advanced
+  → Running nextest on: oxigeo-gpu, oxigeo-gpu-advanced
 [✓] Detection complete: 12 failures found
 
 [STAGE 2] Failure Classification
@@ -90,7 +90,7 @@ jq . target/fail-test-detection/fail-tests.json
 
 ### HARDWARE_UNAVAILABLE > gpu_device_not_found (8 tests)
 
-#### oxigdal-gpu::test_gpu_buffer_creation
+#### oxigeo-gpu::test_gpu_buffer_creation
 - **File:** tests/gpu_test.rs:45
 - **Fix:** add_ignore_with_env_check
 - **Error:** No adapter found
@@ -109,7 +109,7 @@ jq . target/fail-test-detection/fail-tests.json
 ┌─────────────────────────────────────────────┐
 │ Auto-Fix Summary                            │
 ├─────────────────────────────────────────────┤
-│ Packages:     oxigdal-gpu, oxigdal-gpu-adv. │
+│ Packages:     oxigeo-gpu, oxigeo-gpu-adv. │
 │ Tests:        12                            │
 │ Confidence:   HIGH                          │
 │ Backup Dir:   .auto-fix-backups/20260213... │
@@ -122,8 +122,8 @@ Proceed with fixes? (y/N): y
 ```
 [✓] Backup created: .auto-fix-backups/20260213_094523
 [✓] Pre-flight check: All packages compile
-[✓] Modified: crates/oxigdal-gpu/tests/gpu_test.rs (8 tests)
-[✓] Modified: crates/oxigdal-gpu-advanced/tests/multi_gpu_test.rs (4 tests)
+[✓] Modified: crates/oxigeo-gpu/tests/gpu_test.rs (8 tests)
+[✓] Modified: crates/oxigeo-gpu-advanced/tests/multi_gpu_test.rs (4 tests)
 [✓] Post-modification check: All packages compile
 [✓] Audit logged: tools/auto-fix-tests/auto-fix-audit.log
 
@@ -134,10 +134,10 @@ Success! 12 tests fixed across 2 packages.
 
 ```bash
 # Re-run tests to verify
-cargo nextest run -p oxigdal-gpu
+cargo nextest run -p oxigeo-gpu
 
 # Check git diff
-git diff crates/oxigdal-gpu/tests/
+git diff crates/oxigeo-gpu/tests/
 ```
 
 **Example Fix Applied**:
@@ -156,8 +156,8 @@ fn test_gpu_buffer_creation() {
 #[test]
 #[ignore = "GPU device not available"]
 fn test_gpu_buffer_creation() {
-    if std::env::var("OXIGDAL_GPU_TESTS").is_err() {
-        eprintln!("Skipping GPU test (set OXIGDAL_GPU_TESTS=1 to enable)");
+    if std::env::var("OXIGEO_GPU_TESTS").is_err() {
+        eprintln!("Skipping GPU test (set OXIGEO_GPU_TESTS=1 to enable)");
         return;
     }
     let device = get_gpu_device();
@@ -180,7 +180,7 @@ cat target/fail-test-detection/fail-report.md
 ./scripts/auto-fix-fail-tests.sh gpu --apply
 
 # 4. Verify
-cargo nextest run -p oxigdal-gpu
+cargo nextest run -p oxigeo-gpu
 ```
 
 ### Workflow 2: Fix All Failing Tests
@@ -221,11 +221,11 @@ cargo run -- --restore .auto-fix-backups/20260213_094523
 
 | Group | Packages | Use Case |
 |-------|----------|----------|
-| `gpu` | oxigdal-gpu, oxigdal-gpu-advanced | GPU tests only |
+| `gpu` | oxigeo-gpu, oxigeo-gpu-advanced | GPU tests only |
 | `gpu-ml` | GPU + ML packages | Default |
 | `external` | Streaming, edge packages | External services |
 | `all` | All workspace packages | Full workspace |
-| `<name>` | Specific package | e.g., `oxigdal-gpu` |
+| `<name>` | Specific package | e.g., `oxigeo-gpu` |
 
 **Examples**:
 ```bash
@@ -236,7 +236,7 @@ cargo run -- --restore .auto-fix-backups/20260213_094523
 ./scripts/auto-fix-fail-tests.sh external --apply
 
 # Specific package
-./scripts/auto-fix-fail-tests.sh oxigdal-streaming --apply
+./scripts/auto-fix-fail-tests.sh oxigeo-streaming --apply
 
 # Everything
 ./scripts/auto-fix-fail-tests.sh all --apply
@@ -441,4 +441,4 @@ cargo run -- --help
 
 ## License
 
-Part of OxiGDAL project. See top-level LICENSE file.
+Part of OxiGeo project. See top-level LICENSE file.

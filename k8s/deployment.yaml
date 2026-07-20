@@ -1,14 +1,14 @@
-# OxiGDAL Kubernetes Deployment
+# OxiGeo Kubernetes Deployment
 # Server deployment configuration
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: oxigdal-server
-  namespace: oxigdal
+  name: oxigeo-server
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
     app.kubernetes.io/version: "0.0.0-UNRENDERED"
 spec:
@@ -20,12 +20,12 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: oxigdal
+      app.kubernetes.io/name: oxigeo
       app.kubernetes.io/component: server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: oxigdal
+        app.kubernetes.io/name: oxigeo
         app.kubernetes.io/component: server
         app.kubernetes.io/version: "0.0.0-UNRENDERED"
       annotations:
@@ -33,7 +33,7 @@ spec:
         prometheus.io/port: "8081"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: oxigdal
+      serviceAccountName: oxigeo
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -53,8 +53,8 @@ spec:
           echo "PostgreSQL is ready"
 
       containers:
-      - name: oxigdal-server
-        image: ghcr.io/cool-japan/oxigdal-server:latest
+      - name: oxigeo-server
+        image: ghcr.io/cool-japan/oxigeo-server:latest
         imagePullPolicy: Always
         ports:
         - name: http
@@ -64,8 +64,8 @@ spec:
           containerPort: 8081
           protocol: TCP
 
-        # Explicit --config as defense in depth alongside the OXIGDAL_CONFIG env var below;
-        # crates/oxigdal-server also reads OXIGDAL_CONFIG directly via clap's `env` attribute,
+        # Explicit --config as defense in depth alongside the OXIGEO_CONFIG env var below;
+        # crates/oxigeo-server also reads OXIGEO_CONFIG directly via clap's `env` attribute,
         # so either mechanism alone is sufficient to load the mounted ConfigMap.
         args:
         - "--config"
@@ -75,26 +75,26 @@ spec:
         - name: RUST_LOG
           valueFrom:
             configMapKeyRef:
-              name: oxigdal-config
+              name: oxigeo-config
               key: RUST_LOG
         - name: RUST_BACKTRACE
           valueFrom:
             configMapKeyRef:
-              name: oxigdal-config
+              name: oxigeo-config
               key: RUST_BACKTRACE
-        - name: OXIGDAL_HOST
+        - name: OXIGEO_HOST
           valueFrom:
             configMapKeyRef:
-              name: oxigdal-config
-              key: OXIGDAL_HOST
-        - name: OXIGDAL_PORT
+              name: oxigeo-config
+              key: OXIGEO_HOST
+        - name: OXIGEO_PORT
           valueFrom:
             configMapKeyRef:
-              name: oxigdal-config
-              key: OXIGDAL_PORT
-        - name: OXIGDAL_DATA_DIR
+              name: oxigeo-config
+              key: OXIGEO_PORT
+        - name: OXIGEO_DATA_DIR
           value: "/data"
-        - name: OXIGDAL_CACHE_DIR
+        - name: OXIGEO_CACHE_DIR
           value: "/cache"
         - name: POSTGRES_HOST
           value: "postgres"
@@ -103,17 +103,17 @@ spec:
         - name: POSTGRES_DB
           valueFrom:
             secretKeyRef:
-              name: oxigdal-secrets
+              name: oxigeo-secrets
               key: postgres-db
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: oxigdal-secrets
+              name: oxigeo-secrets
               key: postgres-user
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: oxigdal-secrets
+              name: oxigeo-secrets
               key: postgres-password
         - name: REDIS_HOST
           value: "redis"
@@ -170,13 +170,13 @@ spec:
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: oxigdal-data
+          claimName: oxigeo-data
       - name: cache
         emptyDir:
           sizeLimit: 2Gi
       - name: config
         configMap:
-          name: oxigdal-config
+          name: oxigeo-config
 
       affinity:
         podAntiAffinity:
@@ -188,7 +188,7 @@ spec:
                 - key: app.kubernetes.io/name
                   operator: In
                   values:
-                  - oxigdal
+                  - oxigeo
               topologyKey: kubernetes.io/hostname
 
       terminationGracePeriodSeconds: 30
@@ -198,7 +198,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/component: database
@@ -226,17 +226,17 @@ spec:
         - name: POSTGRES_DB
           valueFrom:
             secretKeyRef:
-              name: oxigdal-secrets
+              name: oxigeo-secrets
               key: postgres-db
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: oxigdal-secrets
+              name: oxigeo-secrets
               key: postgres-user
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: oxigdal-secrets
+              name: oxigeo-secrets
               key: postgres-password
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
@@ -276,7 +276,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
     app.kubernetes.io/name: redis
     app.kubernetes.io/component: cache

@@ -1,8 +1,8 @@
-# Getting Started with OxiGDAL
+# Getting Started with OxiGeo
 
 ## Introduction
 
-OxiGDAL is a Pure Rust geospatial data abstraction library providing high-performance, memory-safe access to raster and vector geospatial data. This tutorial will guide you through the basics of using OxiGDAL.
+OxiGeo is a Pure Rust geospatial data abstraction library providing high-performance, memory-safe access to raster and vector geospatial data. This tutorial will guide you through the basics of using OxiGeo.
 
 ## Prerequisites
 
@@ -12,30 +12,30 @@ OxiGDAL is a Pure Rust geospatial data abstraction library providing high-perfor
 
 ## Installation
 
-Add OxiGDAL to your `Cargo.toml`:
+Add OxiGeo to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-core = "0.1"
+oxigeo-core = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
 For specific format support, add the corresponding driver crates:
 
 ```toml
-oxigdal-geotiff = "0.1"
-oxigdal-geojson = "0.1"
-oxigdal-geoparquet = "0.1"
+oxigeo-geotiff = "0.2"
+oxigeo-geojson = "0.2"
+oxigeo-geoparquet = "0.2"
 ```
 
 ## Core Concepts
 
 ### Datasets
 
-A dataset represents a single geospatial data source. OxiGDAL supports both raster and vector datasets.
+A dataset represents a single geospatial data source. OxiGeo supports both raster and vector datasets.
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use std::path::Path;
 
 async fn open_dataset() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +50,7 @@ async fn open_dataset() -> Result<(), Box<dyn std::error::Error>> {
 Raster datasets contain one or more bands representing different data channels.
 
 ```rust
-use oxigdal_core::{Dataset, DataType};
+use oxigeo_core::{Dataset, DataType};
 
 async fn read_band() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("image.tif").await?;
@@ -70,7 +70,7 @@ async fn read_band() -> Result<(), Box<dyn std::error::Error>> {
 Vector datasets contain layers with features (points, lines, polygons).
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_vector() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("shapes.geojson").await?;
@@ -93,7 +93,7 @@ async fn read_vector() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading a Whole Band
 
 ```rust
-use oxigdal_core::{Dataset, RasterBand};
+use oxigeo_core::{Dataset, RasterBand};
 
 async fn read_full_band() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let dataset = Dataset::open("elevation.tif").await?;
@@ -134,8 +134,8 @@ async fn read_subset() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
 ### Creating a New GeoTIFF
 
 ```rust
-use oxigdal_core::{Dataset, Driver, DataType};
-use oxigdal_geotiff::GeoTiffDriver;
+use oxigeo_core::{Dataset, Driver, DataType};
+use oxigeo_geotiff::GeoTiffDriver;
 
 async fn create_geotiff() -> Result<(), Box<dyn std::error::Error>> {
     let driver = GeoTiffDriver::new();
@@ -166,8 +166,8 @@ async fn create_geotiff() -> Result<(), Box<dyn std::error::Error>> {
 ### Setting Projection
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_proj::SpatialRef;
+use oxigeo_core::Dataset;
+use oxigeo_proj::SpatialRef;
 
 async fn set_projection() -> Result<(), Box<dyn std::error::Error>> {
     let mut dataset = Dataset::create("output.tif", 100, 100, 1).await?;
@@ -183,7 +183,7 @@ async fn set_projection() -> Result<(), Box<dyn std::error::Error>> {
 ### Reprojecting Data
 
 ```rust
-use oxigdal_proj::{SpatialRef, Transformer};
+use oxigeo_proj::{SpatialRef, Transformer};
 
 async fn reproject_dataset() -> Result<(), Box<dyn std::error::Error>> {
     let src_dataset = Dataset::open("input.tif").await?;
@@ -201,24 +201,24 @@ async fn reproject_dataset() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Error Handling
 
-OxiGDAL uses `Result` types for error handling. Always handle errors appropriately:
+OxiGeo uses `Result` types for error handling. Always handle errors appropriately:
 
 ```rust
-use oxigdal_core::{Dataset, OxiGdalError};
+use oxigeo_core::{Dataset, OxiGeoError};
 
-async fn robust_open() -> Result<(), OxiGdalError> {
+async fn robust_open() -> Result<(), OxiGeoError> {
     match Dataset::open("data.tif").await {
         Ok(dataset) => {
             println!("Successfully opened dataset");
             Ok(())
         }
-        Err(OxiGdalError::FileNotFound(path)) => {
+        Err(OxiGeoError::FileNotFound(path)) => {
             eprintln!("File not found: {}", path);
-            Err(OxiGdalError::FileNotFound(path))
+            Err(OxiGeoError::FileNotFound(path))
         }
-        Err(OxiGdalError::UnsupportedFormat(format)) => {
+        Err(OxiGeoError::UnsupportedFormat(format)) => {
             eprintln!("Unsupported format: {}", format);
-            Err(OxiGdalError::UnsupportedFormat(format))
+            Err(OxiGeoError::UnsupportedFormat(format))
         }
         Err(e) => {
             eprintln!("Error opening dataset: {}", e);
@@ -239,7 +239,7 @@ async fn robust_open() -> Result<(), OxiGdalError> {
 ## Complete Example
 
 ```rust
-use oxigdal_core::{Dataset, DataType};
+use oxigeo_core::{Dataset, DataType};
 use std::path::Path;
 
 #[tokio::main]
@@ -303,8 +303,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Resources
 
-- [OxiGDAL API Documentation](https://docs.rs/oxigdal)
-- [GitHub Repository](https://github.com/cool-japan/oxigdal)
+- [OxiGeo API Documentation](https://docs.rs/oxigeo)
+- [GitHub Repository](https://github.com/cool-japan/oxigeo)
 - [Format Drivers Documentation](../../DRIVERS.md)
 - [Performance Guide](../../PERFORMANCE_GUIDE.md)
 

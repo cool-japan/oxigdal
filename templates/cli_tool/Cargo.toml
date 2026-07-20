@@ -1,13 +1,13 @@
 [package]
-name = "my-oxigdal-cli"
+name = "my-oxigeo-cli"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-oxigdal-core = "0.1"
-oxigdal-algorithms = "0.1"
-oxigdal-geotiff = "0.1"
+oxigeo-core = "0.2"
+oxigeo-algorithms = "0.2"
+oxigeo-geotiff = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

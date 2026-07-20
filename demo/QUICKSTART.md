@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get the OxiGDAL COG Viewer demo running in 3 simple steps!
+Get the OxiGeo COG Viewer demo running in 3 simple steps!
 
 ## Prerequisites
 

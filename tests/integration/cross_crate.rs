@@ -1,6 +1,6 @@
 //! Cross-crate integration tests
 //!
-//! Tests that verify APIs work correctly across different OxiGDAL crates.
+//! Tests that verify APIs work correctly across different OxiGeo crates.
 //!
 //! Unlike an earlier revision of this file, these tests exercise the *real*
 //! crate APIs (algorithms band-math, projection transforms, driver readers/
@@ -12,26 +12,26 @@
 
 use std::path::Path;
 
-use oxigdal_algorithms::RasterCalculator;
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::io::FileDataSource;
-use oxigdal_core::types::RasterDataType;
-use oxigdal_geojson::reader::feature_collection_from_str;
-use oxigdal_geotiff::tiff::Predictor;
-use oxigdal_geotiff::{
+use oxigeo_algorithms::RasterCalculator;
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_core::types::RasterDataType;
+use oxigeo_geojson::reader::feature_collection_from_str;
+use oxigeo_geotiff::tiff::Predictor;
+use oxigeo_geotiff::{
     Compression, GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions, WriterConfig,
 };
-use oxigdal_proj::{Coordinate, transform_epsg};
-use oxigdal_stac::ItemBuilder;
-use oxigdal_stac::chrono::Utc;
-use oxigdal_zarr::metadata::v3::ArrayMetadataV3;
-use oxigdal_zarr::{FilesystemStore, ZarrV3Reader, ZarrV3Writer};
+use oxigeo_proj::{Coordinate, transform_epsg};
+use oxigeo_stac::ItemBuilder;
+use oxigeo_stac::chrono::Utc;
+use oxigeo_zarr::metadata::v3::ArrayMetadataV3;
+use oxigeo_zarr::{FilesystemStore, ZarrV3Reader, ZarrV3Writer};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Test core + algorithms integration.
 ///
-/// Feeds `oxigdal-core` `RasterBuffer`s into the `oxigdal-algorithms` raster
+/// Feeds `oxigeo-core` `RasterBuffer`s into the `oxigeo-algorithms` raster
 /// calculator and checks the NDVI band-math result against the closed-form
 /// value, so a regression in the calculator fails the test.
 #[test]
@@ -56,7 +56,7 @@ fn test_core_algorithms_integration() -> Result<()> {
 
 /// Test core + projection integration.
 ///
-/// Uses the real `oxigdal-proj` EPSG:4326 -> EPSG:3857 transform. The origin
+/// Uses the real `oxigeo-proj` EPSG:4326 -> EPSG:3857 transform. The origin
 /// maps to the origin, while an off-origin geographic point maps to Web
 /// Mercator metres far from zero — an identity stand-in would fail this.
 #[test]
@@ -83,7 +83,7 @@ fn test_core_projection_integration() -> Result<()> {
 /// Test drivers + core integration.
 ///
 /// Exercises real GeoTIFF (raster) round-trip, GeoJSON parsing, and Zarr array
-/// round-trip, all producing/consuming `oxigdal-core` data structures.
+/// round-trip, all producing/consuming `oxigeo-core` data structures.
 #[test]
 fn test_drivers_core_integration() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
@@ -97,7 +97,7 @@ fn test_drivers_core_integration() -> Result<()> {
 
 /// Test metadata + STAC integration.
 ///
-/// Builds a real `oxigdal-stac` `Item` from extracted metadata and validates it
+/// Builds a real `oxigeo-stac` `Item` from extracted metadata and validates it
 /// serializes to a STAC Feature carrying the source CRS.
 #[test]
 fn test_metadata_stac_integration() -> Result<()> {
@@ -125,8 +125,8 @@ struct Metadata {
     bands: Vec<String>,
 }
 
-/// Computes NDVI = (NIR - RED) / (NIR + RED) via the real `oxigdal-algorithms`
-/// raster calculator over `oxigdal-core` `RasterBuffer`s.
+/// Computes NDVI = (NIR - RED) / (NIR + RED) via the real `oxigeo-algorithms`
+/// raster calculator over `oxigeo-core` `RasterBuffer`s.
 fn apply_ndvi(nir: &[f32], red: &[f32]) -> Result<Vec<f32>> {
     assert_eq!(nir.len(), red.len());
     let n = nir.len() as u64;
@@ -157,7 +157,7 @@ fn parse_epsg(crs: &str) -> Result<u32> {
     Ok(code.parse::<u32>()?)
 }
 
-/// Transforms geographic points via the real `oxigdal-proj` EPSG transform.
+/// Transforms geographic points via the real `oxigeo-proj` EPSG transform.
 fn transform_points(
     points: &[(f64, f64)],
     from_crs: &str,
@@ -174,7 +174,7 @@ fn transform_points(
     Ok(out)
 }
 
-/// Writes then reads back a GeoTIFF via the real `oxigdal-geotiff` driver and
+/// Writes then reads back a GeoTIFF via the real `oxigeo-geotiff` driver and
 /// verifies the pixel data survives the round-trip.
 fn create_dataset_geotiff(path: &Path) -> Result<()> {
     let (width, height) = (16u64, 16u64);
@@ -225,7 +225,7 @@ fn create_dataset_geotiff(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Parses a real GeoJSON `FeatureCollection` via the `oxigdal-geojson` driver.
+/// Parses a real GeoJSON `FeatureCollection` via the `oxigeo-geojson` driver.
 fn create_dataset_geojson() -> Result<()> {
     let json = r#"{
         "type": "FeatureCollection",
@@ -241,7 +241,7 @@ fn create_dataset_geojson() -> Result<()> {
     Ok(())
 }
 
-/// Writes then reads back a Zarr v3 array via the real `oxigdal-zarr` driver.
+/// Writes then reads back a Zarr v3 array via the real `oxigeo-zarr` driver.
 fn create_dataset_zarr(path: &Path) -> Result<()> {
     let (rows, cols) = (8usize, 8usize);
     let n = rows * cols;
@@ -277,7 +277,7 @@ fn create_dataset_zarr(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Builds a real `oxigdal-stac` `Item` from extracted metadata and serializes it.
+/// Builds a real `oxigeo-stac` `Item` from extracted metadata and serializes it.
 fn convert_to_stac(metadata: &Metadata) -> Result<String> {
     let (west, south, east, north) = metadata.bounds;
     let item = ItemBuilder::new("metadata-item")
@@ -303,7 +303,7 @@ fn convert_to_stac(metadata: &Metadata) -> Result<String> {
 #[test]
 fn test_dev_tools_profiler() -> Result<()> {
     // Test using dev tools with core operations
-    use oxigdal_dev_tools::profiler::Profiler;
+    use oxigeo_dev_tools::profiler::Profiler;
 
     let mut profiler = Profiler::new("test_operation");
     profiler.start();
@@ -321,7 +321,7 @@ fn test_dev_tools_profiler() -> Result<()> {
 
 #[test]
 fn test_dev_tools_validator() -> Result<()> {
-    use oxigdal_dev_tools::validator::DataValidator;
+    use oxigeo_dev_tools::validator::DataValidator;
 
     // Validate raster dimensions
     let result = DataValidator::validate_raster_dimensions(100, 100, 3);
@@ -336,9 +336,9 @@ fn test_dev_tools_validator() -> Result<()> {
 
 #[test]
 fn test_jupyter_kernel() -> Result<()> {
-    use oxigdal_jupyter::OxiGdalKernel;
+    use oxigeo_jupyter::OxiGeoKernel;
 
-    let mut kernel = OxiGdalKernel::new()?;
+    let mut kernel = OxiGeoKernel::new()?;
 
     // Execute a magic command
     let result = kernel.execute("%list")?;

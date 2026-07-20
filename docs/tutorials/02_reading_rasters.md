@@ -1,15 +1,15 @@
-# Reading Raster Data in OxiGDAL
+# Reading Raster Data in OxiGeo
 
 ## Overview
 
-This tutorial covers advanced techniques for reading raster data efficiently in OxiGDAL, including windowed reading, tiled processing, and handling different data types.
+This tutorial covers advanced techniques for reading raster data efficiently in OxiGeo, including windowed reading, tiled processing, and handling different data types.
 
 ## Basic Raster Reading
 
 ### Opening a Raster Dataset
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn open_raster() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("satellite_image.tif").await?;
@@ -25,7 +25,7 @@ async fn open_raster() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading Metadata
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("dem.tif").await?;
@@ -54,7 +54,7 @@ async fn read_metadata() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading Entire Band
 
 ```rust
-use oxigdal_core::{Dataset, DataType};
+use oxigeo_core::{Dataset, DataType};
 
 async fn read_entire_band() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let dataset = Dataset::open("temperature.tif").await?;
@@ -94,7 +94,7 @@ async fn read_window() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
 ### Reading with Resampling
 
 ```rust
-use oxigdal_core::{Dataset, ResampleAlg};
+use oxigeo_core::{Dataset, ResampleAlg};
 
 async fn read_with_resampling() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let dataset = Dataset::open("highres.tif").await?;
@@ -125,7 +125,7 @@ async fn read_with_resampling() -> Result<Vec<f32>, Box<dyn std::error::Error>> 
 ### Processing in Tiles
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn process_in_tiles() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("huge.tif").await?;
@@ -171,7 +171,7 @@ fn process_tile(tile: &mut [f32], _width: usize, _height: usize) -> Result<(), B
 ### Parallel Tile Processing
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use rayon::prelude::*;
 
 async fn parallel_tile_processing() -> Result<(), Box<dyn std::error::Error>> {
@@ -212,7 +212,7 @@ async fn parallel_tile_processing() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading All Bands
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_all_bands() -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
     let dataset = Dataset::open("rgb_image.tif").await?;
@@ -268,7 +268,7 @@ async fn read_interleaved() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
 ### Type Conversion
 
 ```rust
-use oxigdal_core::{Dataset, DataType};
+use oxigeo_core::{Dataset, DataType};
 
 async fn handle_data_types() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("mixed_types.tif").await?;
@@ -301,7 +301,7 @@ async fn handle_data_types() -> Result<(), Box<dyn std::error::Error>> {
 ### Filtering NoData
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn handle_nodata() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let dataset = Dataset::open("with_nodata.tif").await?;
@@ -333,7 +333,7 @@ async fn handle_nodata() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
 ### Streaming Large Files
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use std::io::Write;
 
 async fn stream_to_file() -> Result<(), Box<dyn std::error::Error>> {
@@ -368,7 +368,7 @@ async fn stream_to_file() -> Result<(), Box<dyn std::error::Error>> {
 ### Computing Statistics
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn compute_statistics() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("data.tif").await?;
@@ -431,7 +431,7 @@ async fn compute_statistics() -> Result<(), Box<dyn std::error::Error>> {
 ## Complete Example: NDVI Calculation
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

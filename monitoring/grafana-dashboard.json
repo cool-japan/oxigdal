@@ -1,7 +1,7 @@
 {
   "dashboard": {
-    "title": "OxiGDAL Server Dashboard",
-    "tags": ["oxigdal", "geospatial", "monitoring"],
+    "title": "OxiGeo Server Dashboard",
+    "tags": ["oxigeo", "geospatial", "monitoring"],
     "timezone": "browser",
     "schemaVersion": 38,
     "version": 1,
@@ -14,7 +14,7 @@
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "rate(http_requests_total{job=\"oxigdal-server\"}[5m])",
+            "expr": "rate(http_requests_total{job=\"oxigeo-server\"}[5m])",
             "legendFormat": "{{instance}} - {{method}} {{path}}",
             "refId": "A"
           }
@@ -31,12 +31,12 @@
         "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"oxigdal-server\"}[5m]))",
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"oxigeo-server\"}[5m]))",
             "legendFormat": "{{instance}} - p95",
             "refId": "A"
           },
           {
-            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=\"oxigdal-server\"}[5m]))",
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=\"oxigeo-server\"}[5m]))",
             "legendFormat": "{{instance}} - p99",
             "refId": "B"
           }
@@ -53,12 +53,12 @@
         "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "rate(http_requests_total{job=\"oxigdal-server\",status=~\"5..\"}[5m])",
+            "expr": "rate(http_requests_total{job=\"oxigeo-server\",status=~\"5..\"}[5m])",
             "legendFormat": "{{instance}} - 5xx errors",
             "refId": "A"
           },
           {
-            "expr": "rate(http_requests_total{job=\"oxigdal-server\",status=~\"4..\"}[5m])",
+            "expr": "rate(http_requests_total{job=\"oxigeo-server\",status=~\"4..\"}[5m])",
             "legendFormat": "{{instance}} - 4xx errors",
             "refId": "B"
           }
@@ -92,7 +92,7 @@
         "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "rate(process_cpu_seconds_total{job=\"oxigdal-server\"}[5m])",
+            "expr": "rate(process_cpu_seconds_total{job=\"oxigeo-server\"}[5m])",
             "legendFormat": "{{instance}}",
             "refId": "A"
           }
@@ -109,12 +109,12 @@
         "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "process_resident_memory_bytes{job=\"oxigdal-server\"}",
+            "expr": "process_resident_memory_bytes{job=\"oxigeo-server\"}",
             "legendFormat": "{{instance}} - RSS",
             "refId": "A"
           },
           {
-            "expr": "process_virtual_memory_bytes{job=\"oxigdal-server\"}",
+            "expr": "process_virtual_memory_bytes{job=\"oxigeo-server\"}",
             "legendFormat": "{{instance}} - Virtual",
             "refId": "B"
           }
@@ -131,7 +131,7 @@
         "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "http_connections_active{job=\"oxigdal-server\"}",
+            "expr": "http_connections_active{job=\"oxigeo-server\"}",
             "legendFormat": "{{instance}}",
             "refId": "A"
           }
@@ -148,7 +148,7 @@
         "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "rate(cache_hits_total{job=\"oxigdal-server\"}[5m]) / rate(cache_requests_total{job=\"oxigdal-server\"}[5m])",
+            "expr": "rate(cache_hits_total{job=\"oxigeo-server\"}[5m]) / rate(cache_requests_total{job=\"oxigeo-server\"}[5m])",
             "legendFormat": "{{instance}} - Hit Rate",
             "refId": "A"
           }
@@ -165,12 +165,12 @@
         "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "rate(tile_generation_total{job=\"oxigdal-server\"}[5m])",
+            "expr": "rate(tile_generation_total{job=\"oxigeo-server\"}[5m])",
             "legendFormat": "{{instance}} - Success",
             "refId": "A"
           },
           {
-            "expr": "rate(tile_generation_failures_total{job=\"oxigdal-server\"}[5m])",
+            "expr": "rate(tile_generation_failures_total{job=\"oxigeo-server\"}[5m])",
             "legendFormat": "{{instance}} - Failures",
             "refId": "B"
           }
@@ -187,7 +187,7 @@
         "gridPos": {"x": 0, "y": 32, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "pg_stat_database_numbackends{datname=\"oxigdal\"}",
+            "expr": "pg_stat_database_numbackends{datname=\"oxigeo\"}",
             "legendFormat": "Active Connections",
             "refId": "A"
           },
@@ -231,7 +231,7 @@
         "gridPos": {"x": 0, "y": 40, "w": 6, "h": 8},
         "targets": [
           {
-            "expr": "sum(rate(http_requests_total{job=\"oxigdal-server\"}[5m])) by (method)",
+            "expr": "sum(rate(http_requests_total{job=\"oxigeo-server\"}[5m])) by (method)",
             "legendFormat": "{{method}}",
             "refId": "A"
           }
@@ -244,7 +244,7 @@
         "gridPos": {"x": 6, "y": 40, "w": 6, "h": 8},
         "targets": [
           {
-            "expr": "sum(rate(http_requests_total{job=\"oxigdal-server\"}[5m])) by (status)",
+            "expr": "sum(rate(http_requests_total{job=\"oxigeo-server\"}[5m])) by (status)",
             "legendFormat": "{{status}}",
             "refId": "A"
           }
@@ -257,7 +257,7 @@
         "gridPos": {"x": 12, "y": 40, "w": 12, "h": 8},
         "targets": [
           {
-            "expr": "topk(10, sum(rate(http_requests_total{job=\"oxigdal-server\"}[5m])) by (path))",
+            "expr": "topk(10, sum(rate(http_requests_total{job=\"oxigeo-server\"}[5m])) by (path))",
             "format": "table",
             "refId": "A"
           }
@@ -315,7 +315,7 @@
         "gridPos": {"x": 12, "y": 48, "w": 6, "h": 4},
         "targets": [
           {
-            "expr": "time() - process_start_time_seconds{job=\"oxigdal-server\"}",
+            "expr": "time() - process_start_time_seconds{job=\"oxigeo-server\"}",
             "refId": "A"
           }
         ],
@@ -333,7 +333,7 @@
         "gridPos": {"x": 18, "y": 48, "w": 6, "h": 4},
         "targets": [
           {
-            "expr": "oxigdal_version_info",
+            "expr": "oxigeo_version_info",
             "refId": "A"
           }
         ],
@@ -355,7 +355,7 @@
           "name": "instance",
           "type": "query",
           "datasource": "$datasource",
-          "query": "label_values(http_requests_total{job=\"oxigdal-server\"}, instance)",
+          "query": "label_values(http_requests_total{job=\"oxigeo-server\"}, instance)",
           "refresh": 1,
           "multi": true,
           "includeAll": true

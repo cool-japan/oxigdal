@@ -73,7 +73,7 @@ Options:
 cargo run -- --analyze-only --min-confidence HIGH
 
 # Dry-run for specific package
-cargo run -- --dry-run --packages oxigdal-gpu
+cargo run -- --dry-run --packages oxigeo-gpu
 
 # Apply fixes with default HIGH confidence (interactive confirmation)
 cargo run -- --apply
@@ -85,7 +85,7 @@ cargo run -- --apply --yes
 cargo run -- --apply --min-confidence MEDIUM --allow-medium
 
 # Apply fixes to multiple packages
-cargo run -- --apply --packages oxigdal-gpu,oxigdal-core
+cargo run -- --apply --packages oxigeo-gpu,oxigeo-core
 
 # Restore from a specific backup
 cargo run -- --restore .auto-fix-backups/20260213_123456
@@ -169,9 +169,9 @@ cargo run -- --restore .auto-fix-backups/20260213_123456
 
 Example log entry:
 ```
-[2026-02-13 12:34:56] START - Mode: APPLY, Confidence: High, Packages: oxigdal-gpu
-[2026-02-13 12:35:01] MODIFIED - File: crates/oxigdal-gpu/tests/gpu_test.rs, Strategy: AddTimeoutOrIgnore, Tests: 4
-[2026-02-13 12:35:05] COMPILE_CHECK - Package: oxigdal-gpu, Status: PASS
+[2026-02-13 12:34:56] START - Mode: APPLY, Confidence: High, Packages: oxigeo-gpu
+[2026-02-13 12:35:01] MODIFIED - File: crates/oxigeo-gpu/tests/gpu_test.rs, Strategy: AddTimeoutOrIgnore, Tests: 4
+[2026-02-13 12:35:05] COMPILE_CHECK - Package: oxigeo-gpu, Status: PASS
 [2026-02-13 12:35:10] SUMMARY - Status: SUCCESS, Files: 2, Tests: 8, Errors: 0
 ```
 
@@ -426,8 +426,8 @@ cargo run -- --restore .auto-fix-backups/TIMESTAMP
 
 ```bash
 # After applying fixes
-cargo check -p oxigdal-gpu
-cargo test -p oxigdal-gpu --no-run
+cargo check -p oxigeo-gpu
+cargo test -p oxigeo-gpu --no-run
 ```
 
 ## Troubleshooting
@@ -443,7 +443,7 @@ cargo test -p oxigdal-gpu --no-run
 
 **Example**:
 ```bash
-rustfmt crates/oxigdal-gpu/tests/gpu_test.rs
+rustfmt crates/oxigeo-gpu/tests/gpu_test.rs
 cargo run -- --apply
 ```
 
@@ -522,8 +522,8 @@ cargo run -- --min-confidence MEDIUM --allow-medium --dry-run
 
 **Example**:
 ```bash
-ls -la crates/oxigdal-gpu/tests/
-chmod u+w crates/oxigdal-gpu/tests/*.rs
+ls -la crates/oxigeo-gpu/tests/
+chmod u+w crates/oxigeo-gpu/tests/*.rs
 ```
 
 ### Debug Mode
@@ -669,4 +669,4 @@ To contribute:
 
 ## License
 
-Part of OxiGDAL project. See top-level LICENSE file.
+Part of OxiGeo project. See top-level LICENSE file.

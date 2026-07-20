@@ -1,8 +1,8 @@
-# OxiGDAL Benchmark Suite Summary
+# OxiGeo Benchmark Suite Summary
 
 ## Overview
 
-A comprehensive performance benchmark suite has been created for OxiGDAL using Criterion.rs. This suite enables rigorous performance testing and comparison with GDAL and rasterio.
+A comprehensive performance benchmark suite has been created for OxiGeo using Criterion.rs. This suite enables rigorous performance testing and comparison with GDAL and rasterio.
 
 ## Benchmark Suites Created
 
@@ -66,13 +66,13 @@ A comprehensive performance benchmark suite has been created for OxiGDAL using C
 ### Quick Start
 ```bash
 # Run all benchmarks
-cargo bench --package oxigdal-benchmarks
+cargo bench --package oxigeo-benchmarks
 
 # Run specific suite
-cargo bench --package oxigdal-benchmarks --bench compression
+cargo bench --package oxigeo-benchmarks --bench compression
 
 # Run with filtering
-cargo bench --package oxigdal-benchmarks -- deflate
+cargo bench --package oxigeo-benchmarks -- deflate
 ```
 
 ### View Results
@@ -101,7 +101,7 @@ Complete methodology documented in:
 
 ### Metrics for Comparison
 
-| Category | OxiGDAL | GDAL | Rasterio | Metric |
+| Category | OxiGeo | GDAL | Rasterio | Metric |
 |----------|---------|------|----------|--------|
 | GeoTransform ops | ✓ | ✓ | ✓ | ns/operation |
 | Buffer operations | ✓ | ✓ | ✓ | pixels/sec |
@@ -158,8 +158,8 @@ members = [
 ```
 
 ### Crate Dependencies
-- `oxigdal-core`: Core types and operations
-- `oxigdal-geotiff`: GeoTIFF driver with compression
+- `oxigeo-core`: Core types and operations
+- `oxigeo-geotiff`: GeoTIFF driver with compression
 - `criterion`: Benchmarking framework with HTML reports
 
 ## CI/CD Integration

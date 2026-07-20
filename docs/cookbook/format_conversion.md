@@ -7,8 +7,8 @@ Common recipes for converting between geospatial data formats.
 ### GeoTIFF to COG
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_geotiff::{GeoTiffDriver, CogOptions};
+use oxigeo_core::Dataset;
+use oxigeo_geotiff::{GeoTiffDriver, CogOptions};
 
 async fn geotiff_to_cog(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;
@@ -41,7 +41,7 @@ async fn hdf5_to_geotiff(input: &str, subdataset: &str, output: &str) -> Result<
 ### NetCDF to Zarr
 
 ```rust
-use oxigdal_zarr::ZarrDriver;
+use oxigeo_zarr::ZarrDriver;
 
 async fn netcdf_to_zarr(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;
@@ -58,7 +58,7 @@ async fn netcdf_to_zarr(input: &str, output: &str) -> Result<(), Box<dyn std::er
 ### Shapefile to GeoJSON
 
 ```rust
-use oxigdal_geojson::GeoJsonDriver;
+use oxigeo_geojson::GeoJsonDriver;
 
 async fn shapefile_to_geojson(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open(input).await?;
@@ -88,7 +88,7 @@ async fn shapefile_to_geojson(input: &str, output: &str) -> Result<(), Box<dyn s
 ### GeoJSON to GeoParquet
 
 ```rust
-use oxigdal_geoparquet::GeoParquetDriver;
+use oxigeo_geoparquet::GeoParquetDriver;
 
 async fn geojson_to_geoparquet(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open(input).await?;
@@ -119,7 +119,7 @@ async fn geojson_to_geoparquet(input: &str, output: &str) -> Result<(), Box<dyn 
 ### FlatGeobuf to Shapefile
 
 ```rust
-use oxigdal_shapefile::ShapefileDriver;
+use oxigeo_shapefile::ShapefileDriver;
 
 async fn flatgeobuf_to_shapefile(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open(input).await?;
@@ -198,7 +198,7 @@ async fn convert_file(input: &str, output: &str) -> Result<(), Box<dyn std::erro
 ### GeoTIFF with Compression
 
 ```rust
-use oxigdal_geotiff::{GeoTiffDriver, GeoTiffOptions};
+use oxigeo_geotiff::{GeoTiffDriver, GeoTiffOptions};
 
 async fn create_compressed_geotiff(
     data: &[f32],

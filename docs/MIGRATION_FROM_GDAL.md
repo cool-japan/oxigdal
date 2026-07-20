@@ -1,19 +1,19 @@
-# Migration Guide: From GDAL/OGR to OxiGDAL
+# Migration Guide: From GDAL/OGR to OxiGeo
 
-This guide helps you migrate from GDAL/OGR (C/C++ or Python bindings) to OxiGDAL (Pure Rust).
+This guide helps you migrate from GDAL/OGR (C/C++ or Python bindings) to OxiGeo (Pure Rust).
 
 ## Table of Contents
 
-- [Why Migrate to OxiGDAL?](#why-migrate-to-oxigdal)
+- [Why Migrate to OxiGeo?](#why-migrate-to-oxigeo)
 - [Key Differences](#key-differences)
 - [API Mapping](#api-mapping)
 - [Common Patterns](#common-patterns)
 - [Performance Considerations](#performance-considerations)
 - [Troubleshooting](#troubleshooting)
 
-## Why Migrate to OxiGDAL?
+## Why Migrate to OxiGeo?
 
-### Advantages of OxiGDAL
+### Advantages of OxiGeo
 
 1. **Memory Safety**: Rust's ownership system prevents common errors
    - No buffer overflows
@@ -46,7 +46,7 @@ This guide helps you migrate from GDAL/OGR (C/C++ or Python bindings) to OxiGDAL
 
 ### Conceptual Differences
 
-| Aspect | GDAL/OGR | OxiGDAL |
+| Aspect | GDAL/OGR | OxiGeo |
 |--------|----------|---------|
 | Memory | Manual/GC | Automatic (ownership) |
 | Errors | Return codes/exceptions | Result<T, E> |
@@ -63,10 +63,10 @@ apt-get install gdal-bin libgdal-dev
 pip install gdal
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```bash
 # Pure Rust, no system dependencies
-cargo add oxigdal-core oxigdal-geotiff
+cargo add oxigeo-core oxigeo-geotiff
 ```
 
 ## API Mapping
@@ -89,10 +89,10 @@ if not dataset:
     raise Exception("Failed to open")
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 let source = FileDataSource::open("file.tif")?;
 let reader = GeoTiffReader::open(source)?;
@@ -110,7 +110,7 @@ transform = dataset.GetGeoTransform()
 projection = dataset.GetProjection()
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
 let width = reader.width();
 let height = reader.height();
@@ -130,7 +130,7 @@ array = band.ReadAsArray()
 window = band.ReadAsArray(xoff=100, yoff=100, xsize=256, ysize=256)
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
 // Read full raster
 let buffer = reader.read_tile_buffer(0, 0, 0)?;
@@ -155,9 +155,9 @@ band.FlushCache()
 dataset = None  # Close
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
-use oxigdal_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
+use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
 use std::fs::File;
 
 let options = GeoTiffWriterOptions {
@@ -184,10 +184,10 @@ dst_ds = gdal.Warp('output.tif', src_ds,
                    dstSRS='EPSG:3857')
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
-use oxigdal_algorithms::reproject::{reproject, ReprojectOptions, Resampling};
-use oxigdal_proj::Projection;
+use oxigeo_algorithms::reproject::{reproject, ReprojectOptions, Resampling};
+use oxigeo_proj::Projection;
 
 let src_proj = Projection::from_epsg(4326)?;
 let dst_proj = Projection::from_epsg(3857)?;
@@ -220,7 +220,7 @@ for feature in layer:
     area = geom.GetArea()
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
 use geo::Area;
 use geojson::GeoJson;
@@ -260,7 +260,7 @@ def process_tiles(dataset, tile_size=256):
             # Write back if needed
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
 use rayon::prelude::*;
 
@@ -294,7 +294,7 @@ nir = dataset.GetRasterBand(5).ReadAsArray()
 ndvi = (nir - red) / (nir + red)
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
 fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer)
     -> Result<RasterBuffer, Error>
@@ -332,10 +332,10 @@ fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer)
 dataset = gdal.Open('/vsicurl/https://example.com/data.tif')
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
-use oxigdal_cloud::backends::HttpBackend;
-use oxigdal_cloud::retry::RetryConfig;
+use oxigeo_cloud::backends::HttpBackend;
+use oxigeo_cloud::retry::RetryConfig;
 
 let retry_config = RetryConfig::default();
 let http_backend = HttpBackend::new(retry_config);
@@ -353,7 +353,7 @@ let data = http_backend.get("https://example.com/data.tif").await?;
 - Potential leaks with improper cleanup
 - Python GC overhead
 
-**OxiGDAL:**
+**OxiGeo:**
 - Automatic cleanup (RAII)
 - No GC overhead
 - Stack allocation when possible
@@ -374,7 +374,7 @@ with Pool() as pool:
     results = pool.map(worker, tile_list)
 ```
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
 // Built-in parallel iterators
 use rayon::prelude::*;
@@ -392,9 +392,9 @@ let results: Vec<_> = tile_list
 - Limited SIMD support
 - Numpy can use BLAS/MKL
 
-**OxiGDAL:**
+**OxiGeo:**
 ```rust
-use oxigdal_core::simd_buffer::SimdBuffer;
+use oxigeo_core::simd_buffer::SimdBuffer;
 
 let simd_buffer = SimdBuffer::from_buffer(&buffer)?;
 let result = simd_buffer.add_scalar(10.0)?; // Vectorized automatically
@@ -422,10 +422,10 @@ except RuntimeError as e:
     print(f"Error: {e}")
 ```
 
-### OxiGDAL Approach
+### OxiGeo Approach
 
 ```rust
-use oxigdal_core::error::Result;
+use oxigeo_core::error::Result;
 
 fn process_file(path: &str) -> Result<()> {
     let source = FileDataSource::open(path)?;
@@ -447,8 +447,8 @@ match process_file("input.tif") {
 ## Migration Checklist
 
 - [ ] Identify GDAL features used in your code
-- [ ] Check OxiGDAL feature support
-- [ ] Replace file I/O with OxiGDAL equivalents
+- [ ] Check OxiGeo feature support
+- [ ] Replace file I/O with OxiGeo equivalents
 - [ ] Update error handling to use Result<T, E>
 - [ ] Replace NULL checks with Option<T>
 - [ ] Convert array operations to RasterBuffer
@@ -461,10 +461,10 @@ match process_file("input.tif") {
 
 ### Issue: Missing Driver Support
 
-**Problem:** GDAL driver not available in OxiGDAL
+**Problem:** GDAL driver not available in OxiGeo
 
 **Solution:**
-- Check if driver is feature-gated: `cargo add oxigdal-hdf5 --features hdf5`
+- Check if driver is feature-gated: `cargo add oxigeo-hdf5 --features hdf5`
 - For unsupported formats, consider preprocessing with GDAL
 
 ### Issue: Different Results
@@ -478,7 +478,7 @@ match process_file("input.tif") {
 
 ### Issue: Performance Regression
 
-**Problem:** OxiGDAL slower than GDAL for specific operation
+**Problem:** OxiGeo slower than GDAL for specific operation
 
 **Solution:**
 - Enable release mode: `cargo build --release`
@@ -488,15 +488,15 @@ match process_file("input.tif") {
 
 ## Resources
 
-- [OxiGDAL Documentation](https://docs.rs/oxigdal)
+- [OxiGeo Documentation](https://docs.rs/oxigeo)
 - [Example Gallery](../examples/)
 - [Rust Book](https://doc.rust-lang.org/book/)
 - [GDAL API Documentation](https://gdal.org/api/)
 
 ## Getting Help
 
-- GitHub Issues: https://github.com/cool-japan/oxigdal/issues
-- Discussions: https://github.com/cool-japan/oxigdal/discussions
+- GitHub Issues: https://github.com/cool-japan/oxigeo/issues
+- Discussions: https://github.com/cool-japan/oxigeo/discussions
 - COOLJAPAN Community: Contact team
 
 ## Next Steps

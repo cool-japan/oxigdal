@@ -8,8 +8,8 @@
 //! acceptable; panics and out-of-bounds reads are not.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use oxigdal_gpkg::GeoPackage;
-use oxigdal_gpkg::scan_sqlite_master;
+use oxigeo_gpkg::GeoPackage;
+use oxigeo_gpkg::scan_sqlite_master;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(gpkg) = GeoPackage::from_bytes(data.to_vec()) {

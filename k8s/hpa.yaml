@@ -1,20 +1,20 @@
-# OxiGDAL Kubernetes Horizontal Pod Autoscaler
+# OxiGeo Kubernetes Horizontal Pod Autoscaler
 # Auto-scaling configuration based on metrics
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: oxigdal-server-hpa
-  namespace: oxigdal
+  name: oxigeo-server-hpa
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: autoscaling
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: oxigdal-server
+    name: oxigeo-server
 
   minReplicas: 3
   maxReplicas: 20
@@ -80,23 +80,23 @@ spec:
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  name: oxigdal-server-vpa
-  namespace: oxigdal
+  name: oxigeo-server-vpa
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: autoscaling
 spec:
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: oxigdal-server
+    name: oxigeo-server
 
   updatePolicy:
     updateMode: Auto  # Can be: Off, Initial, Recreate, Auto
 
   resourcePolicy:
     containerPolicies:
-    - containerName: oxigdal-server
+    - containerName: oxigeo-server
       minAllowed:
         cpu: 250m
         memory: 512Mi
@@ -113,15 +113,15 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: oxigdal-server-pdb
-  namespace: oxigdal
+  name: oxigeo-server-pdb
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: availability
 spec:
   minAvailable: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: oxigdal
+      app.kubernetes.io/name: oxigeo
       app.kubernetes.io/component: server
   unhealthyPodEvictionPolicy: AlwaysAllow

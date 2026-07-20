@@ -1,4 +1,4 @@
-# Quick Start Guide - OxiGDAL COG Viewer
+# Quick Start Guide - OxiGeo COG Viewer
 
 Get the COG viewer running in 3 simple steps.
 
@@ -13,7 +13,7 @@ Get the COG viewer running in 3 simple steps.
 ### 1. Build WASM (if not already built)
 
 ```bash
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 wasm-pack build --target web --out-dir ../../demo/pkg
 cd ../../demo/cog-viewer
 ```
@@ -91,7 +91,7 @@ https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/2020/S2A_3
 ### WASM not found
 ```bash
 # Build the WASM package
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 wasm-pack build --target web --out-dir ../../demo/pkg
 ```
 
@@ -124,7 +124,7 @@ Requires WebAssembly and ES6 modules support.
 ### Rebuild WASM after code changes
 
 ```bash
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 wasm-pack build --target web --dev --out-dir ../../demo/pkg
 ```
 
@@ -132,7 +132,7 @@ wasm-pack build --target web --dev --out-dir ../../demo/pkg
 
 Use a tool like `watchexec`:
 ```bash
-watchexec -w ../../crates/oxigdal-wasm/src -w main.js -w style.css -- echo "Files changed"
+watchexec -w ../../crates/oxigeo-wasm/src -w main.js -w style.css -- echo "Files changed"
 ```
 
 ## Performance Tips
@@ -145,9 +145,9 @@ watchexec -w ../../crates/oxigdal-wasm/src -w main.js -w style.css -- echo "File
 ## Links
 
 - **Full Documentation**: [README.md](README.md)
-- **OxiGDAL Repository**: https://github.com/cool-japan/oxigdal
-- **Report Issues**: https://github.com/cool-japan/oxigdal/issues
+- **OxiGeo Repository**: https://github.com/cool-japan/oxigeo
+- **Report Issues**: https://github.com/cool-japan/oxigeo/issues
 
 ---
 
-**Quick Start Complete!** Enjoy exploring COGs in the browser with OxiGDAL.
+**Quick Start Complete!** Enjoy exploring COGs in the browser with OxiGeo.

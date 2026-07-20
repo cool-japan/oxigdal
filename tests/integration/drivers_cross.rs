@@ -7,7 +7,7 @@
 //! Validates data conversion, metadata preservation, and format compatibility.
 //!
 //! The GeoTIFF <-> Zarr raster pipeline (create/read/convert helpers) is wired
-//! to the *real* `oxigdal-geotiff` and `oxigdal-zarr` drivers, so those paths
+//! to the *real* `oxigeo-geotiff` and `oxigeo-zarr` drivers, so those paths
 //! genuinely exercise cross-driver conversion. The remaining format pairs
 //! (NetCDF, HDF5, Shapefile, GeoParquet, FlatGeobuf, GRIB, VRT, GML, KML, GPKG,
 //! JPEG2000) still use lightweight local stand-ins and are tracked for a
@@ -23,14 +23,14 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use oxigdal_core::io::FileDataSource;
-use oxigdal_core::types::RasterDataType;
-use oxigdal_geotiff::tiff::Predictor;
-use oxigdal_geotiff::{
+use oxigeo_core::io::FileDataSource;
+use oxigeo_core::types::RasterDataType;
+use oxigeo_geotiff::tiff::Predictor;
+use oxigeo_geotiff::{
     Compression, GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions, WriterConfig,
 };
-use oxigdal_zarr::metadata::v3::ArrayMetadataV3;
-use oxigdal_zarr::{FilesystemStore, ZarrV3Reader, ZarrV3Writer};
+use oxigeo_zarr::metadata::v3::ArrayMetadataV3;
+use oxigeo_zarr::{FilesystemStore, ZarrV3Reader, ZarrV3Writer};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

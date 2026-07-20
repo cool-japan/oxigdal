@@ -23,7 +23,7 @@ Cargo.lock
 
 # Cache files
 
-crates/oxigdal-edge/.oxigdal_cache
+crates/oxigeo-edge/.oxigeo_cache
 
 # Claude AI config
 **/.claude/
@@ -73,10 +73,13 @@ tarpaulin-report.html
 *.wasm
 
 # edge cache
-crates/oxigdal-edge/.oxigdal_cache/
+crates/oxigeo-edge/.oxigeo_cache/
 
 # Node modules (for demo/wasm builds)
 node_modules/
+
+# Python bytecode
+__pycache__/
 
 # Environment files
 .env
@@ -88,6 +91,6 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-crates/oxigdal-node/oxigdal.darwin-arm64.node
+crates/oxigeo-node/oxigeo.darwin-arm64.node
 
 target

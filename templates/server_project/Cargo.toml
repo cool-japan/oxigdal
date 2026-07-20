@@ -1,13 +1,13 @@
 [package]
-name = "my-oxigdal-server"
+name = "my-oxigeo-server"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-oxigdal-core = "0.1"
-oxigdal-server = "0.1"
-oxigdal-geotiff = "0.1"
+oxigeo-core = "0.2"
+oxigeo-server = "0.2"
+oxigeo-geotiff = "0.2"
 
 # Web framework
 axum = "0.8"

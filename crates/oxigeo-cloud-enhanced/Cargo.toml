@@ -1,0 +1,137 @@
+[package]
+name = "oxigeo-cloud-enhanced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-cloud-enhanced"
+readme = "README.md"
+description = "Deep cloud platform integrations for AWS, Azure, and GCP"
+keywords = ["science", "network-programming", "aws", "azure", "gcp"]
+categories = ["science", "network-programming", "api-bindings"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Oxigeo crates
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-cloud = { workspace = true }
+
+# Arrow ecosystem
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+
+# AWS SDK (optional — enabled by "aws" feature)
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+aws-sdk-athena = { workspace = true, optional = true }
+aws-sdk-glue = { workspace = true, optional = true }
+aws-sdk-lambda = { workspace = true, optional = true }
+aws-sdk-sagemaker = { workspace = true, optional = true }
+aws-sdk-sagemakerruntime = { workspace = true, optional = true }
+aws-sdk-cloudwatch = { workspace = true, optional = true }
+aws-sdk-costexplorer = { workspace = true, optional = true }
+aws-smithy-types = { workspace = true, optional = true }
+
+# Azure SDK
+azure_core = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
+azure_storage = { workspace = true, optional = true }
+azure_storage_blobs = { workspace = true, optional = true }
+azure_storage_datalake = { workspace = true, optional = true }
+# `azure_storage_datalake` response types (e.g. `Path::last_modified`,
+# `HeadPathResponse::last_modified`) are expressed as `time::OffsetDateTime`;
+# needed directly (not just transitively) to convert those into
+# `chrono::DateTime<Utc>` in data_lake.rs.
+time = { workspace = true, optional = true }
+
+# GCP SDK
+google-cloud-storage = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
+# Used by workload_identity.rs / monitoring.rs / cost.rs to talk to the GCE
+# metadata server and the IAM Credentials, Cloud Monitoring, and BigQuery
+# REST APIs directly (none of which are covered by google-cloud-auth), and
+# by azure/managed_identity.rs to talk to the Azure Resource Manager REST
+# API (not covered by azure_core's storage-oriented pipeline).
+#
+# NOTE: `google-cloud-bigquery` is intentionally NOT a dependency here.
+# Version 0.15 pins `arrow` to the `53.x` series via `arrow-arith`, which
+# requires `chrono <0.4.40`; this workspace's `arrow = "59"` requires
+# `chrono >=0.4.40` transitively, so the two cannot be unified in one
+# dependency graph (verified via a direct `cargo check` resolution
+# attempt). `gcp/cost.rs` uses the BigQuery REST `jobs.query` API over
+# `reqwest` instead. Re-visit once `google-cloud-bigquery` tracks
+# `arrow >= 57`.
+reqwest = { workspace = true, optional = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+url = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+lru = { workspace = true }
+regex = { workspace = true }
+
+[features]
+default = []
+aws = [
+    "dep:aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types",
+    "dep:aws-sdk-athena", "dep:aws-sdk-glue", "dep:aws-sdk-lambda",
+    "dep:aws-sdk-sagemaker", "dep:aws-sdk-sagemakerruntime",
+    "dep:aws-sdk-cloudwatch", "dep:aws-sdk-costexplorer", "dep:aws-smithy-types",
+    "oxigeo-cloud/s3",
+]
+azure = [
+    "dep:azure_core", "dep:azure_identity", "dep:azure_storage", "dep:azure_storage_blobs",
+    "dep:azure_storage_datalake", "dep:reqwest", "dep:time",
+]
+gcp = ["dep:google-cloud-storage", "dep:google-cloud-auth", "dep:reqwest"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "cloud_enhanced_bench"
+harness = false
+
+[lints]
+workspace = true
+
+# NOTE: every feature (`aws`, `azure`, `gcp`) transitively pulls aws-lc-sys
+# (C/asm) via rustls's default crypto provider (aws-config/azure_core/
+# google-cloud-storage all depend on it), so this crate's own `default = []`
+# stays empty -- that Pure-Rust default-features policy governs what ships
+# to *users* by default, not what the docs.rs *build sandbox* is permitted
+# to compile for documentation purposes. docs.rs routinely compiles
+# C-dependent crates (aws-lc-sys/ring are two of the most common docs.rs
+# dependencies in the wider Rust ecosystem) in its own isolated container,
+# so building docs with all features enabled here does not violate the
+# workspace's Pure-Rust policy. Without this, the `aws`/`azure`/`gcp`
+# feature-gated modules -- most of this crate's actual API surface -- never
+# appear in the published documentation.
+[package.metadata.docs.rs]
+features = ["aws", "azure", "gcp"]
+rustdoc-args = ["--cfg", "docsrs"]

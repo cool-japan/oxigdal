@@ -5,9 +5,9 @@
 //! out-of-bounds reads, and other UB are not.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use oxigdal_shapefile::dbf::DbfHeader;
-use oxigdal_shapefile::shp::ShapefileHeader;
-use oxigdal_shapefile::shp::header::HEADER_SIZE;
+use oxigeo_shapefile::dbf::DbfHeader;
+use oxigeo_shapefile::shp::ShapefileHeader;
+use oxigeo_shapefile::shp::header::HEADER_SIZE;
 use std::io::Cursor;
 
 fuzz_target!(|data: &[u8]| {
@@ -25,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > HEADER_SIZE {
         let mut cursor = Cursor::new(&data[HEADER_SIZE..]);
         for _ in 0..64 {
-            match oxigdal_shapefile::shp::Shape::read(&mut cursor) {
+            match oxigeo_shapefile::shp::Shape::read(&mut cursor) {
                 Ok(_) => continue,
                 Err(_) => break,
             }

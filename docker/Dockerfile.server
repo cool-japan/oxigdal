@@ -1,4 +1,4 @@
-# OxiGDAL Server Docker Image
+# OxiGeo Server Docker Image
 # WMS/WMTS/WFS tile server for serving geospatial data
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -20,8 +20,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
 # Build server in release mode with optimizations
-RUN cargo build --release --bin oxigdal-server \
-    && strip target/release/oxigdal-server
+RUN cargo build --release --bin oxigeo-server \
+    && strip target/release/oxigeo-server
 
 # Runtime stage - minimal image
 FROM debian:bookworm-slim
@@ -33,24 +33,24 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN useradd -m -u 1000 -s /bin/bash oxigdal
+RUN useradd -m -u 1000 -s /bin/bash oxigeo
 
 # Copy binary from builder
-COPY --from=builder /build/target/release/oxigdal-server /usr/local/bin/oxigdal-server
+COPY --from=builder /build/target/release/oxigeo-server /usr/local/bin/oxigeo-server
 
 # Create necessary directories
 RUN mkdir -p /data /config /cache && \
-    chown -R oxigdal:oxigdal /data /config /cache
+    chown -R oxigeo:oxigeo /data /config /cache
 
 # Copy default configuration. `docker COPY` is not shell-interpreted (it takes literal
 # whitespace-separated source paths), so it cannot express a "copy if present" fallback -
 # docker/config/server.toml is committed unconditionally so this always succeeds. Operators
 # who want a different config should bind-mount over /config/server.toml instead of editing
 # this image.
-COPY --chown=oxigdal:oxigdal docker/config/server.toml /config/server.toml
+COPY --chown=oxigeo:oxigeo docker/config/server.toml /config/server.toml
 
 # Switch to non-root user
-USER oxigdal
+USER oxigeo
 WORKDIR /data
 
 # Expose server ports
@@ -61,31 +61,31 @@ EXPOSE 8080 8081
 # Set environment variables
 ENV RUST_LOG=info \
     RUST_BACKTRACE=1 \
-    OXIGDAL_DATA_DIR=/data \
-    OXIGDAL_CACHE_DIR=/cache \
-    OXIGDAL_CONFIG=/config/server.toml \
-    OXIGDAL_HOST=0.0.0.0 \
-    OXIGDAL_PORT=8080
+    OXIGEO_DATA_DIR=/data \
+    OXIGEO_CACHE_DIR=/cache \
+    OXIGEO_CONFIG=/config/server.toml \
+    OXIGEO_HOST=0.0.0.0 \
+    OXIGEO_PORT=8080
 
 # Health check - verify server responds
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Default command starts server. --config is passed explicitly as defense in depth alongside
-# the OXIGDAL_CONFIG env var above (crates/oxigdal-server's `config` CLI arg also reads
-# OXIGDAL_CONFIG directly via clap's `env` attribute; either mechanism alone is sufficient).
-ENTRYPOINT ["oxigdal-server"]
+# the OXIGEO_CONFIG env var above (crates/oxigeo-server's `config` CLI arg also reads
+# OXIGEO_CONFIG directly via clap's `env` attribute; either mechanism alone is sufficient).
+ENTRYPOINT ["oxigeo-server"]
 CMD ["--host", "0.0.0.0", "--port", "8080", "--config", "/config/server.toml"]
 
 # Build-time version, defaulting to the last released version; override with
-# `--build-arg OXIGDAL_VERSION=$(docker/build.sh --print-version)` (see docker/build.sh) so
+# `--build-arg OXIGEO_VERSION=$(docker/build.sh --print-version)` (see docker/build.sh) so
 # this label never drifts from the workspace Cargo.toml version again.
-ARG OXIGDAL_VERSION=0.1.7
+ARG OXIGEO_VERSION=0.2.0
 
-LABEL org.opencontainers.image.title="OxiGDAL Server" \
-      org.opencontainers.image.description="WMS/WMTS tile server for OxiGDAL" \
+LABEL org.opencontainers.image.title="OxiGeo Server" \
+      org.opencontainers.image.description="WMS/WMTS tile server for OxiGeo" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
-      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigeo" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="${OXIGDAL_VERSION}" \
-      org.opencontainers.image.url="https://github.com/cool-japan/oxigdal"
+      org.opencontainers.image.version="${OXIGEO_VERSION}" \
+      org.opencontainers.image.url="https://github.com/cool-japan/oxigeo"

@@ -1,10 +1,10 @@
-//! OxiGDAL ML Project Template
+//! OxiGeo ML Project Template
 
 use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("OxiGDAL ML Project");
+    println!("OxiGeo ML Project");
 
     // Example: Load training data
     // let train_data = load_training_data("train/")?;

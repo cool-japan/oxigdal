@@ -1,13 +1,13 @@
 # Vector Processing Recipes
 
-Common recipes for vector data processing with OxiGDAL.
+Common recipes for vector data processing with OxiGeo.
 
 ## Reading Vectors
 
 ### Read All Features
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_all_features(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(path).await?;
@@ -47,7 +47,7 @@ async fn filter_by_attribute(path: &str, attribute: &str, value: &str) -> Result
 ### Create Point Layer
 
 ```rust
-use oxigdal_geojson::GeoJsonDriver;
+use oxigeo_geojson::GeoJsonDriver;
 use geo_types::{Point, Geometry};
 
 async fn create_points(points: &[(f64, f64, String)]) -> Result<(), Box<dyn std::error::Error>> {
@@ -285,7 +285,7 @@ async fn join_attributes(target_path: &str, join_path: &str, key_field: &str) ->
 ### GeoJSON to Shapefile
 
 ```rust
-use oxigdal_shapefile::ShapefileDriver;
+use oxigeo_shapefile::ShapefileDriver;
 
 async fn geojson_to_shapefile(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open(input).await?;
@@ -317,7 +317,7 @@ async fn geojson_to_shapefile(input: &str, output: &str) -> Result<(), Box<dyn s
 ### Shapefile to GeoParquet
 
 ```rust
-use oxigdal_geoparquet::GeoParquetDriver;
+use oxigeo_geoparquet::GeoParquetDriver;
 
 async fn shapefile_to_geoparquet(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open(input).await?;

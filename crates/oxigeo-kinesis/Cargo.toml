@@ -1,0 +1,80 @@
+[package]
+name = "oxigeo-kinesis"
+description = "AWS Kinesis streaming integration for OxiGeo - Real-time data streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-kinesis"
+readme = "README.md"
+keywords = ["kinesis", "streaming", "aws", "real-time", "analytics"]
+categories = ["science", "network-programming", "asynchronous", "database"]
+
+[features]
+default = ["std"]
+std = ["oxigeo-core/std", "thiserror/std", "serde/std"]
+alloc = []
+
+# Kinesis components
+streams = ["async", "dep:aws-sdk-kinesis", "dep:aws-config"]
+firehose = ["async", "dep:aws-sdk-firehose"]
+analytics = ["async", "dep:aws-sdk-kinesisanalyticsv2"]
+monitoring = ["async", "dep:aws-sdk-cloudwatch"]
+
+# Features
+async = ["oxigeo-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
+checkpointing = ["streams", "dep:aws-sdk-dynamodb"]
+enhanced-fanout = ["streams"]
+compression = ["dep:oxiarc-archive", "dep:oxiarc-zstd"]
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+bytes = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, optional = true, features = ["io-util", "time", "sync", "rt"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# AWS SDK
+aws-sdk-kinesis = { workspace = true, optional = true }
+aws-sdk-firehose = { workspace = true, optional = true }
+aws-sdk-kinesisanalyticsv2 = { workspace = true, optional = true }
+aws-sdk-cloudwatch = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+aws-smithy-types = { workspace = true }
+
+# Compression
+oxiarc-archive = { workspace = true, optional = true }
+oxiarc-zstd = { workspace = true, optional = true }
+
+# Utilities
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+num-traits = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
+
+# NOTE: `streams`/`firehose`/`analytics`/`monitoring` (and the checkpointing/
+# enhanced-fanout features that depend on them) all pull AWS SDK crates whose
+# rustls default crypto provider drags in aws-lc-sys (C/asm). `async` and
+# `compression` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["std", "alloc", "async", "compression"]
+rustdoc-args = ["--cfg", "docsrs"]

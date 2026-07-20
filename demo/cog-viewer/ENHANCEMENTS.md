@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document summarizes all enhancements made to the OxiGDAL COG Viewer demo for production deployment as part of **Priority 1.3: Expand WASM and Demo** (Phase 1 Browser Breakthrough).
+This document summarizes all enhancements made to the OxiGeo COG Viewer demo for production deployment as part of **Priority 1.3: Expand WASM and Demo** (Phase 1 Browser Breakthrough).
 
 **Target:** ~1,800 LOC enhancements
 **Status:** ✅ Complete
@@ -14,7 +14,7 @@ This document summarizes all enhancements made to the OxiGDAL COG Viewer demo fo
 
 **Files Modified:**
 - `/Cargo.toml` - Added web_sys Worker features
-- `/crates/oxigdal-wasm/src/worker.rs` - Completed Worker implementation
+- `/crates/oxigeo-wasm/src/worker.rs` - Completed Worker implementation
 - `/demo/cog-viewer/cog-worker.js` - New worker script (220 LOC)
 
 **Features:**
@@ -264,7 +264,7 @@ This document summarizes all enhancements made to the OxiGDAL COG Viewer demo fo
 
 ### Files Modified
 1. `/Cargo.toml` - Added Worker features (8 lines)
-2. `/crates/oxigdal-wasm/src/worker.rs` - Completed implementation (~100 LOC changes)
+2. `/crates/oxigeo-wasm/src/worker.rs` - Completed implementation (~100 LOC changes)
 
 **Total Modified LOC:** ~108
 
@@ -341,7 +341,7 @@ git commit -m "Deploy enhanced COG viewer demo"
 git push origin main
 ```
 
-Demo URL: `https://cool-japan.github.io/oxigdal/cog-viewer/`
+Demo URL: `https://cool-japan.github.io/oxigeo/cog-viewer/`
 
 ### Netlify
 
@@ -434,6 +434,6 @@ Apache-2.0
 
 ---
 
-**Built with OxiGDAL** | Part of the **COOLJAPAN Pure Rust Ecosystem**
+**Built with OxiGeo** | Part of the **COOLJAPAN Pure Rust Ecosystem**
 
 Copyright (c) 2025-2026 COOLJAPAN OU (Team Kitasan)

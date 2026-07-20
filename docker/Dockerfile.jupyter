@@ -1,5 +1,5 @@
-# OxiGDAL Jupyter Docker Image
-# Jupyter notebook environment with oxigdal-python bindings
+# OxiGeo Jupyter Docker Image
+# Jupyter notebook environment with oxigeo-python bindings
 # Author: COOLJAPAN OU (Team Kitasan)
 
 # Build stage for Python bindings
@@ -25,7 +25,7 @@ COPY crates ./crates
 RUN pip3 install --no-cache-dir maturin
 
 # Build Python wheel
-RUN cd crates/oxigdal-python && \
+RUN cd crates/oxigeo-python && \
     maturin build --release --strip && \
     ls -la target/wheels/
 
@@ -60,8 +60,8 @@ RUN pip install --no-cache-dir \
     scikit-learn \
     scipy
 
-# Copy and install oxigdal-python wheel
-COPY --from=builder /build/crates/oxigdal-python/target/wheels/*.whl /tmp/
+# Copy and install oxigeo-python wheel
+COPY --from=builder /build/crates/oxigeo-python/target/wheels/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 
 # Create directories
@@ -70,8 +70,8 @@ RUN mkdir -p /notebooks /data && \
 
 # `docker COPY` is not shell-interpreted, so it cannot express a "copy if exists" fallback;
 # there is no committed examples/notebooks/ directory of Python-compatible notebooks to copy
-# unconditionally (crates/oxigdal-jupyter/examples/notebooks/ holds Rust evcxr snippets, not
-# .ipynb notebooks for this Python/oxigdal-python image). /notebooks is left empty for
+# unconditionally (crates/oxigeo-jupyter/examples/notebooks/ holds Rust evcxr snippets, not
+# .ipynb notebooks for this Python/oxigeo-python image). /notebooks is left empty for
 # operators to bind-mount their own notebooks over, e.g.
 # `-v ./my-notebooks:/notebooks`.
 
@@ -85,7 +85,7 @@ EXPOSE 8888
 # Set environment variables
 ENV RUST_LOG=info \
     JUPYTER_ENABLE_LAB=yes \
-    JUPYTER_TOKEN=oxigdal
+    JUPYTER_TOKEN=oxigeo
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
@@ -97,14 +97,14 @@ CMD ["jupyter", "lab", \
      "--port=8888", \
      "--no-browser", \
      "--allow-root", \
-     "--NotebookApp.token=oxigdal"]
+     "--NotebookApp.token=oxigeo"]
 
 # Build-time version, defaulting to the last released version; see docker/build.sh.
-ARG OXIGDAL_VERSION=0.1.7
+ARG OXIGEO_VERSION=0.2.0
 
-LABEL org.opencontainers.image.title="OxiGDAL Jupyter" \
-      org.opencontainers.image.description="Jupyter notebook environment with OxiGDAL Python bindings" \
+LABEL org.opencontainers.image.title="OxiGeo Jupyter" \
+      org.opencontainers.image.description="Jupyter notebook environment with OxiGeo Python bindings" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
-      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigeo" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="${OXIGDAL_VERSION}"
+      org.opencontainers.image.version="${OXIGEO_VERSION}"

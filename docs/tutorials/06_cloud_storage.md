@@ -9,8 +9,8 @@ This tutorial covers accessing and processing geospatial data stored in cloud ob
 ### Basic S3 Access
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::S3Options;
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::S3Options;
 
 async fn open_from_s3() -> Result<(), Box<dyn std::error::Error>> {
     let options = S3Options {
@@ -31,7 +31,7 @@ async fn open_from_s3() -> Result<(), Box<dyn std::error::Error>> {
 ### Using AWS SDK Credentials
 
 ```rust
-use oxigdal_cloud::s3::S3Client;
+use oxigeo_cloud::s3::S3Client;
 use aws_config::load_from_env;
 
 async fn use_aws_credentials() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,8 +52,8 @@ async fn use_aws_credentials() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading COG from S3
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::S3Options;
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::S3Options;
 
 async fn read_cog_from_s3() -> Result<(), Box<dyn std::error::Error>> {
     let options = S3Options::default();
@@ -81,8 +81,8 @@ async fn read_cog_from_s3() -> Result<(), Box<dyn std::error::Error>> {
 ### Azure Blob Access
 
 ```rust
-use oxigdal_cloud::azure::AzureOptions;
-use oxigdal_core::Dataset;
+use oxigeo_cloud::azure::AzureOptions;
+use oxigeo_core::Dataset;
 
 async fn open_from_azure() -> Result<(), Box<dyn std::error::Error>> {
     let options = AzureOptions {
@@ -103,7 +103,7 @@ async fn open_from_azure() -> Result<(), Box<dyn std::error::Error>> {
 ### Azure Data Lake
 
 ```rust
-use oxigdal_cloud::azure::{AzureClient, DataLakeOptions};
+use oxigeo_cloud::azure::{AzureClient, DataLakeOptions};
 
 async fn access_data_lake() -> Result<(), Box<dyn std::error::Error>> {
     let options = DataLakeOptions {
@@ -126,8 +126,8 @@ async fn access_data_lake() -> Result<(), Box<dyn std::error::Error>> {
 ### GCS Access
 
 ```rust
-use oxigdal_cloud::gcs::GcsOptions;
-use oxigdal_core::Dataset;
+use oxigeo_cloud::gcs::GcsOptions;
+use oxigeo_core::Dataset;
 
 async fn open_from_gcs() -> Result<(), Box<dyn std::error::Error>> {
     let options = GcsOptions {
@@ -149,7 +149,7 @@ async fn open_from_gcs() -> Result<(), Box<dyn std::error::Error>> {
 ### Searching STAC Catalog
 
 ```rust
-use oxigdal_stac::{StacClient, SearchParams};
+use oxigeo_stac::{StacClient, SearchParams};
 
 async fn search_stac() -> Result<(), Box<dyn std::error::Error>> {
     let client = StacClient::new("https://earth-search.aws.element84.com/v1")?;
@@ -182,8 +182,8 @@ async fn search_stac() -> Result<(), Box<dyn std::error::Error>> {
 ### Loading STAC Item
 
 ```rust
-use oxigdal_stac::StacClient;
-use oxigdal_core::Dataset;
+use oxigeo_stac::StacClient;
+use oxigeo_core::Dataset;
 
 async fn load_stac_item() -> Result<(), Box<dyn std::error::Error>> {
     let client = StacClient::new("https://earth-search.aws.element84.com/v1")?;
@@ -207,8 +207,8 @@ async fn load_stac_item() -> Result<(), Box<dyn std::error::Error>> {
 ### Creating COG (Cloud Optimized GeoTIFF)
 
 ```rust
-use oxigdal_core::{Dataset, Driver};
-use oxigdal_geotiff::{GeoTiffDriver, CogOptions};
+use oxigeo_core::{Dataset, Driver};
+use oxigeo_geotiff::{GeoTiffDriver, CogOptions};
 
 async fn create_cog() -> Result<(), Box<dyn std::error::Error>> {
     // Open source dataset
@@ -235,8 +235,8 @@ async fn create_cog() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing to Cloud Storage
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::{S3Client, UploadOptions};
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::{S3Client, UploadOptions};
 
 async fn upload_to_s3() -> Result<(), Box<dyn std::error::Error>> {
     // Create dataset locally first
@@ -272,8 +272,8 @@ async fn upload_to_s3() -> Result<(), Box<dyn std::error::Error>> {
 ### Streaming Processing
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::S3Options;
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::S3Options;
 
 async fn stream_process() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open_with_options(
@@ -316,8 +316,8 @@ fn process_tile(tile: &[f32]) -> Result<(), Box<dyn std::error::Error>> {
 ### AWS Lambda Integration
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::aws::LambdaClient;
+use oxigeo_core::Dataset;
+use oxigeo_cloud::aws::LambdaClient;
 
 async fn lambda_processing() -> Result<(), Box<dyn std::error::Error>> {
     let lambda_client = LambdaClient::default().await?;
@@ -341,8 +341,8 @@ async fn lambda_processing() -> Result<(), Box<dyn std::error::Error>> {
 ### Cloud Function for Batch Processing
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::S3Client;
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::S3Client;
 
 async fn batch_cloud_processing() -> Result<(), Box<dyn std::error::Error>> {
     let s3_client = S3Client::default().await?;
@@ -380,12 +380,12 @@ async fn process_dataset(dataset: &Dataset) -> Result<Dataset, Box<dyn std::erro
 ### Local Cache for Cloud Data
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::cache::{CacheOptions, LocalCache};
+use oxigeo_core::Dataset;
+use oxigeo_cloud::cache::{CacheOptions, LocalCache};
 
 async fn use_cache() -> Result<(), Box<dyn std::error::Error>> {
     let cache_options = CacheOptions {
-        cache_dir: "/tmp/oxigdal_cache".to_string(),
+        cache_dir: "/tmp/oxigeo_cache".to_string(),
         max_size_mb: 1024,
         ttl_seconds: 3600,
         ..Default::default()
@@ -411,10 +411,10 @@ async fn use_cache() -> Result<(), Box<dyn std::error::Error>> {
 ## Complete Example: Cloud Mosaic Pipeline
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::{S3Client, S3Options};
-use oxigdal_algorithms::mosaic::MosaicOptions;
-use oxigdal_stac::{StacClient, SearchParams};
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::{S3Client, S3Options};
+use oxigeo_algorithms::mosaic::MosaicOptions;
+use oxigeo_stac::{StacClient, SearchParams};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -496,7 +496,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Cost Optimization
 
 ```rust
-use oxigdal_cloud::cost::{CostEstimator, StorageClass};
+use oxigeo_cloud::cost::{CostEstimator, StorageClass};
 
 async fn estimate_costs() -> Result<(), Box<dyn std::error::Error>> {
     let estimator = CostEstimator::new("us-west-2");

@@ -20,14 +20,14 @@ echo -e "${BLUE}GeoSentinel — Sentinel-2 change detection${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Check if the WASM package exists (pkg is a symlink into crates/oxigdal-wasm)
-if [ ! -f "pkg/oxigdal_wasm.js" ]; then
+# Check if the WASM package exists (pkg is a symlink into crates/oxigeo-wasm)
+if [ ! -f "pkg/oxigeo_wasm.js" ]; then
     echo -e "${YELLOW}WASM package not found. Building...${NC}"
     echo ""
 
-    (cd ../.. && wasm-pack build crates/oxigdal-wasm --target web --out-dir pkg)
+    (cd ../.. && wasm-pack build crates/oxigeo-wasm --target web --out-dir pkg)
 
-    if [ -f "pkg/oxigdal_wasm.js" ]; then
+    if [ -f "pkg/oxigeo_wasm.js" ]; then
         echo -e "${GREEN}[ok] WASM package built successfully${NC}"
     else
         echo -e "${RED}[fail] Failed to build WASM package${NC}"

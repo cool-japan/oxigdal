@@ -1,0 +1,65 @@
+[package]
+name = "oxigeo-terrain"
+description = "Advanced terrain analysis and DEM processing for OxiGeo - Derivatives, hydrology, viewshed, and geomorphometry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-terrain"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "terrain", "dem"]
+categories = ["science", "algorithms", "graphics"]
+
+[features]
+default = ["std", "derivatives", "hydrology"]
+std = ["thiserror/std", "serde/std"]
+parallel = ["dep:rayon"]
+derivatives = []
+hydrology = []
+visibility = []
+geomorphometry = []
+mesh = ["dep:oxigeo-index"]
+all_features = ["derivatives", "hydrology", "visibility", "geomorphometry", "parallel", "mesh"]
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+num-traits = { workspace = true }
+tracing = { workspace = true }
+
+# Scientific computing - Use SciRS2 ecosystem
+# Note: scirs2-core includes ndarray 0.17.1 as required dependency
+scirs2-core = { workspace = true, features = ["array", "array_stats", "linalg"] }
+
+# Parallelization
+rayon = { workspace = true, optional = true }
+
+# Statistical operations
+approx = { workspace = true }
+
+# Ordered floats for priority queues
+ordered-float = { workspace = true }
+
+# Spatial indexing (Delaunay triangulation for mesh feature)
+oxigeo-index = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "terrain_bench"
+harness = false
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

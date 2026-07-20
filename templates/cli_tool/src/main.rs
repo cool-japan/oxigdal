@@ -1,11 +1,11 @@
-//! OxiGDAL CLI Tool Template
+//! OxiGeo CLI Tool Template
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "my-cli")]
-#[command(about = "My OxiGDAL CLI tool")]
+#[command(about = "My OxiGeo CLI tool")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

@@ -435,9 +435,9 @@ def extract_test_output_from_stderr(
         Test-specific output or full stderr if not found
     """
     # Look for patterns like:
-    # "FAIL [   2.074s] (62/90) oxigdal-gpu::gpu_integration_test memory_tests::test_memory_pool_expansion"
+    # "FAIL [   2.074s] (62/90) oxigeo-gpu::gpu_integration_test memory_tests::test_memory_pool_expansion"
     # or
-    # "TIMEOUT [ 120.006s] (84/90) oxigdal-gpu::gpu_test test_element_wise_operations"
+    # "TIMEOUT [ 120.006s] (84/90) oxigeo-gpu::gpu_test test_element_wise_operations"
 
     # Build search patterns
     patterns = [

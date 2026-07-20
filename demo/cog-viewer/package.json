@@ -1,14 +1,14 @@
 {
-  "name": "oxigdal-cog-viewer",
-  "version": "0.1.7",
-  "description": "Advanced COG (Cloud Optimized GeoTIFF) viewer powered by OxiGDAL WebAssembly",
+  "name": "oxigeo-cog-viewer",
+  "version": "0.2.0",
+  "description": "Advanced COG (Cloud Optimized GeoTIFF) viewer powered by OxiGeo WebAssembly",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "start": "python3 -m http.server 8080",
     "serve": "http-server -p 8080 -c-1",
-    "build:wasm": "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --out-dir ../../demo/pkg",
-    "build:wasm:release": "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg",
+    "build:wasm": "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --out-dir ../../demo/pkg",
+    "build:wasm:release": "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg",
     "optimize": "./optimize-wasm.sh",
     "build": "npm run build:wasm:release && npm run optimize",
     "dev": "npm run build:wasm && npm run serve",
@@ -29,7 +29,7 @@
     "leaflet",
     "cloud-optimized",
     "rust",
-    "oxigdal",
+    "oxigeo",
     "cooljapan",
     "pure-rust"
   ],
@@ -37,13 +37,13 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cool-japan/oxigdal.git",
+    "url": "https://github.com/cool-japan/oxigeo.git",
     "directory": "demo/cog-viewer"
   },
   "bugs": {
-    "url": "https://github.com/cool-japan/oxigdal/issues"
+    "url": "https://github.com/cool-japan/oxigeo/issues"
   },
-  "homepage": "https://github.com/cool-japan/oxigdal#readme",
+  "homepage": "https://github.com/cool-japan/oxigeo#readme",
   "devDependencies": {
     "http-server": "^14.1.1"
   },

@@ -1,0 +1,100 @@
+[package]
+name = "oxigeo-db-connectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-db-connectors"
+readme = "README.md"
+keywords = ["gis", "science", "database", "spatial", "connector"]
+categories = ["database", "science"]
+description = "Database connectors for OxiGeo (MySQL, SQLite, MongoDB, ClickHouse, TimescaleDB, Cassandra)"
+
+[features]
+default = ["postgres", "mysql", "mongodb", "clickhouse", "cassandra"]
+# SQLite uses pure-Rust oxisql-sqlite-compat (limbo engine) - COOLJAPAN Pure Rust Policy
+sqlite = ["dep:oxisql-sqlite-compat", "dep:oxisql-core"]
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
+mysql = ["dep:mysql_async"]
+mongodb = ["dep:mongodb", "dep:bson"]
+clickhouse = ["dep:clickhouse"]
+cassandra = ["dep:scylla"]
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+bytes.workspace = true
+byteorder.workspace = true
+url.workspace = true
+geojson.workspace = true
+geo-types.workspace = true
+geo.workspace = true
+tracing.workspace = true
+
+# Internal dependencies
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-postgis.workspace = true
+
+# MySQL/MariaDB
+# SECURITY NOTE: mysql_async 0.36.1 uses lru 0.14.0 (RUSTSEC-2026-0002: unsound IterMut)
+# FIXED: Patched via [patch.crates-io] in workspace Cargo.toml using git master (includes PR #382: lru -> 0.16)
+# Remove patch once mysql_async releases a version with lru 0.16+ on crates.io
+mysql_async = { workspace = true, optional = true }
+
+# SQLite/SpatiaLite - pure-Rust limbo engine (COOLJAPAN Pure Rust Policy)
+oxisql-sqlite-compat = { workspace = true, optional = true }
+oxisql-core = { workspace = true, optional = true }
+
+# MongoDB (async by default with tokio)
+mongodb = { workspace = true, optional = true }
+bson = { workspace = true, features = ["serde"], optional = true }
+
+# ClickHouse
+clickhouse = { workspace = true, optional = true }
+
+# Cassandra/ScyllaDB
+scylla = { workspace = true, features = ["rustls-023"], optional = true }
+
+# PostgreSQL/TimescaleDB
+tokio-postgres = { workspace = true, features = ["with-chrono-0_4"], optional = true }
+deadpool-postgres = { workspace = true, optional = true }
+
+# Connection pooling
+deadpool.workspace = true
+bb8.workspace = true
+
+# WKB/WKT support
+wkt.workspace = true
+
+# Additional utilities
+base64.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "db_bench"
+harness = false
+
+[lints]
+workspace = true
+
+# NOTE: `mysql` (libz-sys), `mongodb` (ring) and `cassandra` (aws-lc-sys via
+# scylla's rustls-023 feature) all pull non-Pure-Rust C/asm crates. `sqlite`,
+# `postgres` and `clickhouse` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["sqlite", "postgres", "clickhouse"]
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,4 +1,4 @@
-# OxiGDAL Development Docker Image
+# OxiGeo Development Docker Image
 # Full development environment with all tools
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -99,11 +99,11 @@ VOLUME ["/workspace", "/data", "/cache"]
 CMD ["/bin/bash"]
 
 # Build-time version, defaulting to the last released version; see docker/build.sh.
-ARG OXIGDAL_VERSION=0.1.7
+ARG OXIGEO_VERSION=0.2.0
 
-LABEL org.opencontainers.image.title="OxiGDAL Development Environment" \
-      org.opencontainers.image.description="Full development environment for OxiGDAL with all tools" \
+LABEL org.opencontainers.image.title="OxiGeo Development Environment" \
+      org.opencontainers.image.description="Full development environment for OxiGeo with all tools" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
-      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigeo" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="${OXIGDAL_VERSION}"
+      org.opencontainers.image.version="${OXIGEO_VERSION}"

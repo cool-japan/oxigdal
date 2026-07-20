@@ -1,0 +1,134 @@
+[package]
+name = "oxigeo-dev-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-dev-tools"
+readme = "README.md"
+description = "Development tools for OxiGeo: profiling, debugging, validation, and testing utilities"
+keywords = ["gis", "science", "development", "profiling", "testing"]
+categories = ["science", "development-tools", "development-tools::profiling"]
+
+[features]
+default = []
+# File-watching support (notify depends on C inotify/kqueue; off by default)
+file-watch = ["dep:notify"]
+
+[dependencies]
+# Internal dependencies
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-geotiff.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Time and duration
+chrono.workspace = true
+
+# System information
+sysinfo.workspace = true
+
+# Formatting and display
+colored.workspace = true
+comfy-table.workspace = true
+
+# File watching (optional — notify links to C inotify/kqueue; enable with feature "file-watch")
+notify = { workspace = true, optional = true }
+walkdir.workspace = true
+
+# Benchmarking
+criterion.workspace = true
+
+# Profiling
+pprof.workspace = true
+
+# Testing utilities
+proptest.workspace = true
+tempfile.workspace = true
+
+# Diff
+diff.workspace = true
+
+# Utilities
+num-traits.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+oxigeo-jupyter.workspace = true
+# Real driver / algorithm crates exercised by the cross-crate and cross-driver
+# integration tests (tests/integration/{cross_crate,drivers_cross}.rs). These are
+# dev-only so they do not enlarge the production dependency surface.
+oxigeo-zarr.workspace = true
+oxigeo-geojson.workspace = true
+oxigeo-proj.workspace = true
+oxigeo-stac.workspace = true
+# oxigeo-algorithms is declared with default-features = false in the workspace
+# root; re-enable the std feature so the raster calculator (band math) is usable.
+# Path-only (no version): dev-dependencies are stripped from the published
+# manifest, so a workspace-inherited version requirement here would force
+# cargo to resolve `oxigeo-algorithms = "^0.2.0"` against crates.io during
+# `cargo publish`, which fails before that version exists.
+oxigeo-algorithms = { path = "../oxigeo-algorithms", default-features = false, features = ["std"] }
+# chrono and serde_json are already normal dependencies (used by the STAC
+# integration test); no separate dev-dependency entry is required.
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[test]]
+name = "vector_advanced"
+path = "../../tests/integration/vector_advanced.rs"
+
+[[test]]
+name = "drivers_cross"
+path = "../../tests/integration/drivers_cross.rs"
+
+[[test]]
+name = "format_roundtrip"
+path = "../../tests/integration/format_roundtrip.rs"
+
+[[test]]
+name = "cross_crate"
+path = "../../tests/integration/cross_crate.rs"
+
+[[test]]
+name = "algorithms_advanced"
+path = "../../tests/integration/algorithms_advanced.rs"
+
+[[test]]
+name = "cloud_integration"
+path = "../../tests/integration/cloud_integration.rs"
+
+[[test]]
+name = "fuzzing"
+path = "../../tests/integration/fuzzing.rs"
+
+[[test]]
+name = "ml_pipeline"
+path = "../../tests/integration/ml_pipeline.rs"
+
+[[test]]
+name = "performance"
+path = "../../tests/integration/performance.rs"
+
+[[test]]
+name = "property_based"
+path = "../../tests/integration/property_based.rs"
+
+[[test]]
+name = "stress_parallel"
+path = "../../tests/integration/stress_parallel.rs"

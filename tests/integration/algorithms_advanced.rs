@@ -16,16 +16,16 @@
 
 use std::error::Error;
 
-use oxigdal_algorithms::raster::compute_viewshed as real_compute_viewshed;
-use oxigdal_algorithms::raster::hydrology::compute_d8_accumulation_from_fdir;
-use oxigdal_algorithms::{Resampler, ResamplingMethod};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
+use oxigeo_algorithms::raster::compute_viewshed as real_compute_viewshed;
+use oxigeo_algorithms::raster::hydrology::compute_d8_accumulation_from_fdir;
+use oxigeo_algorithms::{Resampler, ResamplingMethod};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Builds a single-band `Float32` [`RasterBuffer`] (width × height) from a
-/// row-major `f32` slice for feeding into the real `oxigdal-algorithms` kernels.
+/// row-major `f32` slice for feeding into the real `oxigeo-algorithms` kernels.
 fn raster_from_f32(data: &[f32], width: usize, height: usize) -> Result<RasterBuffer> {
     let mut buf = RasterBuffer::zeros(width as u64, height as u64, RasterDataType::Float32);
     for y in 0..height {
@@ -51,7 +51,7 @@ fn raster_to_f32(buf: &RasterBuffer, width: usize, height: usize) -> Result<Vec<
     Ok(out)
 }
 
-/// Resamples a row-major `f32` raster through the real `oxigdal-algorithms`
+/// Resamples a row-major `f32` raster through the real `oxigeo-algorithms`
 /// [`Resampler`] using the requested method.
 fn resample_real(
     src: &[f32],
@@ -738,7 +738,7 @@ fn test_resampling_downsampling_quality() -> Result<()> {
     let dst_width = 50;
     let dst_height = 50;
 
-    // Test different methods (all via the real oxigdal-algorithms resamplers).
+    // Test different methods (all via the real oxigeo-algorithms resamplers).
     let nearest = resample_nearest(&src_data, src_width, src_height, dst_width, dst_height)?;
     let bilinear = resample_bilinear(&src_data, src_width, src_height, dst_width, dst_height)?;
     let bicubic = resample_bicubic(&src_data, src_width, src_height, dst_width, dst_height)?;
@@ -1341,7 +1341,7 @@ fn compute_glcm_correlation(glcm: &[Vec<usize>]) -> Result<f64> {
     Ok(0.5) // Placeholder
 }
 
-/// Computes a binary viewshed via the real `oxigdal-algorithms` R1
+/// Computes a binary viewshed via the real `oxigeo-algorithms` R1
 /// line-of-sight kernel. Returns a row-major `u8` grid (1 = visible).
 fn compute_viewshed(
     elevation: &[f32],
@@ -1463,7 +1463,7 @@ fn compute_flow_direction(elevation: &[f32], width: usize, height: usize) -> Res
 }
 
 /// Computes D8 flow accumulation from a precomputed flow-direction grid via the
-/// real `oxigdal-algorithms` hydrology kernel. The grid uses the standard D8
+/// real `oxigeo-algorithms` hydrology kernel. The grid uses the standard D8
 /// power-of-two encoding (E=1, SE=2, S=4, ... NE=128), matching the crate's
 /// `FlowDirection` codes. Returns a row-major `u32` accumulation grid.
 fn compute_flow_accumulation(flow_dir: &[u8], width: usize, height: usize) -> Result<Vec<u32>> {

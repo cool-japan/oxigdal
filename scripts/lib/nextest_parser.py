@@ -126,7 +126,7 @@ def _parse_test_event(event: Dict) -> Optional[TestEvent]:
         return None
 
     # Parse the name to extract package and test name
-    # Format: "oxigdal-analytics::oxigdal_analytics$change::detection::tests::test_absolute_difference"
+    # Format: "oxigeo-analytics::oxigeo_analytics$change::detection::tests::test_absolute_difference"
     parts = test_name_full.split('::', 1)
     if len(parts) >= 2:
         package = parts[0]

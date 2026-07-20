@@ -1,6 +1,6 @@
-# OxiGDAL WebAssembly Guide
+# OxiGeo WebAssembly Guide
 
-This guide covers using OxiGDAL in the browser via WebAssembly (WASM).
+This guide covers using OxiGeo in the browser via WebAssembly (WASM).
 
 ## Table of Contents
 
@@ -15,7 +15,7 @@ This guide covers using OxiGDAL in the browser via WebAssembly (WASM).
 
 ## Introduction
 
-OxiGDAL's WebAssembly bindings (`oxigdal-wasm`) enable geospatial processing directly in the browser:
+OxiGeo's WebAssembly bindings (`oxigeo-wasm`) enable geospatial processing directly in the browser:
 
 - **No server required** - All processing happens client-side
 - **Fast performance** - Near-native speed via WASM
@@ -43,7 +43,7 @@ OxiGDAL's WebAssembly bindings (`oxigdal-wasm`) enable geospatial processing dir
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 # Build the WASM package
-cd oxigdal/crates/oxigdal-wasm
+cd oxigeo/crates/oxigeo-wasm
 wasm-pack build --target web --out-dir ../../demo/cog-viewer/pkg
 ```
 
@@ -52,9 +52,9 @@ wasm-pack build --target web --out-dir ../../demo/cog-viewer/pkg
 **NPM/Yarn Installation** (when published):
 
 ```bash
-npm install @cooljapan/oxigdal
+npm install @cooljapan/oxigeo
 # or
-yarn add @cooljapan/oxigdal
+yarn add @cooljapan/oxigeo
 ```
 
 **Manual Installation**:
@@ -62,7 +62,7 @@ yarn add @cooljapan/oxigdal
 Copy the generated `pkg/` directory to your project and import:
 
 ```javascript
-import init, { WasmCogViewer } from './pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer } from './pkg/oxigeo_wasm.js';
 ```
 
 ### HTML Setup
@@ -72,12 +72,12 @@ import init, { WasmCogViewer } from './pkg/oxigdal_wasm.js';
 <html>
 <head>
     <meta charset="utf-8">
-    <title>OxiGDAL WASM Demo</title>
+    <title>OxiGeo WASM Demo</title>
 </head>
 <body>
     <canvas id="map" width="800" height="600"></canvas>
     <script type="module">
-        import init from './pkg/oxigdal_wasm.js';
+        import init from './pkg/oxigeo_wasm.js';
         await init();
         // Your code here
     </script>
@@ -92,7 +92,7 @@ import init, { WasmCogViewer } from './pkg/oxigdal_wasm.js';
 ### Basic COG Viewing
 
 ```javascript
-import init, { WasmCogViewer } from './pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer } from './pkg/oxigeo_wasm.js';
 
 async function viewCog(url) {
     // Initialize WASM module
@@ -173,7 +173,7 @@ try {
 ### Advanced Viewer with Caching
 
 ```javascript
-import { AdvancedCogViewer } from './pkg/oxigdal_wasm.js';
+import { AdvancedCogViewer } from './pkg/oxigeo_wasm.js';
 
 async function advancedView(url) {
     const viewer = new AdvancedCogViewer();
@@ -311,7 +311,7 @@ const histogram = JSON.parse(
 ### Batch Tile Loading
 
 ```javascript
-import { BatchTileLoader } from './pkg/oxigdal_wasm.js';
+import { BatchTileLoader } from './pkg/oxigeo_wasm.js';
 
 async function batchLoad(url) {
     const loader = new BatchTileLoader(4); // 4 parallel requests
@@ -338,7 +338,7 @@ async function batchLoad(url) {
 ### Web Workers
 
 ```javascript
-import { WasmWorkerPool } from './pkg/oxigdal_wasm.js';
+import { WasmWorkerPool } from './pkg/oxigeo_wasm.js';
 
 async function useWorkers(url) {
     // Create worker pool
@@ -412,7 +412,7 @@ viewer.setPrefetchStrategy('none');       // No prefetching
 // to fetch only the needed tiles
 
 // Monitor fetch statistics
-import { FetchStats } from './pkg/oxigdal_wasm.js';
+import { FetchStats } from './pkg/oxigeo_wasm.js';
 
 const stats = FetchStats.get();
 console.log('Total requests:', stats.totalRequests);
@@ -423,7 +423,7 @@ console.log('Cache hits:', stats.cacheHits);
 ### Retry Configuration
 
 ```javascript
-import { FetchBackend, RetryConfig } from './pkg/oxigdal_wasm.js';
+import { FetchBackend, RetryConfig } from './pkg/oxigeo_wasm.js';
 
 // Configure retry behavior
 const config = RetryConfig.new()
@@ -446,7 +446,7 @@ const backend = await FetchBackend.newWithConfig(url, config);
 <html>
 <head>
     <meta charset="utf-8">
-    <title>OxiGDAL COG Viewer</title>
+    <title>OxiGeo COG Viewer</title>
     <style>
         #container {
             display: flex;
@@ -481,7 +481,7 @@ const backend = await FetchBackend.newWithConfig(url, config);
     </div>
 
     <script type="module">
-        import init, { AdvancedCogViewer } from './pkg/oxigdal_wasm.js';
+        import init, { AdvancedCogViewer } from './pkg/oxigeo_wasm.js';
 
         await init();
 
@@ -621,7 +621,7 @@ Hit Rate: ${(cacheStats.hitRate * 100).toFixed(1)}%
 ### GeoJSON Export
 
 ```javascript
-import { GeoJsonExporter } from './pkg/oxigdal_wasm.js';
+import { GeoJsonExporter } from './pkg/oxigeo_wasm.js';
 
 // Export image bounds as GeoJSON
 const bounds = GeoJsonExporter.exportBounds(
@@ -645,7 +645,7 @@ console.log('Point GeoJSON:', point);
 
 ## Browser Compatibility
 
-OxiGDAL WASM works in all modern browsers:
+OxiGeo WASM works in all modern browsers:
 
 | Browser | Minimum Version | Notes |
 |---------|----------------|-------|
@@ -705,9 +705,9 @@ if (performance.memory) {
 
 ## See Also
 
-- [Quickstart Guide](oxigdal_quickstart_guide.md)
-- [Driver Guide](oxigdal_driver_guide.md)
-- [Algorithm Guide](oxigdal_algorithm_guide.md)
-- **Demo Application**: `oxigdal/demo/cog-viewer/`
-- **API Documentation**: https://docs.rs/oxigdal-wasm
+- [Quickstart Guide](oxigeo_quickstart_guide.md)
+- [Driver Guide](oxigeo_driver_guide.md)
+- [Algorithm Guide](oxigeo_algorithm_guide.md)
+- **Demo Application**: `oxigeo/demo/cog-viewer/`
+- **API Documentation**: https://docs.rs/oxigeo-wasm
 - **WASM Pack Documentation**: https://rustwasm.github.io/wasm-pack/

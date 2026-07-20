@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Detect slow tests across OxiGDAL workspace
+# Detect slow tests across OxiGeo workspace
 # Usage: ./scripts/detect-slow-tests.sh [gpu-ml|gpu|all|<package-name>]
 
 # Default to gpu-ml if no argument provided
@@ -36,17 +36,17 @@ log_error() {
 
 # Package groups
 GPU_ML_PACKAGES=(
-    "oxigdal-gpu"
-    "oxigdal-gpu-advanced"
-    "oxigdal-ml"
-    "oxigdal-ml-foundation"
-    "oxigdal-analytics"
-    "oxigdal-distributed"
+    "oxigeo-gpu"
+    "oxigeo-gpu-advanced"
+    "oxigeo-ml"
+    "oxigeo-ml-foundation"
+    "oxigeo-analytics"
+    "oxigeo-distributed"
 )
 
 GPU_PACKAGES=(
-    "oxigdal-gpu"
-    "oxigdal-gpu-advanced"
+    "oxigeo-gpu"
+    "oxigeo-gpu-advanced"
 )
 
 # Function to run slow test detection for a package

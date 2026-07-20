@@ -1,9 +1,9 @@
-# OxiGDAL AWS CloudFormation Template
-# Deploys OxiGDAL server on AWS with ECS Fargate
+# OxiGeo AWS CloudFormation Template
+# Deploys OxiGeo server on AWS with ECS Fargate
 # Author: COOLJAPAN OU (Team Kitasan)
 
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'OxiGDAL Geospatial Server - Complete Infrastructure'
+Description: 'OxiGeo Geospatial Server - Complete Infrastructure'
 
 Parameters:
   Environment:
@@ -38,8 +38,8 @@ Parameters:
 
   ContainerImage:
     Type: String
-    Default: ghcr.io/cool-japan/oxigdal-server:latest
-    Description: Docker image for OxiGDAL server
+    Default: ghcr.io/cool-japan/oxigeo-server:latest
+    Description: Docker image for OxiGeo server
 
   DesiredCount:
     Type: Number
@@ -315,7 +315,7 @@ Resources:
       AllocatedStorage: !Ref DBAllocatedStorage
       StorageType: gp3
       StorageEncrypted: true
-      MasterUsername: oxigdal
+      MasterUsername: oxigeo
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${DBSecret}:SecretString:password}}'
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
@@ -333,7 +333,7 @@ Resources:
     Properties:
       Description: Database credentials
       GenerateSecretString:
-        SecretStringTemplate: '{"username": "oxigdal"}'
+        SecretStringTemplate: '{"username": "oxigeo"}'
         GenerateStringKey: password
         PasswordLength: 32
         ExcludeCharacters: '"@/\'
@@ -475,7 +475,7 @@ Resources:
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
-        - Name: oxigdal-server
+        - Name: oxigeo-server
           Image: !Ref ContainerImage
           PortMappings:
             - ContainerPort: 8080
@@ -483,9 +483,9 @@ Resources:
           Environment:
             - Name: RUST_LOG
               Value: info
-            - Name: OXIGDAL_HOST
+            - Name: OXIGEO_HOST
               Value: 0.0.0.0
-            - Name: OXIGDAL_PORT
+            - Name: OXIGEO_PORT
               Value: '8080'
             - Name: POSTGRES_HOST
               Value: !GetAtt DBInstance.Endpoint.Address
@@ -523,7 +523,7 @@ Resources:
             - !Ref PrivateSubnet1
             - !Ref PrivateSubnet2
       LoadBalancers:
-        - ContainerName: oxigdal-server
+        - ContainerName: oxigeo-server
           ContainerPort: 8080
           TargetGroupArn: !Ref ALBTargetGroup
 

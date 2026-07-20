@@ -1,6 +1,6 @@
-# OxiGDAL Performance Benchmarks
+# OxiGeo Performance Benchmarks
 
-This directory contains comprehensive performance benchmarks for OxiGDAL using Criterion.rs.
+This directory contains comprehensive performance benchmarks for OxiGeo using Criterion.rs.
 
 ## Benchmark Suites
 
@@ -122,11 +122,11 @@ Open `target/criterion/report/index.html` in your browser to view:
 - Statistical analysis (mean, median, std dev)
 - Throughput measurements
 
-## Comparison Methodology: OxiGDAL vs GDAL/Rasterio
+## Comparison Methodology: OxiGeo vs GDAL/Rasterio
 
 ### Benchmarking Strategy
 
-To compare OxiGDAL performance with GDAL and rasterio, follow these steps:
+To compare OxiGeo performance with GDAL and rasterio, follow these steps:
 
 #### 1. Environment Setup
 
@@ -144,7 +144,7 @@ gdalinfo --version
 python --version
 pip show rasterio
 
-# OxiGDAL
+# OxiGeo
 cargo --version
 rustc --version
 ```
@@ -249,7 +249,7 @@ def test_geotransform_pixel_to_world(benchmark):
         result = benchmark(pixel_to_world)
 ```
 
-#### 5. OxiGDAL Benchmarks
+#### 5. OxiGeo Benchmarks
 
 Use the existing Criterion benchmarks in this directory.
 
@@ -271,7 +271,7 @@ Use the existing Criterion benchmarks in this directory.
 
 #### 7. Comparison Metrics
 
-Compare OxiGDAL against GDAL/rasterio on:
+Compare OxiGeo against GDAL/rasterio on:
 
 ##### A. Core Operations
 - GeoTransform: pixel↔world conversions
@@ -306,7 +306,7 @@ import pandas as pd
 
 # Example: Compression throughput comparison
 data = {
-    'Library': ['OxiGDAL', 'GDAL', 'Rasterio'],
+    'Library': ['OxiGeo', 'GDAL', 'Rasterio'],
     'DEFLATE (MB/s)': [245, 198, 185],
     'LZW (MB/s)': [312, 289, 275],
     'ZSTD (MB/s)': [428, 387, 365],
@@ -325,16 +325,16 @@ Use statistical tests to determine if differences are significant:
 ```python
 from scipy import stats
 
-oxigdal_times = [1.23, 1.25, 1.22, 1.24, 1.23]  # milliseconds
+oxigeo_times = [1.23, 1.25, 1.22, 1.24, 1.23]  # milliseconds
 gdal_times = [1.45, 1.47, 1.44, 1.46, 1.45]
 
 # Perform t-test
-statistic, pvalue = stats.ttest_ind(oxigdal_times, gdal_times)
+statistic, pvalue = stats.ttest_ind(oxigeo_times, gdal_times)
 
 if pvalue < 0.05:
     print(f"Significant difference (p={pvalue:.4f})")
-    speedup = np.mean(gdal_times) / np.mean(oxigdal_times)
-    print(f"OxiGDAL is {speedup:.2f}x faster")
+    speedup = np.mean(gdal_times) / np.mean(oxigeo_times)
+    print(f"OxiGeo is {speedup:.2f}x faster")
 ```
 
 #### 10. Reporting Format
@@ -351,7 +351,7 @@ Create a benchmark report with:
 **Example Report Structure**:
 
 ```markdown
-# OxiGDAL vs GDAL/Rasterio Performance Comparison
+# OxiGeo vs GDAL/Rasterio Performance Comparison
 
 ## Environment
 - CPU: AMD Ryzen 9 5950X (16 cores, 3.4 GHz)
@@ -359,7 +359,7 @@ Create a benchmark report with:
 - OS: Linux 6.1.0
 - GDAL: 3.8.0
 - Rasterio: 1.3.9
-- OxiGDAL: 0.1.0
+- OxiGeo: 0.1.0
 
 ## Test Data
 - 1024×1024 Float32 GeoTIFF
@@ -370,7 +370,7 @@ Create a benchmark report with:
 
 ### GeoTransform Performance
 
-| Operation | OxiGDAL (μs) | GDAL (μs) | Speedup |
+| Operation | OxiGeo (μs) | GDAL (μs) | Speedup |
 |-----------|-------------|-----------|---------|
 | Pixel→World | 0.45 | 0.62 | 1.38x |
 | World→Pixel | 0.58 | 0.81 | 1.40x |
@@ -378,7 +378,7 @@ Create a benchmark report with:
 
 ### Compression Performance
 
-| Codec | OxiGDAL (MB/s) | GDAL (MB/s) | Speedup |
+| Codec | OxiGeo (MB/s) | GDAL (MB/s) | Speedup |
 |-------|---------------|-------------|---------|
 | DEFLATE | 245 | 198 | 1.24x |
 | LZW | 312 | 289 | 1.08x |
@@ -386,7 +386,7 @@ Create a benchmark report with:
 
 ## Analysis
 
-OxiGDAL demonstrates 10-50% performance improvements over GDAL in most operations:
+OxiGeo demonstrates 10-50% performance improvements over GDAL in most operations:
 
 1. **GeoTransform**: Rust's LLVM optimizations and inline functions provide
    consistent 1.4x speedup
@@ -396,7 +396,7 @@ OxiGDAL demonstrates 10-50% performance improvements over GDAL in most operation
 
 ## Conclusions
 
-OxiGDAL provides competitive to superior performance compared to GDAL while
+OxiGeo provides competitive to superior performance compared to GDAL while
 maintaining memory safety guarantees.
 ```
 

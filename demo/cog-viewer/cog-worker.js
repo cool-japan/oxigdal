@@ -12,7 +12,7 @@
  */
 
 // Import WASM module
-import init, { WasmCogViewer } from '../pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer } from '../pkg/oxigeo_wasm.js';
 
 // Worker state
 let wasmInitialized = false;

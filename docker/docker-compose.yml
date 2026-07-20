@@ -1,17 +1,17 @@
-# OxiGDAL Docker Compose - Production Configuration
+# OxiGeo Docker Compose - Production Configuration
 # Multi-service composition for production deployment
 # Author: COOLJAPAN OU (Team Kitasan)
 
 version: '3.9'
 
 services:
-  # OxiGDAL tile server - WMS/WMTS/WFS
+  # OxiGeo tile server - WMS/WMTS/WFS
   server:
     build:
       context: ..
       dockerfile: docker/Dockerfile.server
-    image: oxigdal/server:latest
-    container_name: oxigdal-server
+    image: oxigeo/server:latest
+    container_name: oxigeo-server
     restart: unless-stopped
     ports:
       - "8080:8080"  # HTTP server
@@ -23,17 +23,17 @@ services:
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
-      - OXIGDAL_HOST=0.0.0.0
-      - OXIGDAL_PORT=8080
-      - OXIGDAL_DATA_DIR=/data
-      - OXIGDAL_CACHE_DIR=/cache
-      # NOTE: OXIGDAL_CACHE_SIZE / OXIGDAL_MAX_TILE_AGE are not currently read by
-      # crates/oxigdal-server (its CLI only binds OXIGDAL_HOST/PORT/WORKERS/LOG_LEVEL/CONFIG
+      - OXIGEO_HOST=0.0.0.0
+      - OXIGEO_PORT=8080
+      - OXIGEO_DATA_DIR=/data
+      - OXIGEO_CACHE_DIR=/cache
+      # NOTE: OXIGEO_CACHE_SIZE / OXIGEO_MAX_TILE_AGE are not currently read by
+      # crates/oxigeo-server (its CLI only binds OXIGEO_HOST/PORT/WORKERS/LOG_LEVEL/CONFIG
       # via clap's `env` attribute - see src/main.rs). Cache sizing/TTL is controlled by
       # [cache] in the mounted server.toml (docker/config/server.toml) instead; these two
       # vars are kept here as documentation of intent pending that CLI gap being closed.
-      - OXIGDAL_CACHE_SIZE=${OXIGDAL_CACHE_SIZE:-1024}
-      - OXIGDAL_MAX_TILE_AGE=${OXIGDAL_MAX_TILE_AGE:-3600}
+      - OXIGEO_CACHE_SIZE=${OXIGEO_CACHE_SIZE:-1024}
+      - OXIGEO_MAX_TILE_AGE=${OXIGEO_MAX_TILE_AGE:-3600}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -41,7 +41,7 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - oxigdal-network
+      - oxigeo-network
     deploy:
       resources:
         limits:
@@ -54,7 +54,7 @@ services:
   # PostgreSQL with PostGIS for vector data
   postgres:
     image: postgis/postgis:16-3.4
-    container_name: oxigdal-postgres
+    container_name: oxigeo-postgres
     restart: unless-stopped
     ports:
       - "5432:5432"
@@ -62,17 +62,17 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d:ro
     environment:
-      - POSTGRES_DB=${POSTGRES_DB:-oxigdal}
-      - POSTGRES_USER=${POSTGRES_USER:-oxigdal}
+      - POSTGRES_DB=${POSTGRES_DB:-oxigeo}
+      - POSTGRES_USER=${POSTGRES_USER:-oxigeo}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
       - PGDATA=/var/lib/postgresql/data/pgdata
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oxigdal}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oxigeo}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - oxigdal-network
+      - oxigeo-network
     deploy:
       resources:
         limits:
@@ -85,7 +85,7 @@ services:
   # Redis for caching
   redis:
     image: redis:7-alpine
-    container_name: oxigdal-redis
+    container_name: oxigeo-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -98,7 +98,7 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - oxigdal-network
+      - oxigeo-network
     deploy:
       resources:
         limits:
@@ -111,7 +111,7 @@ services:
   # Prometheus for metrics collection
   prometheus:
     image: prom/prometheus:latest
-    container_name: oxigdal-prometheus
+    container_name: oxigeo-prometheus
     restart: unless-stopped
     ports:
       - "9090:9090"
@@ -125,7 +125,7 @@ services:
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
     networks:
-      - oxigdal-network
+      - oxigeo-network
     deploy:
       resources:
         limits:
@@ -138,20 +138,20 @@ services:
   # Grafana for visualization
   grafana:
     image: grafana/grafana:latest
-    container_name: oxigdal-grafana
+    container_name: oxigeo-grafana
     restart: unless-stopped
     ports:
       - "3000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/oxigdal.json:ro
+      - ./monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/oxigeo.json:ro
       - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
     networks:
-      - oxigdal-network
+      - oxigeo-network
     depends_on:
       - prometheus
     deploy:
@@ -166,7 +166,7 @@ services:
   # Nginx reverse proxy
   nginx:
     image: nginx:alpine
-    container_name: oxigdal-nginx
+    container_name: oxigeo-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -178,7 +178,7 @@ services:
     depends_on:
       - server
     networks:
-      - oxigdal-network
+      - oxigeo-network
     deploy:
       resources:
         limits:
@@ -189,7 +189,7 @@ services:
           memory: 128M
 
 networks:
-  oxigdal-network:
+  oxigeo-network:
     driver: bridge
     ipam:
       config:

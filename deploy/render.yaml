@@ -1,11 +1,11 @@
-# OxiGDAL Render Configuration
+# OxiGeo Render Configuration
 # Configuration for Render platform deployment
 # Author: COOLJAPAN OU (Team Kitasan)
 
 services:
-  # OxiGDAL Server
+  # OxiGeo Server
   - type: web
-    name: oxigdal-server
+    name: oxigeo-server
     env: docker
     dockerfilePath: ./docker/Dockerfile.server
     region: oregon
@@ -19,55 +19,55 @@ services:
         value: info
       - key: RUST_BACKTRACE
         value: "1"
-      - key: OXIGDAL_HOST
+      - key: OXIGEO_HOST
         value: "0.0.0.0"
-      - key: OXIGDAL_PORT
+      - key: OXIGEO_PORT
         value: "8080"
-      - key: OXIGDAL_DATA_DIR
+      - key: OXIGEO_DATA_DIR
         value: /data
-      - key: OXIGDAL_CACHE_DIR
+      - key: OXIGEO_CACHE_DIR
         value: /cache
       - key: POSTGRES_HOST
         fromDatabase:
-          name: oxigdal-postgres
+          name: oxigeo-postgres
           property: host
       - key: POSTGRES_PORT
         fromDatabase:
-          name: oxigdal-postgres
+          name: oxigeo-postgres
           property: port
       - key: POSTGRES_DB
         fromDatabase:
-          name: oxigdal-postgres
+          name: oxigeo-postgres
           property: database
       - key: POSTGRES_USER
         fromDatabase:
-          name: oxigdal-postgres
+          name: oxigeo-postgres
           property: user
       - key: POSTGRES_PASSWORD
         fromDatabase:
-          name: oxigdal-postgres
+          name: oxigeo-postgres
           property: password
       - key: REDIS_HOST
         fromService:
           type: redis
-          name: oxigdal-redis
+          name: oxigeo-redis
           property: host
       - key: REDIS_PORT
         fromService:
           type: redis
-          name: oxigdal-redis
+          name: oxigeo-redis
           property: port
 
     autoDeploy: true
 
     disk:
-      name: oxigdal-data
+      name: oxigeo-data
       mountPath: /data
       sizeGB: 10
 
   # Redis Cache
   - type: redis
-    name: oxigdal-redis
+    name: oxigeo-redis
     plan: standard
     region: oregon
     maxmemoryPolicy: allkeys-lru
@@ -75,9 +75,9 @@ services:
 
 # PostgreSQL Database
 databases:
-  - name: oxigdal-postgres
-    databaseName: oxigdal
-    user: oxigdal
+  - name: oxigeo-postgres
+    databaseName: oxigeo
+    user: oxigeo
     plan: standard
     region: oregon
     postgresMajorVersion: 16

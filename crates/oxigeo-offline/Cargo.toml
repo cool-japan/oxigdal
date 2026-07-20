@@ -1,0 +1,84 @@
+[package]
+name = "oxigeo-offline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-offline"
+readme = "README.md"
+description = "Offline-first data management with sync queue, conflict resolution, and optimistic updates for OxiGeo"
+keywords = ["offline", "sync", "conflict-resolution", "indexeddb", "sqlite"]
+categories = ["database", "wasm", "caching", "asynchronous"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["native"]
+native = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio", "dep:futures"]
+wasm = ["wasm-bindgen", "js-sys", "web-sys", "wasm-bindgen-futures"]
+serde = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime (native only)
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+# Pure-Rust SQLite engine (native; replaces rusqlite / libsqlite3)
+oxisql-core = { workspace = true, optional = true }
+oxisql-sqlite-compat = { workspace = true, optional = true }
+
+# WASM support
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+oxiarc-deflate = { workspace = true }
+
+# Internal dependencies
+oxigeo-core = { workspace = true, default-features = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+proptest = { workspace = true }
+wasm-bindgen-test.workspace = true
+
+[lints]
+workspace = true
+
+# `all-features = true` enables `native` (oxisql-core/oxisql-sqlite-compat,
+# pure-Rust, no rusqlite/libsqlite3), `wasm` (wasm-bindgen/js-sys/web-sys —
+# these compile as inert stubs off the wasm32 target, they are not
+# wasm32-gated in their own Cargo.toml) and `serde` together. Verified
+# 2026-07-17 with `cargo doc -p oxigeo-offline --no-deps --target
+# x86_64-unknown-linux-gnu --all-features` (docs.rs's default target) —
+# builds clean, no non-Linux/FFI deps resolved. (Unrelated pre-existing
+# rustdoc private-intra-doc-link warnings in src/conflict.rs and
+# src/history.rs were observed but do not fail the docs.rs build; out of
+# scope for this docs.rs-metadata lane — flagged for the owning lane.)
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

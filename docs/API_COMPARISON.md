@@ -1,6 +1,6 @@
-# API Comparison: OxiGDAL vs GDAL
+# API Comparison: OxiGeo vs GDAL
 
-Comprehensive reference comparing OxiGDAL APIs with their GDAL equivalents.
+Comprehensive reference comparing OxiGeo APIs with their GDAL equivalents.
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@ Comprehensive reference comparing OxiGDAL APIs with their GDAL equivalents.
 
 ### Opening and Reading Files
 
-| Operation | GDAL (C++) | GDAL (Python) | OxiGDAL (Rust) |
+| Operation | GDAL (C++) | GDAL (Python) | OxiGeo (Rust) |
 |-----------|-----------|---------------|----------------|
 | Open file | `GDALOpen("file.tif", GA_ReadOnly)` | `gdal.Open("file.tif")` | `FileDataSource::open("file.tif")?` |
 | Get width | `dataset->GetRasterXSize()` | `ds.RasterXSize` | `reader.width()` |
@@ -29,7 +29,7 @@ Comprehensive reference comparing OxiGDAL APIs with their GDAL equivalents.
 ### Raster Data Access
 
 ```rust
-// OxiGDAL: Type-safe raster access
+// OxiGeo: Type-safe raster access
 let buffer = reader.read_tile_buffer(0, 0, 0)?;
 
 // Get pixel
@@ -49,7 +49,7 @@ for pixel in buffer.iter() {
 
 ### Raster Statistics
 
-| Operation | GDAL (C++) | GDAL (Python) | OxiGDAL |
+| Operation | GDAL (C++) | GDAL (Python) | OxiGeo |
 |-----------|-----------|---------------|---------|
 | Compute stats | `band->ComputeStatistics()` | `band.ComputeStatistics()` | `buffer.compute_statistics()?` |
 | Get minimum | `band->GetMinimum()` | `band.GetMinimum()` | `stats.min` |
@@ -60,8 +60,8 @@ for pixel in buffer.iter() {
 ### Raster Resampling
 
 ```rust
-// OxiGDAL: Resample raster data
-use oxigdal_algorithms::resample::{Resampling, ResampleOptions};
+// OxiGeo: Resample raster data
+use oxigeo_algorithms::resample::{Resampling, ResampleOptions};
 
 let options = ResampleOptions {
     width: new_width,
@@ -75,7 +75,7 @@ let resampled = buffer.resample(&options)?;
 ### Band Math
 
 ```rust
-// OxiGDAL: Type-safe band math
+// OxiGeo: Type-safe band math
 fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer) -> Result<RasterBuffer> {
     let mut result = RasterBuffer::zeros(
         nir.width(),
@@ -98,7 +98,7 @@ fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer) -> Result<RasterBuffer
 
 ### Raster Writing
 
-| Operation | GDAL (C++) | GDAL (Python) | OxiGDAL |
+| Operation | GDAL (C++) | GDAL (Python) | OxiGeo |
 |-----------|-----------|---------------|---------|
 | Create file | `driver->Create()` | `driver.Create()` | `GeoTiffWriter::new()?` |
 | Write band | `band->WriteArray()` | `band.WriteArray()` | `writer.write_buffer()?` |
@@ -111,7 +111,7 @@ fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer) -> Result<RasterBuffer
 
 ### Opening and Reading Vector Data
 
-| Operation | GDAL (OGR C++) | GDAL (OGR Python) | OxiGDAL |
+| Operation | GDAL (OGR C++) | GDAL (OGR Python) | OxiGeo |
 |-----------|---------------|-------------------|---------|
 | Open source | `OGROpen("file.shp")` | `ogr.Open("file.shp")` | `FileDataSource::open()?` |
 | Get layer | `datasource->GetLayer(0)` | `ds.GetLayer(0)` | `reader.layer(0)?` |
@@ -122,7 +122,7 @@ fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer) -> Result<RasterBuffer
 
 ### Geometry Operations
 
-| Operation | Shapely (Python) | OxiGDAL (Rust via geo) |
+| Operation | Shapely (Python) | OxiGeo (Rust via geo) |
 |-----------|------------------|----------------------|
 | Create point | `Point(x, y)` | `Point::new(x, y)` |
 | Create linestring | `LineString(coords)` | `LineString::from(coords)` |
@@ -138,9 +138,9 @@ fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer) -> Result<RasterBuffer
 ### Vector Writing
 
 ```rust
-// OxiGDAL: Write vector features
-use oxigdal_core::vector::{Feature, Geometry};
-use oxigdal_geojson::GeoJsonWriter;
+// OxiGeo: Write vector features
+use oxigeo_core::vector::{Feature, Geometry};
+use oxigeo_geojson::GeoJsonWriter;
 
 let mut writer = GeoJsonWriter::create("output.geojson")?;
 
@@ -154,20 +154,20 @@ writer.write_feature(&feature)?;
 
 ## Coordinate Reference Systems
 
-| Operation | GDAL (Python) | OxiGDAL |
+| Operation | GDAL (Python) | OxiGeo |
 |-----------|---------------|---------|
 | Create from EPSG | `osr.SpatialReference(4326)` | `Projection::from_epsg(4326)?` |
 | Create from WKT | `osr.SpatialReference(wkt_string)` | `Projection::from_wkt(wkt_string)?` |
 | Get EPSG code | `srs.GetAttrValue("AUTHORITY", 1)` | `proj.epsg_code()` |
 | Get WKT | `srs.ExportToWkt()` | `proj.to_wkt()?` |
 | Transform point | `ct.TransformPoint(x, y)` | `proj.transform_point(x, y, &other_proj)?` |
-| Transform buffer | `gdal.Warp()` | `oxigdal_algorithms::reproject()` |
+| Transform buffer | `gdal.Warp()` | `oxigeo_algorithms::reproject()` |
 
 ### Projection Example
 
 ```rust
-// OxiGDAL: Coordinate transformation
-use oxigdal_proj::Projection;
+// OxiGeo: Coordinate transformation
+use oxigeo_proj::Projection;
 
 let from = Projection::from_epsg(4326)?;  // WGS84
 let to = Projection::from_epsg(3857)?;    // Web Mercator
@@ -180,7 +180,7 @@ println!("Transformed: ({}, {})", x, y);
 
 ### GeoTransform
 
-| Aspect | GDAL | OxiGDAL |
+| Aspect | GDAL | OxiGeo |
 |--------|------|---------|
 | Get transform | `ds.GetGeoTransform()` | `reader.geo_transform()` |
 | Tuple structure | `(x_off, pixel_x, x_skew, y_off, y_skew, pixel_y)` | Struct with named fields |
@@ -190,7 +190,7 @@ println!("Transformed: ({}, {})", x, y);
 
 ### NoData Values
 
-| Operation | GDAL (Python) | OxiGDAL |
+| Operation | GDAL (Python) | OxiGeo |
 |-----------|---------------|---------|
 | Get NoData | `band.GetNoDataValue()` | `buffer.nodata_value()` |
 | Set NoData | `band.SetNoDataValue()` | `GeoTiffWriterOptions::nodata` |
@@ -200,7 +200,7 @@ println!("Transformed: ({}, {})", x, y);
 
 ### Raster Data Type Mapping
 
-| GDAL | OxiGDAL | Bits | Range |
+| GDAL | OxiGeo | Bits | Range |
 |------|---------|------|-------|
 | GDT_Byte | UInt8 | 8 | 0-255 |
 | GDT_UInt16 | UInt16 | 16 | 0-65535 |
@@ -236,7 +236,7 @@ except Exception as e:
     print(f"Error: {e}")
 ```
 
-### OxiGDAL Error Pattern
+### OxiGeo Error Pattern
 
 ```rust
 // Explicit Result type
@@ -264,7 +264,7 @@ match FileDataSource::open("file.tif") {
 
 ### File Reading
 
-| Operation | GDAL | OxiGDAL |
+| Operation | GDAL | OxiGeo |
 |-----------|------|---------|
 | Read file | `gdal.Open()` | `FileDataSource::open()?` |
 | Read HTTP | `/vsicurl/http://...` | `HttpBackend::get()?` |
@@ -274,9 +274,9 @@ match FileDataSource::open("file.tif") {
 ### Cloud Storage Access
 
 ```rust
-// OxiGDAL: Cloud-native I/O
-use oxigdal_cloud::backends::{S3Backend, HttpBackend};
-use oxigdal_cloud::retry::RetryConfig;
+// OxiGeo: Cloud-native I/O
+use oxigeo_cloud::backends::{S3Backend, HttpBackend};
+use oxigeo_cloud::retry::RetryConfig;
 
 // S3
 let retry = RetryConfig::default();
@@ -291,7 +291,7 @@ let range_data = http.get_range("https://example.com/file.tif", 0, 1024).await?;
 ### Async Operations
 
 ```rust
-// OxiGDAL: Native async support
+// OxiGeo: Native async support
 #[tokio::main]
 async fn main() -> Result<()> {
     let http = HttpBackend::new(RetryConfig::default());
@@ -311,7 +311,7 @@ async fn main() -> Result<()> {
 
 ### Raster Formats
 
-| Format | GDAL Support | OxiGDAL | Notes |
+| Format | GDAL Support | OxiGeo | Notes |
 |--------|-------------|---------|-------|
 | GeoTIFF/COG | ✅ Full | ✅ Full | Cloud Optimized GeoTIFF |
 | HDF5 | ✅ Full | ✅ Full | Scientific data |
@@ -322,7 +322,7 @@ async fn main() -> Result<()> {
 
 ### Vector Formats
 
-| Format | GDAL Support | OxiGDAL | Notes |
+| Format | GDAL Support | OxiGeo | Notes |
 |--------|-------------|---------|-------|
 | Shapefile | ✅ Full | ✅ Full | Legacy format |
 | GeoJSON | ✅ Full | ✅ Full | Web standard |
@@ -334,7 +334,7 @@ async fn main() -> Result<()> {
 
 ### Memory Usage
 
-| Operation | GDAL | OxiGDAL | Notes |
+| Operation | GDAL | OxiGeo | Notes |
 |-----------|------|---------|-------|
 | Load 1GB file | ~3.5GB | ~1.2GB | Rust vs Python GDAL |
 | Read tile | Contiguous | Cached | Smart caching |
@@ -342,7 +342,7 @@ async fn main() -> Result<()> {
 
 ### Speed
 
-| Operation | GDAL | OxiGDAL | Notes |
+| Operation | GDAL | OxiGeo | Notes |
 |-----------|------|---------|-------|
 | NDVI (4096x4096) | 120ms | 45ms (2.7x) | NumPy vs optimized Rust |
 | With SIMD | - | 18ms (6.7x) | SIMD operations |
@@ -356,7 +356,7 @@ async fn main() -> Result<()> {
 // GDAL
 GDALDataset *ds = (GDALDataset *)GDALOpen("file.tif", GA_ReadOnly);
 
-// OxiGDAL
+// OxiGeo
 let source = FileDataSource::open("file.tif")?;
 let reader = GeoTiffReader::open(source)?;
 ```
@@ -368,7 +368,7 @@ band = ds.GetRasterBand(1)
 data = band.ReadAsArray()
 result = data * 2
 
-# OxiGDAL
+# OxiGeo
 let buffer = reader.read_tile_buffer(0, 0, 0)?;
 let result = buffer.multiply_scalar(2.0)?;
 ```
@@ -381,7 +381,7 @@ out_ds = driver.Create('output.tif', width, height, 1, gdal.GDT_Float32)
 out_ds.SetGeoTransform(gt)
 out_ds.GetRasterBand(1).WriteArray(result)
 
-# OxiGDAL
+# OxiGeo
 let file = File::create("output.tif")?;
 let writer = GeoTiffWriter::new(file, options)?;
 writer.write_buffer(&result)?;

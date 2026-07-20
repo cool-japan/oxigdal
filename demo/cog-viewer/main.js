@@ -1,17 +1,17 @@
 /**
- * OxiGDAL Advanced COG Viewer - Main Application
+ * OxiGeo Advanced COG Viewer - Main Application
  *
  * Features:
  * - Leaflet-based interactive map
- * - OxiGDAL WASM integration for COG reading
+ * - OxiGeo WASM integration for COG reading
  * - Advanced band selection and visualization
  * - Performance monitoring
  * - Comprehensive error handling
  * - Tile caching and optimization
  */
 
-// Import WASM module from pkg directory (symlinked to crates/oxigdal-wasm/pkg)
-import init, { WasmCogViewer, WasmTerrain, version } from './pkg/oxigdal_wasm.js';
+// Import WASM module from pkg directory (symlinked to crates/oxigeo-wasm/pkg)
+import init, { WasmCogViewer, WasmTerrain, version } from './pkg/oxigeo_wasm.js';
 // Vector format parsers (self-contained; keeps this file under 2000 lines).
 import {
     isVectorFormat,
@@ -120,7 +120,7 @@ const app = {
 async function initializeApp() {
     try {
         updateStatus('loading', 'Initializing WebAssembly...');
-        showLoading('Initializing OxiGDAL WASM module...');
+        showLoading('Initializing OxiGeo WASM module...');
 
         // Install the network byte accounting before anything fetches data.
         installFetchAccounting();
@@ -134,7 +134,7 @@ async function initializeApp() {
         const versionBadge = document.getElementById('version-badge');
         versionBadge.textContent = `v${version()}`;
 
-        console.log('OxiGDAL WASM initialized successfully');
+        console.log('OxiGeo WASM initialized successfully');
 
         // Initialize Leaflet map
         initializeMap();
@@ -1030,7 +1030,7 @@ async function assembleElevationGrid(width, height, tileWidth, tileHeight) {
  * through fetch, so they are correctly never counted.
  */
 function installFetchAccounting() {
-    if (typeof window === 'undefined' || window.__oxigdalFetchWrapped) {
+    if (typeof window === 'undefined' || window.__oxigeoFetchWrapped) {
         return;
     }
     const originalFetch = window.fetch.bind(window);
@@ -1057,7 +1057,7 @@ function installFetchAccounting() {
         }
         return response;
     };
-    window.__oxigdalFetchWrapped = true;
+    window.__oxigeoFetchWrapped = true;
 }
 
 /** True for the demo's own code/assets (excluded from the data-fetched tally). */

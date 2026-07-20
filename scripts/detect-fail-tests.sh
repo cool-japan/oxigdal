@@ -2,7 +2,7 @@
 # Disable exit-on-error for this script since we want to collect ALL test failures
 set -uo pipefail
 
-# Detect failing tests across OxiGDAL workspace
+# Detect failing tests across OxiGeo workspace
 # Usage: ./scripts/detect-fail-tests.sh [gpu-ml|gpu|all|<package-name>]
 #
 # This script runs tests with --no-fail-fast to collect ALL failures (not just the first),
@@ -51,26 +51,26 @@ log_debug() {
 
 # Package groups
 GPU_ML_PACKAGES=(
-    "oxigdal-gpu"
-    "oxigdal-gpu-advanced"
-    "oxigdal-ml"
-    "oxigdal-ml-foundation"
-    "oxigdal-analytics"
-    "oxigdal-distributed"
+    "oxigeo-gpu"
+    "oxigeo-gpu-advanced"
+    "oxigeo-ml"
+    "oxigeo-ml-foundation"
+    "oxigeo-analytics"
+    "oxigeo-distributed"
 )
 
 GPU_PACKAGES=(
-    "oxigdal-gpu"
-    "oxigdal-gpu-advanced"
+    "oxigeo-gpu"
+    "oxigeo-gpu-advanced"
 )
 
 # Packages known to have external dependencies (likely to fail in CI/isolated environments)
 EXTERNAL_DEP_PACKAGES=(
-    "oxigdal-kafka"
-    "oxigdal-redis"
-    "oxigdal-s3"
-    "oxigdal-azure"
-    "oxigdal-gcp"
+    "oxigeo-kafka"
+    "oxigeo-redis"
+    "oxigeo-s3"
+    "oxigeo-azure"
+    "oxigeo-gcp"
 )
 
 # Function to run fail test detection for a package
@@ -191,7 +191,7 @@ validate_package() {
 
 # Main execution
 main() {
-    log_info "=== OxiGDAL Fail Test Detection ==="
+    log_info "=== OxiGeo Fail Test Detection ==="
     log_info "Target: $TARGET"
     log_info "Output directory: $OUTPUT_DIR"
     echo ""

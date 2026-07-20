@@ -1,12 +1,12 @@
-# CLI Tool Template for OxiGDAL
+# CLI Tool Template for OxiGeo
 
-A project template for building command-line geospatial processing tools powered by OxiGDAL.
+A project template for building command-line geospatial processing tools powered by OxiGeo.
 
 ## What This Template Provides
 
 - Pre-configured CLI argument parsing with [clap](https://docs.rs/clap) (derive API)
 - Progress bar support via [indicatif](https://docs.rs/indicatif) and styled terminal output via [console](https://docs.rs/console)
-- OxiGDAL core, algorithms, and GeoTIFF driver dependencies ready to use
+- OxiGeo core, algorithms, and GeoTIFF driver dependencies ready to use
 - Structured error handling with `anyhow` and `thiserror`
 - Subcommand-based CLI structure (easily extensible)
 
@@ -51,7 +51,7 @@ fn main() -> Result<()> {
 ## Extending the Template
 
 - Add new subcommands by extending the `Commands` enum
-- Add driver dependencies (`oxigdal-geojson`, `oxigdal-shapefile`, etc.) as needed
+- Add driver dependencies (`oxigeo-geojson`, `oxigeo-shapefile`, etc.) as needed
 - Use `indicatif::ProgressBar` for long-running operations
 - Add logging with `tracing` and `tracing-subscriber`
 
@@ -59,4 +59,4 @@ fn main() -> Result<()> {
 
 Apache-2.0
 
-Part of the [OxiGDAL](https://github.com/cool-japan/oxigdal) project by COOLJAPAN OU.
+Part of the [OxiGeo](https://github.com/cool-japan/oxigeo) project by COOLJAPAN OU.

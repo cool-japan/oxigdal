@@ -1,9 +1,9 @@
-# Netlify configuration for OxiGDAL COG Viewer Demo
+# Netlify configuration for OxiGeo COG Viewer Demo
 # https://docs.netlify.com/configure-builds/file-based-configuration/
 
 [build]
   # Build command - builds WASM and prepares demo
-  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && wasm-opt -Oz -o ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm && mv ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm"
+  command = "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && wasm-opt -Oz -o ../pkg/oxigeo_wasm_bg.wasm.opt ../pkg/oxigeo_wasm_bg.wasm && mv ../pkg/oxigeo_wasm_bg.wasm.opt ../pkg/oxigeo_wasm_bg.wasm"
 
   # Publish directory
   publish = "."
@@ -107,13 +107,13 @@
 
 # Context-specific settings
 [context.production]
-  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && wasm-opt -Oz -o ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm && mv ../pkg/oxigdal_wasm_bg.wasm.opt ../pkg/oxigdal_wasm_bg.wasm"
+  command = "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg && cd ../../demo/cog-viewer && wasm-opt -Oz -o ../pkg/oxigeo_wasm_bg.wasm.opt ../pkg/oxigeo_wasm_bg.wasm && mv ../pkg/oxigeo_wasm_bg.wasm.opt ../pkg/oxigeo_wasm_bg.wasm"
 
 [context.deploy-preview]
-  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --dev --out-dir ../../demo/pkg"
+  command = "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --dev --out-dir ../../demo/pkg"
 
 [context.branch-deploy]
-  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --dev --out-dir ../../demo/pkg"
+  command = "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --dev --out-dir ../../demo/pkg"
 
 # Dev server configuration
 [dev]

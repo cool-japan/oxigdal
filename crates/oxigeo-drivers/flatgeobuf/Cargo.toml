@@ -1,0 +1,51 @@
+[package]
+name = "oxigeo-flatgeobuf"
+description = "FlatGeobuf driver for OxiGeo - Pure Rust GDAL reimplementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-flatgeobuf"
+readme = "README.md"
+keywords = ["flatgeobuf", "fgb", "vector", "science", "gdal"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["oxigeo-core/std", "thiserror/std"]
+async = ["oxigeo-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
+http = ["async", "dep:reqwest"]
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+flatbuffers = { workspace = true }
+
+# Async
+tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# HTTP support
+reqwest = { workspace = true, optional = true, features = ["stream"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
+
+# NOTE: `http` pulls reqwest -> rustls -> aws-lc-sys (C/asm). `std`/`async`
+# stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["std", "async"]
+rustdoc-args = ["--cfg", "docsrs"]

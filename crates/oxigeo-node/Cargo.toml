@@ -1,0 +1,62 @@
+[package]
+name = "oxigeo-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-node"
+readme = "README.md"
+description = "Node.js bindings for OxiGeo - Pure Rust geospatial data abstraction library"
+keywords = ["science", "gdal", "raster", "gis", "nodejs"]
+categories = ["science", "api-bindings"]
+
+[lib]
+name = "oxigeo_node"
+crate-type = ["cdylib"]
+
+[dependencies]
+# OxiGeo ecosystem
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-algorithms = { workspace = true, default-features = true }
+oxigeo-geotiff.workspace = true
+oxigeo-geojson.workspace = true
+oxigeo-proj.workspace = true
+
+# napi-rs for Node.js bindings
+napi = { workspace = true, features = ["async", "tokio_rt", "napi8", "serde-json"] }
+napi-derive.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Utilities
+bytes.workspace = true
+num-traits.workspace = true
+
+[build-dependencies]
+napi-build.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = ["geotiff", "geojson", "proj"]
+geotiff = []
+geojson = []
+proj = []
+algorithms = []
+async-io = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

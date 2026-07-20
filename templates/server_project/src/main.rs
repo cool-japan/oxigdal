@@ -1,4 +1,4 @@
-//! OxiGDAL Server Template
+//! OxiGeo Server Template
 
 use axum::{routing::get, Router};
 use std::net::SocketAddr;
@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = Router::new()
-        .route("/", get(|| async { "OxiGDAL Server" }))
+        .route("/", get(|| async { "OxiGeo Server" }))
         .route("/health", get(|| async { "OK" }));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));

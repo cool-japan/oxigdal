@@ -1,6 +1,6 @@
-# OxiGDAL COG Viewer - Browser Demo
+# OxiGeo COG Viewer - Browser Demo
 
-A modern, interactive web application demonstrating OxiGDAL's WebAssembly capabilities for viewing Cloud Optimized GeoTIFFs (COGs) directly in the browser.
+A modern, interactive web application demonstrating OxiGeo's WebAssembly capabilities for viewing Cloud Optimized GeoTIFFs (COGs) directly in the browser.
 
 ## Features
 
@@ -24,9 +24,9 @@ Before building and deploying the demo, ensure you have:
 
 ## Building the WASM Package
 
-1. Navigate to the oxigdal-wasm crate directory:
+1. Navigate to the oxigeo-wasm crate directory:
    ```bash
-   cd crates/oxigdal-wasm
+   cd crates/oxigeo-wasm
    ```
 
 2. Build the WASM package:
@@ -93,7 +93,7 @@ Any static file server will work. The key requirement is that it must:
 
 4. Your demo will be available at:
    ```
-   https://your-username.github.io/oxigdal/
+   https://your-username.github.io/oxigeo/
    ```
 
 ### Netlify
@@ -147,15 +147,15 @@ Any static file server will work. The key requirement is that it must:
 
 2. Copy the entire demo directory to your web server:
    ```bash
-   rsync -avz demo/ user@your-server:/var/www/oxigdal-demo/
+   rsync -avz demo/ user@your-server:/var/www/oxigeo-demo/
    ```
 
 3. Configure your web server (nginx example):
    ```nginx
    server {
        listen 80;
-       server_name demo.oxigdal.com;
-       root /var/www/oxigdal-demo;
+       server_name demo.oxigeo.com;
+       root /var/www/oxigeo-demo;
        index index.html;
 
        location / {
@@ -218,7 +218,7 @@ Common COG hosting services (AWS S3, Google Cloud Storage, Azure Blob Storage) c
 
 **Solution**: Ensure you've built the WASM package:
 ```bash
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --target web --out-dir ../../demo/pkg
 ```
 
@@ -261,7 +261,7 @@ The demo application consists of:
 ### Technology Stack
 
 - **Frontend**: Vanilla JavaScript (ES6 modules), HTML5 Canvas
-- **WASM**: OxiGDAL compiled to WebAssembly via wasm-pack
+- **WASM**: OxiGeo compiled to WebAssembly via wasm-pack
 - **Styling**: Modern CSS with CSS Grid and Flexbox
 - **No frameworks**: Pure web standards for minimal dependencies
 
@@ -294,7 +294,7 @@ To modify the demo:
 1. Edit HTML/CSS/JS files in the `demo/` directory
 2. Rebuild WASM if you modify Rust code:
    ```bash
-   cd crates/oxigdal-wasm
+   cd crates/oxigeo-wasm
    wasm-pack build --target web --out-dir ../../demo/pkg
    ```
 3. Refresh your browser to see changes
@@ -311,11 +311,11 @@ Contributions are welcome! To contribute:
 
 ## License
 
-This demo is part of the OxiGDAL project and is licensed under Apache-2.0.
+This demo is part of the OxiGeo project and is licensed under Apache-2.0.
 
 ## Links
 
-- [OxiGDAL Repository](https://github.com/cool-japan/oxigdal)
+- [OxiGeo Repository](https://github.com/cool-japan/oxigeo)
 - [COOLJAPAN Ecosystem](https://github.com/cool-japan)
 - [Cloud Optimized GeoTIFF Specification](https://www.cogeo.org/)
 
@@ -324,9 +324,9 @@ This demo is part of the OxiGDAL project and is licensed under Apache-2.0.
 For issues or questions:
 
 - Open an issue on GitHub
-- Check the main OxiGDAL documentation
+- Check the main OxiGeo documentation
 - Review the browser console for error messages
 
 ---
 
-Built with OxiGDAL | Part of the COOLJAPAN Pure Rust Ecosystem
+Built with OxiGeo | Part of the COOLJAPAN Pure Rust Ecosystem

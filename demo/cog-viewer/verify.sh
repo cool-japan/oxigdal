@@ -1,5 +1,5 @@
 #!/bin/bash
-# OxiGDAL COG Viewer - Verification Script
+# OxiGeo COG Viewer - Verification Script
 #
 # This script verifies that all required files are in place
 
@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}OxiGDAL COG Viewer - Verification${NC}"
+echo -e "${BLUE}OxiGeo COG Viewer - Verification${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
@@ -51,8 +51,8 @@ check_file ".gitignore"
 echo ""
 echo "Checking WASM package..."
 check_dir "../pkg"
-check_file "../pkg/oxigdal_wasm.js"
-check_file "../pkg/oxigdal_wasm_bg.wasm"
+check_file "../pkg/oxigeo_wasm.js"
+check_file "../pkg/oxigeo_wasm_bg.wasm"
 
 echo ""
 echo "Checking browser compatibility..."
@@ -73,7 +73,7 @@ else
 fi
 
 # Check WASM import
-if grep -q "import.*oxigdal_wasm" main.js; then
+if grep -q "import.*oxigeo_wasm" main.js; then
     echo -e "${GREEN}✓${NC} WASM module import found"
 else
     echo -e "${RED}✗${NC} WASM module import not found"
@@ -95,14 +95,14 @@ fi
 
 echo ""
 echo "File size summary..."
-if [ -f "../pkg/oxigdal_wasm_bg.wasm" ]; then
-    wasm_size=$(stat -f%z "../pkg/oxigdal_wasm_bg.wasm" 2>/dev/null || stat -c%s "../pkg/oxigdal_wasm_bg.wasm" 2>/dev/null)
+if [ -f "../pkg/oxigeo_wasm_bg.wasm" ]; then
+    wasm_size=$(stat -f%z "../pkg/oxigeo_wasm_bg.wasm" 2>/dev/null || stat -c%s "../pkg/oxigeo_wasm_bg.wasm" 2>/dev/null)
     wasm_kb=$((wasm_size / 1024))
     echo "  WASM binary: ${wasm_kb} KB"
 fi
 
-if [ -f "../pkg/oxigdal_wasm.js" ]; then
-    js_size=$(stat -f%z "../pkg/oxigdal_wasm.js" 2>/dev/null || stat -c%s "../pkg/oxigdal_wasm.js" 2>/dev/null)
+if [ -f "../pkg/oxigeo_wasm.js" ]; then
+    js_size=$(stat -f%z "../pkg/oxigeo_wasm.js" 2>/dev/null || stat -c%s "../pkg/oxigeo_wasm.js" 2>/dev/null)
     js_kb=$((js_size / 1024))
     echo "  JS bindings: ${js_kb} KB"
 fi
@@ -122,7 +122,7 @@ else
     echo -e "${RED}✗ Some checks failed${NC}"
     echo ""
     echo "To build WASM package:"
-    echo "  cd ../../crates/oxigdal-wasm"
+    echo "  cd ../../crates/oxigeo-wasm"
     echo "  wasm-pack build --target web --out-dir ../../demo/pkg"
     exit 1
 fi

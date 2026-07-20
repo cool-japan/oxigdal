@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# OxiGDAL Demo Build Script
+# OxiGeo Demo Build Script
 # This script builds the WASM package for the demo application
 
 set -e  # Exit on error
 
 echo "=========================================="
-echo "OxiGDAL Demo Build Script"
+echo "OxiGeo Demo Build Script"
 echo "=========================================="
 echo ""
 
@@ -19,7 +19,7 @@ fi
 
 # Navigate to the wasm crate directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WASM_CRATE_DIR="${SCRIPT_DIR}/../crates/oxigdal-wasm"
+WASM_CRATE_DIR="${SCRIPT_DIR}/../crates/oxigeo-wasm"
 OUTPUT_DIR="${SCRIPT_DIR}/pkg"
 
 echo "Building WASM package..."

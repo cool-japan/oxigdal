@@ -1,4 +1,4 @@
-# OxiGDAL Docker Image Publishing Workflow
+# OxiGeo Docker Image Publishing Workflow
 # Builds and publishes Docker images to GitHub Container Registry
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -30,16 +30,16 @@ jobs:
     strategy:
       matrix:
         image:
-          - name: oxigdal-server
+          - name: oxigeo-server
             dockerfile: docker/Dockerfile.server
             platforms: linux/amd64,linux/arm64
-          - name: oxigdal-cli
+          - name: oxigeo-cli
             dockerfile: docker/Dockerfile.cli
             platforms: linux/amd64,linux/arm64
-          - name: oxigdal-jupyter
+          - name: oxigeo-jupyter
             dockerfile: docker/Dockerfile.jupyter
             platforms: linux/amd64,linux/arm64
-          - name: oxigdal-dev
+          - name: oxigeo-dev
             dockerfile: docker/Dockerfile.dev
             platforms: linux/amd64
 
@@ -130,8 +130,8 @@ jobs:
     strategy:
       matrix:
         image:
-          - oxigdal-server
-          - oxigdal-cli
+          - oxigeo-server
+          - oxigeo-cli
 
     steps:
       - name: Checkout repository
@@ -149,7 +149,7 @@ jobs:
           docker pull ${{ env.IMAGE_BASE }}/${{ matrix.image }}:${{ github.sha }}
 
           # Test server image
-          if [ "${{ matrix.image }}" = "oxigdal-server" ]; then
+          if [ "${{ matrix.image }}" = "oxigeo-server" ]; then
             docker run -d --name test-server -p 8080:8080 \
               ${{ env.IMAGE_BASE }}/${{ matrix.image }}:${{ github.sha }}
 
@@ -165,7 +165,7 @@ jobs:
           fi
 
           # Test CLI image
-          if [ "${{ matrix.image }}" = "oxigdal-cli" ]; then
+          if [ "${{ matrix.image }}" = "oxigeo-cli" ]; then
             docker run --rm ${{ env.IMAGE_BASE }}/${{ matrix.image }}:${{ github.sha }} --version
           fi
 
@@ -187,19 +187,19 @@ jobs:
           body: |
             ## Docker Images
 
-            - Server: `${{ env.IMAGE_BASE }}/oxigdal-server:${{ github.ref_name }}`
-            - CLI: `${{ env.IMAGE_BASE }}/oxigdal-cli:${{ github.ref_name }}`
-            - Jupyter: `${{ env.IMAGE_BASE }}/oxigdal-jupyter:${{ github.ref_name }}`
-            - Dev: `${{ env.IMAGE_BASE }}/oxigdal-dev:${{ github.ref_name }}`
+            - Server: `${{ env.IMAGE_BASE }}/oxigeo-server:${{ github.ref_name }}`
+            - CLI: `${{ env.IMAGE_BASE }}/oxigeo-cli:${{ github.ref_name }}`
+            - Jupyter: `${{ env.IMAGE_BASE }}/oxigeo-jupyter:${{ github.ref_name }}`
+            - Dev: `${{ env.IMAGE_BASE }}/oxigeo-dev:${{ github.ref_name }}`
 
             ## Quick Start
 
             ```bash
             # Run server
-            docker run -p 8080:8080 ${{ env.IMAGE_BASE }}/oxigdal-server:${{ github.ref_name }}
+            docker run -p 8080:8080 ${{ env.IMAGE_BASE }}/oxigeo-server:${{ github.ref_name }}
 
             # Run CLI
-            docker run ${{ env.IMAGE_BASE }}/oxigdal-cli:${{ github.ref_name }} --help
+            docker run ${{ env.IMAGE_BASE }}/oxigeo-cli:${{ github.ref_name }} --help
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

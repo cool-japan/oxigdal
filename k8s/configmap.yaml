@@ -1,24 +1,24 @@
-# OxiGDAL Kubernetes ConfigMap
-# Configuration management for OxiGDAL services
+# OxiGeo Kubernetes ConfigMap
+# Configuration management for OxiGeo services
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: oxigdal-config
-  namespace: oxigdal
+  name: oxigeo-config
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: config
 data:
   # Server configuration.
   #
-  # Field/table names here MUST match `crates/oxigdal-server::config::Config` exactly - every
+  # Field/table names here MUST match `crates/oxigeo-server::config::Config` exactly - every
   # struct in that module derives `#[serde(deny_unknown_fields)]`, so a stale or mistyped key
   # makes the server refuse to start (loudly) rather than silently ignoring it. There is no
   # top-level [tile], [cors], or [logging] table: tile settings live per-layer under
   # [[layers]], CORS lives under [server], and log verbosity is controlled by the RUST_LOG
-  # env var below (see crates/oxigdal-server/src/main.rs), not a config file field.
+  # env var below (see crates/oxigeo-server/src/main.rs), not a config file field.
   server.toml: |
     [server]
     host = "0.0.0.0"
@@ -38,25 +38,25 @@ data:
     compression = false
 
     [metadata]
-    title = "OxiGDAL Tile Server"
-    abstract_ = "WMS/WMTS tile server powered by OxiGDAL"
+    title = "OxiGeo Tile Server"
+    abstract_ = "WMS/WMTS tile server powered by OxiGeo"
 
   # Environment configuration
   RUST_LOG: "info"
   RUST_BACKTRACE: "1"
-  OXIGDAL_DATA_DIR: "/data"
-  OXIGDAL_CACHE_DIR: "/cache"
-  OXIGDAL_HOST: "0.0.0.0"
-  OXIGDAL_PORT: "8080"
+  OXIGEO_DATA_DIR: "/data"
+  OXIGEO_CACHE_DIR: "/cache"
+  OXIGEO_HOST: "0.0.0.0"
+  OXIGEO_PORT: "8080"
 
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: nginx-config
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: proxy
 data:
   nginx.conf: |
@@ -95,9 +95,9 @@ data:
                    application/json application/javascript application/xml+rss
                    application/rss+xml application/atom+xml image/svg+xml;
 
-        upstream oxigdal_backend {
+        upstream oxigeo_backend {
             least_conn;
-            server oxigdal-server:8080 max_fails=3 fail_timeout=30s;
+            server oxigeo-server:8080 max_fails=3 fail_timeout=30s;
             keepalive 32;
         }
 
@@ -106,7 +106,7 @@ data:
             server_name _;
 
             location / {
-                proxy_pass http://oxigdal_backend;
+                proxy_pass http://oxigeo_backend;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection "upgrade";
@@ -123,12 +123,12 @@ data:
             }
 
             location /health {
-                proxy_pass http://oxigdal_backend/health;
+                proxy_pass http://oxigeo_backend/health;
                 access_log off;
             }
 
             location /metrics {
-                proxy_pass http://oxigdal_backend:8081/metrics;
+                proxy_pass http://oxigeo_backend:8081/metrics;
                 access_log off;
             }
         }

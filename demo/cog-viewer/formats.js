@@ -1,5 +1,5 @@
 /**
- * OxiGDAL GeoLab — vector format parsers.
+ * OxiGeo GeoLab — vector format parsers.
  *
  * Self-contained ES module: every function here only depends on the browser
  * (fetch, DOMParser), the vendored globals (window.flatgeobuf / window.shapefile

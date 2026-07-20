@@ -1,6 +1,6 @@
-# Migration Guide: Python Geospatial to Rust OxiGDAL
+# Migration Guide: Python Geospatial to Rust OxiGeo
 
-This guide helps Python developers transition from Python-based geospatial libraries (GDAL, Rasterio, GeoPandas, Shapely) to Rust with OxiGDAL.
+This guide helps Python developers transition from Python-based geospatial libraries (GDAL, Rasterio, GeoPandas, Shapely) to Rust with OxiGeo.
 
 ## Table of Contents
 
@@ -81,28 +81,28 @@ println!("{:?}", my_vec);  // [1, 2, 3, 1]
 
 ### Raster Processing
 
-| Python | Rust (OxiGDAL) |
+| Python | Rust (OxiGeo) |
 |--------|----------------|
-| `rasterio` | `oxigdal-core` + `oxigdal-geotiff` |
-| `gdal` | `oxigdal-*` drivers |
+| `rasterio` | `oxigeo-core` + `oxigeo-geotiff` |
+| `gdal` | `oxigeo-*` drivers |
 | `numpy` arrays | `RasterBuffer` |
-| `xarray` | `oxigdal-temporal` |
+| `xarray` | `oxigeo-temporal` |
 
 ### Vector Processing
 
 | Python | Rust |
 |--------|------|
 | `shapely` | `geo` crate |
-| `fiona` | `oxigdal-geojson`, etc. |
-| `geopandas` | `oxigdal-core::vector` |
-| `pyproj` | `oxigdal-proj` |
+| `fiona` | `oxigeo-geojson`, etc. |
+| `geopandas` | `oxigeo-core::vector` |
+| `pyproj` | `oxigeo-proj` |
 
 ### Cloud/IO
 
-| Python | Rust (OxiGDAL) |
+| Python | Rust (OxiGeo) |
 |--------|----------------|
-| `s3fs` | `oxigdal-cloud` |
-| `fsspec` | `oxigdal-cloud` |
+| `s3fs` | `oxigeo-cloud` |
+| `fsspec` | `oxigeo-cloud` |
 | `requests` | `reqwest` |
 | `aiohttp` | `tokio` + `reqwest` |
 
@@ -132,10 +132,10 @@ with rasterio.open('input.tif') as src:
     print(f"Mean: {mean:.2f}, Std: {std:.2f}")
 ```
 
-**Rust (OxiGDAL):**
+**Rust (OxiGeo):**
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("input.tif")?;
@@ -187,12 +187,12 @@ with rasterio.open('ndvi.tif', 'w',
     dst.write(ndvi, 1)
 ```
 
-**Rust (OxiGDAL):**
+**Rust (OxiGeo):**
 ```rust
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
-use oxigdal_geotiff::GeoTiffReader;
-use oxigdal_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
+use oxigeo_geotiff::GeoTiffReader;
+use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
 use std::fs::File;
 
 fn calculate_ndvi(nir: &RasterBuffer, red: &RasterBuffer)
@@ -276,7 +276,7 @@ if __name__ == '__main__':
 **Rust (Rayon):**
 ```rust
 use rayon::prelude::*;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("input.tif")?;
@@ -446,7 +446,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 4096x4096 image: 120ms
 ```
 
-**Rust (OxiGDAL):**
+**Rust (OxiGeo):**
 ```
 4096x4096 image: 45ms (2.7x faster)
 With SIMD: 18ms (6.7x faster)
@@ -474,7 +474,7 @@ Peak memory: ~1.2GB (minimal overhead)
 **Rust (lib.rs):**
 ```rust
 use pyo3::prelude::*;
-use oxigdal_core::buffer::RasterBuffer;
+use oxigeo_core::buffer::RasterBuffer;
 
 #[pyfunction]
 fn calculate_ndvi_fast(nir_path: &str, red_path: &str) -> PyResult<()> {
@@ -483,7 +483,7 @@ fn calculate_ndvi_fast(nir_path: &str, red_path: &str) -> PyResult<()> {
 }
 
 #[pymodule]
-fn oxigdal_python(_py: Python, m: &PyModule) -> PyResult<()> {
+fn oxigeo_python(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calculate_ndvi_fast, m)?)?;
     Ok(())
 }
@@ -491,10 +491,10 @@ fn oxigdal_python(_py: Python, m: &PyModule) -> PyResult<()> {
 
 **Python:**
 ```python
-import oxigdal_python
+import oxigeo_python
 
 # Call Rust function from Python
-oxigdal_python.calculate_ndvi_fast('nir.tif', 'red.tif')
+oxigeo_python.calculate_ndvi_fast('nir.tif', 'red.tif')
 ```
 
 ### Benefits of Hybrid Approach
@@ -607,14 +607,14 @@ let result = 5.0 / 2.0;  // 2.5 (float division)
 ## Next Steps
 
 1. Complete the [Rust Book](https://doc.rust-lang.org/book/)
-2. Try the [OxiGDAL tutorials](../examples/tutorials/)
+2. Try the [OxiGeo tutorials](../examples/tutorials/)
 3. Port a small Python script to Rust
 4. Join the Rust community
 
 ## Getting Help
 
 - Rust Users Forum: https://users.rust-lang.org/
-- OxiGDAL Issues: https://github.com/cool-japan/oxigdal/issues
+- OxiGeo Issues: https://github.com/cool-japan/oxigeo/issues
 - r/rust on Reddit
 
 Happy coding! 🦀

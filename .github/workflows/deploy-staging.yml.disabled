@@ -1,4 +1,4 @@
-# OxiGDAL Staging Deployment Workflow
+# OxiGeo Staging Deployment Workflow
 # Deploys to staging environment for testing
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -16,8 +16,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECS_CLUSTER: oxigdal-staging
-  ECS_SERVICE: oxigdal-server
+  ECS_CLUSTER: oxigeo-staging
+  ECS_SERVICE: oxigeo-server
 
 jobs:
   should-deploy:
@@ -68,10 +68,10 @@ jobs:
         run: |
           aws cloudformation deploy \
             --template-file deploy/aws/cloudformation.yaml \
-            --stack-name oxigdal-staging \
+            --stack-name oxigeo-staging \
             --parameter-overrides \
               Environment=staging \
-              ContainerImage=ghcr.io/${{ github.repository_owner }}/oxigdal-server:${{ steps.sha.outputs.short }} \
+              ContainerImage=ghcr.io/${{ github.repository_owner }}/oxigeo-server:${{ steps.sha.outputs.short }} \
               DesiredCount=1 \
               TaskCpu=512 \
               TaskMemory=1024 \
@@ -98,7 +98,7 @@ jobs:
         id: service-url
         run: |
           ALB_DNS=$(aws cloudformation describe-stacks \
-            --stack-name oxigdal-staging \
+            --stack-name oxigeo-staging \
             --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerURL'].OutputValue" \
             --output text)
           echo "url=$ALB_DNS" >> $GITHUB_OUTPUT
@@ -163,7 +163,7 @@ jobs:
       - name: Cleanup old task definitions
         run: |
           # Keep only the latest 5 task definitions
-          FAMILY="oxigdal-staging-task"
+          FAMILY="oxigeo-staging-task"
           REVISIONS=$(aws ecs list-task-definitions --family-prefix $FAMILY --status ACTIVE --query 'taskDefinitionArns[5:]' --output text)
 
           for revision in $REVISIONS; do

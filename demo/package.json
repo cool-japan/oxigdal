@@ -1,11 +1,11 @@
 {
-  "name": "oxigdal-demo",
-  "version": "0.1.7",
-  "description": "OxiGDAL COG Viewer Demo - WebAssembly Browser Application",
+  "name": "oxigeo-demo",
+  "version": "0.2.0",
+  "description": "OxiGeo COG Viewer Demo - WebAssembly Browser Application",
   "private": true,
   "scripts": {
-    "build:wasm": "cd ../crates/oxigdal-wasm && wasm-pack build --target web --out-dir ../../demo/pkg",
-    "build:wasm:release": "cd ../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg",
+    "build:wasm": "cd ../crates/oxigeo-wasm && wasm-pack build --target web --out-dir ../../demo/pkg",
+    "build:wasm:release": "cd ../crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg",
     "serve": "python3 -m http.server 8080",
     "dev": "npm run build:wasm && npm run serve",
     "start": "npm run serve"
@@ -16,12 +16,12 @@
     "geotiff",
     "wasm",
     "webassembly",
-    "oxigdal"
+    "oxigeo"
   ],
   "author": "COOLJAPAN OU (Team Kitasan)",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cool-japan/oxigdal"
+    "url": "https://github.com/cool-japan/oxigeo"
   }
 }

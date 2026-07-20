@@ -20,10 +20,10 @@
 
 use std::error::Error;
 
-use oxigdal_algorithms::raster::{FocalBoundaryMode, WindowShape, focal_mean as real_focal_mean};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
-use oxigdal_proj::{Coordinate as ProjCoordinate, transform_epsg};
+use oxigeo_algorithms::raster::{FocalBoundaryMode, WindowShape, focal_mean as real_focal_mean};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
+use oxigeo_proj::{Coordinate as ProjCoordinate, transform_epsg};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -138,11 +138,11 @@ fn prop_buffer_zero_is_identity() -> Result<()> {
 fn prop_double_buffer_equals_single_buffer() -> Result<()> {
     // Property: Buffer(Buffer(P, d), d) ≈ Buffer(P, 2d)
     //
-    // Exercised against the real `oxigdal-algorithms` buffer engine (Minkowski
+    // Exercised against the real `oxigeo-algorithms` buffer engine (Minkowski
     // expansion), which honours this identity up to polygonal approximation of
     // the round joins. A local scaling stand-in cannot satisfy it, which is why
     // this test was previously quarantined.
-    use oxigdal_algorithms::vector::{
+    use oxigeo_algorithms::vector::{
         AreaMethod, BufferOptions, Point as CorePoint, area_polygon,
         buffer_point as real_buffer_point, buffer_polygon as real_buffer_polygon,
     };
@@ -751,7 +751,7 @@ fn parse_epsg(crs: &str) -> Result<u32> {
     Ok(code.parse::<u32>()?)
 }
 
-/// Transforms a point between EPSG CRSes using the real `oxigdal-proj` engine.
+/// Transforms a point between EPSG CRSes using the real `oxigeo-proj` engine.
 fn transform_point(point: &Point, from_crs: &str, to_crs: &str) -> Result<Point> {
     let from = parse_epsg(from_crs)?;
     let to = parse_epsg(to_crs)?;
@@ -825,7 +825,7 @@ fn raster_multiply(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
     Ok(a.iter().zip(b.iter()).map(|(&x, &y)| x * y).collect())
 }
 
-/// Computes a focal (moving-window) mean via the real `oxigdal-algorithms`
+/// Computes a focal (moving-window) mean via the real `oxigeo-algorithms`
 /// focal kernel with a square window and edge-aware boundary handling
 /// (`Ignore` = shrink the neighbourhood at the borders), so border pixels are
 /// smoothed rather than passed through.

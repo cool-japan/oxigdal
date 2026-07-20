@@ -1,0 +1,124 @@
+[package]
+name = "oxigeo"
+description = "Pure Rust geospatial data abstraction library — the Rust alternative to GDAL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo"
+readme = "README.md"
+keywords = ["gdal", "geospatial", "gis", "raster", "vector"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["geotiff", "geojson", "shapefile"]
+full = [
+    "geotiff", "geojson", "shapefile", "geoparquet", "netcdf",
+    "hdf5", "zarr", "grib", "stac", "vrt", "flatgeobuf", "jpeg2000",
+    "terrain", "gpkg", "pmtiles", "mbtiles", "copc", "index",
+]
+
+# Individual driver features — user picks what they need
+geotiff = ["dep:oxigeo-geotiff"]
+geojson = ["dep:oxigeo-geojson"]
+shapefile = ["dep:oxigeo-shapefile"]
+geoparquet = ["dep:oxigeo-geoparquet", "dep:arrow-array", "dep:arrow-schema"]
+netcdf = ["dep:oxigeo-netcdf"]
+hdf5 = ["dep:oxigeo-hdf5"]
+zarr = ["dep:oxigeo-zarr"]
+grib = ["dep:oxigeo-grib"]
+stac = ["dep:oxigeo-stac"]
+terrain = ["dep:oxigeo-terrain"]
+vrt = ["dep:oxigeo-vrt"]
+flatgeobuf = ["dep:oxigeo-flatgeobuf"]
+jpeg2000 = ["dep:oxigeo-jpeg2000"]
+
+# Tile / database / point-cloud formats
+gpkg = ["dep:oxigeo-gpkg"]
+pmtiles = ["dep:oxigeo-pmtiles"]
+mbtiles = ["dep:oxigeo-mbtiles"]
+copc = ["dep:oxigeo-copc"]
+
+# Spatial indexing
+index = ["dep:oxigeo-index"]
+
+# no_std geometry primitives
+noalloc = ["dep:oxigeo-noalloc"]
+
+# GDAL C API compatibility shim (function-name aliases)
+gdal-compat = []
+
+# Advanced capabilities
+services = ["dep:oxigeo-services"]
+cloud = ["dep:oxigeo-cloud"]
+proj = ["dep:oxigeo-proj"]
+algorithms = ["dep:oxigeo-algorithms"]
+analytics = ["dep:oxigeo-analytics"]
+streaming = ["dep:oxigeo-streaming"]
+ml = ["dep:oxigeo-ml"]
+gpu = ["dep:oxigeo-gpu"]
+server = ["dep:oxigeo-server"]
+temporal = ["dep:oxigeo-temporal"]
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# Drivers (all optional)
+oxigeo-geotiff = { workspace = true, optional = true }
+oxigeo-geojson = { workspace = true, optional = true }
+oxigeo-shapefile = { workspace = true, optional = true }
+oxigeo-geoparquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+oxigeo-netcdf = { workspace = true, optional = true }
+oxigeo-hdf5 = { workspace = true, optional = true }
+oxigeo-zarr = { workspace = true, optional = true }
+oxigeo-grib = { workspace = true, optional = true }
+oxigeo-stac = { workspace = true, optional = true, features = ["std", "async"] }
+oxigeo-terrain = { workspace = true, optional = true }
+oxigeo-vrt = { workspace = true, optional = true }
+oxigeo-flatgeobuf = { workspace = true, optional = true }
+oxigeo-jpeg2000 = { workspace = true, optional = true }
+
+# Advanced (all optional)
+oxigeo-cloud = { workspace = true, optional = true }
+oxigeo-proj = { workspace = true, optional = true }
+oxigeo-algorithms = { workspace = true, optional = true, default-features = true }
+oxigeo-analytics = { workspace = true, optional = true }
+oxigeo-streaming = { workspace = true, optional = true }
+oxigeo-ml = { workspace = true, optional = true }
+oxigeo-gpu = { workspace = true, optional = true }
+oxigeo-server = { workspace = true, optional = true }
+oxigeo-temporal = { workspace = true, optional = true }
+
+# Tile / database / point-cloud formats (all optional)
+oxigeo-gpkg = { workspace = true, optional = true }
+oxigeo-pmtiles = { workspace = true, optional = true }
+oxigeo-mbtiles = { workspace = true, optional = true }
+oxigeo-copc = { workspace = true, optional = true }
+
+# Spatial indexing (optional)
+oxigeo-index = { workspace = true, optional = true }
+
+# no_std geometry primitives (optional)
+oxigeo-noalloc = { workspace = true, optional = true }
+
+# OGC web services (optional)
+oxigeo-services = { workspace = true, optional = true }
+
+[dev-dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true, default-features = false, features = ["arrow"] }
+
+[package.metadata.docs.rs]
+# Build docs with all features so every feature-gated item is documented.
+features = ["full", "cloud", "proj", "algorithms", "analytics", "streaming",
+            "ml", "gpu", "server", "temporal", "gdal-compat", "services",
+            "noalloc", "index"]
+rustdoc-args = ["--cfg", "docsrs"]

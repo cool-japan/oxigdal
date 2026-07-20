@@ -1,4 +1,4 @@
-# OxiGDAL Base Docker Image
+# OxiGeo Base Docker Image
 # Multi-stage build for optimized production images
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -22,46 +22,46 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 
 # Create dummy source files for all crates to cache dependencies
-RUN mkdir -p crates/oxigdal-core/src \
-    crates/oxigdal-algorithms/src \
-    crates/oxigdal-proj/src \
-    crates/oxigdal-qc/src \
-    crates/oxigdal-drivers/geotiff/src \
-    crates/oxigdal-drivers/geojson/src \
-    crates/oxigdal-drivers/zarr/src \
-    crates/oxigdal-drivers/flatgeobuf/src \
-    crates/oxigdal-drivers/shapefile/src \
-    crates/oxigdal-drivers/netcdf/src \
-    crates/oxigdal-drivers/geoparquet/src \
-    crates/oxigdal-drivers/hdf5/src \
-    crates/oxigdal-drivers/vrt/src \
-    crates/oxigdal-drivers/grib/src \
-    crates/oxigdal-wasm/src \
-    crates/oxigdal-mobile/src \
-    crates/oxigdal-examples/src \
-    crates/oxigdal-cli/src \
-    crates/oxigdal-cloud/src \
-    crates/oxigdal-3d/src \
-    crates/oxigdal-server/src \
-    crates/oxigdal-postgis/src \
-    crates/oxigdal-analytics/src \
-    crates/oxigdal-temporal/src \
-    crates/oxigdal-rs3gw/src \
-    crates/oxigdal-distributed/src \
-    crates/oxigdal-python/src \
-    crates/oxigdal-stac/src \
-    crates/oxigdal-ml/src \
-    crates/oxigdal-metadata/src \
-    crates/oxigdal-ws/src \
-    crates/oxigdal-etl/src \
-    crates/oxigdal-gpu/src \
-    crates/oxigdal-bench/src \
-    crates/oxigdal-services/src \
+RUN mkdir -p crates/oxigeo-core/src \
+    crates/oxigeo-algorithms/src \
+    crates/oxigeo-proj/src \
+    crates/oxigeo-qc/src \
+    crates/oxigeo-drivers/geotiff/src \
+    crates/oxigeo-drivers/geojson/src \
+    crates/oxigeo-drivers/zarr/src \
+    crates/oxigeo-drivers/flatgeobuf/src \
+    crates/oxigeo-drivers/shapefile/src \
+    crates/oxigeo-drivers/netcdf/src \
+    crates/oxigeo-drivers/geoparquet/src \
+    crates/oxigeo-drivers/hdf5/src \
+    crates/oxigeo-drivers/vrt/src \
+    crates/oxigeo-drivers/grib/src \
+    crates/oxigeo-wasm/src \
+    crates/oxigeo-mobile/src \
+    crates/oxigeo-examples/src \
+    crates/oxigeo-cli/src \
+    crates/oxigeo-cloud/src \
+    crates/oxigeo-3d/src \
+    crates/oxigeo-server/src \
+    crates/oxigeo-postgis/src \
+    crates/oxigeo-analytics/src \
+    crates/oxigeo-temporal/src \
+    crates/oxigeo-rs3gw/src \
+    crates/oxigeo-distributed/src \
+    crates/oxigeo-python/src \
+    crates/oxigeo-stac/src \
+    crates/oxigeo-ml/src \
+    crates/oxigeo-metadata/src \
+    crates/oxigeo-ws/src \
+    crates/oxigeo-etl/src \
+    crates/oxigeo-gpu/src \
+    crates/oxigeo-bench/src \
+    crates/oxigeo-services/src \
     benchmarks/src
 
 # Create minimal Cargo.toml files for dependency caching
 COPY crates/*/Cargo.toml crates/
-COPY crates/oxigdal-drivers/*/Cargo.toml crates/oxigdal-drivers/
+COPY crates/oxigeo-drivers/*/Cargo.toml crates/oxigeo-drivers/
 
 # Stage 2: Minimal runtime base
 FROM debian:bookworm-slim AS runtime-base
@@ -73,7 +73,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
-RUN useradd -m -u 1000 -s /bin/bash oxigdal
+RUN useradd -m -u 1000 -s /bin/bash oxigeo
 
 # Set environment variables
 ENV RUST_LOG=info \
@@ -107,8 +107,8 @@ WORKDIR /workspace
 ENV RUST_LOG=debug \
     RUST_BACKTRACE=full
 
-LABEL org.opencontainers.image.title="OxiGDAL Base Images" \
-      org.opencontainers.image.description="Base Docker images for OxiGDAL geospatial library" \
+LABEL org.opencontainers.image.title="OxiGeo Base Images" \
+      org.opencontainers.image.description="Base Docker images for OxiGeo geospatial library" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
-      org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
+      org.opencontainers.image.source="https://github.com/cool-japan/oxigeo" \
       org.opencontainers.image.licenses="Apache-2.0"

@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build and Test Script for OxiGDAL COG Viewer
+# Build and Test Script for OxiGeo COG Viewer
 
 set -e
 
 echo "=================================================="
-echo "OxiGDAL COG Viewer - Build and Test"
+echo "OxiGeo COG Viewer - Build and Test"
 echo "=================================================="
 echo ""
 
@@ -34,7 +34,7 @@ echo -e "${GREEN}✓ wasm-pack installed${NC}"
 # Build WASM
 echo ""
 echo "2. Building WASM package..."
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 cd ../../demo/cog-viewer
 echo -e "${GREEN}✓ WASM build complete${NC}"
@@ -64,7 +64,7 @@ for file in "${required_files[@]}"; do
 done
 
 # Verify WASM package
-if [ -f "../pkg/oxigdal_wasm.js" ] && [ -f "../pkg/oxigdal_wasm_bg.wasm" ]; then
+if [ -f "../pkg/oxigeo_wasm.js" ] && [ -f "../pkg/oxigeo_wasm_bg.wasm" ]; then
     echo -e "${GREEN}✓ WASM package${NC}"
 else
     echo -e "${RED}✗ WASM package (missing)${NC}"
@@ -74,7 +74,7 @@ fi
 # Check file sizes
 echo ""
 echo "4. File sizes:"
-wasm_size=$(wc -c < ../pkg/oxigdal_wasm_bg.wasm)
+wasm_size=$(wc -c < ../pkg/oxigeo_wasm_bg.wasm)
 wasm_size_mb=$(echo "scale=2; $wasm_size / 1024 / 1024" | bc)
 echo "   WASM binary: ${wasm_size_mb} MB"
 

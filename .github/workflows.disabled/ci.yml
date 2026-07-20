@@ -151,7 +151,7 @@ jobs:
 
       - name: Test feature powerset (core crate only)
         run: |
-          cargo hack test --package oxigdal-core --feature-powerset --depth 2 --exclude-no-default-features
+          cargo hack test --package oxigeo-core --feature-powerset --depth 2 --exclude-no-default-features
         timeout-minutes: 30
 
   # Check WASM compilation
@@ -177,13 +177,13 @@ jobs:
 
       - name: Check WASM build
         run: |
-          cargo check --package oxigdal-wasm --target wasm32-unknown-unknown
+          cargo check --package oxigeo-wasm --target wasm32-unknown-unknown
 
       - name: Install wasm-pack
         run: cargo install wasm-pack
 
       - name: Build WASM package
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: |
           wasm-pack build --target web --dev
 

@@ -1,8 +1,8 @@
-# OxiGDAL COG Viewer - Production Ready ✅
+# OxiGeo COG Viewer - Production Ready ✅
 
 ## Executive Summary
 
-The OxiGDAL COG Viewer demo has been **successfully enhanced** and is now **production-ready** for deployment.
+The OxiGeo COG Viewer demo has been **successfully enhanced** and is now **production-ready** for deployment.
 
 **Date:** January 25, 2026
 **Version:** 0.1.0
@@ -60,7 +60,7 @@ The OxiGDAL COG Viewer demo has been **successfully enhanced** and is now **prod
 
 **Try the Demo:**
 ```
-https://cool-japan.github.io/oxigdal/cog-viewer/
+https://cool-japan.github.io/oxigeo/cog-viewer/
 ```
 
 **Features:**
@@ -276,7 +276,7 @@ Referrer-Policy: strict-origin-when-cross-origin
 ## Deployment Status
 
 ### GitHub Pages
-- **URL:** `https://cool-japan.github.io/oxigdal/cog-viewer/`
+- **URL:** `https://cool-japan.github.io/oxigeo/cog-viewer/`
 - **Status:** ✅ Auto-deploy on push to main
 - **Workflow:** `.github/workflows/deploy-demo.yml`
 - **Build Time:** ~5 minutes
@@ -357,14 +357,14 @@ Referrer-Policy: strict-origin-when-cross-origin
 - **Pull Requests:** Contribute improvements
 
 ### Links
-- **Demo:** https://cool-japan.github.io/oxigdal/cog-viewer/
-- **Repository:** https://github.com/cool-japan/oxigdal
-- **Documentation:** https://docs.rs/oxigdal
+- **Demo:** https://cool-japan.github.io/oxigeo/cog-viewer/
+- **Repository:** https://github.com/cool-japan/oxigeo
+- **Documentation:** https://docs.rs/oxigeo
 - **COOLJAPAN:** https://github.com/cool-japan
 
 ## Conclusion
 
-The OxiGDAL COG Viewer demo is **production-ready** and demonstrates the full capabilities of OxiGDAL in a browser environment. All enhancements have been implemented, tested, and optimized for deployment.
+The OxiGeo COG Viewer demo is **production-ready** and demonstrates the full capabilities of OxiGeo in a browser environment. All enhancements have been implemented, tested, and optimized for deployment.
 
 ### Key Achievements
 

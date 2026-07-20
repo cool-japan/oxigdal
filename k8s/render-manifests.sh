@@ -6,7 +6,7 @@
 #
 # Usage:
 #   k8s/render-manifests.sh | kubectl apply -f -
-#   k8s/render-manifests.sh > /tmp/oxigdal-deployment.rendered.yaml
+#   k8s/render-manifests.sh > /tmp/oxigeo-deployment.rendered.yaml
 
 set -euo pipefail
 
@@ -17,11 +17,11 @@ resolve_version() {
     grep -m1 '^version *= *"' "${repo_root}/Cargo.toml" | sed -E 's/^version *= *"([^"]+)".*/\1/'
 }
 
-oxigdal_version="$(resolve_version)"
+oxigeo_version="$(resolve_version)"
 
-if [[ -z "${oxigdal_version}" ]]; then
+if [[ -z "${oxigeo_version}" ]]; then
     echo "error: could not resolve workspace version from ${repo_root}/Cargo.toml" >&2
     exit 1
 fi
 
-sed "s/0.0.0-UNRENDERED/${oxigdal_version}/g" "${script_dir}/deployment.yaml"
+sed "s/0.0.0-UNRENDERED/${oxigeo_version}/g" "${script_dir}/deployment.yaml"

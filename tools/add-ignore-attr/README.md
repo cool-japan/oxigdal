@@ -35,12 +35,12 @@ The tool expects a JSON file with the following structure:
 {
   "slow_tests": [
     {
-      "package": "oxigdal-core",
+      "package": "oxigeo-core",
       "test_name": "test_large_allocation",
       "duration_secs": 12.5
     },
     {
-      "package": "oxigdal-algorithms",
+      "package": "oxigeo-algorithms",
       "test_name": "test_complex_topology",
       "duration_secs": 8.3
     }
@@ -85,14 +85,14 @@ Loaded 3 slow tests from slow-tests.json
 
 Processing 3 packages...
 
-Package: oxigdal-gpu (1 slow tests)
+Package: oxigeo-gpu (1 slow tests)
   Found 22 test files
-  [+] Added #[ignore] to test: test_compute_heavy_operation in crates/oxigdal-gpu/tests/gpu_test.rs
+  [+] Added #[ignore] to test: test_compute_heavy_operation in crates/oxigeo-gpu/tests/gpu_test.rs
 
-Package: oxigdal-core (1 slow tests)
+Package: oxigeo-core (1 slow tests)
   Found 27 test files
 
-Package: oxigdal-algorithms (1 slow tests)
+Package: oxigeo-algorithms (1 slow tests)
   Found 106 test files
 
 Summary:

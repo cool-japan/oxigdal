@@ -1,0 +1,93 @@
+[package]
+name = "oxigeo-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-gpu"
+readme = "README.md"
+description = "GPU-accelerated geospatial operations for OxiGeo using WGPU"
+keywords = ["gis", "gdal", "gpu", "wgpu", "science"]
+categories = ["science", "graphics", "rendering"]
+
+[features]
+default = ["auto-backend"]
+# Auto-select platform backend
+auto-backend = []
+# GPU backends
+vulkan = ["wgpu/vulkan"]
+metal = ["wgpu/metal"]
+dx12 = ["wgpu/dx12"]
+webgpu = ["wgpu/webgpu"]
+directml = []
+cuda = []
+# All backends (except WebGPU for native)
+all-native-backends = ["vulkan", "metal", "dx12"]
+# Backend-specific optimizations
+backend-optimizations = ["cuda", "vulkan", "metal", "directml"]
+# Multi-GPU support
+multi-gpu = []
+# Native filesystem-polling shader hot-reload backend (std only, no extra deps)
+shader-hot-reload = []
+
+[dependencies]
+# Workspace dependencies
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+num-traits = { workspace = true }
+rayon = { workspace = true }
+
+# GPU dependencies (latest versions)
+wgpu = { workspace = true }
+pollster.workspace = true
+encase.workspace = true
+naga = { workspace = true }
+
+# Half-precision float support
+half = { workspace = true }
+
+# Math
+glam = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+criterion = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "gpu_bench"
+harness = false
+
+[lints]
+workspace = true
+
+# NOTE: docs.rs has no GPU hardware/drivers, so we build with the pure
+# wgpu/WGSL backend surface only (no `cuda`/`directml`/`backend-optimizations`,
+# which name non-wgpu accelerator paths) instead of `all-features = true`.
+#
+# `metal` and `dx12` only gate the corresponding `wgpu/*` backend cargo
+# features; wgpu compiles those backend crates (ash/gpu-allocator/etc.) on
+# every host via `cfg(target_os = ...)` internally, so they do not require
+# Apple/Windows toolchains to build docs. Verified 2026-07-17 with
+# `cargo doc -p oxigeo-gpu --no-deps --target x86_64-unknown-linux-gnu
+# --features "auto-backend,vulkan,metal,dx12,webgpu,all-native-backends,
+# multi-gpu,shader-hot-reload"` (docs.rs's default target) — builds clean,
+# no non-Linux/FFI blockers in the resolved dependency tree.
+[package.metadata.docs.rs]
+features = [
+    "auto-backend", "vulkan", "metal", "dx12", "webgpu",
+    "all-native-backends", "multi-gpu", "shader-hot-reload",
+]
+rustdoc-args = ["--cfg", "docsrs"]

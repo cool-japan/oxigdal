@@ -44,7 +44,7 @@
   "attributes": {
     "crs": "EPSG:4326",
     "description": "Basque Country region elevation data (synthetic)",
-    "generator": "OxiGDAL Zarr Sample Generator",
+    "generator": "OxiGeo Zarr Sample Generator",
     "units": "meters",
     "version": "0.1.7"
   }

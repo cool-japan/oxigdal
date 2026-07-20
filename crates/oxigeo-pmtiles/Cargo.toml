@@ -1,0 +1,65 @@
+[package]
+name = "oxigeo-pmtiles"
+description = "Pure Rust PMTiles v3 reader for OxiGeo - single-file tile archive with varint directory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-pmtiles"
+readme = "README.md"
+keywords = ["pmtiles", "tiles", "gis", "protomaps", "geospatial"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std"]
+# Enable transparent tile/directory decompression via the OxiARC ecosystem
+# (COOLJAPAN Pure Rust Policy — no flate2 / brotli-rs / zstd C bindings).
+compression = ["dep:oxiarc-archive"]
+# Enable parallel tile encoding via rayon. Requires `compression` to function.
+parallel = ["dep:rayon", "compression"]
+# Enable HTTP range-request reader backed by oxigeo-streaming cloud HTTP layer.
+http-range = ["dep:oxigeo-streaming", "dep:tokio", "oxigeo-streaming/cloud-http"]
+# Enable async reader backed by tokio::io::AsyncRead + AsyncSeek.
+async = ["dep:tokio"]
+# Enable PMTiles → MBTiles export via SQLite (Pure-Rust OxiSQL engine).
+mbtiles = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio"]
+# Enable cloud-storage (S3 / GCS / Azure Blob) range-request reader.
+cloud-storage = ["dep:url", "dep:reqwest", "dep:tokio"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Pure-Rust compression/decompression (feature-gated): powers
+# gzip / brotli / zstd decoding of PMTiles tile payloads and directories.
+oxiarc-archive = { workspace = true, optional = true }
+# HTTP range-request reader (feature-gated): powered by oxigeo-streaming.
+oxigeo-streaming = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+oxisql-core = { workspace = true, optional = true }
+oxisql-sqlite-compat = { workspace = true, optional = true }
+# Parallel tile encoding (feature-gated): data-parallel compression via rayon.
+rayon = { workspace = true, optional = true }
+# Cloud-storage range-request reader (feature-gated).
+url = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true
+
+# NOTE: `http-range` (oxigeo-streaming/cloud-http) and `cloud-storage` both
+# pull reqwest -> rustls -> aws-lc-sys (C/asm). `compression`, `parallel`,
+# `async` and `mbtiles` (pure-Rust OxiSQL) stay on a pure-Rust closure.
+[package.metadata.docs.rs]
+features = ["std", "compression", "parallel", "async", "mbtiles"]
+rustdoc-args = ["--cfg", "docsrs"]

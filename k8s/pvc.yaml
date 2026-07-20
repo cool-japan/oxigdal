@@ -1,14 +1,14 @@
-# OxiGDAL Kubernetes Persistent Volume Claims
+# OxiGeo Kubernetes Persistent Volume Claims
 # Storage definitions for data persistence
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: oxigdal-data
-  namespace: oxigdal
+  name: oxigeo-data
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: storage
 spec:
   accessModes:
@@ -24,7 +24,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/component: database
@@ -42,7 +42,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: redis-data
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
     app.kubernetes.io/name: redis
     app.kubernetes.io/component: cache
@@ -60,9 +60,9 @@ spec:
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: oxigdal-data-nfs
+  name: oxigeo-data-nfs
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: storage
 spec:
   capacity:
@@ -76,21 +76,21 @@ spec:
   - nfsvers=4.1
   nfs:
     server: nfs-server.example.com  # Replace with your NFS server
-    path: /exports/oxigdal/data
+    path: /exports/oxigeo/data
 
 ---
 # Optional: S3-compatible storage (using CSI driver)
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: oxigdal-s3-data
-  namespace: oxigdal
+  name: oxigeo-s3-data
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: storage
   annotations:
     # S3 CSI driver annotations
-    csi.storage.k8s.io/bucket-name: oxigdal-data
+    csi.storage.k8s.io/bucket-name: oxigeo-data
 spec:
   accessModes:
   - ReadWriteMany

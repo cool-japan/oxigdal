@@ -73,30 +73,30 @@ class ParseCratesArrayTests(unittest.TestCase):
         script = (
             "VERSION=\"0.1.7\"\n"
             "CRATES=(\n"
-            "    \"oxigdal-core\"\n"
-            "    \"oxigdal-proj\"  # comment\n"
-            "    \"oxigdal-geotiff\"\n"
+            "    \"oxigeo-core\"\n"
+            "    \"oxigeo-proj\"  # comment\n"
+            "    \"oxigeo-geotiff\"\n"
             ")\n"
             "echo done\n"
         )
         entries = parse_crates_array(script)
-        self.assertEqual(entries, ["oxigdal-core", "oxigdal-proj", "oxigdal-geotiff"])
+        self.assertEqual(entries, ["oxigeo-core", "oxigeo-proj", "oxigeo-geotiff"])
 
     def test_returns_empty_list_when_array_absent(self) -> None:
         self.assertEqual(parse_crates_array("echo no array here\n"), [])
 
     def test_detects_missing_entry_against_known_reference_case(self) -> None:
         # Regression fixture mirroring the real bug this tool was built to catch:
-        # oxigdal-wasm-geoparquet absent from an otherwise-complete CRATES array.
+        # oxigeo-wasm-geoparquet absent from an otherwise-complete CRATES array.
         script = (
             "CRATES=(\n"
-            "    \"oxigdal-core\"\n"
-            "    \"oxigdal-wasm\"\n"
-            "    \"oxigdal-cli\"\n"
+            "    \"oxigeo-core\"\n"
+            "    \"oxigeo-wasm\"\n"
+            "    \"oxigeo-cli\"\n"
             ")\n"
         )
         entries = parse_crates_array(script)
-        self.assertNotIn("oxigdal-wasm-geoparquet", entries)
+        self.assertNotIn("oxigeo-wasm-geoparquet", entries)
 
 
 if __name__ == "__main__":

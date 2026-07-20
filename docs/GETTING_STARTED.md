@@ -1,6 +1,6 @@
-# Getting Started with OxiGDAL
+# Getting Started with OxiGeo
 
-Quick start guide to get you up and running with OxiGDAL in minutes.
+Quick start guide to get you up and running with OxiGeo in minutes.
 
 ## Table of Contents
 
@@ -31,18 +31,18 @@ If not installed, follow [rustup.rs](https://rustup.rs/)
 ### Create a New Project
 
 ```bash
-cargo new oxigdal-demo
-cd oxigdal-demo
+cargo new oxigeo-demo
+cd oxigeo-demo
 ```
 
-### Add OxiGDAL Dependencies
+### Add OxiGeo Dependencies
 
 Add these to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-core = "0.1"
-oxigdal-geotiff = "0.1"
+oxigeo-core = "0.2"
+oxigeo-geotiff = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -51,11 +51,11 @@ tokio = { version = "1", features = ["full"] }
 Create your first program by editing `src/main.rs`:
 
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("OxiGDAL Hello World!");
+    println!("OxiGeo Hello World!");
 
     // Open a GeoTIFF file
     let source = FileDataSource::open("sample.tif")?;
@@ -84,7 +84,7 @@ Build and run:
 ```bash
 cargo run --release
 # Output:
-# OxiGDAL Hello World!
+# OxiGeo Hello World!
 # File: sample.tif
 #   Width: 512 pixels
 #   Height: 512 pixels
@@ -98,8 +98,8 @@ cargo run --release
 ### Read a Complete Raster
 
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("elevation.tif")?;
@@ -128,8 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Read a Data Window
 
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("large_file.tif")?;
@@ -177,9 +177,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Create and Write a GeoTIFF
 
 ```rust
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::{RasterDataType, GeoTransform, BoundingBox};
-use oxigdal_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::{RasterDataType, GeoTransform, BoundingBox};
+use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
 use std::fs::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -284,10 +284,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Task 1: Calculate NDVI
 
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn calculate_ndvi(nir_path: &str, red_path: &str)
     -> Result<RasterBuffer, Box<dyn std::error::Error>>
@@ -331,9 +331,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Task 2: Resample Raster
 
 ```rust
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
-use oxigdal_algorithms::resample::{Resampling, ResampleOptions};
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
+use oxigeo_algorithms::resample::{Resampling, ResampleOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read input
@@ -358,7 +358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Task 3: Reproject Data
 
 ```rust
-use oxigdal_proj::Projection;
+use oxigeo_proj::Projection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Define source and destination CRS
@@ -379,8 +379,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Task 4: Cloud Data Access
 
 ```rust
-use oxigdal_cloud::backends::HttpBackend;
-use oxigdal_cloud::retry::RetryConfig;
+use oxigeo_cloud::backends::HttpBackend;
+use oxigeo_cloud::retry::RetryConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -401,8 +401,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use rayon::prelude::*;
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("large_image.tif")?;
@@ -435,7 +435,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Error Handling
 
-All OxiGDAL operations return `Result<T, OxiGdalError>`. Use the `?` operator for ergonomic error propagation:
+All OxiGeo operations return `Result<T, OxiGeoError>`. Use the `?` operator for ergonomic error propagation:
 
 ```rust
 fn process_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -490,10 +490,10 @@ Enable specific features for your use case:
 
 ```toml
 [dependencies]
-oxigdal-core = { version = "0.1", features = ["std", "arrow"] }
-oxigdal-geotiff = "0.1"
-oxigdal-cloud = { version = "0.1", features = ["s3", "http"] }
-oxigdal-algorithms = { version = "0.1", features = ["simd"] }
+oxigeo-core = { version = "0.2", features = ["std", "arrow"] }
+oxigeo-geotiff = "0.2"
+oxigeo-cloud = { version = "0.2", features = ["s3", "http"] }
+oxigeo-algorithms = { version = "0.2", features = ["simd"] }
 ```
 
 ## Building for Performance
@@ -536,7 +536,7 @@ cargo test --all-features
 Print debugging information:
 
 ```rust
-use oxigdal_core::io::FileDataSource;
+use oxigeo_core::io::FileDataSource;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("image.tif")?;
@@ -572,14 +572,14 @@ RUST_LOG=debug cargo run
 
 4. **Get Help**
    - Read the [Troubleshooting Guide](TROUBLESHOOTING.md)
-   - Check [GitHub Issues](https://github.com/cool-japan/oxigdal/issues)
+   - Check [GitHub Issues](https://github.com/cool-japan/oxigeo/issues)
    - Join COOLJAPAN Community
 
 ## Resources
 
-- **Official Documentation**: https://docs.rs/oxigdal
+- **Official Documentation**: https://docs.rs/oxigeo
 - **Rust Book**: https://doc.rust-lang.org/book/
 - **Geospatial Standards**: https://www.ogc.org/
 - **GDAL API Reference**: https://gdal.org/api/
 
-Happy geospatial computing with OxiGDAL!
+Happy geospatial computing with OxiGeo!

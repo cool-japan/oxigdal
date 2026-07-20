@@ -7,10 +7,10 @@
 //! out-of-bounds reads are not.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use oxigdal_pmtiles::PmTilesHeader;
-use oxigdal_pmtiles::directory::decode_directory;
-use oxigdal_pmtiles::header::PMTILES_HEADER_SIZE;
-use oxigdal_pmtiles::header_v2::{parse_v2_header, read_v2_entry};
+use oxigeo_pmtiles::PmTilesHeader;
+use oxigeo_pmtiles::directory::decode_directory;
+use oxigeo_pmtiles::header::PMTILES_HEADER_SIZE;
+use oxigeo_pmtiles::header_v2::{parse_v2_header, read_v2_entry};
 
 fuzz_target!(|data: &[u8]| {
     // v3 fixed 127-byte header.

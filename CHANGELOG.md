@@ -1,11 +1,39 @@
 # Changelog
 
-All notable changes to OxiGDAL will be documented in this file.
+All notable changes to OxiGeo will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-07-20
+
+### Changed
+
+- **Project renamed: OxiGDAL → OxiGeo.** Version 0.2.0 is functionally
+  identical to 0.1.7 — this is a rename-only release with no feature or
+  behavior changes beyond identifiers. The GitHub repository has moved to
+  <https://github.com/cool-japan/oxigeo> (old `oxigdal` URLs redirect), and
+  v0.1.7 remains the final release published under the OxiGDAL name.
+
+  Migration table (old → new):
+
+  | Area | Old (OxiGDAL) | New (OxiGeo) |
+  |------|---------------|--------------|
+  | Crates (all 74 published) | `oxigdal`, `oxigdal-<name>` | `oxigeo`, `oxigeo-<name>` |
+  | CLI binary | `oxigdal` | `oxigeo` |
+  | Environment variables | `OXIGDAL_*` (e.g. `OXIGDAL_CONFIG`, `OXIGDAL_HOST`, `OXIGDAL_PORT`, `OXIGDAL_WORKERS`, `OXIGDAL_LOG_LEVEL`, `OXIGDAL_DATA_DIR`, `OXIGDAL_CACHE_DIR`) | `OXIGEO_*` (`OXIGEO_CONFIG`, `OXIGEO_HOST`, `OXIGEO_PORT`, `OXIGEO_WORKERS`, `OXIGEO_LOG_LEVEL`, `OXIGEO_DATA_DIR`, `OXIGEO_CACHE_DIR`) |
+  | Python | PyPI package `oxigdal`; `import oxigdal`; native module `oxigdal._oxigdal` | PyPI package `oxigeo`; `import oxigeo`; native module `oxigeo._oxigeo` |
+  | npm | `@cooljapan/oxigdal`; `@cooljapan/oxigdal-node` (+ platform packages); `@cooljapan/oxigdal-geoparquet` | `@cooljapan/oxigeo`; `@cooljapan/oxigeo-node` (+ platform packages); `@cooljapan/oxigeo-geoparquet` |
+  | C / mobile FFI | symbol prefix `oxigdal_`; JNI class `com.cooljapan.oxigdal.OxiGDAL`; header `oxigdal_mobile.h`; include guard `OXIGDAL_MOBILE_H` | symbol prefix `oxigeo_`; JNI class `com.cooljapan.oxigeo.OxiGeo`; header `oxigeo_mobile.h`; include guard `OXIGEO_MOBILE_H` |
+  | Rust API types | `OxiGdal*` prefixed types (e.g. `OxiGdalError`) | `OxiGeo*` (`OxiGeoError`) |
+  | WASM artifacts | `oxigdal_wasm*`; napi artifact `oxigdal.<triple>.node` | `oxigeo_wasm*`; napi artifact `oxigeo.<triple>.node` |
+  | Container images | `oxigdal/*`; systemd unit `oxigdal-server.service` | `oxigeo/*`; systemd unit `oxigeo-server.service` |
+  | Runtime identifiers | HTTP User-Agent `OxiGDAL/1.0`; Kafka consumer group `oxigdal-etl`; ETL checkpoint dir `oxigdal-checkpoints`; edge cache dir `.oxigdal_cache`; attestation format id `oxigdal-attestation` | HTTP User-Agent `OxiGeo/1.0` (the `oxigeo-stac`/`oxigeo-ml` agents now report `0.2.0`); Kafka consumer group `oxigeo-etl`; ETL checkpoint dir `oxigeo-checkpoints`; edge cache dir `.oxigeo_cache`; attestation format id `oxigeo-attestation` |
+
+- The `oxigdal-*` 0.1.x crates remain published on crates.io for existing
+  users; the `oxigeo-*` crates supersede them starting with 0.2.0.
 
 ## [0.1.7] - 2026-07-20
 
@@ -710,11 +738,12 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 
 ## Links
 
-- **Homepage**: <https://github.com/cool-japan/oxigdal>
-- **Documentation**: <https://docs.rs/oxigdal>
-- **Issue Tracker**: <https://github.com/cool-japan/oxigdal/issues>
+- **Homepage**: <https://github.com/cool-japan/oxigeo>
+- **Documentation**: <https://docs.rs/oxigeo>
+- **Issue Tracker**: <https://github.com/cool-japan/oxigeo/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/cool-japan/oxigeo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cool-japan/oxigeo/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.7
 [0.1.6]: https://github.com/cool-japan/oxigdal/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/cool-japan/oxigdal/compare/v0.1.4...v0.1.5

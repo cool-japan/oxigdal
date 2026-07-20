@@ -1,12 +1,12 @@
 /**
- * OxiGDAL COG Viewer Demo Application
+ * OxiGeo COG Viewer Demo Application
  *
- * This application demonstrates the capabilities of OxiGDAL WASM bindings
+ * This application demonstrates the capabilities of OxiGeo WASM bindings
  * for viewing Cloud Optimized GeoTIFFs in the browser.
  */
 
 // WASM module imports
-import init, { WasmCogViewer, version } from './pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer, version } from './pkg/oxigeo_wasm.js';
 
 // Application state
 const state = {
@@ -43,12 +43,12 @@ async function initApp() {
     try {
         // Initialize WASM module
         await init();
-        console.log('OxiGDAL WASM initialized');
+        console.log('OxiGeo WASM initialized');
 
         // Display version
         const versionInfo = document.getElementById('version-info');
         if (versionInfo) {
-            versionInfo.textContent = `OxiGDAL v${version()}`;
+            versionInfo.textContent = `OxiGeo v${version()}`;
         }
 
         // Setup canvas

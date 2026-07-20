@@ -1,0 +1,35 @@
+[Unit]
+Description=OxiGeo Tile Server
+Documentation=https://github.com/cool-japan/oxigeo
+After=network.target
+
+[Service]
+Type=simple
+User=oxigeo
+Group=oxigeo
+WorkingDirectory=/opt/oxigeo-server
+
+# Path to the binary
+ExecStart=/usr/local/bin/oxigeo-server --config /etc/oxigeo/config.toml
+
+# Environment variables
+Environment="OXIGEO_LOG_LEVEL=info"
+Environment="RUST_BACKTRACE=1"
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/cache/oxigeo /var/log/oxigeo
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

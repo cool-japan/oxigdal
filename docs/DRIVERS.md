@@ -1,6 +1,6 @@
-# OxiGDAL Driver Guide
+# OxiGeo Driver Guide
 
-This guide provides detailed documentation for each geospatial data format driver supported by OxiGDAL.
+This guide provides detailed documentation for each geospatial data format driver supported by OxiGeo.
 
 ## Table of Contents
 
@@ -14,7 +14,7 @@ This guide provides detailed documentation for each geospatial data format drive
 
 ## GeoTIFF / COG Driver
 
-**Crate**: `oxigdal-geotiff`
+**Crate**: `oxigeo-geotiff`
 **Format**: GeoTIFF, Cloud Optimized GeoTIFF (COG)
 **Type**: Raster
 **Read**: ✅ Full support
@@ -40,8 +40,8 @@ The GeoTIFF driver provides comprehensive support for reading and writing GeoTIF
 #### Basic Reading
 
 ```rust
-use oxigdal_geotiff::GeoTiffReader;
-use oxigdal_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
 
 fn read_geotiff() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("elevation.tif")?;
@@ -75,8 +75,8 @@ fn read_geotiff() -> Result<(), Box<dyn std::error::Error>> {
 #### Reading Cloud Optimized GeoTIFF (COG)
 
 ```rust
-use oxigdal_geotiff::CogReader;
-use oxigdal_core::io::FileDataSource;
+use oxigeo_geotiff::CogReader;
+use oxigeo_core::io::FileDataSource;
 
 fn read_cog() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("satellite.tif")?;
@@ -106,8 +106,8 @@ fn read_cog() -> Result<(), Box<dyn std::error::Error>> {
 #### Validating COG Structure
 
 ```rust
-use oxigdal_geotiff::{TiffFile, cog};
-use oxigdal_core::io::FileDataSource;
+use oxigeo_geotiff::{TiffFile, cog};
+use oxigeo_core::io::FileDataSource;
 
 fn validate_cog() -> Result<(), Box<dyn std::error::Error>> {
     let source = FileDataSource::open("maybe_cog.tif")?;
@@ -135,9 +135,9 @@ fn validate_cog() -> Result<(), Box<dyn std::error::Error>> {
 #### Basic GeoTIFF Writing
 
 ```rust
-use oxigdal_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::{RasterDataType, GeoTransform, BoundingBox};
+use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::{RasterDataType, GeoTransform, BoundingBox};
 use std::fs::File;
 
 fn write_geotiff() -> Result<(), Box<dyn std::error::Error>> {
@@ -172,10 +172,10 @@ fn write_geotiff() -> Result<(), Box<dyn std::error::Error>> {
 #### Writing Cloud Optimized GeoTIFF (COG)
 
 ```rust
-use oxigdal_geotiff::writer::{CogWriter, CogWriterOptions, OverviewResampling};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::{RasterDataType, GeoTransform, BoundingBox};
-use oxigdal_geotiff::tiff::Compression;
+use oxigeo_geotiff::writer::{CogWriter, CogWriterOptions, OverviewResampling};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::{RasterDataType, GeoTransform, BoundingBox};
+use oxigeo_geotiff::tiff::Compression;
 use std::fs::File;
 
 fn write_cog() -> Result<(), Box<dyn std::error::Error>> {
@@ -215,7 +215,7 @@ fn write_cog() -> Result<(), Box<dyn std::error::Error>> {
 The GeoTIFF driver supports multiple compression schemes:
 
 ```rust
-use oxigdal_geotiff::tiff::Compression;
+use oxigeo_geotiff::tiff::Compression;
 
 // Available compression methods:
 let compressions = vec![
@@ -231,7 +231,7 @@ let compressions = vec![
 
 ## GeoJSON Driver
 
-**Crate**: `oxigdal-geojson`
+**Crate**: `oxigeo-geojson`
 **Format**: GeoJSON (RFC 7946)
 **Type**: Vector
 **Read**: ✅ Full support
@@ -255,7 +255,7 @@ The GeoJSON driver provides full RFC 7946 compliance with support for all geomet
 ### Reading GeoJSON
 
 ```rust
-use oxigdal_geojson::{GeoJsonReader, FeatureCollection};
+use oxigeo_geojson::{GeoJsonReader, FeatureCollection};
 use std::fs::File;
 use std::io::BufReader;
 
@@ -288,7 +288,7 @@ fn read_geojson() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing GeoJSON
 
 ```rust
-use oxigdal_geojson::{
+use oxigeo_geojson::{
     GeoJsonWriter, FeatureCollection, Feature, Geometry, GeometryType,
     Properties, Coordinate,
 };
@@ -341,7 +341,7 @@ fn write_geojson() -> Result<(), Box<dyn std::error::Error>> {
 All GeoJSON geometry types are supported:
 
 ```rust
-use oxigdal_geojson::{Geometry, GeometryType};
+use oxigeo_geojson::{Geometry, GeometryType};
 
 // Point
 let point = Geometry {
@@ -389,7 +389,7 @@ let polygon = Geometry {
 ### Validation
 
 ```rust
-use oxigdal_geojson::Validator;
+use oxigeo_geojson::Validator;
 
 fn validate_geojson(collection: &FeatureCollection) {
     let validator = Validator::new();
@@ -412,7 +412,7 @@ fn validate_geojson(collection: &FeatureCollection) {
 
 ## GeoParquet Driver
 
-**Crate**: `oxigdal-geoparquet`
+**Crate**: `oxigeo-geoparquet`
 **Format**: GeoParquet
 **Type**: Vector (columnar)
 **Read**: ✅ Full support
@@ -435,7 +435,7 @@ GeoParquet is a columnar vector format built on Apache Parquet, optimized for cl
 ### Reading GeoParquet
 
 ```rust
-use oxigdal_geoparquet::GeoParquetReader;
+use oxigeo_geoparquet::GeoParquetReader;
 use std::fs::File;
 
 fn read_geoparquet() -> Result<(), Box<dyn std::error::Error>> {
@@ -461,7 +461,7 @@ fn read_geoparquet() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing GeoParquet
 
 ```rust
-use oxigdal_geoparquet::{GeoParquetWriter, GeoParquetMetadata, CompressionCodec};
+use oxigeo_geoparquet::{GeoParquetWriter, GeoParquetMetadata, CompressionCodec};
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, Field, DataType};
 use std::fs::File;
@@ -506,7 +506,7 @@ fn write_geoparquet() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Zarr Driver
 
-**Crate**: `oxigdal-zarr`
+**Crate**: `oxigeo-zarr`
 **Format**: Zarr (v2 and v3)
 **Type**: Raster (N-dimensional)
 **Read**: ✅ Full support
@@ -528,7 +528,7 @@ Zarr is a chunked, compressed, N-dimensional array format optimized for cloud st
 ### Reading Zarr
 
 ```rust
-use oxigdal_zarr::{ZarrReader, storage::FilesystemStore};
+use oxigeo_zarr::{ZarrReader, storage::FilesystemStore};
 
 fn read_zarr() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = std::env::temp_dir();
@@ -555,7 +555,7 @@ fn read_zarr() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing Zarr
 
 ```rust
-use oxigdal_zarr::{
+use oxigeo_zarr::{
     ZarrWriter, storage::FilesystemStore,
     metadata::{ArrayMetadata, DataType},
     codecs::CompressionCodec,
@@ -594,7 +594,7 @@ fn write_zarr() -> Result<(), Box<dyn std::error::Error>> {
 ### Cloud Storage (S3)
 
 ```rust
-use oxigdal_zarr::{ZarrReader, storage::S3Store};
+use oxigeo_zarr::{ZarrReader, storage::S3Store};
 
 async fn read_zarr_s3() -> Result<(), Box<dyn std::error::Error>> {
     // Create S3 storage backend
@@ -612,7 +612,7 @@ async fn read_zarr_s3() -> Result<(), Box<dyn std::error::Error>> {
 
 ## FlatGeobuf Driver
 
-**Crate**: `oxigdal-flatgeobuf`
+**Crate**: `oxigeo-flatgeobuf`
 **Format**: FlatGeobuf
 **Type**: Vector (streaming)
 **Read**: ✅ Full support
@@ -634,7 +634,7 @@ FlatGeobuf is a binary vector format optimized for streaming and HTTP range requ
 ### Reading FlatGeobuf
 
 ```rust
-use oxigdal_flatgeobuf::FgbReader;
+use oxigeo_flatgeobuf::FgbReader;
 use std::fs::File;
 
 fn read_flatgeobuf() -> Result<(), Box<dyn std::error::Error>> {
@@ -661,8 +661,8 @@ fn read_flatgeobuf() -> Result<(), Box<dyn std::error::Error>> {
 ### Spatial Queries with HTTP
 
 ```rust
-use oxigdal_flatgeobuf::HttpReader;
-use oxigdal_core::types::BoundingBox;
+use oxigeo_flatgeobuf::HttpReader;
+use oxigeo_core::types::BoundingBox;
 
 async fn query_flatgeobuf_http() -> Result<(), Box<dyn std::error::Error>> {
     let url = "https://example.com/data.fgb";
@@ -681,8 +681,8 @@ async fn query_flatgeobuf_http() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing FlatGeobuf
 
 ```rust
-use oxigdal_flatgeobuf::{FgbWriter, Header, Feature};
-use oxigdal_core::vector::GeometryType;
+use oxigeo_flatgeobuf::{FgbWriter, Header, Feature};
+use oxigeo_core::vector::GeometryType;
 use std::fs::File;
 
 fn write_flatgeobuf() -> Result<(), Box<dyn std::error::Error>> {
@@ -726,6 +726,6 @@ fn write_flatgeobuf() -> Result<(), Box<dyn std::error::Error>> {
 
 ## See Also
 
-- [Quickstart Guide](oxigdal_quickstart_guide.md)
-- [Algorithm Guide](oxigdal_algorithm_guide.md)
-- [WASM Guide](oxigdal_wasm_guide.md)
+- [Quickstart Guide](oxigeo_quickstart_guide.md)
+- [Algorithm Guide](oxigeo_algorithm_guide.md)
+- [WASM Guide](oxigeo_wasm_guide.md)

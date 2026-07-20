@@ -1,25 +1,25 @@
-# OxiGDAL Benchmarking Guide
+# OxiGeo Benchmarking Guide
 
 ## Quick Start
 
 Run all benchmarks:
 ```bash
-cargo bench --package oxigdal-benchmarks
+cargo bench --package oxigeo-benchmarks
 ```
 
 Run a specific benchmark suite:
 ```bash
-cargo bench --package oxigdal-benchmarks --bench geo_transform
-cargo bench --package oxigdal-benchmarks --bench bounding_box
-cargo bench --package oxigdal-benchmarks --bench raster_buffer
-cargo bench --package oxigdal-benchmarks --bench compression
-cargo bench --package oxigdal-benchmarks --bench tiff_parsing
+cargo bench --package oxigeo-benchmarks --bench geo_transform
+cargo bench --package oxigeo-benchmarks --bench bounding_box
+cargo bench --package oxigeo-benchmarks --bench raster_buffer
+cargo bench --package oxigeo-benchmarks --bench compression
+cargo bench --package oxigeo-benchmarks --bench tiff_parsing
 ```
 
 Run a specific test within a suite:
 ```bash
-cargo bench --package oxigdal-benchmarks --bench compression -- deflate
-cargo bench --package oxigdal-benchmarks --bench geo_transform -- pixel_to_world
+cargo bench --package oxigeo-benchmarks --bench compression -- deflate
+cargo bench --package oxigeo-benchmarks --bench geo_transform -- pixel_to_world
 ```
 
 ## Understanding Results
@@ -68,7 +68,7 @@ Run benchmarks 3-5 times and use median results:
 
 ```bash
 for i in {1..5}; do
-    cargo bench --package oxigdal-benchmarks
+    cargo bench --package oxigeo-benchmarks
 done
 ```
 
@@ -252,7 +252,7 @@ g++ -std=c++17 -O3 -o bench_gdal bench_gdal.cpp \
 
 Create a comparison table:
 
-| Operation | OxiGDAL (μs) | GDAL (μs) | Rasterio (μs) | Speedup |
+| Operation | OxiGeo (μs) | GDAL (μs) | Rasterio (μs) | Speedup |
 |-----------|-------------|-----------|---------------|---------|
 | GeoTransform pixel→world | 0.45 | 0.62 | 0.78 | 1.38x / 1.73x |
 | Read 1024×1024 UInt8 | 125 | 156 | 189 | 1.25x / 1.51x |
@@ -278,7 +278,7 @@ Use valgrind/massif to analyze memory usage:
 
 ```bash
 # Build benchmark
-cargo bench --no-run --package oxigdal-benchmarks
+cargo bench --no-run --package oxigeo-benchmarks
 
 # Find benchmark binary
 find target/release -name "geo_transform*" -type f
@@ -297,10 +297,10 @@ Use `perf` on Linux:
 ```bash
 # Record cache misses
 perf stat -e cache-references,cache-misses \
-    cargo bench --package oxigdal-benchmarks --bench raster_buffer
+    cargo bench --package oxigeo-benchmarks --bench raster_buffer
 
 # Detailed analysis
-perf record cargo bench --package oxigdal-benchmarks --bench raster_buffer
+perf record cargo bench --package oxigeo-benchmarks --bench raster_buffer
 perf report
 ```
 
@@ -327,7 +327,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Run benchmarks
-        run: cargo bench --package oxigdal-benchmarks -- --save-baseline main
+        run: cargo bench --package oxigeo-benchmarks -- --save-baseline main
 
       - name: Upload results
         uses: actions/upload-artifact@v4

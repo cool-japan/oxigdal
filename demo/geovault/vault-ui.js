@@ -4,7 +4,7 @@
  * Session-ledger plumbing for the sovereign clean-room workstation:
  *
  *  - WASM init and WasmVaultSession lifecycle (blake3 hash chain → Merkle
- *    root → Ed25519 seal, all inside oxigdal-security compiled to wasm)
+ *    root → Ed25519 seal, all inside oxigeo-security compiled to wasm)
  *  - Network guards: fetch / XMLHttpRequest / sendBeacon are wrapped BEFORE
  *    anything else runs; any request to a non-same-origin URL is blocked
  *    (rejected, never sent) and recorded in the ledger as
@@ -25,7 +25,7 @@ import wasmInit, {
     WasmVaultSession,
     verifyAttestation,
     version as wasmVersion,
-} from './pkg/oxigdal_wasm.js';
+} from './pkg/oxigeo_wasm.js';
 
 /* ------------------------------------------------------------------ */
 /* Policy                                                              */
@@ -575,7 +575,7 @@ function selectContents(el) {
 export async function initVault() {
     await wasmInit();
 
-    setText('version-badge', `oxigdal-wasm ${wasmVersion()}`);
+    setText('version-badge', `oxigeo-wasm ${wasmVersion()}`);
 
     const policyJson = JSON.stringify({
         csp: CSP_POLICY,

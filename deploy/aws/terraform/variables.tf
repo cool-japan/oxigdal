@@ -1,4 +1,4 @@
-# OxiGDAL AWS Terraform Variables
+# OxiGeo AWS Terraform Variables
 # Author: COOLJAPAN OU (Team Kitasan)
 
 variable "aws_region" {
@@ -10,7 +10,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name"
   type        = string
-  default     = "oxigdal"
+  default     = "oxigeo"
 }
 
 variable "environment" {
@@ -71,9 +71,9 @@ variable "redis_num_nodes" {
 
 # ECS Configuration
 variable "container_image" {
-  description = "Docker image for OxiGDAL server"
+  description = "Docker image for OxiGeo server"
   type        = string
-  default     = "ghcr.io/cool-japan/oxigdal-server:latest"
+  default     = "ghcr.io/cool-japan/oxigeo-server:latest"
 }
 
 variable "ecs_desired_count" {

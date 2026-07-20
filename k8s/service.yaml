@@ -1,14 +1,14 @@
-# OxiGDAL Kubernetes Services
-# Service definitions for OxiGDAL components
+# OxiGeo Kubernetes Services
+# Service definitions for OxiGeo components
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: oxigdal-server
-  namespace: oxigdal
+  name: oxigeo-server
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
   annotations:
     prometheus.io/scrape: "true"
@@ -17,7 +17,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
   ports:
   - name: http
@@ -37,16 +37,16 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: oxigdal-server-headless
-  namespace: oxigdal
+  name: oxigeo-server-headless
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
 spec:
   type: ClusterIP
   clusterIP: None
   selector:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
   ports:
   - name: http
@@ -59,7 +59,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/component: database
@@ -79,7 +79,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: redis
-  namespace: oxigdal
+  namespace: oxigeo
   labels:
     app.kubernetes.io/name: redis
     app.kubernetes.io/component: cache
@@ -98,15 +98,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: oxigdal-server-lb
-  namespace: oxigdal
+  name: oxigeo-server-lb
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
 spec:
   type: LoadBalancer
   selector:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: server
   ports:
   - name: http

@@ -1,0 +1,25 @@
+[package]
+name = "oxigeo-index"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure-Rust spatial index (R-tree) for OxiGeo vector data"
+keywords = ["geospatial", "spatial-index", "rtree", "vector"]
+categories = ["science", "data-structures"]
+
+[features]
+default = ["std"]
+std = []
+parallel = ["std", "dep:rayon"]
+
+[dependencies]
+thiserror.workspace = true
+delaunator.workspace = true
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,12 +1,12 @@
-# OxiGDAL Kubernetes Namespace
+# OxiGeo Kubernetes Namespace
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: oxigdal
+  name: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/instance: production
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/component: geospatial

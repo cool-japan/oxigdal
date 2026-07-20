@@ -1,24 +1,24 @@
-# OxiGDAL Kubernetes RBAC
+# OxiGeo Kubernetes RBAC
 # Role-Based Access Control configuration
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: oxigdal
-  namespace: oxigdal
+  name: oxigeo
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: rbac
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: oxigdal-role
-  namespace: oxigdal
+  name: oxigeo-role
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: rbac
 rules:
 # Allow reading ConfigMaps
@@ -45,34 +45,34 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: oxigdal-rolebinding
-  namespace: oxigdal
+  name: oxigeo-rolebinding
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: rbac
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: oxigdal-role
+  name: oxigeo-role
 subjects:
 - kind: ServiceAccount
-  name: oxigdal
-  namespace: oxigdal
+  name: oxigeo
+  namespace: oxigeo
 
 ---
 # Network Policy for security
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: oxigdal-netpol
-  namespace: oxigdal
+  name: oxigeo-netpol
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: security
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: oxigdal
+      app.kubernetes.io/name: oxigeo
   policyTypes:
   - Ingress
   - Egress

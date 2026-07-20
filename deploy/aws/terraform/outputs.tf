@@ -1,4 +1,4 @@
-# OxiGDAL AWS Terraform Outputs
+# OxiGeo AWS Terraform Outputs
 # Author: COOLJAPAN OU (Team Kitasan)
 
 output "alb_dns_name" {

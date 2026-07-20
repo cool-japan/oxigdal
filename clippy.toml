@@ -1,4 +1,4 @@
-# Clippy configuration for OxiGDAL workspace
+# Clippy configuration for OxiGeo workspace
 #
 # allow-expect-in-tests: suppress `clippy::expect_used` warnings in test/bench
 # code. Per COOLJAPAN policy, expect() with descriptive messages is acceptable

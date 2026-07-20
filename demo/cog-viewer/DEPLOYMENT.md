@@ -1,4 +1,4 @@
-# Deployment Guide - OxiGDAL COG Viewer
+# Deployment Guide - OxiGeo COG Viewer
 
 Comprehensive guide for deploying the COG viewer to various platforms.
 
@@ -24,7 +24,7 @@ Before deploying, ensure:
 
 1. WASM package is built:
    ```bash
-   cd ../../crates/oxigdal-wasm
+   cd ../../crates/oxigeo-wasm
    wasm-pack build --target web --release --out-dir ../../demo/pkg
    ```
 
@@ -44,14 +44,14 @@ Before deploying, ensure:
 ### Production Build
 
 ```bash
-# Navigate to oxigdal-wasm
-cd ../../crates/oxigdal-wasm
+# Navigate to oxigeo-wasm
+cd ../../crates/oxigeo-wasm
 
 # Build optimized WASM
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 
 # Optional: Further optimize WASM
-wasm-opt -Oz -o ../../demo/pkg/oxigdal_wasm_bg.wasm ../../demo/pkg/oxigdal_wasm_bg.wasm
+wasm-opt -Oz -o ../../demo/pkg/oxigeo_wasm_bg.wasm ../../demo/pkg/oxigeo_wasm_bg.wasm
 ```
 
 ### Build Optimization Options
@@ -84,7 +84,7 @@ wasm-pack build --target web --profiling --out-dir ../../demo/pkg
    - Branch: `main`, folder: `/demo/cog-viewer`
    - Save
 
-4. Access at: `https://YOUR-USERNAME.github.io/oxigdal/`
+4. Access at: `https://YOUR-USERNAME.github.io/oxigeo/`
 
 #### Method 2: GitHub Actions
 
@@ -98,7 +98,7 @@ on:
     branches: [main]
     paths:
       - 'demo/cog-viewer/**'
-      - 'crates/oxigdal-wasm/**'
+      - 'crates/oxigeo-wasm/**'
 
 jobs:
   deploy:
@@ -116,7 +116,7 @@ jobs:
 
       - name: Build WASM
         run: |
-          cd crates/oxigdal-wasm
+          cd crates/oxigeo-wasm
           wasm-pack build --target web --release --out-dir ../../demo/pkg
 
       - name: Deploy to GitHub Pages
@@ -250,12 +250,12 @@ jobs:
 
 1. Create S3 bucket:
    ```bash
-   aws s3 mb s3://oxigdal-cog-viewer
+   aws s3 mb s3://oxigeo-cog-viewer
    ```
 
 2. Enable static website hosting:
    ```bash
-   aws s3 website s3://oxigdal-cog-viewer --index-document index.html
+   aws s3 website s3://oxigeo-cog-viewer --index-document index.html
    ```
 
 3. Configure CORS:
@@ -274,13 +274,13 @@ jobs:
    }
    EOF
 
-   aws s3api put-bucket-cors --bucket oxigdal-cog-viewer --cors-configuration file://cors.json
+   aws s3api put-bucket-cors --bucket oxigeo-cog-viewer --cors-configuration file://cors.json
    ```
 
 4. Upload files:
    ```bash
    cd demo/cog-viewer
-   aws s3 sync . s3://oxigdal-cog-viewer/ \
+   aws s3 sync . s3://oxigeo-cog-viewer/ \
      --exclude ".git/*" \
      --exclude "*.sh" \
      --cache-control "public, max-age=31536000" \
@@ -289,7 +289,7 @@ jobs:
 
 5. Set proper MIME types:
    ```bash
-   aws s3 cp s3://oxigdal-cog-viewer/ s3://oxigdal-cog-viewer/ \
+   aws s3 cp s3://oxigeo-cog-viewer/ s3://oxigeo-cog-viewer/ \
      --recursive \
      --exclude "*" \
      --include "*.wasm" \
@@ -302,7 +302,7 @@ jobs:
 1. Create distribution:
    ```bash
    aws cloudfront create-distribution \
-     --origin-domain-name oxigdal-cog-viewer.s3.amazonaws.com \
+     --origin-domain-name oxigeo-cog-viewer.s3.amazonaws.com \
      --default-root-object index.html
    ```
 
@@ -326,7 +326,7 @@ COPY . .
 RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 # Build WASM
-WORKDIR /app/crates/oxigdal-wasm
+WORKDIR /app/crates/oxigeo-wasm
 RUN wasm-pack build --target web --release --out-dir ../../demo/pkg
 
 # Production stage
@@ -379,27 +379,27 @@ CMD ["nginx", "-g", "daemon off;"]
 Build and run:
 ```bash
 cd ../../  # Project root
-docker build -t oxigdal-cog-viewer -f demo/cog-viewer/Dockerfile .
-docker run -p 8080:80 oxigdal-cog-viewer
+docker build -t oxigeo-cog-viewer -f demo/cog-viewer/Dockerfile .
+docker run -p 8080:80 oxigeo-cog-viewer
 ```
 
 ### Self-Hosted Nginx
 
 #### Nginx Configuration
 
-Create `/etc/nginx/sites-available/oxigdal-cog-viewer`:
+Create `/etc/nginx/sites-available/oxigeo-cog-viewer`:
 
 ```nginx
 server {
     listen 80;
-    server_name demo.oxigdal.com;
+    server_name demo.oxigeo.com;
 
-    root /var/www/oxigdal-cog-viewer;
+    root /var/www/oxigeo-cog-viewer;
     index index.html;
 
     # Logging
-    access_log /var/log/nginx/oxigdal-access.log;
-    error_log /var/log/nginx/oxigdal-error.log;
+    access_log /var/log/nginx/oxigeo-access.log;
+    error_log /var/log/nginx/oxigeo-error.log;
 
     # CORS headers
     add_header Access-Control-Allow-Origin * always;
@@ -452,14 +452,14 @@ server {
 
 Enable and restart:
 ```bash
-sudo ln -s /etc/nginx/sites-available/oxigdal-cog-viewer /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/oxigeo-cog-viewer /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
 ```
 
 Deploy files:
 ```bash
-rsync -avz --delete demo/cog-viewer/ user@server:/var/www/oxigdal-cog-viewer/
+rsync -avz --delete demo/cog-viewer/ user@server:/var/www/oxigeo-cog-viewer/
 ```
 
 ## CORS Configuration
@@ -492,7 +492,7 @@ curl -I -X OPTIONS \
 cargo install wasm-opt
 
 # Optimize WASM binary
-wasm-opt -Oz -o demo/pkg/oxigdal_wasm_bg.wasm demo/pkg/oxigdal_wasm_bg.wasm
+wasm-opt -Oz -o demo/pkg/oxigeo_wasm_bg.wasm demo/pkg/oxigeo_wasm_bg.wasm
 ```
 
 ### Compression
@@ -533,7 +533,7 @@ Add to HTML `<head>`:
 Always use HTTPS in production:
 ```bash
 # Let's Encrypt with certbot
-sudo certbot --nginx -d demo.oxigdal.com
+sudo certbot --nginx -d demo.oxigeo.com
 ```
 
 ### Rate Limiting
@@ -576,7 +576,7 @@ window.addEventListener('load', () => {
 Add Google Analytics or Plausible:
 ```html
 <!-- Plausible Analytics -->
-<script defer data-domain="demo.oxigdal.com" src="https://plausible.io/js/script.js"></script>
+<script defer data-domain="demo.oxigeo.com" src="https://plausible.io/js/script.js"></script>
 ```
 
 ## Verification
@@ -597,4 +597,4 @@ npx lighthouse https://your-demo-url.com --view
 
 ---
 
-**Deployment Complete!** Your COG viewer is now live and ready to showcase OxiGDAL's browser capabilities.
+**Deployment Complete!** Your COG viewer is now live and ready to showcase OxiGeo's browser capabilities.

@@ -1,6 +1,6 @@
-# OxiGDAL Algorithm Guide
+# OxiGeo Algorithm Guide
 
-This guide covers all geospatial processing algorithms available in `oxigdal-algorithms`.
+This guide covers all geospatial processing algorithms available in `oxigeo-algorithms`.
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@ Resampling changes the spatial resolution or dimensions of raster data while pre
 
 ### Overview
 
-The `oxigdal-algorithms` crate provides four resampling methods:
+The `oxigeo-algorithms` crate provides four resampling methods:
 
 | Method | Speed | Quality | Best For |
 |--------|-------|---------|----------|
@@ -29,9 +29,9 @@ The `oxigdal-algorithms` crate provides four resampling methods:
 ### Basic Usage
 
 ```rust
-use oxigdal_algorithms::resampling::{Resampler, ResamplingMethod};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
+use oxigeo_algorithms::resampling::{Resampler, ResamplingMethod};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
 
 fn resample_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create source raster (1000x1000)
@@ -67,7 +67,7 @@ fn resample_example() -> Result<(), Box<dyn std::error::Error>> {
 **Example:**
 
 ```rust
-use oxigdal_algorithms::resampling::{NearestResampler, ResamplingMethod};
+use oxigeo_algorithms::resampling::{NearestResampler, ResamplingMethod};
 
 fn nearest_example() -> Result<(), Box<dyn std::error::Error>> {
     let src = RasterBuffer::zeros(1000, 1000, RasterDataType::UInt8);
@@ -101,7 +101,7 @@ fn nearest_example() -> Result<(), Box<dyn std::error::Error>> {
 **Example:**
 
 ```rust
-use oxigdal_algorithms::resampling::BilinearResampler;
+use oxigeo_algorithms::resampling::BilinearResampler;
 
 fn bilinear_example() -> Result<(), Box<dyn std::error::Error>> {
     // DEM resampling
@@ -146,7 +146,7 @@ Where:
 **Example:**
 
 ```rust
-use oxigdal_algorithms::resampling::BicubicResampler;
+use oxigeo_algorithms::resampling::BicubicResampler;
 
 fn bicubic_example() -> Result<(), Box<dyn std::error::Error>> {
     // High-quality imagery resampling
@@ -187,7 +187,7 @@ This produces smoother curves than bilinear while preserving edges better.
 **Example:**
 
 ```rust
-use oxigdal_algorithms::resampling::LanczosResampler;
+use oxigeo_algorithms::resampling::LanczosResampler;
 
 fn lanczos_example() -> Result<(), Box<dyn std::error::Error>> {
     // Maximum quality resampling
@@ -246,9 +246,9 @@ Is your data categorical/classified?
 Perform mathematical operations on raster data.
 
 ```rust
-use oxigdal_algorithms::raster::RasterCalculator;
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
+use oxigeo_algorithms::raster::RasterCalculator;
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
 
 fn raster_calc_example() -> Result<(), Box<dyn std::error::Error>> {
     let input1 = RasterBuffer::zeros(1000, 1000, RasterDataType::Float32);
@@ -274,7 +274,7 @@ fn raster_calc_example() -> Result<(), Box<dyn std::error::Error>> {
 Create shaded relief visualization from DEMs.
 
 ```rust
-use oxigdal_algorithms::raster::Hillshade;
+use oxigeo_algorithms::raster::Hillshade;
 
 fn hillshade_example() -> Result<(), Box<dyn std::error::Error>> {
     let dem = RasterBuffer::zeros(1000, 1000, RasterDataType::Float32);
@@ -302,7 +302,7 @@ fn hillshade_example() -> Result<(), Box<dyn std::error::Error>> {
 Calculate terrain slope and aspect from DEMs.
 
 ```rust
-use oxigdal_algorithms::raster::{Slope, Aspect};
+use oxigeo_algorithms::raster::{Slope, Aspect};
 
 fn terrain_analysis() -> Result<(), Box<dyn std::error::Error>> {
     let dem = RasterBuffer::zeros(1000, 1000, RasterDataType::Float32);
@@ -331,7 +331,7 @@ fn terrain_analysis() -> Result<(), Box<dyn std::error::Error>> {
 Remap pixel values to new categories.
 
 ```rust
-use oxigdal_algorithms::raster::Reclassify;
+use oxigeo_algorithms::raster::Reclassify;
 use std::collections::HashMap;
 
 fn reclassify_example() -> Result<(), Box<dyn std::error::Error>> {
@@ -355,7 +355,7 @@ fn reclassify_example() -> Result<(), Box<dyn std::error::Error>> {
 Compute statistics within zones defined by a zone raster.
 
 ```rust
-use oxigdal_algorithms::raster::ZonalStats;
+use oxigeo_algorithms::raster::ZonalStats;
 
 fn zonal_stats_example() -> Result<(), Box<dyn std::error::Error>> {
     let values = RasterBuffer::zeros(1000, 1000, RasterDataType::Float32);
@@ -383,8 +383,8 @@ fn zonal_stats_example() -> Result<(), Box<dyn std::error::Error>> {
 Create buffers around vector geometries.
 
 ```rust
-use oxigdal_algorithms::vector::Buffer;
-use oxigdal_core::vector::Geometry;
+use oxigeo_algorithms::vector::Buffer;
+use oxigeo_core::vector::Geometry;
 
 fn buffer_example() -> Result<(), Box<dyn std::error::Error>> {
     let point = Geometry::Point { x: 0.0, y: 0.0 };
@@ -404,7 +404,7 @@ fn buffer_example() -> Result<(), Box<dyn std::error::Error>> {
 Compute geometric intersection of two geometries.
 
 ```rust
-use oxigdal_algorithms::vector::Intersection;
+use oxigeo_algorithms::vector::Intersection;
 
 fn intersection_example() -> Result<(), Box<dyn std::error::Error>> {
     let poly1 = /* ... */;
@@ -422,7 +422,7 @@ fn intersection_example() -> Result<(), Box<dyn std::error::Error>> {
 Combine multiple geometries into one.
 
 ```rust
-use oxigdal_algorithms::vector::Union;
+use oxigeo_algorithms::vector::Union;
 
 fn union_example() -> Result<(), Box<dyn std::error::Error>> {
     let geometries = vec![/* ... */];
@@ -439,7 +439,7 @@ fn union_example() -> Result<(), Box<dyn std::error::Error>> {
 Simplify line geometries while preserving shape.
 
 ```rust
-use oxigdal_algorithms::vector::DouglasPeucker;
+use oxigeo_algorithms::vector::DouglasPeucker;
 
 fn simplify_example() -> Result<(), Box<dyn std::error::Error>> {
     let linestring = /* ... */;
@@ -466,7 +466,7 @@ Enable SIMD for significant speedup (2-8x):
 
 ```toml
 [dependencies]
-oxigdal-algorithms = { version = "0.1", features = ["simd"] }
+oxigeo-algorithms = { version = "0.2", features = ["simd"] }
 ```
 
 **Supported architectures:**
@@ -489,11 +489,11 @@ Enable parallel processing with rayon:
 
 ```toml
 [dependencies]
-oxigdal-algorithms = { version = "0.1", features = ["parallel"] }
+oxigeo-algorithms = { version = "0.2", features = ["parallel"] }
 ```
 
 ```rust
-use oxigdal_algorithms::resampling::Resampler;
+use oxigeo_algorithms::resampling::Resampler;
 
 fn parallel_example() -> Result<(), Box<dyn std::error::Error>> {
     let resampler = Resampler::new(ResamplingMethod::Bilinear)
@@ -512,7 +512,7 @@ fn parallel_example() -> Result<(), Box<dyn std::error::Error>> {
 Process large rasters in chunks to control memory usage:
 
 ```rust
-use oxigdal_algorithms::resampling::ChunkedResampler;
+use oxigeo_algorithms::resampling::ChunkedResampler;
 
 fn chunked_example() -> Result<(), Box<dyn std::error::Error>> {
     let resampler = ChunkedResampler::new(ResamplingMethod::Bilinear)
@@ -531,11 +531,11 @@ Enable Arrow feature for zero-copy operations:
 
 ```toml
 [dependencies]
-oxigdal-core = { version = "0.1", features = ["arrow"] }
+oxigeo-core = { version = "0.2", features = ["arrow"] }
 ```
 
 ```rust
-use oxigdal_core::buffer::RasterBuffer;
+use oxigeo_core::buffer::RasterBuffer;
 use arrow_array::Float32Array;
 
 fn arrow_example() -> Result<(), Box<dyn std::error::Error>> {
@@ -556,7 +556,7 @@ fn arrow_example() -> Result<(), Box<dyn std::error::Error>> {
 Run benchmarks to measure performance:
 
 ```bash
-cd oxigdal/benchmarks
+cd oxigeo/benchmarks
 cargo bench --bench resampling
 cargo bench --bench raster_ops
 cargo bench --bench vector_ops
@@ -607,7 +607,7 @@ cargo bench --bench vector_ops
 
 ## See Also
 
-- [Quickstart Guide](oxigdal_quickstart_guide.md)
-- [Driver Guide](oxigdal_driver_guide.md)
-- [WASM Guide](oxigdal_wasm_guide.md)
-- API Documentation: https://docs.rs/oxigdal-algorithms
+- [Quickstart Guide](oxigeo_quickstart_guide.md)
+- [Driver Guide](oxigeo_driver_guide.md)
+- [WASM Guide](oxigeo_wasm_guide.md)
+- API Documentation: https://docs.rs/oxigeo-algorithms

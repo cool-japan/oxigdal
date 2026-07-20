@@ -1,14 +1,14 @@
-# OxiGDAL Kubernetes Ingress
+# OxiGeo Kubernetes Ingress
 # Ingress configuration for external access
 # Author: COOLJAPAN OU (Team Kitasan)
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: oxigdal-ingress
-  namespace: oxigdal
+  name: oxigeo-ingress
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: ingress
   annotations:
     # Nginx ingress annotations
@@ -47,45 +47,45 @@ spec:
 
   tls:
   - hosts:
-    - oxigdal.example.com
-    - api.oxigdal.example.com
-    - tiles.oxigdal.example.com
-    secretName: oxigdal-tls-cert
+    - oxigeo.example.com
+    - api.oxigeo.example.com
+    - tiles.oxigeo.example.com
+    secretName: oxigeo-tls-cert
 
   rules:
   # Main API endpoint
-  - host: oxigdal.example.com
+  - host: oxigeo.example.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: oxigdal-server
+            name: oxigeo-server
             port:
               name: http
 
   # API subdomain
-  - host: api.oxigdal.example.com
+  - host: api.oxigeo.example.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: oxigdal-server
+            name: oxigeo-server
             port:
               name: http
 
   # Tiles subdomain for WMS/WMTS
-  - host: tiles.oxigdal.example.com
+  - host: tiles.oxigeo.example.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: oxigdal-server
+            name: oxigeo-server
             port:
               name: http
 
@@ -94,32 +94,32 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: oxigdal-ingress-traefik
-  namespace: oxigdal
+  name: oxigeo-ingress-traefik
+  namespace: oxigeo
   labels:
-    app.kubernetes.io/name: oxigdal
+    app.kubernetes.io/name: oxigeo
     app.kubernetes.io/component: ingress
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: oxigdal-ratelimit@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: oxigeo-ratelimit@kubernetescrd
 spec:
   ingressClassName: traefik
 
   tls:
   - hosts:
-    - oxigdal.example.com
-    secretName: oxigdal-tls-cert
+    - oxigeo.example.com
+    secretName: oxigeo-tls-cert
 
   rules:
-  - host: oxigdal.example.com
+  - host: oxigeo.example.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: oxigdal-server
+            name: oxigeo-server
             port:
               name: http
 
@@ -128,8 +128,8 @@ spec:
 apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
 metadata:
-  name: oxigdal-ratelimit
-  namespace: oxigdal
+  name: oxigeo-ratelimit
+  namespace: oxigeo
 spec:
   rateLimit:
     average: 100

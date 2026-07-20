@@ -1,4 +1,4 @@
-# OxiGDAL Docker Ignore
+# OxiGeo Docker Ignore
 # Exclude unnecessary files from Docker context
 
 # Build artifacts

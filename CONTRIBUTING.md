@@ -1,6 +1,6 @@
-# Contributing to OxiGDAL
+# Contributing to OxiGeo
 
-Thank you for considering a contribution to OxiGDAL. This document covers development setup,
+Thank you for considering a contribution to OxiGeo. This document covers development setup,
 the policies every change must satisfy, and what to expect from a pull request.
 
 By participating in this project you agree to abide by the [Code of Conduct](CODE_OF_CONDUCT.md).
@@ -9,7 +9,7 @@ By participating in this project you agree to abide by the [Code of Conduct](COD
 
 ### Prerequisites
 
-- **Rust** — install/manage via [rustup](https://rustup.rs/). OxiGDAL targets edition 2024
+- **Rust** — install/manage via [rustup](https://rustup.rs/). OxiGeo targets edition 2024
   and requires Rust **1.89+** (see `rust-version` in the workspace `Cargo.toml`).
 - **cargo-nextest** — the test runner used across the workspace:
 
@@ -26,8 +26,8 @@ By participating in this project you agree to abide by the [Code of Conduct](COD
 ### Clone and build
 
 ```bash
-git clone https://github.com/cool-japan/oxigdal.git
-cd oxigdal
+git clone https://github.com/cool-japan/oxigeo.git
+cd oxigeo
 cargo build --all-features
 ```
 
@@ -41,7 +41,7 @@ cargo test --doc --all-features   # doc tests (nextest does not run these)
 Run a single crate while iterating:
 
 ```bash
-cargo nextest run -p oxigdal-geotiff --all-features
+cargo nextest run -p oxigeo-geotiff --all-features
 ```
 
 ### Lint and format
@@ -56,12 +56,12 @@ Format only the files you touched during day-to-day edits (`rustfmt <file>`); us
 
 ## COOLJAPAN Policies
 
-OxiGDAL is part of the [COOLJAPAN](https://github.com/cool-japan) ecosystem and every
+OxiGeo is part of the [COOLJAPAN](https://github.com/cool-japan) ecosystem and every
 contribution — including from automated agents — must respect these rules:
 
 | Policy | Requirement |
 |--------|-------------|
-| **No `unwrap()` / `expect()`** | Production code must not panic. `clippy::unwrap_used` and `clippy::panic` are denied workspace-wide. Return `Result<T, OxiGdalError>` instead. `#[cfg(test)]` code is exempt. |
+| **No `unwrap()` / `expect()`** | Production code must not panic. `clippy::unwrap_used` and `clippy::panic` are denied workspace-wide. Return `Result<T, OxiGeoError>` instead. `#[cfg(test)]` code is exempt. |
 | **Zero warnings** | `cargo clippy --all-features -- -D warnings` must be clean before merge. |
 | **Pure Rust** | No new C/C++/Fortran dependencies in default features. If a native dependency is unavoidable, gate it behind an explicit, non-default Cargo feature. Compression goes through `oxiarc-*`; no `zip`/`flate2`/`zstd`/`bzip2`/`lz4`/`tar`/`snap`/`brotli`/`miniz_oxide`. |
 | **Workspace-inherited dependencies** | Member crates declare dependencies as `{ workspace = true }` (with feature additions as needed) and pin versions in the root `Cargo.toml` only, not per-crate. |
@@ -95,7 +95,7 @@ issue — follow the process in [SECURITY.md](SECURITY.md) instead.
 ## Getting Help
 
 - General questions and design discussion: open a
-  [GitHub issue](https://github.com/cool-japan/oxigdal/issues) or discussion thread.
+  [GitHub issue](https://github.com/cool-japan/oxigeo/issues) or discussion thread.
 - Security reports: see [SECURITY.md](SECURITY.md) — please do not use public issues.
 
 We appreciate every contribution, from typo fixes to new format drivers. Thank you for

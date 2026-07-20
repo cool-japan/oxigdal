@@ -1,0 +1,72 @@
+[package]
+name = "oxigeo-qc"
+description = "Quality control and validation suite for OxiGeo - Comprehensive data integrity checks for geospatial data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-qc"
+readme = "README.md"
+keywords = ["gdal", "science", "gis", "quality", "validation"]
+categories = ["science", "data-structures"]
+
+[features]
+default = ["std", "html"]
+std = ["thiserror/std", "serde/std"]
+html = ["dep:quick-xml"]
+pdf = []  # Optional PDF report generation (future)
+
+[dependencies]
+# Core dependencies
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+# Internal dependencies
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-algorithms = { workspace = true, default-features = true }
+oxigeo-index = { workspace = true }
+oxigeo-geotiff = { workspace = true }
+oxigeo-proj = { workspace = true }
+oxigeo-stac = { workspace = true }
+oxigeo-gpkg = { workspace = true }
+
+# TOML parsing for rules
+toml = { workspace = true }
+
+# Pattern matching (ValueDomain::Pattern / RuleType::Pattern)
+regex = { workspace = true }
+
+# HTML generation
+quick-xml = { workspace = true, optional = true }
+
+# Statistics and numerical operations
+num-traits = { workspace = true }
+approx = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+# Path-only (no version): dev-dependencies are stripped from the published
+# manifest, so a workspace-inherited version requirement here would force
+# cargo to resolve `oxigeo-geojson = "^0.2.0"` against crates.io during
+# `cargo publish`, which fails before that version exists. This is package
+# `oxigeo-geojson` at crates/oxigeo-drivers/geojson (the GeoJSON driver),
+# not the distinct `oxigeo-geojson-stream` package that lives at
+# crates/oxigeo-geojson/ (TopoJSON/GeoJSON-streaming code).
+oxigeo-geojson = { path = "../oxigeo-drivers/geojson" }
+
+[lib]
+name = "oxigeo_qc"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

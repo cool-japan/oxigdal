@@ -1,13 +1,13 @@
 # Raster Processing Recipes
 
-Common recipes for raster data processing with OxiGDAL.
+Common recipes for raster data processing with OxiGeo.
 
 ## Reading Rasters
 
 ### Read a Single Band
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn read_band() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let dataset = Dataset::open("elevation.tif").await?;
@@ -42,7 +42,7 @@ async fn read_window() -> Result<Vec<f32>, Box<dyn std::error::Error>> {
 ### Create GeoTIFF from Array
 
 ```rust
-use oxigdal_core::{Dataset, DataType};
+use oxigeo_core::{Dataset, DataType};
 
 async fn create_from_array(data: &[f32], width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
     let mut dataset = Dataset::create("output.tif", width, height, 1).await?;
@@ -75,7 +75,7 @@ async fn create_rgb(r: &[u8], g: &[u8], b: &[u8], width: u32, height: u32) -> Re
 ### Reproject to WGS84
 
 ```rust
-use oxigdal_proj::SpatialRef;
+use oxigeo_proj::SpatialRef;
 
 async fn reproject_to_wgs84(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;
@@ -107,7 +107,7 @@ async fn reproject_to_web_mercator(input: &str) -> Result<(), Box<dyn std::error
 ### Downsample by Factor
 
 ```rust
-use oxigdal_core::ResampleAlg;
+use oxigeo_core::ResampleAlg;
 
 async fn downsample(input: &str, factor: u32) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;
@@ -143,7 +143,7 @@ async fn upsample(input: &str, factor: u32) -> Result<(), Box<dyn std::error::Er
 ### Clip by Bounding Box
 
 ```rust
-use oxigdal_core::BoundingBox;
+use oxigeo_core::BoundingBox;
 
 async fn clip_bbox(input: &str, bbox: BoundingBox) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;
@@ -309,7 +309,7 @@ async fn compute_statistics(input: &str) -> Result<(), Box<dyn std::error::Error
 ### Convert to COG
 
 ```rust
-use oxigdal_geotiff::{GeoTiffDriver, CogOptions};
+use oxigeo_geotiff::{GeoTiffDriver, CogOptions};
 
 async fn convert_to_cog(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;

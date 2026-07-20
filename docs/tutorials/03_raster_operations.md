@@ -1,4 +1,4 @@
-# Raster Operations in OxiGDAL
+# Raster Operations in OxiGeo
 
 ## Overview
 
@@ -9,8 +9,8 @@ This tutorial covers common raster operations including reprojection, resampling
 ### Basic Reprojection
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_proj::{SpatialRef, Transformer};
+use oxigeo_core::Dataset;
+use oxigeo_proj::{SpatialRef, Transformer};
 
 async fn reproject_raster() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("utm.tif").await?;
@@ -30,8 +30,8 @@ async fn reproject_raster() -> Result<(), Box<dyn std::error::Error>> {
 ### Reprojection with Custom Parameters
 
 ```rust
-use oxigdal_core::{Dataset, ResampleAlg};
-use oxigdal_proj::{SpatialRef, ReprojectOptions};
+use oxigeo_core::{Dataset, ResampleAlg};
+use oxigeo_proj::{SpatialRef, ReprojectOptions};
 
 async fn reproject_custom() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("input.tif").await?;
@@ -62,7 +62,7 @@ async fn reproject_custom() -> Result<(), Box<dyn std::error::Error>> {
 ### Upsampling
 
 ```rust
-use oxigdal_core::{Dataset, ResampleAlg};
+use oxigeo_core::{Dataset, ResampleAlg};
 
 async fn upsample_raster() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("lowres.tif").await?;
@@ -99,7 +99,7 @@ async fn downsample_raster() -> Result<(), Box<dyn std::error::Error>> {
 ### Clip by Bounding Box
 
 ```rust
-use oxigdal_core::{Dataset, BoundingBox};
+use oxigeo_core::{Dataset, BoundingBox};
 
 async fn clip_by_bbox() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("large.tif").await?;
@@ -121,7 +121,7 @@ async fn clip_by_bbox() -> Result<(), Box<dyn std::error::Error>> {
 ### Clip by Polygon
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 use geo_types::Polygon;
 
 async fn clip_by_polygon() -> Result<(), Box<dyn std::error::Error>> {
@@ -149,8 +149,8 @@ async fn clip_by_polygon() -> Result<(), Box<dyn std::error::Error>> {
 ### Simple Mosaic
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_algorithms::mosaic::MosaicOptions;
+use oxigeo_core::Dataset;
+use oxigeo_algorithms::mosaic::MosaicOptions;
 
 async fn create_mosaic() -> Result<(), Box<dyn std::error::Error>> {
     let inputs = vec![
@@ -171,7 +171,7 @@ async fn create_mosaic() -> Result<(), Box<dyn std::error::Error>> {
 ### Blended Mosaic
 
 ```rust
-use oxigdal_algorithms::mosaic::{MosaicOptions, BlendMethod};
+use oxigeo_algorithms::mosaic::{MosaicOptions, BlendMethod};
 
 async fn create_blended_mosaic() -> Result<(), Box<dyn std::error::Error>> {
     let inputs = vec![
@@ -197,7 +197,7 @@ async fn create_blended_mosaic() -> Result<(), Box<dyn std::error::Error>> {
 ### Band Math
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn band_math() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("multiband.tif").await?;
@@ -279,7 +279,7 @@ async fn calculate_ndvi() -> Result<(), Box<dyn std::error::Error>> {
 ### Convolution Filter
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn apply_convolution() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open("input.tif").await?;
@@ -383,7 +383,7 @@ async fn sobel_edge_detection() -> Result<(), Box<dyn std::error::Error>> {
 ### Data Type Conversion
 
 ```rust
-use oxigdal_core::{Dataset, DataType};
+use oxigeo_core::{Dataset, DataType};
 
 async fn convert_data_type() -> Result<(), Box<dyn std::error::Error>> {
     let src = Dataset::open("float_data.tif").await?;
@@ -420,7 +420,7 @@ async fn convert_data_type() -> Result<(), Box<dyn std::error::Error>> {
 ## Hillshade Generation
 
 ```rust
-use oxigdal_core::Dataset;
+use oxigeo_core::Dataset;
 
 async fn generate_hillshade() -> Result<(), Box<dyn std::error::Error>> {
     let dem = Dataset::open("elevation.tif").await?;
@@ -483,8 +483,8 @@ async fn generate_hillshade() -> Result<(), Box<dyn std::error::Error>> {
 ## Complete Example: Multi-Step Processing
 
 ```rust
-use oxigdal_core::{Dataset, ResampleAlg};
-use oxigdal_proj::SpatialRef;
+use oxigeo_core::{Dataset, ResampleAlg};
+use oxigeo_proj::SpatialRef;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

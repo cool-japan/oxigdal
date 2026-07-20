@@ -1,9 +1,9 @@
 /**
- * OxiGDAL Advanced COG Viewer - Enhanced Main Application
+ * OxiGeo Advanced COG Viewer - Enhanced Main Application
  *
  * Features:
  * - Leaflet-based interactive map
- * - OxiGDAL WASM integration for COG reading
+ * - OxiGeo WASM integration for COG reading
  * - Advanced band selection and visualization
  * - Performance monitoring
  * - Comprehensive error handling
@@ -19,7 +19,7 @@
  */
 
 // Import WASM module from parent demo directory
-import init, { WasmCogViewer, version } from '../pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer, version } from '../pkg/oxigeo_wasm.js';
 
 // Application state
 const app = {
@@ -107,7 +107,7 @@ const app = {
 async function initializeApp() {
     try {
         updateStatus('loading', 'Initializing WebAssembly...');
-        showLoading('Initializing OxiGDAL WASM module...');
+        showLoading('Initializing OxiGeo WASM module...');
 
         // Initialize WASM
         await init();
@@ -119,7 +119,7 @@ async function initializeApp() {
             versionBadge.textContent = `v${version()}`;
         }
 
-        console.log('OxiGDAL WASM initialized successfully');
+        console.log('OxiGeo WASM initialized successfully');
 
         // Initialize Leaflet map
         initializeMap();

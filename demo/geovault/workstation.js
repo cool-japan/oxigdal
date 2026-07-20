@@ -17,7 +17,7 @@ import {
     WasmAnomaly,
     WasmImageProcessor,
     fileDigestHex,
-} from './pkg/oxigdal_wasm.js';
+} from './pkg/oxigeo_wasm.js';
 import { initVault, vaultLog, isSealed } from './vault-ui.js';
 
 /* ------------------------------------------------------------------ */

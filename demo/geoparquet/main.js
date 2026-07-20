@@ -1,5 +1,5 @@
 /**
- * OxiGDAL GeoParquet Live — main application.
+ * OxiGeo GeoParquet Live — main application.
  *
  * A 5.9 GB GeoParquet is queried straight from the browser: the Parquet
  * footer is fetched once (with a Cache API fast path), bounding-box +
@@ -8,10 +8,10 @@
  * HTTP range requests. No database, no server-side code.
  *
  * Error convention: the WASM layer rejects with JSON strings
- * `{code, message, detail}` (see crates/oxigdal-wasm-geoparquet/src/error.rs).
+ * `{code, message, detail}` (see crates/oxigeo-wasm-geoparquet/src/error.rs).
  */
 
-import init, { RemoteGeoParquet } from './pkg/oxigdal_geoparquet.js';
+import init, { RemoteGeoParquet } from './pkg/oxigeo_geoparquet.js';
 import { BoxDraw } from './map-draw.js';
 import { RowGroupStrip } from './rg-strip.js';
 
@@ -28,7 +28,7 @@ const LIVE_URL =
 const EXTRA_COLUMNS = ['confidence'];
 
 /** Cache API bucket for parquet footers. */
-const FOOTER_CACHE = 'oxigdal-gpq-footer-v1';
+const FOOTER_CACHE = 'oxigeo-gpq-footer-v1';
 
 /** Only this many features get click popups (contract: no handlers above 20k). */
 const POPUP_LIMIT = 20000;
@@ -59,7 +59,7 @@ const $ = (id) => document.getElementById(id);
 // (WASM, vendored JS/CSS, examples.json) are excluded.
 
 function installFetchAccounting() {
-    if (window.__oxigdalFetchWrapped) return;
+    if (window.__oxigeoFetchWrapped) return;
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (input, init2) => {
         const response = await originalFetch(input, init2);
@@ -77,7 +77,7 @@ function installFetchAccounting() {
         } catch (_e) { /* accounting must never break the fetch itself */ }
         return response;
     };
-    window.__oxigdalFetchWrapped = true;
+    window.__oxigeoFetchWrapped = true;
 }
 
 function isAppAssetUrl(url) {

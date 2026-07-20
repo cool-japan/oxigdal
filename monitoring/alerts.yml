@@ -1,14 +1,14 @@
-# OxiGDAL Prometheus Alert Rules
-# Alerting rules for monitoring OxiGDAL services
+# OxiGeo Prometheus Alert Rules
+# Alerting rules for monitoring OxiGeo services
 # Author: COOLJAPAN OU (Team Kitasan)
 
 groups:
-  - name: oxigdal_server_alerts
+  - name: oxigeo_server_alerts
     interval: 30s
     rules:
       # High CPU usage
       - alert: HighCPUUsage
-        expr: rate(process_cpu_seconds_total{job="oxigdal-server"}[5m]) > 0.8
+        expr: rate(process_cpu_seconds_total{job="oxigeo-server"}[5m]) > 0.8
         for: 5m
         labels:
           severity: warning
@@ -19,7 +19,7 @@ groups:
 
       # High memory usage
       - alert: HighMemoryUsage
-        expr: (process_resident_memory_bytes{job="oxigdal-server"} / node_memory_MemTotal_bytes) > 0.85
+        expr: (process_resident_memory_bytes{job="oxigeo-server"} / node_memory_MemTotal_bytes) > 0.85
         for: 5m
         labels:
           severity: warning
@@ -29,19 +29,19 @@ groups:
           description: "Memory usage is above 85% (current value: {{ $value | humanizePercentage }})"
 
       # Service down
-      - alert: OxiGDALServerDown
-        expr: up{job="oxigdal-server"} == 0
+      - alert: OxiGeoServerDown
+        expr: up{job="oxigeo-server"} == 0
         for: 1m
         labels:
           severity: critical
           component: server
         annotations:
-          summary: "OxiGDAL server is down"
-          description: "OxiGDAL server {{ $labels.instance }} has been down for more than 1 minute"
+          summary: "OxiGeo server is down"
+          description: "OxiGeo server {{ $labels.instance }} has been down for more than 1 minute"
 
       # High request latency
       - alert: HighRequestLatency
-        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="oxigdal-server"}[5m])) > 1
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="oxigeo-server"}[5m])) > 1
         for: 5m
         labels:
           severity: warning
@@ -52,7 +52,7 @@ groups:
 
       # High error rate
       - alert: HighErrorRate
-        expr: rate(http_requests_total{job="oxigdal-server",status=~"5.."}[5m]) > 0.05
+        expr: rate(http_requests_total{job="oxigeo-server",status=~"5.."}[5m]) > 0.05
         for: 5m
         labels:
           severity: critical
@@ -63,7 +63,7 @@ groups:
 
       # Too many requests
       - alert: HighRequestRate
-        expr: rate(http_requests_total{job="oxigdal-server"}[5m]) > 1000
+        expr: rate(http_requests_total{job="oxigeo-server"}[5m]) > 1000
         for: 5m
         labels:
           severity: info
@@ -74,7 +74,7 @@ groups:
 
       # Cache hit rate too low
       - alert: LowCacheHitRate
-        expr: rate(cache_hits_total{job="oxigdal-server"}[5m]) / rate(cache_requests_total{job="oxigdal-server"}[5m]) < 0.7
+        expr: rate(cache_hits_total{job="oxigeo-server"}[5m]) / rate(cache_requests_total{job="oxigeo-server"}[5m]) < 0.7
         for: 10m
         labels:
           severity: warning
@@ -110,7 +110,7 @@ groups:
 
       # Slow queries
       - alert: SlowQueries
-        expr: rate(pg_stat_activity_max_tx_duration{datname="oxigdal"}[5m]) > 30
+        expr: rate(pg_stat_activity_max_tx_duration{datname="oxigeo"}[5m]) > 30
         for: 5m
         labels:
           severity: warning

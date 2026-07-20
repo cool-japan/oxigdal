@@ -1,4 +1,4 @@
-name: Deploy OxiGDAL COG Viewer
+name: Deploy OxiGeo COG Viewer
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - 'demo/cog-viewer/**'
-      - 'crates/oxigdal-wasm/**'
+      - 'crates/oxigeo-wasm/**'
       - '.github/workflows/deploy.yml'
   pull_request:
     branches:
@@ -56,17 +56,17 @@ jobs:
           rm -rf binaryen-version_116*
 
       - name: Build WASM Package
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: |
           wasm-pack build --target web --release --out-dir ../../demo/pkg
 
       - name: Optimize WASM (optional)
         working-directory: demo/pkg
         run: |
-          if [ -f oxigdal_wasm_bg.wasm ]; then
-            wasm-opt -Oz -o oxigdal_wasm_bg_opt.wasm oxigdal_wasm_bg.wasm || true
-            if [ -f oxigdal_wasm_bg_opt.wasm ]; then
-              mv oxigdal_wasm_bg_opt.wasm oxigdal_wasm_bg.wasm
+          if [ -f oxigeo_wasm_bg.wasm ]; then
+            wasm-opt -Oz -o oxigeo_wasm_bg_opt.wasm oxigeo_wasm_bg.wasm || true
+            if [ -f oxigeo_wasm_bg_opt.wasm ]; then
+              mv oxigeo_wasm_bg_opt.wasm oxigeo_wasm_bg.wasm
             fi
           fi
 
@@ -118,7 +118,7 @@ jobs:
           curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM Package
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: |
           wasm-pack build --target web --release --out-dir ../../demo/pkg
 
@@ -165,7 +165,7 @@ jobs:
           curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM Package
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: |
           wasm-pack build --target web --release --out-dir ../../demo/pkg
 

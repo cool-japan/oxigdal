@@ -1,0 +1,49 @@
+[package]
+name = "oxigeo-ha"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-ha"
+readme = "README.md"
+rust-version.workspace = true
+keywords = ["gis", "gdal", "high-availability", "disaster-recovery", "failover"]
+categories = ["science", "database", "concurrency"]
+description = "High availability, disaster recovery, and automatic failover for OxiGeo"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+dashmap.workspace = true
+bytes.workspace = true
+oxicode = { workspace = true, features = ["serde"] }  # COOLJAPAN policy: Use oxicode instead of bincode
+crc32fast.workspace = true
+oxiarc-lz4.workspace = true
+oxiarc-archive = { workspace = true }
+oxiarc-zstd = { workspace = true }
+
+[dev-dependencies]
+tokio-test.workspace = true
+criterion = { workspace = true }
+tempfile.workspace = true
+
+[[bench]]
+name = "ha_bench"
+harness = false
+
+[lib]
+path = "src/lib.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

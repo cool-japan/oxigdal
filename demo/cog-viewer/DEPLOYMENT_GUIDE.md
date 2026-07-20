@@ -1,6 +1,6 @@
-# OxiGDAL COG Viewer Deployment Guide
+# OxiGeo COG Viewer Deployment Guide
 
-Complete guide for deploying the OxiGDAL COG Viewer to various platforms.
+Complete guide for deploying the OxiGeo COG Viewer to various platforms.
 
 ## Table of Contents
 
@@ -47,21 +47,21 @@ Complete guide for deploying the OxiGDAL COG Viewer to various platforms.
 From the project root:
 
 ```bash
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 ```
 
 This creates:
-- `oxigdal_wasm.js` - JavaScript bindings
-- `oxigdal_wasm_bg.wasm` - WebAssembly binary
-- `oxigdal_wasm.d.ts` - TypeScript definitions
+- `oxigeo_wasm.js` - JavaScript bindings
+- `oxigeo_wasm_bg.wasm` - WebAssembly binary
+- `oxigeo_wasm.d.ts` - TypeScript definitions
 
 ### Step 2: Optimize WASM (Optional)
 
 ```bash
 cd ../../demo/pkg
-wasm-opt -Oz -o oxigdal_wasm_bg_opt.wasm oxigdal_wasm_bg.wasm
-mv oxigdal_wasm_bg_opt.wasm oxigdal_wasm_bg.wasm
+wasm-opt -Oz -o oxigeo_wasm_bg_opt.wasm oxigeo_wasm_bg.wasm
+mv oxigeo_wasm_bg_opt.wasm oxigeo_wasm_bg.wasm
 ```
 
 Optimization flags:
@@ -97,7 +97,7 @@ The repository includes a pre-configured workflow at `.github/workflows/deploy.y
 
 3. View deployment:
    - Actions tab will show build progress
-   - Site will be available at `https://USERNAME.github.io/oxigdal/`
+   - Site will be available at `https://USERNAME.github.io/oxigeo/`
 
 #### Manual Deployment
 
@@ -147,7 +147,7 @@ netlify deploy --prod --dir=demo/cog-viewer
 1. Connect repository to Netlify
 
 2. Configure build settings:
-   - **Build command:** `cd crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg`
+   - **Build command:** `cd crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg`
    - **Publish directory:** `demo/cog-viewer`
    - **Environment variables:**
      ```
@@ -177,7 +177,7 @@ The included `netlify.toml`:
 
 ```toml
 [build]
-  command = "cd ../../crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg"
+  command = "cd ../../crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg"
   publish = "."
 
 [build.environment]
@@ -222,7 +222,7 @@ vercel --prod
 
 2. Configure build settings:
    - **Framework Preset:** Other
-   - **Build Command:** `cd crates/oxigdal-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg`
+   - **Build Command:** `cd crates/oxigeo-wasm && wasm-pack build --target web --release --out-dir ../../demo/pkg`
    - **Output Directory:** `demo/cog-viewer`
 
 3. Add environment variables:
@@ -239,7 +239,7 @@ The included `vercel.json`:
   "version": 2,
   "builds": [
     {
-      "src": "crates/oxigdal-wasm/Cargo.toml",
+      "src": "crates/oxigeo-wasm/Cargo.toml",
       "use": "@vercel/rust",
       "config": {
         "target": "wasm32-unknown-unknown"
@@ -282,8 +282,8 @@ cd demo
 ### Step 2: Create S3 Bucket
 
 ```bash
-aws s3 mb s3://oxigdal-cog-viewer
-aws s3 website s3://oxigdal-cog-viewer \
+aws s3 mb s3://oxigeo-cog-viewer
+aws s3 website s3://oxigeo-cog-viewer \
   --index-document index.html \
   --error-document 404.html
 ```
@@ -292,31 +292,31 @@ aws s3 website s3://oxigdal-cog-viewer \
 
 ```bash
 # Upload with correct MIME types
-aws s3 sync cog-viewer s3://oxigdal-cog-viewer \
+aws s3 sync cog-viewer s3://oxigeo-cog-viewer \
   --exclude "*.wasm" \
   --cache-control "public, max-age=31536000"
 
-aws s3 sync pkg s3://oxigdal-cog-viewer/pkg \
+aws s3 sync pkg s3://oxigeo-cog-viewer/pkg \
   --exclude "*" \
   --include "*.wasm" \
   --content-type "application/wasm" \
   --cache-control "public, max-age=31536000"
 
-aws s3 sync pkg s3://oxigdal-cog-viewer/pkg \
+aws s3 sync pkg s3://oxigeo-cog-viewer/pkg \
   --exclude "*.wasm"
 ```
 
 ### Step 4: Configure Public Access
 
 ```bash
-aws s3api put-bucket-policy --bucket oxigdal-cog-viewer --policy '{
+aws s3api put-bucket-policy --bucket oxigeo-cog-viewer --policy '{
   "Version": "2012-10-17",
   "Statement": [{
     "Sid": "PublicReadGetObject",
     "Effect": "Allow",
     "Principal": "*",
     "Action": "s3:GetObject",
-    "Resource": "arn:aws:s3:::oxigdal-cog-viewer/*"
+    "Resource": "arn:aws:s3:::oxigeo-cog-viewer/*"
   }]
 }'
 ```
@@ -325,13 +325,13 @@ aws s3api put-bucket-policy --bucket oxigdal-cog-viewer --policy '{
 
 ```bash
 aws cloudfront create-distribution --distribution-config '{
-  "CallerReference": "oxigdal-cog-viewer-'$(date +%s)'",
-  "Comment": "OxiGDAL COG Viewer",
+  "CallerReference": "oxigeo-cog-viewer-'$(date +%s)'",
+  "Comment": "OxiGeo COG Viewer",
   "Origins": {
     "Quantity": 1,
     "Items": [{
-      "Id": "S3-oxigdal-cog-viewer",
-      "DomainName": "oxigdal-cog-viewer.s3-website-us-east-1.amazonaws.com",
+      "Id": "S3-oxigeo-cog-viewer",
+      "DomainName": "oxigeo-cog-viewer.s3-website-us-east-1.amazonaws.com",
       "CustomOriginConfig": {
         "HTTPPort": 80,
         "OriginProtocolPolicy": "http-only"
@@ -339,7 +339,7 @@ aws cloudfront create-distribution --distribution-config '{
     }]
   },
   "DefaultCacheBehavior": {
-    "TargetOriginId": "S3-oxigdal-cog-viewer",
+    "TargetOriginId": "S3-oxigeo-cog-viewer",
     "ViewerProtocolPolicy": "redirect-to-https",
     "Compress": true,
     "MinTTL": 0,
@@ -360,7 +360,7 @@ aws cloudfront create-distribution --distribution-config '{
 server {
     listen 80;
     server_name cog-viewer.example.com;
-    root /var/www/oxigdal-cog-viewer;
+    root /var/www/oxigeo-cog-viewer;
     index index.html;
 
     # WASM MIME type
@@ -395,7 +395,7 @@ server {
 ```apache
 <VirtualHost *:80>
     ServerName cog-viewer.example.com
-    DocumentRoot /var/www/oxigdal-cog-viewer
+    DocumentRoot /var/www/oxigeo-cog-viewer
 
     # WASM MIME type
     AddType application/wasm .wasm
@@ -418,7 +418,7 @@ server {
     </FilesMatch>
 
     # SPA fallback
-    <Directory /var/www/oxigdal-cog-viewer>
+    <Directory /var/www/oxigeo-cog-viewer>
         Options -Indexes +FollowSymLinks
         AllowOverride All
         Require all granted
@@ -454,12 +454,12 @@ server {
 
 ### Module Not Found Errors
 
-**Problem:** `Error: Cannot find module '../pkg/oxigdal_wasm.js'`
+**Problem:** `Error: Cannot find module '../pkg/oxigeo_wasm.js'`
 
 **Solution:**
 ```bash
 # Rebuild WASM package
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 
 # Verify output
@@ -535,13 +535,13 @@ Create `sw.js`:
 ```javascript
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open('oxigdal-v1').then((cache) => {
+    caches.open('oxigeo-v1').then((cache) => {
       return cache.addAll([
         '/index.html',
         '/main.js',
         '/style.css',
-        '/pkg/oxigdal_wasm.js',
-        '/pkg/oxigdal_wasm_bg.wasm',
+        '/pkg/oxigeo_wasm.js',
+        '/pkg/oxigeo_wasm_bg.wasm',
       ]);
     })
   );
@@ -562,7 +562,7 @@ self.addEventListener('fetch', (event) => {
 location = /index.html {
     http2_push /main.js;
     http2_push /style.css;
-    http2_push /pkg/oxigdal_wasm.js;
+    http2_push /pkg/oxigeo_wasm.js;
 }
 ```
 
@@ -633,6 +633,6 @@ console.log(`WASM loaded in ${wasmLoadTime}ms`);
 ## Support
 
 For issues and questions:
-- GitHub Issues: https://github.com/cool-japan/oxigdal/issues
-- Documentation: https://github.com/cool-japan/oxigdal/wiki
+- GitHub Issues: https://github.com/cool-japan/oxigeo/issues
+- Documentation: https://github.com/cool-japan/oxigeo/wiki
 - Email: team@cooljapan.eu

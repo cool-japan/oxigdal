@@ -6,6 +6,6 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    // TiffHeader::parse is re-exported via oxigdal_geotiff::TiffHeader
-    let _ = oxigdal_geotiff::TiffHeader::parse(data);
+    // TiffHeader::parse is re-exported via oxigeo_geotiff::TiffHeader
+    let _ = oxigeo_geotiff::TiffHeader::parse(data);
 });

@@ -7,8 +7,8 @@ Common recipes for working with cloud-stored geospatial data.
 ### Read from S3
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_cloud::s3::S3Options;
+use oxigeo_core::Dataset;
+use oxigeo_cloud::s3::S3Options;
 
 async fn read_from_s3() -> Result<(), Box<dyn std::error::Error>> {
     let options = S3Options::default();
@@ -26,7 +26,7 @@ async fn read_from_s3() -> Result<(), Box<dyn std::error::Error>> {
 ### Write to S3
 
 ```rust
-use oxigdal_cloud::s3::S3Client;
+use oxigeo_cloud::s3::S3Client;
 
 async fn write_to_s3(local_path: &str, bucket: &str, key: &str) -> Result<(), Box<dyn std::error::Error>> {
     let s3_client = S3Client::default().await?;
@@ -65,7 +65,7 @@ async fn list_s3_objects(bucket: &str, prefix: &str) -> Result<Vec<String>, Box<
 ### Read from Azure
 
 ```rust
-use oxigdal_cloud::azure::AzureOptions;
+use oxigeo_cloud::azure::AzureOptions;
 
 async fn read_from_azure() -> Result<(), Box<dyn std::error::Error>> {
     let options = AzureOptions {
@@ -86,7 +86,7 @@ async fn read_from_azure() -> Result<(), Box<dyn std::error::Error>> {
 ### Write to Azure
 
 ```rust
-use oxigdal_cloud::azure::AzureClient;
+use oxigeo_cloud::azure::AzureClient;
 
 async fn write_to_azure(local_path: &str, container: &str, blob_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let client = AzureClient::default().await?;
@@ -103,7 +103,7 @@ async fn write_to_azure(local_path: &str, container: &str, blob_name: &str) -> R
 ### Read from GCS
 
 ```rust
-use oxigdal_cloud::gcs::GcsOptions;
+use oxigeo_cloud::gcs::GcsOptions;
 
 async fn read_from_gcs() -> Result<(), Box<dyn std::error::Error>> {
     let options = GcsOptions::default();
@@ -120,7 +120,7 @@ async fn read_from_gcs() -> Result<(), Box<dyn std::error::Error>> {
 ### Write to GCS
 
 ```rust
-use oxigdal_cloud::gcs::GcsClient;
+use oxigeo_cloud::gcs::GcsClient;
 
 async fn write_to_gcs(local_path: &str, bucket: &str, object_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let client = GcsClient::default().await?;
@@ -137,7 +137,7 @@ async fn write_to_gcs(local_path: &str, bucket: &str, object_name: &str) -> Resu
 ### Create COG
 
 ```rust
-use oxigdal_geotiff::{GeoTiffDriver, CogOptions};
+use oxigeo_geotiff::{GeoTiffDriver, CogOptions};
 
 async fn create_cog(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dataset = Dataset::open(input).await?;
@@ -180,7 +180,7 @@ async fn read_cog_from_cloud(url: &str) -> Result<(), Box<dyn std::error::Error>
 ### Search STAC
 
 ```rust
-use oxigdal_stac::{StacClient, SearchParams};
+use oxigeo_stac::{StacClient, SearchParams};
 
 async fn search_stac_catalog() -> Result<(), Box<dyn std::error::Error>> {
     let client = StacClient::new("https://earth-search.aws.element84.com/v1")?;
@@ -258,11 +258,11 @@ async fn process_dataset(dataset: &Dataset) -> Result<Dataset, Box<dyn std::erro
 ### Local Cache for Cloud Data
 
 ```rust
-use oxigdal_cloud::cache::{LocalCache, CacheOptions};
+use oxigeo_cloud::cache::{LocalCache, CacheOptions};
 
 async fn use_local_cache(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let cache_options = CacheOptions {
-        cache_dir: "/tmp/oxigdal_cache".to_string(),
+        cache_dir: "/tmp/oxigeo_cache".to_string(),
         max_size_mb: 1024,
         ttl_seconds: 3600,
         ..Default::default()

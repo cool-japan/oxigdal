@@ -1,9 +1,9 @@
 # Security Policy
 
-> **Note:** OxiGDAL is being renamed to **OxiGeo**. v0.1.7 is the final release under the
-> OxiGDAL name; development (including security fixes) continues under the **OxiGeo** name
-> from v0.2.0 onward. This policy still applies to the OxiGDAL 0.1.x line during the
-> transition — see below.
+> **Note:** **OxiGeo** is the new name of **OxiGDAL**. v0.1.7 was the final release under
+> the OxiGDAL name; development (including security fixes) continues under the **OxiGeo**
+> name from v0.2.0 onward. This policy also covers the 0.1.x line published under the old
+> OxiGDAL name — see below.
 
 ## Supported Versions
 
@@ -11,20 +11,20 @@ We release patches for security vulnerabilities in the following versions:
 
 | Version      | Supported                                             |
 | ------------ | ------------------------------------------------------ |
-| 0.1.7 (final OxiGDAL release) | :warning: critical fixes evaluated case-by-case |
-| 0.1.x (< 0.1.7) | :x: please upgrade to 0.1.7                        |
 | OxiGeo >= 0.2.0 | :white_check_mark: active development line          |
+| OxiGDAL 0.1.7 (final release under the old name) | :warning: critical fixes evaluated case-by-case |
+| OxiGDAL 0.1.x (< 0.1.7) | :x: please upgrade to 0.1.7                |
 | < 0.1        | :x:                                                     |
 
-0.1.7 is the last release published under the OxiGDAL name. We do not commit to an
-indefinite maintenance window for the 0.1.x line: during the transition to OxiGeo, we will
-evaluate critical/high-severity reports against 0.1.7 case-by-case and, where a fix is
-straightforward to backport, publish a patch release. All new feature work and the primary
-security-maintenance line move to OxiGeo starting at 0.2.0.
+0.1.7 was the last release published under the OxiGDAL name. We do not commit to an
+indefinite maintenance window for the 0.1.x line: we evaluate critical/high-severity
+reports against 0.1.7 case-by-case and, where a fix is straightforward to backport,
+publish a patch release. All new feature work and the primary security-maintenance line
+moved to OxiGeo starting at 0.2.0.
 
 ## Reporting a Vulnerability
 
-We take the security of OxiGDAL seriously. If you believe you have found a security vulnerability, please report it to us as described below.
+We take the security of OxiGeo seriously. If you believe you have found a security vulnerability, please report it to us as described below.
 
 ### Where to Report
 
@@ -33,7 +33,7 @@ We take the security of OxiGDAL seriously. If you believe you have found a secur
 Instead, please report them via one of the following methods:
 
 1. **Email**: Send details to `security@cooljapan.ee`
-2. **GitHub Security Advisory**: Use the [Security Advisories](https://github.com/cool-japan/oxigdal/security/advisories/new) feature
+2. **GitHub Security Advisory**: Use the [Security Advisories](https://github.com/cool-japan/oxigeo/security/advisories/new) feature
 
 ### What to Include
 
@@ -45,7 +45,7 @@ When reporting a vulnerability, please include the following information:
 - **Step-by-step instructions to reproduce**: Include proof-of-concept or exploit code if available
 - **Impact of the vulnerability**: What an attacker could achieve by exploiting this vulnerability
 - **Any special configuration required**: Dependencies, environment setup, etc.
-- **Affected versions**: Which versions of OxiGDAL are impacted
+- **Affected versions**: Which versions of OxiGeo are impacted
 
 ### What to Expect
 
@@ -66,7 +66,7 @@ When reporting a vulnerability, please include the following information:
 
 ## Security Scanning
 
-OxiGDAL does not currently run scheduled CI security scans (house policy restricts
+OxiGeo does not currently run scheduled CI security scans (house policy restricts
 `.github/workflows/*.yml` to the `pypi-publish.yml` and `npm-publish.yml` publish
 pipelines only — there is no `security.yml` workflow). Instead, security scanning is run
 locally by maintainers and as part of release preparation:
@@ -75,14 +75,14 @@ locally by maintainers and as part of release preparation:
 - **cargo-deny**: license and security compliance checks, run on demand
 - **cargo-geiger**: unsafe code analysis, run on demand
 
-If you rely on OxiGDAL in production, we recommend running `cargo audit` against your own
+If you rely on OxiGeo in production, we recommend running `cargo audit` against your own
 lockfile on your own schedule rather than assuming upstream CI coverage.
 
 ### Allowlisted advisories
 
 `.cargo/audit.toml` maintains an explicit, commented allowlist of advisories that
 `cargo audit` would otherwise flag. As of the 0.1.7 release this allowlist covers 21
-advisories, all transitive (pulled in by a dependency several levels removed from OxiGDAL
+advisories, all transitive (pulled in by a dependency several levels removed from OxiGeo
 code, with no upstream fix available yet or no fixed version published), grouped roughly
 as:
 
@@ -95,8 +95,8 @@ as:
 - **`quick-xml` DoS-class advisories** (unbounded namespace-declaration allocation;
   quadratic-runtime duplicate-attribute-name checking) — CPU/memory exhaustion, not
   memory-unsafety — reached via `pprof`/`inferno` (default dependency of
-  `oxigdal-dev-tools`/`oxigdal-bench`) and via `azure_core` (non-default `azure`/
-  `azure-blob` features of `oxigdal-cloud`/`oxigdal-cloud-enhanced`)
+  `oxigeo-dev-tools`/`oxigeo-bench`) and via `azure_core` (non-default `azure`/
+  `azure-blob` features of `oxigeo-cloud`/`oxigeo-cloud-enhanced`)
 - **Unmaintained-but-unpatched** crates reached transitively (`fxhash`, `instant`, `json`,
   `paste`, `proc-macro-error2`, `atomic-polyfill`, `rand` 0.7.3) via `sled`, `heapless`/
   `proj`, `evcxr`/Jupyter, `nalgebra`/`scirs2`, `mysql_async`, and `azure_core`
@@ -104,7 +104,7 @@ as:
 - **`rsa` timing side-channel** (RUSTSEC-2023-0071, the Marvin Attack) — no fixed version
   exists upstream yet
 
-None of these are reachable through OxiGDAL's default (Pure-Rust, no-cloud) feature set.
+None of these are reachable through OxiGeo's default (Pure-Rust, no-cloud) feature set.
 Each entry in `.cargo/audit.toml` carries a one-line justification; consult that file for
 the authoritative, currently-ignored advisory IDs, and re-run `cargo audit` yourself before
 enabling `cloud`, `security`/`tls`, or `postgis` in a security-sensitive deployment.
@@ -113,7 +113,7 @@ enabling `cloud`, `security`/`tls`, or `postgis` in a security-sensitive deploym
 
 ### Dependency Management
 
-- Keep OxiGDAL and all dependencies up to date
+- Keep OxiGeo and all dependencies up to date
 - Review security advisories regularly
 - Use `cargo audit` to check for vulnerabilities
 - Pin critical dependencies in production
@@ -128,7 +128,7 @@ enabling `cloud`, `security`/`tls`, or `postgis` in a security-sensitive deploym
 
 ### Feature Flags
 
-OxiGDAL follows the **Pure Rust Policy**. Some features may include C/Fortran dependencies:
+OxiGeo follows the **Pure Rust Policy**. Some features may include C/Fortran dependencies:
 
 - Default features are 100% Pure Rust
 - Optional C/Fortran dependencies are feature-gated
@@ -136,7 +136,7 @@ OxiGDAL follows the **Pure Rust Policy**. Some features may include C/Fortran de
 
 ### WASM Considerations
 
-When using OxiGDAL in WebAssembly:
+When using OxiGeo in WebAssembly:
 
 - Validate all input from JavaScript
 - Be aware of browser security policies
@@ -147,7 +147,7 @@ When using OxiGDAL in WebAssembly:
 
 ### Unsafe Code
 
-OxiGDAL minimizes the use of `unsafe` code, but some is necessary for performance:
+OxiGeo minimizes the use of `unsafe` code, but some is necessary for performance:
 
 - All `unsafe` blocks are documented with safety comments
 - Regular audits are performed using `cargo-geiger`
@@ -155,7 +155,7 @@ OxiGDAL minimizes the use of `unsafe` code, but some is necessary for performanc
 
 ### Memory Safety
 
-OxiGDAL is written in Rust, which provides memory safety guarantees:
+OxiGeo is written in Rust, which provides memory safety guarantees:
 
 - No buffer overflows or use-after-free bugs in safe code
 - Thread safety enforced by the type system
@@ -180,7 +180,7 @@ Mitigations:
 
 ### Trusted Dependencies
 
-OxiGDAL primarily uses well-maintained dependencies from the Rust ecosystem:
+OxiGeo primarily uses well-maintained dependencies from the Rust ecosystem:
 
 - **Arrow/Parquet**: Apache Arrow ecosystem for data processing
 - **tokio**: Async runtime from the Tokio project
@@ -188,13 +188,13 @@ OxiGDAL primarily uses well-maintained dependencies from the Rust ecosystem:
 
 ### COOLJAPAN Ecosystem
 
-OxiGDAL may use COOLJAPAN ecosystem crates:
+OxiGeo may use COOLJAPAN ecosystem crates:
 
 - **OxiBLAS**: Pure Rust BLAS implementation
 - **Oxicode**: Pure Rust serialization (alternative to bincode)
 - **SciRS2**: Scientific computing libraries
 
-These are developed with the same security standards as OxiGDAL.
+These are developed with the same security standards as OxiGeo.
 
 ### Supply Chain Security
 
@@ -232,8 +232,8 @@ We protect against supply chain attacks:
 For security-related questions or concerns:
 
 - **Email**: security@cooljapan.ee
-- **GitHub**: [Security Advisories](https://github.com/cool-japan/oxigdal/security/advisories)
-- **Project Homepage**: https://github.com/cool-japan/oxigdal
+- **GitHub**: [Security Advisories](https://github.com/cool-japan/oxigeo/security/advisories)
+- **Project Homepage**: https://github.com/cool-japan/oxigeo
 
 ## Acknowledgments
 

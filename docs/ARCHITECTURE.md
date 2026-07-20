@@ -1,6 +1,6 @@
-# OxiGDAL Architecture Overview
+# OxiGeo Architecture Overview
 
-Comprehensive guide to OxiGDAL's design, structure, and component interactions.
+Comprehensive guide to OxiGeo's design, structure, and component interactions.
 
 ## Table of Contents
 
@@ -69,7 +69,7 @@ Comprehensive guide to OxiGDAL's design, structure, and component interactions.
 
 ## Core Components
 
-### 1. oxigdal-core
+### 1. oxigeo-core
 
 **Purpose**: Foundational types and traits (no_std compatible)
 
@@ -79,7 +79,7 @@ Comprehensive guide to OxiGDAL's design, structure, and component interactions.
 - `simd_buffer/` - SIMD-optimized operations
 - `vector/` - Geometry types (Point, Polygon, LineString, etc.)
 - `io/` - DataSource trait and implementations
-- `error/` - OxiGdalError type
+- `error/` - OxiGeoError type
 
 **Responsibility**:
 - Define the public API surface
@@ -90,7 +90,7 @@ Comprehensive guide to OxiGDAL's design, structure, and component interactions.
 
 **Structure**:
 ```
-oxigdal-drivers/
+oxigeo-drivers/
 ├── geotiff/        # GeoTIFF and Cloud Optimized GeoTIFF
 ├── geojson/        # GeoJSON and ndjson
 ├── zarr/           # Zarr arrays
@@ -118,16 +118,16 @@ pub trait DataFormat {
 
 | Crate | Purpose | Features |
 |-------|---------|----------|
-| `oxigdal-algorithms` | Raster algorithms | NDVI, resampling, statistics, morphology |
-| `oxigdal-cloud` | Cloud storage backends | S3, Azure, GCS, HTTP |
-| `oxigdal-proj` | Coordinate projections | EPSG, WKT, coordinate transforms |
-| `oxigdal-postgis` | PostGIS integration | Spatial queries, database I/O |
-| `oxigdal-3d` | 3D/point cloud support | LAS/LAZ, OBJ, glTF, point clouds |
-| `oxigdal-analytics` | Spatial analytics | Clustering, hotspots, change detection |
-| `oxigdal-temporal` | Time series analysis | Trend analysis, gap filling, anomalies |
-| `oxigdal-ml` | Machine learning | Classification, segmentation, ONNX |
-| `oxigdal-wasm` | WebAssembly support | Browser-based processing |
-| `oxigdal-server` | Web services | WMS, WMTS, XYZ tiles, REST API |
+| `oxigeo-algorithms` | Raster algorithms | NDVI, resampling, statistics, morphology |
+| `oxigeo-cloud` | Cloud storage backends | S3, Azure, GCS, HTTP |
+| `oxigeo-proj` | Coordinate projections | EPSG, WKT, coordinate transforms |
+| `oxigeo-postgis` | PostGIS integration | Spatial queries, database I/O |
+| `oxigeo-3d` | 3D/point cloud support | LAS/LAZ, OBJ, glTF, point clouds |
+| `oxigeo-analytics` | Spatial analytics | Clustering, hotspots, change detection |
+| `oxigeo-temporal` | Time series analysis | Trend analysis, gap filling, anomalies |
+| `oxigeo-ml` | Machine learning | Classification, segmentation, ONNX |
+| `oxigeo-wasm` | WebAssembly support | Browser-based processing |
+| `oxigeo-server` | Web services | WMS, WMTS, XYZ tiles, REST API |
 
 ## Data Flow
 
@@ -196,10 +196,10 @@ New GeoJSON/Shapefile
 
 ## Module Organization
 
-### oxigdal-core Module Tree
+### oxigeo-core Module Tree
 
 ```
-oxigdal_core/
+oxigeo_core/
 ├── types/
 │   ├── mod.rs              # RasterDataType, BoundingBox
 │   ├── geotransform.rs     # Affine transformation
@@ -223,13 +223,13 @@ oxigdal_core/
 │   ├── memory.rs           # In-memory buffers
 │   └── http.rs             # HTTP fetching
 └── error/
-    └── mod.rs              # OxiGdalError type
+    └── mod.rs              # OxiGeoError type
 ```
 
 ### Driver Module Organization (Example: GeoTIFF)
 
 ```
-oxigdal_geotiff/
+oxigeo_geotiff/
 ├── lib.rs                  # Exports
 ├── error.rs                # GeoTIFF-specific errors
 ├── tiff/
@@ -254,10 +254,10 @@ oxigdal_geotiff/
 
 ### 1. Result-Based Error Handling
 
-All fallible operations return `Result<T, OxiGdalError>`:
+All fallible operations return `Result<T, OxiGeoError>`:
 
 ```rust
-pub type Result<T> = std::result::Result<T, OxiGdalError>;
+pub type Result<T> = std::result::Result<T, OxiGeoError>;
 
 // Usage
 fn open_file(path: &str) -> Result<RasterBuffer> {
@@ -348,7 +348,7 @@ impl GeoTransform {
 
 ### Zero-Copy Operations
 
-Where possible, OxiGDAL uses zero-copy techniques:
+Where possible, OxiGeo uses zero-copy techniques:
 
 ```rust
 // No copy: memory-mapped file
@@ -375,7 +375,7 @@ Rust ensures:
 
 ### Threading Model
 
-OxiGDAL uses three concurrency patterns:
+OxiGeo uses three concurrency patterns:
 
 #### 1. Rayon Parallel Iterators
 
@@ -437,7 +437,7 @@ static mut GLOBAL_BUFFER: RasterBuffer;  // Unsafe!
 
 1. **Create a new crate**:
 ```bash
-cargo new --lib crates/oxigdal-drivers/myformat
+cargo new --lib crates/oxigeo-drivers/myformat
 ```
 
 2. **Implement core traits**:
@@ -457,17 +457,17 @@ impl<S: DataSource> RasterReader for MyFormatReader<S> {
 3. **Add to workspace**:
 ```toml
 # workspace Cargo.toml
-members = ["crates/oxigdal-drivers/myformat"]
+members = ["crates/oxigeo-drivers/myformat"]
 
-# oxigdal-myformat Cargo.toml
+# oxigeo-myformat Cargo.toml
 [dependencies]
-oxigdal-core = { path = "../../../oxigdal-core" }
+oxigeo-core = { path = "../../../oxigeo-core" }
 ```
 
 ### Adding Custom Algorithms
 
 ```rust
-// In oxigdal-algorithms or new feature crate
+// In oxigeo-algorithms or new feature crate
 pub fn custom_algorithm(buffer: &RasterBuffer, params: &Params) -> Result<RasterBuffer> {
     let mut result = RasterBuffer::zeros(buffer.width(), buffer.height(), buffer.data_type());
 
@@ -538,4 +538,4 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 - [PERFORMANCE_GUIDE.md](PERFORMANCE_GUIDE.md) - Optimization techniques
 - [BEST_PRACTICES.md](BEST_PRACTICES.md) - Development patterns
-- [API_COMPARISON.md](API_COMPARISON.md) - GDAL vs OxiGDAL
+- [API_COMPARISON.md](API_COMPARISON.md) - GDAL vs OxiGeo

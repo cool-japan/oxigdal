@@ -163,7 +163,7 @@ jobs:
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: OxiGDAL Benchmarks
+          name: OxiGeo Benchmarks
           tool: 'cargo'
           output-file-path: bench-output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -247,7 +247,7 @@ jobs:
 
       - name: Run memory benchmarks
         run: |
-          cargo valgrind test --package oxigdal-core --release -- --nocapture > memory-report.txt || true
+          cargo valgrind test --package oxigeo-core --release -- --nocapture > memory-report.txt || true
 
       - name: Generate memory summary
         run: |

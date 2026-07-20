@@ -1,10 +1,10 @@
-# OxiGDAL Quickstart Guide
+# OxiGeo Quickstart Guide
 
-Welcome to OxiGDAL - a pure Rust reimplementation of GDAL for cloud-native geospatial computing!
+Welcome to OxiGeo - a pure Rust reimplementation of GDAL for cloud-native geospatial computing!
 
-## What is OxiGDAL?
+## What is OxiGeo?
 
-OxiGDAL is a modern, pure-Rust geospatial data processing library that provides:
+OxiGeo is a modern, pure-Rust geospatial data processing library that provides:
 
 - **Cloud-Native**: Optimized for Cloud Optimized GeoTIFF (COG) and cloud storage
 - **Pure Rust**: No C/C++/Fortran dependencies - 100% memory-safe Rust
@@ -14,26 +14,26 @@ OxiGDAL is a modern, pure-Rust geospatial data processing library that provides:
 
 ## Installation
 
-Add OxiGDAL to your `Cargo.toml`:
+Add OxiGeo to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-core = "0.1"
-oxigdal-algorithms = "0.1"
-oxigdal-geotiff = "0.1"
-oxigdal-geojson = "0.1"
-oxigdal-geoparquet = "0.1"
-oxigdal-zarr = "0.1"
-oxigdal-flatgeobuf = "0.1"
+oxigeo-core = "0.2"
+oxigeo-algorithms = "0.2"
+oxigeo-geotiff = "0.2"
+oxigeo-geojson = "0.2"
+oxigeo-geoparquet = "0.2"
+oxigeo-zarr = "0.2"
+oxigeo-flatgeobuf = "0.2"
 ```
 
 Or for the most common use case (GeoTIFF/COG):
 
 ```toml
 [dependencies]
-oxigdal-core = "0.1"
-oxigdal-geotiff = "0.1"
-oxigdal-algorithms = "0.1"
+oxigeo-core = "0.2"
+oxigeo-geotiff = "0.2"
+oxigeo-algorithms = "0.2"
 ```
 
 ## Quick Start Examples
@@ -41,8 +41,8 @@ oxigdal-algorithms = "0.1"
 ### Reading a Cloud Optimized GeoTIFF (COG)
 
 ```rust
-use oxigdal_geotiff::CogReader;
-use oxigdal_core::io::FileDataSource;
+use oxigeo_geotiff::CogReader;
+use oxigeo_core::io::FileDataSource;
 
 fn read_cog_example() -> Result<(), Box<dyn std::error::Error>> {
     // Open the COG file
@@ -66,7 +66,7 @@ fn read_cog_example() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading GeoJSON
 
 ```rust
-use oxigdal_geojson::{GeoJsonReader, FeatureCollection};
+use oxigeo_geojson::{GeoJsonReader, FeatureCollection};
 use std::fs::File;
 use std::io::BufReader;
 
@@ -92,7 +92,7 @@ fn read_geojson_example() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing GeoJSON
 
 ```rust
-use oxigdal_geojson::{GeoJsonWriter, FeatureCollection, Feature, Geometry, GeometryType};
+use oxigeo_geojson::{GeoJsonWriter, FeatureCollection, Feature, Geometry, GeometryType};
 use std::fs::File;
 use std::io::BufWriter;
 
@@ -136,7 +136,7 @@ fn write_geojson_example() -> Result<(), Box<dyn std::error::Error>> {
 ### Reading GeoParquet
 
 ```rust
-use oxigdal_geoparquet::GeoParquetReader;
+use oxigeo_geoparquet::GeoParquetReader;
 use std::fs::File;
 
 fn read_geoparquet_example() -> Result<(), Box<dyn std::error::Error>> {
@@ -159,9 +159,9 @@ fn read_geoparquet_example() -> Result<(), Box<dyn std::error::Error>> {
 ### Resampling Raster Data
 
 ```rust
-use oxigdal_algorithms::resampling::{Resampler, ResamplingMethod};
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
+use oxigeo_algorithms::resampling::{Resampler, ResamplingMethod};
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
 
 fn resample_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create a source raster (1000x1000)
@@ -182,7 +182,7 @@ fn resample_example() -> Result<(), Box<dyn std::error::Error>> {
 ### Working with Bounding Boxes
 
 ```rust
-use oxigdal_core::types::{BoundingBox, GeoTransform};
+use oxigeo_core::types::{BoundingBox, GeoTransform};
 
 fn bbox_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create a bounding box (Web Mercator extent for San Francisco)
@@ -206,10 +206,10 @@ fn bbox_example() -> Result<(), Box<dyn std::error::Error>> {
 
 ## WebAssembly Usage
 
-OxiGDAL can run in the browser via WebAssembly:
+OxiGeo can run in the browser via WebAssembly:
 
 ```javascript
-import init, { WasmCogViewer } from '@cooljapan/oxigdal';
+import init, { WasmCogViewer } from '@cooljapan/oxigeo';
 
 async function viewCog(url) {
     await init();
@@ -233,12 +233,12 @@ async function viewCog(url) {
 
 ## Error Handling
 
-OxiGDAL uses comprehensive error handling with descriptive errors:
+OxiGeo uses comprehensive error handling with descriptive errors:
 
 ```rust
-use oxigdal_geotiff::CogReader;
-use oxigdal_core::error::OxiGdalError;
-use oxigdal_core::io::FileDataSource;
+use oxigeo_geotiff::CogReader;
+use oxigeo_core::error::OxiGeoError;
+use oxigeo_core::io::FileDataSource;
 
 fn error_handling_example() {
     match FileDataSource::open("nonexistent.tif") {
@@ -257,19 +257,19 @@ fn error_handling_example() {
 
 Each crate supports various feature flags:
 
-### oxigdal-core
+### oxigeo-core
 - `std` (default) - Standard library support
 - `alloc` - Allocation support without std
 - `arrow` - Apache Arrow integration
 - `async` - Async I/O traits
 
-### oxigdal-geotiff
+### oxigeo-geotiff
 - `deflate` (default) - DEFLATE/zlib compression
 - `lzw` (default) - LZW compression
 - `zstd` - ZSTD compression
 - `jpeg` - JPEG compression (planned)
 
-### oxigdal-algorithms
+### oxigeo-algorithms
 - `simd` - SIMD optimizations (AVX2, NEON)
 - `parallel` - Parallel processing with rayon
 
@@ -283,7 +283,7 @@ Each crate supports various feature flags:
 2. **Enable SIMD optimizations**:
    ```toml
    [dependencies]
-   oxigdal-algorithms = { version = "0.1", features = ["simd"] }
+   oxigeo-algorithms = { version = "0.2", features = ["simd"] }
    ```
 
 3. **Use zero-copy where possible**:
@@ -296,19 +296,19 @@ Each crate supports various feature flags:
 
 ## Next Steps
 
-- Read the [Driver Guide](oxigdal_driver_guide.md) for detailed driver documentation
-- Read the [Algorithm Guide](oxigdal_algorithm_guide.md) for processing algorithms
-- Read the [WASM Guide](oxigdal_wasm_guide.md) for browser usage
+- Read the [Driver Guide](oxigeo_driver_guide.md) for detailed driver documentation
+- Read the [Algorithm Guide](oxigeo_algorithm_guide.md) for processing algorithms
+- Read the [WASM Guide](oxigeo_wasm_guide.md) for browser usage
 - Check the examples in the repository
 
 ## Getting Help
 
-- **Documentation**: https://docs.rs/oxigdal
-- **Repository**: https://github.com/cool-japan/oxigdal
-- **Issues**: https://github.com/cool-japan/oxigdal/issues
+- **Documentation**: https://docs.rs/oxigeo
+- **Repository**: https://github.com/cool-japan/oxigeo
+- **Issues**: https://github.com/cool-japan/oxigeo/issues
 
 ## License
 
-OxiGDAL is licensed under Apache-2.0.
+OxiGeo is licensed under Apache-2.0.
 
 Copyright © 2025 COOLJAPAN OU (Team Kitasan)

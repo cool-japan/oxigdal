@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Verify (read-only) the dependency-ordered publish list used by the
-external `pub_oxigdal.sh` release script against the ground truth
+external `pub_oxigeo.sh` release script against the ground truth
 reported by `cargo metadata`.
 
 This tool NEVER runs `cargo publish` and NEVER edits the external

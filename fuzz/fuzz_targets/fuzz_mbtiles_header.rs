@@ -1,7 +1,7 @@
 //! Fuzz target: `.mbtiles` archive ingestion boundary.
 //!
 //! MBTiles has no hand-rolled binary header of its own - the container
-//! format *is* SQLite, and `oxigdal-mbtiles` delegates all page/record
+//! format *is* SQLite, and `oxigeo-mbtiles` delegates all page/record
 //! parsing to the Pure-Rust `oxisql-sqlite-compat` engine (see
 //! `reader.rs`). What this crate DOES own is the untrusted-bytes ingestion
 //! path: `MBTilesReader::open_in_memory` spills attacker-controlled bytes
@@ -12,7 +12,7 @@
 //! Any `Err` is acceptable; panics are not.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use oxigdal_mbtiles::MBTilesReader;
+use oxigeo_mbtiles::MBTilesReader;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(reader) = MBTilesReader::open_in_memory(data) {

@@ -1,5 +1,5 @@
 """
-Shared library modules for OxiGDAL test analysis.
+Shared library modules for OxiGeo test analysis.
 
 This package provides reusable components for parsing nextest output
 and generating reports for both slow test and fail test detection.

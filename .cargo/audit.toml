@@ -1,7 +1,7 @@
-# cargo-audit configuration for oxigdal
+# cargo-audit configuration for oxigeo
 #
 # This file suppresses known advisories that are transitive dependencies
-# and cannot be fixed by the oxigdal project directly.
+# and cannot be fixed by the oxigeo project directly.
 
 [advisories]
 ignore = [
@@ -71,30 +71,30 @@ ignore = [
     "RUSTSEC-2026-0174",
 
     # RUSTSEC-2026-0178: `tokio-postgres` - Panic on DataRow with fewer columns
-    # Transitive dependency via oxigdal-postgis. Cannot be fixed upstream by us.
+    # Transitive dependency via oxigeo-postgis. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0178",
 
     # RUSTSEC-2026-0179: `postgres-protocol` - Unbounded SCRAM iteration CPU DoS
-    # Transitive dependency via tokio-postgres/oxigdal-postgis. Cannot be fixed upstream by us.
+    # Transitive dependency via tokio-postgres/oxigeo-postgis. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0179",
 
     # RUSTSEC-2026-0180: `postgres-protocol` - Panic decoding malformed hstore
-    # Transitive dependency via tokio-postgres/oxigdal-postgis. Cannot be fixed upstream by us.
+    # Transitive dependency via tokio-postgres/oxigeo-postgis. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0180",
 
     # RUSTSEC-2026-0195: `quick-xml` - unbounded namespace-declaration allocation DoS
     # (memory-exhaustion; not memory-unsafety/RCE). Transitive dependency via
-    # pprof/inferno (default dependency of oxigdal-dev-tools/oxigdal-bench) and via
-    # azure_core (non-default `azure`/`azure-blob` features of oxigdal-cloud/
-    # oxigdal-cloud-enhanced). No quick-xml >=0.41.0 is reachable within current
+    # pprof/inferno (default dependency of oxigeo-dev-tools/oxigeo-bench) and via
+    # azure_core (non-default `azure`/`azure-blob` features of oxigeo-cloud/
+    # oxigeo-cloud-enhanced). No quick-xml >=0.41.0 is reachable within current
     # semver constraints on either path. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0195",
 
     # RUSTSEC-2026-0194: `quick-xml` - quadratic-runtime duplicate-attribute-name
     # check DoS (CPU-exhaustion; not memory-unsafety/RCE). Transitive dependency via
-    # pprof/inferno (default dependency of oxigdal-dev-tools/oxigdal-bench) and via
-    # azure_core (non-default `azure`/`azure-blob` features of oxigdal-cloud/
-    # oxigdal-cloud-enhanced). No quick-xml >=0.41.0 is reachable within current
+    # pprof/inferno (default dependency of oxigeo-dev-tools/oxigeo-bench) and via
+    # azure_core (non-default `azure`/`azure-blob` features of oxigeo-cloud/
+    # oxigeo-cloud-enhanced). No quick-xml >=0.41.0 is reachable within current
     # semver constraints on either path. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0194",
 ]

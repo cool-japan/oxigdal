@@ -44,7 +44,7 @@ fi
 
 # Test 2: Detect-only mode
 test_info "Test 2: Detect-only mode"
-if "$ORCHESTRATOR" oxigdal-gpu --detect-only > /tmp/detect-test.log 2>&1; then
+if "$ORCHESTRATOR" oxigeo-gpu --detect-only > /tmp/detect-test.log 2>&1; then
     if grep -q "DETECTION" /tmp/detect-test.log && grep -q "COMPLETE" /tmp/detect-test.log; then
         test_pass "Detect-only mode works"
     else
@@ -64,7 +64,7 @@ fi
 
 # Test 4: Analyze-only mode
 test_info "Test 4: Analyze-only mode"
-if "$ORCHESTRATOR" oxigdal-gpu --analyze-only > /tmp/analyze-test.log 2>&1; then
+if "$ORCHESTRATOR" oxigeo-gpu --analyze-only > /tmp/analyze-test.log 2>&1; then
     if grep -q "ANALYSIS" /tmp/analyze-test.log && grep -q "COMPLETE" /tmp/analyze-test.log; then
         test_pass "Analyze-only mode works"
     else
@@ -108,7 +108,7 @@ fi
 
 # Test 8: Full workflow (dry-run)
 test_info "Test 8: Full workflow (dry-run)"
-if "$ORCHESTRATOR" oxigdal-gpu --full --dry-run > /tmp/full-test.log 2>&1; then
+if "$ORCHESTRATOR" oxigeo-gpu --full --dry-run > /tmp/full-test.log 2>&1; then
     if grep -q "DETECTION" /tmp/full-test.log && \
        grep -q "ANALYSIS" /tmp/full-test.log && \
        grep -q "AUTO-FIX" /tmp/full-test.log && \
@@ -141,7 +141,7 @@ fi
 
 # Test 11: Summary section
 test_info "Test 11: Summary section displayed"
-if "$ORCHESTRATOR" oxigdal-gpu --detect-only 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "SUMMARY"; then
+if "$ORCHESTRATOR" oxigeo-gpu --detect-only 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "SUMMARY"; then
     test_pass "Summary section displayed"
 else
     test_fail "Summary section missing"
@@ -149,7 +149,7 @@ fi
 
 # Test 12: Statistics calculation
 test_info "Test 12: Statistics calculated"
-if "$ORCHESTRATOR" oxigdal-gpu --analyze-only 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "Auto-fixable:.*%"; then
+if "$ORCHESTRATOR" oxigeo-gpu --analyze-only 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "Auto-fixable:.*%"; then
     test_pass "Statistics calculated correctly"
 else
     test_fail "Statistics calculation failed"

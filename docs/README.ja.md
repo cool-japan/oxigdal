@@ -1,10 +1,10 @@
-# OxiGDAL ドキュメント
+# OxiGeo ドキュメント
 
 > English version: [README.md](README.md)
 
 ## Getting Started
 
-- [Quickstart](QUICKSTART.md) — 5分で始める OxiGDAL
+- [Quickstart](QUICKSTART.md) — 5分で始める OxiGeo
 - [Getting Started](GETTING_STARTED.md) — インストールから基本操作まで
 
 ## Guides
@@ -19,7 +19,7 @@
 ## Migration
 
 - [Migration from GDAL](MIGRATION_FROM_GDAL.md) — GDAL/OGR からの移行ガイド
-- [API Comparison](API_COMPARISON.md) — GDAL C++/Python vs OxiGDAL 対応表
+- [API Comparison](API_COMPARISON.md) — GDAL C++/Python vs OxiGeo 対応表
 - [Python to Rust](PYTHON_TO_RUST.md) — Python ジオ開発者向け Rust 入門
 
 ## Cookbook

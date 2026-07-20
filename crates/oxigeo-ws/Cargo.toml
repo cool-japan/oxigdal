@@ -1,0 +1,56 @@
+[package]
+name = "oxigeo-ws"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-ws"
+readme = "README.md"
+description = "WebSocket streaming support for OxiGeo - real-time geospatial data delivery"
+keywords = ["websocket", "science", "streaming", "gdal", "real-time"]
+categories = ["web-programming::websocket", "science", "network-programming"]
+
+[dependencies]
+# Workspace dependencies
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "net", "time"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+
+# WebSocket dependencies
+axum = { workspace = true, features = ["ws"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "compression-br", "compression-gzip", "compression-deflate", "trace"] }
+tokio-tungstenite.workspace = true
+
+# Serialization
+rmp-serde.workspace = true  # MessagePack
+
+# Compression
+oxiarc-zstd = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test.workspace = true
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

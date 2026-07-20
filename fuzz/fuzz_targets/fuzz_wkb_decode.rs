@@ -7,9 +7,9 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     // wkb_bbox: returns Option, must never panic
-    let _ = oxigdal_geoparquet::geometry::wkb_extended::wkb_bbox(data);
+    let _ = oxigeo_geoparquet::geometry::wkb_extended::wkb_bbox(data);
 
     // Full WKB geometry decode: returns Result, must never panic
-    let mut reader = oxigdal_geoparquet::geometry::WkbReader::new(data);
+    let mut reader = oxigeo_geoparquet::geometry::WkbReader::new(data);
     let _ = reader.read_geometry();
 });

@@ -1,5 +1,5 @@
 #!/bin/bash
-# OxiGDAL Demo Deployment Script
+# OxiGeo Demo Deployment Script
 # Automates deployment to various platforms
 # Author: COOLJAPAN OU (Team Kitasan)
 # License: Apache 2.0 / MIT
@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DEMO_DIR="$PROJECT_ROOT/demo"
-WASM_PKG_SRC="$PROJECT_ROOT/crates/oxigdal-wasm/pkg"
+WASM_PKG_SRC="$PROJECT_ROOT/crates/oxigeo-wasm/pkg"
 WASM_PKG_DEST="$DEMO_DIR/pkg"
 
 # Colors for output
@@ -38,20 +38,20 @@ print_error() {
 
 # Print header
 echo "================================================"
-echo "  OxiGDAL Demo Deployment"
+echo "  OxiGeo Demo Deployment"
 echo "  Phase 1: Browser Breakthrough"
 echo "================================================"
 echo ""
 
 # Check if we're in the right directory
 if [ ! -f "$PROJECT_ROOT/Cargo.toml" ]; then
-    print_error "Not in OxiGDAL project root"
+    print_error "Not in OxiGeo project root"
     exit 1
 fi
 
 # Step 1: Build WASM package
 print_info "Step 1: Building WASM package..."
-cd "$PROJECT_ROOT/crates/oxigdal-wasm"
+cd "$PROJECT_ROOT/crates/oxigeo-wasm"
 
 if ! wasm-pack build --target web --release; then
     print_error "WASM build failed"
@@ -59,7 +59,7 @@ if ! wasm-pack build --target web --release; then
 fi
 
 print_success "WASM package built successfully"
-WASM_SIZE=$(du -h "$WASM_PKG_SRC/oxigdal_wasm_bg.wasm" | cut -f1)
+WASM_SIZE=$(du -h "$WASM_PKG_SRC/oxigeo_wasm_bg.wasm" | cut -f1)
 print_info "Package size: $WASM_SIZE"
 
 # Step 2: Copy to demo directory
@@ -75,8 +75,8 @@ REQUIRED_FILES=(
     "$DEMO_DIR/cog-viewer/index.html"
     "$DEMO_DIR/cog-viewer/main.js"
     "$DEMO_DIR/cog-viewer/style.css"
-    "$WASM_PKG_DEST/oxigdal_wasm_bg.wasm"
-    "$WASM_PKG_DEST/oxigdal_wasm.js"
+    "$WASM_PKG_DEST/oxigeo_wasm_bg.wasm"
+    "$WASM_PKG_DEST/oxigeo_wasm.js"
 )
 
 ALL_PRESENT=true

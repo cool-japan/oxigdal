@@ -1,6 +1,6 @@
-# Best Practices for OxiGDAL Development
+# Best Practices for OxiGeo Development
 
-Guidelines and patterns for writing robust, performant, and maintainable OxiGDAL applications.
+Guidelines and patterns for writing robust, performant, and maintainable OxiGeo applications.
 
 ## Table of Contents
 
@@ -68,14 +68,14 @@ pub enum ProcessingError {
     #[error("File I/O error: {0}")]
     IoError(#[from] std::io::Error),
 
-    #[error("OxiGDAL error: {0}")]
-    OxiGdalError(#[from] OxiGdalError),
+    #[error("OxiGeo error: {0}")]
+    OxiGeoError(#[from] OxiGeoError),
 }
 
 // Usage
 fn load_and_validate(path: &str) -> Result<RasterBuffer, ProcessingError> {
     let source = FileDataSource::open(path)?;  // IoError converted automatically
-    let reader = GeoTiffReader::open(source)?;  // OxiGdalError converted
+    let reader = GeoTiffReader::open(source)?;  // OxiGeoError converted
 
     if reader.width() == 0 || reader.height() == 0 {
         return Err(ProcessingError::InvalidDimensions {
@@ -123,8 +123,8 @@ fn bad_function() {
 ### Best Practice 2: Use RasterBuffer for Pixel Data
 
 ```rust
-use oxigdal_core::buffer::RasterBuffer;
-use oxigdal_core::types::RasterDataType;
+use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
 
 // Good: appropriate data structure
 let buffer = RasterBuffer::zeros(512, 512, RasterDataType::Float32);
@@ -216,7 +216,7 @@ perf report
 ### Best Practice 3: Use SIMD Operations
 
 ```rust
-use oxigdal_core::simd_buffer::SimdBuffer;
+use oxigeo_core::simd_buffer::SimdBuffer;
 
 // Good: SIMD-accelerated operations
 let buffer = RasterBuffer::zeros(1024, 1024, RasterDataType::Float32);
@@ -397,8 +397,8 @@ mod tests {
 
 ```rust
 // tests/integration_test.rs
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 #[test]
 fn test_read_write_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
@@ -475,8 +475,8 @@ fn test_file_processing() -> Result<(), Box<dyn std::error::Error>> {
 /// # Examples
 ///
 /// ```
-/// # use oxigdal_core::buffer::RasterBuffer;
-/// # use oxigdal_core::types::RasterDataType;
+/// # use oxigeo_core::buffer::RasterBuffer;
+/// # use oxigeo_core::types::RasterDataType;
 /// let nir = RasterBuffer::zeros(512, 512, RasterDataType::Float32);
 /// let red = RasterBuffer::zeros(512, 512, RasterDataType::Float32);
 /// let ndvi = calculate_ndvi(&nir, &red)?;
@@ -583,7 +583,7 @@ fn read_file_unsafe(path: &str) -> Result<Vec<u8>> {
 ```bash
 # For binary size
 cargo build --release -Z build-std=std,panic_abort --target x86_64-unknown-linux-gnu
-strip target/x86_64-unknown-linux-gnu/release/oxigdal
+strip target/x86_64-unknown-linux-gnu/release/oxigeo
 
 # For runtime speed
 RUSTFLAGS="-C target-cpu=native -C llvm-args=-mcpu=native" cargo build --release
@@ -597,7 +597,7 @@ cargo build --release -C lto=fat -C codegen-units=1
 ```toml
 [dependencies]
 # Pin critical dependencies
-oxigdal-core = "=0.1.0"
+oxigeo-core = "=0.1.0"
 
 # Allow patch versions for stable APIs
 tokio = "~1.40"
@@ -622,7 +622,7 @@ fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    info!("Starting OxiGDAL application");
+    info!("Starting OxiGeo application");
 
     match process_file("input.tif") {
         Ok(buffer) => {

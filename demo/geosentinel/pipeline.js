@@ -7,7 +7,7 @@
  *   trueColorRgba ×2
  * and converts the returned RGBA buffers to data URLs for Leaflet
  * image overlays. All JSON shapes follow the design contract and the
- * actual #[wasm_bindgen] exports in crates/oxigdal-wasm/src/sentinel/.
+ * actual #[wasm_bindgen] exports in crates/oxigeo-wasm/src/sentinel/.
  */
 
 /** Longest-side pixel budget for every read (contract default). */

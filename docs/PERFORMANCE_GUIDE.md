@@ -1,6 +1,6 @@
-# OxiGDAL Performance Guide
+# OxiGeo Performance Guide
 
-This guide covers performance optimization techniques for OxiGDAL applications.
+This guide covers performance optimization techniques for OxiGeo applications.
 
 ## Table of Contents
 
@@ -222,7 +222,7 @@ struct Counters {
 ### 1. Use SimdBuffer
 
 ```rust
-use oxigdal_core::simd_buffer::SimdBuffer;
+use oxigeo_core::simd_buffer::SimdBuffer;
 
 // Convert to SIMD
 let simd_buffer = SimdBuffer::from_buffer(&buffer)?;

@@ -1,5 +1,5 @@
 #!/bin/bash
-# OxiGDAL Status Dashboard Generator
+# OxiGeo Status Dashboard Generator
 # Creates a comprehensive status report
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-OUTPUT_FILE="${1:-${PROJECT_ROOT}/target/OXIGDAL_STATUS_DASHBOARD.md}"
+OUTPUT_FILE="${1:-${PROJECT_ROOT}/target/OXIGEO_STATUS_DASHBOARD.md}"
 
 cd "$PROJECT_ROOT"
 
@@ -22,7 +22,7 @@ count_tests() {
 
 # Generate report
 cat > "$OUTPUT_FILE" << 'HEADER'
-# OxiGDAL Project Status Dashboard
+# OxiGeo Project Status Dashboard
 
 **Generated**: TIMESTAMP
 **Phase**: Phase 1 "Browser Breakthrough" - COMPLETE
@@ -61,23 +61,23 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 |-------|---------|-------|--------|
 EOF
 
-# oxigdal-core
-if [ -d "crates/oxigdal-core" ]; then
-    VERSION=$(get_crate_version "crates/oxigdal-core")
-    echo "| oxigdal-core | v$VERSION | 93/93 | ✅ Production |" >> "$OUTPUT_FILE"
+# oxigeo-core
+if [ -d "crates/oxigeo-core" ]; then
+    VERSION=$(get_crate_version "crates/oxigeo-core")
+    echo "| oxigeo-core | v$VERSION | 93/93 | ✅ Production |" >> "$OUTPUT_FILE"
 fi
 
-# oxigdal-geotiff
-if [ -d "crates/oxigdal-drivers/geotiff" ]; then
-    VERSION=$(get_crate_version "crates/oxigdal-drivers/geotiff")
-    echo "| oxigdal-geotiff | v$VERSION | 81/81 | ✅ Production |" >> "$OUTPUT_FILE"
+# oxigeo-geotiff
+if [ -d "crates/oxigeo-drivers/geotiff" ]; then
+    VERSION=$(get_crate_version "crates/oxigeo-drivers/geotiff")
+    echo "| oxigeo-geotiff | v$VERSION | 81/81 | ✅ Production |" >> "$OUTPUT_FILE"
 fi
 
-# oxigdal-wasm
-if [ -d "crates/oxigdal-wasm" ]; then
-    VERSION=$(get_crate_version "crates/oxigdal-wasm")
+# oxigeo-wasm
+if [ -d "crates/oxigeo-wasm" ]; then
+    VERSION=$(get_crate_version "crates/oxigeo-wasm")
     WASM_SIZE="228KB"
-    echo "| oxigdal-wasm | v$VERSION | Build OK | ✅ Production ($WASM_SIZE) |" >> "$OUTPUT_FILE"
+    echo "| oxigeo-wasm | v$VERSION | Build OK | ✅ Production ($WASM_SIZE) |" >> "$OUTPUT_FILE"
 fi
 
 cat >> "$OUTPUT_FILE" << 'EOF'
@@ -86,7 +86,7 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 
 ## Phase 1 Deliverables
 
-### ✅ Core Library (oxigdal-core)
+### ✅ Core Library (oxigeo-core)
 - **Status**: Complete
 - **Tests**: 93/93 passing (100%)
 - **Features**:
@@ -97,7 +97,7 @@ cat >> "$OUTPUT_FILE" << 'EOF'
   - SIMD-aligned buffers
   - Vector geometry support
 
-### ✅ GeoTIFF Driver (oxigdal-geotiff)
+### ✅ GeoTIFF Driver (oxigeo-geotiff)
 - **Status**: Complete
 - **Tests**: 81/81 passing (100%)
 - **Features**:
@@ -108,7 +108,7 @@ cat >> "$OUTPUT_FILE" << 'EOF'
   - HTTP Range requests
   - Tiling and overviews
 
-### ✅ WASM Package (oxigdal-wasm)
+### ✅ WASM Package (oxigeo-wasm)
 - **Status**: Complete
 - **Package Size**: 228KB (optimized)
 - **Features**:
@@ -150,9 +150,9 @@ echo "" >> "$OUTPUT_FILE"
 echo "### Test Results" >> "$OUTPUT_FILE"
 echo "" >> "$OUTPUT_FILE"
 echo "```" >> "$OUTPUT_FILE"
-echo "oxigdal-core:     93/93 tests passing (100%)" >> "$OUTPUT_FILE"
-echo "oxigdal-geotiff:  81/81 tests passing (100%)" >> "$OUTPUT_FILE"
-echo "oxigdal-wasm:     Build successful" >> "$OUTPUT_FILE"
+echo "oxigeo-core:     93/93 tests passing (100%)" >> "$OUTPUT_FILE"
+echo "oxigeo-geotiff:  81/81 tests passing (100%)" >> "$OUTPUT_FILE"
+echo "oxigeo-wasm:     Build successful" >> "$OUTPUT_FILE"
 echo "Overall Coverage: 95%+" >> "$OUTPUT_FILE"
 echo "```" >> "$OUTPUT_FILE"
 
@@ -217,7 +217,7 @@ cat >> "$OUTPUT_FILE" << 'EOF'
    - Resolution: Phase 2 annotation
 
 3. **Disabled Crates**: 3 crates temporarily disabled
-   - oxigdal-cluster, oxigdal-cloud-enhanced, oxigdal-jupyter
+   - oxigeo-cluster, oxigeo-cloud-enhanced, oxigeo-jupyter
    - Impact: None (not Phase 1 deliverables)
    - Resolution: Phase 2 re-enablement
 
@@ -265,11 +265,11 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 cargo build --workspace --all-features --release
 
 # Run tests
-cargo test --package oxigdal-core --lib
-cargo test --package oxigdal-geotiff --lib
+cargo test --package oxigeo-core --lib
+cargo test --package oxigeo-geotiff --lib
 
 # Build WASM
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --target web --release
 ```
 
@@ -293,7 +293,7 @@ python3 -m http.server 8000
 
 ## Reports Generated
 
-1. **OXIGDAL_STATUS_DASHBOARD.md** - This status dashboard (generated in `target/`)
+1. **OXIGEO_STATUS_DASHBOARD.md** - This status dashboard (generated in `target/`)
 
 ---
 
@@ -301,8 +301,8 @@ python3 -m http.server 8000
 
 - **Organization**: COOLJAPAN OU (Team Kitasan)
 - **License**: Apache 2.0 / MIT (dual licensed)
-- **Repository**: https://github.com/cool-japan/oxigdal
-- **Documentation**: https://docs.rs/oxigdal-*
+- **Repository**: https://github.com/cool-japan/oxigeo
+- **Documentation**: https://docs.rs/oxigeo-*
 
 ---
 

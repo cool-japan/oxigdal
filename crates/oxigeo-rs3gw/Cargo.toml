@@ -1,0 +1,84 @@
+[package]
+name = "oxigeo-rs3gw"
+description = "rs3gw storage backend for OxiGeo - High-performance cloud storage access"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["oxigeo", "rs3gw", "s3", "science", "network-programming"]
+categories = ["science", "filesystem"]
+
+[features]
+default = ["local"]
+local = ["rs3gw/local"]
+s3 = ["rs3gw/s3"]
+minio = ["s3"]
+gcs = ["rs3gw/gcs"]
+azure = ["rs3gw/azure"]
+all-backends = ["local", "s3", "gcs", "azure"]
+dedup = []
+encryption = ["getrandom", "hmac", "sha2", "aes-gcm", "chacha20poly1305"]
+ml-cache = []
+zarr = ["oxigeo-zarr"]
+async = ["oxigeo-core/async", "async-trait", "oxigeo-zarr?/async"]
+
+[dependencies]
+# Internal crates
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-zarr = { workspace = true, optional = true, features = [] }
+
+# rs3gw storage backend (from crates.io)
+rs3gw.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Bytes handling
+bytes.workspace = true
+
+# Async support
+tokio = { workspace = true, features = ["sync", "time"] }
+async-trait = { workspace = true, optional = true }
+
+# Futures for async streams
+futures = { workspace = true }
+
+# LRU cache for tile caching
+moka = { workspace = true }
+
+# Serialization
+serde_json = { workspace = true }
+
+# Encryption dependencies (optional)
+getrandom = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true
+
+# NOTE: `s3`/`minio` (ring, aws-lc-sys), `gcs` (aws-lc-sys) and `azure`
+# (aws-lc-sys, native-tls) all pull non-Pure-Rust TLS/crypto backends via
+# rs3gw's cloud backends. `local`, `dedup`, `encryption`, `ml-cache`, `zarr`
+# and `async` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["local", "dedup", "encryption", "ml-cache", "zarr", "async"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[bench]]
+name = "datasource_benchmarks"
+harness = false

@@ -1,0 +1,131 @@
+[package]
+name = "oxigeo-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-security"
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["security", "encryption", "access-control", "compliance", "audit"]
+categories = ["cryptography", "authentication", "science"]
+description = "Enterprise security features for OxiGeo: encryption, access control, compliance"
+
+[features]
+# `enterprise` — the original heavyweight server-side surface (encryption at rest,
+#   access control, audit, lineage, multitenancy, anonymization, compliance, scanning).
+# `tls` — TLS-in-transit support; implies `enterprise` (lives in encryption::in_transit).
+#   The oxitls stack is 100% Pure Rust (no ring/C/ASM).
+# `attestation` — lightweight, wasm-friendly crypto deps (blake3 hash chain / Merkle /
+#   Ed25519 session seal). The attestation module itself lands in a follow-up work
+#   package; the feature only enables its dependencies for now.
+default = ["enterprise", "tls", "attestation"]
+enterprise = [
+    "dep:tokio",
+    "dep:dashmap",
+    "dep:petgraph",
+    "dep:scirs2-core",
+    "dep:oxiarc-zstd",
+    "dep:regex",
+    "dep:parking_lot",
+    "dep:uuid",
+    "dep:chrono",
+    "dep:aes-gcm",
+    "dep:chacha20poly1305",
+    "dep:argon2",
+    "dep:pbkdf2",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:base64",
+    "dep:tracing",
+]
+tls = [
+    "enterprise",
+    "dep:rustls",
+    "dep:rustls-pemfile",
+    "dep:oxitls-core",
+    "dep:oxitls-adapter-rustls-rustcrypto",
+    "dep:oxitls-webpki-roots",
+]
+attestation = ["dep:blake3", "dep:ed25519-dalek"]
+
+[dependencies]
+# Crypto primitives — Pure Rust only (enterprise)
+pbkdf2 = { workspace = true, optional = true }
+argon2 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+
+# Attestation crypto — blake3 hash chain + Merkle root + Ed25519 seal (wasm-friendly).
+# ed25519-dalek internally uses sha2 0.10 (accepted duplicate major vs workspace sha2 0.11).
+blake3 = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+
+# TLS support — pure-Rust via OxiTLS + rustls (feature-gated)
+# rustls is still needed for the public Arc<ClientConfig>/Arc<ServerConfig> return types.
+rustls = { workspace = true, features = ["std", "tls12"], optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+oxitls-core = { workspace = true, optional = true }
+oxitls-adapter-rustls-rustcrypto = { workspace = true, optional = true }
+oxitls-webpki-roots = { workspace = true, optional = true }
+
+# UUID and time (enterprise)
+uuid = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+
+# Serialization (always on — error.rs and config surface)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime (enterprise)
+tokio = { workspace = true, optional = true }
+
+# Error handling (always on)
+thiserror = { workspace = true }
+
+# Logging (enterprise)
+tracing = { workspace = true, optional = true }
+
+# Data structures (enterprise)
+dashmap = { workspace = true, optional = true }
+petgraph = { workspace = true, optional = true }
+
+# Compression (enterprise)
+oxiarc-zstd = { workspace = true, optional = true }
+
+# Random — use scirs2-core for RNG (SciRS2 Policy: no direct rand/rand_distr).
+# getrandom stays mandatory: OS entropy for key material on every feature surface.
+scirs2-core = { workspace = true, features = ["random"], optional = true }
+getrandom.workspace = true
+
+# Encoding (enterprise)
+base64 = { workspace = true, optional = true }
+
+# Pattern matching (enterprise)
+regex = { workspace = true, optional = true }
+
+# Concurrency (enterprise)
+parking_lot = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "security_bench"
+harness = false
+
+[lib]
+doctest = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

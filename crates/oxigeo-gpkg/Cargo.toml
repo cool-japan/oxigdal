@@ -1,0 +1,52 @@
+[package]
+name = "oxigeo-gpkg"
+description = "Pure Rust GeoPackage (GPKG) reader for OxiGeo - SQLite format parser without C dependencies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-gpkg"
+readme = "README.md"
+keywords = ["geopackage", "gpkg", "sqlite", "gis", "geospatial"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[features]
+default = ["std"]
+std = ["thiserror/std"]
+reproject = ["dep:oxigeo-proj"]
+flatgeobuf-export = ["dep:oxigeo-flatgeobuf", "dep:oxigeo-core"]
+# mbtiles-export uses the Pure-Rust OxiSQL engine (no C/FFI).
+mbtiles-export = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio"]
+change-tracking = ["dep:oxisql-sqlite-compat", "dep:oxisql-core", "dep:tokio"]
+file-locking = ["dep:libc"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+oxigeo-geojson-stream = { workspace = true }
+serde_json = { workspace = true }
+oxigeo-proj = { workspace = true, optional = true }
+oxigeo-flatgeobuf = { workspace = true, optional = true }
+oxigeo-core = { workspace = true, optional = true, default-features = true }
+# Pure-Rust SQLite engine (mbtiles-export feature only)
+oxisql-core = { workspace = true, optional = true }
+oxisql-sqlite-compat = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+
+[dev-dependencies]
+libc = { workspace = true }
+tempfile = { workspace = true }
+oxisql-core = { workspace = true }
+oxisql-sqlite-compat = { workspace = true, features = ["blocking"] }
+tokio = { workspace = true, features = ["rt"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

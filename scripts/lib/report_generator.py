@@ -26,8 +26,8 @@ def estimate_test_location(package: str, test_name: str) -> str:
         Estimated file path relative to project root
 
     Example:
-        >>> estimate_test_location('oxigdal-core', 'memory::tests::test_allocator')
-        'crates/oxigdal-core/src/memory.rs'
+        >>> estimate_test_location('oxigeo-core', 'memory::tests::test_allocator')
+        'crates/oxigeo-core/src/memory.rs'
     """
     # Common patterns:
     # - integration tests: tests/*.rs

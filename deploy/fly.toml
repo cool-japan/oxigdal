@@ -1,20 +1,20 @@
-# OxiGDAL Fly.io Configuration
+# OxiGeo Fly.io Configuration
 # Simple deployment configuration for Fly.io platform
 # Author: COOLJAPAN OU (Team Kitasan)
 
-app = "oxigdal-server"
+app = "oxigeo-server"
 primary_region = "sjc"  # San Jose, California
 
 [build]
-  image = "ghcr.io/cool-japan/oxigdal-server:latest"
+  image = "ghcr.io/cool-japan/oxigeo-server:latest"
 
 [env]
   RUST_LOG = "info"
   RUST_BACKTRACE = "1"
-  OXIGDAL_HOST = "0.0.0.0"
-  OXIGDAL_PORT = "8080"
-  OXIGDAL_DATA_DIR = "/data"
-  OXIGDAL_CACHE_DIR = "/cache"
+  OXIGEO_HOST = "0.0.0.0"
+  OXIGEO_PORT = "8080"
+  OXIGEO_DATA_DIR = "/data"
+  OXIGEO_CACHE_DIR = "/cache"
 
 [http_service]
   internal_port = 8080
@@ -69,11 +69,11 @@ primary_region = "sjc"  # San Jose, California
   memory_mb = 4096
 
 [[mounts]]
-  source = "oxigdal_data"
+  source = "oxigeo_data"
   destination = "/data"
 
 [[mounts]]
-  source = "oxigdal_cache"
+  source = "oxigeo_cache"
   destination = "/cache"
 
 [metrics]
@@ -89,9 +89,9 @@ primary_region = "sjc"  # San Jose, California
   url_prefix = "/static/"
 
 # PostgreSQL Database (Fly Postgres)
-# Run: fly postgres create --name oxigdal-postgres
-# Then: fly postgres attach --app oxigdal-server oxigdal-postgres
+# Run: fly postgres create --name oxigeo-postgres
+# Then: fly postgres attach --app oxigeo-server oxigeo-postgres
 
 # Redis Cache (Upstash Redis)
-# Run: fly redis create --name oxigdal-redis
-# Then: fly redis attach --app oxigdal-server oxigdal-redis
+# Run: fly redis create --name oxigeo-redis
+# Then: fly redis attach --app oxigeo-server oxigeo-redis

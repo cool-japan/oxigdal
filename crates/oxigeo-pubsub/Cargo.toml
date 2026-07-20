@@ -1,0 +1,96 @@
+[package]
+name = "oxigeo-pubsub"
+description = "Google Cloud Pub/Sub integration for OxiGeo - Pure Rust streaming and messaging"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/oxigeo-pubsub"
+readme = "README.md"
+keywords = ["pubsub", "messaging", "streaming", "network-programming", "google"]
+categories = ["science", "network-programming", "asynchronous", "database"]
+
+[features]
+default = ["std", "async"]
+std = ["oxigeo-core/std", "thiserror/std", "serde/std"]
+alloc = []
+
+# Core features
+async = ["oxigeo-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
+publisher = ["async", "pubsub-client"]
+subscriber = ["async", "pubsub-client"]
+pubsub-client = ["dep:google-cloud-pubsub", "dep:google-cloud-googleapis", "dep:google-cloud-auth"]
+
+# Schema support
+schema = ["dep:apache-avro", "dep:prost"]
+avro = ["schema", "dep:apache-avro"]
+protobuf = ["schema", "dep:prost", "dep:prost-types"]
+
+# Monitoring
+monitoring = ["async"]
+
+# Advanced features
+batching = ["async"]
+ordering = ["async"]
+flow-control = ["async"]
+dead-letter = ["async"]
+
+# Authentication
+auth = []
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, optional = true, features = ["io-util", "sync", "time", "rt"] }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+# Google Cloud Pub/Sub - Pure Rust SDK
+google-cloud-pubsub = { workspace = true, optional = true }
+google-cloud-googleapis = { workspace = true, features = ["pubsub"], optional = true }
+google-cloud-auth = { workspace = true, optional = true }
+
+# Schema support - Pure Rust
+apache-avro = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Utilities
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+
+# Metrics
+num-traits = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
+
+# NOTE: `pubsub-client` (and the `publisher`/`subscriber` features that
+# depend on it) pulls google-cloud-pubsub -> rustls -> aws-lc-sys (C/asm).
+# All other features stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = [
+    "std", "alloc", "async", "schema", "avro", "protobuf",
+    "monitoring", "batching", "ordering", "flow-control", "dead-letter", "auth",
+]
+rustdoc-args = ["--cfg", "docsrs"]

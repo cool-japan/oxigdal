@@ -1,15 +1,15 @@
 [package]
-name = "my-oxigdal-ml-project"
+name = "my-oxigeo-ml-project"
 version = "0.1.0"
 edition = "2024"
 authors = ["Your Name <you@example.com>"]
 publish = false
 
 [dependencies]
-oxigdal-core = "0.1"
-oxigdal-algorithms = "0.1"
-oxigdal-ml = "0.1"
-oxigdal-geotiff = "0.1"
+oxigeo-core = "0.2"
+oxigeo-algorithms = "0.2"
+oxigeo-ml = "0.2"
+oxigeo-geotiff = "0.2"
 
 # ML dependencies
 ort = { version = "2.0.0-rc.11", default-features = false, features = ["ndarray"] }

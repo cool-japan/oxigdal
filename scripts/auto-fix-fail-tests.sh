@@ -12,11 +12,11 @@
 #   ./scripts/auto-fix-fail-tests.sh [PACKAGE_GROUP] [OPTIONS]
 #
 # Package Groups:
-#   gpu         - GPU packages only (oxigdal-gpu, oxigdal-gpu-advanced)
+#   gpu         - GPU packages only (oxigeo-gpu, oxigeo-gpu-advanced)
 #   gpu-ml      - GPU + ML packages (default)
 #   external    - Packages with external dependencies
 #   all         - All workspace packages
-#   <package>   - Specific package name (e.g., oxigdal-gpu)
+#   <package>   - Specific package name (e.g., oxigeo-gpu)
 #
 # Options:
 #   --detect-only       Run detection stage only
@@ -32,7 +32,7 @@
 # Examples:
 #   ./scripts/auto-fix-fail-tests.sh gpu --dry-run
 #   ./scripts/auto-fix-fail-tests.sh gpu --apply --yes
-#   ./scripts/auto-fix-fail-tests.sh oxigdal-gpu --analyze-only
+#   ./scripts/auto-fix-fail-tests.sh oxigeo-gpu --analyze-only
 #   ./scripts/auto-fix-fail-tests.sh --fix-only --apply --min-confidence MEDIUM
 
 set -uo pipefail
@@ -122,7 +122,7 @@ Options:
 Examples:
   $(basename "$0") gpu --dry-run
   $(basename "$0") gpu --apply --yes
-  $(basename "$0") oxigdal-gpu --analyze-only
+  $(basename "$0") oxigeo-gpu --analyze-only
   $(basename "$0") --fix-only --apply --min-confidence MEDIUM
 
 Workflow Stages:

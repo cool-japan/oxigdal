@@ -68,8 +68,8 @@ No adapter found
 #[test]
 #[ignore = "GPU device not available"]
 fn test_gpu_buffer_creation() {
-    if std::env::var("OXIGDAL_GPU_TESTS").is_err() {
-        eprintln!("Skipping GPU test (set OXIGDAL_GPU_TESTS=1 to enable)");
+    if std::env::var("OXIGEO_GPU_TESTS").is_err() {
+        eprintln!("Skipping GPU test (set OXIGEO_GPU_TESTS=1 to enable)");
         return;
     }
     // ... test code ...
@@ -159,8 +159,8 @@ Connection refused (os error 111): localhost:9092
 #[test]
 #[ignore = "Kafka broker not available"]
 fn test_kafka_streaming() {
-    if std::env::var("OXIGDAL_KAFKA_TESTS").is_err() {
-        eprintln!("Skipping Kafka test (set OXIGDAL_KAFKA_TESTS=1 to enable)");
+    if std::env::var("OXIGEO_KAFKA_TESTS").is_err() {
+        eprintln!("Skipping Kafka test (set OXIGEO_KAFKA_TESTS=1 to enable)");
         return;
     }
     // ... test code ...
@@ -958,8 +958,8 @@ stack backtrace:
 #[test]
 #[ignore = "GPU device not available"]
 fn test_gpu_buffer_creation() {
-    if std::env::var("OXIGDAL_GPU_TESTS").is_err() {
-        eprintln!("Skipping GPU test (set OXIGDAL_GPU_TESTS=1 to enable)");
+    if std::env::var("OXIGEO_GPU_TESTS").is_err() {
+        eprintln!("Skipping GPU test (set OXIGEO_GPU_TESTS=1 to enable)");
         return;
     }
     // ... original test code ...
@@ -1037,4 +1037,4 @@ To contribute new patterns or categories:
 
 ## License
 
-Part of OxiGDAL project. See top-level LICENSE file.
+Part of OxiGeo project. See top-level LICENSE file.

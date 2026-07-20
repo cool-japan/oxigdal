@@ -50,7 +50,7 @@ The **Shinjuku** example box hits exactly row group 0 of 3.
 
 The filter box accepts a SQL `WHERE` fragment, parsed with `sqlparser` and
 lowered to Parquet predicate pushdown. Supported grammar (from
-`crates/oxigdal-wasm-geoparquet/src/filter_expr.rs`):
+`crates/oxigeo-wasm-geoparquet/src/filter_expr.rs`):
 
 | Expression                    | Lowered to                 |
 |-------------------------------|----------------------------|
@@ -104,7 +104,7 @@ Useful columns in the VIDA file: `area_in_meters` (Float64), `confidence`
 | `examples.json` | preset boxes + filters (Shinjuku, Shibuya, Osaka, ...)  |
 | `serve.py`      | local static server with HTTP Range support              |
 | `build.sh`      | wasm-pack build + npm package name rewrite (idempotent)  |
-| `pkg` → symlink | `crates/oxigdal-wasm-geoparquet/pkg` build output        |
+| `pkg` → symlink | `crates/oxigeo-wasm-geoparquet/pkg` build output        |
 
-Part of [OxiGDAL](https://github.com/cool-japan/oxigdal) — Pure-Rust geospatial
+Part of [OxiGeo](https://github.com/cool-japan/oxigeo) — Pure-Rust geospatial
 data access by COOLJAPAN OU (Team Kitasan). License: Apache-2.0.

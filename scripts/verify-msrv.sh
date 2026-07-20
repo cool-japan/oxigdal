@@ -1,5 +1,5 @@
 #!/bin/bash
-# OxiGDAL MSRV (Minimum Supported Rust Version) verification script.
+# OxiGeo MSRV (Minimum Supported Rust Version) verification script.
 #
 # Checks `cargo check` for the workspace default-members against the
 # rust-version declared in [workspace.package] of the root Cargo.toml,
@@ -99,11 +99,11 @@ fi
 if [[ "$CHECK_ALL" == "true" ]]; then
     print_info "Checking all default-member packages (this may take a while)..."
     cd "$PROJECT_ROOT"
-    if cargo "+${TOOLCHAIN}" check --workspace 2>&1 | tee /tmp/oxigdal-msrv-check.log; then
+    if cargo "+${TOOLCHAIN}" check --workspace 2>&1 | tee /tmp/oxigeo-msrv-check.log; then
         print_ok "All default-member packages check clean under $TOOLCHAIN"
         exit 0
     else
-        print_err "Workspace check failed under $TOOLCHAIN — see /tmp/oxigdal-msrv-check.log"
+        print_err "Workspace check failed under $TOOLCHAIN — see /tmp/oxigeo-msrv-check.log"
         exit 1
     fi
 fi
@@ -113,18 +113,18 @@ if [[ -z "$PACKAGES" ]]; then
     # to depend (directly or via workspace inheritance) on `sysinfo`, whose
     # published patch releases have historically raised their own MSRV
     # ahead of this workspace's declared floor.
-    PACKAGES="oxigdal-core oxigdal-algorithms oxigdal-proj oxigdal-geotiff oxigdal oxigdal-server oxigdal-ml oxigdal-cluster oxigdal-bench oxigdal-dev-tools oxigdal-edge"
+    PACKAGES="oxigeo-core oxigeo-algorithms oxigeo-proj oxigeo-geotiff oxigeo oxigeo-server oxigeo-ml oxigeo-cluster oxigeo-bench oxigeo-dev-tools oxigeo-edge"
 fi
 
 print_info "Packages: $PACKAGES"
 
 cd "$PROJECT_ROOT"
 # shellcheck disable=SC2086
-if cargo "+${TOOLCHAIN}" check $(printf -- '-p %s ' $PACKAGES) 2>&1 | tee /tmp/oxigdal-msrv-check.log; then
+if cargo "+${TOOLCHAIN}" check $(printf -- '-p %s ' $PACKAGES) 2>&1 | tee /tmp/oxigeo-msrv-check.log; then
     print_ok "Representative package set checks clean under $TOOLCHAIN"
     exit 0
 else
-    print_err "Check failed under $TOOLCHAIN — see /tmp/oxigdal-msrv-check.log for the offending crate"
+    print_err "Check failed under $TOOLCHAIN — see /tmp/oxigeo-msrv-check.log for the offending crate"
     print_warn "If the failure names a third-party dependency's own MSRV requirement,"
     print_warn "the workspace rust-version must be raised to match (or that dependency pinned lower)."
     exit 1

@@ -1,6 +1,6 @@
-# Basic OxiGDAL Project
+# Basic OxiGeo Project
 
-This is a template for a basic OxiGDAL project.
+This is a template for a basic OxiGeo project.
 
 ## Getting Started
 
@@ -17,18 +17,18 @@ This is a template for a basic OxiGDAL project.
 ## Example Usage
 
 ```rust
-use oxigdal_core::Dataset;
-use oxigdal_geotiff;
+use oxigeo_core::Dataset;
+use oxigeo_geotiff;
 
 fn main() -> Result<()> {
     // Read raster
-    let dataset = oxigdal_geotiff::read("input.tif")?;
+    let dataset = oxigeo_geotiff::read("input.tif")?;
 
     // Process data
     // ...
 
     // Write output
-    oxigdal_geotiff::write("output.tif", &dataset)?;
+    oxigeo_geotiff::write("output.tif", &dataset)?;
 
     Ok(())
 }

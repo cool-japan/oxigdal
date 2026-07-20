@@ -1,6 +1,6 @@
-# OxiGDAL Troubleshooting Guide
+# OxiGeo Troubleshooting Guide
 
-Solutions to common issues and problems you might encounter with OxiGDAL.
+Solutions to common issues and problems you might encounter with OxiGeo.
 
 ## Table of Contents
 
@@ -38,7 +38,7 @@ cargo --version
 **Error:**
 ```
 error: linker link.exe not found
-error: could not compile 'oxigdal-core'
+error: could not compile 'oxigeo-core'
 ```
 
 **Solution:**
@@ -101,10 +101,10 @@ error[E0433]: cannot find type `RasterDataType` in this scope
 **Solution:**
 ```rust
 // Add missing import
-use oxigdal_core::types::RasterDataType;
+use oxigeo_core::types::RasterDataType;
 
 // Or use full path
-let buffer = oxigdal_core::types::RasterBuffer::zeros(512, 512, oxigdal_core::types::RasterDataType::Float32);
+let buffer = oxigeo_core::types::RasterBuffer::zeros(512, 512, oxigeo_core::types::RasterDataType::Float32);
 ```
 
 ### Issue: Lifetime Mismatch
@@ -184,7 +184,7 @@ buffer.scale(2.0)?;   // OK: new borrow
 
 **Error:**
 ```
-Error: OxiGdalError: IO error: file not found
+Error: OxiGeoError: IO error: file not found
 ```
 
 **Solution:**
@@ -326,7 +326,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 2. **Enable SIMD:**
 ```rust
-use oxigdal_core::simd_buffer::SimdBuffer;
+use oxigeo_core::simd_buffer::SimdBuffer;
 
 let buffer = reader.read_tile_buffer(0, 0, 0)?;
 let simd_buffer = SimdBuffer::from_buffer(&buffer)?;
@@ -394,7 +394,7 @@ RUST_LOG=debug cargo run --release
 
 1. **Enable Caching:**
 ```rust
-use oxigdal_cloud::cache::CacheConfig;
+use oxigeo_cloud::cache::CacheConfig;
 
 let cache = CacheConfig {
     enabled: true,
@@ -407,7 +407,7 @@ let http = HttpBackend::new(retry_config, cache);
 
 2. **Use Prefetching:**
 ```rust
-use oxigdal_cloud::prefetch::PrefetchConfig;
+use oxigeo_cloud::prefetch::PrefetchConfig;
 
 let prefetch = PrefetchConfig {
     enabled: true,
@@ -420,7 +420,7 @@ let tile = http.get_with_prefetch(url, prefetch).await?;
 
 3. **Use Appropriate Retry Config:**
 ```rust
-use oxigdal_cloud::retry::RetryConfig;
+use oxigeo_cloud::retry::RetryConfig;
 
 let retry = RetryConfig {
     max_retries: 3,
@@ -493,7 +493,7 @@ File says EPSG:4326 but coordinates don't match
 
 **Solution:**
 ```rust
-use oxigdal_proj::Projection;
+use oxigeo_proj::Projection;
 
 fn verify_crs(reader: &GeoTiffReader) -> Result<()> {
     let epsg = reader.epsg_code();
@@ -521,7 +521,7 @@ fn verify_crs(reader: &GeoTiffReader) -> Result<()> {
 
 **Problem:**
 ```
-ModuleNotFoundError: No module named 'oxigdal_python'
+ModuleNotFoundError: No module named 'oxigeo_python'
 ```
 
 **Solution:**
@@ -531,25 +531,25 @@ maturin develop
 
 # Or use PyO3 directly
 maturin build --release
-pip install ./target/wheels/oxigdal_python-*.whl
+pip install ./target/wheels/oxigeo_python-*.whl
 ```
 
 ### Issue: JavaScript-Rust Integration via WASM
 
 **Problem:**
 ```
-ReferenceError: oxigdal is not defined
+ReferenceError: oxigeo is not defined
 ```
 
 **Solution:**
 ```javascript
 // Ensure WASM module is loaded
-import init, * as oxigdal from './pkg/oxigdal_wasm.js';
+import init, * as oxigeo from './pkg/oxigeo_wasm.js';
 
 (async () => {
     await init();  // Initialize WASM
-    const viewer = oxigdal.WasmCogViewer.new();
-    // Now oxigdal functions available
+    const viewer = oxigeo.WasmCogViewer.new();
+    // Now oxigeo functions available
 })();
 ```
 
@@ -635,8 +635,8 @@ lldb ./target/debug/app
 
 ```rust
 // minimal.rs - Reproduce the issue in isolation
-use oxigdal_core::io::FileDataSource;
-use oxigdal_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+use oxigeo_geotiff::GeoTiffReader;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Minimal steps to reproduce
@@ -657,16 +657,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Resources
 
-- **Official Documentation**: https://docs.rs/oxigdal
-- **GitHub Issues**: https://github.com/cool-japan/oxigdal/issues
-- **Discussions**: https://github.com/cool-japan/oxigdal/discussions
+- **Official Documentation**: https://docs.rs/oxigeo
+- **GitHub Issues**: https://github.com/cool-japan/oxigeo/issues
+- **Discussions**: https://github.com/cool-japan/oxigeo/discussions
 - **COOLJAPAN Community**: Contact team
 
 ### When Reporting Issues
 
 Include:
 1. Rust version: `rustc --version`
-2. OxiGDAL version: `cargo tree | grep oxigdal`
+2. OxiGeo version: `cargo tree | grep oxigeo`
 3. Operating system: `uname -a`
 4. Minimal reproduction code
 5. Full error message with backtrace:

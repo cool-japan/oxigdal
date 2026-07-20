@@ -1,5 +1,5 @@
 /**
- * OxiGDAL GeoLab — pure terrain raster helpers.
+ * OxiGeo GeoLab — pure terrain raster helpers.
  *
  * Self-contained ES module: these functions turn WasmTerrain outputs into
  * RGBA `ImageData` (or a human label). They depend only on the browser's

@@ -1,12 +1,12 @@
-# Server Project Template for OxiGDAL
+# Server Project Template for OxiGeo
 
-A project template for building geospatial web services powered by OxiGDAL and Axum.
+A project template for building geospatial web services powered by OxiGeo and Axum.
 
 ## What This Template Provides
 
 - [Axum](https://docs.rs/axum) web framework with Tower middleware stack
 - CORS, static file serving, and request tracing via `tower-http`
-- OxiGDAL core, server, and GeoTIFF driver dependencies
+- OxiGeo core, server, and GeoTIFF driver dependencies
 - Async runtime (Tokio) for high-performance concurrent request handling
 - JSON serialization with `serde` and `serde_json`
 - Structured error handling with `anyhow` and `thiserror`
@@ -33,7 +33,7 @@ use serde_json::json;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = Router::new()
-        .route("/", get(|| async { "OxiGDAL Server" }))
+        .route("/", get(|| async { "OxiGeo Server" }))
         .route("/health", get(|| async { "OK" }))
         .route("/tiles/{z}/{x}/{y}", get(serve_tile));
 
@@ -52,11 +52,11 @@ async fn serve_tile(/* params */) -> Json<serde_json::Value> {
 - Add tile serving endpoints for COG (Cloud Optimized GeoTIFF) data
 - Implement OGC-compliant WMS/WFS/WMTS services
 - Add authentication and rate limiting middleware
-- Integrate with OxiGDAL cloud storage backends for remote data access
+- Integrate with OxiGeo cloud storage backends for remote data access
 - Serve vector tiles from GeoParquet, FlatGeobuf, or Shapefile sources
 
 ## License
 
 Apache-2.0
 
-Part of the [OxiGDAL](https://github.com/cool-japan/oxigdal) project by COOLJAPAN OU.
+Part of the [OxiGeo](https://github.com/cool-japan/oxigeo) project by COOLJAPAN OU.

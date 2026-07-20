@@ -1,0 +1,102 @@
+[package]
+name = "oxigeo-examples"
+description = "Example programs demonstrating OxiGeo usage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "read-geotiff"
+path = "src/read_geotiff.rs"
+
+[[bin]]
+name = "cog-tiles"
+path = "src/cog_tiles.rs"
+
+[[bin]]
+name = "list-tiff-structure"
+path = "src/list_tiff_structure.rs"
+
+[[bin]]
+name = "buffer-ops"
+path = "src/buffer_ops.rs"
+
+[[bin]]
+name = "write-geotiff"
+path = "src/write_geotiff.rs"
+
+[[bin]]
+name = "create-cog"
+path = "src/create_cog.rs"
+
+[[bin]]
+name = "geotiff-with-overviews"
+path = "src/geotiff_with_overviews.rs"
+
+[[bin]]
+name = "create-geoparquet-samples"
+path = "src/create_test_geoparquet_samples.rs"
+
+[features]
+default = []
+zstd = ["oxigeo-geotiff/zstd"]
+
+[dependencies]
+oxigeo-core = { workspace = true, default-features = true }
+oxigeo-geotiff = { workspace = true }
+oxigeo-algorithms = { workspace = true, default-features = true }
+oxigeo-proj = { workspace = true }
+oxigeo-stac = { workspace = true, features = ["std"] }
+oxigeo-geojson = { workspace = true }
+oxigeo-geoparquet = { workspace = true }
+oxigeo-zarr = { workspace = true }
+oxigeo-netcdf = { workspace = true }
+oxigeo-shapefile = { workspace = true }
+oxigeo-cloud = { workspace = true }
+oxigeo-analytics = { workspace = true }
+oxigeo-temporal = { workspace = true }
+oxigeo-sensors = { workspace = true }
+oxigeo-ml = { workspace = true }
+oxigeo-qc = { workspace = true }
+oxigeo-gpu = { workspace = true }
+oxigeo-mobile = { workspace = true }
+oxigeo-server = { workspace = true }
+oxigeo-postgis = { workspace = true }
+
+# Vector geometry
+geo = { workspace = true }
+geo-types = { workspace = true }
+
+# Array types used by oxigeo-sensors' spectral index / calibration APIs
+scirs2-core = { workspace = true, features = ["array"] }
+
+# Web services (tutorial 07)
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+rayon = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time and dates
+chrono = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

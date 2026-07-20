@@ -21,7 +21,7 @@ fn test_geotiff_roundtrip() -> Result<()> {
     let height = 100;
     let data: Vec<f32> = (0..(width * height)).map(|i| i as f32).collect();
 
-    // Write (placeholder - would use actual OxiGDAL)
+    // Write (placeholder - would use actual OxiGeo)
     write_geotiff(&test_file, width, height, &data)?;
 
     // Read back

@@ -1,5 +1,5 @@
-# npm Publishing Workflow for OxiGDAL WASM bindings
-# Builds and publishes @cooljapan/oxigdal to npm using wasm-pack
+# npm Publishing Workflow for OxiGeo WASM bindings
+# Builds and publishes @cooljapan/oxigeo to npm using wasm-pack
 
 name: npm Publish
 
@@ -28,7 +28,7 @@ env:
   CARGO_TERM_COLOR: always
   WASM_PACK_VERSION: "0.13.1"
   SCOPE: "cooljapan"
-  NPM_PACKAGE: "@cooljapan/oxigdal"
+  NPM_PACKAGE: "@cooljapan/oxigeo"
 
 jobs:
   build:
@@ -56,29 +56,29 @@ jobs:
         run: cargo install wasm-pack --version ${{ env.WASM_PACK_VERSION }} --locked || true
 
       - name: Build for bundler target
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: wasm-pack build --scope ${{ env.SCOPE }} --target bundler --out-dir pkg-bundler --release
 
       - name: Build for web target
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: wasm-pack build --scope ${{ env.SCOPE }} --target web --out-dir pkg-web --release
 
       - name: Build for Node.js target
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: wasm-pack build --scope ${{ env.SCOPE }} --target nodejs --out-dir pkg-node --release
 
-      - name: Rename packages to @cooljapan/oxigdal
-        working-directory: crates/oxigdal-wasm
+      - name: Rename packages to @cooljapan/oxigeo
+        working-directory: crates/oxigeo-wasm
         run: |
           for dir in pkg-bundler pkg-web pkg-node; do
             if [ -f "${dir}/package.json" ]; then
-              sed -i "s|\"@${SCOPE}/oxigdal-wasm\"|\"${NPM_PACKAGE}\"|g" "${dir}/package.json"
+              sed -i "s|\"@${SCOPE}/oxigeo-wasm\"|\"${NPM_PACKAGE}\"|g" "${dir}/package.json"
               echo "Updated ${dir}/package.json → ${NPM_PACKAGE}"
             fi
           done
 
       - name: Show package info
-        working-directory: crates/oxigdal-wasm
+        working-directory: crates/oxigeo-wasm
         run: |
           echo "=== bundler ==="
           cat pkg-bundler/package.json
@@ -96,19 +96,19 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-pkg-bundler
-          path: crates/oxigdal-wasm/pkg-bundler/
+          path: crates/oxigeo-wasm/pkg-bundler/
 
       - name: Upload web package
         uses: actions/upload-artifact@v4
         with:
           name: npm-pkg-web
-          path: crates/oxigdal-wasm/pkg-web/
+          path: crates/oxigeo-wasm/pkg-web/
 
       - name: Upload node package
         uses: actions/upload-artifact@v4
         with:
           name: npm-pkg-node
-          path: crates/oxigdal-wasm/pkg-node/
+          path: crates/oxigeo-wasm/pkg-node/
 
   publish:
     name: Publish to npm

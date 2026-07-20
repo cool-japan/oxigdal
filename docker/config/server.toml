@@ -1,12 +1,12 @@
-# OxiGDAL Tile Server - default Docker configuration
+# OxiGeo Tile Server - default Docker configuration
 #
-# Loaded via `--config /config/server.toml` / the OXIGDAL_CONFIG env var (see
+# Loaded via `--config /config/server.toml` / the OXIGEO_CONFIG env var (see
 # docker/Dockerfile.server and docker-compose.yml). Field/table names must match
-# `crates/oxigdal-server::config::Config` exactly - every struct in that module derives
+# `crates/oxigeo-server::config::Config` exactly - every struct in that module derives
 # `#[serde(deny_unknown_fields)]`, so a stale or mistyped key makes the server refuse to
 # start rather than silently ignoring it.
 #
-# Values mirror the OXIGDAL_CACHE_SIZE / OXIGDAL_MAX_TILE_AGE defaults set in
+# Values mirror the OXIGEO_CACHE_SIZE / OXIGEO_MAX_TILE_AGE defaults set in
 # docker/docker-compose.yml; those two env vars are informational only today (the server does
 # not currently read them - see the note in docker-compose.yml), so this file is the actual
 # source of truth for cache sizing when running via Docker.
@@ -31,8 +31,8 @@ enable_stats = true
 compression = false
 
 [metadata]
-title = "OxiGDAL Tile Server"
-abstract_ = "WMS/WMTS tile server powered by OxiGDAL"
+title = "OxiGeo Tile Server"
+abstract_ = "WMS/WMTS tile server powered by OxiGeo"
 keywords = ["tiles", "wms", "wmts", "geospatial"]
 
 # No [[layers]] are defined by default; mount your rasters under /data (see the `data` volume

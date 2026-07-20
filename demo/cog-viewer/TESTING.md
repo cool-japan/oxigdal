@@ -1,4 +1,4 @@
-# Testing Checklist - OxiGDAL COG Viewer
+# Testing Checklist - OxiGeo COG Viewer
 
 Comprehensive testing guide to ensure the COG viewer works correctly across all browsers and scenarios.
 
@@ -14,7 +14,7 @@ Comprehensive testing guide to ensure the COG viewer works correctly across all 
 - [ ] Release build optimizations applied
 
 ```bash
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 ```
 
@@ -348,7 +348,7 @@ After code changes:
 **Automated checks:**
 ```bash
 # Build check
-cd ../../crates/oxigdal-wasm
+cd ../../crates/oxigeo-wasm
 cargo build --release --target wasm32-unknown-unknown
 
 # Lint check

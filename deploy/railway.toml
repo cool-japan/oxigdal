@@ -1,4 +1,4 @@
-# OxiGDAL Railway Configuration
+# OxiGeo Railway Configuration
 # Configuration for Railway platform deployment
 # Author: COOLJAPAN OU (Team Kitasan)
 
@@ -7,7 +7,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "docker/Dockerfile.server"
 
 [deploy]
-startCommand = "oxigdal-server --host 0.0.0.0 --port $PORT"
+startCommand = "oxigeo-server --host 0.0.0.0 --port $PORT"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
@@ -17,7 +17,7 @@ healthcheckTimeout = 100
 numReplicas = 2
 
 [[services]]
-name = "oxigdal-server"
+name = "oxigeo-server"
 
 [services.resources]
 cpu = 2
@@ -32,10 +32,10 @@ protocol = "http"
 #
 # RUST_LOG=info
 # RUST_BACKTRACE=1
-# OXIGDAL_HOST=0.0.0.0
-# OXIGDAL_PORT=$PORT
-# OXIGDAL_DATA_DIR=/data
-# OXIGDAL_CACHE_DIR=/cache
+# OXIGEO_HOST=0.0.0.0
+# OXIGEO_PORT=$PORT
+# OXIGEO_DATA_DIR=/data
+# OXIGEO_CACHE_DIR=/cache
 #
 # PostgreSQL (from Railway addon):
 # DATABASE_URL=${{Postgres.DATABASE_URL}}

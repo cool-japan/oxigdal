@@ -50,8 +50,8 @@ jobs:
             --out Xml \
             --out Html \
             --output-dir coverage \
-            --exclude-files "crates/oxigdal-examples/*" \
-            --exclude-files "crates/oxigdal-python/*" \
+            --exclude-files "crates/oxigeo-examples/*" \
+            --exclude-files "crates/oxigeo-python/*" \
             --exclude-files "benchmarks/*" \
             --exclude-files "*/tests/*" \
             -- --test-threads 1
@@ -84,7 +84,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/cobertura.xml
           flags: unittests
-          name: oxigdal-coverage
+          name: oxigeo-coverage
           fail_ci_if_error: false
           verbose: true
 
@@ -148,7 +148,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./lcov.info
           flags: llvm-cov
-          name: oxigdal-coverage-llvm
+          name: oxigeo-coverage-llvm
           fail_ci_if_error: false
 
       - name: Upload LLVM coverage artifacts
@@ -166,11 +166,11 @@ jobs:
       fail-fast: false
       matrix:
         crate:
-          - oxigdal-core
-          - oxigdal-algorithms
-          - oxigdal-proj
-          - oxigdal-stac
-          - oxigdal-geotiff
+          - oxigeo-core
+          - oxigeo-algorithms
+          - oxigeo-proj
+          - oxigeo-stac
+          - oxigeo-geotiff
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

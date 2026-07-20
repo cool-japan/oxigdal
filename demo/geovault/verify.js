@@ -3,13 +3,13 @@
  *
  * Independent attestation verifier. Loads an attestation.json (file drop,
  * file picker, or pasted text) and re-verifies it from the JSON alone with
- * `verifyAttestation` — the same oxigdal-security code the workstation
+ * `verifyAttestation` — the same oxigeo-security code the workstation
  * used, recomputing the blake3 hash chain, the Merkle root, and the
  * Ed25519 seal signature. Entirely client-side; this page makes no network
  * requests beyond its own same-origin assets.
  */
 
-import wasmInit, { verifyAttestation, version as wasmVersion } from './pkg/oxigdal_wasm.js';
+import wasmInit, { verifyAttestation, version as wasmVersion } from './pkg/oxigeo_wasm.js';
 
 function $(id) {
     return document.getElementById(id);
@@ -159,7 +159,7 @@ async function handleFile(file) {
 async function boot() {
     await wasmInit();
     const badge = $('version-badge');
-    if (badge) badge.textContent = `oxigdal-wasm ${wasmVersion()}`;
+    if (badge) badge.textContent = `oxigeo-wasm ${wasmVersion()}`;
 
     const runBtn = $('verify-run');
     const ta = $('verify-text');

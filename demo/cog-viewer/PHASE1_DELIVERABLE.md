@@ -1,8 +1,8 @@
-# OxiGDAL Phase 1 Deliverable: COG Viewer Demo Application
+# OxiGeo Phase 1 Deliverable: COG Viewer Demo Application
 
 ## Overview
 
-Complete interactive Cloud-Optimized GeoTIFF (COG) viewer built with OxiGDAL WebAssembly bindings, Leaflet, and modern web technologies. This demo showcases OxiGDAL's browser capabilities with zero backend dependencies.
+Complete interactive Cloud-Optimized GeoTIFF (COG) viewer built with OxiGeo WebAssembly bindings, Leaflet, and modern web technologies. This demo showcases OxiGeo's browser capabilities with zero backend dependencies.
 
 ## Deliverable Status
 
@@ -11,7 +11,7 @@ Complete interactive Cloud-Optimized GeoTIFF (COG) viewer built with OxiGDAL Web
 | # | Requirement | Status | Implementation |
 |---|-------------|--------|----------------|
 | 1 | Interactive COG viewer | ✅ Complete | Leaflet-based with pan/zoom/tile rendering |
-| 2 | OxiGDAL-WASM integration | ✅ Complete | Full WASM bindings with async tile loading |
+| 2 | OxiGeo-WASM integration | ✅ Complete | Full WASM bindings with async tile loading |
 | 3 | Pan/Zoom/Tile rendering | ✅ Complete | Custom GridLayer with HTTP range requests |
 | 4 | Metadata display panel | ✅ Complete | Comprehensive metadata extraction and display |
 | 5 | Example S3-hosted COGs | ✅ Complete | 3 curated examples (Sentinel-2, OpenAerialMap, Hurricane Harvey) |
@@ -46,7 +46,7 @@ demo/cog-viewer/
 
 **Technology Stack:**
 - Leaflet 1.9.4 for map rendering
-- OxiGDAL WASM for geospatial data processing
+- OxiGeo WASM for geospatial data processing
 - Pure client-side processing (no backend)
 
 **Capabilities:**
@@ -57,11 +57,11 @@ demo/cog-viewer/
 - Overview/pyramid level support
 - Automatic bounds detection and fitting
 
-### 2. OxiGDAL-WASM Integration
+### 2. OxiGeo-WASM Integration
 
 **WASM Bindings:**
 ```javascript
-import init, { WasmCogViewer, version } from '../pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer, version } from '../pkg/oxigeo_wasm.js';
 
 // Initialize WASM
 await init();
@@ -286,7 +286,7 @@ Area: 1.23 km²
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Header: OxiGDAL COG Viewer (version, status)               │
+│  Header: OxiGeo COG Viewer (version, status)               │
 ├──────────┬──────────────────────────────────┬───────────────┤
 │          │                                  │               │
 │  Left    │                                  │    Right      │
@@ -390,7 +390,7 @@ Area Measurement:
 
 ```bash
 # Build WASM
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 
 # Start server
@@ -537,7 +537,7 @@ Planned for future phases:
 
 ### Runtime Dependencies
 - Leaflet 1.9.4 (CDN)
-- OxiGDAL WASM (built from source)
+- OxiGeo WASM (built from source)
 
 ### Development Dependencies
 - Rust 1.89+
@@ -553,17 +553,17 @@ The application has zero runtime NPM dependencies, ensuring:
 
 ## Conclusion
 
-The OxiGDAL Phase 1 COG Viewer demo application successfully delivers all required features:
+The OxiGeo Phase 1 COG Viewer demo application successfully delivers all required features:
 
 ✅ **Interactive COG viewer** with Leaflet integration
-✅ **OxiGDAL-WASM** bindings with async tile loading
+✅ **OxiGeo-WASM** bindings with async tile loading
 ✅ **Pan/Zoom/Tile rendering** with custom GridLayer
 ✅ **Metadata display** with comprehensive information
 ✅ **Example S3-hosted COGs** (3 curated datasets)
 ✅ **Measurement tools** (distance and area calculation)
 ✅ **Deployment configuration** (GitHub Pages, Netlify, Vercel)
 
-The application demonstrates OxiGDAL's powerful browser capabilities, providing a production-ready foundation for geospatial web applications with zero backend dependencies.
+The application demonstrates OxiGeo's powerful browser capabilities, providing a production-ready foundation for geospatial web applications with zero backend dependencies.
 
 ---
 
@@ -571,11 +571,11 @@ The application demonstrates OxiGDAL's powerful browser capabilities, providing 
 
 ```bash
 # Clone repository
-git clone https://github.com/cool-japan/oxigdal.git
-cd oxigdal
+git clone https://github.com/cool-japan/oxigeo.git
+cd oxigeo
 
 # Build WASM
-cd crates/oxigdal-wasm
+cd crates/oxigeo-wasm
 wasm-pack build --target web --release --out-dir ../../demo/pkg
 
 # Start server
@@ -589,13 +589,13 @@ http://localhost:8080
 ## Live Demo
 
 Once deployed, the demo will be available at:
-- GitHub Pages: `https://cool-japan.github.io/oxigdal/demo/cog-viewer/`
+- GitHub Pages: `https://cool-japan.github.io/oxigeo/demo/cog-viewer/`
 - Netlify: (configure with your account)
 - Vercel: (configure with your account)
 
 ---
 
-**Built with:** OxiGDAL | Pure Rust | COOLJAPAN Ecosystem
+**Built with:** OxiGeo | Pure Rust | COOLJAPAN Ecosystem
 **License:** Apache-2.0
 **Author:** COOLJAPAN OU (Team Kitasan)
 **Date:** January 2026
