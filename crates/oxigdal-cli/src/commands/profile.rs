@@ -1,20 +1,20 @@
 //! Performance profiling command
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
-// Note: oxigdal_dev_tools is currently disabled due to build errors
-// use oxigdal_dev_tools::profiler::Profiler;
+
+use crate::util::profiler::{Operation, Profiler};
 
 /// Profile a geospatial operation
 #[derive(Args, Debug)]
 pub struct ProfileArgs {
-    /// Operation to profile
-    #[arg(value_name = "OPERATION")]
-    pub operation: String,
-
     /// Input file path
     #[arg(value_name = "INPUT")]
     pub input: String,
+
+    /// Operation to profile (open, read-features, read-bands, stats)
+    #[arg(value_name = "OPERATION", default_value = "open")]
+    pub operation: String,
 
     /// Number of iterations
     #[arg(long, short = 'n', default_value = "10")]
@@ -23,51 +23,60 @@ pub struct ProfileArgs {
     /// Export results to JSON file
     #[arg(long, short = 'o')]
     pub output: Option<String>,
+
+    /// Print results as JSON to stdout instead of a text table
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Execute profile command
-pub fn execute(_args: ProfileArgs, _output_format: crate::OutputFormat) -> Result<()> {
-    anyhow::bail!(
-        "Profile command is not yet implemented. oxigdal_dev_tools crate is currently disabled."
-    );
+pub fn execute(args: ProfileArgs, output_format: crate::OutputFormat) -> Result<()> {
+    let op: Operation = args
+        .operation
+        .parse()
+        .with_context(|| format!("Failed to parse operation '{}'", args.operation))?;
 
-    // Placeholder for when oxigdal_dev_tools is available:
-    // let mut profiler = Profiler::new(&args.operation);
-    //
-    // println!("Profiling operation: {}", args.operation);
-    // println!("Input: {}", args.input);
-    // println!("Iterations: {}", args.iterations);
-    // println!();
-    //
-    // // Run profiling iterations
-    // for i in 0..args.iterations {
-    //     profiler.start();
-    //
-    //     // Placeholder: Would execute actual operation
-    //     execute_operation(&args.operation, &args.input)?;
-    //
-    //     profiler.stop();
-    //
-    //     if i % 10 == 0 && i > 0 {
-    //         println!("Completed {} / {} iterations", i, args.iterations);
-    //     }
-    // }
-    //
-    // // Generate report
-    // println!("{}", profiler.report());
-    //
-    // // Export if requested
-    // if let Some(output_path) = args.output {
-    //     let json = profiler.export_json()?;
-    //     std::fs::write(&output_path, json)?;
-    //     println!("Exported results to: {}", output_path);
-    // }
-    //
-    // Ok(())
+    println!("Profiling operation: {op}");
+    println!("Input:      {}", args.input);
+    println!("Iterations: {}", args.iterations);
+    println!();
+
+    let profiler = run_profiler(&op, &args.input, args.iterations)?;
+
+    let use_json = args.json || matches!(output_format, crate::OutputFormat::Json);
+    if use_json {
+        let json = profiler
+            .export_json()
+            .context("Failed to export profiler report as JSON")?;
+        println!("{json}");
+    } else {
+        print!("{}", profiler.report());
+    }
+
+    if let Some(ref output_path) = args.output {
+        let json = profiler
+            .export_json()
+            .context("Failed to serialise profiler report for file export")?;
+        std::fs::write(output_path, &json)
+            .with_context(|| format!("Failed to write profiler results to '{output_path}'"))?;
+        println!("Results exported to: {output_path}");
+    }
+
+    Ok(())
 }
 
-// fn execute_operation(_operation: &str, _input: &str) -> Result<()> {
-//     // Placeholder for actual operation execution
-//     std::thread::sleep(std::time::Duration::from_millis(10));
-//     Ok(())
-// }
+/// Run the operation `iterations` times, recording wall-clock durations.
+fn run_profiler(op: &Operation, input: &str, iterations: usize) -> Result<Profiler> {
+    let mut profiler = Profiler::new(format!("{op}@{input}"));
+    for i in 0..iterations {
+        profiler.start();
+        op.execute(input)
+            .with_context(|| format!("Iteration {i} of operation '{op}' failed"))?;
+        profiler.stop();
+
+        if i > 0 && i % 10 == 0 {
+            println!("  completed {i} / {iterations} iterations …");
+        }
+    }
+    Ok(profiler)
+}

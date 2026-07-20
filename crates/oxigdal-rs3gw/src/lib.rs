@@ -46,6 +46,7 @@
 //! use oxigdal_rs3gw::{OxigdalBackend, Rs3gwDataSource};
 //! use oxigdal_core::io::DataSource;
 //!
+//! # #[cfg(feature = "s3")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Configure S3 backend
 //! let backend = OxigdalBackend::S3 {
@@ -74,8 +75,10 @@
 //! ## Using with MinIO
 //!
 //! ```no_run
-//! use oxigdal_rs3gw::{MinioBackendBuilder, Rs3gwDataSource};
+//! # #[cfg(feature = "s3")]
+//! # use oxigdal_rs3gw::{MinioBackendBuilder, Rs3gwDataSource};
 //!
+//! # #[cfg(feature = "s3")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let backend = MinioBackendBuilder::new(
 //!     "http://localhost:9000",
@@ -184,7 +187,9 @@ pub mod features;
 pub mod store;
 
 // Re-exports for convenience
-pub use config::{MinioBackendBuilder, OxigdalBackend, S3BackendBuilder, parse_url};
+#[cfg(feature = "s3")]
+pub use config::{MinioBackendBuilder, S3BackendBuilder};
+pub use config::{OxigdalBackend, parse_url};
 pub use datasource::Rs3gwDataSource;
 pub use error::{Result, Rs3gwError};
 

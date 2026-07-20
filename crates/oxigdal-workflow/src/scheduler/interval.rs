@@ -82,10 +82,10 @@ impl IntervalSchedule {
     /// Calculate the next execution time from the given datetime.
     pub fn next_execution_from(&self, from: DateTime<Utc>) -> Result<Option<DateTime<Utc>>> {
         // Check if max executions reached
-        if let Some(max) = self.max_executions {
-            if self.execution_count >= max {
-                return Ok(None);
-            }
+        if let Some(max) = self.max_executions
+            && self.execution_count >= max
+        {
+            return Ok(None);
         }
 
         let start = self.start_time.unwrap_or(from);
@@ -101,10 +101,10 @@ impl IntervalSchedule {
         let next = from + duration;
 
         // Check if next execution is beyond end time
-        if let Some(end) = self.end_time {
-            if next > end {
-                return Ok(None);
-            }
+        if let Some(end) = self.end_time
+            && next > end
+        {
+            return Ok(None);
         }
 
         Ok(Some(next))
@@ -129,17 +129,17 @@ impl IntervalSchedule {
             current += duration;
 
             // Check max executions
-            if let Some(max) = self.max_executions {
-                if executions.len() >= max {
-                    break;
-                }
+            if let Some(max) = self.max_executions
+                && executions.len() >= max
+            {
+                break;
             }
 
             // Check end time
-            if let Some(end_time) = self.end_time {
-                if current > end_time {
-                    break;
-                }
+            if let Some(end_time) = self.end_time
+                && current > end_time
+            {
+                break;
             }
         }
 
@@ -149,24 +149,24 @@ impl IntervalSchedule {
     /// Check if the schedule is still active.
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         // Check if before start time
-        if let Some(start) = self.start_time {
-            if now < start {
-                return false;
-            }
+        if let Some(start) = self.start_time
+            && now < start
+        {
+            return false;
         }
 
         // Check if after end time
-        if let Some(end) = self.end_time {
-            if now > end {
-                return false;
-            }
+        if let Some(end) = self.end_time
+            && now > end
+        {
+            return false;
         }
 
         // Check if max executions reached
-        if let Some(max) = self.max_executions {
-            if self.execution_count >= max {
-                return false;
-            }
+        if let Some(max) = self.max_executions
+            && self.execution_count >= max
+        {
+            return false;
         }
 
         true

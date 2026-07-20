@@ -279,13 +279,13 @@ impl TileCache {
         }
 
         // Try disk cache if enabled
-        if self.config.disk_cache_dir.is_some() {
-            if let Some(data) = self.get_from_disk(key) {
-                // Promote to memory cache
-                let _ = self.put_in_memory(key.clone(), data.clone());
-                self.record_hit();
-                return Some(data);
-            }
+        if self.config.disk_cache_dir.is_some()
+            && let Some(data) = self.get_from_disk(key)
+        {
+            // Promote to memory cache
+            let _ = self.put_in_memory(key.clone(), data.clone());
+            self.record_hit();
+            return Some(data);
         }
 
         self.record_miss();
@@ -414,11 +414,11 @@ impl TileCache {
         self.update_memory_usage(|_| 0);
 
         // Clear disk cache if enabled
-        if let Some(ref dir) = self.config.disk_cache_dir {
-            if dir.exists() {
-                std::fs::remove_dir_all(dir)?;
-                std::fs::create_dir_all(dir)?;
-            }
+        if let Some(ref dir) = self.config.disk_cache_dir
+            && dir.exists()
+        {
+            std::fs::remove_dir_all(dir)?;
+            std::fs::create_dir_all(dir)?;
         }
 
         // Reset stats
@@ -456,55 +456,55 @@ impl TileCache {
 
     /// Record a cache hit
     fn record_hit(&self) {
-        if self.config.enable_stats {
-            if let Ok(mut stats) = self.stats.lock() {
-                stats.hits += 1;
-            }
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.hits += 1;
         }
     }
 
     /// Record a cache miss
     fn record_miss(&self) {
-        if self.config.enable_stats {
-            if let Ok(mut stats) = self.stats.lock() {
-                stats.misses += 1;
-            }
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.misses += 1;
         }
     }
 
     /// Record an eviction
     fn record_eviction(&self) {
-        if self.config.enable_stats {
-            if let Ok(mut stats) = self.stats.lock() {
-                stats.evictions += 1;
-            }
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.evictions += 1;
         }
     }
 
     /// Record an expiration
     fn record_expiration(&self) {
-        if self.config.enable_stats {
-            if let Ok(mut stats) = self.stats.lock() {
-                stats.expirations += 1;
-            }
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.expirations += 1;
         }
     }
 
     /// Record a disk read
     fn record_disk_read(&self) {
-        if self.config.enable_stats {
-            if let Ok(mut stats) = self.stats.lock() {
-                stats.disk_reads += 1;
-            }
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.disk_reads += 1;
         }
     }
 
     /// Record a disk write
     fn record_disk_write(&self) {
-        if self.config.enable_stats {
-            if let Ok(mut stats) = self.stats.lock() {
-                stats.disk_writes += 1;
-            }
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.disk_writes += 1;
         }
     }
 }

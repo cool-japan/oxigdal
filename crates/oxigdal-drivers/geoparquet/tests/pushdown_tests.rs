@@ -504,3 +504,104 @@ fn write_plain_geo_parquet(path: &Path) {
     writer.write(&batch).expect("write");
     writer.close().expect("close");
 }
+
+/// Write a plain GeoParquet file (geometry column only, no covering.bbox) whose
+/// rows are the supplied geometries encoded as little-endian WKB.
+fn write_plain_geo_parquet_with(path: &Path, geoms: &[Geometry]) {
+    let base = Schema::new(vec![Field::new("geometry", DataType::Binary, true)]);
+    let schema = geo_schema(base, "geometry");
+
+    let raw: Vec<Vec<u8>> = geoms
+        .iter()
+        .map(|g| WkbWriter::new(true).write_geometry(g).expect("wkb encode"))
+        .collect();
+    let wkb_refs: Vec<Option<&[u8]>> = raw.iter().map(|v| Some(v.as_slice())).collect();
+
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(BinaryArray::from(wkb_refs))])
+        .expect("batch");
+
+    let file = File::create(path).expect("create");
+    let props = WriterProperties::builder()
+        .set_compression(Compression::SNAPPY)
+        .build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("writer");
+    writer.write(&batch).expect("write");
+    writer.close().expect("close");
+}
+
+// ── Test 9: WKB fallback must not silently drop multi-geometry rows ─────────────
+
+/// Regression for the `wkb_bbox()` silent-failure defect: before the fix,
+/// `wkb_bbox()` returned `None` for `MultiPolygon`/`MultiLineString`/
+/// `GeometryCollection`/big-endian WKB, and the pushdown WKB fallback mask
+/// (initialised `false`, only set `true` inside the `Some(..)` branch) treated
+/// `None` as "row does not match". A bbox query against a GeoParquet 1.0 file
+/// (no covering.bbox columns) therefore silently omitted every matching
+/// MultiPolygon / MultiLineString feature. This test proves those rows are now
+/// returned.
+#[test]
+fn test_wkb_fallback_matches_multi_geometries() {
+    use oxigdal_geoparquet::geometry::{
+        Coordinate, LineString, MultiLineString, MultiPolygon, Polygon,
+    };
+
+    let temp_dir = std::env::temp_dir();
+    let path = temp_dir.join("pushdown_multi_geom_no_bbox.parquet");
+
+    // Row 0: MultiPolygon whose parts lie inside the query box (0,0,10,10).
+    let mpoly_in = Geometry::MultiPolygon(MultiPolygon::new(vec![
+        Polygon::new_simple(LineString::new(vec![
+            Coordinate::new_2d(1.0, 1.0),
+            Coordinate::new_2d(2.0, 1.0),
+            Coordinate::new_2d(2.0, 2.0),
+            Coordinate::new_2d(1.0, 1.0),
+        ])),
+        Polygon::new_simple(LineString::new(vec![
+            Coordinate::new_2d(3.0, 3.0),
+            Coordinate::new_2d(4.0, 3.0),
+            Coordinate::new_2d(4.0, 4.0),
+            Coordinate::new_2d(3.0, 3.0),
+        ])),
+    ]));
+    // Row 1: MultiLineString crossing into the query box.
+    let mls_in = Geometry::MultiLineString(MultiLineString::new(vec![LineString::new(vec![
+        Coordinate::new_2d(-5.0, 5.0),
+        Coordinate::new_2d(5.0, 5.0),
+    ])]));
+    // Row 2: MultiPolygon far outside the query box.
+    let mpoly_out = Geometry::MultiPolygon(MultiPolygon::new(vec![Polygon::new_simple(
+        LineString::new(vec![
+            Coordinate::new_2d(100.0, 100.0),
+            Coordinate::new_2d(101.0, 100.0),
+            Coordinate::new_2d(101.0, 101.0),
+            Coordinate::new_2d(100.0, 100.0),
+        ]),
+    )]));
+
+    write_plain_geo_parquet_with(&path, &[mpoly_in, mls_in, mpoly_out]);
+
+    // Sanity: this file genuinely has no covering.bbox columns, so the read
+    // takes the WKB-decode fallback path.
+    {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let file = File::open(&path).expect("open");
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
+        let schema = builder.parquet_schema().clone();
+        assert!(
+            BboxColumns::detect(&schema, "geometry").is_none(),
+            "fixture must have no covering.bbox columns"
+        );
+    }
+
+    let reader = GeoParquetReader::open(&path)
+        .expect("open")
+        .with_bbox_filter((0.0, 0.0, 10.0, 10.0));
+    let results = reader.read_pushdown().expect("pushdown");
+    let total: usize = results.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total, 2,
+        "WKB fallback must return the intersecting MultiPolygon and MultiLineString rows"
+    );
+
+    cleanup(&path);
+}

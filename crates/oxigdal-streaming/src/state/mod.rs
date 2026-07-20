@@ -10,9 +10,11 @@ pub use backend::KvStateBackend;
 pub use backend::{MemoryStateBackend, StateBackend};
 pub use checkpoint::{
     Checkpoint, CheckpointBarrier, CheckpointConfig, CheckpointCoordinator, CheckpointMetadata,
-    CheckpointStorage,
+    CheckpointStorage, FileCheckpointStorage,
 };
 pub use keyed_state::{
     AggregatingState, KeyedState, ListState, MapState, ReducingState, ValueState,
 };
-pub use operator_state::{BroadcastState, ListCheckpointed, OperatorState, UnionListState};
+pub use operator_state::{
+    BroadcastState, DynOperatorState, ListCheckpointed, OperatorState, UnionListState,
+};

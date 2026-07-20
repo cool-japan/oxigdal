@@ -317,6 +317,16 @@ pub enum CodecError {
         /// Error message
         message: String,
     },
+
+    /// Checksum verification failed (e.g. the Zarr v3 `crc32c` codec detected
+    /// corrupted/tampered chunk or shard data on decode)
+    #[error("Checksum mismatch: expected {expected:08x}, got {actual:08x}")]
+    ChecksumMismatch {
+        /// Checksum stored alongside the payload
+        expected: u32,
+        /// Checksum recomputed from the payload
+        actual: u32,
+    },
 }
 
 /// Filter-related errors

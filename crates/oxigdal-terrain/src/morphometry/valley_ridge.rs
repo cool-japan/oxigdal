@@ -172,10 +172,10 @@ where
 
     if invert {
         for v in dem_f64.iter_mut() {
-            if let Some(nd) = nodata_f64 {
-                if (*v - nd).abs() < f64::EPSILON {
-                    continue; // leave nodata cells unchanged
-                }
+            if let Some(nd) = nodata_f64
+                && (*v - nd).abs() < f64::EPSILON
+            {
+                continue; // leave nodata cells unchanged
             }
             if v.is_finite() {
                 *v = -(*v);
@@ -215,12 +215,12 @@ where
             let v_f64 = dem_f64[idx];
 
             // nodata: set base to NaN and mark as not-updatable via NaN check
-            if let Some(nd) = nodata_f64 {
-                if (v_f64 - nd).abs() < f64::EPSILON {
-                    base[[r, c]] = f64::NAN;
-                    fixed[[r, c]] = true;
-                    continue;
-                }
+            if let Some(nd) = nodata_f64
+                && (v_f64 - nd).abs() < f64::EPSILON
+            {
+                base[[r, c]] = f64::NAN;
+                fixed[[r, c]] = true;
+                continue;
             }
 
             // border rows/cols: keep DEM value and fix
@@ -252,10 +252,10 @@ where
             if base[[r, c]].is_nan() {
                 continue; // nodata
             }
-            if let Some(nd) = nodata_f64 {
-                if (orig_f64 - nd).abs() < f64::EPSILON {
-                    continue;
-                }
+            if let Some(nd) = nodata_f64
+                && (orig_f64 - nd).abs() < f64::EPSILON
+            {
+                continue;
             }
 
             // valley_depth = max(0, base_level - dem)

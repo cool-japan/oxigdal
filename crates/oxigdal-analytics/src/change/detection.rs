@@ -3,6 +3,7 @@
 //! Implementations of various change detection methods for multi-temporal analysis.
 
 use crate::error::{AnalyticsError, Result};
+use scirs2_core::linalg::eig_symmetric;
 use scirs2_core::ndarray::{Array2, ArrayView2, ArrayView3};
 use scirs2_core::num_traits::Float;
 
@@ -348,7 +349,26 @@ impl PrincipalComponentAnalysis {
         Self
     }
 
-    /// Detect change using PCA
+    /// Detect change using PCA (Deng et al., 2008; Celik, 2009 -- the classic
+    /// PCA change-vector technique used in remote-sensing change detection).
+    ///
+    /// The before/after bands are stacked into a single `2 * bands`
+    /// dimensional observation per pixel. The covariance matrix of the
+    /// mean-centered stacked observations is eigendecomposed, and the
+    /// pixel-wise projection onto the *minor* eigenvector (the component
+    /// with the smallest eigenvalue) is used as the change score.
+    ///
+    /// The intuition: for pixels that did not change, the corresponding
+    /// before/after band values are highly correlated, so that correlated
+    /// ("no-change") variance is captured by the major components. Variance
+    /// that is *not* explained by that shared before/after correlation --
+    /// i.e. genuine change -- is pushed into the minor components, so the
+    /// minor-component score is a strong change indicator.
+    ///
+    /// # Errors
+    /// Returns an error if images have different dimensions, there are
+    /// fewer than 2 pixels (a covariance matrix cannot be formed), or the
+    /// covariance matrix eigendecomposition fails to converge.
     pub fn detect_change(
         &self,
         before: &ArrayView3<f64>,
@@ -362,11 +382,22 @@ impl PrincipalComponentAnalysis {
         }
 
         let (height, width, bands) = before.dim();
-
-        // Stack images for PCA
         let n_pixels = height * width;
-        let mut stacked = Array2::zeros((n_pixels, bands * 2));
+        let n_features = bands * 2;
 
+        if n_pixels < 2 {
+            return Err(AnalyticsError::insufficient_data(
+                "PCA change detection requires at least 2 pixels",
+            ));
+        }
+        if bands == 0 {
+            return Err(AnalyticsError::insufficient_data(
+                "PCA change detection requires at least 1 band",
+            ));
+        }
+
+        // Stack before/after bands into a single (n_pixels x 2*bands) matrix.
+        let mut stacked = Array2::zeros((n_pixels, n_features));
         for b in 0..bands {
             let before_band = before.slice(s![.., .., b]);
             let after_band = after.slice(s![.., .., b]);
@@ -377,17 +408,37 @@ impl PrincipalComponentAnalysis {
             }
         }
 
-        // Simplified PCA: compute variance along time dimension
+        // Mean-center each feature column.
+        let mut centered = stacked;
+        for f in 0..n_features {
+            let mean = centered.column(f).sum() / n_pixels as f64;
+            for i in 0..n_pixels {
+                centered[[i, f]] -= mean;
+            }
+        }
+
+        // Sample covariance matrix of the stacked observations: C = Xᵀ·X / (n-1).
+        let denom = (n_pixels - 1) as f64;
+        let covariance = centered.t().dot(&centered).mapv(|x| x / denom);
+
+        // Eigendecompose the covariance matrix; eigenvalues come back sorted
+        // ascending, so column 0 is the minor (smallest-eigenvalue) component.
+        let evd = eig_symmetric(&covariance).map_err(|e| {
+            AnalyticsError::matrix_error(format!("PCA covariance eigendecomposition failed: {e}"))
+        })?;
+        let minor_eigenvector = evd.eigenvectors.column(0);
+
+        // Project every pixel's centered observation onto the minor
+        // component; its magnitude is the PCA change score.
         let mut magnitude = Array2::zeros((height, width));
         for i in 0..height {
             for j in 0..width {
                 let idx = i * width + j;
-                let mut sum_sq = 0.0;
-                for b in 0..bands {
-                    let diff = stacked[[idx, b + bands]] - stacked[[idx, b]];
-                    sum_sq += diff * diff;
+                let mut score = 0.0;
+                for f in 0..n_features {
+                    score += centered[[idx, f]] * minor_eigenvector[f];
                 }
-                magnitude[[i, j]] = sum_sq.sqrt();
+                magnitude[[i, j]] = score.abs();
             }
         }
 
@@ -532,5 +583,104 @@ mod tests {
             .expect("Otsu threshold computation should succeed");
 
         assert!(threshold > 1.0 && threshold < 10.0);
+    }
+
+    /// PCA change detection must actually perform PCA (covariance
+    /// eigendecomposition + minor-component projection), not just Euclidean
+    /// before/after distance. This test builds a scene where 19 of 20
+    /// pixels have `before == after` (perfectly correlated, lying on the
+    /// diagonal `after = before`), and a single pixel has a real jump
+    /// (`after` far from `before`). Since the vast majority of pixels
+    /// define the dominant (major) component, real PCA must concentrate the
+    /// outlier's deviation into the minor component and give it by far the
+    /// largest magnitude of any pixel.
+    #[test]
+    fn test_pca_change_detection_flags_decorrelated_outlier() {
+        let height = 5;
+        let width = 4;
+        let bands = 1;
+        let n_pixels = height * width;
+        let outlier_idx = 10usize; // pixel (2, 2)
+
+        let mut before_data = vec![0.0f64; n_pixels];
+        let mut after_data = vec![0.0f64; n_pixels];
+        for (idx, (b, a)) in before_data
+            .iter_mut()
+            .zip(after_data.iter_mut())
+            .enumerate()
+        {
+            let v = idx as f64;
+            *b = v;
+            *a = v;
+        }
+        // Introduce a single genuine, decorrelated change.
+        after_data[outlier_idx] = before_data[outlier_idx] + 30.0;
+
+        let before = Array::from_shape_vec((height, width, bands), before_data)
+            .expect("Failed to build before array");
+        let after = Array::from_shape_vec((height, width, bands), after_data)
+            .expect("Failed to build after array");
+
+        let pca = PrincipalComponentAnalysis::new();
+        let magnitude = pca
+            .detect_change(&before.view(), &after.view())
+            .expect("PCA change detection should succeed");
+
+        assert_eq!(magnitude.dim(), (height, width));
+
+        let outlier_i = outlier_idx / width;
+        let outlier_j = outlier_idx % width;
+        let outlier_magnitude = magnitude[[outlier_i, outlier_j]];
+
+        for i in 0..height {
+            for j in 0..width {
+                if (i, j) == (outlier_i, outlier_j) {
+                    continue;
+                }
+                assert!(
+                    magnitude[[i, j]] < outlier_magnitude,
+                    "unchanged pixel ({i},{j}) magnitude {} should be far below the \
+                     decorrelated outlier's magnitude {outlier_magnitude}",
+                    magnitude[[i, j]]
+                );
+            }
+        }
+
+        // Real PCA must diverge from plain Euclidean CVA on this scene: CVA
+        // would report the exact same |after-before| = 30.0 at the outlier
+        // regardless of the surrounding correlation structure, while PCA's
+        // score depends on the fitted covariance eigenvectors.
+        let detector = ChangeDetector::new(ChangeMethod::CVA);
+        let cva_result = detector
+            .detect(&before.view(), &after.view())
+            .expect("CVA detection should succeed");
+        assert!(
+            (cva_result.magnitude[[outlier_i, outlier_j]] - outlier_magnitude).abs() > 1e-6,
+            "PCA magnitude should not equal the naive CVA Euclidean magnitude"
+        );
+    }
+
+    #[test]
+    fn test_pca_change_detection_dimension_mismatch() {
+        let before = Array::from_shape_vec((2, 2, 1), vec![1.0, 2.0, 3.0, 4.0])
+            .expect("Failed to create before array");
+        let after =
+            Array::from_shape_vec((2, 3, 1), vec![0.0; 6]).expect("Failed to create after array");
+
+        let pca = PrincipalComponentAnalysis::new();
+        let result = pca.detect_change(&before.view(), &after.view());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pca_change_detection_requires_min_pixels() {
+        let before =
+            Array::from_shape_vec((1, 1, 1), vec![1.0]).expect("Failed to create before array");
+        let after =
+            Array::from_shape_vec((1, 1, 1), vec![2.0]).expect("Failed to create after array");
+
+        let pca = PrincipalComponentAnalysis::new();
+        let result = pca.detect_change(&before.view(), &after.view());
+        assert!(result.is_err());
     }
 }

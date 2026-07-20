@@ -2,11 +2,13 @@
 //!
 //! Builds a complete PMTiles v3 file, including header, root directory,
 //! optional leaf directories, metadata, and tile data sections.  Tiles are
-//! deduplicated by content hash so identical payloads share a single copy.
-//! Consecutive tiles sharing the same content and contiguous IDs are
-//! merged with run-length compression.  When the root directory serialises
-//! to more than [`LEAF_SPLIT_THRESHOLD`] bytes, the entries are split into
-//! leaf directories.
+//! deduplicated by content: a fast FNV-1a hash pre-filters candidates, but
+//! every candidate is verified with a full byte-for-byte comparison before
+//! its storage is reused, so a hash collision can never cause two distinct
+//! payloads to be merged.  Consecutive tiles sharing the same content and
+//! contiguous IDs are merged with run-length compression.  When the root
+//! directory serialises to more than [`LEAF_SPLIT_THRESHOLD`] bytes, the
+//! entries are split into leaf directories.
 //!
 //! Reference: <https://github.com/protomaps/PMTiles/blob/main/spec/v3/spec.md>
 
@@ -55,8 +57,13 @@ struct DirEntry {
 
 /// FNV-1a 64-bit hash for content deduplication.
 ///
-/// This is a simple, fast, non-cryptographic hash well-suited for
-/// deduplication of tile payloads.
+/// This is a simple, fast, non-cryptographic hash used purely as a
+/// pre-filter to narrow the set of byte-equality candidates for a tile
+/// payload. It provides **no** collision-resistance guarantee on its own:
+/// [`PmTilesBuilder::build`] always verifies a hash hit with a full
+/// byte-for-byte comparison before treating two payloads as identical, so
+/// a hash collision here can never cause distinct tile content to be
+/// merged.
 fn fnv1a_hash(data: &[u8]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0100_0000_01b3;
@@ -66,6 +73,53 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+/// Look up a verified content-dedup match for `data` among the candidates
+/// stored under `hash` in `seen_hashes`.
+///
+/// `hash` (e.g. from [`fnv1a_hash`]) is only used to narrow the candidate
+/// set; it is *never* trusted as proof of equality on its own. Each
+/// candidate's stored bytes (sliced out of `tile_data_buf` by its recorded
+/// `(offset, length)`) are compared byte-for-byte against `data`, and only
+/// an exact match is returned. This means a hash collision between two
+/// genuinely distinct payloads can never cause one to be silently reused in
+/// place of the other -- the mismatching candidate is skipped and the
+/// caller falls through to storing `data` as a new, additional candidate
+/// under the same hash key.
+///
+/// Returns `None` if no stored candidate under `hash` has byte-identical
+/// content to `data` (including the case where `hash` has no candidates
+/// at all).
+fn find_verified_dedup_match(
+    seen_hashes: &BTreeMap<u64, Vec<(u64, u32)>>,
+    tile_data_buf: &[u8],
+    hash: u64,
+    data: &[u8],
+) -> Option<(u64, u32)> {
+    let candidates = seen_hashes.get(&hash)?;
+    for &(existing_offset, existing_len) in candidates {
+        if existing_len as usize != data.len() {
+            continue;
+        }
+        let start = existing_offset as usize;
+        let Some(end) = start.checked_add(existing_len as usize) else {
+            // Should be unreachable: offsets/lengths are always derived from
+            // tile_data_buf's own prior length, but guard defensively rather
+            // than panic on overflow.
+            continue;
+        };
+        let Some(existing_bytes) = tile_data_buf.get(start..end) else {
+            // Should be unreachable: offsets/lengths are always derived from
+            // tile_data_buf's own prior length, but guard defensively rather
+            // than panic-index.
+            continue;
+        };
+        if existing_bytes == data {
+            return Some((existing_offset, existing_len));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -714,10 +768,18 @@ impl PmTilesBuilder {
         let addressed_tiles = self.tiles.len() as u64;
 
         // ------------------------------------------------------------------
-        // Step 1: Content deduplication via FNV-1a hash.
+        // Step 1: Content deduplication via FNV-1a hash pre-filter plus a
+        // mandatory byte-for-byte equality check on every candidate hit.
         // Produces a tile_data_buf and raw DirEntry list (run_length == 1).
         // ------------------------------------------------------------------
-        let mut seen_hashes: BTreeMap<u64, (u64, u32)> = BTreeMap::new();
+        // Value: a small list of (offset, length) candidates that share this
+        // FNV-1a hash. FNV-1a is only a fast pre-filter -- a hash hit is
+        // *not* treated as proof of content equality. Every candidate is
+        // verified with a full byte-for-byte comparison against the stored
+        // payload before being reused; a genuine hash collision (two
+        // distinct payloads sharing a hash) falls through to storing the
+        // new payload as an additional candidate under the same key.
+        let mut seen_hashes: BTreeMap<u64, Vec<(u64, u32)>> = BTreeMap::new();
         let mut tile_data_buf: Vec<u8> = Vec::new();
         let mut had_dedup = false;
 
@@ -729,18 +791,19 @@ impl PmTilesBuilder {
                 PmTilesError::InvalidFormat("Tile data exceeds u32::MAX bytes".into())
             })?;
 
-            let (offset, length) =
-                if let Some(&(existing_offset, existing_len)) = seen_hashes.get(&hash) {
-                    had_dedup = true;
-                    (existing_offset, existing_len)
-                } else {
-                    let offset = u64::try_from(tile_data_buf.len()).map_err(|_| {
-                        PmTilesError::InvalidFormat("Total tile data exceeds u64 range".into())
-                    })?;
-                    tile_data_buf.extend_from_slice(&tile.data);
-                    seen_hashes.insert(hash, (offset, len));
-                    (offset, len)
-                };
+            let reused = find_verified_dedup_match(&seen_hashes, &tile_data_buf, hash, &tile.data);
+
+            let (offset, length) = if let Some((existing_offset, existing_len)) = reused {
+                had_dedup = true;
+                (existing_offset, existing_len)
+            } else {
+                let offset = u64::try_from(tile_data_buf.len()).map_err(|_| {
+                    PmTilesError::InvalidFormat("Total tile data exceeds u64 range".into())
+                })?;
+                tile_data_buf.extend_from_slice(&tile.data);
+                seen_hashes.entry(hash).or_default().push((offset, len));
+                (offset, len)
+            };
 
             raw_entries.push(DirEntry {
                 tile_id: tile.tile_id,
@@ -750,7 +813,7 @@ impl PmTilesBuilder {
             });
         }
 
-        let unique_contents = seen_hashes.len() as u64;
+        let unique_contents = seen_hashes.values().map(Vec::len).sum::<usize>() as u64;
 
         // ------------------------------------------------------------------
         // Step 1b: Resolve the directory layout strategy.
@@ -1238,6 +1301,103 @@ mod tests {
             "archive should be smaller due to dedup, got {} bytes",
             archive.len()
         );
+    }
+
+    #[test]
+    fn test_find_verified_dedup_match_rejects_hash_collision() {
+        // Regression test for a real defect: dedup must never trust a hash
+        // hit alone. Fabricate a scenario where two *distinct* payloads are
+        // deliberately stored under the *same* hash key (as would happen on
+        // a genuine FNV-1a collision) and confirm the lookup only reports a
+        // match for byte-identical content, never for the colliding-but-
+        // different payload.
+        let tile_data_buf: Vec<u8> = b"AAAA".to_vec();
+        let colliding_hash = 0xDEAD_BEEFu64; // arbitrary key shared by both.
+        let mut seen_hashes: BTreeMap<u64, Vec<(u64, u32)>> = BTreeMap::new();
+        // A single candidate stored under `colliding_hash`: bytes "AAAA" at
+        // offset 0, length 4.
+        seen_hashes.insert(colliding_hash, vec![(0, 4)]);
+
+        // Same hash, byte-identical content -> must match.
+        let identical =
+            find_verified_dedup_match(&seen_hashes, &tile_data_buf, colliding_hash, b"AAAA");
+        assert_eq!(identical, Some((0, 4)));
+
+        // Same hash, same length, but genuinely different bytes (the
+        // collision case) -> must NOT match.
+        let colliding_but_different =
+            find_verified_dedup_match(&seen_hashes, &tile_data_buf, colliding_hash, b"BBBB");
+        assert_eq!(
+            colliding_but_different, None,
+            "a hash collision must never be treated as a content match"
+        );
+
+        // Same hash, different length -> must NOT match (fast-path rejects
+        // before even touching the buffer).
+        let different_length =
+            find_verified_dedup_match(&seen_hashes, &tile_data_buf, colliding_hash, b"AAAAA");
+        assert_eq!(different_length, None);
+
+        // Unknown hash -> no candidates at all.
+        let no_candidates =
+            find_verified_dedup_match(&seen_hashes, &tile_data_buf, 0x1234, b"AAAA");
+        assert_eq!(no_candidates, None);
+    }
+
+    #[test]
+    fn test_find_verified_dedup_match_second_candidate_in_list() {
+        // Two distinct payloads legitimately share one hash bucket (both
+        // added earlier because the first didn't byte-match the second at
+        // insertion time). The lookup must scan every candidate, not just
+        // the first, and find the correct one.
+        let tile_data_buf: Vec<u8> = [&b"AAAA"[..], &b"CCCC"[..]].concat();
+        let hash = 0x1111_1111u64;
+        let mut seen_hashes: BTreeMap<u64, Vec<(u64, u32)>> = BTreeMap::new();
+        seen_hashes.insert(hash, vec![(0, 4), (4, 4)]);
+
+        let first = find_verified_dedup_match(&seen_hashes, &tile_data_buf, hash, b"AAAA");
+        assert_eq!(first, Some((0, 4)));
+
+        let second = find_verified_dedup_match(&seen_hashes, &tile_data_buf, hash, b"CCCC");
+        assert_eq!(second, Some((4, 4)));
+
+        let neither = find_verified_dedup_match(&seen_hashes, &tile_data_buf, hash, b"ZZZZ");
+        assert_eq!(neither, None);
+    }
+
+    #[test]
+    fn test_builder_hash_collision_preserves_distinct_content() {
+        // End-to-end regression test: two tiles whose content is
+        // deliberately engineered to collide under the *real* fnv1a_hash
+        // (by exploiting the fact that seen_hashes is keyed by the actual
+        // hash value) must still both retain their own distinct content
+        // after build() + round-trip through the reader. We can't easily
+        // brute-force a genuine 64-bit FNV-1a collision in a unit test, so
+        // this test instead proves the property that matters operationally:
+        // many distinct payloads added to the same builder never have their
+        // content corrupted by any other payload, verified via full
+        // round-trip decode for every tile. This exercises the exact code
+        // path (`find_verified_dedup_match`) that the fabricated-collision
+        // unit tests above verify in isolation.
+        let mut builder = PmTilesBuilder::new(TileType::Png, 0, 5);
+        let mut expected: Vec<(u8, u32, Vec<u8>)> = Vec::new();
+        for x in 0..32u32 {
+            // Distinct content per tile, all the same length so that a
+            // naive length-blind hash-only dedup would be most tempted to
+            // (wrongly) merge them.
+            let data = vec![x as u8; 32];
+            builder.add_tile(5, x, 0, &data).expect("add ok");
+            expected.push((5, x, data));
+        }
+        let archive = builder.build().expect("build ok");
+        let reader = PmTilesReader::from_bytes(archive).expect("reader ok");
+        for (z, x, data) in expected {
+            let tile = reader
+                .get_tile(z, x, 0)
+                .expect("get_tile ok")
+                .expect("tile present");
+            assert_eq!(tile, data, "tile z={z} x={x} content must be unmodified");
+        }
     }
 
     #[test]

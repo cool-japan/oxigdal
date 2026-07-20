@@ -27,7 +27,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-zarr = "0.1.0"
+oxigdal-zarr = "0.1.7"
 ```
 
 ### Features
@@ -37,25 +37,25 @@ Enable optional features for specific capabilities:
 ```toml
 [dependencies]
 # Filesystem support
-oxigdal-zarr = { version = "0.1.0", features = ["filesystem"] }
+oxigdal-zarr = { version = "0.1.7", features = ["filesystem"] }
 
 # Cloud storage with S3
-oxigdal-zarr = { version = "0.1.0", features = ["s3", "async"] }
+oxigdal-zarr = { version = "0.1.7", features = ["s3", "async"] }
 
 # HTTP remote access
-oxigdal-zarr = { version = "0.1.0", features = ["http"] }
+oxigdal-zarr = { version = "0.1.7", features = ["http"] }
 
 # Compression codecs
-oxigdal-zarr = { version = "0.1.0", features = ["zstd", "gzip", "lz4"] }
+oxigdal-zarr = { version = "0.1.7", features = ["zstd", "gzip", "lz4"] }
 
 # Parallel processing
-oxigdal-zarr = { version = "0.1.0", features = ["parallel"] }
+oxigdal-zarr = { version = "0.1.7", features = ["parallel"] }
 
 # Chunk caching
-oxigdal-zarr = { version = "0.1.0", features = ["cache"] }
+oxigdal-zarr = { version = "0.1.7", features = ["cache"] }
 
 # All features
-oxigdal-zarr = { version = "0.1.0", features = ["filesystem", "s3", "http", "async", "zstd", "gzip", "lz4", "shuffle", "delta", "scale-offset", "parallel", "cache", "v2", "v3"] }
+oxigdal-zarr = { version = "0.1.7", features = ["filesystem", "s3", "http", "async", "zstd", "gzip", "lz4", "shuffle", "delta", "scale-offset", "parallel", "cache", "v2", "v3"] }
 ```
 
 ## Quick Start

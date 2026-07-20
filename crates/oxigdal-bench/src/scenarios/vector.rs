@@ -518,7 +518,8 @@ mod tests {
 
     #[test]
     fn test_geojson_read_scenario_creation() {
-        let scenario = GeoJsonReadScenario::new("/tmp/test.geojson").with_feature_count(100);
+        let scenario = GeoJsonReadScenario::new(std::env::temp_dir().join("test.geojson"))
+            .with_feature_count(100);
 
         assert_eq!(scenario.name(), "geojson_read");
         assert_eq!(scenario.feature_count, Some(100));
@@ -526,8 +527,9 @@ mod tests {
 
     #[test]
     fn test_simplification_scenario_creation() {
-        let scenario = SimplificationScenario::new("/tmp/test.geojson", 0.001)
-            .with_algorithm(SimplificationAlgorithm::VisvalingamWhyatt);
+        let scenario =
+            SimplificationScenario::new(std::env::temp_dir().join("test.geojson"), 0.001)
+                .with_algorithm(SimplificationAlgorithm::VisvalingamWhyatt);
 
         assert_eq!(scenario.name(), "geometry_simplification");
         assert_eq!(scenario.tolerance, 0.001);
@@ -535,7 +537,8 @@ mod tests {
 
     #[test]
     fn test_buffer_scenario_creation() {
-        let scenario = BufferScenario::new("/tmp/test.geojson", 10.0).with_resolution(32);
+        let scenario = BufferScenario::new(std::env::temp_dir().join("test.geojson"), 10.0)
+            .with_resolution(32);
 
         assert_eq!(scenario.name(), "geometry_buffer");
         assert_eq!(scenario.resolution, 32);
@@ -543,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_spatial_index_scenario_creation() {
-        let scenario = SpatialIndexScenario::new("/tmp/test.geojson")
+        let scenario = SpatialIndexScenario::new(std::env::temp_dir().join("test.geojson"))
             .with_index_type(SpatialIndexType::Quadtree)
             .with_query_count(500);
 

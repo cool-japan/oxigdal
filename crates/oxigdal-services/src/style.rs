@@ -808,23 +808,23 @@ impl StyleValidator {
 
         for layer in &spec.layers {
             // check source references
-            if let Some(src) = &layer.source {
-                if !spec.sources.contains_key(src.as_str()) {
-                    errors.push(ValidationError {
-                        layer_id: Some(layer.id.clone()),
-                        message: format!("layer references unknown source '{src}'"),
-                    });
-                }
+            if let Some(src) = &layer.source
+                && !spec.sources.contains_key(src.as_str())
+            {
+                errors.push(ValidationError {
+                    layer_id: Some(layer.id.clone()),
+                    message: format!("layer references unknown source '{src}'"),
+                });
             }
 
             // zoom range sanity
-            if let (Some(min), Some(max)) = (layer.min_zoom, layer.max_zoom) {
-                if min > max {
-                    errors.push(ValidationError {
-                        layer_id: Some(layer.id.clone()),
-                        message: format!("minzoom ({min}) must be <= maxzoom ({max})"),
-                    });
-                }
+            if let (Some(min), Some(max)) = (layer.min_zoom, layer.max_zoom)
+                && min > max
+            {
+                errors.push(ValidationError {
+                    layer_id: Some(layer.id.clone()),
+                    message: format!("minzoom ({min}) must be <= maxzoom ({max})"),
+                });
             }
 
             // background layers must have no source

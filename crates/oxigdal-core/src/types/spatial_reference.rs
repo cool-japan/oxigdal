@@ -4,6 +4,9 @@
 //! around any string-form coordinate reference system identifier (WKT, EPSG
 //! code string, PROJ string, or unknown).
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use core::fmt;
 
 /// The detected encoding format of a CRS string.

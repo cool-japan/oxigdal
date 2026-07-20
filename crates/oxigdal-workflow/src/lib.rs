@@ -68,6 +68,8 @@ pub use engine::{
 };
 pub use error::{DagError, Result, WorkflowError};
 pub use monitoring::{ExecutionHistory, WorkflowMetrics};
-pub use scheduler::{CronSchedule, EventTrigger, Scheduler, SchedulerConfig};
+pub use scheduler::{
+    CronSchedule, EventTrigger, Scheduler, SchedulerConfig, WorkflowEvent, WorkflowRunner,
+};
 pub use templates::{WorkflowTemplate, WorkflowTemplateLibrary};
 pub use versioning::{WorkflowVersion, WorkflowVersionManager};

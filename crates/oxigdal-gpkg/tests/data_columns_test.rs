@@ -289,6 +289,36 @@ fn build_gpkg_with_rows(rows: &[(i64, Vec<u8>)]) -> Vec<u8> {
     file
 }
 
+/// Build a GeoPackage whose `sqlite_master` claims a `gpkg_data_columns`
+/// table rooted at a page number that does not exist in the file (the file
+/// only has `total_pages` pages). Any scan of this table must fail with a
+/// genuine B-tree traversal error, exercising the "malformed page data"
+/// error path that [`DataColumnsCatalog::load`] must propagate rather than
+/// silently swallow.
+fn build_gpkg_with_corrupt_data_columns_rootpage() -> Vec<u8> {
+    let page_size = 4096usize;
+    let total_pages = 2usize;
+    let mut file = vec![0u8; page_size * total_pages];
+
+    // Page 1: master claims gpkg_data_columns is rooted at page 99, which is
+    // far beyond the file's actual page count (2) — a corrupt/out-of-range
+    // root page, simulating malformed page data.
+    let master_rec = build_master_record(
+        "gpkg_data_columns",
+        99,
+        "CREATE TABLE gpkg_data_columns(\
+         table_name TEXT NOT NULL,\
+         column_name TEXT NOT NULL,\
+         name TEXT,title TEXT,\
+         description TEXT,mime_type TEXT,\
+         constraint_name TEXT)",
+    );
+    let master_page = build_leaf_table_page(page_size, &[(1, &master_rec)], 100);
+    file[..page_size].copy_from_slice(&master_page);
+    write_sqlite_file_header(&mut file, page_size as u16, total_pages as u32);
+    file
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1 — absent table returns empty catalog (not an error)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -721,4 +751,38 @@ fn test_data_columns_catalog_constraint_name_index_consistent() {
 
     // Totals: rule_x (2) + rule_y (1) + None (1) = 4 = catalog.len().
     assert_eq!(catalog.len(), 4);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 13 — genuine B-tree corruption must propagate as Err, not Ok(empty)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Regression test: `DataColumnsCatalog::load` previously used
+/// `read_data_columns_rows(gpkg).unwrap_or_default()`, which silently
+/// converted *any* error — including genuine B-tree corruption such as an
+/// out-of-range root page — into an empty catalog. That directly
+/// contradicted the documented `# Errors` contract ("Returns an error only
+/// when the underlying SQLite B-tree traversal fails for a reason other
+/// than a missing table"). A corrupted GeoPackage must now surface an
+/// `Err`, not be silently reported as "no data columns annotated".
+#[test]
+fn test_data_columns_catalog_load_propagates_corrupt_page_error() {
+    let bytes = build_gpkg_with_corrupt_data_columns_rootpage();
+    let gpkg = GeoPackage::from_bytes(bytes).expect("valid outer sqlite file bytes");
+
+    let result = DataColumnsCatalog::load(&gpkg);
+    assert!(
+        result.is_err(),
+        "load() must propagate a genuine B-tree corruption error (out-of-range \
+         root page) instead of silently returning an empty catalog; got {result:?}"
+    );
+
+    // The lower-level reader must independently agree that this is an error,
+    // confirming the corruption is real and not an artifact of the catalog
+    // wrapper.
+    let rows_result = read_data_columns_rows(&gpkg);
+    assert!(
+        rows_result.is_err(),
+        "read_data_columns_rows must itself fail on the out-of-range root page; got {rows_result:?}"
+    );
 }

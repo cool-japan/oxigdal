@@ -100,29 +100,44 @@ impl IOSMemoryManager {
         }
     }
 
-    /// Update memory statistics
-    pub fn update_stats(&self) -> Result<()> {
-        // In a real implementation, this would use iOS APIs to get memory info
-        // For now, create mock statistics
-        let total_physical = 4 * 1024 * 1024 * 1024u64; // 4 GB
-        let used = 2 * 1024 * 1024 * 1024u64; // 2 GB
-        let available = total_physical - used;
-        let app_usage = 256 * 1024 * 1024u64; // 256 MB
-
-        let usage_pct = (used as f64 / total_physical as f64) * 100.0;
-        let pressure_level = if usage_pct >= self.critical_threshold {
+    /// Classify a usage percentage against the configured thresholds.
+    fn classify_pressure(&self, usage_pct: f64) -> MemoryPressureLevel {
+        if usage_pct >= self.critical_threshold {
             MemoryPressureLevel::Critical
         } else if usage_pct >= self.warning_threshold {
             MemoryPressureLevel::Warning
         } else {
             MemoryPressureLevel::Normal
+        }
+    }
+
+    /// Update memory statistics from live operating-system telemetry.
+    ///
+    /// This queries genuine physical-memory figures from the OS (via `sysinfo`,
+    /// which uses the mach `host_statistics64`/`task_info` APIs on Apple
+    /// targets), so the resulting [`MemoryPressureLevel`] reflects the device's
+    /// real state and OOM-avoidance logic engages under actual pressure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MobileError::MemoryPressureError`] if the platform cannot
+    /// report physical-memory statistics. It never substitutes fabricated
+    /// values that would leave the safety mechanism permanently inert.
+    pub fn update_stats(&self) -> Result<()> {
+        let mem = crate::sys_probe::sample_physical_memory()?;
+
+        let usage_pct = if mem.total == 0 {
+            0.0
+        } else {
+            (mem.used as f64 / mem.total as f64) * 100.0
         };
+        let pressure_level = self.classify_pressure(usage_pct);
 
         let stats = MemoryStats {
-            total_physical,
-            available,
-            used,
-            app_usage,
+            total_physical: mem.total,
+            available: mem.available,
+            used: mem.used,
+            app_usage: mem.process,
             pressure_level,
             timestamp: Instant::now(),
         };
@@ -380,5 +395,46 @@ mod tests {
         let chunk_size = manager.optimal_chunk_size(100 * 1024 * 1024);
         assert!(chunk_size > 0);
         assert!(chunk_size <= manager.memory_budget());
+    }
+
+    #[test]
+    fn test_classify_pressure_thresholds() {
+        let manager = IOSMemoryManager::new();
+        // Thresholds are 75% warning / 90% critical.
+        assert_eq!(manager.classify_pressure(50.0), MemoryPressureLevel::Normal);
+        assert_eq!(manager.classify_pressure(74.9), MemoryPressureLevel::Normal);
+        assert_eq!(
+            manager.classify_pressure(75.0),
+            MemoryPressureLevel::Warning
+        );
+        assert_eq!(
+            manager.classify_pressure(89.9),
+            MemoryPressureLevel::Warning
+        );
+        assert_eq!(
+            manager.classify_pressure(90.0),
+            MemoryPressureLevel::Critical
+        );
+        assert_eq!(
+            manager.classify_pressure(99.0),
+            MemoryPressureLevel::Critical
+        );
+    }
+
+    #[test]
+    fn test_update_stats_reports_real_memory() {
+        // Regression guard: the manager must reflect live OS memory rather than
+        // a fixed 50%/Normal fabrication. On any supported host the figures are
+        // real and self-consistent, and the pressure level is derived from the
+        // measured usage percentage (not hardcoded).
+        let manager = IOSMemoryManager::new();
+        let stats = manager.current_stats().expect("real memory stats");
+
+        assert!(stats.total_physical > 0);
+        assert!(stats.used <= stats.total_physical);
+        assert!(stats.available <= stats.total_physical);
+
+        let expected = manager.classify_pressure(stats.usage_percentage());
+        assert_eq!(stats.pressure_level, expected);
     }
 }

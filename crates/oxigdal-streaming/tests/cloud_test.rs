@@ -3,6 +3,8 @@
 //! PresignedUrlGenerator (SigV4), SHA-256/HMAC-SHA256 vectors,
 //! MultipartUploadState, and RetryPolicy/RetryState.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use oxigdal_streaming::cloud::{
     ByteRangeRequest, CloudCredentials, CloudError, CloudRangeCoalescer, CloudScheme,
     CompletedPart, HttpMethod, MultipartUploadState, ObjectUrl, PresignedUrlConfig,

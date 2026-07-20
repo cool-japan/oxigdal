@@ -303,7 +303,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             GpuAdvancedError::device_error("Failed to receive buffer mapping result".to_string())
         })??;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::device_error(format!("get_mapped_range failed: {e}")))?;
         let u32_data: &[u32] = bytemuck::cast_slice(&data);
         let result: Vec<u8> = u32_data.iter().map(|&v| v as u8).collect();
 
@@ -569,7 +571,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             GpuAdvancedError::device_error("Failed to receive buffer mapping result".to_string())
         })??;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::device_error(format!("get_mapped_range failed: {e}")))?;
         let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
 
         drop(data);
@@ -884,7 +888,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             GpuAdvancedError::device_error("Failed to receive slope buffer mapping")
         })??;
 
-        let slope_data = slope_slice.get_mapped_range();
+        let slope_data = slope_slice.get_mapped_range().map_err(|e| {
+            GpuAdvancedError::device_error(format!("slope get_mapped_range failed: {e}"))
+        })?;
         let slope_result: Vec<f32> = bytemuck::cast_slice(&slope_data).to_vec();
         drop(slope_data);
         slope_staging.unmap();
@@ -901,7 +907,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             GpuAdvancedError::device_error("Failed to receive aspect buffer mapping")
         })??;
 
-        let aspect_data = aspect_slice.get_mapped_range();
+        let aspect_data = aspect_slice.get_mapped_range().map_err(|e| {
+            GpuAdvancedError::device_error(format!("aspect get_mapped_range failed: {e}"))
+        })?;
         let aspect_result: Vec<f32> = bytemuck::cast_slice(&aspect_data).to_vec();
         drop(aspect_data);
         aspect_staging.unmap();
@@ -1183,7 +1191,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             GpuAdvancedError::device_error("Failed to receive buffer mapping result".to_string())
         })??;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::device_error(format!("get_mapped_range failed: {e}")))?;
         let u32_data: &[u32] = bytemuck::cast_slice(&data);
         let result: Vec<u8> = u32_data.iter().map(|&v| v as u8).collect();
 

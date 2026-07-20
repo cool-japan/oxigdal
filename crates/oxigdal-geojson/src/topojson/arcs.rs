@@ -43,69 +43,122 @@ pub(crate) fn normalize_ring(ring: Vec<QuantPoint>) -> Vec<QuantPoint> {
 
 /// A junction is a vertex that must become an arc endpoint.
 ///
-/// Junctions are detected by comparing, for each vertex, the ordered pair
-/// `(prev, next)` across all rings that contain it.  If two rings disagree on
-/// the neighbours of a vertex, that vertex is a junction.  Additionally, the
-/// first (and therefore last) vertex of every ring is always a junction.
-pub(crate) fn detect_junctions(rings: &[Vec<QuantPoint>]) -> HashSet<QuantPoint> {
-    // Map: vertex → canonical (prev, next) seen first
+/// Paths may be *closed rings* (polygon boundaries) or *open chains*
+/// (LineString / MultiLineString paths); the parallel `is_ring` slice flags
+/// which is which.  Rings and chains are processed together so that arcs are
+/// shared across both.
+///
+/// A vertex is a junction when, comparing its neighbours across every path that
+/// passes through it, two paths disagree on the neighbour pair.  The comparison
+/// is *unordered*: a path traversing the same two neighbours in the opposite
+/// direction is **not** a junction (this is what allows a shared sub-path to be
+/// reused as a single reversed arc).  In addition:
+///
+/// * the first vertex of every **ring** is always a junction (so each ring is
+///   cut at a deterministic starting point), and
+/// * both endpoints of every **chain** are always junctions (a line's ends are
+///   always arc endpoints).
+pub(crate) fn detect_junctions(paths: &[Vec<QuantPoint>], is_ring: &[bool]) -> HashSet<QuantPoint> {
+    // Map: vertex → the (prev, next) neighbour pair first observed there.
     let mut vertex_neighbours: HashMap<QuantPoint, (QuantPoint, QuantPoint)> = HashMap::new();
     let mut junctions: HashSet<QuantPoint> = HashSet::new();
 
-    for ring in rings {
-        let n = ring.len();
+    for (path_idx, path) in paths.iter().enumerate() {
+        let n = path.len();
         if n == 0 {
             continue;
         }
-        for i in 0..n {
-            let v = ring[i];
-            let prev = ring[(i + n - 1) % n];
-            let next = ring[(i + 1) % n];
-            match vertex_neighbours.get(&v) {
-                Some(&(ep, en)) => {
-                    if ep != prev || en != next {
-                        junctions.insert(v);
-                    }
-                }
-                None => {
-                    vertex_neighbours.insert(v, (prev, next));
-                }
+        let ring = is_ring.get(path_idx).copied().unwrap_or(true);
+        if ring {
+            // Closed ring: every vertex has *cyclic* neighbours.
+            for i in 0..n {
+                let v = path[i];
+                let prev = path[(i + n - 1) % n];
+                let next = path[(i + 1) % n];
+                mark_neighbour(v, prev, next, &mut vertex_neighbours, &mut junctions);
             }
-        }
-        // The starting vertex of each ring is always a junction
-        if !ring.is_empty() {
-            junctions.insert(ring[0]);
+            // The starting vertex of each ring is always an arc endpoint.
+            junctions.insert(path[0]);
+        } else {
+            // Open chain: both endpoints are always arc endpoints.
+            junctions.insert(path[0]);
+            junctions.insert(path[n - 1]);
+            // Interior vertices use *linear* (non-wrapping) neighbours.
+            for i in 1..n.saturating_sub(1) {
+                let v = path[i];
+                let prev = path[i - 1];
+                let next = path[i + 1];
+                mark_neighbour(v, prev, next, &mut vertex_neighbours, &mut junctions);
+            }
         }
     }
 
     junctions
 }
 
+/// Record a vertex's `(prev, next)` neighbours, marking it a junction when a
+/// later path passes through it with a genuinely different neighbour pair.
+///
+/// The comparison is *unordered*: a reversed traversal (`prev`/`next` swapped)
+/// of the same neighbours does not create a junction.
+fn mark_neighbour(
+    v: QuantPoint,
+    prev: QuantPoint,
+    next: QuantPoint,
+    vertex_neighbours: &mut HashMap<QuantPoint, (QuantPoint, QuantPoint)>,
+    junctions: &mut HashSet<QuantPoint>,
+) {
+    match vertex_neighbours.get(&v) {
+        Some(&(left, right)) => {
+            let same_forward = left == prev && right == next;
+            let same_reverse = left == next && right == prev;
+            if !same_forward && !same_reverse {
+                junctions.insert(v);
+            }
+        }
+        None => {
+            vertex_neighbours.insert(v, (prev, next));
+        }
+    }
+}
+
 // ─── Arc extraction ──────────────────────────────────────────────────────────
 
-/// Extract arcs from a list of normalised rings, deduplicating shared arcs.
+/// Extract arcs from a list of normalised paths, deduplicating shared arcs.
+///
+/// Each path is either a closed ring or an open chain, per the parallel
+/// `is_ring` slice.  Rings are cut cyclically starting at their first junction;
+/// chains are cut linearly between their endpoints.  Arcs are deduplicated with
+/// a single canonical-key store shared across rings *and* chains, so a
+/// sub-path common to a line and a polygon boundary is emitted exactly once.
 ///
 /// Returns:
 /// - `arcs`: the unique arcs as sequences of absolute `QuantPoint`s (not yet
 ///   delta-encoded).
-/// - `ring_arc_indices`: for each ring, an ordered list of arc references.
-///   A non-negative entry `i` means arc `i` is used in forward direction;
-///   a negative entry `!(i as i32)` (bitwise NOT) means arc `i` is used in
-///   reverse direction.
+/// - `ring_arc_indices`: for each input path, an ordered list of arc
+///   references.  A non-negative entry `i` means arc `i` is used in the forward
+///   direction; a negative entry `!(i as i32)` (bitwise NOT) means arc `i` is
+///   used in reverse.
 pub(crate) fn extract_arcs(
-    rings: &[Vec<QuantPoint>],
+    paths: &[Vec<QuantPoint>],
+    is_ring: &[bool],
     junctions: &HashSet<QuantPoint>,
 ) -> (Vec<Vec<QuantPoint>>, Vec<Vec<i32>>) {
     // Storage for unique arcs (stored in canonical, forward direction)
     let mut arcs: Vec<Vec<QuantPoint>> = Vec::new();
     // Map: canonical arc key → index in `arcs`
     let mut arc_index: HashMap<Vec<QuantPoint>, usize> = HashMap::new();
-    // Arc indices for each input ring
-    let mut ring_arc_indices: Vec<Vec<i32>> = Vec::with_capacity(rings.len());
+    // Arc indices for each input path
+    let mut ring_arc_indices: Vec<Vec<i32>> = Vec::with_capacity(paths.len());
 
-    for ring in rings {
-        let ring_refs = cut_ring_into_arcs(ring, junctions, &mut arcs, &mut arc_index);
-        ring_arc_indices.push(ring_refs);
+    for (path_idx, path) in paths.iter().enumerate() {
+        let ring = is_ring.get(path_idx).copied().unwrap_or(true);
+        let path_refs = if ring {
+            cut_ring_into_arcs(path, junctions, &mut arcs, &mut arc_index)
+        } else {
+            cut_chain_into_arcs(path, junctions, &mut arcs, &mut arc_index)
+        };
+        ring_arc_indices.push(path_refs);
     }
 
     (arcs, ring_arc_indices)
@@ -157,6 +210,51 @@ fn cut_ring_into_arcs(
     }
 
     ring_refs
+}
+
+/// Cut an open chain (a LineString path) into arcs at junctions and return the
+/// signed arc-index sequence for this chain.
+///
+/// Unlike [`cut_ring_into_arcs`], the chain is walked *linearly* from its first
+/// to its last vertex with **no** rotation.  Both endpoints are guaranteed
+/// junctions (see [`detect_junctions`]); every interior junction closes the
+/// current arc and begins the next.  A chain that never touches an interior
+/// junction becomes a single arc spanning its full length (this covers the
+/// simple single-segment and closed-loop cases).
+fn cut_chain_into_arcs(
+    chain: &[QuantPoint],
+    junctions: &HashSet<QuantPoint>,
+    arcs: &mut Vec<Vec<QuantPoint>>,
+    arc_index: &mut HashMap<Vec<QuantPoint>, usize>,
+) -> Vec<i32> {
+    let n = chain.len();
+    if n < 2 {
+        // A degenerate chain (empty or single point) contributes no arc.
+        return Vec::new();
+    }
+
+    let mut chain_refs: Vec<i32> = Vec::new();
+    let mut current: Vec<QuantPoint> = vec![chain[0]];
+
+    for (i, &vertex) in chain.iter().enumerate().skip(1) {
+        current.push(vertex);
+
+        let at_junction = junctions.contains(&vertex);
+        let at_end = i == n - 1;
+
+        if at_junction || at_end {
+            let segment = std::mem::take(&mut current);
+            let arc_ref = commit_arc(segment, arcs, arc_index);
+            chain_refs.push(arc_ref);
+
+            if !at_end {
+                // Start the next segment at this interior junction vertex.
+                current.push(vertex);
+            }
+        }
+    }
+
+    chain_refs
 }
 
 /// Find the index of the first junction in a ring.
@@ -262,7 +360,7 @@ mod tests {
     #[test]
     fn detect_junctions_marks_ring_start() {
         let rings = vec![vec![(0, 0), (1, 0), (1, 1)]];
-        let junctions = detect_junctions(&rings);
+        let junctions = detect_junctions(&rings, &[true]);
         assert!(junctions.contains(&(0, 0)));
     }
 
@@ -272,7 +370,7 @@ mod tests {
         let r1 = vec![(0, 0), (1, 0), (1, 1)]; // neighbours of (1,0): (0,0) and (1,1)
         let r2 = vec![(1, 0), (2, 0), (2, 1)]; // neighbours of (1,0): (2,1) and (2,0)
         let rings = vec![r1, r2];
-        let junctions = detect_junctions(&rings);
+        let junctions = detect_junctions(&rings, &[true, true]);
         // (1,0) appears in both rings with different neighbours → junction
         assert!(junctions.contains(&(1, 0)));
     }
@@ -281,12 +379,83 @@ mod tests {
     fn extract_arcs_single_ring() {
         let ring = vec![(0, 0), (1, 0), (1, 1)];
         let rings = vec![ring.clone()];
-        let junctions = detect_junctions(&rings);
-        let (arcs, ring_indices) = extract_arcs(&rings, &junctions);
+        let junctions = detect_junctions(&rings, &[true]);
+        let (arcs, ring_indices) = extract_arcs(&rings, &[true], &junctions);
         // Single closed ring → single arc
         assert_eq!(arcs.len(), 1);
         assert_eq!(ring_indices.len(), 1);
         assert_eq!(ring_indices[0].len(), 1);
+    }
+
+    #[test]
+    fn detect_junctions_marks_chain_endpoints() {
+        // A single open chain: both endpoints are junctions, interior is not.
+        let paths = vec![vec![(0, 0), (1, 0), (2, 0)]];
+        let junctions = detect_junctions(&paths, &[false]);
+        assert!(junctions.contains(&(0, 0)), "start endpoint is a junction");
+        assert!(junctions.contains(&(2, 0)), "end endpoint is a junction");
+        assert!(
+            !junctions.contains(&(1, 0)),
+            "lone interior vertex is not a junction"
+        );
+    }
+
+    #[test]
+    fn single_segment_chain_is_one_arc() {
+        let paths = vec![vec![(0, 0), (5, 3)]];
+        let junctions = detect_junctions(&paths, &[false]);
+        let (arcs, refs) = extract_arcs(&paths, &[false], &junctions);
+        assert_eq!(arcs.len(), 1, "single segment → single arc");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].len(), 1, "chain references exactly one arc");
+    }
+
+    #[test]
+    fn closed_line_chain_is_one_arc() {
+        // A LineString whose first and last vertices coincide (a loop) is still
+        // an open chain — it must NOT be normalised, and it becomes one arc.
+        let paths = vec![vec![(0, 0), (2, 0), (2, 2), (0, 0)]];
+        let junctions = detect_junctions(&paths, &[false]);
+        let (arcs, refs) = extract_arcs(&paths, &[false], &junctions);
+        assert_eq!(arcs.len(), 1);
+        assert_eq!(refs[0].len(), 1);
+        // The arc preserves the full loop including the closing vertex.
+        assert_eq!(arcs[0].len(), 4);
+    }
+
+    #[test]
+    fn two_chains_share_reversed_subpath_as_one_arc() {
+        // Line 1: A - J1 - M - J2 - B  (forward through the shared J1-M-J2)
+        // Line 2: C - J2 - M - J1 - D  (reverse through the shared J1-M-J2)
+        let a = (0, 10);
+        let j1 = (2, 0);
+        let m = (3, 0);
+        let j2 = (4, 0);
+        let b = (6, 10);
+        let c = (6, -10);
+        let d = (0, -10);
+        let paths = vec![vec![a, j1, m, j2, b], vec![c, j2, m, j1, d]];
+        let is_ring = [false, false];
+        let junctions = detect_junctions(&paths, &is_ring);
+        // M is interior to the shared sub-path in *both* lines (reversed) → not a junction.
+        assert!(
+            !junctions.contains(&m),
+            "shared interior vertex is not a junction"
+        );
+        assert!(junctions.contains(&j1));
+        assert!(junctions.contains(&j2));
+
+        let (arcs, refs) = extract_arcs(&paths, &is_ring, &junctions);
+        // The shared J1-M-J2 arc must be stored exactly once.
+        let shared_present = arcs.iter().any(|arc| arc.len() == 3 && arc.contains(&m));
+        assert!(shared_present, "shared 3-point arc stored once");
+
+        // Exactly one referencing line uses the shared arc reversed (negative index).
+        let all_refs: Vec<i32> = refs.iter().flatten().copied().collect();
+        assert!(
+            all_refs.iter().any(|&r| r < 0),
+            "one line references the shared arc with a negative (reversed) index"
+        );
     }
 
     #[test]

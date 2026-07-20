@@ -7,13 +7,15 @@
 //! - WKT (Well-Known Text) parsing
 //! - PROJ string support
 //! - Coordinate transformations between different CRS
-//! - Pure Rust implementation by default using proj4rs
+//! - Pure Rust implementation by default using OxiProj (COOLJAPAN cartographic engine)
+//! - proj4rs retained as optional fallback via the `proj4rs-compat` feature
 //! - Optional C bindings to PROJ library (feature-gated)
 //!
 //! # Features
 //!
-//! - `std` (default): Enable standard library support
+//! - `std` (default): Enable standard library support and OxiProj EPSG/ProjJSON features
 //! - `proj-sys`: Enable optional C bindings to PROJ library for full PROJ support
+//! - `proj-db`: Enable SQLite PROJ.db reader for ~7500 EPSG codes
 //!
 //! # Examples
 //!
@@ -92,7 +94,7 @@
 //!
 //! # Pure Rust Implementation
 //!
-//! By default, this crate uses the pure Rust `proj4rs` library for coordinate transformations.
+//! By default, this crate uses the pure Rust `OxiProj` library for coordinate transformations.
 //! This ensures:
 //!
 //! - No C/C++ dependencies
@@ -109,7 +111,7 @@
 //!
 //! # Accuracy and Limitations
 //!
-//! The pure Rust implementation using proj4rs provides accurate transformations for most
+//! The pure Rust implementation using OxiProj provides accurate transformations for most
 //! common use cases. However, it may have limitations compared to the full PROJ library:
 //!
 //! - Limited support for some exotic projections
@@ -347,5 +349,15 @@ mod tests {
         let coord_2d_from_3d = coord_3d.to_2d();
         assert_eq!(coord_2d_from_3d.x, 10.0);
         assert_eq!(coord_2d_from_3d.y, 20.0);
+    }
+}
+
+#[cfg(test)]
+mod oxiproj_linkage_tests {
+    #[test]
+    fn test_oxiproj_linkage() {
+        // Verify OxiProj is reachable from this crate
+        let info = oxiproj::proj_info();
+        assert!(!info.version.is_empty());
     }
 }

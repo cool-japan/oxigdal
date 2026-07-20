@@ -9,7 +9,21 @@
 //!
 //! Uses proptest for generating random test cases.
 
+#![allow(dead_code)]
+#![allow(unused_comparisons)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::useless_vec,
+    clippy::manual_clamp,
+    clippy::absurd_extreme_comparisons
+)]
+
 use std::error::Error;
+
+use oxigdal_algorithms::raster::{FocalBoundaryMode, WindowShape, focal_mean as real_focal_mean};
+use oxigdal_core::buffer::RasterBuffer;
+use oxigdal_core::types::RasterDataType;
+use oxigdal_proj::{Coordinate as ProjCoordinate, transform_epsg};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -46,8 +60,14 @@ fn prop_intersection_commutative() -> Result<()> {
     // Property: Intersection(A, B) == Intersection(B, A)
     let test_cases = vec![
         (create_square(0.0, 0.0, 10.0), create_square(5.0, 5.0, 10.0)),
-        (create_square(0.0, 0.0, 20.0), create_square(10.0, 10.0, 5.0)),
-        (create_square(-10.0, -10.0, 15.0), create_square(0.0, 0.0, 15.0)),
+        (
+            create_square(0.0, 0.0, 20.0),
+            create_square(10.0, 10.0, 5.0),
+        ),
+        (
+            create_square(-10.0, -10.0, 15.0),
+            create_square(0.0, 0.0, 15.0),
+        ),
     ];
 
     for (poly_a, poly_b) in test_cases {
@@ -57,7 +77,10 @@ fn prop_intersection_commutative() -> Result<()> {
         let area_ab = polygon_area(&int_ab)?;
         let area_ba = polygon_area(&int_ba)?;
 
-        assert!((area_ab - area_ba).abs() < 1e-6, "Intersection not commutative");
+        assert!(
+            (area_ab - area_ba).abs() < 1e-6,
+            "Intersection not commutative"
+        );
     }
 
     Ok(())
@@ -68,7 +91,10 @@ fn prop_union_commutative() -> Result<()> {
     // Property: Union(A, B) == Union(B, A)
     let test_cases = vec![
         (create_square(0.0, 0.0, 10.0), create_square(5.0, 5.0, 10.0)),
-        (create_square(0.0, 0.0, 20.0), create_square(10.0, 10.0, 5.0)),
+        (
+            create_square(0.0, 0.0, 20.0),
+            create_square(10.0, 10.0, 5.0),
+        ),
     ];
 
     for (poly_a, poly_b) in test_cases {
@@ -99,7 +125,10 @@ fn prop_buffer_zero_is_identity() -> Result<()> {
         let original_area = polygon_area(&poly)?;
         let buffered_area = polygon_area(&buffered)?;
 
-        assert!((original_area - buffered_area).abs() < 0.1, "Zero buffer not identity");
+        assert!(
+            (original_area - buffered_area).abs() < 0.1,
+            "Zero buffer not identity"
+        );
     }
 
     Ok(())
@@ -108,18 +137,38 @@ fn prop_buffer_zero_is_identity() -> Result<()> {
 #[test]
 fn prop_double_buffer_equals_single_buffer() -> Result<()> {
     // Property: Buffer(Buffer(P, d), d) ≈ Buffer(P, 2d)
-    let point = Point { x: 0.0, y: 0.0 };
-    let distances = vec![1.0, 2.0, 5.0, 10.0];
+    //
+    // Exercised against the real `oxigdal-algorithms` buffer engine (Minkowski
+    // expansion), which honours this identity up to polygonal approximation of
+    // the round joins. A local scaling stand-in cannot satisfy it, which is why
+    // this test was previously quarantined.
+    use oxigdal_algorithms::vector::{
+        AreaMethod, BufferOptions, Point as CorePoint, area_polygon,
+        buffer_point as real_buffer_point, buffer_polygon as real_buffer_polygon,
+    };
+
+    let options = BufferOptions::default();
+    let center = CorePoint::new(0.0, 0.0);
+    let distances = [1.0, 2.0, 5.0, 10.0];
 
     for &d in &distances {
-        let single_buffer = buffer_point(&point, 2.0 * d)?;
-        let double_buffer = buffer_polygon(&buffer_point(&point, d)?, d, 16)?;
+        let single_buffer = real_buffer_point(&center, 2.0 * d, &options)
+            .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        let inner =
+            real_buffer_point(&center, d, &options).map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        let double_buffer =
+            real_buffer_polygon(&inner, d, &options).map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
-        let area1 = polygon_area(&single_buffer)?;
-        let area2 = polygon_area(&double_buffer)?;
+        let area1 = area_polygon(&single_buffer, AreaMethod::Planar)
+            .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        let area2 = area_polygon(&double_buffer, AreaMethod::Planar)
+            .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
-        // Allow some tolerance for approximation
-        assert!((area1 - area2).abs() / area1 < 0.1, "Double buffer property violated");
+        // Allow tolerance for the polygonal approximation of the round buffer.
+        assert!(
+            (area1 - area2).abs() / area1 < 0.1,
+            "Double buffer property violated: single={area1}, double={area2} (d={d})"
+        );
     }
 
     Ok(())
@@ -139,7 +188,10 @@ fn prop_simplification_reduces_vertices() -> Result<()> {
             simplified.points.len() <= complex_line.points.len(),
             "Simplification increased vertices"
         );
-        assert!(simplified.points.len() >= 2, "Simplified to less than 2 points");
+        assert!(
+            simplified.points.len() >= 2,
+            "Simplified to less than 2 points"
+        );
     }
 
     Ok(())
@@ -257,7 +309,7 @@ fn prop_transform_preserves_distance_ratios() -> Result<()> {
 #[test]
 fn prop_float_to_int_to_float_lossy() -> Result<()> {
     // Property: Converting float -> int -> float loses precision but stays bounded
-    let test_values = vec![1.1, 2.5, 3.9, 10.7, 100.3];
+    let test_values: Vec<f64> = vec![1.1, 2.5, 3.9, 10.7, 100.3];
 
     for value in test_values {
         let as_int = value as i32;
@@ -277,12 +329,7 @@ fn prop_float_to_int_to_float_lossy() -> Result<()> {
 #[test]
 fn prop_byte_normalization_range() -> Result<()> {
     // Property: Normalizing any value to byte range gives [0, 255]
-    let test_ranges = vec![
-        (0.0, 1.0),
-        (0.0, 100.0),
-        (-50.0, 50.0),
-        (1000.0, 2000.0),
-    ];
+    let test_ranges = vec![(0.0, 1.0), (0.0, 100.0), (-50.0, 50.0), (1000.0, 2000.0)];
 
     for (min_val, max_val) in test_ranges {
         let test_values = vec![min_val, (min_val + max_val) / 2.0, max_val];
@@ -335,7 +382,7 @@ fn prop_mean_within_min_max() -> Result<()> {
         let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
-        assert!(mean >= min && mean <= max, "Mean outside [min, max]");
+        assert!((min..=max).contains(&mean), "Mean outside [min, max]");
     }
 
     Ok(())
@@ -368,7 +415,10 @@ fn prop_constant_array_zero_variance() -> Result<()> {
         let data = vec![value; 100];
         let variance = compute_variance(&data)?;
 
-        assert!(variance.abs() < 1e-10, "Constant array has non-zero variance");
+        assert!(
+            variance.abs() < 1e-10,
+            "Constant array has non-zero variance"
+        );
     }
 
     Ok(())
@@ -392,7 +442,10 @@ fn prop_median_robust_to_outliers() -> Result<()> {
     let mean_change = (mean_with_outlier - mean_base).abs();
     let median_change = (median_with_outlier - median_base).abs();
 
-    assert!(mean_change > median_change, "Median not more robust than mean");
+    assert!(
+        mean_change > median_change,
+        "Median not more robust than mean"
+    );
 
     Ok(())
 }
@@ -401,15 +454,18 @@ fn prop_median_robust_to_outliers() -> Result<()> {
 fn prop_correlation_bounded() -> Result<()> {
     // Property: Correlation coefficient in [-1, 1]
     let test_pairs = vec![
-        (vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![2.0, 4.0, 6.0, 8.0, 10.0]), // Perfect positive
-        (vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5.0, 4.0, 3.0, 2.0, 1.0]),  // Perfect negative
-        (vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![1.0, 1.0, 1.0, 1.0, 1.0]),  // No correlation
+        (
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![2.0, 4.0, 6.0, 8.0, 10.0],
+        ), // Perfect positive
+        (vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5.0, 4.0, 3.0, 2.0, 1.0]), // Perfect negative
+        (vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![1.0, 1.0, 1.0, 1.0, 1.0]), // No correlation
     ];
 
     for (x, y) in test_pairs {
         let corr = compute_correlation(&x, &y)?;
 
-        assert!(corr >= -1.0 && corr <= 1.0, "Correlation outside [-1, 1]");
+        assert!((-1.0..=1.0).contains(&corr), "Correlation outside [-1, 1]");
     }
 
     Ok(())
@@ -487,7 +543,10 @@ fn prop_raster_identity_elements() -> Result<()> {
     }
 
     for (orig, mul) in raster.iter().zip(mul_result.iter()) {
-        assert!((orig - mul).abs() < 1e-10, "Multiplication identity violated");
+        assert!(
+            (orig - mul).abs() < 1e-10,
+            "Multiplication identity violated"
+        );
     }
 
     Ok(())
@@ -524,7 +583,10 @@ fn prop_resampling_preserves_range() -> Result<()> {
     let src_max = src_data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
 
     for &value in &resampled {
-        assert!(value >= src_min && value <= src_max, "Resampling created out-of-range value");
+        assert!(
+            (src_min..=src_max).contains(&value),
+            "Resampling created out-of-range value"
+        );
     }
 
     Ok(())
@@ -556,7 +618,10 @@ fn create_square(x: f64, y: f64, size: f64) -> Polygon {
         exterior: vec![
             Point { x, y },
             Point { x: x + size, y },
-            Point { x: x + size, y: y + size },
+            Point {
+                x: x + size,
+                y: y + size,
+            },
             Point { x, y: y + size },
             Point { x, y },
         ],
@@ -639,7 +704,10 @@ fn polygon_contains_point(poly: &Polygon, point: &Point) -> Result<bool> {
     for i in 0..points.len() - 1 {
         let j = (i + 1) % (points.len() - 1);
         if ((points[i].y > point.y) != (points[j].y > point.y))
-            && (point.x < (points[j].x - points[i].x) * (point.y - points[i].y) / (points[j].y - points[i].y) + points[i].x)
+            && (point.x
+                < (points[j].x - points[i].x) * (point.y - points[i].y)
+                    / (points[j].y - points[i].y)
+                    + points[i].x)
         {
             inside = !inside;
         }
@@ -651,7 +719,8 @@ fn polygon_contains_point(poly: &Polygon, point: &Point) -> Result<bool> {
 fn polygon_area(poly: &Polygon) -> Result<f64> {
     let mut area = 0.0;
     for i in 0..poly.exterior.len() - 1 {
-        area += poly.exterior[i].x * poly.exterior[i + 1].y - poly.exterior[i + 1].x * poly.exterior[i].y;
+        area += poly.exterior[i].x * poly.exterior[i + 1].y
+            - poly.exterior[i + 1].x * poly.exterior[i].y;
     }
     Ok((area / 2.0).abs())
 }
@@ -666,16 +735,29 @@ fn polygon_union(_a: &Polygon, _b: &Polygon) -> Result<Polygon> {
 
 fn simplify_linestring(line: &LineString, _tolerance: f64) -> Result<LineString> {
     Ok(LineString {
-        points: vec![line.points[0].clone(), line.points[line.points.len() - 1].clone()],
+        points: vec![
+            line.points[0].clone(),
+            line.points[line.points.len() - 1].clone(),
+        ],
     })
 }
 
-fn transform_point(point: &Point, _from_crs: &str, _to_crs: &str) -> Result<Point> {
-    // Simplified transformation
-    Ok(Point {
-        x: point.x * 111320.0,
-        y: point.y * 110540.0,
-    })
+/// Parses an `EPSG:<code>` CRS string into its numeric code.
+fn parse_epsg(crs: &str) -> Result<u32> {
+    let code = crs
+        .trim()
+        .strip_prefix("EPSG:")
+        .ok_or("expected EPSG:<code> CRS string")?;
+    Ok(code.parse::<u32>()?)
+}
+
+/// Transforms a point between EPSG CRSes using the real `oxigdal-proj` engine.
+fn transform_point(point: &Point, from_crs: &str, to_crs: &str) -> Result<Point> {
+    let from = parse_epsg(from_crs)?;
+    let to = parse_epsg(to_crs)?;
+    let c = transform_epsg(&ProjCoordinate::new(point.x, point.y), from, to)
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    Ok(Point { x: c.x, y: c.y })
 }
 
 fn normalize_to_byte(value: f64, min_val: f64, max_val: f64) -> Result<u8> {
@@ -689,9 +771,7 @@ fn rescale_data(data: &[f64], new_min: f64, new_max: f64) -> Result<Vec<f64>> {
 
     Ok(data
         .iter()
-        .map(|&v| {
-            ((v - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
-        })
+        .map(|&v| ((v - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min)
         .collect())
 }
 
@@ -726,7 +806,15 @@ fn compute_correlation(x: &[f64], y: &[f64]) -> Result<f64> {
         var_y += dy * dy;
     }
 
-    Ok(cov / (var_x * var_y).sqrt())
+    // Pearson's r is undefined when either variable is constant (zero variance):
+    // the denominator is zero. Report zero correlation for the degenerate case
+    // instead of producing a NaN that would escape the [-1, 1] invariant.
+    let denom = (var_x * var_y).sqrt();
+    if denom == 0.0 {
+        return Ok(0.0);
+    }
+    // Clamp to guard against tiny floating-point overshoot past ±1.
+    Ok((cov / denom).clamp(-1.0, 1.0))
 }
 
 fn raster_add(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
@@ -737,30 +825,43 @@ fn raster_multiply(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
     Ok(a.iter().zip(b.iter()).map(|(&x, &y)| x * y).collect())
 }
 
+/// Computes a focal (moving-window) mean via the real `oxigdal-algorithms`
+/// focal kernel with a square window and edge-aware boundary handling
+/// (`Ignore` = shrink the neighbourhood at the borders), so border pixels are
+/// smoothed rather than passed through.
 fn focal_mean(data: &[f32], width: usize, height: usize, window: usize) -> Result<Vec<f32>> {
-    let mut result = data.to_vec();
-    let half = window / 2;
-
-    for y in half..(height - half) {
-        for x in half..(width - half) {
-            let mut sum = 0.0;
-            let mut count = 0;
-
-            for ky in 0..window {
-                for kx in 0..window {
-                    sum += data[(y + ky - half) * width + (x + kx - half)];
-                    count += 1;
-                }
-            }
-
-            result[y * width + x] = sum / count as f32;
+    let mut buf = RasterBuffer::zeros(width as u64, height as u64, RasterDataType::Float32);
+    for y in 0..height {
+        for x in 0..width {
+            buf.set_pixel(x as u64, y as u64, f64::from(data[y * width + x]))
+                .map_err(|e| Box::new(e) as Box<dyn Error>)?;
         }
     }
 
+    let shape =
+        WindowShape::rectangular(window, window).map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let out = real_focal_mean(&buf, &shape, &FocalBoundaryMode::Ignore)
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+
+    let mut result = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            result.push(
+                out.get_pixel(x as u64, y as u64)
+                    .map_err(|e| Box::new(e) as Box<dyn Error>)? as f32,
+            );
+        }
+    }
     Ok(result)
 }
 
-fn resample_bilinear(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Result<Vec<f32>> {
+fn resample_bilinear(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; dst_w * dst_h];
     let x_ratio = src_w as f32 / dst_w as f32;
     let y_ratio = src_h as f32 / dst_h as f32;

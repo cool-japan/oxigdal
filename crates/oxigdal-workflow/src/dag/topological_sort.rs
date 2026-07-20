@@ -85,10 +85,10 @@ pub fn create_execution_plan(dag: &WorkflowDag) -> Result<ExecutionPlan> {
 
         // Find all tasks with in-degree 0
         for (&node_idx, &degree) in &in_degree {
-            if degree == 0 {
-                if let Some(task) = dag.graph.node_weight(node_idx) {
-                    current_level.push(task.id.clone());
-                }
+            if degree == 0
+                && let Some(task) = dag.graph.node_weight(node_idx)
+            {
+                current_level.push(task.id.clone());
             }
         }
 
@@ -104,10 +104,10 @@ pub fn create_execution_plan(dag: &WorkflowDag) -> Result<ExecutionPlan> {
 
                 // Update neighbors
                 for neighbor in dag.graph.neighbors(node_idx) {
-                    if let Some(degree) = in_degree.get_mut(&neighbor) {
-                        if *degree != usize::MAX {
-                            *degree = degree.saturating_sub(1);
-                        }
+                    if let Some(degree) = in_degree.get_mut(&neighbor)
+                        && *degree != usize::MAX
+                    {
+                        *degree = degree.saturating_sub(1);
                     }
                 }
             }
@@ -129,39 +129,39 @@ pub fn critical_path(dag: &WorkflowDag) -> Result<Vec<String>> {
     let mut longest_path: HashMap<NodeIndex, (u64, Vec<String>)> = HashMap::new();
 
     for task_id in topo_order {
-        if let Some(&node_idx) = dag.task_map.get(&task_id) {
-            if let Some(task) = dag.graph.node_weight(node_idx) {
-                // Get the execution time for this task
-                let exec_time = task.timeout_secs.unwrap_or(60);
+        if let Some(&node_idx) = dag.task_map.get(&task_id)
+            && let Some(task) = dag.graph.node_weight(node_idx)
+        {
+            // Get the execution time for this task
+            let exec_time = task.timeout_secs.unwrap_or(60);
 
-                // Find the longest path from predecessors
-                let incoming_edges: Vec<_> = dag
-                    .graph
-                    .edges_directed(node_idx, Direction::Incoming)
-                    .collect();
+            // Find the longest path from predecessors
+            let incoming_edges: Vec<_> = dag
+                .graph
+                .edges_directed(node_idx, Direction::Incoming)
+                .collect();
 
-                let (max_predecessor_time, predecessor_path) = if incoming_edges.is_empty() {
-                    (0, Vec::new())
-                } else {
-                    incoming_edges
-                        .iter()
-                        .filter_map(|edge| {
-                            let source_idx = edge.source();
-                            longest_path
-                                .get(&source_idx)
-                                .map(|(time, path)| (*time, path.clone()))
-                        })
-                        .max_by_key(|(time, _)| *time)
-                        .unwrap_or((0, Vec::new()))
-                };
+            let (max_predecessor_time, predecessor_path) = if incoming_edges.is_empty() {
+                (0, Vec::new())
+            } else {
+                incoming_edges
+                    .iter()
+                    .filter_map(|edge| {
+                        let source_idx = edge.source();
+                        longest_path
+                            .get(&source_idx)
+                            .map(|(time, path)| (*time, path.clone()))
+                    })
+                    .max_by_key(|(time, _)| *time)
+                    .unwrap_or((0, Vec::new()))
+            };
 
-                // Calculate path for this node
-                let mut current_path = predecessor_path;
-                current_path.push(task_id.clone());
+            // Calculate path for this node
+            let mut current_path = predecessor_path;
+            current_path.push(task_id.clone());
 
-                let total_time = max_predecessor_time + exec_time;
-                longest_path.insert(node_idx, (total_time, current_path));
-            }
+            let total_time = max_predecessor_time + exec_time;
+            longest_path.insert(node_idx, (total_time, current_path));
         }
     }
 

@@ -136,6 +136,22 @@ impl ConsumerRecord {
     }
 }
 
+/// Decides whether another `get_records` attempt should be made given the
+/// number of attempts already made and the configured retry limit.
+///
+/// `attempt` is the count of attempts made so far (including the failure
+/// that just occurred); retrying continues while `attempt < retry_attempts`,
+/// mirroring the exponential-backoff retry loop used by `streams::producer`.
+fn should_retry(attempt: u32, retry_attempts: u32) -> bool {
+    attempt < retry_attempts
+}
+
+/// Computes the exponential backoff delay (in milliseconds) for a given
+/// retry attempt, matching the formula used by `streams::producer::send_batch`.
+fn retry_backoff_ms(base_ms: u64, attempt: u32) -> u64 {
+    base_ms.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)))
+}
+
 /// Standard Kinesis consumer (polling-based)
 pub struct Consumer {
     client: Arc<KinesisClient>,
@@ -224,16 +240,31 @@ impl Consumer {
                 message: "Shard iterator is None".to_string(),
             })?;
 
-        let response = self
-            .client
-            .get_records()
-            .shard_iterator(iterator)
-            .limit(self.config.max_records)
-            .send()
-            .await
-            .map_err(|e| KinesisError::Service {
-                message: e.to_string(),
-            })?;
+        let iterator = iterator.clone();
+        let mut attempt = 0u32;
+        let response = loop {
+            match self
+                .client
+                .get_records()
+                .shard_iterator(&iterator)
+                .limit(self.config.max_records)
+                .send()
+                .await
+            {
+                Ok(response) => break response,
+                Err(e) => {
+                    attempt += 1;
+                    if !should_retry(attempt, self.config.retry_attempts) {
+                        return Err(KinesisError::Service {
+                            message: e.to_string(),
+                        });
+                    }
+
+                    let backoff_ms = retry_backoff_ms(self.config.retry_backoff_ms, attempt);
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        };
 
         // Update shard iterator for next call
         self.shard_iterator = response.next_shard_iterator().map(|s| s.to_string());
@@ -505,5 +536,64 @@ mod tests {
 
         metrics.update_millis_behind_latest(5000);
         assert_eq!(metrics.millis_behind_latest(), 5000);
+    }
+
+    #[test]
+    fn test_consumer_config_default_retry_settings() {
+        let config = ConsumerConfig::default();
+        assert_eq!(config.retry_attempts, 3);
+        assert_eq!(config.retry_backoff_ms, 100);
+    }
+
+    #[test]
+    fn test_consumer_config_with_retry_attempts() {
+        let config = ConsumerConfig::new("test-stream").with_retry_attempts(5);
+        assert_eq!(config.retry_attempts, 5);
+    }
+
+    // Regression tests for the poll() retry loop: a transient get_records
+    // failure must be absorbed (retried with exponential backoff) instead of
+    // immediately propagating and killing poll_loop, up to retry_attempts.
+
+    #[test]
+    fn test_should_retry_absorbs_transient_failures_within_limit() {
+        // With retry_attempts = 3, the first two failed attempts should be
+        // retried; the third exhausts the budget and must surface an error.
+        assert!(should_retry(1, 3));
+        assert!(should_retry(2, 3));
+        assert!(!should_retry(3, 3));
+    }
+
+    #[test]
+    fn test_should_retry_zero_attempts_never_retries() {
+        // retry_attempts = 0 must fail fast on the very first error rather
+        // than looping forever.
+        assert!(!should_retry(1, 0));
+    }
+
+    #[test]
+    fn test_should_retry_single_attempt_configured() {
+        // retry_attempts = 1 means: try once, and the first failure is
+        // already terminal (no retry budget left), matching producer.rs
+        // semantics of "attempt >= retry_attempts" being the abort condition.
+        assert!(!should_retry(1, 1));
+    }
+
+    #[test]
+    fn test_retry_backoff_ms_exponential_growth() {
+        // Mirrors streams::producer::send_batch's
+        // `config.retry_backoff_ms * 2u64.pow(attempt - 1)` formula.
+        assert_eq!(retry_backoff_ms(100, 1), 100);
+        assert_eq!(retry_backoff_ms(100, 2), 200);
+        assert_eq!(retry_backoff_ms(100, 3), 400);
+        assert_eq!(retry_backoff_ms(100, 4), 800);
+    }
+
+    #[test]
+    fn test_retry_backoff_ms_saturates_instead_of_overflowing() {
+        // A pathologically large attempt count must not panic via
+        // multiplication/exponent overflow in production code.
+        let backoff = retry_backoff_ms(u64::MAX / 2, 64);
+        assert_eq!(backoff, u64::MAX);
     }
 }

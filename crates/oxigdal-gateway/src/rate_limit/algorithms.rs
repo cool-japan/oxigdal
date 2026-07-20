@@ -21,7 +21,13 @@ pub trait Algorithm: Send + Sync {
     ) -> Result<bool>;
 
     /// Records a request.
-    async fn record(&self, storage: &impl Storage, key: &str, window: Duration) -> Result<()>;
+    async fn record(
+        &self,
+        storage: &impl Storage,
+        key: &str,
+        limit: u64,
+        window: Duration,
+    ) -> Result<()>;
 }
 
 /// Token bucket algorithm.
@@ -62,7 +68,13 @@ impl Algorithm for TokenBucket {
         Ok(new_tokens > 0)
     }
 
-    async fn record(&self, storage: &impl Storage, key: &str, window: Duration) -> Result<()> {
+    async fn record(
+        &self,
+        storage: &impl Storage,
+        key: &str,
+        limit: u64,
+        window: Duration,
+    ) -> Result<()> {
         let token_key = format!("{key}:tokens");
         let last_refill_key = format!("{key}:last_refill");
 
@@ -71,8 +83,8 @@ impl Algorithm for TokenBucket {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Get current state
-        let limit = storage.get(key).await?.unwrap_or(100); // Default limit
+        // Get current state, using the caller's configured limit (never a phantom storage
+        // slot -- nothing ever writes a plain `key` entry, so reading it back always missed).
         let current_tokens = storage.get(&token_key).await?.unwrap_or(limit);
         let last_refill = storage.get(&last_refill_key).await?.unwrap_or(now);
 
@@ -133,7 +145,13 @@ impl Algorithm for LeakyBucket {
         Ok(new_level < limit)
     }
 
-    async fn record(&self, storage: &impl Storage, key: &str, window: Duration) -> Result<()> {
+    async fn record(
+        &self,
+        storage: &impl Storage,
+        key: &str,
+        limit: u64,
+        window: Duration,
+    ) -> Result<()> {
         let bucket_key = format!("{key}:bucket");
         let last_leak_key = format!("{key}:last_leak");
 
@@ -142,7 +160,6 @@ impl Algorithm for LeakyBucket {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let limit = storage.get(key).await?.unwrap_or(100);
         let current_level = storage.get(&bucket_key).await?.unwrap_or(0);
         let last_leak = storage.get(&last_leak_key).await?.unwrap_or(now);
 
@@ -183,7 +200,13 @@ impl Algorithm for FixedWindow {
         Ok(count < limit)
     }
 
-    async fn record(&self, storage: &impl Storage, key: &str, window: Duration) -> Result<()> {
+    async fn record(
+        &self,
+        storage: &impl Storage,
+        key: &str,
+        _limit: u64,
+        window: Duration,
+    ) -> Result<()> {
         let count = storage.get(key).await?.unwrap_or(0);
         storage.set(key, count + 1, Some(window)).await
     }
@@ -246,7 +269,13 @@ impl Algorithm for SlidingWindow {
         Ok(total < limit)
     }
 
-    async fn record(&self, storage: &impl Storage, key: &str, window: Duration) -> Result<()> {
+    async fn record(
+        &self,
+        storage: &impl Storage,
+        key: &str,
+        _limit: u64,
+        window: Duration,
+    ) -> Result<()> {
         let bucket = self.current_bucket(window);
         let bucket_key = self.get_bucket_key(key, bucket);
 
@@ -281,7 +310,7 @@ mod tests {
                     .await
                     .unwrap_or(false)
             );
-            algorithm.record(&storage, key, window).await.ok();
+            algorithm.record(&storage, key, limit, window).await.ok();
         }
 
         // 6th request should be denied
@@ -346,7 +375,98 @@ mod tests {
                     .await
                     .unwrap_or(false)
             );
-            algorithm.record(&storage, key, window).await.ok();
+            algorithm.record(&storage, key, limit, window).await.ok();
         }
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_record_uses_configured_limit_not_hardcoded_100() {
+        let storage = MemoryStorage::new();
+        let algorithm = TokenBucket;
+
+        let key = "small_limit_user";
+        let limit = 5;
+        let window = Duration::from_secs(60);
+
+        // A single record() call consumes one token from a bucket sized `limit` (5), leaving
+        // `limit - 1` tokens. Before the fix this silently used a hardcoded default limit of
+        // 100 instead, which would have left 99 tokens.
+        algorithm.record(&storage, key, limit, window).await.ok();
+
+        let tokens = storage
+            .get(&format!("{key}:tokens"))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        assert_eq!(tokens, limit - 1);
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_record_caps_at_configured_limit() {
+        let storage = MemoryStorage::new();
+        let algorithm = TokenBucket;
+
+        let key = "capped_user";
+        let limit = 3;
+        let window = Duration::from_secs(60);
+
+        // Recording more than `limit` times must never let the stored token count exceed
+        // `limit`, regardless of the (now-unused) phantom `key` storage slot.
+        for _ in 0..10 {
+            algorithm.record(&storage, key, limit, window).await.ok();
+        }
+
+        let tokens = storage
+            .get(&format!("{key}:tokens"))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(u64::MAX);
+        assert!(tokens <= limit);
+    }
+
+    #[tokio::test]
+    async fn test_leaky_bucket_record_uses_configured_limit_not_hardcoded_100() {
+        let storage = MemoryStorage::new();
+        let algorithm = LeakyBucket;
+
+        let key = "small_limit_user";
+        let limit = 5;
+        let window = Duration::from_secs(60);
+
+        algorithm.record(&storage, key, limit, window).await.ok();
+
+        let level = storage
+            .get(&format!("{key}:bucket"))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        // First record on an empty bucket should land at exactly 1, not the pre-fix behavior
+        // of computing leak rate against a hardcoded limit of 100.
+        assert_eq!(level, 1);
+    }
+
+    #[tokio::test]
+    async fn test_leaky_bucket_record_caps_at_configured_limit() {
+        let storage = MemoryStorage::new();
+        let algorithm = LeakyBucket;
+
+        let key = "capped_user";
+        let limit = 3;
+        let window = Duration::from_secs(60);
+
+        for _ in 0..10 {
+            algorithm.record(&storage, key, limit, window).await.ok();
+        }
+
+        let level = storage
+            .get(&format!("{key}:bucket"))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(u64::MAX);
+        assert!(level <= limit);
     }
 }

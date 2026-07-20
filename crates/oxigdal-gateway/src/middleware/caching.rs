@@ -63,7 +63,7 @@ impl Middleware for CachingMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, _response: &mut Response) -> Result<()> {
+    async fn after_response(&self, _request: &Request, _response: &mut Response) -> Result<()> {
         Ok(())
     }
 }

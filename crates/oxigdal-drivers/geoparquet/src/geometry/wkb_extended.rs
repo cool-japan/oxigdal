@@ -350,8 +350,15 @@ fn read_le_u32(data: &[u8], offset: usize) -> Option<u32> {
 /// Computes the 2D bounding box `(min_x, min_y, max_x, max_y)` of a WKB-encoded
 /// geometry.
 ///
-/// Returns `None` for empty or unrecognised geometries.  Only the 2D components
-/// (x, y) are considered.
+/// Handles every OGC geometry type (`Point`, `LineString`, `Polygon`,
+/// `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`) in
+/// both little- and big-endian byte order.  `Point`/`LineString`/`Polygon`
+/// little-endian inputs take a fast byte-offset path; all other cases
+/// (multi-geometries, collections, and any big-endian input) are parsed by the
+/// full [`WkbReader`](crate::geometry::WkbReader) and reduced to their union
+/// bounding box.  Only the 2D components (x, y) are considered.
+///
+/// Returns `None` for empty or unparseable geometries.
 #[must_use]
 pub fn wkb_bbox(wkb: &[u8]) -> Option<(f64, f64, f64, f64)> {
     if wkb.len() < 5 {
@@ -360,9 +367,9 @@ pub fn wkb_bbox(wkb: &[u8]) -> Option<(f64, f64, f64, f64)> {
 
     let is_le = wkb[0] == WKB_LITTLE_ENDIAN;
     if !is_le {
-        // Big-endian not handled in this helper; callers can use the WkbReader
-        // from wkb.rs for full portability.
-        return None;
+        // Big-endian: delegate to the full WkbReader, which handles both byte
+        // orders and every geometry type.
+        return wkb_bbox_via_reader(wkb);
     }
 
     let type_code = read_le_u32(wkb, 1)?;
@@ -415,11 +422,27 @@ pub fn wkb_bbox(wkb: &[u8]) -> Option<(f64, f64, f64, f64)> {
             }
         }
         _ => {
-            // For multi-geometries and collections we fall back to iterating
-            // sub-geometry WKB blobs is complex without a full parser; return
-            // None to signal "not computed".
-            None
+            // Multi-geometries (MultiPoint/MultiLineString/MultiPolygon) and
+            // GeometryCollection each nest full sub-geometry WKB blobs; delegate
+            // to the full WkbReader, which parses all of them (and recurses into
+            // collections) and compute the union bbox from the parsed geometry.
+            wkb_bbox_via_reader(wkb)
         }
+    }
+}
+
+/// Computes the 2D bounding box of a WKB blob by fully parsing it with
+/// [`WkbReader`](crate::geometry::WkbReader).
+///
+/// Used for geometry types and byte orders not covered by [`wkb_bbox`]'s
+/// fast byte-offset path (multi-geometries, geometry collections, and any
+/// big-endian input).  Returns `None` if the blob cannot be parsed or has no
+/// finite extent (e.g. an empty geometry).
+fn wkb_bbox_via_reader(wkb: &[u8]) -> Option<(f64, f64, f64, f64)> {
+    let geom = crate::geometry::WkbReader::new(wkb).read_geometry().ok()?;
+    match geom.bbox()?.as_slice() {
+        [min_x, min_y, max_x, max_y] => Some((*min_x, *min_y, *max_x, *max_y)),
+        _ => None,
     }
 }
 
@@ -477,17 +500,17 @@ pub fn compute_geometry_stats(wkb_values: &[Vec<u8>]) -> GeometryStats {
         }
 
         // Read type code.
-        if wkb[0] == WKB_LITTLE_ENDIAN {
-            if let Some(type_code) = read_le_u32(wkb, 1) {
-                let base = type_code % 1000;
-                let qualifier = type_code / 1000;
-                type_set.insert(base);
-                if qualifier == 1 || qualifier == 3 {
-                    has_z = true;
-                }
-                if qualifier == 2 || qualifier == 3 {
-                    has_m = true;
-                }
+        if wkb[0] == WKB_LITTLE_ENDIAN
+            && let Some(type_code) = read_le_u32(wkb, 1)
+        {
+            let base = type_code % 1000;
+            let qualifier = type_code / 1000;
+            type_set.insert(base);
+            if qualifier == 1 || qualifier == 3 {
+                has_z = true;
+            }
+            if qualifier == 2 || qualifier == 3 {
+                has_m = true;
             }
         }
 
@@ -796,6 +819,129 @@ mod tests {
     fn test_bbox_short_data_returns_none() {
         let short = vec![0x01u8, 0x00, 0x00];
         assert!(wkb_bbox(&short).is_none());
+    }
+
+    fn bbox_close(bbox: (f64, f64, f64, f64), expected: (f64, f64, f64, f64)) {
+        assert!(
+            (bbox.0 - expected.0).abs() < 1e-9,
+            "min_x {bbox:?} {expected:?}"
+        );
+        assert!(
+            (bbox.1 - expected.1).abs() < 1e-9,
+            "min_y {bbox:?} {expected:?}"
+        );
+        assert!(
+            (bbox.2 - expected.2).abs() < 1e-9,
+            "max_x {bbox:?} {expected:?}"
+        );
+        assert!(
+            (bbox.3 - expected.3).abs() < 1e-9,
+            "max_y {bbox:?} {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_bbox_multipolygon_disjoint_union() {
+        use crate::geometry::{Coordinate, Geometry, LineString, MultiPolygon, Polygon, WkbWriter};
+        let poly_a = Polygon::new_simple(LineString::new(vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(1.0, 0.0),
+            Coordinate::new_2d(1.0, 1.0),
+            Coordinate::new_2d(0.0, 0.0),
+        ]));
+        let poly_b = Polygon::new_simple(LineString::new(vec![
+            Coordinate::new_2d(10.0, 10.0),
+            Coordinate::new_2d(12.0, 10.0),
+            Coordinate::new_2d(12.0, 13.0),
+            Coordinate::new_2d(10.0, 10.0),
+        ]));
+        let geom = Geometry::MultiPolygon(MultiPolygon::new(vec![poly_a, poly_b]));
+        let wkb = WkbWriter::new(true)
+            .write_geometry(&geom)
+            .expect("encode multipolygon");
+        // Before the fix, wkb_bbox() returned None for MultiPolygon and the
+        // pushdown fallback silently dropped every such row.
+        let bbox = wkb_bbox(&wkb).expect("multipolygon bbox must be computed");
+        bbox_close(bbox, (0.0, 0.0, 12.0, 13.0));
+    }
+
+    #[test]
+    fn test_bbox_multilinestring_union() {
+        use crate::geometry::{Coordinate, Geometry, LineString, MultiLineString, WkbWriter};
+        let ls_a = LineString::new(vec![
+            Coordinate::new_2d(-5.0, 2.0),
+            Coordinate::new_2d(0.0, 2.0),
+        ]);
+        let ls_b = LineString::new(vec![
+            Coordinate::new_2d(3.0, -4.0),
+            Coordinate::new_2d(3.0, 8.0),
+        ]);
+        let geom = Geometry::MultiLineString(MultiLineString::new(vec![ls_a, ls_b]));
+        let wkb = WkbWriter::new(true)
+            .write_geometry(&geom)
+            .expect("encode multilinestring");
+        let bbox = wkb_bbox(&wkb).expect("multilinestring bbox must be computed");
+        bbox_close(bbox, (-5.0, -4.0, 3.0, 8.0));
+    }
+
+    #[test]
+    fn test_bbox_geometrycollection_mixed() {
+        use crate::geometry::{Coordinate, Geometry, LineString, Point, WkbWriter};
+        let pt = Geometry::Point(Point::new_2d(-1.0, -1.0));
+        let ls = Geometry::LineString(LineString::new(vec![
+            Coordinate::new_2d(4.0, 0.0),
+            Coordinate::new_2d(4.0, 9.0),
+        ]));
+        let gc =
+            Geometry::GeometryCollection(crate::geometry::GeometryCollection::new(vec![pt, ls]));
+        let wkb = WkbWriter::new(true)
+            .write_geometry(&gc)
+            .expect("encode geometrycollection");
+        let bbox = wkb_bbox(&wkb).expect("geometrycollection bbox must be computed");
+        bbox_close(bbox, (-1.0, -1.0, 4.0, 9.0));
+    }
+
+    #[test]
+    fn test_bbox_big_endian_point() {
+        use crate::geometry::{Geometry, Point, WkbWriter};
+        let geom = Geometry::Point(Point::new_2d(3.0, 7.0));
+        let wkb = WkbWriter::new(false)
+            .write_geometry(&geom)
+            .expect("encode be point");
+        // Big-endian input used to early-return None.
+        let bbox = wkb_bbox(&wkb).expect("big-endian point bbox must be computed");
+        bbox_close(bbox, (3.0, 7.0, 3.0, 7.0));
+    }
+
+    #[test]
+    fn test_bbox_big_endian_polygon() {
+        use crate::geometry::{Coordinate, Geometry, LineString, Polygon, WkbWriter};
+        let geom = Geometry::Polygon(Polygon::new_simple(LineString::new(vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(4.0, 0.0),
+            Coordinate::new_2d(4.0, 3.0),
+            Coordinate::new_2d(0.0, 0.0),
+        ])));
+        let wkb = WkbWriter::new(false)
+            .write_geometry(&geom)
+            .expect("encode be polygon");
+        let bbox = wkb_bbox(&wkb).expect("big-endian polygon bbox must be computed");
+        bbox_close(bbox, (0.0, 0.0, 4.0, 3.0));
+    }
+
+    #[test]
+    fn test_bbox_multipoint() {
+        use crate::geometry::{Geometry, MultiPoint, Point, WkbWriter};
+        let mp = Geometry::MultiPoint(MultiPoint::new(vec![
+            Point::new_2d(1.0, 5.0),
+            Point::new_2d(-2.0, 9.0),
+            Point::new_2d(7.0, -3.0),
+        ]));
+        let wkb = WkbWriter::new(true)
+            .write_geometry(&mp)
+            .expect("encode multipoint");
+        let bbox = wkb_bbox(&wkb).expect("multipoint bbox must be computed");
+        bbox_close(bbox, (-2.0, -3.0, 7.0, 9.0));
     }
 
     // ── compute_geometry_stats ────────────────────────────────────────────────

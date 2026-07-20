@@ -10,7 +10,6 @@
 // risk in multi-threaded processes); our tests are single-threaded.
 #![allow(unsafe_code)]
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use oxigdal_proj::epsg::{EpsgDatabase, populate_from_proj_db};
@@ -88,7 +87,8 @@ fn test_default_proj_db_paths_returns_non_empty_list() {
 fn test_default_proj_db_paths_honors_env_var() {
     let _guard = ENV_MUTEX.lock().expect("env mutex");
     let prev = std::env::var("PROJ_DATA").ok();
-    unsafe { std::env::set_var("PROJ_DATA", "/tmp/test_proj_data") };
+    let tmp_proj_data = std::env::temp_dir().join("test_proj_data");
+    unsafe { std::env::set_var("PROJ_DATA", &tmp_proj_data) };
     let paths = default_proj_db_paths();
     unsafe {
         match prev {
@@ -97,7 +97,7 @@ fn test_default_proj_db_paths_honors_env_var() {
         }
     }
     assert!(!paths.is_empty());
-    assert_eq!(paths[0], PathBuf::from("/tmp/test_proj_data/proj.db"));
+    assert_eq!(paths[0], tmp_proj_data.join("proj.db"));
 }
 
 #[test]

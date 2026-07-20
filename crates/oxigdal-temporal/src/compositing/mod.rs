@@ -142,12 +142,11 @@ impl TemporalCompositor {
 
                     for entry in ts.entries().values() {
                         // Apply filters
-                        if let Some(max_cc) = config.max_cloud_cover {
-                            if let Some(cc) = entry.metadata.cloud_cover {
-                                if cc > max_cc {
-                                    continue;
-                                }
-                            }
+                        if let Some(max_cc) = config.max_cloud_cover
+                            && let Some(cc) = entry.metadata.cloud_cover
+                            && cc > max_cc
+                        {
+                            continue;
                         }
 
                         if let Some(data) = &entry.data {
@@ -204,12 +203,11 @@ impl TemporalCompositor {
                     let mut n = 0;
 
                     for entry in ts.entries().values() {
-                        if let Some(max_cc) = config.max_cloud_cover {
-                            if let Some(cc) = entry.metadata.cloud_cover {
-                                if cc > max_cc {
-                                    continue;
-                                }
-                            }
+                        if let Some(max_cc) = config.max_cloud_cover
+                            && let Some(cc) = entry.metadata.cloud_cover
+                            && cc > max_cc
+                        {
+                            continue;
                         }
 
                         if let Some(data) = &entry.data {

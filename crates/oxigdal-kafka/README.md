@@ -32,7 +32,12 @@ Apache Kafka integration for OxiGDAL - High-performance async producer/consumer 
 
 ## COOLJAPAN Compliance
 
-- ✅ **Pure Rust**: Uses `rdkafka` with pure Rust backend
+- ⚠️ **Pure Rust (opt-in)**: `producer`/`consumer`/`transactions` depend on
+  `rdkafka`, a C `librdkafka` FFI binding — not Pure Rust. The C dependency
+  is feature-gated behind `backend-rdkafka` (transitively enabled by those
+  three features); `cargo build --no-default-features` produces a
+  genuinely Pure Rust build containing only the message/schema/config data
+  types, with no rdkafka symbol in the dependency graph.
 - ✅ **No unwrap()**: All error paths handled with Result types
 - ✅ **Files < 2000 lines**: Modular design with focused modules
 - ✅ **Workspace deps**: All dependencies use workspace configuration
@@ -50,10 +55,13 @@ oxigdal-kafka = "0.1"
 ### Feature Flags
 
 - `default`: Enables producer and consumer
-- `producer`: Producer functionality
-- `consumer`: Consumer functionality
+- `producer`: Producer functionality (pulls in `backend-rdkafka`)
+- `consumer`: Consumer functionality (pulls in `backend-rdkafka`)
 - `schema-registry`: Avro schema registry support
-- `transactions`: Transactional producer/consumer
+- `transactions`: Transactional producer/consumer (pulls in `backend-rdkafka`)
+- `backend-rdkafka`: Opt-in C `librdkafka` FFI backend; omit it (and
+  `producer`/`consumer`/`transactions`) for a Pure Rust build of just the
+  message/schema/config data types
 - `compression-*`: Various compression algorithms
 - `all`: All features enabled
 

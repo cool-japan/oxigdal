@@ -168,7 +168,7 @@ impl AnomalyDetector {
                         a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
                     });
 
-                    let mad = if deviations.len() % 2 == 0 {
+                    let mad = if deviations.len().is_multiple_of(2) {
                         (deviations[deviations.len() / 2 - 1] + deviations[deviations.len() / 2])
                             / 2.0
                     } else {

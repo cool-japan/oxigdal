@@ -3,6 +3,9 @@
 //! This module provides abstract traits for reading and writing geospatial data
 //! from various sources (local files, HTTP, cloud storage, etc.).
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use crate::error::Result;
 
 /// Byte range for partial reads

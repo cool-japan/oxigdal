@@ -149,7 +149,7 @@ impl GpuTimestampProfiler {
 
         // Round up to even, with a minimum of 2 (one start + one end slot).
         let capacity = capacity.max(2);
-        let capacity = if capacity % 2 == 0 {
+        let capacity = if capacity.is_multiple_of(2) {
             capacity
         } else {
             capacity.saturating_add(1)
@@ -340,7 +340,9 @@ impl GpuTimestampProfiler {
             })?;
 
         // 3. Decode raw u64 timestamps.
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().map_err(|e| {
+            GpuError::execution_failed(format!("profiler: get_mapped_range failed: {e}"))
+        })?;
         let raw_ts: Vec<u64> = data
             .chunks_exact(TIMESTAMP_BYTES as usize)
             .map(|c| u64::from_ne_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))

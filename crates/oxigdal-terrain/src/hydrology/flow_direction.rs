@@ -84,11 +84,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    flow_dir[[y, x]] = 0;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                flow_dir[[y, x]] = 0;
+                continue;
             }
 
             let center_val = center.into();
@@ -103,10 +103,10 @@ where
                 if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                     let neighbor = dem[[ny as usize, nx as usize]];
 
-                    if let Some(nd) = nodata {
-                        if is_nodata(neighbor, nd) {
-                            continue;
-                        }
+                    if let Some(nd) = nodata
+                        && is_nodata(neighbor, nd)
+                    {
+                        continue;
                     }
 
                     let neighbor_val = neighbor.into();

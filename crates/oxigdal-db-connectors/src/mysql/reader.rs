@@ -219,12 +219,11 @@ impl MySqlReader {
                 if col_name.as_ref() != "id"
                     && col_name.as_ref() != self.geometry_column.as_str()
                     && col_name.as_ref() != "geom_wkt"
+                    && let Some(value) = row.get_opt::<mysql_async::Value, _>(i)
                 {
-                    if let Some(value) = row.get_opt::<mysql_async::Value, _>(i) {
-                        let value = value.map_err(|e| Error::TypeConversion(e.to_string()))?;
-                        let json_value = mysql_value_to_json(value)?;
-                        properties.insert(col_name.to_string(), json_value);
-                    }
+                    let value = value.map_err(|e| Error::TypeConversion(e.to_string()))?;
+                    let json_value = mysql_value_to_json(value)?;
+                    properties.insert(col_name.to_string(), json_value);
                 }
             }
 

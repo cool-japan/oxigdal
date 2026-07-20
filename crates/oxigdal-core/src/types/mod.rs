@@ -19,6 +19,9 @@ mod geo_transform;
 pub mod spatial_reference;
 pub mod statistics;
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 pub use bbox::{BoundingBox, BoundingBox3D, PixelExtent};
 pub use color_table::{ColorEntry, ColorTable, ColorTableKind};
 pub use data_type::{

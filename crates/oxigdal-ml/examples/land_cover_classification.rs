@@ -69,7 +69,14 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Creates a sample input raster
+/// Creates a sample input raster.
+///
+/// Note: `RasterBuffer` is single-band. A real 3-channel (RGB) classifier such
+/// as ResNet50 expects a `[1, 3, H, W]` tensor, so running this example against
+/// such a model now returns a clear `InferenceError::InvalidBandCount` instead of
+/// silently building a `[1, 1, H, W]` tensor. Full multi-band inference support
+/// (threading a multi-band buffer through the `Model` trait) is tracked as future
+/// work.
 fn create_sample_input(width: u64, height: u64) -> RasterBuffer {
     RasterBuffer::zeros(width, height, RasterDataType::Float32)
 }

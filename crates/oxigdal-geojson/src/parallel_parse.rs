@@ -7,7 +7,7 @@
 //!
 //! Parsing a very large `FeatureCollection` is dominated by the per-feature
 //! work of walking each feature's JSON value and materialising the typed
-//! [`GeoJsonGeometry`] / [`GeoJsonFeature`] representation.  That work is
+//! `GeoJsonGeometry` / [`GeoJsonFeature`] representation.  That work is
 //! embarrassingly parallel: every feature is independent.
 //!
 //! [`parse_features_parallel`] first parses the whole input once into a
@@ -15,9 +15,9 @@
 //! contiguous JSON document), validates that it is a `FeatureCollection`, and
 //! then distributes the per-feature parse across a rayon thread pool.  Every
 //! feature is parsed through the exact same code path the sequential parser
-//! uses ([`crate::parser::parse_feature_value`]), so the resulting features are
+//! uses (`crate::parser::parse_feature_value`), so the resulting features are
 //! byte-for-byte identical, and the reconstructed
-//! [`FeatureCollection`](crate::parser::FeatureCollection) preserves the same
+//! [`FeatureCollection`] preserves the same
 //! top-level members (`bbox`, 3-D bbox, `crs`, `name`).
 //!
 //! # Order guarantees

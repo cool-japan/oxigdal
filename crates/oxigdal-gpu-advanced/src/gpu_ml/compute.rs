@@ -279,7 +279,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 GpuAdvancedError::device_error(format!("Buffer mapping failed: {:?}", e))
             })?;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::device_error(format!("get_mapped_range failed: {e}")))?;
         let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
 
         drop(data);
@@ -543,7 +545,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 GpuAdvancedError::device_error(format!("Buffer mapping failed: {:?}", e))
             })?;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::device_error(format!("get_mapped_range failed: {e}")))?;
         let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
 
         drop(data);
@@ -779,7 +783,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 GpuAdvancedError::device_error(format!("Buffer mapping failed: {:?}", e))
             })?;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::device_error(format!("get_mapped_range failed: {e}")))?;
         let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
 
         drop(data);

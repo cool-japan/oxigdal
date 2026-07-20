@@ -260,13 +260,13 @@ pub async fn get_capabilities(
     debug!("WMS GetCapabilities request");
 
     // Validate service parameter
-    if let Some(ref service) = params.service {
-        if service.to_uppercase() != "WMS" {
-            return Err(WmsError::InvalidParameter(format!(
-                "Invalid SERVICE: {}",
-                service
-            )));
-        }
+    if let Some(ref service) = params.service
+        && service.to_uppercase() != "WMS"
+    {
+        return Err(WmsError::InvalidParameter(format!(
+            "Invalid SERVICE: {}",
+            service
+        )));
     }
 
     // Get all layers
@@ -942,10 +942,11 @@ fn build_band_window_from_full(
         for dx in 0..src_width {
             let gx = src_x + dx;
             let gy = src_y + dy;
-            if gx < ds_width && gy < ds_height {
-                if let Ok(val) = full_buffer.get_pixel(gx, gy) {
-                    let _ = window.set_pixel(dx, dy, val);
-                }
+            if gx < ds_width
+                && gy < ds_height
+                && let Ok(val) = full_buffer.get_pixel(gx, gy)
+            {
+                let _ = window.set_pixel(dx, dy, val);
             }
         }
     }

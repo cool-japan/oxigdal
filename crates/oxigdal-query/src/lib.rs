@@ -39,6 +39,9 @@ pub mod executor;
 pub mod explain;
 pub mod index;
 pub mod optimizer;
+// Parallel query execution is gated behind the default-on `parallel` feature
+// so wasm32 / single-threaded consumers can opt out of rayon.
+#[cfg(feature = "parallel")]
 pub mod parallel;
 pub mod parser;
 

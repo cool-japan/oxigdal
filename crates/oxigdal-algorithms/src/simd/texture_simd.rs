@@ -947,7 +947,7 @@ pub fn compute_texture_feature_image_simd(
         });
     }
 
-    if window_size % 2 == 0 || window_size < 3 {
+    if window_size.is_multiple_of(2) || window_size < 3 {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and at least 3".to_string(),

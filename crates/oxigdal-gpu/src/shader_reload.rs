@@ -280,14 +280,14 @@ impl ShaderWatcher {
                 Err(_) => continue,
             };
 
-            if self.update_source(&label, new_wgsl) {
-                if let Some(src) = self.sources.get(&label) {
-                    events.push(ShaderChangeEvent {
-                        label,
-                        old_version,
-                        new_version: src.version,
-                    });
-                }
+            if self.update_source(&label, new_wgsl)
+                && let Some(src) = self.sources.get(&label)
+            {
+                events.push(ShaderChangeEvent {
+                    label,
+                    old_version,
+                    new_version: src.version,
+                });
             }
         }
 

@@ -239,10 +239,10 @@ impl PartitionManager {
         let mut partitions = self.partitions.write().await;
         let mut key_partitions = self.key_partitions.write().await;
 
-        if let Some(partition_id) = key_partitions.remove(key) {
-            if let Some(partition) = partitions.get_mut(&partition_id) {
-                partition.current_size = partition.current_size.saturating_sub(size);
-            }
+        if let Some(partition_id) = key_partitions.remove(key)
+            && let Some(partition) = partitions.get_mut(&partition_id)
+        {
+            partition.current_size = partition.current_size.saturating_sub(size);
         }
 
         Ok(())

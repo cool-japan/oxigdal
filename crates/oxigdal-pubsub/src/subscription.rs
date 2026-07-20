@@ -5,6 +5,7 @@
 //! and retry configurations.
 
 use crate::error::{PubSubError, Result};
+#[cfg(feature = "subscriber")]
 use crate::subscriber::DeadLetterConfig;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use google_cloud_pubsub::client::SubscriptionAdmin;
@@ -164,13 +165,13 @@ impl SubscriptionCreateConfig {
             ));
         }
 
-        if let Some(retention) = self.message_retention_duration {
-            if !(600..=604800).contains(&retention) {
-                return Err(PubSubError::configuration(
-                    "Message retention must be between 600 and 604800 seconds",
-                    "message_retention_duration",
-                ));
-            }
+        if let Some(retention) = self.message_retention_duration
+            && !(600..=604800).contains(&retention)
+        {
+            return Err(PubSubError::configuration(
+                "Message retention must be between 600 and 604800 seconds",
+                "message_retention_duration",
+            ));
         }
 
         Ok(())
@@ -217,6 +218,7 @@ impl DeadLetterPolicy {
     }
 }
 
+#[cfg(feature = "subscriber")]
 impl From<DeadLetterConfig> for DeadLetterPolicy {
     fn from(config: DeadLetterConfig) -> Self {
         Self {

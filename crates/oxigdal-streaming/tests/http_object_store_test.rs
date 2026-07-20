@@ -5,6 +5,7 @@
 //! external network access.
 
 #![cfg(feature = "cloud-http")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use oxigdal_streaming::cloud::retry::RetryPolicy;
 use oxigdal_streaming::cloud::{CloudCredentials, CloudError, HttpObjectStore, ObjectUrl};

@@ -17,6 +17,19 @@
 //! - Streaming computation (no full pixel collection)
 //! - Reservoir sampling for percentiles (~10k samples)
 //! - Thread-local histogram bins
+//!
+//! # Median accuracy
+//!
+//! **Both** the sequential and parallel code paths compute
+//! [`RasterStatistics::median`] via bounded reservoir sampling (Algorithm R,
+//! capped at ~10,000 samples), not a full sort of every valid pixel. The
+//! median is therefore **exact** only while the raster (or zone) has at most
+//! 10,000 valid pixels; for anything larger it is a statistical estimate
+//! computed from a uniform random subsample. This applies equally to
+//! [`compute_statistics`], the sequential and parallel internals behind it,
+//! and zonal statistics. Callers that require the true median for large
+//! rasters should use [`compute_exact_median`], which collects every valid
+//! value (O(n) memory) and computes it exactly.
 
 use crate::error::{AlgorithmError, Result};
 use oxigdal_core::buffer::RasterBuffer;
@@ -38,7 +51,12 @@ pub struct RasterStatistics {
     pub max: f64,
     /// Mean (average) value
     pub mean: f64,
-    /// Median value
+    /// Median value.
+    ///
+    /// Computed via bounded reservoir sampling (~10,000 samples). This is
+    /// the **exact** median when `count <= 10_000`; for larger rasters it is
+    /// a statistical estimate from a uniform random subsample, not the true
+    /// median. Use `compute_exact_median` if an exact result is required.
     pub median: f64,
     /// Standard deviation
     pub stddev: f64,
@@ -110,6 +128,46 @@ impl Histogram {
     }
 }
 
+/// Offers a candidate value to a bounded reservoir sample using Algorithm R
+/// (Vitter, 1985).
+///
+/// After `seen` items have been observed from the stream (this call counts
+/// as one of them, so `seen` must be the 1-based running count including the
+/// current value), the reservoir holds a uniform random sample of
+/// `min(seen, capacity)` of them. Uses [`fastrand`] for the random index
+/// rather than a hand-rolled hash of the running count, so the selection is
+/// a genuine independent draw per candidate instead of a deterministic
+/// function of `seen` alone.
+fn reservoir_offer(reservoir: &mut Vec<f64>, capacity: usize, seen: usize, value: f64) {
+    if reservoir.len() < capacity {
+        reservoir.push(value);
+    } else if seen > 0 {
+        let idx = fastrand::usize(0..seen);
+        if idx < capacity {
+            reservoir[idx] = value;
+        }
+    }
+}
+
+/// Merges a just-completed reservoir sample (`incoming`, drawn from
+/// `incoming_seen` stream items) into an accumulating reservoir
+/// (`accumulator`), which already reflects `accumulated_seen` prior stream
+/// items. Each incoming sample is offered to the accumulator as though the
+/// stream continued past `accumulated_seen`, preserving Algorithm R's
+/// uniform-sampling guarantee for the combined stream.
+fn reservoir_merge(
+    accumulator: &mut Vec<f64>,
+    capacity: usize,
+    accumulated_seen: usize,
+    incoming: Vec<f64>,
+) {
+    let mut seen = accumulated_seen;
+    for value in incoming {
+        seen += 1;
+        reservoir_offer(accumulator, capacity, seen, value);
+    }
+}
+
 /// Computes basic statistics for a raster
 ///
 /// This function uses streaming computation to minimize memory usage.
@@ -157,17 +215,7 @@ fn compute_statistics_parallel(raster: &RasterBuffer) -> Result<RasterStatistics
                         row_max = row_max.max(val);
 
                         // Reservoir sampling for median (target: 10000 samples)
-                        if row_samples.len() < 10000 {
-                            row_samples.push(val);
-                        } else {
-                            // Random replacement using simple LCG
-                            let idx = ((row_count.wrapping_mul(1103515245).wrapping_add(12345))
-                                >> 16)
-                                % row_count;
-                            if idx < 10000 {
-                                row_samples[idx] = val;
-                            }
-                        }
+                        reservoir_offer(&mut row_samples, 10_000, row_count, val);
                     }
                 }
             }
@@ -185,21 +233,7 @@ fn compute_statistics_parallel(raster: &RasterBuffer) -> Result<RasterStatistics
             || (0, 0.0, 0.0, f64::INFINITY, f64::NEG_INFINITY, Vec::new()),
             |(c1, s1, sq1, min1, max1, mut samples1), (c2, s2, sq2, min2, max2, samples2)| {
                 // Merge samples using reservoir sampling
-                let total = c1 + c2;
-                if total > 0 {
-                    for val in samples2 {
-                        if samples1.len() < 10000 {
-                            samples1.push(val);
-                        } else {
-                            let idx = ((total.wrapping_mul(1103515245).wrapping_add(12345)) >> 16)
-                                % total;
-                            if idx < 10000 {
-                                let len = samples1.len();
-                                samples1[idx % len] = val;
-                            }
-                        }
-                    }
-                }
+                reservoir_merge(&mut samples1, 10_000, c1, samples2);
 
                 (
                     c1 + c2,
@@ -254,7 +288,9 @@ fn compute_statistics_parallel(raster: &RasterBuffer) -> Result<RasterStatistics
 ///
 /// This is the baseline implementation used when the parallel feature
 /// is not enabled or for small datasets where parallelism overhead
-/// would outweigh benefits.
+/// would outweigh benefits. Like the parallel path, the median is computed
+/// via bounded reservoir sampling and is only exact for `count <= 10_000`;
+/// see the module-level "Median accuracy" section.
 fn compute_statistics_sequential(raster: &RasterBuffer) -> Result<RasterStatistics> {
     let mut count = 0usize;
     let mut sum = 0.0f64;
@@ -275,16 +311,7 @@ fn compute_statistics_sequential(raster: &RasterBuffer) -> Result<RasterStatisti
                 max = max.max(val);
 
                 // Reservoir sampling for median
-                if median_samples.len() < 10000 {
-                    median_samples.push(val);
-                } else {
-                    // Simple LCG-based random index for reservoir sampling
-                    // This avoids external random dependencies while providing adequate randomness
-                    let idx = ((count.wrapping_mul(1103515245).wrapping_add(12345)) >> 16) % count;
-                    if idx < 10000 {
-                        median_samples[idx] = val;
-                    }
-                }
+                reservoir_offer(&mut median_samples, 10_000, count, val);
             }
         }
     }
@@ -324,6 +351,65 @@ fn compute_statistics_sequential(raster: &RasterBuffer) -> Result<RasterStatisti
     })
 }
 
+/// Computes the exact median of all valid (non-NoData, finite) pixel values
+/// in a raster.
+///
+/// [`compute_statistics`]'s `median` field is only exact when the raster has
+/// at most 10,000 valid pixels; beyond that it is a reservoir-sampled
+/// estimate (see the module-level "Median accuracy" section). This function
+/// instead collects every valid value and selects the true median via
+/// `select_nth_unstable_by`, so it is exact regardless of raster size, at
+/// the cost of O(n) memory (n = number of valid pixels) and an O(n) average
+/// time selection pass instead of a single O(1)-memory streaming pass.
+///
+/// # Errors
+///
+/// Returns an error if the raster has no valid pixels.
+pub fn compute_exact_median(raster: &RasterBuffer) -> Result<f64> {
+    let mut values = Vec::new();
+
+    for y in 0..raster.height() {
+        for x in 0..raster.width() {
+            let val = raster.get_pixel(x, y).map_err(AlgorithmError::Core)?;
+            if !raster.is_nodata(val) && val.is_finite() {
+                values.push(val);
+            }
+        }
+    }
+
+    exact_median_of(values, "compute_exact_median")
+}
+
+/// Selects the true median of `values` in place, consuming the vector.
+///
+/// Uses `select_nth_unstable_by` (average O(n) time, no full sort) rather
+/// than sorting the whole slice.
+fn exact_median_of(mut values: Vec<f64>, operation: &'static str) -> Result<f64> {
+    if values.is_empty() {
+        return Err(AlgorithmError::InsufficientData {
+            operation,
+            message: "No valid pixels found".to_string(),
+        });
+    }
+
+    let cmp = |a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal);
+    let len = values.len();
+    let mid = len / 2;
+
+    if len % 2 == 1 {
+        let (_, &mut median, _) = values.select_nth_unstable_by(mid, cmp);
+        Ok(median)
+    } else {
+        // Even length: need both the (mid-1)th and mid-th order statistics.
+        // select_nth_unstable_by(mid) partitions so everything before `mid`
+        // is <= the pivot; the largest of that lower partition is the
+        // (mid-1)th order statistic.
+        let (lower, &mut upper, _) = values.select_nth_unstable_by(mid, cmp);
+        let lower_max = lower.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Ok((lower_max + upper) / 2.0)
+    }
+}
+
 /// Computes percentiles for a raster
 ///
 /// Uses reservoir sampling to estimate percentiles efficiently
@@ -359,17 +445,7 @@ fn compute_percentiles_parallel(raster: &RasterBuffer) -> Result<Percentiles> {
                 if let Ok(val) = raster.get_pixel(x, y) {
                     if !raster.is_nodata(val) && val.is_finite() {
                         row_count += 1;
-
-                        if row_samples.len() < SAMPLE_SIZE {
-                            row_samples.push(val);
-                        } else {
-                            let idx = ((row_count.wrapping_mul(1103515245).wrapping_add(12345))
-                                >> 16)
-                                % row_count;
-                            if idx < SAMPLE_SIZE {
-                                row_samples[idx] = val;
-                            }
-                        }
+                        reservoir_offer(&mut row_samples, SAMPLE_SIZE, row_count, val);
                     }
                 }
             }
@@ -379,23 +455,10 @@ fn compute_percentiles_parallel(raster: &RasterBuffer) -> Result<Percentiles> {
         .reduce(
             || (0, Vec::new()),
             |(c1, mut s1), (c2, s2)| {
-                let total = c1 + c2;
-
                 // Merge samples
-                for val in s2 {
-                    if s1.len() < SAMPLE_SIZE {
-                        s1.push(val);
-                    } else if total > 0 {
-                        let idx =
-                            ((total.wrapping_mul(1103515245).wrapping_add(12345)) >> 16) % total;
-                        if idx < SAMPLE_SIZE {
-                            let len = s1.len();
-                            s1[idx % len] = val;
-                        }
-                    }
-                }
+                reservoir_merge(&mut s1, SAMPLE_SIZE, c1, s2);
 
-                (total, s1)
+                (c1 + c2, s1)
             },
         );
 
@@ -438,15 +501,7 @@ fn compute_percentiles_sequential(raster: &RasterBuffer) -> Result<Percentiles> 
             let val = raster.get_pixel(x, y).map_err(AlgorithmError::Core)?;
             if !raster.is_nodata(val) && val.is_finite() {
                 count += 1;
-
-                if samples.len() < SAMPLE_SIZE {
-                    samples.push(val);
-                } else {
-                    let idx = ((count.wrapping_mul(1103515245).wrapping_add(12345)) >> 16) % count;
-                    if idx < SAMPLE_SIZE {
-                        samples[idx] = val;
-                    }
-                }
+                reservoir_offer(&mut samples, SAMPLE_SIZE, count, val);
             }
         }
     }
@@ -802,14 +857,7 @@ fn compute_zonal_statistics_parallel(
                             max = max.max(val);
 
                             // Reservoir sampling for median
-                            if median_samples.len() < 10000 {
-                                median_samples.push(val);
-                            } else {
-                                let idx = fastrand::usize(0..count);
-                                if idx < 10000 {
-                                    median_samples[idx] = val;
-                                }
-                            }
+                            reservoir_offer(&mut median_samples, 10_000, count, val);
                         }
                     }
                 }
@@ -882,16 +930,7 @@ fn compute_zonal_statistics_sequential(
                     max = max.max(val);
 
                     // Reservoir sampling for median
-                    if median_samples.len() < 10000 {
-                        median_samples.push(val);
-                    } else {
-                        // Simple LCG-based random index
-                        let idx =
-                            ((count.wrapping_mul(1103515245).wrapping_add(12345)) >> 16) % count;
-                        if idx < 10000 {
-                            median_samples[idx] = val;
-                        }
-                    }
+                    reservoir_offer(&mut median_samples, 10_000, count, val);
                 }
             }
         }
@@ -1396,5 +1435,164 @@ mod tests {
 
         // The value 8.0 should be included in the last bin
         assert_eq!(h.counts.len(), 8);
+    }
+
+    #[test]
+    fn test_exact_median_odd_count() {
+        let mut raster = RasterBuffer::zeros(5, 1, RasterDataType::Float32);
+        let values = [9.0, 1.0, 5.0, 3.0, 7.0];
+        for (x, &v) in values.iter().enumerate() {
+            raster.set_pixel(x as u64, 0, v).ok();
+        }
+
+        // sorted: [1, 3, 5, 7, 9] -> exact median is 5.0
+        let median = compute_exact_median(&raster).expect("median should succeed");
+        assert!((median - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_exact_median_even_count() {
+        let mut raster = RasterBuffer::zeros(3, 2, RasterDataType::Float32);
+        let values = [5.0, 1.0, 3.0, 2.0, 4.0, 100.0];
+        let mut idx = 0usize;
+        for y in 0..2 {
+            for x in 0..3 {
+                raster.set_pixel(x, y, values[idx]).ok();
+                idx += 1;
+            }
+        }
+
+        // sorted: [1, 2, 3, 4, 5, 100] -> exact median is (3+4)/2 = 3.5,
+        // unaffected by the 100.0 outlier since it's not part of the
+        // middle pair.
+        let median = compute_exact_median(&raster).expect("median should succeed");
+        assert!((median - 3.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_exact_median_no_valid_pixels_errors() {
+        let mut raster = RasterBuffer::zeros(4, 4, RasterDataType::Float32);
+        for y in 0..4 {
+            for x in 0..4 {
+                raster.set_pixel(x, y, f64::NAN).ok(); // All NoData/invalid
+            }
+        }
+
+        let result = compute_exact_median(&raster);
+        assert!(result.is_err());
+    }
+
+    /// Regression test: `compute_statistics`'s `median` field is only exact
+    /// while `count <= 10_000` (reservoir sampling kicks in above that). For
+    /// a large raster, `compute_exact_median` must still equal the true
+    /// median computed by sorting every valid value directly -- it must not
+    /// go through the reservoir-sampling approximation at all.
+    #[test]
+    fn test_exact_median_matches_full_sort_for_large_raster() {
+        // 120 x 130 = 15,600 pixels, well above the 10,000-sample reservoir
+        // cap used by `compute_statistics`.
+        let width = 120u64;
+        let height = 130u64;
+        let mut raster = RasterBuffer::zeros(width, height, RasterDataType::Float32);
+
+        let mut all_values = Vec::with_capacity((width * height) as usize);
+        let mut n = 0i64;
+        for y in 0..height {
+            for x in 0..width {
+                // A non-trivial, non-monotonic-in-scan-order value pattern.
+                let val = ((n * 2654435761_i64).rem_euclid(1_000_003)) as f64;
+                raster.set_pixel(x, y, val).ok();
+                all_values.push(val);
+                n += 1;
+            }
+        }
+
+        all_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        let len = all_values.len();
+        let expected = if len % 2 == 0 {
+            (all_values[len / 2 - 1] + all_values[len / 2]) / 2.0
+        } else {
+            all_values[len / 2]
+        };
+
+        let median = compute_exact_median(&raster).expect("median should succeed");
+        assert!(
+            (median - expected).abs() < f64::EPSILON,
+            "exact median {median} did not match full-sort median {expected}"
+        );
+    }
+
+    /// Regression test: the reservoir-sampled `median` field on
+    /// `compute_statistics` should still be a statistically reasonable
+    /// estimate of the true median for a large, uniformly distributed
+    /// raster, confirming the refactor to `reservoir_offer`/`fastrand`
+    /// preserved sampling correctness (values are still drawn roughly
+    /// uniformly, not biased toward a subrange).
+    #[test]
+    fn test_reservoir_sampled_median_close_to_exact_for_large_raster() {
+        let width = 150u64;
+        let height = 100u64; // 15,000 valid pixels > 10,000 reservoir cap
+        let mut raster = RasterBuffer::zeros(width, height, RasterDataType::Float32);
+
+        let mut n = 0.0f64;
+        for y in 0..height {
+            for x in 0..width {
+                raster.set_pixel(x, y, n).ok(); // values 0.0 .. 14999.0
+                n += 1.0;
+            }
+        }
+
+        let exact = compute_exact_median(&raster).expect("exact median should succeed");
+        let stats = compute_statistics(&raster).expect("statistics should succeed");
+
+        // The reservoir sample covers 10,000 of 15,000 values (~67%), so the
+        // sampled median should land close to the true median. Allow a
+        // generous tolerance (~2% of the value range) to avoid flakiness
+        // from the unseeded, thread-local `fastrand` generator.
+        let tolerance = (width * height) as f64 * 0.02;
+        assert!(
+            (stats.median - exact).abs() < tolerance,
+            "reservoir-sampled median {} too far from exact median {} (tolerance {})",
+            stats.median,
+            exact,
+            tolerance
+        );
+    }
+
+    /// Regression test for the `x * 0 = 0`-style silent-failure class of bug
+    /// in reservoir sampling: `reservoir_offer` must retain every observed
+    /// value verbatim (no data loss / no silent zeroing) while the stream is
+    /// still within the reservoir's capacity.
+    #[test]
+    fn test_reservoir_offer_retains_all_items_within_capacity() {
+        let mut reservoir: Vec<f64> = Vec::new();
+        for i in 0..50usize {
+            reservoir_offer(&mut reservoir, 100, i + 1, i as f64);
+        }
+
+        assert_eq!(reservoir.len(), 50);
+        let mut sorted = reservoir.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        let expected: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        assert_eq!(sorted, expected);
+    }
+
+    /// Once the stream exceeds capacity, the reservoir must stay at
+    /// capacity (never grow unbounded, never shrink) and every value it
+    /// holds must have come from the observed stream.
+    #[test]
+    fn test_reservoir_offer_stays_at_capacity_and_only_holds_stream_values() {
+        let mut reservoir: Vec<f64> = Vec::new();
+        let capacity = 20usize;
+        let stream_len = 500usize;
+
+        for i in 0..stream_len {
+            reservoir_offer(&mut reservoir, capacity, i + 1, i as f64);
+        }
+
+        assert_eq!(reservoir.len(), capacity);
+        for &val in &reservoir {
+            assert!((0.0..stream_len as f64).contains(&val));
+        }
     }
 }

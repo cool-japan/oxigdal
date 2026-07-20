@@ -1,31 +1,29 @@
-//! OxiGDAL NetCDF Driver - Pure Rust NetCDF-3 with Optional NetCDF-4 Support
+//! OxiGDAL NetCDF Driver - Pure Rust NetCDF-4 (HDF5) with Optional NetCDF-3
 //!
 //! This crate provides NetCDF file format support for OxiGDAL, following the
 //! COOLJAPAN Pure Rust policy.
 //!
 //! # Pure Rust Policy Compliance
 //!
-//! **IMPORTANT**: This driver provides the structure and API for Pure Rust NetCDF support,
-//! but the actual netcdf3 integration is currently incomplete due to breaking API changes
-//! in netcdf3 v0.6.0. The driver demonstrates:
+//! Real NetCDF-4 files (which are HDF5 files carrying the NetCDF-4 conventions)
+//! are read and written with the Pure-Rust [`oxinetcdf`] crate atop
+//! [`oxih5`](https://crates.io/crates/oxih5). There is **no** `libnetcdf`, no
+//! `libhdf5`, and no FFI — the default build is 100% Pure Rust.
 //!
-//! - Complete Pure Rust data structures for NetCDF metadata (dimensions, variables, attributes)
-//! - CF conventions support
-//! - Feature-gated architecture for Pure Rust vs. C-binding implementations
-//!
-//! **Status**: The reader/writer implementations need to be updated to use the new
-//! `Dataset`/`FileReader`/`FileWriter` API from netcdf3 v0.6.0 (breaking change from v0.1.0).
-//!
-//! For NetCDF-4 (HDF5-based) support, you can enable the `netcdf4` feature,
-//! which requires system libraries (libnetcdf, libhdf5) and is **NOT Pure Rust**.
+//! - Reading honours the NetCDF-4 conventions: dimension scales, coordinate
+//!   variables, `DIMENSION_LIST` axis linkage, and user attributes (`units`,
+//!   `_FillValue`, `scale_factor`, `add_offset`, …).
+//! - Writing produces real HDF5/NetCDF-4 files via the Pure-Rust backend.
+//! - Optional NetCDF-3 classic support is available behind the `netcdf3`
+//!   feature (the `netcdf3` crate, also Pure Rust).
 //!
 //! ## Feature Flags
 //!
-//! - `netcdf3` (default): Pure Rust NetCDF-3 support via netcdf3 crate
-//! - `netcdf4`: NetCDF-4/HDF5 support via C bindings (requires system libraries)
+//! - `std` (default): standard-library support.
+//! - `netcdf3`: Pure Rust NetCDF-3 (classic / 64-bit offset) support via the
+//!   `netcdf3` crate. NetCDF-4 support is always available and needs no feature.
 //! - `cf_conventions`: CF (Climate and Forecast) conventions support
 //! - `async`: Async I/O support
-//! - `compression`: Compression support (NetCDF-4 only)
 //!
 //! # NetCDF Format Support
 //!
@@ -42,17 +40,17 @@
 //! - Variable and global attributes
 //! - Coordinate variables
 //!
-//! ## NetCDF-4 (C Bindings, Feature-Gated)
+//! ## NetCDF-4 (Pure Rust, always available)
 //!
-//! Additional data types (requires `netcdf4` feature):
+//! Real NetCDF-4 / HDF5 files are read and written via the Pure-Rust
+//! [`oxinetcdf`] backend. Additional data types over NetCDF-3:
 //! - `u8`, `u16`, `u32`, `u64` - Unsigned integers
 //! - `i64`, `u64` - 64-bit integers
 //! - `string` - Variable-length strings
 //!
-//! Additional features (requires `netcdf4` feature):
-//! - HDF5-based compression
-//! - Groups and nested groups
-//! - User-defined types
+//! Additional features:
+//! - HDF5-based (DEFLATE) compression
+//! - Groups and coordinate variables
 //! - Multiple unlimited dimensions
 //!
 //! # Example - Reading NetCDF-3 File (Pure Rust)
@@ -167,38 +165,27 @@
 //! }
 //! ```
 //!
-//! # Pure Rust Limitations
+//! # Pure Rust Notes
 //!
-//! When using the default Pure Rust mode (NetCDF-3 only):
-//!
-//! - No NetCDF-4/HDF5 format support
-//! - No compression support
-//! - No groups or user-defined types
-//! - Only one unlimited dimension allowed
-//! - Limited to NetCDF-3 data types
-//!
-//! To use NetCDF-4 features, enable the `netcdf4` feature (requires C dependencies):
-//!
-//! ```toml
-//! [dependencies]
-//! oxigdal-netcdf = { version = "0.1", features = ["netcdf4"] }
-//! ```
-//!
-//! **Note**: Enabling `netcdf4` violates the COOLJAPAN Pure Rust policy and requires
-//! system libraries (libnetcdf ≥ 4.0, libhdf5 ≥ 1.8).
+//! - NetCDF-4 reading/writing is Pure Rust via [`oxinetcdf`] atop `oxih5`
+//!   (DEFLATE compression through `oxiarc-deflate`); no C libraries are used.
+//! - The Pure-Rust NetCDF-4 writer supports data variables, dimensions, and
+//!   string attributes. Constructs it cannot yet represent (e.g. explicit
+//!   coordinate-variable values or numeric attributes) return a typed error
+//!   rather than producing an incomplete file.
+//! - NetCDF-3 classic support is optional (`netcdf3` feature) and allows only
+//!   one unlimited dimension per the classic model.
 //!
 //! # Performance Considerations
 //!
-//! - Pure Rust NetCDF-3 reader/writer has comparable performance to C libraries
 //! - For large datasets, consider using chunked reading/writing
-//! - Unlimited dimensions may have performance implications
 //! - CF metadata parsing is done on-demand
 //!
 //! # References
 //!
 //! - [NetCDF User Guide](https://www.unidata.ucar.edu/software/netcdf/docs/)
 //! - [CF Conventions](http://cfconventions.org/)
-//! - [netcdf3 crate](https://crates.io/crates/netcdf3)
+//! - [oxinetcdf crate](https://crates.io/crates/oxinetcdf)
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(clippy::all)]
@@ -275,27 +262,28 @@ pub const fn has_netcdf3() -> bool {
 }
 
 /// Check if NetCDF-4 support is available.
+///
+/// Always `true`: NetCDF-4 (HDF5) reading/writing is provided by the Pure-Rust
+/// [`oxinetcdf`] backend and needs no feature flag.
 #[must_use]
 pub const fn has_netcdf4() -> bool {
-    cfg!(feature = "netcdf4")
+    true
 }
 
 /// Get supported format versions.
+///
+/// NetCDF-4 variants are always supported (Pure-Rust `oxinetcdf` backend);
+/// NetCDF-3 variants require the optional `netcdf3` feature.
 #[must_use]
 #[allow(unused_mut)]
 pub fn supported_versions() -> Vec<NetCdfVersion> {
-    let mut versions = Vec::new();
+    // NetCDF-4 is always available via the Pure-Rust backend.
+    let mut versions = vec![NetCdfVersion::NetCdf4, NetCdfVersion::NetCdf4Classic];
 
     #[cfg(feature = "netcdf3")]
     {
         versions.push(NetCdfVersion::Classic);
         versions.push(NetCdfVersion::Offset64Bit);
-    }
-
-    #[cfg(feature = "netcdf4")]
-    {
-        versions.push(NetCdfVersion::NetCdf4);
-        versions.push(NetCdfVersion::NetCdf4Classic);
     }
 
     versions
@@ -356,12 +344,9 @@ mod tests {
     fn test_supported_versions() {
         let versions = supported_versions();
 
-        // When no features enabled, versions list is empty
-        #[cfg(all(not(feature = "netcdf3"), not(feature = "netcdf4")))]
-        assert!(versions.is_empty());
-
-        #[cfg(any(feature = "netcdf3", feature = "netcdf4"))]
+        // NetCDF-4 is always available via the Pure-Rust oxinetcdf backend.
         assert!(!versions.is_empty());
+        assert!(versions.contains(&NetCdfVersion::NetCdf4));
 
         #[cfg(feature = "netcdf3")]
         assert!(versions.contains(&NetCdfVersion::Classic));

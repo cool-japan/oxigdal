@@ -418,10 +418,10 @@ impl FaultToleranceManager {
 
     /// Check if task is ready for retry.
     pub fn is_ready_for_retry(&self, task_id: TaskId) -> bool {
-        if let Some(retry_state) = self.inner.retry_state.get(&task_id) {
-            if let Some(next_retry_at) = retry_state.next_retry_at {
-                return Instant::now() >= next_retry_at;
-            }
+        if let Some(retry_state) = self.inner.retry_state.get(&task_id)
+            && let Some(next_retry_at) = retry_state.next_retry_at
+        {
+            return Instant::now() >= next_retry_at;
         }
         false
     }

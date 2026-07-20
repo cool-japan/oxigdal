@@ -272,10 +272,10 @@ impl PrefetchManager {
 
     /// Takes the next hint from the queue
     pub fn dequeue(&self) -> Option<PrefetchHint> {
-        if let Ok(mut queue) = self.queue.write() {
-            if !queue.is_empty() {
-                return Some(queue.remove(0));
-            }
+        if let Ok(mut queue) = self.queue.write()
+            && !queue.is_empty()
+        {
+            return Some(queue.remove(0));
         }
         None
     }

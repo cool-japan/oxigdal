@@ -201,11 +201,11 @@ impl Storage for RedisStorage {
 
         let new_value: u64 = conn.incr(key, 1).await?;
 
-        if let Some(ttl) = ttl {
-            if new_value == 1 {
-                // Set TTL only on first increment
-                let _: bool = conn.expire(key, ttl.as_secs() as i64).await?;
-            }
+        if let Some(ttl) = ttl
+            && new_value == 1
+        {
+            // Set TTL only on first increment
+            let _: bool = conn.expire(key, ttl.as_secs() as i64).await?;
         }
 
         Ok(new_value)

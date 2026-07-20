@@ -1224,11 +1224,11 @@ fn test_file_seek_operations() {
             .expect("Failed to read")
             .expect("No feature");
 
-        if let Some(Geometry::Point(p1)) = &feature1.geometry {
-            if let Some(Geometry::Point(p2)) = &feature2.geometry {
-                assert_eq!(p1.coord.x, 0.0);
-                assert_eq!(p2.coord.x, 1.0);
-            }
+        if let Some(Geometry::Point(p1)) = &feature1.geometry
+            && let Some(Geometry::Point(p2)) = &feature2.geometry
+        {
+            assert_eq!(p1.coord.x, 0.0);
+            assert_eq!(p2.coord.x, 1.0);
         }
     }
 

@@ -345,12 +345,11 @@ fn bench_memory_peak_usage(c: &mut Criterion) {
                 .build();
 
             // Simulate a multi-step processing pipeline
-            if let Ok(step1) = gaussian_blur(black_box(&raster), 1.5, Some(3)) {
-                if let Ok(step2) = gaussian_blur(&step1, 1.5, Some(5)) {
-                    if let Ok(stats) = compute_statistics(&step2) {
-                        let _ = black_box(stats);
-                    }
-                }
+            if let Ok(step1) = gaussian_blur(black_box(&raster), 1.5, Some(3))
+                && let Ok(step2) = gaussian_blur(&step1, 1.5, Some(5))
+                && let Ok(stats) = compute_statistics(&step2)
+            {
+                let _ = black_box(stats);
             }
         });
     });

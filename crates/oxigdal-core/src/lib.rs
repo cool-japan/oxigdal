@@ -45,15 +45,36 @@
 #![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[cfg(feature = "std")]
 extern crate std;
 
+/// Internal prelude that makes `alloc`-provided types and macros available in
+/// `no_std` builds.
+///
+/// Under the `std` feature these names come from the standard prelude, so this
+/// module is only wired in for `no_std` (`#[cfg(not(feature = "std"))]`) to keep
+/// the `std` build byte-for-byte identical. Modules that use bare `Vec`,
+/// `String`, `Box`, `format!` or `vec!` add
+/// `#[cfg(not(feature = "std"))] use crate::compat::*;` at their top.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+pub(crate) mod compat {
+    pub use alloc::borrow::ToOwned;
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
+    pub use alloc::{format, vec};
+}
+
 pub mod buffer;
 pub mod error;
 pub mod io;
+// The advanced memory-management module (custom allocators, memory-mapped I/O,
+// NUMA/huge-page support) relies on `parking_lot`, hashed collections, the global
+// allocator and OS primitives, so it requires the standard library.
+#[cfg(feature = "std")]
 pub mod memory;
 pub mod simd_buffer;
 pub mod types;
@@ -64,6 +85,7 @@ pub mod tutorials;
 
 // Re-export commonly used items
 pub use error::{OxiGdalError, Result};
+#[cfg(feature = "std")]
 pub use io::{Dataset, FieldType, RasterDataset, VectorDataset};
 pub use types::{
     BoundingBox, ColorEntry, ColorTable, ColorTableKind, CrsFormat, GeoTransform, Histogram,

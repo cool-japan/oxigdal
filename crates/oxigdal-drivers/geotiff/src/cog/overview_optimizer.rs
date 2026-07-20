@@ -134,10 +134,10 @@ fn calculate_optimal_levels(
         }
 
         // Stop if we've reached max levels
-        if let Some(max) = max_levels {
-            if levels.len() >= max {
-                break;
-            }
+        if let Some(max) = max_levels
+            && levels.len() >= max
+        {
+            break;
         }
 
         levels.push(current_factor);

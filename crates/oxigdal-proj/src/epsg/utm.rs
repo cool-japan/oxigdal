@@ -67,18 +67,6 @@ fn register_wgs84_utm(db: &mut EpsgDatabase) {
             datum: "WGS84".to_string(),
         });
     }
-
-    // WGS 84 / UTM zone 37N (override check)
-    db.add_definition(EpsgDefinition {
-        code: 32637,
-        name: "WGS 84 / UTM zone 37N (override check)".to_string(),
-        proj_string: "+proj=utm +zone=37 +datum=WGS84 +units=m +no_defs".to_string(),
-        wkt: None,
-        crs_type: CrsType::Projected,
-        area_of_use: "34°E to 40°E, northern hemisphere".to_string(),
-        unit: "metre".to_string(),
-        datum: "WGS84".to_string(),
-    });
 }
 
 fn register_jgd2011_utm(db: &mut EpsgDatabase) {
@@ -595,5 +583,54 @@ fn register_jgd2000_plane_rect(db: &mut EpsgDatabase) {
             unit: "metre".to_string(),
             datum: "JGD2000".to_string(),
         });
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Regression test for a leftover debug "(override check)" registration
+    /// that used to clobber the correctly-computed EPSG:32637 definition
+    /// registered by the `1..=60` WGS84 UTM zone loop with a wrong name and
+    /// an incorrect, hard-coded area-of-use string.
+    #[test]
+    fn test_epsg_32637_is_not_overridden_by_leftover_debug_registration() {
+        let mut db = EpsgDatabase::new();
+        db.definitions.clear();
+        register_wgs84_utm(&mut db);
+
+        let def = db.lookup(32637).expect("EPSG:32637 must be registered");
+        assert_eq!(
+            def.name, "WGS 84 / UTM zone 37N",
+            "name must not carry the leftover '(override check)' suffix"
+        );
+        assert!(
+            def.area_of_use.contains("36") && def.area_of_use.contains("42"),
+            "area_of_use must be the loop-computed 36°E–42°E range, got: {}",
+            def.area_of_use
+        );
+        assert!(!def.area_of_use.contains("34"));
+        assert!(!def.area_of_use.contains("40"));
+    }
+
+    #[test]
+    fn test_all_wgs84_utm_zones_registered_exactly_once_with_correct_names() {
+        let mut db = EpsgDatabase::new();
+        db.definitions.clear();
+        register_wgs84_utm(&mut db);
+
+        for zone in 1..=60u32 {
+            let north = db
+                .lookup(32600 + zone)
+                .unwrap_or_else(|_| panic!("zone {zone}N must be registered"));
+            assert_eq!(north.name, format!("WGS 84 / UTM zone {zone}N"));
+
+            let south = db
+                .lookup(32700 + zone)
+                .unwrap_or_else(|_| panic!("zone {zone}S must be registered"));
+            assert_eq!(south.name, format!("WGS 84 / UTM zone {zone}S"));
+        }
     }
 }

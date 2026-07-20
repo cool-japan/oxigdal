@@ -137,17 +137,16 @@ fn bench_buffer_transfers(c: &mut Criterion) {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-        ) {
-            if let Ok(staging) = GpuBuffer::staging(&context, size) {
-                let mut staging_mut = staging.clone();
+        ) && let Ok(staging) = GpuBuffer::staging(&context, size)
+        {
+            let mut staging_mut = staging.clone();
 
-                group.bench_with_input(BenchmarkId::new("download", size), &size, |b, _| {
-                    b.iter(|| {
-                        let _ = staging_mut.copy_from(&buffer);
-                        let _ = pollster::block_on(staging.read());
-                    });
+            group.bench_with_input(BenchmarkId::new("download", size), &size, |b, _| {
+                b.iter(|| {
+                    let _ = staging_mut.copy_from(&buffer);
+                    let _ = pollster::block_on(staging.read());
                 });
-            }
+            });
         }
     }
 

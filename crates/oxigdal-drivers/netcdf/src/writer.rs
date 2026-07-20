@@ -12,7 +12,6 @@ use crate::metadata::{NetCdfMetadata, NetCdfVersion};
 use crate::variable::{DataType, Variable};
 
 /// Pending variable data to write.
-#[cfg(feature = "netcdf3")]
 enum PendingData {
     F32(Vec<f32>),
     F64(Vec<f64>),
@@ -23,12 +22,14 @@ enum PendingData {
 
 /// NetCDF file writer.
 ///
-/// Provides methods for creating and writing NetCDF files.
+/// Provides methods for creating and writing NetCDF files. NetCDF-4 files are
+/// written with the Pure-Rust [`oxinetcdf`] backend (real HDF5, no FFI);
+/// NetCDF-3 classic files use the optional `netcdf3` backend.
 pub struct NetCdfWriter {
     metadata: NetCdfMetadata,
     #[cfg(feature = "netcdf3")]
     dataset_nc3: Option<netcdf3::DataSet>,
-    #[cfg(feature = "netcdf3")]
+    /// Buffered variable data, flushed to the backend on [`NetCdfWriter::close`].
     pending_data: std::collections::HashMap<String, PendingData>,
     #[cfg(feature = "netcdf4")]
     file_nc4: Option<netcdf::FileMut>,
@@ -56,19 +57,11 @@ impl NetCdfWriter {
     /// # Errors
     ///
     /// Returns error if the file cannot be created.
-    #[allow(unused_variables)]
     pub fn create(path: impl AsRef<Path>, version: NetCdfVersion) -> Result<Self> {
         let path = path.as_ref();
 
         if version.is_netcdf4() {
-            #[cfg(feature = "netcdf4")]
-            {
-                Self::create_netcdf4(path)
-            }
-            #[cfg(not(feature = "netcdf4"))]
-            {
-                Err(NetCdfError::NetCdf4NotAvailable)
-            }
+            Self::new_netcdf4(path, version)
         } else {
             #[cfg(feature = "netcdf3")]
             {
@@ -106,15 +99,30 @@ impl NetCdfWriter {
         })
     }
 
-    /// Create a NetCDF-4 file.
+    /// Create a NetCDF-4 (HDF5) file.
+    ///
+    /// The file is written with the Pure-Rust [`oxinetcdf`] backend on
+    /// [`NetCdfWriter::close`]. Defaults to the full NetCDF-4 model.
     ///
     /// # Errors
     ///
     /// Returns error if the file cannot be created.
-    #[cfg(feature = "netcdf4")]
-    pub fn create_netcdf4(_path: impl AsRef<Path>) -> Result<Self> {
-        // NetCDF-4 support is placeholder for now
-        Err(NetCdfError::NetCdf4NotAvailable)
+    pub fn create_netcdf4(path: impl AsRef<Path>) -> Result<Self> {
+        Self::new_netcdf4(path, NetCdfVersion::NetCdf4)
+    }
+
+    /// Internal constructor for the Pure-Rust NetCDF-4 backend.
+    fn new_netcdf4(path: impl AsRef<Path>, version: NetCdfVersion) -> Result<Self> {
+        Ok(Self {
+            metadata: NetCdfMetadata::new(version),
+            #[cfg(feature = "netcdf3")]
+            dataset_nc3: None,
+            pending_data: std::collections::HashMap::new(),
+            #[cfg(feature = "netcdf4")]
+            file_nc4: None,
+            path: path.as_ref().to_path_buf(),
+            is_define_mode: true,
+        })
     }
 
     /// Get the file metadata.
@@ -301,11 +309,8 @@ impl NetCdfWriter {
         }
 
         // Store pending data for later write
-        #[cfg(feature = "netcdf3")]
-        {
-            self.pending_data
-                .insert(var_name.to_string(), PendingData::F32(data.to_vec()));
-        }
+        self.pending_data
+            .insert(var_name.to_string(), PendingData::F32(data.to_vec()));
 
         Ok(())
     }
@@ -340,11 +345,8 @@ impl NetCdfWriter {
             });
         }
 
-        #[cfg(feature = "netcdf3")]
-        {
-            self.pending_data
-                .insert(var_name.to_string(), PendingData::F64(data.to_vec()));
-        }
+        self.pending_data
+            .insert(var_name.to_string(), PendingData::F64(data.to_vec()));
 
         Ok(())
     }
@@ -379,24 +381,44 @@ impl NetCdfWriter {
             });
         }
 
-        #[cfg(feature = "netcdf3")]
-        {
-            self.pending_data
-                .insert(var_name.to_string(), PendingData::I32(data.to_vec()));
-        }
+        self.pending_data
+            .insert(var_name.to_string(), PendingData::I32(data.to_vec()));
 
         Ok(())
     }
 
-    /// Finalize and close the file.
+    /// Finalize and close the file, flushing all buffered data to disk.
     ///
-    /// This method consumes the writer and ensures all data is written to disk.
+    /// NetCDF-4 files are written with the Pure-Rust [`oxinetcdf`] backend
+    /// (real HDF5, no FFI); NetCDF-3 classic files use the optional `netcdf3`
+    /// backend. The writer never silently succeeds without producing a file —
+    /// unsupported constructs return a typed error.
     ///
     /// # Errors
     ///
-    /// Returns error if file cannot be closed.
-    #[cfg(feature = "netcdf3")]
+    /// Returns an error if the file cannot be written, or if a requested
+    /// construct is not supported by the active backend.
     pub fn close(self) -> Result<()> {
+        if self.metadata.version().is_netcdf4() {
+            return self.write_netcdf4();
+        }
+
+        #[cfg(feature = "netcdf3")]
+        {
+            self.close_netcdf3()
+        }
+        #[cfg(not(feature = "netcdf3"))]
+        {
+            Err(NetCdfError::FeatureNotEnabled {
+                feature: "netcdf3".to_string(),
+                message: "Enable the 'netcdf3' feature to write NetCDF-3 files".to_string(),
+            })
+        }
+    }
+
+    /// Write the buffered dataset as a NetCDF-3 classic file.
+    #[cfg(feature = "netcdf3")]
+    fn close_netcdf3(self) -> Result<()> {
         if let Some(dataset) = self.dataset_nc3 {
             // Remove the file if it already exists (e.g., created by NamedTempFile)
             if self.path.exists() {
@@ -433,9 +455,145 @@ impl NetCdfWriter {
         Ok(())
     }
 
-    /// Finalize and close the file.
-    #[cfg(not(feature = "netcdf3"))]
-    pub fn close(self) -> Result<()> {
+    /// Write the buffered dataset as a real NetCDF-4 (HDF5) file using the
+    /// Pure-Rust [`oxinetcdf`] backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when a construct cannot be represented by the
+    /// Pure-Rust backend (e.g. explicit coordinate-variable values or a
+    /// non-string attribute), rather than writing an incomplete file.
+    fn write_netcdf4(self) -> Result<()> {
+        use oxinetcdf::{NcDimId, NcFileWriter, VarOrGroup};
+
+        let mut writer = NcFileWriter::new();
+        if self.metadata.version() == NetCdfVersion::NetCdf4Classic {
+            writer.set_classic_mode();
+        }
+
+        // Global attributes (string only — the NetCDF-4 backend cannot encode
+        // numeric global attributes).
+        for attr in self.metadata.global_attributes().iter() {
+            match attr.value() {
+                AttributeValue::Text(s) => {
+                    writer
+                        .put_att_str(VarOrGroup::Root, attr.name(), s)
+                        .map_err(map_ncw_err)?;
+                }
+                other => {
+                    return Err(NetCdfError::AttributeError(format!(
+                        "Pure-Rust NetCDF-4 backend supports only string global attributes; \
+                         '{}' ({}) cannot be written",
+                        attr.name(),
+                        other.type_name()
+                    )));
+                }
+            }
+        }
+
+        // Dimensions.
+        let mut dim_ids: std::collections::HashMap<String, NcDimId> =
+            std::collections::HashMap::new();
+        for dim in self.metadata.dimensions().iter() {
+            let id = if dim.is_unlimited() {
+                writer
+                    .def_dim_unlimited(dim.name(), dim.len())
+                    .map_err(map_ncw_err)?
+            } else {
+                writer.def_dim(dim.name(), dim.len()).map_err(map_ncw_err)?
+            };
+            dim_ids.insert(dim.name().to_string(), id);
+        }
+
+        // Variables.
+        for var in self.metadata.variables().iter() {
+            // A pure coordinate variable (1-D, named after its own dimension)
+            // is written automatically by the backend as the dimension index.
+            let is_pure_coord = var.dimension_names().len() == 1
+                && var.dimension_names()[0] == var.name()
+                && dim_ids.contains_key(var.name());
+            if is_pure_coord {
+                if self.pending_data.contains_key(var.name()) {
+                    return Err(NetCdfError::Other(format!(
+                        "Pure-Rust NetCDF-4 backend cannot write explicit values for \
+                         coordinate variable '{}'; the dimension index is written automatically",
+                        var.name()
+                    )));
+                }
+                if !var.attributes().is_empty() {
+                    return Err(NetCdfError::Other(format!(
+                        "Pure-Rust NetCDF-4 backend cannot attach attributes to coordinate \
+                         variable '{}'",
+                        var.name()
+                    )));
+                }
+                continue;
+            }
+
+            let nc_type = datatype_to_nctype(var.data_type())?;
+            let dims: Vec<NcDimId> = var
+                .dimension_names()
+                .iter()
+                .map(|name| {
+                    dim_ids
+                        .get(name)
+                        .copied()
+                        .ok_or_else(|| NetCdfError::DimensionNotFound { name: name.clone() })
+                })
+                .collect::<Result<_>>()?;
+            let var_id = writer
+                .def_var(var.name(), &dims, nc_type)
+                .map_err(map_ncw_err)?;
+
+            // Data.
+            if let Some(pending) = self.pending_data.get(var.name()) {
+                match pending {
+                    PendingData::F32(v) => {
+                        let widened: Vec<f64> = v.iter().map(|&x| f64::from(x)).collect();
+                        writer.put_var_f64(var_id, &widened).map_err(map_ncw_err)?;
+                    }
+                    PendingData::F64(v) => {
+                        writer.put_var_f64(var_id, v).map_err(map_ncw_err)?;
+                    }
+                    PendingData::I32(v) => {
+                        writer.put_var_i32(var_id, v).map_err(map_ncw_err)?;
+                    }
+                    PendingData::I16(_) | PendingData::I8(_) => {
+                        return Err(NetCdfError::Other(format!(
+                            "Pure-Rust NetCDF-4 backend cannot write i16/i8 data for '{}'",
+                            var.name()
+                        )));
+                    }
+                }
+            }
+
+            // String attributes.
+            for attr in var.attributes().iter() {
+                match attr.value() {
+                    AttributeValue::Text(s) => {
+                        writer
+                            .put_att_str(VarOrGroup::Var(var_id), attr.name(), s)
+                            .map_err(map_ncw_err)?;
+                    }
+                    other => {
+                        return Err(NetCdfError::AttributeError(format!(
+                            "Pure-Rust NetCDF-4 backend supports only string variable attributes; \
+                             '{}' ({}) on '{}' cannot be written",
+                            attr.name(),
+                            other.type_name(),
+                            var.name()
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Overwrite any pre-existing file (e.g. a NamedTempFile placeholder).
+        if self.path.exists() {
+            std::fs::remove_file(&self.path)
+                .map_err(|e| NetCdfError::Io(format!("failed to remove existing file: {e}")))?;
+        }
+        writer.close(&self.path).map_err(map_ncw_err)?;
         Ok(())
     }
 
@@ -531,9 +689,114 @@ impl NetCdfWriter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NetCDF-4 (oxinetcdf) mapping helpers
+// ---------------------------------------------------------------------------
+
+/// Map the crate's [`DataType`] to the oxinetcdf NetCDF-4 type vocabulary.
+///
+/// # Errors
+///
+/// Returns [`NetCdfError::DataTypeMismatch`] for types the Pure-Rust NetCDF-4
+/// backend cannot write.
+fn datatype_to_nctype(dtype: DataType) -> Result<oxinetcdf::NcType> {
+    use oxinetcdf::NcType;
+    Ok(match dtype {
+        DataType::F32 => NcType::Float32,
+        DataType::F64 => NcType::Float64,
+        DataType::I32 => NcType::Int32,
+        DataType::I64 => NcType::Int64,
+        DataType::U8 => NcType::UInt8,
+        DataType::String => NcType::String,
+        other => {
+            return Err(NetCdfError::DataTypeMismatch {
+                expected: "F32/F64/I32/I64/U8/String".to_string(),
+                found: other.name().to_string(),
+            });
+        }
+    })
+}
+
+/// Map an oxinetcdf writer error into the crate's error type.
+fn map_ncw_err(e: oxinetcdf::NcError) -> NetCdfError {
+    NetCdfError::Other(format!("NetCDF-4 writer error: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn test_netcdf4_write_read_roundtrip() {
+        use crate::reader::NetCdfReader;
+
+        let path =
+            std::env::temp_dir().join(format!("oxigdal_nc4_writer_{}.nc", std::process::id()));
+
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::NetCdf4).expect("create NetCDF-4");
+        writer
+            .add_dimension(Dimension::new("x", 4).expect("dim"))
+            .expect("add dim");
+        writer
+            .add_variable(Variable::new("temp", DataType::F64, vec!["x".to_string()]).expect("var"))
+            .expect("add var");
+        writer
+            .add_variable_attribute(
+                "temp",
+                Attribute::new("units", AttributeValue::text("kelvin")).expect("attr"),
+            )
+            .expect("add var attr");
+        writer
+            .add_global_attribute(
+                Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("attr"),
+            )
+            .expect("add global attr");
+        writer.end_define_mode().expect("end define");
+        writer
+            .write_f64("temp", &[1.0, 2.0, 3.0, 4.0])
+            .expect("write data");
+        // close() must write a real HDF5/NetCDF-4 file, not silently succeed.
+        writer.close().expect("close writes real file");
+
+        // Read it back with the real oxinetcdf-backed reader.
+        let reader = NetCdfReader::open(&path).expect("open real NetCDF-4");
+        assert!(reader.version().is_netcdf4());
+        let temp = reader.variables().get("temp").expect("temp var");
+        assert_eq!(temp.data_type(), DataType::F64);
+        let units = temp.attributes().get("units").expect("units attr");
+        assert_eq!(units.value().as_text().expect("text"), "kelvin");
+
+        let data = reader.read_f64("temp").expect("read temp");
+        assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
+
+        let cf = reader.cf_metadata().expect("cf metadata");
+        assert_eq!(cf.conventions.as_deref(), Some("CF-1.8"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_netcdf4_rejects_numeric_global_attribute() {
+        let path = std::env::temp_dir().join(format!(
+            "oxigdal_nc4_writer_numattr_{}.nc",
+            std::process::id()
+        ));
+
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::NetCdf4).expect("create NetCDF-4");
+        writer
+            .add_global_attribute(Attribute::new("answer", AttributeValue::i32(42)).expect("attr"))
+            .expect("add global attr");
+        writer.end_define_mode().expect("end define");
+
+        // A numeric global attribute is not representable: fail loud, no file.
+        let result = writer.close();
+        assert!(matches!(result, Err(NetCdfError::AttributeError(_))));
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn test_data_type_conversion() {

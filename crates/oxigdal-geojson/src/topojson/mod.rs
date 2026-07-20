@@ -7,12 +7,14 @@
 //! ## Pipeline
 //!
 //! 1. Compute the bounding box of all features to build a quantisation transform.
-//! 2. Walk all polygon rings, quantising coordinates to integer grid positions.
-//! 3. Normalise rings (remove duplicate closing vertex).
+//! 2. Walk all polygon rings *and* line chains (LineString / MultiLineString),
+//!    quantising coordinates to integer grid positions.
+//! 3. Normalise rings (remove duplicate closing vertex); keep open chains verbatim.
 //! 4. Detect *junctions* — vertices where two or more arcs meet with different
-//!    neighbours, and ring start vertices.
-//! 5. Cut rings into arcs at junctions; deduplicate using a canonical
-//!    (lexicographically smallest) arc key.
+//!    neighbours, ring start vertices, and line chain endpoints.
+//! 5. Cut rings (cyclically) and chains (linearly) into arcs at junctions;
+//!    deduplicate using a canonical (lexicographically smallest) arc key shared
+//!    across rings and chains so a common sub-path is stored once.
 //! 6. Delta-encode arcs for compact wire representation.
 //! 7. Serialise as a `{"type":"Topology",...}` JSON object.
 //!

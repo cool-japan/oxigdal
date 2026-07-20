@@ -4,7 +4,7 @@
 
 use oxigdal_core::error::{CompressionError, OxiGdalError, Result};
 
-use crate::tiff::{Compression, Predictor};
+use crate::tiff::{ByteOrderType, Compression, Predictor};
 
 // Re-export JPEG types for public API
 #[cfg(feature = "jpeg")]
@@ -35,6 +35,8 @@ pub fn decompress(data: &[u8], compression: Compression, expected_size: usize) -
 
         #[cfg(feature = "webp")]
         Compression::WebP => decompress_webp(data),
+
+        Compression::Lerc => crate::lerc_codec::decompress_lerc(data, expected_size),
 
         _ => Err(OxiGdalError::Compression(CompressionError::UnknownMethod {
             method: compression as u16,
@@ -70,68 +72,299 @@ pub fn compress(data: &[u8], compression: Compression) -> Result<Vec<u8>> {
             },
         )),
 
+        Compression::Lerc => Err(OxiGdalError::Compression(
+            CompressionError::CompressionFailed {
+                message: "LERC encoding to the interoperable Esri/GDAL bit-stuffed format is not \
+                          implemented; only decoding (Compression::Lerc via decompress) is \
+                          supported. Refusing to write a non-standard LERC blob."
+                    .to_string(),
+            },
+        )),
+
         _ => Err(OxiGdalError::Compression(CompressionError::UnknownMethod {
             method: compression as u16,
         })),
     }
 }
 
-/// Applies horizontal differencing predictor (reverse)
+/// Reads a `bytes_per_sample`-wide unsigned sample from `bytes` using `byte_order`.
+///
+/// Falls back to a single-byte read for widths other than 1/2/4/8 (never panics).
+fn read_sample(bytes: &[u8], bytes_per_sample: usize, byte_order: ByteOrderType) -> u64 {
+    match bytes_per_sample {
+        2 if bytes.len() >= 2 => u64::from(byte_order.read_u16(bytes)),
+        4 if bytes.len() >= 4 => u64::from(byte_order.read_u32(bytes)),
+        8 if bytes.len() >= 8 => byte_order.read_u64(bytes),
+        _ => bytes.first().copied().map_or(0, u64::from),
+    }
+}
+
+/// Writes `value` back as a `bytes_per_sample`-wide unsigned sample using `byte_order`.
+///
+/// Falls back to a single-byte write for widths other than 1/2/4/8 (never panics).
+fn write_sample(bytes: &mut [u8], bytes_per_sample: usize, byte_order: ByteOrderType, value: u64) {
+    match bytes_per_sample {
+        2 if bytes.len() >= 2 => byte_order.write_u16(bytes, value as u16),
+        4 if bytes.len() >= 4 => byte_order.write_u32(bytes, value as u32),
+        8 if bytes.len() >= 8 => byte_order.write_u64(bytes, value),
+        _ => {
+            if let Some(b) = bytes.first_mut() {
+                *b = value as u8;
+            }
+        }
+    }
+}
+
+/// Reconstructs original sample values from stored horizontal deltas (decode direction).
+///
+/// Per the TIFF 6.0 spec, horizontal differencing operates on whole samples in the
+/// file's declared byte order, not on individual bytes: for samples wider than 8 bits
+/// this requires carry-propagating addition across the low/high bytes of each sample,
+/// not independent per-byte wraparound (which silently drops carries and corrupts data).
+fn undifference_row(
+    row: &mut [u8],
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+    byte_order: ByteOrderType,
+) {
+    if bytes_per_sample == 0 || samples_per_pixel == 0 {
+        return;
+    }
+    let sample_count = row.len() / bytes_per_sample;
+    for j in samples_per_pixel..sample_count {
+        let cur_off = j * bytes_per_sample;
+        let prev_off = (j - samples_per_pixel) * bytes_per_sample;
+        let prev = read_sample(&row[prev_off..], bytes_per_sample, byte_order);
+        let delta = read_sample(&row[cur_off..], bytes_per_sample, byte_order);
+        write_sample(
+            &mut row[cur_off..cur_off + bytes_per_sample],
+            bytes_per_sample,
+            byte_order,
+            prev.wrapping_add(delta),
+        );
+    }
+}
+
+/// Encodes sample deltas from original values (encode direction).
+///
+/// Processes samples from right to left so that the "previous pixel" value read for
+/// each delta is always the still-original (undifferenced) sample. See
+/// [`undifference_row`] for why this must operate on whole samples, not bytes.
+fn difference_row(
+    row: &mut [u8],
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+    byte_order: ByteOrderType,
+) {
+    if bytes_per_sample == 0 || samples_per_pixel == 0 {
+        return;
+    }
+    let sample_count = row.len() / bytes_per_sample;
+    for j in (samples_per_pixel..sample_count).rev() {
+        let cur_off = j * bytes_per_sample;
+        let prev_off = (j - samples_per_pixel) * bytes_per_sample;
+        let cur = read_sample(&row[cur_off..], bytes_per_sample, byte_order);
+        let prev = read_sample(&row[prev_off..], bytes_per_sample, byte_order);
+        write_sample(
+            &mut row[cur_off..cur_off + bytes_per_sample],
+            bytes_per_sample,
+            byte_order,
+            cur.wrapping_sub(prev),
+        );
+    }
+}
+
+/// Reconstructs one scanline that was encoded with the TIFF 6.0 floating-point
+/// predictor (Predictor tag = 3).
+///
+/// The on-disk layout produced by the floating-point predictor is, per scanline:
+/// 1. a *byte-plane transpose* — the most-significant byte of every sample first
+///    (grouped across the whole row), then the next byte plane, and so on down to
+///    the least-significant byte plane; and
+/// 2. a *byte-wise horizontal delta* applied to that transposed stream with a
+///    stride equal to `samples_per_pixel` (matching libtiff's `fpAcc`/`fpDiff`).
+///
+/// Decoding therefore first undoes the byte-wise delta, then undoes the transpose,
+/// reassembling each sample in the file's declared `byte_order` so that downstream
+/// sample readers interpret the bytes correctly. The plane order on disk is always
+/// most-significant-byte-first regardless of `byte_order`; only the reassembly step
+/// depends on the byte order.
+fn undo_float_predictor_row(
+    row: &mut [u8],
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+    byte_order: ByteOrderType,
+) -> Result<()> {
+    let cc = row.len();
+    if bytes_per_sample == 0 || cc == 0 {
+        return Ok(());
+    }
+    if !cc.is_multiple_of(bytes_per_sample) {
+        return Err(OxiGdalError::Compression(
+            CompressionError::DecompressionFailed {
+                message: format!(
+                    "Floating-point predictor: scanline length {cc} is not a multiple of \
+                     sample size {bytes_per_sample}"
+                ),
+            },
+        ));
+    }
+    let sample_count = cc / bytes_per_sample;
+    let stride = samples_per_pixel.max(1);
+
+    // Step 1: undo the byte-wise horizontal delta (running sum, stride = spp).
+    for i in stride..cc {
+        row[i] = row[i].wrapping_add(row[i - stride]);
+    }
+
+    // Step 2: undo the byte-plane transpose, reassembling samples in `byte_order`.
+    let planes = row.to_vec();
+    for sample in 0..sample_count {
+        for byte in 0..bytes_per_sample {
+            // Plane 0 holds the most-significant byte of every sample.
+            let plane = match byte_order {
+                ByteOrderType::BigEndian => byte,
+                ByteOrderType::LittleEndian => bytes_per_sample - byte - 1,
+            };
+            row[bytes_per_sample * sample + byte] = planes[plane * sample_count + sample];
+        }
+    }
+    Ok(())
+}
+
+/// Encodes one scanline with the TIFF 6.0 floating-point predictor (Predictor
+/// tag = 3). This is the exact inverse of [`undo_float_predictor_row`]: it first
+/// performs the byte-plane transpose (most-significant byte plane first) and then
+/// applies the byte-wise horizontal delta with stride `samples_per_pixel`.
+fn apply_float_predictor_row(
+    row: &mut [u8],
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+    byte_order: ByteOrderType,
+) -> Result<()> {
+    let cc = row.len();
+    if bytes_per_sample == 0 || cc == 0 {
+        return Ok(());
+    }
+    if !cc.is_multiple_of(bytes_per_sample) {
+        return Err(OxiGdalError::Compression(
+            CompressionError::CompressionFailed {
+                message: format!(
+                    "Floating-point predictor: scanline length {cc} is not a multiple of \
+                     sample size {bytes_per_sample}"
+                ),
+            },
+        ));
+    }
+    let sample_count = cc / bytes_per_sample;
+    let stride = samples_per_pixel.max(1);
+
+    // Step 1: byte-plane transpose (most-significant byte plane first).
+    let samples = row.to_vec();
+    for sample in 0..sample_count {
+        for byte in 0..bytes_per_sample {
+            let plane = match byte_order {
+                ByteOrderType::BigEndian => byte,
+                ByteOrderType::LittleEndian => bytes_per_sample - byte - 1,
+            };
+            row[plane * sample_count + sample] = samples[bytes_per_sample * sample + byte];
+        }
+    }
+
+    // Step 2: byte-wise horizontal delta (applied back-to-front, stride = spp).
+    for i in (stride..cc).rev() {
+        row[i] = row[i].wrapping_sub(row[i - stride]);
+    }
+    Ok(())
+}
+
+/// Iterates each scanline of `data` and applies `op` to it.
+fn for_each_row<F>(
+    data: &mut [u8],
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+    width: usize,
+    mut op: F,
+) -> Result<()>
+where
+    F: FnMut(&mut [u8]) -> Result<()>,
+{
+    let row_bytes = width
+        .saturating_mul(samples_per_pixel)
+        .saturating_mul(bytes_per_sample);
+    if row_bytes == 0 {
+        return Ok(());
+    }
+    for row_start in (0..data.len()).step_by(row_bytes) {
+        let row_end = (row_start + row_bytes).min(data.len());
+        op(&mut data[row_start..row_end])?;
+    }
+    Ok(())
+}
+
+/// Applies a predictor in the reverse (decode) direction.
+///
+/// `byte_order` must match the byte order the samples are stored in on disk (i.e. the
+/// TIFF file's own byte order for reads), since multi-byte samples must be reassembled
+/// with carry-propagating arithmetic (horizontal differencing) or byte-plane transposed
+/// (floating-point) rather than treated as independent bytes.
+///
+/// # Errors
+/// Returns an error if the floating-point predictor is requested but a scanline length
+/// is not a whole multiple of the sample size (a corrupt/malformed tile), rather than
+/// silently returning undecoded data.
 pub fn apply_predictor_reverse(
     data: &mut [u8],
     predictor: Predictor,
     bytes_per_sample: usize,
     samples_per_pixel: usize,
     width: usize,
-) {
+    byte_order: ByteOrderType,
+) -> Result<()> {
     match predictor {
-        Predictor::None => {}
+        Predictor::None => Ok(()),
         Predictor::HorizontalDifferencing => {
-            let row_bytes = width * samples_per_pixel * bytes_per_sample;
-            for row_start in (0..data.len()).step_by(row_bytes) {
-                let row_end = (row_start + row_bytes).min(data.len());
-                let row = &mut data[row_start..row_end];
-
-                // Reconstruct original values
-                let pixel_bytes = samples_per_pixel * bytes_per_sample;
-                for i in pixel_bytes..row.len() {
-                    row[i] = row[i].wrapping_add(row[i - pixel_bytes]);
-                }
-            }
+            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
+                undifference_row(row, bytes_per_sample, samples_per_pixel, byte_order);
+                Ok(())
+            })
         }
         Predictor::FloatingPoint => {
-            // Floating-point predictor: more complex, involves byte reordering
-            // This is a simplified placeholder
-            tracing::warn!("Floating-point predictor not fully implemented");
+            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
+                undo_float_predictor_row(row, bytes_per_sample, samples_per_pixel, byte_order)
+            })
         }
     }
 }
 
-/// Applies horizontal differencing predictor (forward, for compression)
+/// Applies a predictor in the forward (encode) direction, for compression.
+///
+/// `byte_order` selects the on-disk byte order the encoded samples will be written in;
+/// callers must pass the same byte order that the resulting file's header declares.
+///
+/// # Errors
+/// Returns an error if the floating-point predictor is requested but a scanline length
+/// is not a whole multiple of the sample size.
 pub fn apply_predictor_forward(
     data: &mut [u8],
     predictor: Predictor,
     bytes_per_sample: usize,
     samples_per_pixel: usize,
     width: usize,
-) {
+    byte_order: ByteOrderType,
+) -> Result<()> {
     match predictor {
-        Predictor::None => {}
+        Predictor::None => Ok(()),
         Predictor::HorizontalDifferencing => {
-            let row_bytes = width * samples_per_pixel * bytes_per_sample;
-            for row_start in (0..data.len()).step_by(row_bytes) {
-                let row_end = (row_start + row_bytes).min(data.len());
-                let row = &mut data[row_start..row_end];
-
-                // Store differences (process backwards to avoid overwriting needed values)
-                let pixel_bytes = samples_per_pixel * bytes_per_sample;
-                for i in (pixel_bytes..row.len()).rev() {
-                    row[i] = row[i].wrapping_sub(row[i - pixel_bytes]);
-                }
-            }
+            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
+                difference_row(row, bytes_per_sample, samples_per_pixel, byte_order);
+                Ok(())
+            })
         }
         Predictor::FloatingPoint => {
-            tracing::warn!("Floating-point predictor not fully implemented");
+            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
+                apply_float_predictor_row(row, bytes_per_sample, samples_per_pixel, byte_order)
+            })
         }
     }
 }
@@ -421,7 +654,7 @@ pub fn compress_webp_with_params(
 /// Converts CMYK to RGB
 #[cfg(feature = "jpeg")]
 fn cmyk_to_rgb(cmyk_data: &[u8]) -> Result<Vec<u8>> {
-    if cmyk_data.len() % 4 != 0 {
+    if !cmyk_data.len().is_multiple_of(4) {
         return Err(OxiGdalError::Compression(CompressionError::InvalidData {
             message: "CMYK data length must be multiple of 4".to_string(),
         }));
@@ -549,10 +782,354 @@ mod tests {
         let mut data = original.clone();
 
         // Apply forward then reverse should give original
-        apply_predictor_forward(&mut data, Predictor::HorizontalDifferencing, 1, 1, 8);
-        apply_predictor_reverse(&mut data, Predictor::HorizontalDifferencing, 1, 1, 8);
+        apply_predictor_forward(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            1,
+            1,
+            8,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("forward predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            1,
+            1,
+            8,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse predictor");
 
         assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_predictor_16bit_roundtrip() {
+        // Single-band, 16-bit samples, little-endian: a round-trip through
+        // forward+reverse must reproduce the original regardless of carries.
+        let original: Vec<u8> = [100i16, 300, -50, 20000, -20000, 7]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            2,
+            1,
+            original.len() / 2,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("forward predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            2,
+            1,
+            original.len() / 2,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse predictor");
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_predictor_reverse_16bit_carry() {
+        // Regression test for the byte-wise-vs-sample-wise bug: a delta that
+        // carries from the low byte into the high byte of a 16-bit sample must
+        // be reconstructed correctly, not silently dropped.
+        //
+        // sample0 = 100 (0x0064), delta1 = 200 (0x00C8) => sample1 must be 300.
+        let mut row = Vec::new();
+        row.extend_from_slice(&100u16.to_le_bytes());
+        row.extend_from_slice(&200u16.to_le_bytes());
+
+        apply_predictor_reverse(
+            &mut row,
+            Predictor::HorizontalDifferencing,
+            2,
+            1,
+            2,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse predictor");
+
+        let sample0 = u16::from_le_bytes([row[0], row[1]]);
+        let sample1 = u16::from_le_bytes([row[2], row[3]]);
+        assert_eq!(sample0, 100);
+        assert_eq!(sample1, 300);
+    }
+
+    #[test]
+    fn test_predictor_32bit_roundtrip() {
+        let original: Vec<u8> = [10i32, 100_000, -5, 2_000_000_000]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            4,
+            1,
+            original.len() / 4,
+            ByteOrderType::BigEndian,
+        )
+        .expect("forward predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            4,
+            1,
+            original.len() / 4,
+            ByteOrderType::BigEndian,
+        )
+        .expect("reverse predictor");
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_predictor_16bit_multiband_roundtrip() {
+        // 2 interleaved bands (samples_per_pixel = 2), so the predictor stride
+        // must skip over the other band's sample, not the adjacent byte.
+        let original: Vec<u8> = [1i16, 2, 3, 4, 5, 6, 7, 8]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            2,
+            2,
+            original.len() / 4,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("forward predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::HorizontalDifferencing,
+            2,
+            2,
+            original.len() / 4,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse predictor");
+
+        assert_eq!(data, original);
+    }
+
+    /// Round-trips a single-band Float32 scanline through the TIFF 6.0
+    /// floating-point predictor (Predictor=3). Forward then reverse must
+    /// reproduce the original bytes bit-for-bit.
+    #[test]
+    fn test_float_predictor_f32_roundtrip_le() {
+        let values: [f32; 6] = [1.0, 1.5, -2.25, 3.125, 1000.0, -0.0001];
+        let original: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            1,
+            values.len(),
+            ByteOrderType::LittleEndian,
+        )
+        .expect("forward float predictor");
+        // Encoded form must differ from the raw bytes (the predictor did work).
+        assert_ne!(data, original, "float predictor must transform the data");
+
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            1,
+            values.len(),
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse float predictor");
+
+        assert_eq!(data, original);
+        // Values must decode exactly.
+        let decoded: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(decoded, values);
+    }
+
+    /// Round-trips a single-band Float64 scanline through the floating-point
+    /// predictor in big-endian byte order.
+    #[test]
+    fn test_float_predictor_f64_roundtrip_be() {
+        let values: [f64; 5] = [1.0, -1.0, 123456.789, f64::MIN_POSITIVE, -42.0];
+        let original: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::FloatingPoint,
+            8,
+            1,
+            values.len(),
+            ByteOrderType::BigEndian,
+        )
+        .expect("forward float predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::FloatingPoint,
+            8,
+            1,
+            values.len(),
+            ByteOrderType::BigEndian,
+        )
+        .expect("reverse float predictor");
+
+        assert_eq!(data, original);
+    }
+
+    /// Round-trips a 3-band (RGB) interleaved Float32 image through the
+    /// floating-point predictor: the byte-wise delta stride must equal
+    /// `samples_per_pixel`, so per-band structure is preserved.
+    #[test]
+    fn test_float_predictor_f32_multiband_roundtrip() {
+        // 2 pixels x 3 bands (interleaved) x 1 row.
+        let values: [f32; 6] = [10.0, 20.0, 30.0, 11.0, 21.0, 31.0];
+        let original: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            3,
+            2, // width = 2 pixels
+            ByteOrderType::LittleEndian,
+        )
+        .expect("forward float predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            3,
+            2,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse float predictor");
+
+        assert_eq!(data, original);
+    }
+
+    /// Round-trips multiple scanlines (a full tile) so the per-row iteration
+    /// in `for_each_row` is exercised for the floating-point predictor.
+    #[test]
+    fn test_float_predictor_multirow_roundtrip() {
+        // 4 columns x 3 rows, single band Float32.
+        let width = 4usize;
+        let rows = 3usize;
+        let values: Vec<f32> = (0..(width * rows)).map(|i| i as f32 * 0.5 - 3.0).collect();
+        let original: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut data = original.clone();
+
+        apply_predictor_forward(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            1,
+            width,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("forward float predictor");
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            1,
+            width,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse float predictor");
+
+        assert_eq!(data, original);
+    }
+
+    /// Decodes a hand-constructed Predictor=3 Float32 scanline built exactly as
+    /// libtiff's `fpDiff` would (byte-plane transpose, MSB plane first, then a
+    /// byte-wise delta with stride = samples_per_pixel) and asserts the recovered
+    /// floats are bit-exact. This locks the on-disk format so externally produced
+    /// (GDAL/libtiff) tiles decode correctly, not just our own round-trips.
+    #[test]
+    fn test_float_predictor_decodes_libtiff_layout() {
+        // Two little-endian Float32 samples: 1.0 and 2.0.
+        // 1.0f32 LE bytes: 00 00 80 3F ; 2.0f32 LE bytes: 00 00 00 40.
+        let s0 = 1.0f32.to_le_bytes(); // [0x00,0x00,0x80,0x3F]
+        let s1 = 2.0f32.to_le_bytes(); // [0x00,0x00,0x00,0x40]
+
+        // Byte-plane transpose, MSB plane first (plane 0 = byte index 3 of each LE sample):
+        //   plane0 = [s0[3], s1[3]] = [0x3F, 0x40]
+        //   plane1 = [s0[2], s1[2]] = [0x80, 0x00]
+        //   plane2 = [s0[1], s1[1]] = [0x00, 0x00]
+        //   plane3 = [s0[0], s1[0]] = [0x00, 0x00]
+        let transposed = [
+            s0[3], s1[3], // plane0
+            s0[2], s1[2], // plane1
+            s0[1], s1[1], // plane2
+            s0[0], s1[0], // plane3
+        ];
+        // Apply byte-wise forward delta (stride = 1), back-to-front, to get the
+        // on-disk stream.
+        let mut on_disk = transposed;
+        for i in (1..on_disk.len()).rev() {
+            on_disk[i] = on_disk[i].wrapping_sub(on_disk[i - 1]);
+        }
+
+        // Decode through the public reverse predictor.
+        let mut data = on_disk.to_vec();
+        apply_predictor_reverse(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            1,
+            2,
+            ByteOrderType::LittleEndian,
+        )
+        .expect("reverse float predictor");
+
+        let decoded: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(decoded, vec![1.0f32, 2.0f32]);
+    }
+
+    /// A malformed floating-point tile (scanline length not a multiple of the
+    /// sample size) must return an explicit error, never silently pass through
+    /// undecoded bytes.
+    #[test]
+    fn test_float_predictor_rejects_ragged_row() {
+        // width=2, spp=1, bps=4 => expected row length 8, but supply 6 bytes.
+        let mut data = vec![0u8; 6];
+        let err = apply_predictor_reverse(
+            &mut data,
+            Predictor::FloatingPoint,
+            4,
+            1,
+            2,
+            ByteOrderType::LittleEndian,
+        )
+        .expect_err("ragged float scanline must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Floating-point predictor"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[cfg(feature = "deflate")]
@@ -805,6 +1382,55 @@ mod tests {
             msg.contains("WebP") || msg.contains("webp") || msg.contains("RIFF"),
             "expected WebP-specific decode error, got: {}",
             msg
+        );
+    }
+
+    /// Builds a minimal, checksum-free LERC2 v2 constant-image blob (2x2 Float,
+    /// all valid, `zMin == zMax`) and verifies it decodes through the public
+    /// `decompress` dispatch for `Compression::Lerc` (TIFF tag 34887) into native
+    /// little-endian f32 sample bytes — not the `UnknownMethod` fall-through.
+    #[test]
+    fn test_lerc_dispatch_decodes_constant_image() {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(b"Lerc2 ");
+        blob.extend_from_slice(&2i32.to_le_bytes()); // version 2 (no checksum)
+        blob.extend_from_slice(&2i32.to_le_bytes()); // nRows
+        blob.extend_from_slice(&2i32.to_le_bytes()); // nCols
+        blob.extend_from_slice(&4i32.to_le_bytes()); // numValidPixel
+        blob.extend_from_slice(&8i32.to_le_bytes()); // microBlockSize
+        let blobsize_pos = blob.len();
+        blob.extend_from_slice(&0i32.to_le_bytes()); // blobSize placeholder
+        blob.extend_from_slice(&6i32.to_le_bytes()); // dt = Float
+        blob.extend_from_slice(&0.0f64.to_le_bytes()); // maxZError
+        blob.extend_from_slice(&7.0f64.to_le_bytes()); // zMin
+        blob.extend_from_slice(&7.0f64.to_le_bytes()); // zMax == zMin => const
+        blob.extend_from_slice(&0i32.to_le_bytes()); // numBytesMask = 0 (all valid)
+        let blob_size = blob.len() as i32;
+        blob[blobsize_pos..blobsize_pos + 4].copy_from_slice(&blob_size.to_le_bytes());
+
+        // TIFF tag value must be 34887.
+        assert_eq!(Compression::Lerc as u16, 34887);
+
+        let out = decompress(&blob, Compression::Lerc, 16).expect("LERC dispatch decodes");
+        // 2x2 single-band Float => 4 samples * 4 bytes = 16 bytes, all == 7.0f32.
+        assert_eq!(out.len(), 16);
+        let decoded: Vec<f32> = out
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(decoded, vec![7.0f32; 4]);
+    }
+
+    /// LERC encoding to the interoperable format is intentionally unimplemented:
+    /// the compress dispatch must return an explicit typed error (never a
+    /// non-standard blob written under the LERC tag).
+    #[test]
+    fn test_lerc_compress_returns_typed_error() {
+        let err = compress(&[0u8; 16], Compression::Lerc).expect_err("LERC encode unsupported");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("LERC encoding") && msg.contains("not implemented"),
+            "expected a typed LERC-unsupported error, got: {msg}"
         );
     }
 

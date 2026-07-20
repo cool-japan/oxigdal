@@ -41,6 +41,7 @@ distillation = []  # Knowledge distillation support
 
 # Advanced ML features (Pure Rust - COOLJAPAN compliant)
 cloud-removal = ["dep:scirs2-vision"]  # Cloud and shadow removal
+model-download = ["dep:reqwest"]
 # TEMPORARILY DISABLED: Optional dependency resolution issues with workspace features
 # temporal = ["dep:scirs2-series", "dep:oxigdal-ml-foundation", "oxigdal-ml-foundation?/ml", "dep:oxigdal-temporal", "oxigdal-temporal?/timeseries"]  # Temporal modeling (LSTM, forecasting)
 
@@ -59,6 +60,8 @@ oxionnx = { workspace = true }
 # Geometry and GeoJSON
 geojson = { workspace = true }
 geo-types.workspace = true
+# Geometry algorithms (Douglas-Peucker simplification, polygon union) - Pure Rust
+geo = { workspace = true }
 
 # Numerical operations — ndarray required directly by ort crate (ONNX Runtime public API uses ndarray types)
 ndarray = { workspace = true }
@@ -81,7 +84,7 @@ indicatif = { workspace = true }
 sysinfo = { workspace = true }
 
 # HTTP client for model downloads
-reqwest = { workspace = true }
+reqwest = { workspace = true, optional = true }
 sha2 = { workspace = true }
 
 # GPU backend detection (Pure Rust - COOLJAPAN compliant)
@@ -136,3 +139,15 @@ harness = false
 
 [lints]
 workspace = true
+
+# NOTE: `cuda` (oxionnx/cuda, requires the CUDA toolkit) and `gpu` (which
+# enables `cuda`) are excluded because they require a non-Rust toolchain
+# docs.rs does not provide. `model-download` is excluded because it pulls
+# reqwest -> rustls -> aws-lc-sys (C/asm). `vulkan`/`metal`/`opencl`/`webgpu`/
+# `rocm` stay Pure Rust (dynamic-loading bindings only, no build-time C libs).
+[package.metadata.docs.rs]
+features = [
+    "std", "rocm", "vulkan", "metal", "opencl", "webgpu",
+    "quantization", "pruning", "distillation", "cloud-removal",
+]
+rustdoc-args = ["--cfg", "docsrs"]

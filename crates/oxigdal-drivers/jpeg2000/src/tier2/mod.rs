@@ -18,10 +18,12 @@
 //! so that existing code that references `crate::tier2::PacketDecoder` etc.
 //! continues to compile.
 
+pub mod layout;
 pub mod packet;
 pub mod progression;
 pub mod rate_control;
 pub mod roi;
+pub mod tile;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports

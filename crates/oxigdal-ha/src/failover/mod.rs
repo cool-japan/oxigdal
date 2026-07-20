@@ -13,6 +13,7 @@ pub mod client_redirect;
 pub mod detection;
 pub mod election;
 pub mod promotion;
+pub mod transport;
 
 use crate::error::HaResult;
 use async_trait::async_trait;

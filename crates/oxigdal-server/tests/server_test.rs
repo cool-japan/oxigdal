@@ -18,6 +18,8 @@ fn create_test_config() -> Config {
             timeout_seconds: 30,
             enable_cors: true,
             cors_origins: vec![],
+            metrics_enabled: false,
+            metrics_port: 0,
         },
         cache: oxigdal_server::CacheConfig {
             memory_size_mb: 10, // 10 MB
@@ -276,6 +278,111 @@ fn test_invalid_zoom_levels() {
 
     // Should fail validation due to invalid zoom levels
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn test_docker_shipped_server_toml_matches_real_schema() {
+    // Regression test: docker/config/server.toml is the file actually baked into
+    // docker/Dockerfile.server and bind-mounted by docker-compose.yml. It must parse against
+    // the real `Config` schema (every struct derives `deny_unknown_fields`), not just look
+    // plausible.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = std::path::Path::new(manifest_dir)
+        .join("../../docker/config/server.toml")
+        .canonicalize()
+        .expect("docker/config/server.toml should exist");
+
+    let config = Config::from_file(&path).expect("docker/config/server.toml must be valid");
+    assert!(config.server.metrics_enabled);
+    assert_eq!(config.server.metrics_port, 8081);
+    assert_eq!(config.cache.memory_size_mb, 1024);
+}
+
+#[test]
+fn test_build_router_does_not_panic_on_route_path_syntax() {
+    // Regression test: axum 0.8 panics at router-build time if a route path segment starts
+    // with `:` (the axum 0.6/0.7 param syntax); routes must use `{param}` instead. Calling
+    // `build_router()` here (rather than only `TileServer::new`) exercises that code path.
+    let mut config = create_test_config();
+    config.server.metrics_enabled = false;
+    let server = TileServer::new(config).expect("server creation");
+    let _router = server.build_router();
+}
+
+/// Reserve an ephemeral TCP port by binding then immediately dropping the listener.
+///
+/// Best-effort only (a small TOCTOU race is inherent to this pattern), but sufficient for
+/// picking two independent, non-conflicting ports for a short-lived integration test.
+fn pick_free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .expect("failed to reserve an ephemeral port")
+}
+
+#[tokio::test]
+async fn test_metrics_endpoint_serves_prometheus_text_on_its_own_port() {
+    let mut config = create_test_config();
+    config.server.port = pick_free_port();
+    config.server.metrics_enabled = true;
+    config.server.metrics_port = pick_free_port();
+    let metrics_port = config.server.metrics_port;
+    let app_port = config.server.port;
+
+    let server = TileServer::new(config).expect("server creation");
+    tokio::spawn(async move {
+        let _ = server.serve().await;
+    });
+
+    // Give both listeners a moment to bind before issuing requests.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let client = reqwest::Client::new();
+
+    // The main app router should still work (regression coverage for the route-syntax fix).
+    let health = client
+        .get(format!("http://127.0.0.1:{app_port}/health"))
+        .send()
+        .await
+        .expect("health request should succeed");
+    assert_eq!(health.status(), reqwest::StatusCode::OK);
+
+    let metrics_response = client
+        .get(format!("http://127.0.0.1:{metrics_port}/metrics"))
+        .send()
+        .await
+        .expect("metrics request should succeed");
+
+    assert_eq!(metrics_response.status(), reqwest::StatusCode::OK);
+    let content_type = metrics_response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .expect("content-type header")
+        .to_str()
+        .expect("content-type is ascii");
+    assert!(content_type.starts_with("text/plain"));
+
+    let body = metrics_response.text().await.expect("metrics body");
+
+    // Every metric name the shipped alert rules / Grafana dashboard assume must be present.
+    for expected_metric in [
+        "http_requests_total",
+        "http_request_duration_seconds_bucket",
+        "http_connections_active",
+        "cache_hits_total",
+        "cache_requests_total",
+        "tile_generation_total",
+        "tile_generation_failures_total",
+        "wms_requests_total",
+        "process_cpu_seconds_total",
+        "process_resident_memory_bytes",
+        "oxigdal_version_info",
+    ] {
+        assert!(
+            body.contains(expected_metric),
+            "expected /metrics body to contain `{expected_metric}`, got:\n{body}"
+        );
+    }
 }
 
 #[test]

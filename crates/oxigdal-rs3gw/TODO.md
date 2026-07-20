@@ -2,7 +2,7 @@
 
 > **Purpose:** rs3gw storage backend for OxiGDAL - High-performance cloud storage access (Pure-Rust S3-compatible gateway wrapper; backends: Local/S3/MinIO/GCS/Azure; Zarr store; LRU/ML cache; encryption; dedup).
 > **Status (2026-05-16):** 3,415 Rust LoC · 39 tests · 0 literal-stub markers — gaps are feature parity with the underlying `rs3gw = 0.2.1` upgrade and missing modules advertised in doc.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 - [ ] Update stale `RS3GW_VERSION` constant to track the upgraded `rs3gw` dependency

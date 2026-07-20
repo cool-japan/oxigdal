@@ -27,6 +27,11 @@ services:
       - OXIGDAL_PORT=8080
       - OXIGDAL_DATA_DIR=/data
       - OXIGDAL_CACHE_DIR=/cache
+      # NOTE: OXIGDAL_CACHE_SIZE / OXIGDAL_MAX_TILE_AGE are not currently read by
+      # crates/oxigdal-server (its CLI only binds OXIGDAL_HOST/PORT/WORKERS/LOG_LEVEL/CONFIG
+      # via clap's `env` attribute - see src/main.rs). Cache sizing/TTL is controlled by
+      # [cache] in the mounted server.toml (docker/config/server.toml) instead; these two
+      # vars are kept here as documentation of intent pending that CLI gap being closed.
       - OXIGDAL_CACHE_SIZE=${OXIGDAL_CACHE_SIZE:-1024}
       - OXIGDAL_MAX_TILE_AGE=${OXIGDAL_MAX_TILE_AGE:-3600}
     healthcheck:

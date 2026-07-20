@@ -18,7 +18,6 @@ WORKDIR /build
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY benchmarks ./benchmarks
 
 # Build CLI in release mode with optimizations
 RUN cargo build --release --bin oxigdal \
@@ -59,9 +58,12 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 ENTRYPOINT ["oxigdal"]
 CMD ["--help"]
 
+# Build-time version, defaulting to the last released version; see docker/build.sh.
+ARG OXIGDAL_VERSION=0.1.7
+
 LABEL org.opencontainers.image.title="OxiGDAL CLI" \
       org.opencontainers.image.description="Command-line interface for OxiGDAL geospatial operations" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
       org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="0.1.0"
+      org.opencontainers.image.version="${OXIGDAL_VERSION}"

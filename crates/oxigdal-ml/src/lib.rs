@@ -14,9 +14,11 @@
 //!
 //! # Optional Features
 //!
-//! - `gpu` - Enable CUDA and TensorRT GPU acceleration
-//! - `directml` - Enable DirectML support (Windows)
-//! - `coreml` - Enable CoreML support (macOS/iOS)
+//! - `gpu` / `cuda` / `rocm` - GPU acceleration backends
+//! - `vulkan` / `metal` / `opencl` / `webgpu` - Additional compute backends
+//! - `quantization` / `pruning` / `distillation` - Model optimization
+//! - `cloud-removal` - Cloud and shadow removal (Pure Rust)
+//! - `model-download` - Download models over HTTP
 //!
 //! # Example: Image Segmentation
 //!

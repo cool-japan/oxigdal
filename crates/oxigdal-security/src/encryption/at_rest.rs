@@ -41,7 +41,13 @@ impl AtRestEncryptor {
     }
 
     /// Generate a random key for the given algorithm.
-    pub fn generate_key(algorithm: EncryptionAlgorithm) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecurityError::Encryption`] if the OS RNG fails to fill
+    /// the key buffer (e.g. a sandboxed/restricted environment lacking
+    /// `/dev/urandom` or the `getrandom` syscall).
+    pub fn generate_key(algorithm: EncryptionAlgorithm) -> Result<Vec<u8>> {
         let mut key = vec![
             0u8;
             match algorithm {
@@ -49,8 +55,9 @@ impl AtRestEncryptor {
                 EncryptionAlgorithm::ChaCha20Poly1305 => 32,
             }
         ];
-        getrandom::fill(&mut key).expect("getrandom failed");
-        key
+        getrandom::fill(&mut key)
+            .map_err(|e| SecurityError::encryption(format!("Failed to generate key: {}", e)))?;
+        Ok(key)
     }
 
     /// Encrypt data.
@@ -91,14 +98,15 @@ impl AtRestEncryptor {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        getrandom::fill(&mut nonce_bytes).expect("getrandom failed");
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        getrandom::fill(&mut nonce_bytes)
+            .map_err(|e| SecurityError::encryption(format!("Failed to generate nonce: {}", e)))?;
+        let nonce = Nonce::from(nonce_bytes);
 
         // Encrypt with optional AAD
         let ciphertext = if let Some(aad_data) = aad {
             cipher
                 .encrypt(
-                    nonce,
+                    &nonce,
                     aes_gcm::aead::Payload {
                         msg: plaintext,
                         aad: aad_data,
@@ -107,7 +115,7 @@ impl AtRestEncryptor {
                 .map_err(|e| SecurityError::encryption(format!("Encryption failed: {}", e)))?
         } else {
             cipher
-                .encrypt(nonce, plaintext)
+                .encrypt(&nonce, plaintext)
                 .map_err(|e| SecurityError::encryption(format!("Encryption failed: {}", e)))?
         };
 
@@ -132,12 +140,13 @@ impl AtRestEncryptor {
             )));
         }
 
-        let nonce = Nonce::from_slice(&encrypted.metadata.iv);
+        let nonce = Nonce::try_from(encrypted.metadata.iv.as_slice())
+            .map_err(|_| SecurityError::decryption("Invalid nonce bytes"))?;
 
         let plaintext = if let Some(ref aad) = encrypted.metadata.aad {
             cipher
                 .decrypt(
-                    nonce,
+                    &nonce,
                     aes_gcm::aead::Payload {
                         msg: &encrypted.ciphertext,
                         aad,
@@ -146,7 +155,7 @@ impl AtRestEncryptor {
                 .map_err(|e| SecurityError::decryption(format!("Decryption failed: {}", e)))?
         } else {
             cipher
-                .decrypt(nonce, encrypted.ciphertext.as_ref())
+                .decrypt(&nonce, encrypted.ciphertext.as_ref())
                 .map_err(|e| SecurityError::decryption(format!("Decryption failed: {}", e)))?
         };
 
@@ -159,14 +168,15 @@ impl AtRestEncryptor {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        getrandom::fill(&mut nonce_bytes).expect("getrandom failed");
-        let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
+        getrandom::fill(&mut nonce_bytes)
+            .map_err(|e| SecurityError::encryption(format!("Failed to generate nonce: {}", e)))?;
+        let nonce = chacha20poly1305::Nonce::from(nonce_bytes);
 
         // Encrypt with optional AAD
         let ciphertext = if let Some(aad_data) = aad {
             cipher
                 .encrypt(
-                    nonce,
+                    &nonce,
                     chacha20poly1305::aead::Payload {
                         msg: plaintext,
                         aad: aad_data,
@@ -175,7 +185,7 @@ impl AtRestEncryptor {
                 .map_err(|e| SecurityError::encryption(format!("Encryption failed: {}", e)))?
         } else {
             cipher
-                .encrypt(nonce, plaintext)
+                .encrypt(&nonce, plaintext)
                 .map_err(|e| SecurityError::encryption(format!("Encryption failed: {}", e)))?
         };
 
@@ -200,12 +210,13 @@ impl AtRestEncryptor {
             )));
         }
 
-        let nonce = chacha20poly1305::Nonce::from_slice(&encrypted.metadata.iv);
+        let nonce = chacha20poly1305::Nonce::try_from(encrypted.metadata.iv.as_slice())
+            .map_err(|_| SecurityError::decryption("Invalid nonce bytes"))?;
 
         let plaintext = if let Some(ref aad) = encrypted.metadata.aad {
             cipher
                 .decrypt(
-                    nonce,
+                    &nonce,
                     chacha20poly1305::aead::Payload {
                         msg: &encrypted.ciphertext,
                         aad,
@@ -214,7 +225,7 @@ impl AtRestEncryptor {
                 .map_err(|e| SecurityError::decryption(format!("Decryption failed: {}", e)))?
         } else {
             cipher
-                .decrypt(nonce, encrypted.ciphertext.as_ref())
+                .decrypt(&nonce, encrypted.ciphertext.as_ref())
                 .map_err(|e| SecurityError::decryption(format!("Decryption failed: {}", e)))?
         };
 
@@ -297,8 +308,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_generate_key_returns_result_with_correct_length_and_uniqueness() {
+        // Regression test: `generate_key` used to be infallible (`Vec<u8>`)
+        // and panicked via `.expect("getrandom failed")` on OS RNG failure.
+        // It must now be fallible and surface a typed `SecurityError`
+        // instead of panicking.
+        let key1 = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("generate_key should succeed under normal conditions");
+        let key2 = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("generate_key should succeed under normal conditions");
+
+        assert_eq!(key1.len(), 32);
+        assert_eq!(key2.len(), 32);
+        // Keys should be independently random, not deterministic/reused.
+        assert_ne!(key1, key2);
+
+        let chacha_key = AtRestEncryptor::generate_key(EncryptionAlgorithm::ChaCha20Poly1305)
+            .expect("generate_key should succeed under normal conditions");
+        assert_eq!(chacha_key.len(), 32);
+    }
+
+    #[test]
     fn test_aes_gcm_encryption() {
-        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encryptor =
             AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, key, "test-key".to_string())
                 .expect("Failed to create encryptor");
@@ -317,7 +350,8 @@ mod tests {
 
     #[test]
     fn test_aes_gcm_with_aad() {
-        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encryptor =
             AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, key, "test-key".to_string())
                 .expect("Failed to create encryptor");
@@ -334,7 +368,8 @@ mod tests {
 
     #[test]
     fn test_chacha_encryption() {
-        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::ChaCha20Poly1305);
+        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::ChaCha20Poly1305)
+            .expect("Failed to generate key");
         let encryptor = AtRestEncryptor::new(
             EncryptionAlgorithm::ChaCha20Poly1305,
             key,
@@ -359,7 +394,8 @@ mod tests {
 
     #[test]
     fn test_field_encryptor_string() {
-        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encryptor =
             AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, key, "test-key".to_string())
                 .expect("Failed to create encryptor");
@@ -380,7 +416,8 @@ mod tests {
 
     #[test]
     fn test_encrypt_in_place() {
-        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encryptor =
             AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, key, "test-key".to_string())
                 .expect("Failed to create encryptor");

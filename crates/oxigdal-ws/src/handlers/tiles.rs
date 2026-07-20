@@ -66,11 +66,11 @@ impl TileHandler {
             let client_id = &subscription.client_id;
 
             // Check backpressure
-            if let Some(controller) = self.backpressure.get(client_id) {
-                if controller.should_drop() {
-                    warn!("Dropping tile for client {} due to backpressure", client_id);
-                    continue;
-                }
+            if let Some(controller) = self.backpressure.get(client_id)
+                && controller.should_drop()
+            {
+                warn!("Dropping tile for client {} due to backpressure", client_id);
+                continue;
             }
 
             // Get tile data (with optional delta encoding)

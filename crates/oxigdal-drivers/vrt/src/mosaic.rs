@@ -59,10 +59,22 @@ impl MosaicCompositor {
             if src_end <= source.len() && dest_end <= dest.len() {
                 match self.mode {
                     BlendMode::FirstValid => {
-                        // Copy only if destination is zero (not set)
-                        for i in 0..copy_bytes {
-                            if dest[dest_start + i] == 0 {
-                                dest[dest_start + i] = source[src_start + i];
+                        // Copy only if the destination *sample* is still unset.
+                        // We must test whole `bytes_per_pixel`-wide samples, not
+                        // individual bytes: a zero byte inside an already-written
+                        // multi-byte sample (e.g. the high byte of a small
+                        // UInt16, or any zero byte of a Float32) must NOT be
+                        // overwritten, or the composite becomes a byte-mixed
+                        // value belonging to neither source.
+                        let step = bytes_per_pixel.max(1);
+                        for i in (0..copy_bytes).step_by(step) {
+                            let end = (i + step).min(copy_bytes);
+                            let sample_unset = dest[dest_start + i..dest_start + end]
+                                .iter()
+                                .all(|&b| b == 0);
+                            if sample_unset {
+                                dest[dest_start + i..dest_start + end]
+                                    .copy_from_slice(&source[src_start + i..src_start + end]);
                             }
                         }
                     }
@@ -364,6 +376,103 @@ mod tests {
         assert_eq!(dest[1], 2);
         assert_eq!(dest[4], 3);
         assert_eq!(dest[5], 4);
+    }
+
+    /// Regression: `FirstValid` must treat whole multi-byte samples atomically.
+    /// A UInt16 pixel already written by the first source (value 256, LE bytes
+    /// `[0x00, 0x01]`) must not be partially overwritten by a later source whose
+    /// low byte is non-zero (value 2, LE bytes `[0x02, 0x00]`). The buggy
+    /// per-byte version produced 258 (`[0x02, 0x01]`), belonging to neither
+    /// source.
+    #[test]
+    fn test_first_valid_preserves_multibyte_sample() {
+        let compositor = MosaicCompositor::new(); // defaults to FirstValid
+        let params = CompositeParams::new(0, 0, 1, 1, 1, RasterDataType::UInt16);
+
+        let mut dest = vec![0u8; 2];
+
+        // First source: value 256.
+        let src1 = 256u16.to_le_bytes().to_vec();
+        compositor
+            .composite(&src1, &mut dest, &params)
+            .expect("composite source 1");
+        assert_eq!(u16::from_le_bytes([dest[0], dest[1]]), 256);
+
+        // Second source overlaps the same pixel with value 2.
+        let src2 = 2u16.to_le_bytes().to_vec();
+        compositor
+            .composite(&src2, &mut dest, &params)
+            .expect("composite source 2");
+
+        // The first source's sample must be preserved exactly (not byte-mixed).
+        assert_eq!(
+            u16::from_le_bytes([dest[0], dest[1]]),
+            256,
+            "FirstValid corrupted a multi-byte sample"
+        );
+    }
+
+    /// Regression: a Float32 sample containing interior zero bytes must not be
+    /// clobbered byte-by-byte by a later source.
+    #[test]
+    fn test_first_valid_preserves_float_sample() {
+        let compositor = MosaicCompositor::new();
+        let params = CompositeParams::new(0, 0, 1, 1, 1, RasterDataType::Float32);
+
+        let mut dest = vec![0u8; 4];
+
+        // 1.0f32 = [0x00, 0x00, 0x80, 0x3F] — two interior zero bytes.
+        let src1 = 1.0f32.to_le_bytes().to_vec();
+        compositor
+            .composite(&src1, &mut dest, &params)
+            .expect("composite source 1");
+        assert_eq!(
+            f32::from_le_bytes([dest[0], dest[1], dest[2], dest[3]]),
+            1.0
+        );
+
+        // Second source has non-zero bytes exactly where the first has zeros.
+        let src2 = f32::from_le_bytes([0x11, 0x22, 0x00, 0x40])
+            .to_le_bytes()
+            .to_vec();
+        compositor
+            .composite(&src2, &mut dest, &params)
+            .expect("composite source 2");
+
+        assert_eq!(
+            f32::from_le_bytes([dest[0], dest[1], dest[2], dest[3]]),
+            1.0,
+            "FirstValid corrupted a float sample"
+        );
+    }
+
+    /// Sanity: a genuinely unset pixel is still filled by a later source.
+    #[test]
+    fn test_first_valid_fills_unset_sample() {
+        let compositor = MosaicCompositor::new();
+        // Two UInt16 pixels in a row (dest_width = 2).
+        let params = CompositeParams::new(0, 0, 2, 1, 2, RasterDataType::UInt16);
+
+        let mut dest = vec![0u8; 4];
+        // First source sets only pixel 0 (pixel 1 supplied as 0 = unset).
+        let mut src1 = Vec::new();
+        src1.extend_from_slice(&700u16.to_le_bytes());
+        src1.extend_from_slice(&0u16.to_le_bytes());
+        compositor
+            .composite(&src1, &mut dest, &params)
+            .expect("composite source 1");
+
+        // Second source covers both pixels.
+        let mut src2 = Vec::new();
+        src2.extend_from_slice(&1u16.to_le_bytes());
+        src2.extend_from_slice(&999u16.to_le_bytes());
+        compositor
+            .composite(&src2, &mut dest, &params)
+            .expect("composite source 2");
+
+        // Pixel 0 keeps the first source's value; pixel 1 (was unset) is filled.
+        assert_eq!(u16::from_le_bytes([dest[0], dest[1]]), 700);
+        assert_eq!(u16::from_le_bytes([dest[2], dest[3]]), 999);
     }
 
     #[test]

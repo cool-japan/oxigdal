@@ -262,13 +262,83 @@ pub struct Backoff {
     config: RetryConfig,
     /// Current attempt number
     attempt: usize,
+    /// Per-instance jitter RNG state (LCG), seeded from process/time/stack
+    /// entropy at construction so independent `Backoff` instances -- and
+    /// independent process restarts -- do not replay identical jitter
+    /// sequences (see `entropy_seed`).
+    rng_state: u64,
 }
 
 impl Backoff {
     /// Creates a new backoff calculator
     #[must_use]
     pub fn new(config: RetryConfig) -> Self {
-        Self { config, attempt: 0 }
+        Self {
+            config,
+            attempt: 0,
+            rng_state: Self::entropy_seed(),
+        }
+    }
+
+    /// Derives a per-instance, non-zero LCG seed from process/time/stack
+    /// entropy.
+    ///
+    /// This is deliberately `std`-only (no `rand`/`getrandom` dependency) per
+    /// the Pure Rust / minimal-dependency policy; it does not need to be
+    /// cryptographically secure, only to avoid the two failure modes of the
+    /// previous fixed-zero static seed: (1) the first jitter draw of every
+    /// fresh process being exactly zero, and (2) identical jitter sequences
+    /// being replayed across correlated process restarts (e.g. a fleet-wide
+    /// redeploy), which defeats jitter's anti-thundering-herd purpose.
+    fn entropy_seed() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // A per-process monotonic disambiguator. This is *not* the seed by
+        // itself (a predictable counter would be a poor RNG seed on its
+        // own) -- it is mixed with time/pid/stack-address entropy below so
+        // that two `Backoff`s constructed back-to-back in the same process
+        // (faster than the clock's resolution can distinguish) still get
+        // different seeds, while cross-process correlation is still broken
+        // by the time/pid components varying across restarts.
+        static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let pid = u64::from(std::process::id());
+        // Mix in a stack address for additional entropy across processes
+        // that happen to share a PID namespace view or clock.
+        let stack_marker: u8 = 0;
+        let addr = std::ptr::addr_of!(stack_marker) as u64;
+
+        // splitmix64-style mixing so the combined bits are well distributed
+        // rather than just linearly XORed.
+        let mixed = nanos
+            ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ addr.rotate_left(17)
+            ^ counter.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+        let mut z = mixed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+
+        // Avoid a zero seed: it would reproduce the original bug's
+        // degenerate first LCG output (`0 * 1664525 + 1013904223`, whose
+        // upper 32 bits happen to be zero).
+        if z == 0 { 1 } else { z }
+    }
+
+    /// Advances the per-instance LCG and returns a value in `[0.0, 1.0)`.
+    fn next_random(&mut self) -> f64 {
+        let next = self
+            .rng_state
+            .wrapping_mul(1664525)
+            .wrapping_add(1013904223);
+        self.rng_state = next;
+        (next >> 32) as f64 / u32::MAX as f64
     }
 
     /// Calculates the next backoff duration
@@ -281,7 +351,7 @@ impl Backoff {
 
         let backoff = if self.config.jitter {
             // Add jitter (0% to 50% of base)
-            let jitter_factor = 1.0 + (rand() * 0.5);
+            let jitter_factor = 1.0 + (self.next_random() * 0.5);
             base * jitter_factor
         } else {
             base
@@ -293,22 +363,13 @@ impl Backoff {
     }
 
     /// Resets the backoff state
+    ///
+    /// Note: this resets the retry attempt counter but deliberately leaves
+    /// the RNG state untouched, so a reused `Backoff` keeps drawing fresh
+    /// jitter values rather than replaying its sequence from the start.
     pub fn reset(&mut self) {
         self.attempt = 0;
     }
-}
-
-/// Simple pseudo-random number generator for jitter
-/// Uses a basic LCG (Linear Congruential Generator)
-fn rand() -> f64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEED: AtomicU64 = AtomicU64::new(0);
-
-    let seed = SEED.load(Ordering::Relaxed);
-    let next = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-    SEED.store(next, Ordering::Relaxed);
-
-    (next >> 32) as f64 / u32::MAX as f64
 }
 
 /// Determines if an error is retryable
@@ -540,6 +601,52 @@ mod tests {
 
         assert!(d1 < d2);
         assert!(d2 < d3);
+    }
+
+    #[test]
+    fn test_backoff_first_jitter_is_not_deterministic_zero() {
+        // Regression test: the old fixed-zero static seed made the very
+        // first jitter draw of every fresh process exactly 0.0 (i.e. no
+        // jitter at all on the first backoff). With a per-instance,
+        // entropy-seeded LCG the first jitter factor should differ from the
+        // no-jitter base virtually always.
+        let config = RetryConfig::new()
+            .with_initial_backoff(Duration::from_millis(1000))
+            .with_backoff_multiplier(1.0)
+            .with_jitter(true);
+        let mut jittered = Backoff::new(config.clone());
+        let jittered_first = jittered.next();
+
+        let mut unjittered = Backoff::new(config.with_jitter(false));
+        let base_first = unjittered.next();
+
+        assert_ne!(
+            jittered_first, base_first,
+            "first jittered backoff should not exactly equal the unjittered base"
+        );
+    }
+
+    #[test]
+    fn test_backoff_independent_instances_diverge() {
+        // Regression test: two independently constructed `Backoff`s
+        // (simulating two process starts) must not replay an identical
+        // jitter sequence -- the old implementation used one process-wide
+        // static seed shared by every instance.
+        let config = RetryConfig::new()
+            .with_initial_backoff(Duration::from_millis(1000))
+            .with_backoff_multiplier(1.0)
+            .with_jitter(true);
+
+        let mut backoff_a = Backoff::new(config.clone());
+        let mut backoff_b = Backoff::new(config);
+
+        let sequence_a: Vec<Duration> = (0..5).map(|_| backoff_a.next()).collect();
+        let sequence_b: Vec<Duration> = (0..5).map(|_| backoff_b.next()).collect();
+
+        assert_ne!(
+            sequence_a, sequence_b,
+            "independently constructed Backoff instances must not produce identical jitter sequences"
+        );
     }
 
     #[test]

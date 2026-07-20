@@ -134,11 +134,17 @@ impl Middleware for RequestIdMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()> {
         if self.config.propagate_to_response {
-            // Copy request ID to response if available from context
-            // In a real implementation, this would come from request context
-            let id = self.generate_id();
+            // Propagate the same request ID that `before_request` attached to the inbound
+            // request, so a client can correlate its request with the response. Only
+            // generate a fresh one as a fallback if it's genuinely missing.
+            let id = request
+                .headers
+                .get(&self.config.header_name)
+                .cloned()
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| self.generate_id());
             response
                 .headers
                 .insert(self.config.header_name.clone(), id);
@@ -347,9 +353,11 @@ impl Middleware for EnhancedLoggingMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
-        // Find corresponding request timing
-        let request_id = response
+    async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()> {
+        // Find corresponding request timing, keyed by the same request ID `before_request`
+        // recorded it under (read from the request, not the response -- nothing in this
+        // middleware ever writes REQUEST_ID_HEADER onto the response).
+        let request_id = request
             .headers
             .get(REQUEST_ID_HEADER)
             .cloned()
@@ -560,8 +568,10 @@ impl Middleware for TimeoutMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
-        let request_id = response
+    async fn after_response(&self, request: &Request, _response: &mut Response) -> Result<()> {
+        // Read the request ID from the request (the same one `before_request` recorded it
+        // under) -- this middleware never writes REQUEST_ID_HEADER onto the response.
+        let request_id = request
             .headers
             .get(REQUEST_ID_HEADER)
             .cloned()
@@ -813,7 +823,7 @@ impl Middleware for ErrorHandlingMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, _request: &Request, response: &mut Response) -> Result<()> {
         if response.status >= 400 {
             self.stats.record_error(response.status);
 
@@ -1111,6 +1121,13 @@ impl Middleware for EnhancedMetricsMiddleware {
             .get(REQUEST_ID_HEADER)
             .cloned()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
+        // Persist a freshly generated ID back onto the request so `after_response` (and any
+        // downstream middleware) can correlate against the exact same key, even when no
+        // upstream `RequestIdMiddleware` already stamped one.
+        request
+            .headers
+            .entry(REQUEST_ID_HEADER.to_string())
+            .or_insert_with(|| request_id.clone());
 
         self.request_starts.insert(request_id, Instant::now());
 
@@ -1121,12 +1138,12 @@ impl Middleware for EnhancedMetricsMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()> {
         self.total_responses.fetch_add(1, Ordering::Relaxed);
         self.total_bytes_sent
             .fetch_add(response.body.len() as u64, Ordering::Relaxed);
 
-        let request_id = response
+        let request_id = request
             .headers
             .get(REQUEST_ID_HEADER)
             .cloned()
@@ -1368,14 +1385,15 @@ impl Middleware for CacheControlMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()> {
         // Skip cache headers for non-cacheable status codes
         if !self.config.cacheable_status_codes.contains(&response.status) {
             return Ok(());
         }
 
-        // Find matching rule (we don't have the path in response, so use default)
-        let cache_control = self.generate_cache_control(None);
+        // Find the path-specific rule (if any) using the request path now available here.
+        let rule = self.find_rule(&request.path);
+        let cache_control = self.generate_cache_control(rule);
         response
             .headers
             .insert("Cache-Control".to_string(), cache_control);
@@ -1683,10 +1701,9 @@ mod tests {
             .with_cache_control(CacheControlConfig::default())
             .build();
 
-        // Chain should have 6 middleware components
-        // Note: We can't directly check the count as middlewares is private
-        // but we can verify the chain was created successfully
-        assert!(true);
+        // Chain should have exactly the 6 middleware components that were configured.
+        assert_eq!(chain.len(), 6);
+        assert!(!chain.is_empty());
     }
 
     #[tokio::test]
@@ -1727,6 +1744,12 @@ mod tests {
     #[tokio::test]
     async fn test_cache_control_middleware_flow() {
         let middleware = CacheControlMiddleware::default();
+        let request = Request {
+            method: "GET".to_string(),
+            path: "/test".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
         let mut response = Response {
             status: 200,
             headers: HashMap::new(),
@@ -1734,12 +1757,74 @@ mod tests {
         };
 
         middleware
-            .after_response(&mut response)
+            .after_response(&request, &mut response)
             .await
             .expect("should succeed");
         assert!(response.headers.contains_key("Cache-Control"));
         assert!(response.headers.contains_key("ETag"));
         assert!(response.headers.contains_key("Vary"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_control_middleware_uses_request_path_for_rule() {
+        // Regression test: after_response must select the CacheRule matching the *actual*
+        // request path, not fall back to the default directive regardless of path.
+        let config = CacheControlConfig {
+            rules: vec![CacheRule {
+                path_pattern: "/static/*".to_string(),
+                directive: CacheDirective::Public,
+                max_age: Some(86400),
+                ..CacheRule::default()
+            }],
+            default_directive: CacheDirective::NoStore,
+            ..CacheControlConfig::default()
+        };
+        let middleware = CacheControlMiddleware::new(config);
+
+        let static_request = Request {
+            method: "GET".to_string(),
+            path: "/static/logo.png".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
+        let mut static_response = Response {
+            status: 200,
+            headers: HashMap::new(),
+            body: b"png bytes".to_vec(),
+        };
+        middleware
+            .after_response(&static_request, &mut static_response)
+            .await
+            .expect("should succeed");
+        let static_header = static_response
+            .headers
+            .get("Cache-Control")
+            .cloned()
+            .unwrap_or_default();
+        assert!(static_header.contains("public"));
+        assert!(static_header.contains("max-age=86400"));
+
+        let other_request = Request {
+            method: "GET".to_string(),
+            path: "/api/data".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
+        let mut other_response = Response {
+            status: 200,
+            headers: HashMap::new(),
+            body: b"json bytes".to_vec(),
+        };
+        middleware
+            .after_response(&other_request, &mut other_response)
+            .await
+            .expect("should succeed");
+        let other_header = other_response
+            .headers
+            .get("Cache-Control")
+            .cloned()
+            .unwrap_or_default();
+        assert!(other_header.contains("no-store"));
     }
 
     #[tokio::test]
@@ -1757,6 +1842,10 @@ mod tests {
             .await
             .expect("should succeed");
 
+        // Regression check: before_request must persist the request ID it generated back
+        // onto the request so after_response can correlate against the same key.
+        assert!(request.headers.contains_key(REQUEST_ID_HEADER));
+
         let mut response = Response {
             status: 200,
             headers: HashMap::new(),
@@ -1764,7 +1853,7 @@ mod tests {
         };
 
         middleware
-            .after_response(&mut response)
+            .after_response(&request, &mut response)
             .await
             .expect("should succeed");
 

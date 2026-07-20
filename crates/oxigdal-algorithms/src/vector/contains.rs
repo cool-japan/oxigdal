@@ -418,6 +418,14 @@ fn ray_casting_test(point: &Coordinate, ring: &[Coordinate]) -> bool {
     let mut inside = false;
     let n = ring.len();
 
+    // Guard against empty rings: `Polygon`'s public fields allow constructing a
+    // polygon with an empty interior ring (bypassing `Polygon::new`'s length
+    // validation), and `n - 1` would underflow `usize` and panic under
+    // overflow-checked (debug/test) builds. An empty ring contains no points.
+    if n == 0 {
+        return false;
+    }
+
     let mut j = n - 1;
     for i in 0..n {
         let xi = ring[i].x;
@@ -445,6 +453,12 @@ fn ray_casting_test(point: &Coordinate, ring: &[Coordinate]) -> bool {
 fn winding_number_test(point: &Coordinate, ring: &[Coordinate]) -> bool {
     let mut winding_number = 0;
     let n = ring.len();
+
+    // Guard against empty rings: `0..n - 1` would underflow `usize` when `n == 0`
+    // and panic under overflow-checked builds. An empty ring has winding 0.
+    if n == 0 {
+        return false;
+    }
 
     for i in 0..n - 1 {
         let p1 = &ring[i];
@@ -1023,5 +1037,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_ray_casting_empty_hole_does_not_panic() {
+        // `Polygon`'s public fields let a caller build a polygon with an empty
+        // interior ring, bypassing `Polygon::new`'s length validation. The
+        // point-in-polygon predicates must not underflow/panic on such input.
+        let exterior = LineString::new(vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(4.0, 0.0),
+            Coordinate::new_2d(4.0, 4.0),
+            Coordinate::new_2d(0.0, 4.0),
+            Coordinate::new_2d(0.0, 0.0),
+        ])
+        .expect("valid exterior");
+
+        // Struct-literal construction with an empty interior ring (0 coords).
+        let polygon = Polygon {
+            exterior,
+            interiors: vec![LineString::empty()],
+        };
+
+        let inside = Coordinate::new_2d(2.0, 2.0);
+        let outside = Coordinate::new_2d(10.0, 10.0);
+
+        // Must return sensible results (and, crucially, must NOT panic).
+        assert!(point_in_polygon_or_boundary(&inside, &polygon));
+        assert!(!point_in_polygon_or_boundary(&outside, &polygon));
+        // Direct empty-ring guard behaviour.
+        assert!(!ray_casting_test(&inside, &[]));
+        assert!(!winding_number_test(&inside, &[]));
     }
 }

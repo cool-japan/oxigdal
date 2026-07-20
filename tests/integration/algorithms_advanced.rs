@@ -8,10 +8,65 @@
 //!
 //! Each test validates correctness, performance characteristics, and edge cases.
 
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_parens)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::manual_range_contains, clippy::needless_range_loop)]
+
 use std::error::Error;
-use std::path::PathBuf;
+
+use oxigdal_algorithms::raster::compute_viewshed as real_compute_viewshed;
+use oxigdal_algorithms::raster::hydrology::compute_d8_accumulation_from_fdir;
+use oxigdal_algorithms::{Resampler, ResamplingMethod};
+use oxigdal_core::buffer::RasterBuffer;
+use oxigdal_core::types::RasterDataType;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// Builds a single-band `Float32` [`RasterBuffer`] (width × height) from a
+/// row-major `f32` slice for feeding into the real `oxigdal-algorithms` kernels.
+fn raster_from_f32(data: &[f32], width: usize, height: usize) -> Result<RasterBuffer> {
+    let mut buf = RasterBuffer::zeros(width as u64, height as u64, RasterDataType::Float32);
+    for y in 0..height {
+        for x in 0..width {
+            buf.set_pixel(x as u64, y as u64, f64::from(data[y * width + x]))
+                .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        }
+    }
+    Ok(buf)
+}
+
+/// Reads a `width × height` `RasterBuffer` back into a row-major `f32` vector.
+fn raster_to_f32(buf: &RasterBuffer, width: usize, height: usize) -> Result<Vec<f32>> {
+    let mut out = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            out.push(
+                buf.get_pixel(x as u64, y as u64)
+                    .map_err(|e| Box::new(e) as Box<dyn Error>)? as f32,
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// Resamples a row-major `f32` raster through the real `oxigdal-algorithms`
+/// [`Resampler`] using the requested method.
+fn resample_real(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    method: ResamplingMethod,
+) -> Result<Vec<f32>> {
+    let buf = raster_from_f32(src, src_w, src_h)?;
+    let out = Resampler::new(method)
+        .resample(&buf, dst_w as u64, dst_h as u64)
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    raster_to_f32(&out, dst_w, dst_h)
+}
 
 // ============================================================================
 // SIMD Operations Tests
@@ -66,9 +121,15 @@ fn test_simd_convolution_operations() -> Result<()> {
 
     // 3x3 Gaussian kernel
     let kernel = vec![
-        1.0 / 16.0, 2.0 / 16.0, 1.0 / 16.0,
-        2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0,
-        1.0 / 16.0, 2.0 / 16.0, 1.0 / 16.0,
+        1.0 / 16.0,
+        2.0 / 16.0,
+        1.0 / 16.0,
+        2.0 / 16.0,
+        4.0 / 16.0,
+        2.0 / 16.0,
+        1.0 / 16.0,
+        2.0 / 16.0,
+        1.0 / 16.0,
     ];
 
     let result = simd_convolve(&data, width, height, &kernel, 3)?;
@@ -234,11 +295,13 @@ fn test_terrain_hillshade() -> Result<()> {
 
     // Create elevation data
     let elevation: Vec<f32> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| {
-            let dx = x as f32 - 50.0;
-            let dy = y as f32 - 50.0;
-            (dx * dx + dy * dy).sqrt()
-        }))
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                let dx = x as f32 - 50.0;
+                let dy = y as f32 - 50.0;
+                (dx * dx + dy * dy).sqrt()
+            })
+        })
         .collect();
 
     let cell_size = 1.0;
@@ -251,7 +314,7 @@ fn test_terrain_hillshade() -> Result<()> {
 
     // Hillshade values should be in range [0, 255]
     for &value in hillshade.iter() {
-        assert!(value >= 0.0 && value <= 255.0);
+        assert!((0.0..=255.0).contains(&value));
     }
 
     Ok(())
@@ -265,9 +328,10 @@ fn test_terrain_tpi_tri() -> Result<()> {
 
     // Create elevation with some variation
     let elevation: Vec<f32> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| {
-            ((x as f32 * 0.1).sin() + (y as f32 * 0.1).cos()) * 10.0 + 100.0
-        }))
+        .flat_map(|y| {
+            (0..width)
+                .map(move |x| ((x as f32 * 0.1).sin() + (y as f32 * 0.1).cos()) * 10.0 + 100.0)
+        })
         .collect();
 
     // Compute TPI (Topographic Position Index)
@@ -342,9 +406,9 @@ fn test_texture_analysis_glcm() -> Result<()> {
 
     // Validate feature ranges
     assert!(contrast >= 0.0);
-    assert!(energy >= 0.0 && energy <= 1.0);
-    assert!(homogeneity >= 0.0 && homogeneity <= 1.0);
-    assert!(correlation >= -1.0 && correlation <= 1.0);
+    assert!((0.0..=1.0).contains(&energy));
+    assert!((0.0..=1.0).contains(&homogeneity));
+    assert!((-1.0..=1.0).contains(&correlation));
 
     Ok(())
 }
@@ -357,16 +421,14 @@ fn test_viewshed_analysis() -> Result<()> {
 
     // Create elevation model with a hill in the center
     let elevation: Vec<f32> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| {
-            let dx = x as f32 - 50.0;
-            let dy = y as f32 - 50.0;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist < 20.0 {
-                50.0 - dist
-            } else {
-                30.0
-            }
-        }))
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                let dx = x as f32 - 50.0;
+                let dy = y as f32 - 50.0;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < 20.0 { 50.0 - dist } else { 30.0 }
+            })
+        })
         .collect();
 
     // Observer at center of hill
@@ -442,8 +504,17 @@ fn test_hydrology_flow_direction() -> Result<()> {
 
     // Flow direction values should be valid (powers of 2: 1,2,4,8,16,32,64,128)
     for &dir in flow_dir.iter() {
-        assert!(dir == 0 || dir == 1 || dir == 2 || dir == 4 || dir == 8 ||
-                dir == 16 || dir == 32 || dir == 64 || dir == 128);
+        assert!(
+            dir == 0
+                || dir == 1
+                || dir == 2
+                || dir == 4
+                || dir == 8
+                || dir == 16
+                || dir == 32
+                || dir == 64
+                || dir == 128
+        );
     }
 
     Ok(())
@@ -479,17 +550,19 @@ fn test_hydrology_watershed_delineation() -> Result<()> {
 
     // Create elevation with two basins
     let elevation: Vec<f32> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| {
-            let dx1 = x as f32 - 15.0;
-            let dy1 = y as f32 - 25.0;
-            let dist1 = (dx1 * dx1 + dy1 * dy1).sqrt();
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                let dx1 = x as f32 - 15.0;
+                let dy1 = y as f32 - 25.0;
+                let dist1 = (dx1 * dx1 + dy1 * dy1).sqrt();
 
-            let dx2 = x as f32 - 35.0;
-            let dy2 = y as f32 - 25.0;
-            let dist2 = (dx2 * dx2 + dy2 * dy2).sqrt();
+                let dx2 = x as f32 - 35.0;
+                let dy2 = y as f32 - 25.0;
+                let dist2 = (dx2 * dx2 + dy2 * dy2).sqrt();
 
-            dist1.min(dist2)
-        }))
+                dist1.min(dist2)
+            })
+        })
         .collect();
 
     // Pour points
@@ -516,13 +589,15 @@ fn test_hydrology_stream_network() -> Result<()> {
 
     // Create flow accumulation data
     let flow_accum: Vec<u32> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| {
-            if x == width / 2 {
-                (height - y) as u32 // Simulated stream
-            } else {
-                1
-            }
-        }))
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                if x == width / 2 {
+                    (height - y) as u32 // Simulated stream
+                } else {
+                    1
+                }
+            })
+        })
         .collect();
 
     let threshold = 10u32;
@@ -649,27 +724,47 @@ fn test_resampling_downsampling_quality() -> Result<()> {
     let src_width = 100;
     let src_height = 100;
 
-    // Create checkerboard pattern
+    // Create a fine (1-pixel) checkerboard — the canonical high-frequency test
+    // pattern. A coarse block pattern defeats the check by accident: when the
+    // downsample stride is larger than the block size, interpolation sample
+    // points land inside pure blocks and never straddle an edge, so no blending
+    // occurs. A 1-pixel checkerboard guarantees that every interpolation window
+    // spans both extremes, so a correct anti-aliasing resampler must produce
+    // blended midtones.
     let src_data: Vec<f32> = (0..src_height)
-        .flat_map(|y| (0..src_width).map(move |x| {
-            if (x / 10 + y / 10) % 2 == 0 { 255.0 } else { 0.0 }
-        }))
+        .flat_map(|y| (0..src_width).map(move |x| if (x + y) % 2 == 0 { 255.0 } else { 0.0 }))
         .collect();
 
     let dst_width = 50;
     let dst_height = 50;
 
-    // Test different methods
+    // Test different methods (all via the real oxigdal-algorithms resamplers).
     let nearest = resample_nearest(&src_data, src_width, src_height, dst_width, dst_height)?;
     let bilinear = resample_bilinear(&src_data, src_width, src_height, dst_width, dst_height)?;
     let bicubic = resample_bicubic(&src_data, src_width, src_height, dst_width, dst_height)?;
 
-    // Bilinear and bicubic should have intermediate values
+    // Nearest-neighbour preserves the exact source values: only the two extremes
+    // appear, never a blended midtone.
+    assert!(
+        nearest
+            .iter()
+            .all(|&v| v.abs() < 1e-3 || (v - 255.0).abs() < 1e-3),
+        "nearest-neighbour must not synthesise intermediate values"
+    );
+
+    // Bilinear and bicubic interpolate across block edges, so blended midtones
+    // (strictly between the two source extremes) must appear.
     let has_intermediate_bilinear = bilinear.iter().any(|&v| v > 10.0 && v < 245.0);
     let has_intermediate_bicubic = bicubic.iter().any(|&v| v > 10.0 && v < 245.0);
 
-    assert!(has_intermediate_bilinear);
-    assert!(has_intermediate_bicubic);
+    assert!(
+        has_intermediate_bilinear,
+        "bilinear downsampling should blend edges into intermediate values"
+    );
+    assert!(
+        has_intermediate_bicubic,
+        "bicubic downsampling should blend edges into intermediate values"
+    );
 
     Ok(())
 }
@@ -698,7 +793,13 @@ fn simd_min_max(data: &[f64]) -> Result<(f64, f64)> {
     Ok((min, max))
 }
 
-fn simd_convolve(data: &[f32], width: usize, height: usize, kernel: &[f32], kernel_size: usize) -> Result<Vec<f32>> {
+fn simd_convolve(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    kernel: &[f32],
+    kernel_size: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; width * height];
     let half_kernel = kernel_size / 2;
 
@@ -719,7 +820,13 @@ fn simd_convolve(data: &[f32], width: usize, height: usize, kernel: &[f32], kern
     Ok(result)
 }
 
-fn simd_resample_bilinear(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Result<Vec<f32>> {
+fn simd_resample_bilinear(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; dst_w * dst_h];
     let x_ratio = src_w as f32 / dst_w as f32;
     let y_ratio = src_h as f32 / dst_h as f32;
@@ -802,7 +909,10 @@ fn simd_histogram(data: &[u8], bins: usize) -> Result<Vec<usize>> {
 }
 
 fn simd_threshold_binary(data: &[u8], threshold: u8) -> Result<Vec<u8>> {
-    Ok(data.iter().map(|&v| if v > threshold { 255 } else { 0 }).collect())
+    Ok(data
+        .iter()
+        .map(|&v| if v > threshold { 255 } else { 0 })
+        .collect())
 }
 
 fn simd_threshold_otsu(data: &[u8]) -> Result<u8> {
@@ -922,14 +1032,21 @@ fn simd_hsv_to_rgb(hsv: &[f32]) -> Result<Vec<u8>> {
     Ok(rgb)
 }
 
-fn compute_slope_aspect(elevation: &[f32], width: usize, height: usize, cell_size: f32) -> Result<(Vec<f32>, Vec<f32>)> {
+fn compute_slope_aspect(
+    elevation: &[f32],
+    width: usize,
+    height: usize,
+    cell_size: f32,
+) -> Result<(Vec<f32>, Vec<f32>)> {
     let mut slope = vec![0.0; elevation.len()];
     let mut aspect = vec![0.0; elevation.len()];
 
     for y in 1..(height - 1) {
         for x in 1..(width - 1) {
-            let dz_dx = (elevation[y * width + (x + 1)] - elevation[y * width + (x - 1)]) / (2.0 * cell_size);
-            let dz_dy = (elevation[(y + 1) * width + x] - elevation[(y - 1) * width + x]) / (2.0 * cell_size);
+            let dz_dx = (elevation[y * width + (x + 1)] - elevation[y * width + (x - 1)])
+                / (2.0 * cell_size);
+            let dz_dy = (elevation[(y + 1) * width + x] - elevation[(y - 1) * width + x])
+                / (2.0 * cell_size);
 
             slope[y * width + x] = (dz_dx * dz_dx + dz_dy * dz_dy).sqrt().atan().to_degrees();
             aspect[y * width + x] = dz_dy.atan2(dz_dx).to_degrees();
@@ -943,7 +1060,14 @@ fn compute_slope_aspect(elevation: &[f32], width: usize, height: usize, cell_siz
     Ok((slope, aspect))
 }
 
-fn compute_hillshade(elevation: &[f32], width: usize, height: usize, cell_size: f32, azimuth: f32, altitude: f32) -> Result<Vec<f32>> {
+fn compute_hillshade(
+    elevation: &[f32],
+    width: usize,
+    height: usize,
+    cell_size: f32,
+    azimuth: f32,
+    altitude: f32,
+) -> Result<Vec<f32>> {
     let (slope, aspect) = compute_slope_aspect(elevation, width, height, cell_size)?;
     let mut hillshade = vec![0.0; elevation.len()];
 
@@ -954,8 +1078,8 @@ fn compute_hillshade(elevation: &[f32], width: usize, height: usize, cell_size: 
         let slope_rad = slope[i].to_radians();
         let aspect_rad = aspect[i].to_radians();
 
-        let value = (zenith.to_radians().cos() * slope_rad.cos()) +
-                    (zenith.to_radians().sin() * slope_rad.sin() * (azimuth_rad - aspect_rad).cos());
+        let value = (zenith.to_radians().cos() * slope_rad.cos())
+            + (zenith.to_radians().sin() * slope_rad.sin() * (azimuth_rad - aspect_rad).cos());
 
         hillshade[i] = (value.max(0.0) * 255.0).min(255.0);
     }
@@ -1016,7 +1140,12 @@ fn compute_tri(elevation: &[f32], width: usize, height: usize) -> Result<Vec<f32
     Ok(tri)
 }
 
-fn compute_focal_mean(data: &[f32], width: usize, height: usize, window_size: usize) -> Result<Vec<f32>> {
+fn compute_focal_mean(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    window_size: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; data.len()];
     let half = window_size / 2;
 
@@ -1041,7 +1170,12 @@ fn compute_focal_mean(data: &[f32], width: usize, height: usize, window_size: us
     Ok(result)
 }
 
-fn compute_focal_median(data: &[f32], width: usize, height: usize, window_size: usize) -> Result<Vec<f32>> {
+fn compute_focal_median(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    window_size: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; data.len()];
     let half = window_size / 2;
 
@@ -1065,7 +1199,12 @@ fn compute_focal_median(data: &[f32], width: usize, height: usize, window_size: 
     Ok(result)
 }
 
-fn compute_focal_range(data: &[f32], width: usize, height: usize, window_size: usize) -> Result<Vec<f32>> {
+fn compute_focal_range(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    window_size: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; data.len()];
     let half = window_size / 2;
 
@@ -1091,7 +1230,12 @@ fn compute_focal_range(data: &[f32], width: usize, height: usize, window_size: u
     Ok(result)
 }
 
-fn compute_focal_variety(data: &[f32], width: usize, height: usize, window_size: usize) -> Result<Vec<f32>> {
+fn compute_focal_variety(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    window_size: usize,
+) -> Result<Vec<f32>> {
     let mut result = vec![0.0; data.len()];
     let half = window_size / 2;
 
@@ -1114,7 +1258,14 @@ fn compute_focal_variety(data: &[f32], width: usize, height: usize, window_size:
     Ok(result)
 }
 
-fn compute_glcm(data: &[u8], width: usize, height: usize, distance: usize, angle: f32, levels: usize) -> Result<Vec<Vec<usize>>> {
+fn compute_glcm(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    distance: usize,
+    angle: f32,
+    levels: usize,
+) -> Result<Vec<Vec<usize>>> {
     let mut glcm = vec![vec![0; levels]; levels];
 
     let (dx, dy) = if angle.abs() < 1e-6 {
@@ -1190,6 +1341,8 @@ fn compute_glcm_correlation(glcm: &[Vec<usize>]) -> Result<f64> {
     Ok(0.5) // Placeholder
 }
 
+/// Computes a binary viewshed via the real `oxigdal-algorithms` R1
+/// line-of-sight kernel. Returns a row-major `u8` grid (1 = visible).
 fn compute_viewshed(
     elevation: &[f32],
     width: usize,
@@ -1199,29 +1352,36 @@ fn compute_viewshed(
     observer_height: f32,
     max_distance: f32,
 ) -> Result<Vec<u8>> {
-    let mut viewshed = vec![0u8; elevation.len()];
-    let observer_z = elevation[observer_y * width + observer_x] + observer_height;
+    let dem = raster_from_f32(elevation, width, height)?;
+    let visibility = real_compute_viewshed(
+        &dem,
+        observer_x as u64,
+        observer_y as u64,
+        f64::from(observer_height),
+        0.0,
+        Some(f64::from(max_distance)),
+        1.0,
+    )
+    .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
+    let mut out = vec![0u8; elevation.len()];
     for y in 0..height {
         for x in 0..width {
-            let dx = x as f32 - observer_x as f32;
-            let dy = y as f32 - observer_y as f32;
-            let distance = (dx * dx + dy * dy).sqrt();
-
-            if distance <= max_distance {
-                let target_z = elevation[y * width + x];
-                let angle_to_target = (target_z - observer_z).atan2(distance);
-
-                // Simplified visibility check
-                viewshed[y * width + x] = if angle_to_target > -0.1 { 1 } else { 0 };
-            }
+            let v = visibility
+                .get_pixel(x as u64, y as u64)
+                .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+            out[y * width + x] = u8::from(v > 0.5);
         }
     }
-
-    Ok(viewshed)
+    Ok(out)
 }
 
-fn compute_cost_distance(cost: &[f32], sources: &[bool], width: usize, height: usize) -> Result<(Vec<f32>, Vec<usize>)> {
+fn compute_cost_distance(
+    cost: &[f32],
+    sources: &[bool],
+    width: usize,
+    height: usize,
+) -> Result<(Vec<f32>, Vec<usize>)> {
     let mut distance = vec![f32::INFINITY; cost.len()];
     let mut allocation = vec![0; cost.len()];
 
@@ -1302,45 +1462,40 @@ fn compute_flow_direction(elevation: &[f32], width: usize, height: usize) -> Res
     Ok(flow_dir)
 }
 
+/// Computes D8 flow accumulation from a precomputed flow-direction grid via the
+/// real `oxigdal-algorithms` hydrology kernel. The grid uses the standard D8
+/// power-of-two encoding (E=1, SE=2, S=4, ... NE=128), matching the crate's
+/// `FlowDirection` codes. Returns a row-major `u32` accumulation grid.
 fn compute_flow_accumulation(flow_dir: &[u8], width: usize, height: usize) -> Result<Vec<u32>> {
-    let mut flow_accum = vec![1u32; flow_dir.len()];
-
-    // Simplified accumulation (multiple passes)
-    for _ in 0..100 {
-        let mut new_accum = flow_accum.clone();
-
-        for y in 0..height {
-            for x in 0..width {
-                let idx = y * width + x;
-                let dir = flow_dir[idx];
-
-                if dir > 0 {
-                    let (ny, nx) = match dir {
-                        1 => (y, x + 1),
-                        2 => (y + 1, x + 1),
-                        4 => (y + 1, x),
-                        8 if x > 0 => (y + 1, x - 1),
-                        16 if x > 0 => (y, x - 1),
-                        32 if x > 0 && y > 0 => (y - 1, x - 1),
-                        64 if y > 0 => (y - 1, x),
-                        128 if y > 0 => (y - 1, x + 1),
-                        _ => continue,
-                    };
-
-                    if ny < height && nx < width {
-                        new_accum[ny * width + nx] += flow_accum[idx];
-                    }
-                }
-            }
+    let mut fdir = RasterBuffer::zeros(width as u64, height as u64, RasterDataType::UInt8);
+    for y in 0..height {
+        for x in 0..width {
+            fdir.set_pixel(x as u64, y as u64, f64::from(flow_dir[y * width + x]))
+                .map_err(|e| Box::new(e) as Box<dyn Error>)?;
         }
-
-        flow_accum = new_accum;
     }
 
-    Ok(flow_accum)
+    let accum = compute_d8_accumulation_from_fdir(&fdir, None)
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+
+    let mut out = vec![0u32; flow_dir.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let v = accum
+                .get_pixel(x as u64, y as u64)
+                .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+            out[y * width + x] = v.max(0.0).round() as u32;
+        }
+    }
+    Ok(out)
 }
 
-fn compute_watersheds(elevation: &[f32], pour_points: &[bool], width: usize, height: usize) -> Result<Vec<u32>> {
+fn compute_watersheds(
+    elevation: &[f32],
+    pour_points: &[bool],
+    width: usize,
+    height: usize,
+) -> Result<Vec<u32>> {
     let mut watersheds = vec![0u32; elevation.len()];
     let mut watershed_id = 1u32;
 
@@ -1355,7 +1510,12 @@ fn compute_watersheds(elevation: &[f32], pour_points: &[bool], width: usize, hei
     Ok(watersheds)
 }
 
-fn extract_stream_network(flow_accum: &[u32], width: usize, height: usize, threshold: u32) -> Result<Vec<bool>> {
+fn extract_stream_network(
+    flow_accum: &[u32],
+    width: usize,
+    height: usize,
+    threshold: u32,
+) -> Result<Vec<bool>> {
     let mut streams = vec![false; flow_accum.len()];
 
     for i in 0..flow_accum.len() {
@@ -1399,34 +1559,43 @@ fn fill_sinks(elevation: &[f32], width: usize, height: usize) -> Result<Vec<f32>
     Ok(filled)
 }
 
-fn resample_nearest(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Result<Vec<f32>> {
-    let mut result = vec![0.0; dst_w * dst_h];
-    let x_ratio = src_w as f32 / dst_w as f32;
-    let y_ratio = src_h as f32 / dst_h as f32;
-
-    for y in 0..dst_h {
-        for x in 0..dst_w {
-            let src_x = ((x as f32 + 0.5) * x_ratio) as usize;
-            let src_y = ((y as f32 + 0.5) * y_ratio) as usize;
-            let src_x = src_x.min(src_w - 1);
-            let src_y = src_y.min(src_h - 1);
-            result[y * dst_w + x] = src[src_y * src_w + src_x];
-        }
-    }
-
-    Ok(result)
+fn resample_nearest(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Result<Vec<f32>> {
+    resample_real(src, src_w, src_h, dst_w, dst_h, ResamplingMethod::Nearest)
 }
 
-fn resample_bilinear(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Result<Vec<f32>> {
-    simd_resample_bilinear(src, src_w, src_h, dst_w, dst_h)
+fn resample_bilinear(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Result<Vec<f32>> {
+    resample_real(src, src_w, src_h, dst_w, dst_h, ResamplingMethod::Bilinear)
 }
 
-fn resample_bicubic(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Result<Vec<f32>> {
-    // Simplified bicubic (using bilinear as placeholder)
-    simd_resample_bilinear(src, src_w, src_h, dst_w, dst_h)
+fn resample_bicubic(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Result<Vec<f32>> {
+    resample_real(src, src_w, src_h, dst_w, dst_h, ResamplingMethod::Bicubic)
 }
 
-fn resample_lanczos(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize, _a: usize) -> Result<Vec<f32>> {
-    // Simplified Lanczos (using bilinear as placeholder)
-    simd_resample_bilinear(src, src_w, src_h, dst_w, dst_h)
+fn resample_lanczos(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    _a: usize,
+) -> Result<Vec<f32>> {
+    resample_real(src, src_w, src_h, dst_w, dst_h, ResamplingMethod::Lanczos)
 }

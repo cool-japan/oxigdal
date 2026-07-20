@@ -100,8 +100,7 @@ impl ChunkGrid {
             )));
         }
 
-        for (i, (&chunk_size, &dim_size)) in
-            chunk_dims.iter().zip(dataset_dims.iter()).enumerate()
+        for (i, (&chunk_size, &dim_size)) in chunk_dims.iter().zip(dataset_dims.iter()).enumerate()
         {
             if chunk_size == 0 {
                 return Err(Hdf5Error::InvalidChunkSize(format!(
@@ -120,7 +119,7 @@ impl ChunkGrid {
         let num_chunks: Vec<usize> = dataset_dims
             .iter()
             .zip(chunk_dims.iter())
-            .map(|(&dim, &chunk)| (dim + chunk - 1) / chunk)
+            .map(|(&dim, &chunk)| dim.div_ceil(chunk))
             .collect();
 
         let total_chunks = num_chunks.iter().product();
@@ -191,11 +190,7 @@ impl ChunkGrid {
     }
 
     /// Get all chunk indices that intersect with a hyperslab
-    pub fn intersecting_chunks(
-        &self,
-        start: &[usize],
-        count: &[usize],
-    ) -> Result<Vec<ChunkIndex>> {
+    pub fn intersecting_chunks(&self, start: &[usize], count: &[usize]) -> Result<Vec<ChunkIndex>> {
         if start.len() != self.ndims() || count.len() != self.ndims() {
             return Err(Hdf5Error::invalid_dimensions(
                 "Start and count must match dataset dimensions",
@@ -341,10 +336,7 @@ impl ChunkIndexStructure {
 
     /// Get all written chunks
     pub fn written_chunks(&self) -> Vec<&ChunkMetadata> {
-        self.chunks
-            .values()
-            .filter(|c| c.is_written)
-            .collect()
+        self.chunks.values().filter(|c| c.is_written).collect()
     }
 
     /// Get number of written chunks
@@ -432,7 +424,10 @@ pub enum AccessPattern {
     /// Access entire dataset at once
     FullDataset,
     /// Access slices along specific dimensions
-    Sliced { dim: usize },
+    Sliced {
+        /// Dimension along which slices are taken
+        dim: usize,
+    },
 }
 
 /// Get recommended chunk size based on access pattern
@@ -508,8 +503,8 @@ mod tests {
 
     #[test]
     fn test_chunk_index_from_element_coords() {
-        let grid = ChunkGrid::new(vec![100, 100], vec![10, 10])
-            .expect("Failed to create chunk grid");
+        let grid =
+            ChunkGrid::new(vec![100, 100], vec![10, 10]).expect("Failed to create chunk grid");
         let index = ChunkIndex::from_element_coords(&[25, 37], &grid)
             .expect("Failed to create chunk index");
         assert_eq!(index.coords(), &[2, 3]);
@@ -569,7 +564,9 @@ mod tests {
         assert!(index_struct.has_chunk(&chunk_idx));
         assert_eq!(index_struct.num_written_chunks(), 0);
 
-        index_struct.get_chunk_mut(&chunk_idx).map(|m| m.mark_written());
+        if let Some(m) = index_struct.get_chunk_mut(&chunk_idx) {
+            m.mark_written();
+        }
         assert_eq!(index_struct.num_written_chunks(), 1);
     }
 

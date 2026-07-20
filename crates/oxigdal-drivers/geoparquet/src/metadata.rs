@@ -143,6 +143,65 @@ pub struct GeometryColumnMetadata {
     /// Epoch for coordinate reference system
     #[serde(skip_serializing_if = "Option::is_none")]
     pub epoch: Option<f64>,
+
+    /// GeoParquet 1.1 `covering` object.
+    ///
+    /// Points at the auxiliary bounding-box columns (`covering.bbox.{xmin,
+    /// ymin, xmax, ymax}`) that let a reader prune row groups and rows without
+    /// decoding WKB.  Absent for files written by GeoParquet 1.0 writers or by
+    /// writers that don't emit covering columns.
+    ///
+    /// This is an additive field — the struct carries no `deny_unknown_fields`
+    /// so deserializing a document lacking `covering` yields `None`, and older
+    /// serialized documents remain readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covering: Option<Covering>,
+}
+
+/// GeoParquet 1.1 `covering` object, naming the auxiliary bounding-box columns
+/// that "cover" a geometry column.
+///
+/// Currently the specification defines exactly one covering kind, `bbox`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Covering {
+    /// The bounding-box covering: paths to the four extent columns.
+    pub bbox: CoveringBbox,
+}
+
+/// Paths to the four covering bounding-box columns, per GeoParquet 1.1.
+///
+/// Each field is a column path expressed as an array of path components, e.g.
+/// `["bbox", "xmin"]` for a struct-nested bbox column named `bbox`, or
+/// `["geometry_bbox_xmin"]` for a flat top-level column.  The paths are matched
+/// verbatim against the Parquet leaf column paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CoveringBbox {
+    /// Path to the column holding each row's minimum X extent.
+    pub xmin: Vec<String>,
+    /// Path to the column holding each row's minimum Y extent.
+    pub ymin: Vec<String>,
+    /// Path to the column holding each row's maximum X extent.
+    pub xmax: Vec<String>,
+    /// Path to the column holding each row's maximum Y extent.
+    pub ymax: Vec<String>,
+}
+
+impl Covering {
+    /// Constructs a `covering.bbox` object from a single struct-root column
+    /// name whose children are `xmin`, `ymin`, `xmax`, `ymax`.
+    ///
+    /// This mirrors the common VIDA / GeoParquet 1.1 layout where the covering
+    /// lives in a struct column literally named `bbox`.
+    pub fn bbox_struct(root: &str) -> Self {
+        Self {
+            bbox: CoveringBbox {
+                xmin: vec![root.to_string(), "xmin".to_string()],
+                ymin: vec![root.to_string(), "ymin".to_string()],
+                xmax: vec![root.to_string(), "xmax".to_string()],
+                ymax: vec![root.to_string(), "ymax".to_string()],
+            },
+        }
+    }
 }
 
 impl GeometryColumnMetadata {
@@ -156,6 +215,7 @@ impl GeometryColumnMetadata {
             edges: None,
             orientation: None,
             epoch: None,
+            covering: None,
         }
     }
 
@@ -174,6 +234,7 @@ impl GeometryColumnMetadata {
             edges: None,
             orientation: None,
             epoch: None,
+            covering: None,
         }
     }
 
@@ -204,6 +265,12 @@ impl GeometryColumnMetadata {
     /// Sets polygon orientation
     pub fn with_orientation(mut self, orientation: Orientation) -> Self {
         self.orientation = Some(orientation);
+        self
+    }
+
+    /// Sets the GeoParquet 1.1 `covering` object (auxiliary bbox columns).
+    pub fn with_covering(mut self, covering: Covering) -> Self {
+        self.covering = Some(covering);
         self
     }
 

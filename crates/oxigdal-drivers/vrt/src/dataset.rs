@@ -138,10 +138,10 @@ impl VrtDataset {
         }
 
         // Validate block size if present
-        if let Some((width, height)) = self.block_size {
-            if width == 0 || height == 0 {
-                return Err(VrtError::invalid_structure("Block size must be > 0"));
-            }
+        if let Some((width, height)) = self.block_size
+            && (width == 0 || height == 0)
+        {
+            return Err(VrtError::invalid_structure("Block size must be > 0"));
         }
 
         Ok(())
@@ -222,10 +222,10 @@ impl VrtDataset {
         // Collect all GeoTransforms from band sources
         for band in &self.bands {
             for source in &band.sources {
-                if let Some(ref props) = source.properties {
-                    if let Some(ref gt) = props.geo_transform {
-                        transforms.push(*gt);
-                    }
+                if let Some(ref props) = source.properties
+                    && let Some(ref gt) = props.geo_transform
+                {
+                    transforms.push(*gt);
                 }
             }
         }

@@ -26,6 +26,7 @@
 //! ```
 
 use crate::error::{AlgorithmError, Result};
+use crate::vector::offset::{JoinStyle, OffsetOptions, offset_polygon_rings};
 use crate::vector::pool::{PoolGuard, get_pooled_polygon};
 use oxigdal_core::vector::{Coordinate, LineString, Point, Polygon};
 
@@ -201,11 +202,24 @@ pub fn buffer_linestring(
             right_coords.insert(0, right2);
             right_coords.insert(0, right);
         } else {
-            // Add join
+            // Add join. `left` is the offset of the segment start point `p1`;
+            // for a correct corner join we need the offset of the *vertex* `p2`
+            // along this segment's normal. That is `p2 + (left - p1)`, since
+            // `(left - p1)` is exactly the perpendicular offset vector of the
+            // segment `(p1, p2)`. `left3` is already the vertex offset of `p2`
+            // along the next segment's normal.
             let p3 = &line.coords[i + 2];
             let (left3, _) = offset_segment(p2, p3, abs_distance)?;
+            let off1_at_vertex = Coordinate::new_2d(p2.x + (left.x - p1.x), p2.y + (left.y - p1.y));
 
-            add_join(&mut left_coords, &left, &left3, p2, abs_distance, options)?;
+            add_join(
+                &mut left_coords,
+                &off1_at_vertex,
+                &left3,
+                p2,
+                abs_distance,
+                options,
+            )?;
 
             right_coords.insert(0, right);
         }
@@ -485,36 +499,91 @@ fn add_miter_join(
     Ok(())
 }
 
-/// Computes the miter join point
+/// Computes the true miter join point.
+///
+/// The miter point is the intersection of the two offset lines, which lies on
+/// the corner bisector at distance `distance / cos(θ/2)` from the vertex, where
+/// θ is the turn angle. It is generally *beyond* both offset points (farther
+/// from the vertex), so that the sharp outer corner is fully covered — this is
+/// what distinguishes a miter join from a bevel join.
+///
+/// `offset1` and `offset2` must be the offset points *at the vertex* (each at
+/// distance `distance` from `vertex`), so that `(offset - vertex) / distance`
+/// recovers the corresponding segment's unit normal. This mirrors the correct
+/// `emit_miter` implementation in [`crate::vector::offset`].
+///
+/// Returns `None` (caller falls back to bevel) when the corner is (near)
+/// straight/anti-parallel, or when the miter extension ratio exceeds
+/// `miter_limit`.
 fn compute_miter_point(
     offset1: &Coordinate,
     offset2: &Coordinate,
-    _vertex: &Coordinate,
+    vertex: &Coordinate,
     distance: f64,
     miter_limit: f64,
 ) -> Option<Coordinate> {
-    // Simple implementation: just check if offsets are too far apart
-    let dx = offset2.x - offset1.x;
-    let dy = offset2.y - offset1.y;
-    let miter_distance = (dx * dx + dy * dy).sqrt();
+    if distance.abs() < f64::EPSILON {
+        return None;
+    }
 
-    if miter_distance > distance * miter_limit {
-        // Too sharp, return None to use bevel instead
+    // Arm vectors from the vertex to each offset point (length ≈ `distance`).
+    let ax = offset1.x - vertex.x;
+    let ay = offset1.y - vertex.y;
+    let bx = offset2.x - vertex.x;
+    let by = offset2.y - vertex.y;
+
+    // Bisector direction = normalize(na + nb) where na = a/distance, nb = b/distance.
+    let sx = ax + bx;
+    let sy = ay + by;
+    let blen = (sx * sx + sy * sy).sqrt();
+
+    // Collinear / anti-parallel normals → no distinct miter point; use bevel.
+    if blen < f64::EPSILON {
+        return None;
+    }
+
+    let bux = sx / blen;
+    let buy = sy / blen;
+
+    // cos(θ/2) = bisector_unit · na, where na = a / distance.
+    let cos_half = (bux * ax + buy * ay) / distance;
+    if cos_half.abs() < f64::EPSILON {
+        // Nearly anti-parallel → miter length blows up; fall back to bevel.
+        return None;
+    }
+
+    // Signed miter length along the bisector.
+    let miter_length = distance / cos_half;
+    let ratio = (miter_length / distance).abs();
+
+    if ratio > miter_limit.abs() || !miter_length.is_finite() {
+        // Too sharp: fall back to bevel.
         None
     } else {
-        // Use midpoint as approximation
         Some(Coordinate::new_2d(
-            (offset1.x + offset2.x) / 2.0,
-            (offset1.y + offset2.y) / 2.0,
+            vertex.x + miter_length * bux,
+            vertex.y + miter_length * buy,
         ))
     }
 }
 
-/// Buffers a ring (for polygon buffering)
+/// Buffers a closed ring (for polygon buffering).
+///
+/// This offsets the ring outward for a positive `distance` and inward for a
+/// negative `distance`, applying the configured [`BufferJoinStyle`] at every
+/// vertex. Orientation (CW/CCW) is detected internally via the shoelace
+/// formula so a positive `distance` always expands an exterior (CCW) ring
+/// *outward* regardless of the input winding. The heavy lifting is delegated to
+/// the correct closed-ring offset machinery in [`crate::vector::offset`], which
+/// inserts proper miter/bevel/round join geometry at each corner rather than
+/// dropping the corners entirely.
+///
+/// `is_hole` is retained for API symmetry; the outward/inward direction for
+/// holes is already encoded by the caller negating `distance`.
 fn buffer_ring(
     ring: &LineString,
     distance: f64,
-    _options: &BufferOptions,
+    options: &BufferOptions,
     _is_hole: bool,
 ) -> Result<LineString> {
     if ring.coords.len() < 4 {
@@ -524,29 +593,37 @@ fn buffer_ring(
         });
     }
 
-    let abs_distance = distance.abs();
-    let mut offset_coords = Vec::new();
+    // Convert the ring to the tuple representation used by the offset engine.
+    let ring_tuples: Vec<(f64, f64)> = ring.coords.iter().map(|c| (c.x, c.y)).collect();
 
-    // Process each edge of the ring
-    for i in 0..(ring.coords.len() - 1) {
-        let p1 = &ring.coords[i];
-        let p2 = &ring.coords[i + 1];
-
-        let (left, _right) = offset_segment(p1, p2, abs_distance)?;
-
-        if distance > 0.0 {
-            offset_coords.push(left);
+    // Translate the buffer options to offset options so the requested join
+    // style (and miter limit / simplification) is honoured for polygons.
+    let offset_options = OffsetOptions {
+        miter_limit: options.miter_limit,
+        join_style: match options.join_style {
+            BufferJoinStyle::Round => JoinStyle::Round,
+            BufferJoinStyle::Miter => JoinStyle::Miter,
+            BufferJoinStyle::Bevel => JoinStyle::Bevel,
+        },
+        simplify_tolerance: if options.simplify_tolerance > 0.0 {
+            Some(options.simplify_tolerance)
         } else {
-            // For negative buffer, use right side
-            let (_left, right) = offset_segment(p1, p2, abs_distance)?;
-            offset_coords.push(right);
-        }
-    }
+            None
+        },
+    };
 
-    // Close the ring
-    if let Some(first) = offset_coords.first() {
-        offset_coords.push(*first);
-    }
+    let mut offset_rings = offset_polygon_rings(&[ring_tuples], distance, &offset_options)?;
+
+    let out_ring = offset_rings
+        .pop()
+        .ok_or_else(|| AlgorithmError::GeometryError {
+            message: "offset_polygon_rings returned no ring".to_string(),
+        })?;
+
+    let offset_coords: Vec<Coordinate> = out_ring
+        .iter()
+        .map(|&(x, y)| Coordinate::new_2d(x, y))
+        .collect();
 
     LineString::new(offset_coords).map_err(AlgorithmError::Core)
 }
@@ -825,8 +902,119 @@ mod tests {
                 let options = BufferOptions::default();
                 let result = buffer_polygon(&poly, 2.0, &options);
                 assert!(result.is_ok());
+
+                // The buffered exterior must EXPAND outward, not shrink inward:
+                // a unit-square [0,10]×[0,10] buffered by +2 must reach roughly
+                // [-2,12]×[-2,12]. The old (buggy) implementation produced points
+                // strictly inside the original bounding box.
+                if let Ok(buffered) = result {
+                    let mut min_x = f64::INFINITY;
+                    let mut min_y = f64::INFINITY;
+                    let mut max_x = f64::NEG_INFINITY;
+                    let mut max_y = f64::NEG_INFINITY;
+                    for c in &buffered.exterior.coords {
+                        min_x = min_x.min(c.x);
+                        min_y = min_y.min(c.y);
+                        max_x = max_x.max(c.x);
+                        max_y = max_y.max(c.y);
+                    }
+                    // Strictly grows beyond the original [0,10]×[0,10] box.
+                    assert!(min_x < 0.0, "min_x should extend below 0, got {min_x}");
+                    assert!(min_y < 0.0, "min_y should extend below 0, got {min_y}");
+                    assert!(max_x > 10.0, "max_x should extend beyond 10, got {max_x}");
+                    assert!(max_y > 10.0, "max_y should extend beyond 10, got {max_y}");
+                    // Should be close to the expected [-2, 12] extent.
+                    assert!((-2.5..=-1.5).contains(&min_x), "min_x ~ -2, got {min_x}");
+                    assert!((11.5..=12.5).contains(&max_x), "max_x ~ 12, got {max_x}");
+                }
             }
         }
+    }
+
+    #[test]
+    fn test_buffer_polygon_honors_join_style() {
+        // A right-angle square exercises corner join geometry. Each join style
+        // must be honoured (previously `_options` was ignored for polygons).
+        let exterior_coords = vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(10.0, 0.0),
+            Coordinate::new_2d(10.0, 10.0),
+            Coordinate::new_2d(0.0, 10.0),
+            Coordinate::new_2d(0.0, 0.0),
+        ];
+        let exterior = LineString::new(exterior_coords).expect("valid ring");
+        let poly = Polygon::new(exterior, vec![]).expect("valid polygon");
+
+        let mut round_pts = 0usize;
+        let mut bevel_pts = 0usize;
+        let mut miter_pts = 0usize;
+
+        for (style, out) in [
+            (BufferJoinStyle::Round, &mut round_pts),
+            (BufferJoinStyle::Bevel, &mut bevel_pts),
+            (BufferJoinStyle::Miter, &mut miter_pts),
+        ] {
+            let options = BufferOptions {
+                join_style: style,
+                ..BufferOptions::default()
+            };
+            let buffered = buffer_polygon(&poly, 2.0, &options).expect("buffer ok");
+            // All coordinates must be finite and the ring closed.
+            for c in &buffered.exterior.coords {
+                assert!(c.x.is_finite() && c.y.is_finite());
+            }
+            *out = buffered.exterior.coords.len();
+        }
+
+        // Round joins insert arc points at each corner, so they must produce
+        // strictly more vertices than the sharp miter join.
+        assert!(
+            round_pts > miter_pts,
+            "round joins ({round_pts}) should add more points than miter ({miter_pts})"
+        );
+        // Bevel inserts two points per corner; miter a single point per corner,
+        // so bevel must have at least as many points as miter.
+        assert!(
+            bevel_pts >= miter_pts,
+            "bevel ({bevel_pts}) should have >= miter ({miter_pts}) points"
+        );
+    }
+
+    #[test]
+    fn test_compute_miter_point_extends_beyond_offsets() {
+        // Right-angle corner at the vertex (10, 0). The two vertex offsets are
+        // on the offset lines y = 1 (through (10,1)) and x = 9 (through (9,0)),
+        // so the true miter (their intersection) is (9, 1) — NOT the midpoint
+        // (9.5, 0.5) that the old implementation returned.
+        let vertex = Coordinate::new_2d(10.0, 0.0);
+        let offset1 = Coordinate::new_2d(10.0, 1.0); // seg1 (east) left-normal
+        let offset2 = Coordinate::new_2d(9.0, 0.0); // seg2 (north) left-normal
+        let miter =
+            compute_miter_point(&offset1, &offset2, &vertex, 1.0, 5.0).expect("within miter limit");
+        assert_relative_eq!(miter.x, 9.0, epsilon = 1e-9);
+        assert_relative_eq!(miter.y, 1.0, epsilon = 1e-9);
+
+        // Explicitly reject the degenerate midpoint answer.
+        let midpoint_x = (offset1.x + offset2.x) / 2.0;
+        let midpoint_y = (offset1.y + offset2.y) / 2.0;
+        assert!(
+            (miter.x - midpoint_x).abs() > 0.1 || (miter.y - midpoint_y).abs() > 0.1,
+            "miter point must differ from the offset midpoint"
+        );
+    }
+
+    #[test]
+    fn test_compute_miter_point_exceeds_limit_falls_back() {
+        // Nearly anti-parallel arms → miter blows up → None (bevel fallback).
+        let vertex = Coordinate::new_2d(0.0, 0.0);
+        let offset1 = Coordinate::new_2d(0.0, 1.0);
+        // A tiny tilt away from straight-down: cos(θ/2) ≈ 0.005 → ratio ≈ 200.
+        let offset2 = Coordinate::new_2d(0.01, -0.99995);
+        let miter = compute_miter_point(&offset1, &offset2, &vertex, 1.0, 5.0);
+        assert!(
+            miter.is_none(),
+            "sharp corner must fall back to bevel (None), got {miter:?}"
+        );
     }
 
     #[test]

@@ -219,15 +219,35 @@ fn visit_coords_inner<F: FnMut(f64, f64)>(geom: &GeoJsonGeometry, f: &mut F) {
 
 // ─── Ring collection ─────────────────────────────────────────────────────────
 
-/// Metadata linking a ring back to its source feature and geometry position.
+/// Metadata linking a path (polygon ring or line chain) back to its source
+/// feature and geometry position.
 #[derive(Debug, Clone)]
 pub(crate) struct RingSource {
     /// Index of the feature in the `FeatureCollection`.
     pub feature_idx: usize,
-    /// Which polygon within a MultiPolygon (always 0 for Polygon).
+    /// For polygon rings: which polygon within a MultiPolygon (always 0 for a
+    /// plain Polygon).  For line chains: which line within a MultiLineString
+    /// (always 0 for a plain LineString).
     pub poly_idx: usize,
-    /// Which ring within the polygon (0 = exterior, 1+ = holes).
+    /// For polygon rings: which ring within the polygon (0 = exterior,
+    /// 1+ = holes).  For line chains this is always 0 (a line is a single
+    /// chain).
     pub ring_idx: usize,
+    /// `true` when the path is a *closed* polygon ring; `false` when it is an
+    /// *open* line chain (LineString / MultiLineString path).  Rings and chains
+    /// are processed together for junction detection and arc sharing, but their
+    /// cutting and normalisation rules differ.
+    pub is_ring: bool,
+    /// Path of GeometryCollection member indices from the feature's top-level
+    /// geometry down to the geometry that emitted this path.
+    ///
+    /// Empty for a top-level (non-collection) geometry.  For a geometry that is
+    /// the `k`-th member of the feature's top-level `GeometryCollection` the
+    /// path is `[k]`; nested collections extend the path (`[k, j, …]`).  This
+    /// disambiguates sibling members that would otherwise collide on
+    /// `(feature_idx, poly_idx, ring_idx, is_ring)` — e.g. two `Polygon`
+    /// members both reporting `poly_idx = 0, ring_idx = 0`.
+    pub member_path: Vec<usize>,
 }
 
 /// Collect all polygon rings from the feature collection, quantised to integer
@@ -245,7 +265,7 @@ pub(crate) fn collect_all_rings(
             Some(g) => g,
             None => continue,
         };
-        collect_rings_from_geom(geom, feat_idx, transform, &mut rings, &mut sources);
+        collect_rings_from_geom(geom, feat_idx, &[], transform, &mut rings, &mut sources);
     }
 
     (rings, sources)
@@ -254,6 +274,7 @@ pub(crate) fn collect_all_rings(
 fn collect_rings_from_geom(
     geom: &GeoJsonGeometry,
     feat_idx: usize,
+    member_path: &[usize],
     transform: &QuantTransform,
     rings: &mut Vec<Vec<QuantPoint>>,
     sources: &mut Vec<RingSource>,
@@ -270,6 +291,8 @@ fn collect_rings_from_geom(
                     feature_idx: feat_idx,
                     poly_idx: 0,
                     ring_idx,
+                    is_ring: true,
+                    member_path: member_path.to_vec(),
                 });
             }
         }
@@ -284,6 +307,8 @@ fn collect_rings_from_geom(
                     feature_idx: feat_idx,
                     poly_idx: 0,
                     ring_idx,
+                    is_ring: true,
+                    member_path: member_path.to_vec(),
                 });
             }
         }
@@ -299,6 +324,8 @@ fn collect_rings_from_geom(
                         feature_idx: feat_idx,
                         poly_idx,
                         ring_idx,
+                        is_ring: true,
+                        member_path: member_path.to_vec(),
                     });
                 }
             }
@@ -315,16 +342,84 @@ fn collect_rings_from_geom(
                         feature_idx: feat_idx,
                         poly_idx,
                         ring_idx,
+                        is_ring: true,
+                        member_path: member_path.to_vec(),
                     });
                 }
             }
         }
-        GeoJsonGeometry::GeometryCollection(geoms) => {
-            for g in geoms {
-                collect_rings_from_geom(g, feat_idx, transform, rings, sources);
+        GeoJsonGeometry::LineString(pts) => {
+            let chain: Vec<QuantPoint> = pts
+                .iter()
+                .map(|[x, y]| transform.quantise(*x, *y))
+                .collect();
+            rings.push(chain);
+            sources.push(RingSource {
+                feature_idx: feat_idx,
+                poly_idx: 0,
+                ring_idx: 0,
+                is_ring: false,
+                member_path: member_path.to_vec(),
+            });
+        }
+        GeoJsonGeometry::LineStringZ(pts) => {
+            let chain: Vec<QuantPoint> = pts
+                .iter()
+                .map(|[x, y, _]| transform.quantise(*x, *y))
+                .collect();
+            rings.push(chain);
+            sources.push(RingSource {
+                feature_idx: feat_idx,
+                poly_idx: 0,
+                ring_idx: 0,
+                is_ring: false,
+                member_path: member_path.to_vec(),
+            });
+        }
+        GeoJsonGeometry::MultiLineString(lines) => {
+            for (line_idx, line) in lines.iter().enumerate() {
+                let chain: Vec<QuantPoint> = line
+                    .iter()
+                    .map(|[x, y]| transform.quantise(*x, *y))
+                    .collect();
+                rings.push(chain);
+                sources.push(RingSource {
+                    feature_idx: feat_idx,
+                    poly_idx: line_idx,
+                    ring_idx: 0,
+                    is_ring: false,
+                    member_path: member_path.to_vec(),
+                });
             }
         }
-        // LineString, Point, MultiPoint, MultiLineString — no polygon rings
-        _ => {}
+        GeoJsonGeometry::MultiLineStringZ(lines) => {
+            for (line_idx, line) in lines.iter().enumerate() {
+                let chain: Vec<QuantPoint> = line
+                    .iter()
+                    .map(|[x, y, _]| transform.quantise(*x, *y))
+                    .collect();
+                rings.push(chain);
+                sources.push(RingSource {
+                    feature_idx: feat_idx,
+                    poly_idx: line_idx,
+                    ring_idx: 0,
+                    is_ring: false,
+                    member_path: member_path.to_vec(),
+                });
+            }
+        }
+        GeoJsonGeometry::GeometryCollection(geoms) => {
+            for (member_idx, g) in geoms.iter().enumerate() {
+                let mut child_path = member_path.to_vec();
+                child_path.push(member_idx);
+                collect_rings_from_geom(g, feat_idx, &child_path, transform, rings, sources);
+            }
+        }
+        // Point / MultiPoint — no arcs to track.
+        GeoJsonGeometry::Point(_)
+        | GeoJsonGeometry::PointZ(_)
+        | GeoJsonGeometry::MultiPoint(_)
+        | GeoJsonGeometry::MultiPointZ(_)
+        | GeoJsonGeometry::Null => {}
     }
 }

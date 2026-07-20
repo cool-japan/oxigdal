@@ -530,17 +530,17 @@ impl TopologyChecker {
         let first = polygon.exterior.coords.first();
         let last = polygon.exterior.coords.last();
 
-        if let (Some(f), Some(l)) = (first, last) {
-            if !self.coords_equal(f, l) {
-                errors.push(TopologyError {
-                    feature_id: feature_id.clone(),
-                    error_type: TopologyErrorType::InvalidRing,
-                    location: *f,
-                    severity: Severity::Critical,
-                    description: "Polygon ring is not closed".to_string(),
-                    fix_suggestion: Some("Close the ring by adding first point at end".to_string()),
-                });
-            }
+        if let (Some(f), Some(l)) = (first, last)
+            && !self.coords_equal(f, l)
+        {
+            errors.push(TopologyError {
+                feature_id: feature_id.clone(),
+                error_type: TopologyErrorType::InvalidRing,
+                location: *f,
+                severity: Severity::Critical,
+                description: "Polygon ring is not closed".to_string(),
+                fix_suggestion: Some("Close the ring by adding first point at end".to_string()),
+            });
         }
 
         // Validate exterior ring as linestring
@@ -679,23 +679,37 @@ impl TopologyChecker {
         Ok(None)
     }
 
-    /// Calculates polygon area (simplified shoelace formula).
+    /// Calculates polygon net area (shoelace formula on the exterior ring,
+    /// minus the shoelace area of every interior ring/hole).
+    ///
+    /// Interior rings (holes) reduce the net area of the polygon; a thin
+    /// annulus (large exterior, near-equal-size hole) must therefore score a
+    /// small net area rather than the gross exterior-only area, so sliver
+    /// detection (`check_sliver`) isn't fooled by donut-shaped features.
+    /// The result is clamped at 0.0 to guard against malformed input where
+    /// the holes' combined area exceeds the exterior's (e.g. self-overlapping
+    /// or mis-wound rings).
     fn calculate_area(&self, polygon: &Polygon) -> f64 {
-        let coords = &polygon.exterior.coords;
-        if coords.len() < 3 {
-            return 0.0;
-        }
+        let exterior_area = signed_area(&polygon.exterior.coords).abs();
+        let holes_area: f64 = polygon
+            .interiors
+            .iter()
+            .map(|ring| signed_area(&ring.coords).abs())
+            .sum();
 
-        let mut area = 0.0;
-        for i in 0..coords.len() - 1 {
-            area += coords[i].x * coords[i + 1].y;
-            area -= coords[i + 1].x * coords[i].y;
-        }
-
-        (area / 2.0).abs()
+        (exterior_area - holes_area).max(0.0)
     }
 
     /// Calculates polygon perimeter.
+    ///
+    /// Intentionally exterior-ring-only (unlike `calculate_area`, which nets
+    /// out interior rings): for the sliver-compactness ratio
+    /// `area / perimeter^2` used by `check_sliver`, the boundary length that
+    /// matters for "is this shape thin and elongated" is the outer boundary.
+    /// Including hole perimeters would inflate the denominator for polygons
+    /// that have holes for unrelated reasons (e.g. a donut with a large,
+    /// well-formed hole) and bias them toward looking artificially more
+    /// compact, masking genuine slivers elsewhere in the same feature.
     fn calculate_perimeter(&self, polygon: &Polygon) -> f64 {
         let coords = &polygon.exterior.coords;
         if coords.len() < 2 {
@@ -1115,14 +1129,15 @@ fn detect_overlaps(polygons: &[(u64, &Polygon)]) -> Vec<TopologyViolation> {
 fn compute_overlap_area(poly_a: &Polygon, poly_b: &Polygon, bbox_a: &Bbox2D) -> f64 {
     // Only attempt full intersection when both exteriors have the minimum 4 coords
     // required by `intersect_polygons`.
-    if poly_a.exterior.coords.len() >= 4 && poly_b.exterior.coords.len() >= 4 {
-        if let Ok(intersection_polys) = intersect_polygons(poly_a, poly_b) {
-            let total: f64 = intersection_polys
-                .iter()
-                .map(|p| signed_area(&p.exterior.coords).abs())
-                .sum();
-            return total;
-        }
+    if poly_a.exterior.coords.len() >= 4
+        && poly_b.exterior.coords.len() >= 4
+        && let Ok(intersection_polys) = intersect_polygons(poly_a, poly_b)
+    {
+        let total: f64 = intersection_polys
+            .iter()
+            .map(|p| signed_area(&p.exterior.coords).abs())
+            .sum();
+        return total;
     }
 
     // Fallback: use bbox-intersection area as an estimate.
@@ -1151,15 +1166,15 @@ fn detect_gaps(polygons: &[(u64, &Polygon)], tolerance: f64) -> Vec<TopologyViol
     // register as intersecting.
     let mut tree: RTree<usize> = RTree::new();
     for (i, (_, poly)) in polygons.iter().enumerate() {
-        if let Some(bbox) = polygon_bbox(poly) {
-            if let Some(expanded) = Bbox2D::new(
+        if let Some(bbox) = polygon_bbox(poly)
+            && let Some(expanded) = Bbox2D::new(
                 bbox.min_x - tolerance,
                 bbox.min_y - tolerance,
                 bbox.max_x + tolerance,
                 bbox.max_y + tolerance,
-            ) {
-                tree.insert(expanded, i);
-            }
+            )
+        {
+            tree.insert(expanded, i);
         }
     }
 
@@ -1597,5 +1612,124 @@ mod tests {
             "Expected SelfIntersection for X linestring, got: {:?}",
             violations
         );
+    }
+
+    // ── sliver area/perimeter tests (holes must net out of area) ──────────────
+
+    /// A square with a hole cut out must report the net area (exterior minus
+    /// hole), not the gross exterior area.
+    #[test]
+    fn test_calculate_area_subtracts_holes() {
+        let checker = TopologyChecker::new();
+        let exterior = ls(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let hole = ls(&[(1.0, 1.0), (9.0, 1.0), (9.0, 9.0), (1.0, 9.0), (1.0, 1.0)]);
+        let polygon = Polygon {
+            exterior,
+            interiors: vec![hole],
+        };
+
+        // Exterior area = 100.0, hole area = 64.0, net area = 36.0.
+        let area = checker.calculate_area(&polygon);
+        assert!(
+            (area - 36.0).abs() < 1e-9,
+            "expected net area 36.0, got {area}"
+        );
+    }
+
+    /// A polygon with no holes keeps its full exterior area (regression guard
+    /// for the holes-subtraction change above).
+    #[test]
+    fn test_calculate_area_no_holes_unchanged() {
+        let checker = TopologyChecker::new();
+        let exterior = ls(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let polygon = Polygon {
+            exterior,
+            interiors: vec![],
+        };
+
+        let area = checker.calculate_area(&polygon);
+        assert!(
+            (area - 100.0).abs() < 1e-9,
+            "expected area 100.0, got {area}"
+        );
+    }
+
+    /// A thin annulus (large exterior, near-equal-size hole) is a textbook
+    /// sliver: its true (net) area and compactness are tiny even though the
+    /// gross exterior area is large. Before the holes-subtraction fix,
+    /// `check_sliver` scored this using the gross exterior area (100.0),
+    /// which is far above `sliver_area_threshold` (1.0 by default), so the
+    /// sliver was silently missed. After the fix, the net area (~0.8) is
+    /// below the threshold and the compactness ratio is small enough to be
+    /// flagged.
+    #[test]
+    fn test_check_sliver_detects_thin_annulus() {
+        let checker = TopologyChecker::new();
+        let exterior = ls(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        // Ring thickness of 0.02 on all sides -> hole area = 9.96^2 = 99.2016,
+        // net area = 100.0 - 99.2016 = 0.7984.
+        let hole = ls(&[
+            (0.02, 0.02),
+            (9.98, 0.02),
+            (9.98, 9.98),
+            (0.02, 9.98),
+            (0.02, 0.02),
+        ]);
+        let polygon = Polygon {
+            exterior,
+            interiors: vec![hole],
+        };
+
+        let sliver = checker
+            .check_sliver(&polygon, &None)
+            .expect("check_sliver should succeed")
+            .expect("thin annulus should be flagged as a sliver");
+        assert!(
+            sliver.area < 1.0,
+            "expected net sliver area < 1.0, got {}",
+            sliver.area
+        );
+    }
+
+    /// A solid square (no holes) with the same exterior as the annulus test
+    /// above is well above the default area threshold and must NOT be
+    /// flagged as a sliver.
+    #[test]
+    fn test_check_sliver_ignores_solid_square() {
+        let checker = TopologyChecker::new();
+        let exterior = ls(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let polygon = Polygon {
+            exterior,
+            interiors: vec![],
+        };
+
+        let sliver = checker
+            .check_sliver(&polygon, &None)
+            .expect("check_sliver should succeed");
+        assert!(sliver.is_none(), "solid square should not be a sliver");
     }
 }

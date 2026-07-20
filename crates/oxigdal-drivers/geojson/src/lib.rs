@@ -10,7 +10,7 @@
 //! - Support for all geometry types (Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon, GeometryCollection)
 //! - Feature and FeatureCollection support
 //! - CRS (Coordinate Reference System) handling
-//! - Streaming reader for large files
+//! - GeoJSONL / newline-delimited GeoJSON reading with O(1) memory per feature
 //! - Efficient writer with customizable formatting
 //! - Comprehensive validation
 //! - Zero-copy optimizations where possible
@@ -57,7 +57,10 @@
 //!
 //! # Performance
 //!
-//! - Streaming API for large files (O(1) memory for features)
+//! - GeoJSONL (`read_geojsonl`) streaming for O(1) memory per feature on
+//!   newline-delimited input; standard `FeatureCollection` reads
+//!   (`read_feature_collection`, `iter_features`) fully buffer and parse the
+//!   document up front
 //! - Zero-copy deserialization where possible
 //! - Efficient buffering and I/O
 //! - Parallel processing support (with `async` feature)
@@ -112,7 +115,7 @@ pub use types::{
     Coordinate, CoordinateSequence, Crs, Feature, FeatureCollection, Geometry, GeometryType,
     Position, Properties,
 };
-pub use validation::Validator;
+pub use validation::{RingRole, Validator};
 pub use writer::GeoJsonWriter;
 
 // Re-export GeoJSONL helpers

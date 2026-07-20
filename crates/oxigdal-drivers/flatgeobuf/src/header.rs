@@ -1,11 +1,16 @@
-//! `FlatGeobuf` header types and parsing
+//! `FlatGeobuf` header types and `FlatBuffers` (de)serialization
 //!
 //! The header contains metadata about the feature collection including
-//! geometry type, columns, CRS information, and spatial extent.
+//! geometry type, columns, CRS information, and spatial extent. It is encoded
+//! on disk as a size-prefixed `FlatBuffers` `Header` table exactly as specified
+//! by the `FlatGeobuf` schema (`header.fbs`), so files produced here
+//! interoperate with GDAL and other `FlatGeobuf` tooling.
 
 use crate::error::{FlatGeobufError, Result};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{Read, Write};
+use crate::fbs::{self, FbTable, Offset};
+use crate::index::PackedRTree;
+use flatbuffers::FlatBufferBuilder;
+use std::io::Write;
 
 /// Geometry type enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,196 +430,35 @@ impl Header {
         self
     }
 
-    /// Reads header from a byte stream
-    pub fn read<R: Read>(reader: &mut R) -> Result<Self> {
-        // For now, we'll implement a simplified binary reading
-        // In a full implementation, this would use FlatBuffers
-        let geometry_type = GeometryType::from_u8(reader.read_u8()?)?;
-        let flags = reader.read_u8()?;
-
-        let has_z = (flags & 0x01) != 0;
-        let has_m = (flags & 0x02) != 0;
-        let has_t = (flags & 0x04) != 0;
-        let has_tm = (flags & 0x08) != 0;
-        let has_index = (flags & 0x10) != 0;
-
-        let column_count = reader.read_u32::<LittleEndian>()?;
-        let mut columns = Vec::with_capacity(column_count as usize);
-
-        for _ in 0..column_count {
-            let name_len = reader.read_u32::<LittleEndian>()?;
-            let mut name_bytes = vec![0u8; name_len as usize];
-            reader.read_exact(&mut name_bytes)?;
-            let name = String::from_utf8(name_bytes)?;
-
-            let column_type = ColumnType::from_u8(reader.read_u8()?)?;
-
-            columns.push(Column::new(name, column_type));
-        }
-
-        let has_extent = reader.read_u8()? != 0;
-        let extent = if has_extent {
-            Some([
-                reader.read_f64::<LittleEndian>()?,
-                reader.read_f64::<LittleEndian>()?,
-                reader.read_f64::<LittleEndian>()?,
-                reader.read_f64::<LittleEndian>()?,
-            ])
-        } else {
-            None
-        };
-
-        // Read features count
-        let has_features_count = reader.read_u8()? != 0;
-        let features_count = if has_features_count {
-            Some(reader.read_u64::<LittleEndian>()?)
-        } else {
-            None
-        };
-
-        // Read CRS
-        let has_crs = reader.read_u8()? != 0;
-        let crs = if has_crs {
-            let has_org = reader.read_u8()? != 0;
-            let organization = if has_org {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                Some(String::from_utf8(bytes)?)
-            } else {
-                None
-            };
-
-            let has_code = reader.read_u8()? != 0;
-            let organization_code = if has_code {
-                Some(reader.read_i32::<LittleEndian>()?)
-            } else {
-                None
-            };
-
-            let has_wkt = reader.read_u8()? != 0;
-            let wkt = if has_wkt {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                Some(String::from_utf8(bytes)?)
-            } else {
-                None
-            };
-
-            Some(CrsInfo {
-                organization,
-                organization_code,
-                name: organization_code.map(|c| format!("EPSG:{c}")),
-                description: None,
-                wkt,
-                code: organization_code.map(|c| c.to_string()),
-            })
-        } else {
-            None
-        };
-
-        Ok(Self {
-            geometry_type,
-            has_z,
-            has_m,
-            has_t,
-            has_tm,
-            columns,
-            features_count,
-            has_index,
-            crs,
-            title: None,
-            description: None,
-            metadata: None,
-            extent,
-        })
+    /// Serializes this header to a `FlatBuffers` `Header` table.
+    ///
+    /// The returned bytes are the bare `FlatBuffers` message (no size prefix);
+    /// callers write a `u32` length before them to produce the size-prefixed
+    /// header expected by the on-disk `FlatGeobuf` layout.
+    pub fn to_flatbuffer(&self) -> Result<Vec<u8>> {
+        let mut fbb = FlatBufferBuilder::new();
+        let root = build_header(&mut fbb, self);
+        fbb.finish(root, None);
+        Ok(fbb.finished_data().to_vec())
     }
 
-    /// Writes header to a byte stream
+    /// Writes the `FlatBuffers` header body to a byte stream.
+    ///
+    /// This writes only the header `FlatBuffers` message; the caller is
+    /// responsible for the preceding `u32` size prefix.
     pub fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_u8(self.geometry_type as u8)?;
-
-        let mut flags = 0u8;
-        if self.has_z {
-            flags |= 0x01;
-        }
-        if self.has_m {
-            flags |= 0x02;
-        }
-        if self.has_t {
-            flags |= 0x04;
-        }
-        if self.has_tm {
-            flags |= 0x08;
-        }
-        if self.has_index {
-            flags |= 0x10;
-        }
-        writer.write_u8(flags)?;
-
-        writer.write_u32::<LittleEndian>(self.columns.len() as u32)?;
-        for column in &self.columns {
-            let name_bytes = column.name.as_bytes();
-            writer.write_u32::<LittleEndian>(name_bytes.len() as u32)?;
-            writer.write_all(name_bytes)?;
-            writer.write_u8(column.column_type as u8)?;
-        }
-
-        if let Some(extent) = self.extent {
-            writer.write_u8(1)?;
-            writer.write_f64::<LittleEndian>(extent[0])?;
-            writer.write_f64::<LittleEndian>(extent[1])?;
-            writer.write_f64::<LittleEndian>(extent[2])?;
-            writer.write_f64::<LittleEndian>(extent[3])?;
-        } else {
-            writer.write_u8(0)?;
-        }
-
-        // Write features count
-        if let Some(count) = self.features_count {
-            writer.write_u8(1)?;
-            writer.write_u64::<LittleEndian>(count)?;
-        } else {
-            writer.write_u8(0)?;
-        }
-
-        // Write CRS
-        if let Some(ref crs) = self.crs {
-            writer.write_u8(1)?;
-
-            // Write organization
-            if let Some(ref org) = crs.organization {
-                writer.write_u8(1)?;
-                let bytes = org.as_bytes();
-                writer.write_u32::<LittleEndian>(bytes.len() as u32)?;
-                writer.write_all(bytes)?;
-            } else {
-                writer.write_u8(0)?;
-            }
-
-            // Write organization_code
-            if let Some(code) = crs.organization_code {
-                writer.write_u8(1)?;
-                writer.write_i32::<LittleEndian>(code)?;
-            } else {
-                writer.write_u8(0)?;
-            }
-
-            // Write WKT
-            if let Some(ref wkt) = crs.wkt {
-                writer.write_u8(1)?;
-                let bytes = wkt.as_bytes();
-                writer.write_u32::<LittleEndian>(bytes.len() as u32)?;
-                writer.write_all(bytes)?;
-            } else {
-                writer.write_u8(0)?;
-            }
-        } else {
-            writer.write_u8(0)?;
-        }
-
+        let bytes = self.to_flatbuffer()?;
+        writer.write_all(&bytes)?;
         Ok(())
+    }
+
+    /// Parses a `FlatBuffers` `Header` table from `data`.
+    ///
+    /// `data` must be the bare header `FlatBuffers` message (the bytes that
+    /// follow the on-disk `u32` size prefix), not size-prefixed.
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        let table = FbTable::root(data)?;
+        read_header(&table)
     }
 }
 
@@ -624,8 +468,205 @@ impl Default for Header {
     }
 }
 
+/// Builds a `FlatBuffers` `Column` table.
+fn build_column(fbb: &mut FlatBufferBuilder<'_>, col: &Column) -> Offset {
+    let name_off = fbb.create_string(&col.name);
+    let title_off = col.title.as_deref().map(|s| fbb.create_string(s));
+    let desc_off = col.description.as_deref().map(|s| fbb.create_string(s));
+
+    let wip = fbb.start_table();
+    fbb.push_slot_always(fbs::COLUMN_VT_NAME, name_off);
+    fbb.push_slot::<u8>(fbs::COLUMN_VT_TYPE, col.column_type as u8, 0);
+    if let Some(o) = title_off {
+        fbb.push_slot_always(fbs::COLUMN_VT_TITLE, o);
+    }
+    if let Some(o) = desc_off {
+        fbb.push_slot_always(fbs::COLUMN_VT_DESCRIPTION, o);
+    }
+    fbb.push_slot::<i32>(fbs::COLUMN_VT_WIDTH, col.width.unwrap_or(-1), -1);
+    fbb.push_slot::<i32>(fbs::COLUMN_VT_PRECISION, col.precision.unwrap_or(-1), -1);
+    fbb.push_slot::<i32>(fbs::COLUMN_VT_SCALE, col.scale.unwrap_or(-1), -1);
+    fbb.push_slot::<bool>(fbs::COLUMN_VT_NULLABLE, col.nullable, true);
+    fbb.push_slot::<bool>(fbs::COLUMN_VT_UNIQUE, col.unique, false);
+    fbb.push_slot::<bool>(fbs::COLUMN_VT_PRIMARY_KEY, col.primary_key, false);
+    fbb.end_table(wip)
+}
+
+/// Builds a `FlatBuffers` `Crs` table.
+fn build_crs(fbb: &mut FlatBufferBuilder<'_>, crs: &CrsInfo) -> Offset {
+    let org_off = crs.organization.as_deref().map(|s| fbb.create_string(s));
+    let name_off = crs.name.as_deref().map(|s| fbb.create_string(s));
+    let desc_off = crs.description.as_deref().map(|s| fbb.create_string(s));
+    let wkt_off = crs.wkt.as_deref().map(|s| fbb.create_string(s));
+    let code_str_off = crs.code.as_deref().map(|s| fbb.create_string(s));
+
+    let wip = fbb.start_table();
+    if let Some(o) = org_off {
+        fbb.push_slot_always(fbs::CRS_VT_ORG, o);
+    }
+    fbb.push_slot::<i32>(fbs::CRS_VT_CODE, crs.organization_code.unwrap_or(0), 0);
+    if let Some(o) = name_off {
+        fbb.push_slot_always(fbs::CRS_VT_NAME, o);
+    }
+    if let Some(o) = desc_off {
+        fbb.push_slot_always(fbs::CRS_VT_DESCRIPTION, o);
+    }
+    if let Some(o) = wkt_off {
+        fbb.push_slot_always(fbs::CRS_VT_WKT, o);
+    }
+    if let Some(o) = code_str_off {
+        fbb.push_slot_always(fbs::CRS_VT_CODE_STRING, o);
+    }
+    fbb.end_table(wip)
+}
+
+/// Builds a `FlatBuffers` `Header` table.
+fn build_header(fbb: &mut FlatBufferBuilder<'_>, header: &Header) -> Offset {
+    // All child offsets must be created before the table is started.
+    let title_off = header.title.as_deref().map(|s| fbb.create_string(s));
+    let desc_off = header.description.as_deref().map(|s| fbb.create_string(s));
+    let meta_off = header.metadata.as_deref().map(|s| fbb.create_string(s));
+
+    let envelope_off = header.extent.map(|e| fbb.create_vector::<f64>(&e[..]));
+
+    let columns_off = if header.columns.is_empty() {
+        None
+    } else {
+        let col_offs: Vec<Offset> = header
+            .columns
+            .iter()
+            .map(|c| build_column(fbb, c))
+            .collect();
+        Some(fbb.create_vector(&col_offs))
+    };
+
+    let crs_off = header.crs.as_ref().map(|c| build_crs(fbb, c));
+
+    let index_node_size = if header.has_index {
+        PackedRTree::DEFAULT_NODE_SIZE as u16
+    } else {
+        0
+    };
+
+    let wip = fbb.start_table();
+    if let Some(o) = envelope_off {
+        fbb.push_slot_always(fbs::HEADER_VT_ENVELOPE, o);
+    }
+    fbb.push_slot::<u8>(fbs::HEADER_VT_GEOMETRY_TYPE, header.geometry_type as u8, 0);
+    fbb.push_slot::<bool>(fbs::HEADER_VT_HAS_Z, header.has_z, false);
+    fbb.push_slot::<bool>(fbs::HEADER_VT_HAS_M, header.has_m, false);
+    fbb.push_slot::<bool>(fbs::HEADER_VT_HAS_T, header.has_t, false);
+    fbb.push_slot::<bool>(fbs::HEADER_VT_HAS_TM, header.has_tm, false);
+    if let Some(o) = columns_off {
+        fbb.push_slot_always(fbs::HEADER_VT_COLUMNS, o);
+    }
+    fbb.push_slot::<u64>(
+        fbs::HEADER_VT_FEATURES_COUNT,
+        header.features_count.unwrap_or(0),
+        0,
+    );
+    // Note: the schema default for `index_node_size` is 16. Writing 16 is a
+    // no-op (index present, the FlatGeobuf default); an explicit 0 is stored to
+    // signal "no index".
+    fbb.push_slot::<u16>(fbs::HEADER_VT_INDEX_NODE_SIZE, index_node_size, 16);
+    if let Some(o) = crs_off {
+        fbb.push_slot_always(fbs::HEADER_VT_CRS, o);
+    }
+    if let Some(o) = title_off {
+        fbb.push_slot_always(fbs::HEADER_VT_TITLE, o);
+    }
+    if let Some(o) = desc_off {
+        fbb.push_slot_always(fbs::HEADER_VT_DESCRIPTION, o);
+    }
+    if let Some(o) = meta_off {
+        fbb.push_slot_always(fbs::HEADER_VT_METADATA, o);
+    }
+    fbb.end_table(wip)
+}
+
+/// Reads a `FlatBuffers` `Column` table into a [`Column`].
+fn read_column(t: &FbTable<'_>) -> Result<Column> {
+    let name = t.get_string(fbs::COLUMN_VT_NAME)?.unwrap_or_default();
+    let column_type = ColumnType::from_u8(t.get_u8(fbs::COLUMN_VT_TYPE, 0)?)?;
+    Ok(Column {
+        name,
+        column_type,
+        title: t.get_string(fbs::COLUMN_VT_TITLE)?,
+        description: t.get_string(fbs::COLUMN_VT_DESCRIPTION)?,
+        width: opt_i32(t.get_i32(fbs::COLUMN_VT_WIDTH, -1)?),
+        precision: opt_i32(t.get_i32(fbs::COLUMN_VT_PRECISION, -1)?),
+        scale: opt_i32(t.get_i32(fbs::COLUMN_VT_SCALE, -1)?),
+        nullable: t.get_bool(fbs::COLUMN_VT_NULLABLE, true)?,
+        unique: t.get_bool(fbs::COLUMN_VT_UNIQUE, false)?,
+        primary_key: t.get_bool(fbs::COLUMN_VT_PRIMARY_KEY, false)?,
+    })
+}
+
+/// Reads a `FlatBuffers` `Crs` table into a [`CrsInfo`].
+fn read_crs(t: &FbTable<'_>) -> Result<CrsInfo> {
+    let code = t.get_i32(fbs::CRS_VT_CODE, 0)?;
+    Ok(CrsInfo {
+        organization: t.get_string(fbs::CRS_VT_ORG)?,
+        organization_code: if code == 0 { None } else { Some(code) },
+        name: t.get_string(fbs::CRS_VT_NAME)?,
+        description: t.get_string(fbs::CRS_VT_DESCRIPTION)?,
+        wkt: t.get_string(fbs::CRS_VT_WKT)?,
+        code: t.get_string(fbs::CRS_VT_CODE_STRING)?,
+    })
+}
+
+/// Reads a `FlatBuffers` `Header` table into a [`Header`].
+fn read_header(t: &FbTable<'_>) -> Result<Header> {
+    let geometry_type = GeometryType::from_u8(t.get_u8(fbs::HEADER_VT_GEOMETRY_TYPE, 0)?)?;
+    let has_z = t.get_bool(fbs::HEADER_VT_HAS_Z, false)?;
+    let has_m = t.get_bool(fbs::HEADER_VT_HAS_M, false)?;
+    let has_t = t.get_bool(fbs::HEADER_VT_HAS_T, false)?;
+    let has_tm = t.get_bool(fbs::HEADER_VT_HAS_TM, false)?;
+
+    let mut columns = Vec::new();
+    for col_table in t.get_table_vector(fbs::HEADER_VT_COLUMNS)? {
+        columns.push(read_column(&col_table)?);
+    }
+
+    let index_node_size = t.get_u16(fbs::HEADER_VT_INDEX_NODE_SIZE, 16)?;
+    let has_index = index_node_size != 0;
+    let features_count = Some(t.get_u64(fbs::HEADER_VT_FEATURES_COUNT, 0)?);
+
+    let crs = match t.get_table(fbs::HEADER_VT_CRS)? {
+        Some(c) => Some(read_crs(&c)?),
+        None => None,
+    };
+
+    let extent = match t.get_f64_vector(fbs::HEADER_VT_ENVELOPE)? {
+        Some(v) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+        _ => None,
+    };
+
+    Ok(Header {
+        geometry_type,
+        has_z,
+        has_m,
+        has_t,
+        has_tm,
+        columns,
+        features_count,
+        has_index,
+        crs,
+        title: t.get_string(fbs::HEADER_VT_TITLE)?,
+        description: t.get_string(fbs::HEADER_VT_DESCRIPTION)?,
+        metadata: t.get_string(fbs::HEADER_VT_METADATA)?,
+        extent,
+    })
+}
+
+#[inline]
+const fn opt_i32(v: i32) -> Option<i32> {
+    if v == -1 { None } else { Some(v) }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]
@@ -672,5 +713,48 @@ mod tests {
         assert!(header.has_z);
         assert!(header.has_index);
         assert_eq!(header.extent, Some([-180.0, -90.0, 180.0, 90.0]));
+    }
+
+    /// The header must round-trip through the real `FlatBuffers` encoding.
+    #[test]
+    fn test_header_flatbuffer_roundtrip() {
+        let mut header = Header::new(GeometryType::MultiPolygon)
+            .with_z()
+            .with_index(true)
+            .with_crs(CrsInfo::from_epsg(4326))
+            .with_extent([-10.0, -20.0, 30.0, 40.0])
+            .with_features_count(7);
+        header.add_column(Column::new("name", ColumnType::String));
+        header.add_column(Column::new("count", ColumnType::Int));
+        header.title = Some("My Layer".to_string());
+
+        let bytes = header.to_flatbuffer().expect("encode header");
+        let decoded = Header::from_bytes(&bytes).expect("decode header");
+
+        assert_eq!(decoded.geometry_type, GeometryType::MultiPolygon);
+        assert!(decoded.has_z);
+        assert!(!decoded.has_m);
+        assert!(decoded.has_index);
+        assert_eq!(decoded.features_count, Some(7));
+        assert_eq!(decoded.extent, Some([-10.0, -20.0, 30.0, 40.0]));
+        assert_eq!(decoded.columns.len(), 2);
+        assert_eq!(decoded.columns[0].name, "name");
+        assert_eq!(decoded.columns[0].column_type, ColumnType::String);
+        assert_eq!(decoded.columns[1].name, "count");
+        assert_eq!(decoded.title.as_deref(), Some("My Layer"));
+        let crs = decoded.crs.expect("crs present");
+        assert_eq!(crs.organization.as_deref(), Some("EPSG"));
+        assert_eq!(crs.organization_code, Some(4326));
+    }
+
+    /// A header with no index must encode `index_node_size = 0`.
+    #[test]
+    fn test_header_no_index_roundtrip() {
+        let header = Header::new(GeometryType::Point);
+        let bytes = header.to_flatbuffer().expect("encode header");
+        let decoded = Header::from_bytes(&bytes).expect("decode header");
+        assert!(!decoded.has_index);
+        assert!(decoded.crs.is_none());
+        assert!(decoded.extent.is_none());
     }
 }

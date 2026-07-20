@@ -223,16 +223,24 @@ impl PackedRTree {
         // Build levels until we reach the root
         while current_level.len() > 1 {
             level_sizes.push(current_level.len());
+            let level_start = all_nodes.len();
             all_nodes.extend(current_level.clone());
 
-            // Build parent level
+            // Build parent level. Each parent's `offset` must be the ABSOLUTE
+            // index of its first child within `all_nodes`, matching the
+            // semantics `search()` relies on (and mirroring
+            // `writer::build_rtree_with_offsets`). Storing a constant `0` here
+            // would make `search()` treat every internal node's children as
+            // starting at the front of the array.
             let mut parent_level = Vec::new();
+            let mut child_idx = level_start;
             for chunk in current_level.chunks(node_size) {
                 let mut parent_bbox = BoundingBox::empty();
                 for node in chunk {
                     parent_bbox.expand(&node.bbox);
                 }
-                parent_level.push(Node::new(parent_bbox, 0));
+                parent_level.push(Node::new(parent_bbox, child_idx as u64));
+                child_idx += chunk.len();
             }
 
             current_level = parent_level;
@@ -274,18 +282,28 @@ impl PackedRTree {
             }
 
             if level == 0 {
-                // Leaf node - add to results
-                results.push(node.offset);
+                // Leaf node - return its *node-array index* (which, since leaf
+                // nodes occupy the front of `self.nodes`, equals the feature's
+                // ordinal position). Consumers (`FlatGeobufReader::seek_feature`,
+                // `HttpReader::read_feature_by_index`) dereference this index to
+                // `self.nodes[idx].offset` to obtain the actual byte offset.
+                results.push(offset as u64);
             } else {
-                // Internal node - add children to stack
+                // Internal node. An internal node's `offset` field already holds
+                // the ABSOLUTE index of its first child within `self.nodes`
+                // (that is how both `build_rtree_with_offsets` and `build` write
+                // it), so children are simply the contiguous slots
+                // `first_child .. first_child + node_size`, bounded by the end
+                // of the child level.
                 let child_level = level - 1;
                 let child_start = self.get_level_offset(child_level);
                 let children_per_node = self.node_size;
                 let first_child = node.offset as usize;
+                let child_level_end = child_start + self.level_sizes[child_level];
 
                 for i in 0..children_per_node {
-                    let child_offset = child_start + first_child * children_per_node + i;
-                    if child_offset < child_start + self.level_sizes[child_level] {
+                    let child_offset = first_child + i;
+                    if child_offset < child_level_end {
                         stack.push((child_level, child_offset));
                     }
                 }
@@ -525,5 +543,88 @@ mod tests {
     #[test]
     fn test_node_size() {
         assert_eq!(Node::NODE_SIZE, 40);
+    }
+
+    /// Regression: a multi-level tree (>16 leaves with the default node size)
+    /// must return *every* leaf for a full-extent query. The previous
+    /// child-offset formula re-multiplied the already-absolute child index by
+    /// `node_size`, pushing the computed offset out of range for any internal
+    /// node whose rank was greater than 0, so all children of non-first parents
+    /// were silently dropped and `search()` returned far fewer than all leaves.
+    #[test]
+    fn test_rtree_search_multilevel_returns_all_leaves() {
+        // 40 leaves, node_size 16 -> level sizes [40, 3, 1] (two internal
+        // levels, with parents at ranks 0/1/2 -> the bug's trigger condition).
+        let node_size = PackedRTree::DEFAULT_NODE_SIZE;
+        let n = 40usize;
+        let boxes: Vec<BoundingBox> = (0..n)
+            .map(|i| {
+                let cx = (i as f64) * 4.0 - 78.0; // spread across valid lon range
+                let cy = (i as f64) * 2.0 - 39.0; // valid lat range
+                BoundingBox::new(cx - 0.25, cy - 0.25, cx + 0.25, cy + 0.25)
+            })
+            .collect();
+
+        let rtree = PackedRTree::build(boxes, node_size).expect("build rtree");
+        assert!(rtree.level_sizes.len() >= 3, "expected >=2 internal levels");
+
+        // Full-extent query must reach every leaf.
+        let query = BoundingBox::new(-180.0, -90.0, 180.0, 90.0);
+        let mut results = rtree.search(&query);
+        results.sort_unstable();
+
+        let expected: Vec<u64> = (0..n as u64).collect();
+        assert_eq!(
+            results, expected,
+            "full-extent search must return all leaf node indices exactly once"
+        );
+    }
+
+    /// Regression: a query that only covers part of the extent must still return
+    /// the correct leaves via the corrected internal-node traversal (exercising
+    /// parents beyond rank 0).
+    #[test]
+    fn test_rtree_search_partial_extent_subset() {
+        let node_size = PackedRTree::DEFAULT_NODE_SIZE;
+        let n = 40usize;
+        let centers: Vec<(f64, f64)> = (0..n)
+            .map(|i| ((i as f64) * 4.0 - 78.0, (i as f64) * 2.0 - 39.0))
+            .collect();
+        let boxes: Vec<BoundingBox> = centers
+            .iter()
+            .map(|&(cx, cy)| BoundingBox::new(cx - 0.25, cy - 0.25, cx + 0.25, cy + 0.25))
+            .collect();
+
+        let rtree = PackedRTree::build(boxes, node_size).expect("build rtree");
+
+        // Query a window covering roughly the upper third of the centers.
+        let query = BoundingBox::new(30.0, 15.0, 200.0, 100.0);
+        let results = rtree.search(&query);
+
+        // Every returned index must be a valid leaf whose bbox actually
+        // intersects the query (no false positives, no out-of-range indices).
+        for &idx in &results {
+            let node = &rtree.nodes[idx as usize];
+            assert!(idx < n as u64, "leaf index in range");
+            assert!(
+                node.bbox.intersects(&query),
+                "returned leaf {idx} must intersect the query"
+            );
+        }
+
+        // And every leaf that intersects the query must be returned.
+        let expected_hits: usize = centers
+            .iter()
+            .filter(|&&(cx, cy)| {
+                let b = BoundingBox::new(cx - 0.25, cy - 0.25, cx + 0.25, cy + 0.25);
+                b.intersects(&query)
+            })
+            .count();
+        assert_eq!(
+            results.len(),
+            expected_hits,
+            "search must return exactly the intersecting leaves"
+        );
+        assert!(expected_hits > 0, "test window should hit some features");
     }
 }

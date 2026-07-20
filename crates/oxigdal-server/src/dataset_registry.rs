@@ -123,12 +123,11 @@ impl Dataset {
     /// Get projection (WKT string)
     pub fn projection(&self) -> Result<String, oxigdal_core::OxiGdalError> {
         // Return EPSG code if available
-        if let Ok(guard) = self.reader.read() {
-            if let Some(ref reader) = *guard {
-                if let Some(epsg) = reader.epsg_code() {
-                    return Ok(format!("EPSG:{}", epsg));
-                }
-            }
+        if let Ok(guard) = self.reader.read()
+            && let Some(ref reader) = *guard
+            && let Some(epsg) = reader.epsg_code()
+        {
+            return Ok(format!("EPSG:{}", epsg));
         }
         Ok("EPSG:4326".to_string())
     }

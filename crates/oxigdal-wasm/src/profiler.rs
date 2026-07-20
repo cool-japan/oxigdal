@@ -425,12 +425,70 @@ impl MemoryMonitor {
         }
     }
 
-    /// Records current memory usage
+    /// Records current memory usage.
+    ///
+    /// On `wasm32` targets this reports real memory telemetry: it prefers the
+    /// non-standard `performance.memory.usedJSHeapSize` (Chromium-based
+    /// browsers only) when a `Window` exposes it, since that reflects the
+    /// full JS+WASM heap in use; otherwise it falls back to the size of the
+    /// module's own `WebAssembly.Memory` linear memory buffer
+    /// (`wasm_bindgen::memory()`), which is always available in any WASM
+    /// host with no browser-specific API required. On non-`wasm32` targets
+    /// (native builds/tests) there is no heap to introspect this way, so
+    /// `heap_used` stays `0`.
     pub fn record_current(&mut self, timestamp: f64) {
-        // In WASM, we can't easily get memory info without performance.memory API
-        // For now, use a placeholder
-        let snapshot = MemorySnapshot::new(timestamp, 0);
+        #[cfg(target_arch = "wasm32")]
+        let heap_used = Self::read_heap_used_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let heap_used = 0usize;
+
+        let snapshot = MemorySnapshot::new(timestamp, heap_used);
         self.record(snapshot);
+    }
+
+    /// Reads the current heap usage in bytes from the browser/WASM runtime.
+    ///
+    /// See [`Self::record_current`] for the source-preference order. Returns
+    /// `0` only if neither source is available/readable (e.g. running in a
+    /// worker without `performance.memory` and a `WebAssembly.Memory` handle
+    /// that unexpectedly failed to downcast).
+    #[cfg(target_arch = "wasm32")]
+    fn read_heap_used_bytes() -> usize {
+        use wasm_bindgen::JsCast;
+
+        if let Some(bytes) = Self::js_heap_used_bytes() {
+            return bytes;
+        }
+
+        // Fallback: the size of this module's own linear memory.
+        let memory = wasm_bindgen::memory();
+        if let Ok(memory) = memory.dyn_into::<js_sys::WebAssembly::Memory>() {
+            let buffer = memory.buffer();
+            if let Ok(array_buffer) = buffer.dyn_into::<js_sys::ArrayBuffer>() {
+                return array_buffer.byte_length() as usize;
+            }
+        }
+
+        0
+    }
+
+    /// Attempts to read `window.performance.memory.usedJSHeapSize` via raw
+    /// property reflection (the API is Chromium-only and not part of the
+    /// `web_sys::Performance` typed surface enabled in this workspace, so we
+    /// reach it through `js_sys::Reflect` instead of adding a new web-sys
+    /// feature).
+    #[cfg(target_arch = "wasm32")]
+    fn js_heap_used_bytes() -> Option<usize> {
+        let window = web_sys::window()?;
+        let performance = js_sys::Reflect::get(&window, &JsValue::from_str("performance")).ok()?;
+        let memory = js_sys::Reflect::get(&performance, &JsValue::from_str("memory")).ok()?;
+        let used = js_sys::Reflect::get(&memory, &JsValue::from_str("usedJSHeapSize")).ok()?;
+        let bytes = used.as_f64()?;
+        if bytes.is_finite() && bytes >= 0.0 {
+            Some(bytes as usize)
+        } else {
+            None
+        }
     }
 
     /// Returns the latest snapshot

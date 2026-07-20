@@ -179,26 +179,26 @@ impl OxiGdalKernel {
         let code = code.trim();
 
         // Variable assignment: let name = value
-        if code.starts_with("let ") {
-            if let Some((name, value)) = code.strip_prefix("let ").and_then(|s| s.split_once('=')) {
-                let name = name.trim().to_string();
-                let value_str = value.trim();
+        if code.starts_with("let ")
+            && let Some((name, value)) = code.strip_prefix("let ").and_then(|s| s.split_once('='))
+        {
+            let name = name.trim().to_string();
+            let value_str = value.trim();
 
-                let val = if value_str.starts_with('"') && value_str.ends_with('"') {
-                    Value::String(value_str.trim_matches('"').to_string())
-                } else if let Ok(i) = value_str.parse::<i64>() {
-                    Value::Integer(i)
-                } else if let Ok(f) = value_str.parse::<f64>() {
-                    Value::Float(f)
-                } else if value_str == "true" || value_str == "false" {
-                    Value::Boolean(value_str == "true")
-                } else {
-                    Value::String(value_str.to_string())
-                };
+            let val = if value_str.starts_with('"') && value_str.ends_with('"') {
+                Value::String(value_str.trim_matches('"').to_string())
+            } else if let Ok(i) = value_str.parse::<i64>() {
+                Value::Integer(i)
+            } else if let Ok(f) = value_str.parse::<f64>() {
+                Value::Float(f)
+            } else if value_str == "true" || value_str == "false" {
+                Value::Boolean(value_str == "true")
+            } else {
+                Value::String(value_str.to_string())
+            };
 
-                self.namespace.insert(name, val);
-                return Ok(None);
-            }
+            self.namespace.insert(name, val);
+            return Ok(None);
         }
 
         // Print variable value

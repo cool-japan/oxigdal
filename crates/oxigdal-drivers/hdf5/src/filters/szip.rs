@@ -81,7 +81,7 @@ pub fn apply_szip_forward(data: &[u8], params: &[u32], datatype: &Datatype) -> R
     let bytes_per_pixel = datatype.size();
     let bits_per_pixel = (bytes_per_pixel * 8) as u8;
 
-    if data.is_empty() || data.len() % bytes_per_pixel != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(bytes_per_pixel) {
         return Err(Hdf5Error::Compression(format!(
             "SZIP: data length {} not divisible by element size {}",
             data.len(),

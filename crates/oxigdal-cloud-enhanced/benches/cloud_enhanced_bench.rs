@@ -31,6 +31,7 @@ fn bench_error_creation(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "gcp")]
 fn bench_gcp_config_creation(c: &mut Criterion) {
     c.bench_function("gcp_config_creation", |b| {
         b.iter(|| {
@@ -42,6 +43,15 @@ fn bench_gcp_config_creation(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(feature = "gcp"))]
+criterion_group!(
+    benches,
+    bench_cloud_provider_display,
+    bench_resource_type_display,
+    bench_error_creation,
+);
+
+#[cfg(feature = "gcp")]
 criterion_group!(
     benches,
     bench_cloud_provider_display,
@@ -49,4 +59,5 @@ criterion_group!(
     bench_error_creation,
     bench_gcp_config_creation,
 );
+
 criterion_main!(benches);

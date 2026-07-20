@@ -14,7 +14,7 @@ mod writer;
 
 pub use features::{Coordinates, Geometry as KmlGeometry, Placemark};
 pub use parser::KmlParser;
-pub use styles::{IconStyle, LineStyle, PolyStyle, Style, StyleMap};
+pub use styles::{IconStyle, LabelStyle, LineStyle, PolyStyle, Style, StyleMap};
 pub use writer::KmlWriter;
 
 use crate::error::{Error, Result};

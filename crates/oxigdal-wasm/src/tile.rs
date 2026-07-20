@@ -784,10 +784,10 @@ impl TilePrefetcher {
         let mut tiles = Vec::new();
 
         // Add parent
-        if let Some(parent) = center.parent() {
-            if self.pyramid.is_valid_coord(&parent) {
-                tiles.push(parent);
-            }
+        if let Some(parent) = center.parent()
+            && self.pyramid.is_valid_coord(&parent)
+        {
+            tiles.push(parent);
         }
 
         // Add children

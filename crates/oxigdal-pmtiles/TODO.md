@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure Rust PMTiles v3 reader/writer for OxiGDAL — single-file tile archive with varint directory + Hilbert curve tile IDs
 > **Status (2026-05-16):** 1,579 Rust LoC · 300 tests · 0 real-code stubs (3 pending items are roadmap features: HTTP range reader, async reader, archive validation)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
 - [x] Implement tile data retrieval by (z, x, y) (completed 2026-04-19, part of P1)

@@ -181,16 +181,15 @@ pub fn validate_iso19115(metadata: &Iso19115Metadata) -> Result<ValidationReport
     }
 
     // Validate bounding box if present
-    if let Some(ident) = metadata.identification_info.first() {
-        if let Some(bbox) = ident.extent.geographic_extent {
-            if !bbox.is_valid() {
-                report.errors.push(ValidationError {
-                    field: "extent.geographic_extent".to_string(),
-                    message: "Invalid bounding box coordinates".to_string(),
-                    severity: ErrorSeverity::Error,
-                });
-            }
-        }
+    if let Some(ident) = metadata.identification_info.first()
+        && let Some(bbox) = ident.extent.geographic_extent
+        && !bbox.is_valid()
+    {
+        report.errors.push(ValidationError {
+            field: "extent.geographic_extent".to_string(),
+            message: "Invalid bounding box coordinates".to_string(),
+            severity: ErrorSeverity::Error,
+        });
     }
 
     // Calculate completeness

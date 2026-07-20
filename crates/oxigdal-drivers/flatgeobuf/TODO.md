@@ -2,7 +2,7 @@
 
 > **Purpose:** FlatGeobuf driver for OxiGDAL - Pure Rust GDAL reimplementation
 > **Status (2026-05-16):** 3,417 Rust LoC (incl. tests) - 107 tests - 0 source-code stubs (only one placeholder test stub)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

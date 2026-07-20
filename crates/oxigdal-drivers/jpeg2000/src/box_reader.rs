@@ -562,10 +562,10 @@ impl RoiEncoder {
 
         for region in &self.regions {
             // Skip if this region is for a different component
-            if let Some(comp) = region.component {
-                if comp != component {
-                    continue;
-                }
+            if let Some(comp) = region.component
+                && comp != component
+            {
+                continue;
             }
 
             for py in region.y..(region.y + region.height) {
@@ -605,10 +605,10 @@ impl RoiEncoder {
 
         for region in &self.regions {
             // Skip if this region is for a different component
-            if let Some(comp) = region.component {
-                if comp != component {
-                    continue;
-                }
+            if let Some(comp) = region.component
+                && comp != component
+            {
+                continue;
             }
 
             let shift = region.shift as u32;
@@ -648,10 +648,10 @@ impl RoiEncoder {
         }
 
         for region in &self.regions {
-            if let Some(comp) = region.component {
-                if comp != component {
-                    continue;
-                }
+            if let Some(comp) = region.component
+                && comp != component
+            {
+                continue;
             }
 
             let scale = (1u32 << region.shift) as f32;
@@ -690,10 +690,10 @@ impl RoiEncoder {
         }
 
         for region in &self.regions {
-            if let Some(comp) = region.component {
-                if comp != component {
-                    continue;
-                }
+            if let Some(comp) = region.component
+                && comp != component
+            {
+                continue;
             }
 
             let shift = region.shift as u32;

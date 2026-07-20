@@ -611,10 +611,10 @@ impl StreamBuffer {
 
     /// Evicts the oldest tile
     fn evict_oldest(&mut self) -> WasmResult<()> {
-        if let Some(coord) = self.access_order.pop_front() {
-            if let Some(data) = self.tiles.remove(&coord) {
-                self.current_size -= data.len();
-            }
+        if let Some(coord) = self.access_order.pop_front()
+            && let Some(data) = self.tiles.remove(&coord)
+        {
+            self.current_size -= data.len();
         }
 
         Ok(())

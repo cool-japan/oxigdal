@@ -11,10 +11,13 @@
 
 pub mod bitpack;
 pub mod nbit;
+pub mod pipeline_message;
 pub mod scale_offset;
 
 #[cfg(feature = "szip")]
 pub mod szip;
+
+pub use pipeline_message::parse_filter_pipeline_message;
 
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
@@ -200,6 +203,17 @@ impl FilterPipeline {
         }
     }
 
+    /// Build a pipeline by parsing a raw Object Header "Filter Pipeline" message
+    /// (message type `0x000B`, version 1 or 2).
+    ///
+    /// See [`parse_filter_pipeline_message`] for the supported on-disk layouts.
+    /// The resulting pipeline carries each filter's client data (`cd_values`) so
+    /// [`FilterPipeline::apply_reverse`] can drive the real ScaleOffset / N-Bit /
+    /// SZIP codecs on raw chunk bytes.
+    pub fn from_message_bytes(bytes: &[u8]) -> Result<Self> {
+        parse_filter_pipeline_message(bytes)
+    }
+
     /// Add a filter to the pipeline
     pub fn add_filter(&mut self, filter: Filter) {
         self.filters.push(filter);
@@ -288,7 +302,7 @@ fn apply_filter_forward(
         FilterId::ScaleOffset => {
             scale_offset::apply_scale_offset_forward(data, filter.params(), datatype)
         }
-        FilterId::NBit => nbit::apply_nbit_forward(data, datatype),
+        FilterId::NBit => nbit::apply_nbit_forward(data, filter.params(), datatype),
         #[cfg(feature = "szip")]
         FilterId::Szip => szip::apply_szip_forward(data, filter.params(), datatype),
         _ => Err(Hdf5Error::UnsupportedCompressionFilter(format!(
@@ -298,21 +312,35 @@ fn apply_filter_forward(
     }
 }
 
+/// Number of elements in a chunk from its dimensions (0 when unknown).
+fn chunk_nelmts(chunk_dims: &[usize]) -> usize {
+    if chunk_dims.is_empty() {
+        0
+    } else {
+        chunk_dims.iter().product()
+    }
+}
+
 /// Apply a single filter in reverse direction (decoding)
 fn apply_filter_reverse(
     filter: &Filter,
     data: &[u8],
     datatype: &Datatype,
-    _chunk_dims: &[usize],
+    chunk_dims: &[usize],
 ) -> Result<Vec<u8>> {
     match filter.id {
         FilterId::Deflate => apply_deflate_reverse(data),
         FilterId::Shuffle => apply_shuffle_reverse(data, datatype.size()),
         FilterId::Fletcher32 => apply_fletcher32_reverse(data),
-        FilterId::ScaleOffset => {
-            scale_offset::apply_scale_offset_reverse(data, filter.params(), datatype)
+        FilterId::ScaleOffset => scale_offset::apply_scale_offset_reverse(
+            data,
+            filter.params(),
+            datatype,
+            chunk_nelmts(chunk_dims),
+        ),
+        FilterId::NBit => {
+            nbit::apply_nbit_reverse(data, filter.params(), datatype, chunk_nelmts(chunk_dims))
         }
-        FilterId::NBit => nbit::apply_nbit_reverse(data, datatype),
         #[cfg(feature = "szip")]
         FilterId::Szip => szip::apply_szip_reverse(data, filter.params()),
         _ => Err(Hdf5Error::UnsupportedCompressionFilter(format!(
@@ -355,7 +383,7 @@ fn apply_shuffle_forward(data: &[u8], element_size: usize) -> Result<Vec<u8>> {
     }
 
     let num_elements = data.len() / element_size;
-    if data.len() % element_size != 0 {
+    if !data.len().is_multiple_of(element_size) {
         return Err(Hdf5Error::InvalidSize(format!(
             "Data size ({}) is not a multiple of element size ({})",
             data.len(),
@@ -381,7 +409,7 @@ fn apply_shuffle_reverse(data: &[u8], element_size: usize) -> Result<Vec<u8>> {
     }
 
     let num_elements = data.len() / element_size;
-    if data.len() % element_size != 0 {
+    if !data.len().is_multiple_of(element_size) {
         return Err(Hdf5Error::InvalidSize(format!(
             "Data size ({}) is not a multiple of element size ({})",
             data.len(),

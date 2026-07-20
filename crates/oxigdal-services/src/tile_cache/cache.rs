@@ -341,11 +341,11 @@ impl TileCache {
 
     /// Evicts the least-recently-used entry (front of `access_order`).
     fn evict_lru(&mut self) {
-        if let Some(key) = self.access_order.pop_front() {
-            if let Some(tile) = self.entries.remove(&key) {
-                self.current_bytes = self.current_bytes.saturating_sub(tile.size_bytes);
-                self.eviction_count += 1;
-            }
+        if let Some(key) = self.access_order.pop_front()
+            && let Some(tile) = self.entries.remove(&key)
+        {
+            self.current_bytes = self.current_bytes.saturating_sub(tile.size_bytes);
+            self.eviction_count += 1;
         }
     }
 }

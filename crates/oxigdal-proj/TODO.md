@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure-Rust coordinate transformation and projection support for OxiGDAL — EPSG database, WKT2/WKT1/ESRI WKT, Helmert/Molodensky/NTv2/NADCON datum transforms, ~140 projections.
 > **Status (2026-05-16):** 13,629 Rust LoC · 452 tests · 1 real stub
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

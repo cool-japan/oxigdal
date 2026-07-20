@@ -1,13 +1,14 @@
 //! GeoParquet file reader implementation
 
 use crate::arrow_ext::extract_geoparquet_metadata;
-use crate::covering::BboxColumns;
 use crate::error::{GeoParquetError, Result};
 use crate::filter::{AttributePredicates, filter_batch_by_mask};
 use crate::geometry::native::native_bbox_mask;
 use crate::geometry::{Geometry, WkbReader, decode_native_array, wkb_bbox};
 use crate::metadata::{EncodingType, GeoParquetMetadata};
-use crate::predicate::{AttributeFilter, CoveringBboxPredicate};
+use crate::plan::prune_row_groups;
+use crate::predicate::AttributeFilter;
+use crate::pushdown::execute_pushdown;
 use crate::spatial::{RowGroupBounds, SpatialFilter, SpatialIndex};
 use crate::statistics::{
     ColumnStatistics, extract_column_statistics, geometry_has_meaningful_stats,
@@ -15,9 +16,8 @@ use crate::statistics::{
 use arrow_array::{Array, BinaryArray, RecordBatch};
 use arrow_schema::SchemaRef;
 use oxigdal_core::types::BoundingBox;
-use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{
-    ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder, RowFilter,
+    ArrowReaderMetadata, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder,
 };
 use parquet::file::metadata::ParquetMetaData;
 use std::fs::File;
@@ -40,8 +40,8 @@ pub struct GeoParquetReader {
     geometry_column: String,
     /// Optional bbox filter for pushdown reads.
     bbox_filter: Option<(f64, f64, f64, f64)>,
-    /// Optional attribute filter for pushdown reads.
-    attribute_filter: Option<AttributeFilter>,
+    /// Attribute filters for pushdown reads (combined conjunctively).
+    attribute_filters: Vec<AttributeFilter>,
     /// Cached row-group statistics (lazy).
     stats_cache: OnceLock<Vec<Vec<ColumnStatistics>>>,
 }
@@ -86,7 +86,7 @@ impl GeoParquetReader {
             spatial_index: None,
             geometry_column,
             bbox_filter: None,
-            attribute_filter: None,
+            attribute_filters: Vec::new(),
             stats_cache: OnceLock::new(),
         })
     }
@@ -158,7 +158,16 @@ impl GeoParquetReader {
     ///
     /// [`ArrowPredicate`]: parquet::arrow::arrow_reader::ArrowPredicate
     pub fn with_attribute_filter(mut self, filter: AttributeFilter) -> Self {
-        self.attribute_filter = Some(filter);
+        self.attribute_filters.push(filter);
+        self
+    }
+
+    /// Sets multiple attribute filters at once, replacing any previously set.
+    ///
+    /// The filters are combined conjunctively (a row must satisfy all of them),
+    /// each compiled to its own `ArrowPredicate` within a single `RowFilter`.
+    pub fn with_attribute_filters(mut self, filters: Vec<AttributeFilter>) -> Self {
+        self.attribute_filters = filters;
         self
     }
 
@@ -176,115 +185,30 @@ impl GeoParquetReader {
     /// Propagates Parquet, Arrow, and I/O errors.
     pub fn read_pushdown(&self) -> Result<Vec<RecordBatch>> {
         let file = self.file.try_clone()?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-        let parquet_schema = builder.parquet_schema().clone();
+        let arrow_meta =
+            ArrowReaderMetadata::try_new(self.parquet_metadata.clone(), Default::default())?;
 
-        // Detect covering bbox columns.
-        let bbox_cols = BboxColumns::detect(&parquet_schema, &self.geometry_column);
+        // Row-group pruning shares the same logic as the metadata-only planner.
+        let schema_descr = self.parquet_metadata.file_metadata().schema_descr();
+        let bbox_cols = crate::covering::BboxColumns::detect_with_covering(
+            schema_descr,
+            &self.geometry_column,
+            &self.metadata,
+        );
+        let survivors =
+            prune_row_groups(&self.parquet_metadata, bbox_cols.as_ref(), self.bbox_filter);
 
-        // ── 1. Row-group pruning ──────────────────────────────────────────────
-        let survivor_row_groups: Vec<usize> =
-            if let Some((qxmin, qymin, qxmax, qymax)) = self.bbox_filter {
-                (0..self.parquet_metadata.num_row_groups())
-                    .filter(|&rg_idx| {
-                        let rg = self.parquet_metadata.row_group(rg_idx);
-                        if let Some(bc) = bbox_cols.as_ref() {
-                            if let Some((rxmin, rymin, rxmax, rymax)) = bc.row_group_bbox(rg) {
-                                // AABB intersection (inclusive).
-                                return rxmax >= qxmin
-                                    && rxmin <= qxmax
-                                    && rymax >= qymin
-                                    && rymin <= qymax;
-                            }
-                        }
-                        // No stats → can't prune, keep the row group.
-                        true
-                    })
-                    .collect()
-            } else {
-                (0..self.parquet_metadata.num_row_groups()).collect()
-            };
-
-        let builder = builder.with_row_groups(survivor_row_groups);
-
-        // ── 2 & 3. RowFilter predicates ──────────────────────────────────────
-        let mut predicates: Vec<Box<dyn parquet::arrow::arrow_reader::ArrowPredicate>> = Vec::new();
-
-        // 2a. Covering bbox predicate (GeoParquet 1.1 fast-path).
-        let has_covering_bbox = bbox_cols.is_some();
-        if let (Some((qxmin, qymin, qxmax, qymax)), Some(bc)) = (self.bbox_filter, &bbox_cols) {
-            // Build column name strings from leaf paths.
-            let xmin_name = col_name_from_leaf(&parquet_schema, bc.xmin_col);
-            let ymin_name = col_name_from_leaf(&parquet_schema, bc.ymin_col);
-            let xmax_name = col_name_from_leaf(&parquet_schema, bc.xmax_col);
-            let ymax_name = col_name_from_leaf(&parquet_schema, bc.ymax_col);
-
-            let bbox_proj = ProjectionMask::leaves(
-                &parquet_schema,
-                [bc.xmin_col, bc.ymin_col, bc.xmax_col, bc.ymax_col],
-            );
-            let bbox_pred = CoveringBboxPredicate::new(
-                xmin_name, ymin_name, xmax_name, ymax_name, qxmin, qymin, qxmax, qymax, bbox_proj,
-            );
-            predicates.push(Box::new(bbox_pred));
-        }
-
-        // 2b. Attribute predicate.
-        if let Some(ref attr_filter) = self.attribute_filter {
-            let pred = attr_filter
-                .clone()
-                .to_arrow_predicate(self.schema.clone(), &parquet_schema)?;
-            predicates.push(pred);
-        }
-
-        let builder = if predicates.is_empty() {
-            builder
-        } else {
-            builder.with_row_filter(RowFilter::new(predicates))
-        };
-
-        let mut parquet_reader = builder.build()?;
-
-        // ── 3. Collect + optional WKB post-filter fallback ───────────────────
-        let needs_wkb_fallback = self.bbox_filter.is_some() && !has_covering_bbox;
-
-        let wkb_bbox_tuple = if needs_wkb_fallback {
-            self.bbox_filter
-        } else {
-            None
-        };
-
-        // Encoding dispatch for the bbox-mask fallback: WKB columns use the
-        // legacy `wkb_bbox_mask`; native columns use `native_bbox_mask`.
-        let encoding = detect_encoding(&self.metadata, &self.geometry_column);
-
-        let mut results = Vec::new();
-        for batch_result in &mut parquet_reader {
-            let batch = batch_result?;
-            if let Some((qxmin, qymin, qxmax, qymax)) = wkb_bbox_tuple {
-                let mask = match encoding {
-                    EncodingType::Wkb => {
-                        wkb_bbox_mask(&batch, &self.geometry_column, qxmin, qymin, qxmax, qymax)?
-                    }
-                    native => {
-                        let geom_col = batch
-                            .column_by_name(&self.geometry_column)
-                            .ok_or_else(|| GeoParquetError::missing_field(&self.geometry_column))?;
-                        native_bbox_mask(geom_col.as_ref(), native, qxmin, qymin, qxmax, qymax)?
-                    }
-                };
-                if mask.iter().any(|&b| b) {
-                    let filtered = filter_batch_by_mask(&batch, &mask)?;
-                    if filtered.num_rows() > 0 {
-                        results.push(filtered);
-                    }
-                }
-            } else if batch.num_rows() > 0 {
-                results.push(batch);
-            }
-        }
-
-        Ok(results)
+        execute_pushdown(
+            file,
+            arrow_meta,
+            &self.metadata,
+            &self.geometry_column,
+            self.bbox_filter,
+            &self.attribute_filters,
+            survivors,
+            None,
+            None,
+        )
     }
 
     /// Creates a reader for all rows
@@ -682,57 +606,6 @@ impl GeoParquetBatchReader {
     pub fn geometry_column_name(&self) -> &str {
         &self.geometry_column
     }
-}
-
-// ── Module-level helpers ──────────────────────────────────────────────────────────
-
-/// Returns the last path component (leaf name) for a leaf column at `leaf_idx`.
-///
-/// For a flat column `geometry_bbox_xmin` the path has one part: `"geometry_bbox_xmin"`.
-/// For a struct column `geometry_bbox.xmin` the path has two parts; we return the last: `"xmin"`.
-fn col_name_from_leaf(
-    schema: &parquet::schema::types::SchemaDescriptor,
-    leaf_idx: usize,
-) -> String {
-    let col = schema.column(leaf_idx);
-    col.path()
-        .parts()
-        .last()
-        .cloned()
-        .unwrap_or_else(|| col.name().to_owned())
-}
-
-/// Builds a WKB-based boolean mask checking each row's geometry bbox against
-/// `(qxmin, qymin, qxmax, qymax)`.
-fn wkb_bbox_mask(
-    batch: &RecordBatch,
-    geom_col: &str,
-    qxmin: f64,
-    qymin: f64,
-    qxmax: f64,
-    qymax: f64,
-) -> Result<Vec<bool>> {
-    let col = batch
-        .column_by_name(geom_col)
-        .ok_or_else(|| GeoParquetError::missing_field(geom_col))?;
-
-    let binary = col.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
-        GeoParquetError::type_mismatch("BinaryArray", format!("{:?}", col.data_type()))
-    })?;
-
-    let mut mask = vec![false; binary.len()];
-    for (i, m) in mask.iter_mut().enumerate() {
-        if binary.is_null(i) {
-            continue;
-        }
-        let wkb = binary.value(i);
-        if let Some((xmin, ymin, xmax, ymax)) = wkb_bbox(wkb) {
-            if xmax >= qxmin && xmin <= qxmax && ymax >= qymin && ymin <= qymax {
-                *m = true;
-            }
-        }
-    }
-    Ok(mask)
 }
 
 #[cfg(test)]

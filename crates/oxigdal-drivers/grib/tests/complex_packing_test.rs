@@ -47,7 +47,7 @@ impl BitWriter {
 
     /// Pads with zero bits up to the next byte boundary.
     fn align(&mut self) {
-        while self.bit_pos % 8 != 0 {
+        while !self.bit_pos.is_multiple_of(8) {
             self.write_bits(0, 1);
         }
     }

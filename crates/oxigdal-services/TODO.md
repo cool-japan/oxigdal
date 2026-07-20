@@ -2,7 +2,7 @@
 
 > **Purpose:** OGC Web Services (WFS 2.0.0, WCS 2.0, WPS 2.0, CSW 2.0.2) + OGC API Features/Tiles + MVT encoder for OxiGDAL.
 > **Status (2026-05-16):** 11,691 LoC (src) · 578 tests (205 inline + 373 in tests/) · 3 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Implement real raster read-and-window in WCS `retrieve_coverage_data` (currently returns zeroed buffer).

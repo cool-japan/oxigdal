@@ -22,6 +22,7 @@ pub enum OxigdalBackend {
         root: PathBuf,
     },
 
+    #[cfg(feature = "s3")]
     /// AWS S3 storage
     S3 {
         /// AWS region
@@ -36,6 +37,7 @@ pub enum OxigdalBackend {
         secret_key: Option<String>,
     },
 
+    #[cfg(feature = "s3")]
     /// MinIO storage (S3-compatible)
     MinIO {
         /// MinIO endpoint URL
@@ -50,6 +52,7 @@ pub enum OxigdalBackend {
         region: Option<String>,
     },
 
+    #[cfg(feature = "gcs")]
     /// Google Cloud Storage
     Gcs {
         /// GCS bucket name
@@ -58,6 +61,7 @@ pub enum OxigdalBackend {
         project_id: Option<String>,
     },
 
+    #[cfg(feature = "azure")]
     /// Azure Blob Storage
     Azure {
         /// Azure container name
@@ -97,6 +101,7 @@ impl OxigdalBackend {
                 Some(root.clone()),
             ),
 
+            #[cfg(feature = "s3")]
             Self::S3 {
                 region,
                 bucket: _,
@@ -116,6 +121,7 @@ impl OxigdalBackend {
                 None,
             ),
 
+            #[cfg(feature = "s3")]
             Self::MinIO {
                 endpoint,
                 bucket: _,
@@ -135,6 +141,7 @@ impl OxigdalBackend {
                 None,
             ),
 
+            #[cfg(feature = "gcs")]
             Self::Gcs {
                 bucket: _,
                 project_id,
@@ -160,6 +167,7 @@ impl OxigdalBackend {
                 )
             }
 
+            #[cfg(feature = "azure")]
             Self::Azure {
                 container: _,
                 account,
@@ -184,9 +192,13 @@ impl OxigdalBackend {
     pub fn bucket_name(&self) -> &str {
         match self {
             Self::Local { .. } => "local",
+            #[cfg(feature = "s3")]
             Self::S3 { bucket, .. } => bucket,
+            #[cfg(feature = "s3")]
             Self::MinIO { bucket, .. } => bucket,
+            #[cfg(feature = "gcs")]
             Self::Gcs { bucket, .. } => bucket,
+            #[cfg(feature = "azure")]
             Self::Azure { container, .. } => container,
         }
     }
@@ -232,67 +244,12 @@ pub fn parse_url(url: &str) -> Result<(OxigdalBackend, String, String)> {
             "local".to_string(),
             filename,
         ))
-    } else if let Some(rest) = url.strip_prefix("s3://") {
-        // S3 storage
-        let parts: Vec<&str> = rest.splitn(2, '/').collect();
-        let bucket = parts
-            .first()
-            .ok_or_else(|| Rs3gwError::Configuration {
-                message: "Invalid S3 URL: missing bucket".to_string(),
-            })?
-            .to_string();
-        let key = parts.get(1).unwrap_or(&"").to_string();
-
-        Ok((
-            OxigdalBackend::S3 {
-                region: "us-east-1".to_string(),
-                bucket: bucket.clone(),
-                endpoint: None,
-                access_key: None,
-                secret_key: None,
-            },
-            bucket,
-            key,
-        ))
-    } else if let Some(rest) = url.strip_prefix("gs://") {
-        // Google Cloud Storage
-        let parts: Vec<&str> = rest.splitn(2, '/').collect();
-        let bucket = parts
-            .first()
-            .ok_or_else(|| Rs3gwError::Configuration {
-                message: "Invalid GCS URL: missing bucket".to_string(),
-            })?
-            .to_string();
-        let key = parts.get(1).unwrap_or(&"").to_string();
-
-        Ok((
-            OxigdalBackend::Gcs {
-                bucket: bucket.clone(),
-                project_id: None,
-            },
-            bucket,
-            key,
-        ))
-    } else if let Some(rest) = url.strip_prefix("az://") {
-        // Azure Blob Storage
-        let parts: Vec<&str> = rest.splitn(2, '/').collect();
-        let container = parts
-            .first()
-            .ok_or_else(|| Rs3gwError::Configuration {
-                message: "Invalid Azure URL: missing container".to_string(),
-            })?
-            .to_string();
-        let key = parts.get(1).unwrap_or(&"").to_string();
-
-        Ok((
-            OxigdalBackend::Azure {
-                container: container.clone(),
-                account: String::new(),     // Must be configured separately
-                account_key: String::new(), // Must be configured separately
-            },
-            container,
-            key,
-        ))
+    } else if url.starts_with("s3://") {
+        parse_s3_url(url)
+    } else if url.starts_with("gs://") {
+        parse_gs_url(url)
+    } else if url.starts_with("az://") {
+        parse_az_url(url)
     } else {
         Err(Rs3gwError::Configuration {
             message: format!("Unsupported URL scheme: {url}"),
@@ -300,6 +257,110 @@ pub fn parse_url(url: &str) -> Result<(OxigdalBackend, String, String)> {
     }
 }
 
+#[cfg(feature = "s3")]
+fn parse_s3_url(url: &str) -> Result<(OxigdalBackend, String, String)> {
+    let rest = url
+        .strip_prefix("s3://")
+        .ok_or_else(|| Rs3gwError::Configuration {
+            message: "Invalid S3 URL".to_string(),
+        })?;
+    let parts: Vec<&str> = rest.splitn(2, '/').collect();
+    let bucket = parts
+        .first()
+        .ok_or_else(|| Rs3gwError::Configuration {
+            message: "Invalid S3 URL: missing bucket".to_string(),
+        })?
+        .to_string();
+    let key = parts.get(1).unwrap_or(&"").to_string();
+
+    Ok((
+        OxigdalBackend::S3 {
+            region: "us-east-1".to_string(),
+            bucket: bucket.clone(),
+            endpoint: None,
+            access_key: None,
+            secret_key: None,
+        },
+        bucket,
+        key,
+    ))
+}
+
+#[cfg(not(feature = "s3"))]
+fn parse_s3_url(_url: &str) -> Result<(OxigdalBackend, String, String)> {
+    Err(Rs3gwError::Configuration {
+        message: "S3 backend not enabled; rebuild with the `s3` feature".to_string(),
+    })
+}
+
+#[cfg(feature = "gcs")]
+fn parse_gs_url(url: &str) -> Result<(OxigdalBackend, String, String)> {
+    let rest = url
+        .strip_prefix("gs://")
+        .ok_or_else(|| Rs3gwError::Configuration {
+            message: "Invalid GCS URL".to_string(),
+        })?;
+    let parts: Vec<&str> = rest.splitn(2, '/').collect();
+    let bucket = parts
+        .first()
+        .ok_or_else(|| Rs3gwError::Configuration {
+            message: "Invalid GCS URL: missing bucket".to_string(),
+        })?
+        .to_string();
+    let key = parts.get(1).unwrap_or(&"").to_string();
+
+    Ok((
+        OxigdalBackend::Gcs {
+            bucket: bucket.clone(),
+            project_id: None,
+        },
+        bucket,
+        key,
+    ))
+}
+
+#[cfg(not(feature = "gcs"))]
+fn parse_gs_url(_url: &str) -> Result<(OxigdalBackend, String, String)> {
+    Err(Rs3gwError::Configuration {
+        message: "GCS backend not enabled; rebuild with the `gcs` feature".to_string(),
+    })
+}
+
+#[cfg(feature = "azure")]
+fn parse_az_url(url: &str) -> Result<(OxigdalBackend, String, String)> {
+    let rest = url
+        .strip_prefix("az://")
+        .ok_or_else(|| Rs3gwError::Configuration {
+            message: "Invalid Azure URL".to_string(),
+        })?;
+    let parts: Vec<&str> = rest.splitn(2, '/').collect();
+    let container = parts
+        .first()
+        .ok_or_else(|| Rs3gwError::Configuration {
+            message: "Invalid Azure URL: missing container".to_string(),
+        })?
+        .to_string();
+    let key = parts.get(1).unwrap_or(&"").to_string();
+
+    Ok((
+        OxigdalBackend::Azure {
+            container: container.clone(),
+            account: String::new(),     // Must be configured separately
+            account_key: String::new(), // Must be configured separately
+        },
+        container,
+        key,
+    ))
+}
+
+#[cfg(not(feature = "azure"))]
+fn parse_az_url(_url: &str) -> Result<(OxigdalBackend, String, String)> {
+    Err(Rs3gwError::Configuration {
+        message: "Azure backend not enabled; rebuild with the `azure` feature".to_string(),
+    })
+}
+
+#[cfg(feature = "s3")]
 /// Builder for configuring an S3 backend
 #[derive(Debug, Clone, Default)]
 pub struct S3BackendBuilder {
@@ -310,6 +371,7 @@ pub struct S3BackendBuilder {
     secret_key: Option<String>,
 }
 
+#[cfg(feature = "s3")]
 impl S3BackendBuilder {
     /// Creates a new S3 backend builder
     #[must_use]
@@ -360,6 +422,7 @@ impl S3BackendBuilder {
     }
 }
 
+#[cfg(feature = "s3")]
 /// Builder for configuring a MinIO backend
 #[derive(Debug, Clone)]
 pub struct MinioBackendBuilder {
@@ -370,6 +433,7 @@ pub struct MinioBackendBuilder {
     region: Option<String>,
 }
 
+#[cfg(feature = "s3")]
 impl MinioBackendBuilder {
     /// Creates a new MinIO backend builder
     #[must_use]
@@ -412,6 +476,7 @@ impl MinioBackendBuilder {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_parse_s3_url() {
         let (backend, bucket, key) =
@@ -421,6 +486,7 @@ mod tests {
         assert!(matches!(backend, OxigdalBackend::S3 { .. }));
     }
 
+    #[cfg(feature = "gcs")]
     #[test]
     fn test_parse_gs_url() {
         let (backend, bucket, key) =
@@ -430,6 +496,7 @@ mod tests {
         assert!(matches!(backend, OxigdalBackend::Gcs { .. }));
     }
 
+    #[cfg(feature = "azure")]
     #[test]
     fn test_parse_az_url() {
         let (backend, container, key) =
@@ -452,6 +519,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_s3_backend_builder() {
         let backend = S3BackendBuilder::new("my-bucket")
@@ -483,6 +551,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_minio_backend_builder() {
         let backend = MinioBackendBuilder::new(

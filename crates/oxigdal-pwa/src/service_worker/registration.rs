@@ -2,7 +2,9 @@
 
 use crate::error::{PwaError, Result};
 use serde::{Deserialize, Serialize};
-use web_sys::{ServiceWorker, ServiceWorkerRegistration, ServiceWorkerState};
+use web_sys::{
+    ServiceWorker, ServiceWorkerRegistration, ServiceWorkerState, ServiceWorkerUpdateViaCache,
+};
 
 /// Service worker registration configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,15 @@ impl UpdateViaCache {
             UpdateViaCache::Imports => "imports",
             UpdateViaCache::All => "all",
             UpdateViaCache::None => "none",
+        }
+    }
+
+    /// Convert to the `web_sys` enum used by `RegistrationOptions::set_update_via_cache`.
+    pub fn as_web_sys(&self) -> ServiceWorkerUpdateViaCache {
+        match self {
+            UpdateViaCache::Imports => ServiceWorkerUpdateViaCache::Imports,
+            UpdateViaCache::All => ServiceWorkerUpdateViaCache::All,
+            UpdateViaCache::None => ServiceWorkerUpdateViaCache::None,
         }
     }
 }
@@ -123,7 +134,13 @@ impl ServiceWorkerRegistry {
 
     /// Register the service worker.
     pub async fn register(&self) -> Result<ServiceWorkerRegistration> {
-        super::register_service_worker(&self.config.script_url, self.config.scope.as_deref()).await
+        super::register_service_worker(
+            &self.config.script_url,
+            self.config.scope.as_deref(),
+            self.config.worker_type,
+            self.config.update_via_cache,
+        )
+        .await
     }
 
     /// Get the current registration.
@@ -269,5 +286,33 @@ mod tests {
 
         assert_eq!(registry.config.script_url, "/custom-sw.js");
         assert_eq!(registry.config.scope, Some("/app".to_string()));
+        // Regression: worker_type / update_via_cache must be retained on the
+        // config so ServiceWorkerRegistry::register() can forward them to
+        // register_service_worker() instead of silently discarding them.
+        assert!(matches!(registry.config.worker_type, WorkerType::Module));
+        assert!(matches!(
+            registry.config.update_via_cache,
+            UpdateViaCache::All
+        ));
+    }
+
+    #[test]
+    fn test_update_via_cache_as_web_sys_round_trips_variant() {
+        // Regression for the silent-failure bug where RegistrationConfig's
+        // worker_type/update_via_cache were never forwarded to the browser's
+        // RegistrationOptions. This checks the conversion used to do that
+        // forwarding maps each variant to the matching web_sys enum value.
+        assert_eq!(
+            UpdateViaCache::Imports.as_web_sys(),
+            ServiceWorkerUpdateViaCache::Imports
+        );
+        assert_eq!(
+            UpdateViaCache::All.as_web_sys(),
+            ServiceWorkerUpdateViaCache::All
+        );
+        assert_eq!(
+            UpdateViaCache::None.as_web_sys(),
+            ServiceWorkerUpdateViaCache::None
+        );
     }
 }

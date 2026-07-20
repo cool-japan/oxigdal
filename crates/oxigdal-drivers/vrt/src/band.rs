@@ -487,17 +487,16 @@ impl PixelFunction {
         // Supports: +, -, *, /, sqrt, pow, abs, min, max
         // Variables: B1, B2, B3, etc.
 
-        let mut expr = expression.to_string();
-
-        // Replace band variables with actual values
-        for (i, value) in values.iter().enumerate() {
-            let var = format!("B{}", i + 1);
-            if let Some(v) = value {
-                expr = expr.replace(&var, &v.to_string());
-            } else {
-                return Ok(None); // If any band is NoData, result is NoData
-            }
+        // If any band is NoData, the result is NoData (preserves prior semantics).
+        if values.iter().any(Option::is_none) {
+            return Ok(None);
         }
+
+        // Substitute band variables (B1, B2, ... B10, B11, ...) with their
+        // values. A naive `String::replace("B1", ...)` would corrupt "B10"/"B11"
+        // by matching the "B1" prefix, so we scan for a `B` followed by a full
+        // run of digits and substitute the *complete* index token atomically.
+        let expr = Self::substitute_band_variables(expression, values);
 
         // Basic expression evaluation (simplified)
         // For production, consider using a proper expression parser like `evalexpr`
@@ -508,6 +507,46 @@ impl PixelFunction {
                 expression
             ))),
         }
+    }
+
+    /// Substitutes band variables (`B1`, `B2`, ..., `B10`, `B11`, ...) in
+    /// `expression` with their numeric values from `values` (1-indexed).
+    ///
+    /// Unlike a plain `String::replace`, this matches each `B<n>` token as a
+    /// complete unit — a `B` followed by a maximal run of ASCII digits — so
+    /// `B1` never matches inside `B10`/`B11`. Tokens whose index is out of range
+    /// (no corresponding band) are left untouched. Callers are expected to have
+    /// already rejected NoData bands; a `None` value is treated as `0.0` here
+    /// only as a defensive fallback.
+    fn substitute_band_variables(expression: &str, values: &[Option<f64>]) -> String {
+        let chars: Vec<char> = expression.chars().collect();
+        let mut out = String::with_capacity(expression.len());
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == 'B' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+                // Consume the full run of digits into a band index.
+                let mut j = i + 1;
+                let mut index: usize = 0;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    index = index
+                        .saturating_mul(10)
+                        .saturating_add((chars[j] as u8 - b'0') as usize);
+                    j += 1;
+                }
+                if index >= 1 && index <= values.len() {
+                    let value = values[index - 1].unwrap_or(0.0);
+                    out.push_str(&value.to_string());
+                } else {
+                    // Not a valid band reference: keep the original token.
+                    out.extend(&chars[i..j]);
+                }
+                i = j;
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        out
     }
 
     /// Simple expression evaluator (basic implementation)
@@ -873,6 +912,57 @@ mod tests {
 
         assert_eq!(table.entries.len(), 3);
         assert_eq!(table.get(1).map(|e| e.g), Some(255));
+    }
+
+    /// Regression: BandMath expressions referencing 10+ bands must substitute
+    /// each `B<n>` token independently. The old `String::replace("B1", ...)`
+    /// corrupted `B10`/`B11` by matching the `B1` prefix.
+    #[test]
+    fn test_band_math_double_digit_bands() {
+        let func = PixelFunction::BandMath {
+            expression: "B1+B10+B11".to_string(),
+        };
+        // 11 bands: B1=1, B2..B9=0, B10=10, B11=11.
+        let mut values = vec![Some(0.0); 11];
+        values[0] = Some(1.0); // B1
+        values[9] = Some(10.0); // B10
+        values[10] = Some(11.0); // B11
+
+        let result = func.apply(&values).expect("band math should evaluate");
+        assert_eq!(result, Some(22.0), "expected 1 + 10 + 11 = 22");
+    }
+
+    /// A lone `B10` reference must resolve to band 10's value, never band 1's
+    /// value spliced into the token.
+    #[test]
+    fn test_band_math_b10_not_contaminated_by_b1() {
+        let func = PixelFunction::BandMath {
+            expression: "B10".to_string(),
+        };
+        let mut values = vec![Some(0.0); 10];
+        values[0] = Some(7.0); // B1 — distinctive, must NOT leak into B10
+        values[9] = Some(3.0); // B10
+
+        let result = func.apply(&values).expect("band math should evaluate");
+        assert_eq!(result, Some(3.0));
+    }
+
+    /// The Conditional pixel function evaluates its sub-expressions through the
+    /// same substitution path, so it must also handle 10+ band references.
+    #[test]
+    fn test_conditional_double_digit_bands() {
+        let func = PixelFunction::Conditional {
+            condition: "B11>B1".to_string(),
+            value_if_true: "B10".to_string(),
+            value_if_false: "B1".to_string(),
+        };
+        let mut values = vec![Some(0.0); 11];
+        values[0] = Some(1.0); // B1
+        values[9] = Some(10.0); // B10
+        values[10] = Some(11.0); // B11 (> B1) => choose B10 = 10
+
+        let result = func.apply(&values).expect("conditional should evaluate");
+        assert_eq!(result, Some(10.0));
     }
 
     #[test]

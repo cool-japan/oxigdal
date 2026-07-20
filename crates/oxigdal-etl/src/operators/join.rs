@@ -105,10 +105,10 @@ impl JoinState {
         // Clean left side
         let mut to_remove = Vec::new();
         for entry in self.left_timestamps.iter() {
-            if let Ok(age) = now.duration_since(*entry.value()) {
-                if age > max_age {
-                    to_remove.push(entry.key().clone());
-                }
+            if let Ok(age) = now.duration_since(*entry.value())
+                && age > max_age
+            {
+                to_remove.push(entry.key().clone());
             }
         }
         for key in to_remove {
@@ -119,10 +119,10 @@ impl JoinState {
         // Clean right side
         let mut to_remove = Vec::new();
         for entry in self.right_timestamps.iter() {
-            if let Ok(age) = now.duration_since(*entry.value()) {
-                if age > max_age {
-                    to_remove.push(entry.key().clone());
-                }
+            if let Ok(age) = now.duration_since(*entry.value())
+                && age > max_age
+            {
+                to_remove.push(entry.key().clone());
             }
         }
         for key in to_remove {
@@ -316,11 +316,11 @@ where
         let mut last_cleanup = self.last_cleanup.lock().await;
         let now = SystemTime::now();
 
-        if let Ok(elapsed) = now.duration_since(*last_cleanup) {
-            if elapsed > Duration::from_secs(60) {
-                self.state.cleanup(self.max_age);
-                *last_cleanup = now;
-            }
+        if let Ok(elapsed) = now.duration_since(*last_cleanup)
+            && elapsed > Duration::from_secs(60)
+        {
+            self.state.cleanup(self.max_age);
+            *last_cleanup = now;
         }
     }
 

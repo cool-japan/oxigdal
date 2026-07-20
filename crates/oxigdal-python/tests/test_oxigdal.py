@@ -1251,6 +1251,107 @@ class TestIntegration:
         assert features["type"] == "FeatureCollection"
 
 
+class TestConvolveBoundary:
+    """Regression tests for convolve() boundary-mode handling.
+
+    Previously boundary and fill_value were validated but silently discarded,
+    so every mode behaved identically. These tests confirm the modes now
+    actually differ at the array edges.
+    """
+
+    def _edge_input(self) -> Tuple[np.ndarray, np.ndarray]:
+        # Strong left column; kernel samples the left neighbor only.
+        data = np.array(
+            [[10.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            dtype=np.float64,
+        )
+        kernel = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            dtype=np.float64,
+        )
+        return data, kernel
+
+    def test_boundary_modes_differ_at_edge(self) -> None:
+        data, kernel = self._edge_input()
+        nearest = oxigdal.convolve(data, kernel, boundary="nearest")
+        constant = oxigdal.convolve(data, kernel, boundary="constant", fill_value=0.0)
+        wrap = oxigdal.convolve(data, kernel, boundary="wrap")
+        reflect = oxigdal.convolve(data, kernel, boundary="reflect")
+
+        # At the left edge the modes must diverge.
+        assert nearest[0, 0] == 10.0
+        assert constant[0, 0] == 0.0
+        assert wrap[0, 0] == 0.0
+        assert reflect[0, 0] == 10.0
+        assert constant[0, 0] != nearest[0, 0]
+
+    def test_constant_fill_value_applied(self) -> None:
+        data = np.array([[5.0]], dtype=np.float64)
+        kernel = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            dtype=np.float64,
+        )
+        out = oxigdal.convolve(
+            data, kernel, boundary="constant", fill_value=-99.0
+        )
+        assert out[0, 0] == -99.0
+
+
+class TestWarpContract:
+    """Regression tests for warp()'s cutline/options contract."""
+
+    def test_cutline_raises_not_implemented(self, temp_dir: Path) -> None:
+        # warp with a cutline must fail loudly rather than silently ignoring it.
+        src = str(temp_dir / "warp_src.tif")
+        dst = str(temp_dir / "warp_dst.tif")
+        data = np.random.rand(16, 16).astype(np.float64)
+        oxigdal.write(src, data)
+        with pytest.raises(NotImplementedError):
+            oxigdal.warp(src, dst, cutline="boundary.geojson")
+
+    def test_unknown_option_rejected(self, temp_dir: Path) -> None:
+        src = str(temp_dir / "warp_src2.tif")
+        dst = str(temp_dir / "warp_dst2.tif")
+        data = np.random.rand(16, 16).astype(np.float64)
+        oxigdal.write(src, data)
+        with pytest.raises(ValueError):
+            oxigdal.warp(src, dst, options={"NOT_A_REAL_OPTION": "1"})
+
+
+class TestGilRelease:
+    """Verify heavy calls release the GIL so other Python threads run."""
+
+    def test_read_band_releases_gil(self, temp_dir: Path) -> None:
+        import threading
+
+        # Create a moderately large raster to give the read some duration.
+        src = str(temp_dir / "gil_read.tif")
+        data = np.random.rand(1024, 1024).astype(np.float64)
+        oxigdal.write(src, data)
+
+        counter = {"n": 0}
+        stop = threading.Event()
+
+        def spin() -> None:
+            while not stop.is_set():
+                counter["n"] += 1
+                time.sleep(0.0005)
+
+        t = threading.Thread(target=spin)
+        t.start()
+        try:
+            ds = oxigdal.open(src)
+            for _ in range(5):
+                _ = ds.read_band(1)
+        finally:
+            stop.set()
+            t.join()
+
+        # If the GIL were held for the entire read, the spinner would not have
+        # advanced. A released GIL lets it tick during the reads.
+        assert counter["n"] > 0
+
+
 # ============================================================================
 # Main Entry Point
 # ============================================================================

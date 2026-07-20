@@ -65,14 +65,14 @@ impl LruTtlCache {
             }
 
             // Check max age
-            if let Some(max_age) = self.config.max_age {
-                if entry.age() > max_age {
-                    let size = entry.size;
-                    cache.pop(key);
-                    self.current_size.fetch_sub(size, Ordering::SeqCst);
-                    self.stats.evictions.fetch_add(1, Ordering::Relaxed);
-                    return Err(CloudError::Cache(CacheError::Miss { key: key.clone() }));
-                }
+            if let Some(max_age) = self.config.max_age
+                && entry.age() > max_age
+            {
+                let size = entry.size;
+                cache.pop(key);
+                self.current_size.fetch_sub(size, Ordering::SeqCst);
+                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
+                return Err(CloudError::Cache(CacheError::Miss { key: key.clone() }));
             }
 
             entry.record_access();
@@ -297,12 +297,12 @@ impl LfuCache {
             }
         }
 
-        if let Some(key) = min_key {
-            if let Some((_, entry)) = self.storage.remove(&key) {
-                self.current_size.fetch_sub(entry.size, Ordering::SeqCst);
-                self.frequency_map.remove(&key);
-                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
-            }
+        if let Some(key) = min_key
+            && let Some((_, entry)) = self.storage.remove(&key)
+        {
+            self.current_size.fetch_sub(entry.size, Ordering::SeqCst);
+            self.frequency_map.remove(&key);
+            self.stats.evictions.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -464,7 +464,9 @@ impl ArcCache {
         }
 
         // Ensure we have space
-        while self.current_size.load(Ordering::SeqCst) + entry_size > self.config.max_memory_size {
+        while self.current_size.load(Ordering::SeqCst) + entry_size > self.config.max_memory_size
+            && !self.storage.is_empty()
+        {
             self.replace(&key).await;
         }
 

@@ -32,16 +32,16 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-workflow = "0.1.5"
+oxigdal-workflow = "0.1.7"
 
 # For integrations (HTTP, Kafka)
-oxigdal-workflow = { version = "0.1.5", features = ["integrations"] }
+oxigdal-workflow = { version = "0.1.7", features = ["integrations"] }
 
 # For HTTP server support
-oxigdal-workflow = { version = "0.1.5", features = ["server"] }
+oxigdal-workflow = { version = "0.1.7", features = ["server"] }
 
 # For all features
-oxigdal-workflow = { version = "0.1.5", features = ["full"] }
+oxigdal-workflow = { version = "0.1.7", features = ["full"] }
 ```
 
 ## Quick Start

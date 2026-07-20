@@ -486,12 +486,11 @@ fn simplify_geometry(geometry: &IosGeometry, zoom: c_int) -> IosGeometry {
                 if simplified_ring.len() >= 3 {
                     result.extend(simplified_ring);
                     // Close the ring if not already closed
-                    if let (Some(&first), Some(&last)) = (result.first(), result.last()) {
-                        if (first.0 - last.0).abs() > f64::EPSILON
-                            || (first.1 - last.1).abs() > f64::EPSILON
-                        {
-                            result.push(first);
-                        }
+                    if let (Some(&first), Some(&last)) = (result.first(), result.last())
+                        && ((first.0 - last.0).abs() > f64::EPSILON
+                            || (first.1 - last.1).abs() > f64::EPSILON)
+                    {
+                        result.push(first);
                     }
                     new_rings.push(result.len());
                 }
@@ -728,13 +727,35 @@ fn compute_bbox(coords: &[(f64, f64)]) -> Option<(f64, f64, f64, f64)> {
 // Global Layer Storage (for FFI)
 // ============================================================================
 
-static LAYERS: Mutex<Vec<IosVectorLayer>> = Mutex::new(Vec::new());
+// Slots are `Option<IosVectorLayer>` so `oxigdal_ios_layer_close` can reclaim
+// memory (set the slot to `None`) instead of leaving closed layers resident
+// for the lifetime of the process. Handles remain stable indices (`idx + 1`)
+// into this vector even after a slot is freed; a freed slot is simply
+// reused by the next `store_layer` call.
+static LAYERS: Mutex<Vec<Option<IosVectorLayer>>> = Mutex::new(Vec::new());
 
 /// Stores a layer and returns its handle.
+///
+/// Reuses the first freed (`None`) slot if one is available, otherwise
+/// appends a new slot, so closing layers actually reclaims memory instead
+/// of leaving the backing vector growing without bound.
 fn store_layer(layer: IosVectorLayer) -> Option<*mut OxiGdalLayer> {
     let mut layers = LAYERS.lock().ok()?;
-    let idx = layers.len();
-    layers.push(layer);
+    let idx = match layers.iter().position(Option::is_none) {
+        Some(free_idx) => {
+            // `free_idx` came from `position()` over this same locked `Vec`,
+            // so the slot is guaranteed to exist; `get_mut` still avoids a
+            // panicking index in case that invariant is ever weakened.
+            let slot = layers.get_mut(free_idx)?;
+            *slot = Some(layer);
+            free_idx
+        }
+        None => {
+            let idx = layers.len();
+            layers.push(Some(layer));
+            idx
+        }
+    };
     // Return index as a pointer (will be cast back)
     Some((idx + 1) as *mut OxiGdalLayer)
 }
@@ -743,10 +764,10 @@ fn store_layer(layer: IosVectorLayer) -> Option<*mut OxiGdalLayer> {
 #[allow(dead_code)]
 fn get_layer(
     handle: *const OxiGdalLayer,
-) -> Option<std::sync::MutexGuard<'static, Vec<IosVectorLayer>>> {
+) -> Option<std::sync::MutexGuard<'static, Vec<Option<IosVectorLayer>>>> {
     let layers = LAYERS.lock().ok()?;
     let idx = (handle as usize).checked_sub(1)?;
-    if idx < layers.len() {
+    if layers.get(idx).is_some_and(Option::is_some) {
         Some(layers)
     } else {
         None
@@ -802,12 +823,13 @@ pub unsafe extern "C" fn oxigdal_ios_layer_to_annotations(
         }
     };
 
-    if idx >= layers.len() {
-        crate::ffi::error::set_last_error("Layer not found".to_string());
-        return -1;
-    }
-
-    let layer_data = &layers[idx];
+    let layer_data = match layers.get(idx).and_then(Option::as_ref) {
+        Some(l) => l,
+        None => {
+            crate::ffi::error::set_last_error("Layer not found".to_string());
+            return -1;
+        }
+    };
     let mut written = 0;
     let max_coords = max_coords as usize;
 
@@ -988,12 +1010,13 @@ pub unsafe extern "C" fn oxigdal_ios_create_map_overlay(
         }
     };
 
-    if idx >= layers.len() {
-        crate::ffi::error::set_last_error("Layer not found".to_string());
-        return ptr::null_mut();
-    }
-
-    let layer_data = &layers[idx];
+    let layer_data = match layers.get(idx).and_then(Option::as_ref) {
+        Some(l) => l,
+        None => {
+            crate::ffi::error::set_last_error("Layer not found".to_string());
+            return ptr::null_mut();
+        }
+    };
 
     // Collect all coordinates and determine overlay type
     let mut all_coords: Vec<c_double> = Vec::new();
@@ -1159,12 +1182,13 @@ pub unsafe extern "C" fn oxigdal_ios_simplify_for_zoom(
         }
     };
 
-    if idx >= layers.len() {
-        crate::ffi::error::set_last_error("Layer not found".to_string());
-        return OxiGdalErrorCode::InvalidArgument;
-    }
-
-    let source_layer = &layers[idx];
+    let source_layer = match layers.get(idx).and_then(Option::as_ref) {
+        Some(l) => l,
+        None => {
+            crate::ffi::error::set_last_error("Layer not found".to_string());
+            return OxiGdalErrorCode::InvalidArgument;
+        }
+    };
 
     // Clone needed data before releasing the lock
     let source_name = source_layer.name.clone();
@@ -1257,22 +1281,25 @@ pub unsafe extern "C" fn oxigdal_ios_index_features(
         }
     };
 
-    if idx >= layers.len() {
-        crate::ffi::error::set_last_error("Layer not found".to_string());
-        return -1;
-    }
+    let layer_data = match layers.get_mut(idx).and_then(Option::as_mut) {
+        Some(l) => l,
+        None => {
+            crate::ffi::error::set_last_error("Layer not found".to_string());
+            return -1;
+        }
+    };
 
     // Build R-tree index
     let mut rtree = RTreeIndex::new();
 
-    for (feature_idx, feature) in layers[idx].features.iter().enumerate() {
+    for (feature_idx, feature) in layer_data.features.iter().enumerate() {
         if let Some((min_x, min_y, max_x, max_y)) = feature.bbox {
             let rect = Rect::new(min_x, min_y, max_x, max_y);
             rtree.insert(feature_idx, rect);
         }
     }
 
-    layers[idx].spatial_index = Some(rtree);
+    layer_data.spatial_index = Some(rtree);
 
     0
 }
@@ -1315,12 +1342,13 @@ pub unsafe extern "C" fn oxigdal_ios_query_features(
         }
     };
 
-    if idx >= layers.len() {
-        crate::ffi::error::set_last_error("Layer not found".to_string());
-        return -1;
-    }
-
-    let layer_data = &layers[idx];
+    let layer_data = match layers.get(idx).and_then(Option::as_ref) {
+        Some(l) => l,
+        None => {
+            crate::ffi::error::set_last_error("Layer not found".to_string());
+            return -1;
+        }
+    };
 
     let bb = unsafe { &*bbox };
     let query_rect = Rect::new(bb.min_x, bb.min_y, bb.max_x, bb.max_y);
@@ -1366,6 +1394,12 @@ pub unsafe extern "C" fn oxigdal_ios_query_features(
 
 /// Closes a vector layer and frees resources.
 ///
+/// Frees the layer's data by clearing its slot in the process-global layer
+/// table, so repeatedly opening and closing layers does not leak memory for
+/// the lifetime of the process. The handle itself becomes invalid after this
+/// call; any subsequent use of it will fail with "Layer not found" /
+/// "Invalid layer handle" rather than silently operating on stale data.
+///
 /// # Safety
 /// - layer must be a valid handle
 #[unsafe(no_mangle)]
@@ -1374,9 +1408,32 @@ pub unsafe extern "C" fn oxigdal_ios_layer_close(layer: *mut OxiGdalLayer) -> Ox
         return OxiGdalErrorCode::NullPointer;
     }
 
-    // Note: In a full implementation, we would mark the layer as freed
-    // For now, layers remain in the vector (memory management simplified)
-    OxiGdalErrorCode::Success
+    let idx = match handle_to_index(layer) {
+        Some(i) => i,
+        None => {
+            crate::ffi::error::set_last_error("Invalid layer handle".to_string());
+            return OxiGdalErrorCode::InvalidArgument;
+        }
+    };
+
+    let mut layers = match LAYERS.lock() {
+        Ok(l) => l,
+        Err(_) => {
+            crate::ffi::error::set_last_error("Failed to acquire lock".to_string());
+            return OxiGdalErrorCode::Unknown;
+        }
+    };
+
+    match layers.get_mut(idx) {
+        Some(slot) if slot.is_some() => {
+            *slot = None;
+            OxiGdalErrorCode::Success
+        }
+        _ => {
+            crate::ffi::error::set_last_error("Layer not found".to_string());
+            OxiGdalErrorCode::InvalidArgument
+        }
+    }
 }
 
 // ============================================================================
@@ -1654,5 +1711,60 @@ mod tests {
 
         let simplified = simplify_geometry(&geom, 0); // High tolerance at zoom 0
         assert!(simplified.coordinates.len() < geom.coordinates.len());
+    }
+
+    #[test]
+    fn test_layer_close_invalidates_handle_and_frees_slot() {
+        let layer1 = IosVectorLayer {
+            name: "layer1".to_string(),
+            features: vec![],
+            spatial_index: None,
+            bbox: None,
+        };
+        let handle1 = store_layer(layer1).expect("layer1 should store");
+
+        // The handle is valid before closing (zero features -> zero written,
+        // not the -1 that signals an invalid/unknown handle).
+        let mut coords = [0.0_f64; 4];
+        let before = unsafe { oxigdal_ios_layer_to_annotations(handle1, coords.as_mut_ptr(), 2) };
+        assert_eq!(before, 0);
+
+        let close_result = unsafe { oxigdal_ios_layer_close(handle1) };
+        assert_eq!(close_result, OxiGdalErrorCode::Success);
+
+        // Using the handle after close must fail rather than silently
+        // operating on stale/freed data.
+        let after = unsafe { oxigdal_ios_layer_to_annotations(handle1, coords.as_mut_ptr(), 2) };
+        assert_eq!(after, -1);
+
+        // Closing an already-closed handle must not report Success again.
+        let double_close = unsafe { oxigdal_ios_layer_close(handle1) };
+        assert_ne!(double_close, OxiGdalErrorCode::Success);
+
+        // Storing a new layer reuses the freed slot instead of growing the
+        // backing vector unboundedly (regression test for the leak).
+        let layer2 = IosVectorLayer {
+            name: "layer2".to_string(),
+            features: vec![],
+            spatial_index: None,
+            bbox: None,
+        };
+        let handle2 = store_layer(layer2).expect("layer2 should store");
+        assert_eq!(handle1 as usize, handle2 as usize);
+
+        // Clean up so we don't leave a dangling entry for the rest of the
+        // (isolated, per-test) process.
+        let _ = unsafe { oxigdal_ios_layer_close(handle2) };
+    }
+
+    #[test]
+    fn test_layer_close_null_and_invalid_handles() {
+        let null_result = unsafe { oxigdal_ios_layer_close(ptr::null_mut()) };
+        assert_eq!(null_result, OxiGdalErrorCode::NullPointer);
+
+        // A handle that was never issued by store_layer must be rejected,
+        // not silently treated as success.
+        let bogus_result = unsafe { oxigdal_ios_layer_close(usize::MAX as *mut OxiGdalLayer) };
+        assert_ne!(bogus_result, OxiGdalErrorCode::Success);
     }
 }

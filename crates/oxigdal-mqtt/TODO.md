@@ -2,7 +2,7 @@
 
 > **Purpose:** MQTT 3.1.1 / 5.0 client for OxiGDAL — IoT sensor ingestion, pub/sub, geospatial time-series.
 > **Status (2026-05-16):** 5,620 LoC · 132 tests · 1 real-code stub
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Complete QoS 2 (exactly-once) handshake — currently PUBREC is logged but PUBREL is never issued

@@ -126,13 +126,13 @@ impl RateController {
 
     /// Add a quality layer.  Layers must be added in ascending `layer_index` order.
     pub fn add_layer(&mut self, layer: QualityLayer) -> Result<()> {
-        if let Some(last) = self.layers.last() {
-            if layer.layer_index <= last.layer_index {
-                return Err(Jpeg2000Error::Tier2Error(format!(
-                    "Quality layers must be added in ascending order; got {} after {}",
-                    layer.layer_index, last.layer_index
-                )));
-            }
+        if let Some(last) = self.layers.last()
+            && layer.layer_index <= last.layer_index
+        {
+            return Err(Jpeg2000Error::Tier2Error(format!(
+                "Quality layers must be added in ascending order; got {} after {}",
+                layer.layer_index, last.layer_index
+            )));
         }
         self.layers.push(layer);
         Ok(())
@@ -202,11 +202,11 @@ impl RateController {
 
             // Advance to the next layer whose budget is not yet exceeded
             while current_layer + 1 < num_layers {
-                if let Some(budget) = self.layer_byte_budget(current_layer as u16) {
-                    if cumulative_bytes + cost > budget {
-                        current_layer += 1;
-                        continue;
-                    }
+                if let Some(budget) = self.layer_byte_budget(current_layer as u16)
+                    && cumulative_bytes + cost > budget
+                {
+                    current_layer += 1;
+                    continue;
                 }
                 break;
             }

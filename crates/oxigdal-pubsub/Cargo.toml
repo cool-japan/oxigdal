@@ -14,7 +14,7 @@ keywords = ["pubsub", "messaging", "streaming", "network-programming", "google"]
 categories = ["science", "network-programming", "asynchronous", "database"]
 
 [features]
-default = ["std", "async", "publisher", "subscriber", "pubsub-client"]
+default = ["std", "async"]
 std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
 alloc = []
 
@@ -22,7 +22,7 @@ alloc = []
 async = ["oxigdal-core/async", "dep:tokio", "dep:async-trait", "dep:futures"]
 publisher = ["async", "pubsub-client"]
 subscriber = ["async", "pubsub-client"]
-pubsub-client = ["dep:google-cloud-pubsub", "dep:google-cloud-googleapis"]
+pubsub-client = ["dep:google-cloud-pubsub", "dep:google-cloud-googleapis", "dep:google-cloud-auth"]
 
 # Schema support
 schema = ["dep:apache-avro", "dep:prost"]
@@ -59,7 +59,7 @@ futures = { workspace = true, optional = true }
 # Google Cloud Pub/Sub - Pure Rust SDK
 google-cloud-pubsub = { workspace = true, optional = true }
 google-cloud-googleapis = { workspace = true, features = ["pubsub"], optional = true }
-google-cloud-auth = { workspace = true }
+google-cloud-auth = { workspace = true, optional = true }
 
 # Schema support - Pure Rust
 apache-avro = { workspace = true, optional = true }
@@ -84,3 +84,13 @@ proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+# NOTE: `pubsub-client` (and the `publisher`/`subscriber` features that
+# depend on it) pulls google-cloud-pubsub -> rustls -> aws-lc-sys (C/asm).
+# All other features stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = [
+    "std", "alloc", "async", "schema", "avro", "protobuf",
+    "monitoring", "batching", "ordering", "flow-control", "dead-letter", "auth",
+]
+rustdoc-args = ["--cfg", "docsrs"]

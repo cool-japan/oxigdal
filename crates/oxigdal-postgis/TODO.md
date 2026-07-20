@@ -2,7 +2,7 @@
 
 > **Purpose:** PostgreSQL/PostGIS client — async connection pool (deadpool-postgres), spatial query builder, OGC WKB codec, batch writer.
 > **Status (2026-05-16):** 3,949 LoC (src) · 49 tests (all inline; integration tests deferred) · 1 false-COPY stub
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Replace the "COPY → individual INSERTs" fallback in `PostGisWriter::flush` with a real PostgreSQL binary COPY stream.

@@ -32,8 +32,13 @@ serde.workspace = true
 serde_json.workspace = true
 bytes.workspace = true
 
+# Geospatial reprojection (GeoMapOperator::transform_crs)
+# Workspace declares oxigdal-proj without default-features=false, but we mirror the
+# oxigdal-cli pattern and enable "std" explicitly since oxigdal-proj is not no_std-clean.
+oxigdal-proj = { workspace = true, features = ["std"] }
+
 # Async runtime
-tokio = { workspace = true, features = ["sync", "time", "fs", "io-util"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
 futures.workspace = true
 async-trait.workspace = true
 
@@ -75,3 +80,10 @@ criterion.workspace = true
 
 [lints]
 workspace = true
+
+# NOTE: `kafka` (rdkafka-sys, C librdkafka) and `s3`/`stac`/`http` (aws-lc-sys
+# via reqwest/aws-sdk-s3's rustls default provider) are not Pure Rust.
+# `postgres` and `scheduler` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["std", "postgres", "scheduler"]
+rustdoc-args = ["--cfg", "docsrs"]

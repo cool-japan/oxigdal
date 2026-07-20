@@ -99,10 +99,10 @@ impl ZonalCalculator {
             let value = values[[i, j]];
 
             // Skip no-data values
-            if let Some(no_data) = self.no_data_value {
-                if (value - no_data).abs() < f64::EPSILON {
-                    continue;
-                }
+            if let Some(no_data) = self.no_data_value
+                && (value - no_data).abs() < f64::EPSILON
+            {
+                continue;
             }
 
             zone_values.entry(zone_id).or_default().push(value);
@@ -204,7 +204,7 @@ impl ZonalCalculator {
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let n = sorted.len();
-        if n % 2 == 0 {
+        if n.is_multiple_of(2) {
             Ok((sorted[n / 2 - 1] + sorted[n / 2]) / 2.0)
         } else {
             Ok(sorted[n / 2])

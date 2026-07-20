@@ -16,14 +16,14 @@ categories = ["web-programming::http-server", "science"]
 [dependencies]
 # Internal dependencies
 oxigdal-core.workspace = true
-oxigdal-algorithms.workspace = true
+oxigdal-algorithms = { workspace = true, default-features = true }
 oxigdal-proj.workspace = true
 oxigdal-geotiff.workspace = true
 
 # Web framework
 axum.workspace = true
 tower = { workspace = true, features = ["util", "timeout", "load-shed", "limit"] }
-tower-http = { workspace = true, features = ["fs", "trace", "cors", "compression-full"] }
+tower-http = { workspace = true, features = ["fs", "trace", "cors", "compression-br", "compression-gzip", "compression-deflate"] }
 hyper.workspace = true
 http.workspace = true
 http-body-util.workspace = true
@@ -49,6 +49,9 @@ jpeg-encoder.workspace = true
 
 # Caching
 lru.workspace = true
+
+# Process metrics for the Prometheus /metrics endpoint
+sysinfo.workspace = true
 
 # CLI and configuration
 clap = { workspace = true, features = ["derive", "env", "cargo"] }

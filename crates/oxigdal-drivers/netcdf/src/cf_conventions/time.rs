@@ -69,17 +69,16 @@ impl BoundsVariable {
         }
 
         // Check vertex dimension size
-        if let Some(last_dim) = bounds_dims.last() {
-            if let Some(dim) = dimensions.get(last_dim) {
-                if dim.len() != self.num_vertices {
-                    return Err(NetCdfError::CfConventionsError(format!(
-                        "Bounds variable '{}' vertex dimension should have {} vertices, found {}",
-                        self.name,
-                        self.num_vertices,
-                        dim.len()
-                    )));
-                }
-            }
+        if let Some(last_dim) = bounds_dims.last()
+            && let Some(dim) = dimensions.get(last_dim)
+            && dim.len() != self.num_vertices
+        {
+            return Err(NetCdfError::CfConventionsError(format!(
+                "Bounds variable '{}' vertex dimension should have {} vertices, found {}",
+                self.name,
+                self.num_vertices,
+                dim.len()
+            )));
         }
 
         Ok(())

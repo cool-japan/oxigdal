@@ -2,7 +2,7 @@
 
 > **Purpose:** Advanced format drivers for OxiGDAL — JPEG2000 (JP2/J2K), GeoPackage (GPKG, SQLite-backed), KML/KMZ, GML — feature-gated for selective compile.
 > **Status (2026-05-16):** 4,570 LoC · 80 tests · 2 real stubs (`jp2/codestream.rs:273` JPEG2000 decoder placeholder returns gray fill; `gpkg/spatial_index.rs:85` RTree built with placeholder bounds).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real Pure-Rust JPEG2000 decoder

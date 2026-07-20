@@ -12,7 +12,7 @@
 //!   9.  MIME types for every variant
 //!  10.  `as_tile_type` round-trips to `TileType`
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_pmtiles::{
     DetectedTileFormat, PmTilesBuilder, PmTilesReader, TileType, detect_tile_format,

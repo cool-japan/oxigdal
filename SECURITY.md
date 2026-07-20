@@ -1,13 +1,26 @@
 # Security Policy
 
+> **Note:** OxiGDAL is being renamed to **OxiGeo**. v0.1.7 is the final release under the
+> OxiGDAL name; development (including security fixes) continues under the **OxiGeo** name
+> from v0.2.0 onward. This policy still applies to the OxiGDAL 0.1.x line during the
+> transition — see below.
+
 ## Supported Versions
 
 We release patches for security vulnerabilities in the following versions:
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| < 0.1   | :x:                |
+| Version      | Supported                                             |
+| ------------ | ------------------------------------------------------ |
+| 0.1.7 (final OxiGDAL release) | :warning: critical fixes evaluated case-by-case |
+| 0.1.x (< 0.1.7) | :x: please upgrade to 0.1.7                        |
+| OxiGeo >= 0.2.0 | :white_check_mark: active development line          |
+| < 0.1        | :x:                                                     |
+
+0.1.7 is the last release published under the OxiGDAL name. We do not commit to an
+indefinite maintenance window for the 0.1.x line: during the transition to OxiGeo, we will
+evaluate critical/high-severity reports against 0.1.7 case-by-case and, where a fix is
+straightforward to backport, publish a patch release. All new feature work and the primary
+security-maintenance line move to OxiGeo starting at 0.2.0.
 
 ## Reporting a Vulnerability
 
@@ -53,14 +66,48 @@ When reporting a vulnerability, please include the following information:
 
 ## Security Scanning
 
-OxiGDAL uses automated security scanning:
+OxiGDAL does not currently run scheduled CI security scans (house policy restricts
+`.github/workflows/*.yml` to the `pypi-publish.yml` and `npm-publish.yml` publish
+pipelines only — there is no `security.yml` workflow). Instead, security scanning is run
+locally by maintainers and as part of release preparation:
 
-- **cargo-audit**: Daily scans for known vulnerabilities in dependencies
-- **cargo-deny**: License and security compliance checks
-- **Dependabot**: Automated dependency updates
-- **cargo-geiger**: Unsafe code analysis
+- **cargo-audit**: run locally / at release time against `.cargo/audit.toml` (see below)
+- **cargo-deny**: license and security compliance checks, run on demand
+- **cargo-geiger**: unsafe code analysis, run on demand
 
-See our [Security GitHub Action](.github/workflows/security.yml) for details.
+If you rely on OxiGDAL in production, we recommend running `cargo audit` against your own
+lockfile on your own schedule rather than assuming upstream CI coverage.
+
+### Allowlisted advisories
+
+`.cargo/audit.toml` maintains an explicit, commented allowlist of advisories that
+`cargo audit` would otherwise flag. As of the 0.1.7 release this allowlist covers 21
+advisories, all transitive (pulled in by a dependency several levels removed from OxiGDAL
+code, with no upstream fix available yet or no fixed version published), grouped roughly
+as:
+
+- **TLS/certificate-validation edge cases** in `aws-lc-sys` / `rustls-webpki` /
+  `rustls-pemfile`, reached only when the optional `cloud`/`security`/`tls` feature set
+  pulls in the AWS/Azure SDKs or the TLS stack
+- **Cloud/DB client crates** (`azure_core`/`http-types`, `tokio-postgres`/
+  `postgres-protocol` via the optional `postgis` feature) — panics or DoS vectors in
+  malformed-response parsing, not memory-unsafety
+- **`quick-xml` DoS-class advisories** (unbounded namespace-declaration allocation;
+  quadratic-runtime duplicate-attribute-name checking) — CPU/memory exhaustion, not
+  memory-unsafety — reached via `pprof`/`inferno` (default dependency of
+  `oxigdal-dev-tools`/`oxigdal-bench`) and via `azure_core` (non-default `azure`/
+  `azure-blob` features of `oxigdal-cloud`/`oxigdal-cloud-enhanced`)
+- **Unmaintained-but-unpatched** crates reached transitively (`fxhash`, `instant`, `json`,
+  `paste`, `proc-macro-error2`, `atomic-polyfill`, `rand` 0.7.3) via `sled`, `heapless`/
+  `proj`, `evcxr`/Jupyter, `nalgebra`/`scirs2`, `mysql_async`, and `azure_core`
+  respectively
+- **`rsa` timing side-channel** (RUSTSEC-2023-0071, the Marvin Attack) — no fixed version
+  exists upstream yet
+
+None of these are reachable through OxiGDAL's default (Pure-Rust, no-cloud) feature set.
+Each entry in `.cargo/audit.toml` carries a one-line justification; consult that file for
+the authoritative, currently-ignored advisory IDs, and re-run `cargo audit` yourself before
+enabling `cloud`, `security`/`tls`, or `postgis` in a security-sensitive deployment.
 
 ## Security Best Practices for Users
 
@@ -194,6 +241,6 @@ We thank the security researchers who have responsibly disclosed vulnerabilities
 
 ---
 
-**Last Updated**: January 2026
+**Last Updated**: July 2026
 **Author**: COOLJAPAN OU (Team Kitasan)
 **License**: Apache-2.0

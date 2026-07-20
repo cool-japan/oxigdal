@@ -553,14 +553,14 @@ pub fn extract_dbscan_clusters(result: &OpticsResult, eps: f64) -> Vec<OpticsClu
             if start.is_none() {
                 start = Some(i);
             }
-        } else if let Some(s) = start.take() {
-            if i > s {
-                clusters.push(OpticsCluster {
-                    start: s,
-                    end: i - 1,
-                    xi_steepness: 0.0,
-                });
-            }
+        } else if let Some(s) = start.take()
+            && i > s
+        {
+            clusters.push(OpticsCluster {
+                start: s,
+                end: i - 1,
+                xi_steepness: 0.0,
+            });
         }
     }
     if let Some(s) = start {

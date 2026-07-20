@@ -2,7 +2,7 @@
 
 > **Purpose:** Multi-backend spatial database connectors — MySQL/MariaDB, SQLite/SpatiaLite, MongoDB, ClickHouse, TimescaleDB, Cassandra/ScyllaDB — sharing a unified `DatabaseConnector` trait.
 > **Status (2026-05-16):** 5,697 LoC (src) · 43 tests (16 inline + 27 in tests/) · 0 real-code stubs; many partial-coverage modules
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Flesh out the unified `DatabaseConnector` trait beyond `health_check / version / list_tables`.

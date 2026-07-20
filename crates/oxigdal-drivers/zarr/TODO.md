@@ -2,7 +2,7 @@
 
 > **Purpose:** Zarr v2/v3 driver for OxiGDAL - Pure Rust multidimensional array storage
 > **Status (2026-05-16):** 17,111 Rust LoC (incl. tests) - 286 tests - 3 real stubs (transformers + sharding codec resolver)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

@@ -154,8 +154,9 @@ impl fmt::Display for NetCdfError {
             Self::NetCdf4NotAvailable => {
                 write!(
                     f,
-                    "NetCDF-4 support not available. Enable 'netcdf4' feature to use HDF5-based NetCDF-4 files. \
-                     Note: This requires C dependencies (libnetcdf, libhdf5) and is not Pure Rust."
+                    "NetCDF-4/HDF5 reading is not yet implemented in this Pure Rust build; \
+                     only NetCDF-3 (classic and 64-bit offset) files are currently supported for reading. \
+                     The file was detected as HDF5-based NetCDF-4."
                 )
             }
             Self::CompressionNotSupported { compression } => {
@@ -322,9 +323,10 @@ impl NetCdfError {
             Self::FeatureNotEnabled { .. } => {
                 Some("Enable the required feature flag in Cargo.toml")
             }
-            Self::NetCdf4NotAvailable => {
-                Some("Enable the 'netcdf4' feature for HDF5-based NetCDF-4 support")
-            }
+            Self::NetCdf4NotAvailable => Some(
+                "NetCDF-4/HDF5 reading is not yet implemented; convert the file to NetCDF-3 \
+                 classic (e.g. `nccopy -k classic input.nc output.nc`) to read it with this Pure Rust driver",
+            ),
             Self::CompressionNotSupported { .. } => {
                 Some("Use a supported compression algorithm or disable compression")
             }
@@ -506,8 +508,16 @@ mod tests {
         let err = NetCdfError::NetCdf4NotAvailable;
         let msg = err.to_string();
         assert!(msg.contains("NetCDF-4"));
-        assert!(msg.contains("netcdf4"));
         assert!(msg.contains("Pure Rust"));
+        assert!(msg.contains("NetCDF-3"));
+        // The message must not point users at a Cargo feature that no longer
+        // exists in Cargo.toml.
+        assert!(!msg.contains("Enable 'netcdf4' feature"));
+
+        // The suggestion must likewise not reference the removed feature flag.
+        let suggestion = err.suggestion().expect("suggestion should be present");
+        assert!(!suggestion.contains("'netcdf4' feature"));
+        assert!(suggestion.contains("NetCDF-3"));
     }
 
     #[test]

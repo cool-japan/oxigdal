@@ -417,9 +417,14 @@ impl NotificationSystem {
     }
 
     /// Send a notification.
-    pub async fn send(&self, message: &str) -> Result<()> {
+    pub async fn send(
+        &self,
+        #[cfg(feature = "http-exporter")] message: &str,
+        #[cfg(not(feature = "http-exporter"))] _message: &str,
+    ) -> Result<()> {
         for channel in &self.channels {
             match channel {
+                #[cfg(feature = "http-exporter")]
                 NotificationChannel::Webhook { url } => {
                     let client = reqwest::Client::new();
                     let _ = client
@@ -428,6 +433,7 @@ impl NotificationSystem {
                         .send()
                         .await?;
                 }
+                #[cfg(feature = "http-exporter")]
                 NotificationChannel::Slack { webhook_url } => {
                     let client = reqwest::Client::new();
                     let _ = client
@@ -437,7 +443,7 @@ impl NotificationSystem {
                         .await?;
                 }
                 _ => {
-                    // Placeholder for other channels
+                    // Placeholder for other channels (or http-exporter feature not enabled)
                 }
             }
         }

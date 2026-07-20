@@ -98,11 +98,13 @@ fn test_roundtrip_polygon_with_hole() {
         vec![100.0, 5.0],
         vec![100.0, 0.0],
     ];
+    // Wound clockwise (opposite of the counterclockwise exterior), per RFC
+    // 7946 §3.1.6's right-hand-rule orientation.
     let hole = vec![
         vec![101.0, 1.0],
-        vec![104.0, 1.0],
-        vec![104.0, 4.0],
         vec![101.0, 4.0],
+        vec![104.0, 4.0],
+        vec![104.0, 1.0],
         vec![101.0, 1.0],
     ];
     let polygon = Polygon::with_holes(exterior, vec![hole]).expect("valid polygon");

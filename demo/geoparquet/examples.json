@@ -1,0 +1,64 @@
+{
+  "examples": [
+    {
+      "name": "Shinjuku (Tokyo)",
+      "bbox": [
+        139.69,
+        35.67,
+        139.72,
+        35.7
+      ],
+      "filter": "area_in_meters > 200",
+      "zoom": 14,
+      "note": "central-Tokyo preset (hits 1 of 3 row groups in the offline sample)"
+    },
+    {
+      "name": "Shibuya (Tokyo)",
+      "bbox": [
+        139.685,
+        35.645,
+        139.715,
+        35.675
+      ],
+      "filter": "confidence >= 0.8",
+      "zoom": 14,
+      "note": "Shibuya–Harajuku, high-confidence footprints only"
+    },
+    {
+      "name": "Osaka — Umeda",
+      "bbox": [
+        135.48,
+        34.69,
+        135.51,
+        34.72
+      ],
+      "filter": "area_in_meters > 500",
+      "zoom": 14,
+      "note": "large buildings around Osaka/Umeda station (live dataset only)"
+    },
+    {
+      "name": "Sapporo — Odori",
+      "bbox": [
+        141.34,
+        43.05,
+        141.37,
+        43.08
+      ],
+      "filter": "confidence > 0.75",
+      "zoom": 14,
+      "note": "Odori Park grid, northern Japan (live dataset only)"
+    },
+    {
+      "name": "Kyoto — Gion",
+      "bbox": [
+        135.76,
+        34.99,
+        135.79,
+        35.02
+      ],
+      "filter": "area_in_meters BETWEEN 100 AND 2000",
+      "zoom": 14,
+      "note": "mid-sized machiya blocks east of the Kamo river (live dataset only)"
+    }
+  ]
+}

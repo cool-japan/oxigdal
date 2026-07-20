@@ -71,10 +71,10 @@ impl MessageRouter {
         match message {
             WsMessage::Text(text) => {
                 // Try to parse as JSON and extract route
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                    if let Some(route) = json.get("route").and_then(|r| r.as_str()) {
-                        return Ok(route.to_string());
-                    }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(text)
+                    && let Some(route) = json.get("route").and_then(|r| r.as_str())
+                {
+                    return Ok(route.to_string());
                 }
                 Ok("default".to_string())
             }

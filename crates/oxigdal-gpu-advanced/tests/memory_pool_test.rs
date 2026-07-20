@@ -15,6 +15,7 @@ async fn create_test_device() -> Option<Arc<wgpu::Device>> {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await
         .ok()?;

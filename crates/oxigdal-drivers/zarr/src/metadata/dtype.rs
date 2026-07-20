@@ -225,7 +225,17 @@ fn parse_numpy_dtype_size(dtype: &str) -> Result<usize> {
         })
     })?;
 
-    let size_str = &dtype[2..];
+    // `dtype.chars().nth(1)` above is a char-based lookup, but slicing by a
+    // fixed byte offset is only safe if that offset happens to land on a
+    // UTF-8 char boundary. For a multibyte first character (e.g. dtype
+    // starting with a non-ASCII byte-order/type marker), byte index 2 can
+    // fall inside that character's encoding and `&dtype[2..]` would panic.
+    // `str::get` returns `None` instead of panicking in that case.
+    let size_str = dtype.get(2..).ok_or_else(|| {
+        ZarrError::Metadata(MetadataError::UnsupportedDataType {
+            dtype: dtype.to_string(),
+        })
+    })?;
 
     match type_char {
         'b' => Ok(1), // bool
@@ -346,6 +356,29 @@ impl DType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dtype_element_size_non_char_boundary_errors_not_panics() {
+        // '€' (U+20AC) is 3 bytes in UTF-8, so "€0" is 4 bytes total
+        // (>= 2, passing the byte-length guard) with `chars().nth(1)`
+        // succeeding (`'0'`), but byte index 2 falls inside the 3-byte
+        // encoding of '€' -- not a char boundary. This must return a typed
+        // error instead of panicking on `&dtype[2..]`.
+        let dtype = DType::String("\u{20AC}0".to_string());
+        let result = dtype.element_size();
+        assert!(result.is_err(), "expected error, got {result:?}");
+    }
+
+    #[test]
+    fn test_dtype_element_size_multibyte_first_char_still_errors_cleanly() {
+        // Same char-boundary hazard, but exercised through the crate's
+        // public parsing helper on a variety of multibyte-prefixed strings
+        // to make sure none of them panic.
+        for s in ["\u{20AC}f4", "\u{1F600}i8", "\u{00E9}u2"] {
+            let dtype = DType::String(s.to_string());
+            let _ = dtype.element_size();
+        }
+    }
 
     #[test]
     fn test_dtype_from_numpy_str() {

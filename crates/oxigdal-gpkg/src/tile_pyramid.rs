@@ -406,6 +406,15 @@ mod tests {
         (1u64, vec![v])
     }
 
+    /// Encode a signed 16-bit integer (serial type 2, 2 bytes big-endian).
+    ///
+    /// Used for values that exceed the `i8` range (e.g. EPSG SRS codes like
+    /// `4326`), mirroring the serial-type-2 encoding already used for
+    /// `gpkg_tile_matrix` matrix/tile dimensions below.
+    fn int2_st(v: i16) -> (u64, Vec<u8>) {
+        (2u64, v.to_be_bytes().to_vec())
+    }
+
     /// Encode an IEEE-754 float (serial type 7, 8 bytes big-endian).
     fn float_st(v: f64) -> (u64, Vec<u8>) {
         (7u64, v.to_be_bytes().to_vec())
@@ -469,14 +478,14 @@ mod tests {
     ///
     /// Column layout (§2.2.7):
     ///   0: table_name  TEXT
-    ///   1: srs_id      INTEGER (i8)
+    ///   1: srs_id      INTEGER (i16, serial type 2 — 4326 doesn't fit i8)
     ///   2: min_x       REAL
     ///   3: min_y       REAL
     ///   4: max_x       REAL
     ///   5: max_y       REAL
     fn tile_matrix_set_row(table_name: &str) -> Vec<u8> {
         let (st_name, name_bytes) = text_st(table_name);
-        let (st_srs, srs_bytes) = int1_st(4); // srs_id = 4326 doesn't fit i8; use 4 as placeholder
+        let (st_srs, srs_bytes) = int2_st(4326); // EPSG:4326 (WGS 84)
         let (st_minx, minx_bytes) = float_st(-180.0);
         let (st_miny, miny_bytes) = float_st(-90.0);
         let (st_maxx, maxx_bytes) = float_st(180.0);

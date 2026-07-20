@@ -59,10 +59,10 @@ impl CassandraConnector {
             .known_nodes(&config.contact_points)
             .connection_timeout(config.connection_timeout);
 
-        if let Some(username) = &config.username {
-            if let Some(password) = &config.password {
-                builder = builder.user(username, password);
-            }
+        if let Some(username) = &config.username
+            && let Some(password) = &config.password
+        {
+            builder = builder.user(username, password);
         }
 
         let session = builder

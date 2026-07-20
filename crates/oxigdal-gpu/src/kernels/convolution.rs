@@ -34,7 +34,7 @@ pub struct ConvolutionParams {
 impl ConvolutionParams {
     /// Create new convolution parameters.
     pub fn new(width: u32, height: u32, kernel_width: u32, kernel_height: u32) -> GpuResult<Self> {
-        if kernel_width % 2 == 0 || kernel_height % 2 == 0 {
+        if kernel_width.is_multiple_of(2) || kernel_height.is_multiple_of(2) {
             return Err(GpuError::invalid_kernel_params(
                 "Kernel dimensions must be odd",
             ));
@@ -343,7 +343,7 @@ impl Filters {
     ///
     /// Returns an error if the kernel size is not odd.
     pub fn gaussian_custom(size: usize, sigma: f32) -> crate::error::GpuResult<Vec<f32>> {
-        if size % 2 == 0 {
+        if size.is_multiple_of(2) {
             return Err(crate::error::GpuError::InvalidKernelParams {
                 reason: "Kernel size must be odd".to_string(),
             });
@@ -522,10 +522,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_convolution_kernel() {
-        if let Ok(context) = GpuContext::new().await {
-            if let Ok(_kernel) = ConvolutionKernel::new(&context) {
-                // Kernel created successfully
-            }
+        if let Ok(context) = GpuContext::new().await
+            && let Ok(_kernel) = ConvolutionKernel::new(&context)
+        {
+            // Kernel created successfully
         }
     }
 

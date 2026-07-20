@@ -404,7 +404,7 @@ impl GeoJsonWriter {
 ///
 /// # Errors
 ///
-/// Returns [`GeoJsonError::ReprojectError`] when the CRS pair is unsupported,
+/// Returns `GeoJsonError::ReprojectError` when the CRS pair is unsupported,
 /// or any serialisation error from the underlying writer.
 #[cfg(feature = "reproject")]
 pub fn write_feature_collection_with_reprojection(

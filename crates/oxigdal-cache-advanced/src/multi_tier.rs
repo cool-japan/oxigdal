@@ -310,32 +310,32 @@ impl L2DiskTier {
         let mut total_size = 0;
 
         while let Some(entry) = entries.next_entry().await? {
-            if let Ok(metadata) = entry.metadata().await {
-                if metadata.is_file() {
-                    let file_size = metadata.len() as usize;
-                    total_size += file_size;
+            if let Ok(metadata) = entry.metadata().await
+                && metadata.is_file()
+            {
+                let file_size = metadata.len() as usize;
+                total_size += file_size;
 
-                    // Extract key from filename (remove .cache extension)
-                    if let Some(file_name) = entry.file_name().to_str() {
-                        if file_name.ends_with(".cache") {
-                            let key = file_name.trim_end_matches(".cache").to_string();
+                // Extract key from filename (remove .cache extension)
+                if let Some(file_name) = entry.file_name().to_str()
+                    && file_name.ends_with(".cache")
+                {
+                    let key = file_name.trim_end_matches(".cache").to_string();
 
-                            // Create minimal cache value for index
-                            let value = CacheValue {
-                                data: Bytes::new(),
-                                data_type: DataType::Binary,
-                                created_at: chrono::Utc::now(),
-                                last_accessed: chrono::Utc::now(),
-                                access_count: 0,
-                                size: file_size,
-                            };
+                    // Create minimal cache value for index
+                    let value = CacheValue {
+                        data: Bytes::new(),
+                        data_type: DataType::Binary,
+                        created_at: chrono::Utc::now(),
+                        last_accessed: chrono::Utc::now(),
+                        access_count: 0,
+                        size: file_size,
+                    };
 
-                            self.index.insert(key.clone(), value);
+                    self.index.insert(key.clone(), value);
 
-                            let mut eviction = self.eviction.write().await;
-                            eviction.on_insert(key, file_size);
-                        }
-                    }
+                    let mut eviction = self.eviction.write().await;
+                    eviction.on_insert(key, file_size);
                 }
             }
         }
@@ -601,30 +601,30 @@ impl MultiTierCache {
         }
 
         // Try L2
-        if let Some(l2) = &self.l2 {
-            if let Some(value) = l2.get(key).await? {
-                // Promote to L1
-                let _ = self.l1.put(key.clone(), value.clone()).await;
+        if let Some(l2) = &self.l2
+            && let Some(value) = l2.get(key).await?
+        {
+            // Promote to L1
+            let _ = self.l1.put(key.clone(), value.clone()).await;
 
-                let mut stats = self.global_stats.write().await;
-                stats.hits += 1;
-                return Ok(Some(value));
-            }
+            let mut stats = self.global_stats.write().await;
+            stats.hits += 1;
+            return Ok(Some(value));
         }
 
         // Try L3
-        if let Some(l3) = &self.l3 {
-            if let Some(value) = l3.get(key).await? {
-                // Promote to L2 and L1
-                if let Some(l2) = &self.l2 {
-                    let _ = l2.put(key.clone(), value.clone()).await;
-                }
-                let _ = self.l1.put(key.clone(), value.clone()).await;
-
-                let mut stats = self.global_stats.write().await;
-                stats.hits += 1;
-                return Ok(Some(value));
+        if let Some(l3) = &self.l3
+            && let Some(value) = l3.get(key).await?
+        {
+            // Promote to L2 and L1
+            if let Some(l2) = &self.l2 {
+                let _ = l2.put(key.clone(), value.clone()).await;
             }
+            let _ = self.l1.put(key.clone(), value.clone()).await;
+
+            let mut stats = self.global_stats.write().await;
+            stats.hits += 1;
+            return Ok(Some(value));
         }
 
         let mut stats = self.global_stats.write().await;
@@ -673,16 +673,16 @@ impl MultiTierCache {
             return true;
         }
 
-        if let Some(l2) = &self.l2 {
-            if l2.contains(key).await {
-                return true;
-            }
+        if let Some(l2) = &self.l2
+            && l2.contains(key).await
+        {
+            return true;
         }
 
-        if let Some(l3) = &self.l3 {
-            if l3.contains(key).await {
-                return true;
-            }
+        if let Some(l3) = &self.l3
+            && l3.contains(key).await
+        {
+            return true;
         }
 
         false

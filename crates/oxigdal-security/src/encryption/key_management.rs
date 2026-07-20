@@ -82,7 +82,7 @@ impl KeyManager {
         rotation_period_days: Option<u32>,
     ) -> Result<String> {
         let key_id = Uuid::new_v4().to_string();
-        let key = AtRestEncryptor::generate_key(algorithm);
+        let key = AtRestEncryptor::generate_key(algorithm)?;
         let metadata = KeyMetadata::new(key_id.clone(), algorithm, rotation_period_days);
 
         self.keys.insert(key_id.clone(), (key, metadata));

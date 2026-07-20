@@ -105,34 +105,34 @@ impl GpuProfiler {
         let mut bottlenecks = Vec::new();
 
         // Check memory bandwidth
-        if let Some(bandwidth_gbs) = metrics.average_memory_bandwidth_gbs() {
-            if bandwidth_gbs < self.config.min_expected_bandwidth_gbs {
-                bottlenecks.push(PerformanceBottleneck {
-                    kind: BottleneckKind::MemoryBandwidth,
-                    severity: BottleneckSeverity::High,
-                    description: format!(
-                        "Memory bandwidth {:.2} GB/s is below expected {:.2} GB/s",
-                        bandwidth_gbs, self.config.min_expected_bandwidth_gbs
-                    ),
-                    suggestion: "Consider batching transfers or using compression".to_string(),
-                });
-            }
+        if let Some(bandwidth_gbs) = metrics.average_memory_bandwidth_gbs()
+            && bandwidth_gbs < self.config.min_expected_bandwidth_gbs
+        {
+            bottlenecks.push(PerformanceBottleneck {
+                kind: BottleneckKind::MemoryBandwidth,
+                severity: BottleneckSeverity::High,
+                description: format!(
+                    "Memory bandwidth {:.2} GB/s is below expected {:.2} GB/s",
+                    bandwidth_gbs, self.config.min_expected_bandwidth_gbs
+                ),
+                suggestion: "Consider batching transfers or using compression".to_string(),
+            });
         }
 
         // Check kernel efficiency
         for (label, stats) in &metrics.kernel_stats {
-            if let Some(avg_duration) = stats.average_duration() {
-                if avg_duration > self.config.max_kernel_duration {
-                    bottlenecks.push(PerformanceBottleneck {
-                        kind: BottleneckKind::KernelExecution,
-                        severity: BottleneckSeverity::Medium,
-                        description: format!(
-                            "Kernel '{}' average duration {:?} exceeds threshold {:?}",
-                            label, avg_duration, self.config.max_kernel_duration
-                        ),
-                        suggestion: "Consider optimizing shader or reducing workload".to_string(),
-                    });
-                }
+            if let Some(avg_duration) = stats.average_duration()
+                && avg_duration > self.config.max_kernel_duration
+            {
+                bottlenecks.push(PerformanceBottleneck {
+                    kind: BottleneckKind::KernelExecution,
+                    severity: BottleneckSeverity::Medium,
+                    description: format!(
+                        "Kernel '{}' average duration {:?} exceeds threshold {:?}",
+                        label, avg_duration, self.config.max_kernel_duration
+                    ),
+                    suggestion: "Consider optimizing shader or reducing workload".to_string(),
+                });
             }
         }
 

@@ -210,16 +210,15 @@ impl AdaptiveCompressor {
             CompressionCodec::Zstd,
             CompressionCodec::Snappy,
         ] {
-            if let Some(stats_vec) = self.performance_history.get(&(*codec, data_type)) {
-                if !stats_vec.is_empty() {
-                    let avg_score: f64 =
-                        stats_vec.iter().map(|s| s.efficiency_score()).sum::<f64>()
-                            / stats_vec.len() as f64;
+            if let Some(stats_vec) = self.performance_history.get(&(*codec, data_type))
+                && !stats_vec.is_empty()
+            {
+                let avg_score: f64 = stats_vec.iter().map(|s| s.efficiency_score()).sum::<f64>()
+                    / stats_vec.len() as f64;
 
-                    if avg_score > best_score {
-                        best_score = avg_score;
-                        best_codec = *codec;
-                    }
+                if avg_score > best_score {
+                    best_score = avg_score;
+                    best_codec = *codec;
                 }
             }
         }

@@ -1500,11 +1500,11 @@ impl ExternalIntegrationRegistry {
         let mut errors = Vec::new();
 
         for handler in callbacks.iter() {
-            if handler.is_enabled_for(payload.event_type) {
-                if let Err(e) = handler.handle(payload.clone()).await {
-                    error!("Callback handler {} failed: {}", handler.name(), e);
-                    errors.push(e);
-                }
+            if handler.is_enabled_for(payload.event_type)
+                && let Err(e) = handler.handle(payload.clone()).await
+            {
+                error!("Callback handler {} failed: {}", handler.name(), e);
+                errors.push(e);
             }
         }
 

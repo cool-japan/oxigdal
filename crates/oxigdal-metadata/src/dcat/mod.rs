@@ -473,10 +473,10 @@ impl Dataset {
         let dataset_json =
             serde_json::to_value(self).map_err(|e| MetadataError::JsonError(e.to_string()))?;
 
-        if let serde_json::Value::Object(obj) = dataset_json {
-            if let serde_json::Value::Object(ref mut context_map) = map {
-                context_map.extend(obj);
-            }
+        if let serde_json::Value::Object(obj) = dataset_json
+            && let serde_json::Value::Object(ref mut context_map) = map
+        {
+            context_map.extend(obj);
         }
 
         serde_json::to_string_pretty(&map).map_err(|e| MetadataError::JsonError(e.to_string()))
@@ -504,10 +504,10 @@ impl Catalog {
         let catalog_json =
             serde_json::to_value(self).map_err(|e| MetadataError::JsonError(e.to_string()))?;
 
-        if let serde_json::Value::Object(obj) = catalog_json {
-            if let serde_json::Value::Object(ref mut context_map) = map {
-                context_map.extend(obj);
-            }
+        if let serde_json::Value::Object(obj) = catalog_json
+            && let serde_json::Value::Object(ref mut context_map) = map
+        {
+            context_map.extend(obj);
         }
 
         serde_json::to_string_pretty(&map).map_err(|e| MetadataError::JsonError(e.to_string()))

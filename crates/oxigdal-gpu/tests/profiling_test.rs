@@ -6,7 +6,7 @@
 //! passes on CI machines that have no GPU backend feature compiled in.
 
 // Permit unwrap() in tests and relax doc requirements.
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{GpuContext, GpuTimestampProfiler, PassTiming};
 

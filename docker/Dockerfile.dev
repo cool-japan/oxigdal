@@ -98,9 +98,12 @@ VOLUME ["/workspace", "/data", "/cache"]
 # Default command opens a bash shell
 CMD ["/bin/bash"]
 
+# Build-time version, defaulting to the last released version; see docker/build.sh.
+ARG OXIGDAL_VERSION=0.1.7
+
 LABEL org.opencontainers.image.title="OxiGDAL Development Environment" \
       org.opencontainers.image.description="Full development environment for OxiGDAL with all tools" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
       org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="0.1.0"
+      org.opencontainers.image.version="${OXIGDAL_VERSION}"

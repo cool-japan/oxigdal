@@ -452,10 +452,10 @@ pub(super) fn repair_linestring_coords(coords: &[Coordinate]) -> PyResult<Vec<Co
     repaired.push(coords[0]);
 
     for coord in &coords[1..] {
-        if let Some(last) = repaired.last() {
-            if (coord.x - last.x).abs() > f64::EPSILON || (coord.y - last.y).abs() > f64::EPSILON {
-                repaired.push(*coord);
-            }
+        if let Some(last) = repaired.last()
+            && ((coord.x - last.x).abs() > f64::EPSILON || (coord.y - last.y).abs() > f64::EPSILON)
+        {
+            repaired.push(*coord);
         }
     }
 

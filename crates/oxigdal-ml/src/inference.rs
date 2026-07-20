@@ -68,11 +68,16 @@ impl<M: Model> InferenceEngine<M> {
     }
 
     /// Runs inference on a single (non-tiled) buffer
+    ///
+    /// `input` is a single-band [`RasterBuffer`], so normalization applies the
+    /// first channel's statistics (`channel_idx = 0`). Callers with multi-band
+    /// imagery should split it into per-band buffers and normalize each band
+    /// with its matching channel index before invoking the engine.
     fn predict_single(&mut self, input: &RasterBuffer) -> Result<RasterBuffer> {
         // Normalize if configured
         let normalized = if let Some(ref params) = self.config.normalization {
             debug!("Applying normalization");
-            normalize(input, params)?
+            normalize(input, params, 0)?
         } else {
             input.clone()
         };
@@ -96,7 +101,8 @@ impl<M: Model> InferenceEngine<M> {
         let mut tile_results = Vec::with_capacity(tiles.len());
         for tile in &tiles {
             let normalized = if let Some(ref params) = self.config.normalization {
-                normalize(&tile.buffer, params)?
+                // Tiles are single-band buffers; normalize with the first channel.
+                normalize(&tile.buffer, params, 0)?
             } else {
                 tile.buffer.clone()
             };

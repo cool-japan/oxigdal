@@ -10,6 +10,7 @@
 //! [`BboxColumns`] provides detection and row-group bbox extraction from
 //! Parquet column statistics.
 
+use crate::metadata::GeoParquetMetadata;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::SchemaDescriptor;
@@ -53,6 +54,60 @@ impl BboxColumns {
             .or_else(|| Self::detect_flat_shape(schema, geom_col))
     }
 
+    /// Detect covering bbox columns using the GeoParquet 1.1 `covering.bbox`
+    /// metadata as the authoritative source, falling back to name heuristics.
+    ///
+    /// Resolution order:
+    /// 1. If the `geo` metadata for `geom_col` declares a `covering.bbox`, its
+    ///    four column paths are matched verbatim against the Parquet leaf paths
+    ///    (see [`from_paths`]).  This is the spec-authoritative path.
+    /// 2. Otherwise fall back to [`detect`], which recognises the conventional
+    ///    struct (`<geom>_bbox` / `geometry_bbox` / plain `bbox`) and flat
+    ///    (`<geom>_bbox_xmin`, …) layouts by name.
+    ///
+    /// [`from_paths`]: BboxColumns::from_paths
+    /// [`detect`]: BboxColumns::detect
+    pub fn detect_with_covering(
+        schema: &SchemaDescriptor,
+        geom_col: &str,
+        geo: &GeoParquetMetadata,
+    ) -> Option<Self> {
+        if let Some(col_meta) = geo.get_column(geom_col)
+            && let Some(covering) = col_meta.covering.as_ref()
+            && let Some(bc) = Self::from_paths(
+                schema,
+                &covering.bbox.xmin,
+                &covering.bbox.ymin,
+                &covering.bbox.xmax,
+                &covering.bbox.ymax,
+            )
+        {
+            return Some(bc);
+        }
+        Self::detect(schema, geom_col)
+    }
+
+    /// Resolve four covering bbox leaf columns from explicit column paths.
+    ///
+    /// Each `*_path` is a Parquet column path as a slice of path components
+    /// (e.g. `["bbox", "xmin"]` or `["geometry_bbox_xmin"]`).  A path resolves
+    /// when it exactly equals a leaf column's `path().parts()`.  Returns `None`
+    /// if any of the four paths does not resolve.
+    pub fn from_paths(
+        schema: &SchemaDescriptor,
+        xmin_path: &[String],
+        ymin_path: &[String],
+        xmax_path: &[String],
+        ymax_path: &[String],
+    ) -> Option<Self> {
+        Some(Self {
+            xmin_col: find_leaf_by_path(schema, xmin_path)?,
+            ymin_col: find_leaf_by_path(schema, ymin_path)?,
+            xmax_col: find_leaf_by_path(schema, xmax_path)?,
+            ymax_col: find_leaf_by_path(schema, ymax_path)?,
+        })
+    }
+
     /// Returns `true` (this struct being present already implies availability,
     /// but the method is provided for convenience / API symmetry).
     pub fn is_available(&self) -> bool {
@@ -90,9 +145,11 @@ impl BboxColumns {
             if parts.len() < 2 {
                 continue;
             }
-            // Accept both "<geomcol>_bbox" and "geometry_bbox" as the struct root.
-            let is_matching_struct =
-                parts[0] == struct_name.as_str() || parts[0] == "geometry_bbox";
+            // Accept "<geomcol>_bbox", "geometry_bbox", and the plain "bbox"
+            // struct root (the VIDA / GeoParquet 1.1 convention).
+            let is_matching_struct = parts[0] == struct_name.as_str()
+                || parts[0] == "geometry_bbox"
+                || parts[0] == "bbox";
             if !is_matching_struct {
                 continue;
             }
@@ -152,6 +209,15 @@ impl BboxColumns {
             _ => None,
         }
     }
+}
+
+/// Find the leaf column index whose path components exactly equal `path`.
+fn find_leaf_by_path(schema: &SchemaDescriptor, path: &[String]) -> Option<usize> {
+    (0..schema.num_columns()).find(|&idx| {
+        let col = schema.column(idx);
+        let parts = col.path().parts();
+        parts.len() == path.len() && parts.iter().zip(path).all(|(a, b)| a == b)
+    })
 }
 
 // ── Statistics helpers ──────────────────────────────────────────────────────────

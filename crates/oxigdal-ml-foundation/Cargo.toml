@@ -70,6 +70,8 @@ criterion = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 approx = { workspace = true }
+# Decode-side ONNX loader used to validate hand-written ONNX export (round-trip test)
+oxionnx = { workspace = true }
 
 [[bench]]
 name = "training_benchmark"
@@ -77,3 +79,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

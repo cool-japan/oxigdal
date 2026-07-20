@@ -1,8 +1,10 @@
 //! Conflict detection for concurrent modifications
 
 use crate::error::{Error, Result};
+use crate::history::AncestorStore;
 use crate::types::{Conflict, ConflictType, Record, Version};
 use chrono::{DateTime, Utc};
+use std::sync::Arc;
 
 /// Conflict detector for identifying concurrent modifications
 pub struct ConflictDetector {
@@ -10,6 +12,10 @@ pub struct ConflictDetector {
     strict_version_check: bool,
     /// Enable timestamp-based detection
     use_timestamps: bool,
+    /// Optional version-history store used to look up a real common ancestor for
+    /// three-way merges. When absent, `find_common_ancestor` honestly reports
+    /// that no ancestor is available rather than fabricating one.
+    ancestor_store: Option<Arc<dyn AncestorStore>>,
 }
 
 impl Default for ConflictDetector {
@@ -17,6 +23,7 @@ impl Default for ConflictDetector {
         Self {
             strict_version_check: true,
             use_timestamps: true,
+            ancestor_store: None,
         }
     }
 }
@@ -37,6 +44,21 @@ impl ConflictDetector {
     pub fn with_timestamps(mut self, enabled: bool) -> Self {
         self.use_timestamps = enabled;
         self
+    }
+
+    /// Attach a version-history store so `find_common_ancestor` can return a real
+    /// common ancestor instead of `None`. Callers are responsible for feeding the store via
+    /// [`AncestorStore::record_version`] as record versions become known (e.g. after every
+    /// successful local write or remote pull); without that, lookups will still legitimately
+    /// come back empty even with a store attached.
+    pub fn with_ancestor_store(mut self, store: Arc<dyn AncestorStore>) -> Self {
+        self.ancestor_store = Some(store);
+        self
+    }
+
+    /// Whether an ancestor store is currently attached.
+    pub fn has_ancestor_store(&self) -> bool {
+        self.ancestor_store.is_some()
     }
 
     /// Detect conflicts between local and remote records
@@ -122,11 +144,32 @@ impl ConflictDetector {
         time_diff.num_seconds() > 300
     }
 
-    /// Find common ancestor (placeholder for now)
-    fn find_common_ancestor(&self, _local: &Record, _remote: &Record) -> Result<Option<Record>> {
-        // In a real implementation, this would query the history
-        // For now, we don't have version history
-        Ok(None)
+    /// Find the common ancestor of `local` and `remote`, if one is known.
+    ///
+    /// This performs a real lookup against the attached [`AncestorStore`] (see
+    /// [`Self::with_ancestor_store`]): it asks for the most recent recorded version of this
+    /// record *strictly before* `min(local.version, remote.version)`. Version numbers here
+    /// are a monotonic per-record counter (see [`Version::next`]/[`Version::increment`]), so
+    /// the lower of the two current versions cannot itself be the shared ancestor — it's one
+    /// of the two diverging sides. The last point they could possibly still agree on is
+    /// therefore strictly before it.
+    ///
+    /// If either side is still at version 0 (never updated past its initial insert), there is
+    /// no earlier version to look up at all. If no store is attached, or the store has no
+    /// recorded version for this record below that point, this honestly returns `Ok(None)` —
+    /// it never fabricates a base record. Callers (see [`crate::merge::MergeEngine`]) must
+    /// treat `None` as "no ancestor available", not as permission to silently guess.
+    fn find_common_ancestor(&self, local: &Record, remote: &Record) -> Result<Option<Record>> {
+        let Some(store) = &self.ancestor_store else {
+            return Ok(None);
+        };
+
+        let min_version = local.version.value().min(remote.version.value());
+        let Some(ancestor_bound) = min_version.checked_sub(1) else {
+            return Ok(None);
+        };
+
+        Ok(store.ancestor_at_or_before(&local.id, Version::from_u64(ancestor_bound)))
     }
 
     /// Detect conflict type
@@ -325,6 +368,54 @@ mod tests {
 
         assert_eq!(report.conflict_type, ConflictType::UpdateUpdate);
         assert!(report.difficulty > 0.0);
+    }
+
+    #[test]
+    fn test_no_ancestor_store_configured_returns_none() {
+        // Without an attached AncestorStore, find_common_ancestor must honestly report
+        // "no ancestor available" rather than fabricating one.
+        let detector = ConflictDetector::new();
+        assert!(!detector.has_ancestor_store());
+
+        let local = create_record("test", "local", 2);
+        let mut remote = create_record("test", "remote", 3);
+        remote.id = local.id;
+
+        let conflict = detector
+            .detect(&local, &remote)
+            .expect("detect should succeed")
+            .expect("should be a conflict");
+        assert!(conflict.base.is_none());
+    }
+
+    #[test]
+    fn test_ancestor_store_supplies_real_base() {
+        use crate::history::InMemoryAncestorStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(InMemoryAncestorStore::new());
+
+        // Record the shared ancestor at version 1.
+        let base = create_record("test", "base data", 1);
+        let id = base.id;
+        store.record_version(&base);
+
+        let detector = ConflictDetector::new().with_ancestor_store(store);
+        assert!(detector.has_ancestor_store());
+
+        let mut local = create_record("test", "local data", 2);
+        local.id = id;
+        let mut remote = create_record("test", "remote data", 3);
+        remote.id = id;
+
+        let conflict = detector
+            .detect(&local, &remote)
+            .expect("detect should succeed")
+            .expect("should be a conflict");
+
+        let found_base = conflict.base.expect("ancestor store should supply a base");
+        assert_eq!(found_base.data, Bytes::from("base data"));
+        assert_eq!(found_base.version.value(), 1);
     }
 
     #[test]

@@ -86,6 +86,7 @@ impl CachedChunk {
 
 /// Cache eviction policy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum EvictionPolicy {
     /// Least Recently Used
     LRU,
@@ -238,31 +239,37 @@ impl CacheStatistics {
         }
     }
 
-    /// Get statistics
+    /// Get the total number of cache hits
     pub fn hits(&self) -> u64 {
         self.hits
     }
 
+    /// Get the total number of cache misses
     pub fn misses(&self) -> u64 {
         self.misses
     }
 
+    /// Get the total number of evictions
     pub fn evictions(&self) -> u64 {
         self.evictions
     }
 
+    /// Get the total number of writes
     pub fn writes(&self) -> u64 {
         self.writes
     }
 
+    /// Get the total number of dirty-chunk flushes
     pub fn flushes(&self) -> u64 {
         self.flushes
     }
 
+    /// Get the current number of cached chunks
     pub fn num_cached(&self) -> usize {
         self.num_cached
     }
 
+    /// Get the current cache size in bytes
     pub fn size_bytes(&self) -> usize {
         self.size_bytes
     }
@@ -395,13 +402,13 @@ impl ChunkCache {
     pub fn flush(&mut self, index: &ChunkIndex) -> Result<Option<CachedChunk>> {
         let key = Self::chunk_key(index);
 
-        if let Some(chunk) = self.chunks.get_mut(&key) {
-            if chunk.is_dirty() {
-                let flushed = chunk.clone();
-                chunk.mark_clean();
-                self.statistics.record_flush();
-                return Ok(Some(flushed));
-            }
+        if let Some(chunk) = self.chunks.get_mut(&key)
+            && chunk.is_dirty()
+        {
+            let flushed = chunk.clone();
+            chunk.mark_clean();
+            self.statistics.record_flush();
+            return Ok(Some(flushed));
         }
 
         Ok(None)
@@ -440,21 +447,21 @@ impl ChunkCache {
             EvictionPolicy::FIFO => self.find_fifo_victim(),
         };
 
-        if let Some(key) = key_to_evict {
-            if let Some(chunk) = self.chunks.remove(&key) {
-                if chunk.is_dirty() {
-                    return Err(Hdf5Error::InvalidOperation(
-                        "Cannot evict dirty chunk without flushing".to_string(),
-                    ));
-                }
-
-                self.current_size -= chunk.data.len();
-                self.lru_queue.retain(|k| k != &key);
-                self.statistics.record_eviction();
-
-                self.statistics
-                    .update_state(self.chunks.len(), self.current_size);
+        if let Some(key) = key_to_evict
+            && let Some(chunk) = self.chunks.remove(&key)
+        {
+            if chunk.is_dirty() {
+                return Err(Hdf5Error::InvalidOperation(
+                    "Cannot evict dirty chunk without flushing".to_string(),
+                ));
             }
+
+            self.current_size -= chunk.data.len();
+            self.lru_queue.retain(|k| k != &key);
+            self.statistics.record_eviction();
+
+            self.statistics
+                .update_state(self.chunks.len(), self.current_size);
         }
 
         Ok(())

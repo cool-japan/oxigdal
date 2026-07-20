@@ -1,11 +1,19 @@
 //! Google Cloud Platform integrations.
 //!
 //! This module provides deep integrations with GCP services including
-//! BigQuery GIS, Dataflow, Vertex AI, Cloud Monitoring, and cost optimization.
-
-// TEMPORARY: BigQuery disabled due to arrow version incompatibility
-// #[cfg(feature = "bigquery")]
-// pub mod bigquery;
+//! Dataflow, Vertex AI, Cloud Monitoring, and cost optimization (including a
+//! BigQuery-billing-export-backed cost query path -- see [`cost`]).
+//!
+//! Note: a dedicated `bigquery` module/SDK integration is intentionally not
+//! present. `google-cloud-bigquery` 0.15 pins `arrow` to the `53.x` series,
+//! which is incompatible with this workspace's `arrow = "59"`
+//! (`arrow-arith` in turn requires `chrono >=0.4.34, <0.4.40` under
+//! `arrow` 53 vs `chrono >=0.4.40` under `arrow` 59 -- verified by a direct
+//! `cargo check` dependency resolution attempt, which fails to select a
+//! `chrono` version). [`cost::CostClient`] uses the BigQuery REST `jobs.query`
+//! API directly over `reqwest` instead, avoiding the SDK/arrow conflict
+//! entirely. Re-visit an SDK-backed `bigquery` module once
+//! `google-cloud-bigquery` tracks `arrow >= 57`.
 pub mod cost;
 pub mod dataflow;
 pub mod monitoring;
@@ -51,9 +59,6 @@ impl GcpConfig {
 #[derive(Debug)]
 pub struct GcpClient {
     config: GcpConfig,
-    // TEMPORARY: BigQuery disabled due to arrow version incompatibility
-    // #[cfg(feature = "bigquery")]
-    // bigquery: bigquery::BigQueryClient,
     dataflow: dataflow::DataflowClient,
     vertex_ai: vertex_ai::VertexAiClient,
     monitoring: monitoring::MonitoringClient,
@@ -71,9 +76,6 @@ impl GcpClient {
         let config = GcpConfig::new(project_id, location)?;
 
         Ok(Self {
-            // TEMPORARY: BigQuery disabled due to arrow version incompatibility
-            // #[cfg(feature = "bigquery")]
-            // bigquery: bigquery::BigQueryClient::new(&config).await?,
             dataflow: dataflow::DataflowClient::new(&config)?,
             vertex_ai: vertex_ai::VertexAiClient::new(&config)?,
             monitoring: monitoring::MonitoringClient::new(&config).await?,
@@ -82,13 +84,6 @@ impl GcpClient {
             config,
         })
     }
-
-    // TEMPORARY: BigQuery disabled due to arrow version incompatibility
-    // /// Gets a reference to the BigQuery client.
-    // #[cfg(feature = "bigquery")]
-    // pub fn bigquery(&self) -> &bigquery::BigQueryClient {
-    //     &self.bigquery
-    // }
 
     /// Gets a reference to the Dataflow client.
     pub fn dataflow(&self) -> &dataflow::DataflowClient {

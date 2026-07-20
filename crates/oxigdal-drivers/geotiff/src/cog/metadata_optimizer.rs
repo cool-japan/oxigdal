@@ -192,25 +192,25 @@ pub fn optimize_geokeys(tiff: &TiffFile) -> Result<GeoKeyOptimization> {
 
     if let Some(ifd) = tiff.ifds.first() {
         // Check GeoKeyDirectory size
-        if let Some(entry) = ifd.get_entry(TiffTag::GeoKeyDirectory) {
-            if entry.count > 100 {
-                suggestions.push(
-                    "Large GeoKeyDirectory - consider using WKT instead of detailed parameters"
-                        .to_string(),
-                );
-                estimated_savings += (entry.count - 50) * 2;
-            }
+        if let Some(entry) = ifd.get_entry(TiffTag::GeoKeyDirectory)
+            && entry.count > 100
+        {
+            suggestions.push(
+                "Large GeoKeyDirectory - consider using WKT instead of detailed parameters"
+                    .to_string(),
+            );
+            estimated_savings += (entry.count - 50) * 2;
         }
 
         // Check GeoAsciiParams
-        if let Some(entry) = ifd.get_entry(TiffTag::GeoAsciiParams) {
-            if entry.count > 500 {
-                suggestions.push(format!(
-                    "Large GeoAsciiParams ({} bytes) - consider trimming or using EPSG codes",
-                    entry.count
-                ));
-                estimated_savings += entry.count / 2;
-            }
+        if let Some(entry) = ifd.get_entry(TiffTag::GeoAsciiParams)
+            && entry.count > 500
+        {
+            suggestions.push(format!(
+                "Large GeoAsciiParams ({} bytes) - consider trimming or using EPSG codes",
+                entry.count
+            ));
+            estimated_savings += entry.count / 2;
         }
 
         // Check for redundant geotags
@@ -262,26 +262,22 @@ pub fn find_redundant_tags<S: DataSource>(tiff: &TiffFile, source: &S) -> Vec<u1
         }
 
         // Check for default values that don't need to be stored
-        if let Some(entry) = ifd.get_entry(TiffTag::PlanarConfiguration) {
-            if let Ok(value) =
+        if let Some(entry) = ifd.get_entry(TiffTag::PlanarConfiguration)
+            && let Ok(value) =
                 entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
-            {
-                if value == 1 {
-                    // Default is Chunky
-                    redundant.push(TiffTag::PlanarConfiguration as u16);
-                }
-            }
+            && value == 1
+        {
+            // Default is Chunky
+            redundant.push(TiffTag::PlanarConfiguration as u16);
         }
 
-        if let Some(entry) = ifd.get_entry(TiffTag::ResolutionUnit) {
-            if let Ok(value) =
+        if let Some(entry) = ifd.get_entry(TiffTag::ResolutionUnit)
+            && let Ok(value) =
                 entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
-            {
-                if value == 2 {
-                    // Default is inches
-                    redundant.push(TiffTag::ResolutionUnit as u16);
-                }
-            }
+            && value == 2
+        {
+            // Default is inches
+            redundant.push(TiffTag::ResolutionUnit as u16);
         }
     }
 

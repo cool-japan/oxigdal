@@ -25,10 +25,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-terrain = "0.1.5"
+oxigdal-terrain = "0.1.7"
 
 # With all features enabled
-oxigdal-terrain = { version = "0.1.5", features = ["all_features", "parallel"] }
+oxigdal-terrain = { version = "0.1.7", features = ["all_features", "parallel"] }
 ```
 
 ### Feature Flags

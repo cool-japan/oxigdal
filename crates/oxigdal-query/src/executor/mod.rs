@@ -3,6 +3,7 @@
 pub mod aggregate;
 pub mod filter;
 pub mod join;
+pub(crate) mod like;
 pub mod scan;
 pub mod sort;
 pub mod spatial_funcs;
@@ -147,15 +148,15 @@ impl Executor {
         let mut agg_funcs = Vec::new();
 
         for item in &select.projection {
-            if let SelectItem::Expr { expr, alias } = item {
-                if let Some(agg_func) = self.extract_aggregate(expr) {
-                    let func_alias = alias.clone().or_else(|| Some("agg".to_string()));
-                    agg_funcs.push(AggregateFunction {
-                        func: agg_func.0,
-                        column: agg_func.1,
-                        alias: func_alias,
-                    });
-                }
+            if let SelectItem::Expr { expr, alias } = item
+                && let Some(agg_func) = self.extract_aggregate(expr)
+            {
+                let func_alias = alias.clone().or_else(|| Some("agg".to_string()));
+                agg_funcs.push(AggregateFunction {
+                    func: agg_func.0,
+                    column: agg_func.1,
+                    alias: func_alias,
+                });
             }
         }
 
@@ -203,10 +204,10 @@ impl Executor {
     /// Check if projection has aggregates.
     fn has_aggregates(&self, projection: &[SelectItem]) -> bool {
         for item in projection {
-            if let SelectItem::Expr { expr, .. } = item {
-                if self.extract_aggregate(expr).is_some() {
-                    return true;
-                }
+            if let SelectItem::Expr { expr, .. } = item
+                && self.extract_aggregate(expr).is_some()
+            {
+                return true;
             }
         }
         false
@@ -241,10 +242,10 @@ impl Executor {
         let mut remaining = limit;
 
         for batch in batches {
-            if let Some(rem) = remaining {
-                if rem == 0 {
-                    break;
-                }
+            if let Some(rem) = remaining
+                && rem == 0
+            {
+                break;
             }
 
             let start = if current_row < offset {

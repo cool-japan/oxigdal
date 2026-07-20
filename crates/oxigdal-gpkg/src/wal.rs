@@ -48,7 +48,7 @@ const FRAME_HEADER_SIZE: usize = 24;
 /// This mirrors the `walChecksumBytes` function from the SQLite source code.
 fn wal_checksum(data: &[u8], big_endian: bool, s0_init: u32, s1_init: u32) -> (u32, u32) {
     debug_assert!(
-        data.len() % 8 == 0,
+        data.len().is_multiple_of(8),
         "checksum input must be a multiple of 8 bytes"
     );
 

@@ -157,13 +157,13 @@ pub async fn handle_wfs_request(
     Query(params): Query<WfsRequest>,
 ) -> Result<Response, ServiceError> {
     // Validate service parameter
-    if let Some(ref service) = params.service {
-        if service.to_uppercase() != "WFS" {
-            return Err(ServiceError::InvalidParameter(
-                "SERVICE".to_string(),
-                format!("Expected 'WFS', got '{}'", service),
-            ));
-        }
+    if let Some(ref service) = params.service
+        && service.to_uppercase() != "WFS"
+    {
+        return Err(ServiceError::InvalidParameter(
+            "SERVICE".to_string(),
+            format!("Expected 'WFS', got '{}'", service),
+        ));
     }
 
     // Route to appropriate handler based on request type

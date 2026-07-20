@@ -28,6 +28,7 @@ pub mod projection;
 pub mod raster;
 pub mod types;
 pub mod vector;
+pub mod wasm_shim;
 
 // Re-export the most commonly used items at the module level so callers can
 // write `use oxigdal_wasm::component::ComponentRaster;` without going deeper.
@@ -38,3 +39,4 @@ pub use types::{
     ImageDimensions, PixelCoord,
 };
 pub use vector::{ComponentFeature, ComponentFeatureCollection, FieldValue};
+pub use wasm_shim::{WasmProjection, web_mercator_to_wgs84, wgs84_to_web_mercator};

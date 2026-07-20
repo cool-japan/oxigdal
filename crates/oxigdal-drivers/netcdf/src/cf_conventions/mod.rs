@@ -309,20 +309,19 @@ impl CfValidator {
                 .with_attribute("Conventions")
                 .with_section("2.6.1"),
             );
-        } else if let Some(attr) = attrs.get("Conventions") {
-            if let Ok(conv) = attr.value().as_text() {
-                if !conv.contains("CF-") {
-                    report.add_issue(
-                        CfValidationIssue::new(
-                            CfComplianceLevel::Required,
-                            CfIssueType::InvalidAttributeValue,
-                            format!("Conventions attribute '{}' does not contain 'CF-'", conv),
-                        )
-                        .with_attribute("Conventions")
-                        .with_section("2.6.1"),
-                    );
-                }
-            }
+        } else if let Some(attr) = attrs.get("Conventions")
+            && let Ok(conv) = attr.value().as_text()
+            && !conv.contains("CF-")
+        {
+            report.add_issue(
+                CfValidationIssue::new(
+                    CfComplianceLevel::Required,
+                    CfIssueType::InvalidAttributeValue,
+                    format!("Conventions attribute '{}' does not contain 'CF-'", conv),
+                )
+                .with_attribute("Conventions")
+                .with_section("2.6.1"),
+            );
         }
 
         // Check recommended attributes
@@ -353,28 +352,30 @@ impl CfValidator {
         let attrs = var.attributes();
 
         // Check standard_name
-        if let Some(attr) = attrs.get("standard_name") {
-            if let Ok(std_name) = attr.value().as_text() {
-                // Validate standard name exists
-                if !self.standard_names.contains(std_name) {
-                    report.add_issue(
-                        CfValidationIssue::new(
-                            CfComplianceLevel::Recommended,
-                            CfIssueType::InvalidStandardName,
-                            format!("Unknown standard_name '{}'", std_name),
-                        )
-                        .with_variable(var_name)
-                        .with_attribute("standard_name")
-                        .with_section("3.3"),
-                    );
-                }
+        if let Some(attr) = attrs.get("standard_name")
+            && let Ok(std_name) = attr.value().as_text()
+        {
+            // Validate standard name exists
+            if !self.standard_names.contains(std_name) {
+                report.add_issue(
+                    CfValidationIssue::new(
+                        CfComplianceLevel::Recommended,
+                        CfIssueType::InvalidStandardName,
+                        format!("Unknown standard_name '{}'", std_name),
+                    )
+                    .with_variable(var_name)
+                    .with_attribute("standard_name")
+                    .with_section("3.3"),
+                );
+            }
 
-                // Check units match canonical units
-                if let Some(canonical) = self.standard_names.canonical_units(std_name) {
-                    if let Some(units_attr) = attrs.get("units") {
-                        if let Ok(units) = units_attr.value().as_text() {
-                            if !self.units_validator.are_compatible(units, canonical) {
-                                report.add_issue(
+            // Check units match canonical units
+            if let Some(canonical) = self.standard_names.canonical_units(std_name)
+                && let Some(units_attr) = attrs.get("units")
+                && let Ok(units) = units_attr.value().as_text()
+                && !self.units_validator.are_compatible(units, canonical)
+            {
+                report.add_issue(
                                     CfValidationIssue::new(
                                         CfComplianceLevel::Required,
                                         CfIssueType::UnitsMismatch,
@@ -386,10 +387,6 @@ impl CfValidator {
                                     .with_variable(var_name)
                                     .with_section("3.1"),
                                 );
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -413,65 +410,62 @@ impl CfValidator {
         }
 
         // Validate units if present
-        if let Some(units_attr) = attrs.get("units") {
-            if let Ok(units) = units_attr.value().as_text() {
-                if !self.units_validator.is_valid(units) {
-                    report.add_issue(
-                        CfValidationIssue::new(
-                            CfComplianceLevel::Recommended,
-                            CfIssueType::InvalidUnits,
-                            format!("Invalid units '{}' for variable '{}'", units, var_name),
-                        )
-                        .with_variable(var_name)
-                        .with_attribute("units")
-                        .with_section("3.1"),
-                    );
-                }
-            }
+        if let Some(units_attr) = attrs.get("units")
+            && let Ok(units) = units_attr.value().as_text()
+            && !self.units_validator.is_valid(units)
+        {
+            report.add_issue(
+                CfValidationIssue::new(
+                    CfComplianceLevel::Recommended,
+                    CfIssueType::InvalidUnits,
+                    format!("Invalid units '{}' for variable '{}'", units, var_name),
+                )
+                .with_variable(var_name)
+                .with_attribute("units")
+                .with_section("3.1"),
+            );
         }
 
         // Check cell_methods
-        if let Some(cm_attr) = attrs.get("cell_methods") {
-            if let Ok(cell_methods) = cm_attr.value().as_text() {
-                if let Err(e) = CellMethod::parse_cell_methods(cell_methods) {
-                    report.add_issue(
-                        CfValidationIssue::new(
-                            CfComplianceLevel::Required,
-                            CfIssueType::InvalidCellMethods,
-                            format!("Invalid cell_methods '{}': {}", cell_methods, e),
-                        )
-                        .with_variable(var_name)
-                        .with_attribute("cell_methods")
-                        .with_section("7.3"),
-                    );
-                }
-            }
+        if let Some(cm_attr) = attrs.get("cell_methods")
+            && let Ok(cell_methods) = cm_attr.value().as_text()
+            && let Err(e) = CellMethod::parse_cell_methods(cell_methods)
+        {
+            report.add_issue(
+                CfValidationIssue::new(
+                    CfComplianceLevel::Required,
+                    CfIssueType::InvalidCellMethods,
+                    format!("Invalid cell_methods '{}': {}", cell_methods, e),
+                )
+                .with_variable(var_name)
+                .with_attribute("cell_methods")
+                .with_section("7.3"),
+            );
         }
 
         // Check bounds attribute
-        if let Some(bounds_attr) = attrs.get("bounds") {
-            if let Ok(_bounds_var_name) = bounds_attr.value().as_text() {
-                // Bounds validation would require access to all variables
-                // This is handled in validate_all
-            }
+        if let Some(bounds_attr) = attrs.get("bounds")
+            && let Ok(_bounds_var_name) = bounds_attr.value().as_text()
+        {
+            // Bounds validation would require access to all variables
+            // This is handled in validate_all
         }
 
         // Check cell_measures
-        if let Some(cm_attr) = attrs.get("cell_measures") {
-            if let Ok(cell_measures) = cm_attr.value().as_text() {
-                if let Err(e) = CellMeasure::parse_cell_measures(cell_measures) {
-                    report.add_issue(
-                        CfValidationIssue::new(
-                            CfComplianceLevel::Required,
-                            CfIssueType::InvalidCellMeasures,
-                            format!("Invalid cell_measures '{}': {}", cell_measures, e),
-                        )
-                        .with_variable(var_name)
-                        .with_attribute("cell_measures")
-                        .with_section("7.2"),
-                    );
-                }
-            }
+        if let Some(cm_attr) = attrs.get("cell_measures")
+            && let Ok(cell_measures) = cm_attr.value().as_text()
+            && let Err(e) = CellMeasure::parse_cell_measures(cell_measures)
+        {
+            report.add_issue(
+                CfValidationIssue::new(
+                    CfComplianceLevel::Required,
+                    CfIssueType::InvalidCellMeasures,
+                    format!("Invalid cell_measures '{}': {}", cell_measures, e),
+                )
+                .with_variable(var_name)
+                .with_attribute("cell_measures")
+                .with_section("7.2"),
+            );
         }
     }
 
@@ -484,36 +478,26 @@ impl CfValidator {
     ) {
         let var_name = var.name();
 
-        if let Some(gm_attr) = var.attributes().get("grid_mapping") {
-            if let Ok(gm_var_name) = gm_attr.value().as_text() {
-                // Check grid mapping variable exists
-                if let Some(gm_var) = variables.get(gm_var_name) {
-                    // Check grid_mapping_name attribute
-                    if let Some(gmn_attr) = gm_var.attributes().get("grid_mapping_name") {
-                        if let Ok(gm_name) = gmn_attr.value().as_text() {
-                            let gm_type = GridMappingType::from_cf_name(gm_name);
-                            if gm_type == GridMappingType::Unknown {
-                                report.add_issue(
-                                    CfValidationIssue::new(
-                                        CfComplianceLevel::Recommended,
-                                        CfIssueType::InvalidGridMapping,
-                                        format!("Unknown grid_mapping_name '{}'", gm_name),
-                                    )
-                                    .with_variable(gm_var_name)
-                                    .with_section("5.6"),
-                                );
-                            }
+        if let Some(gm_attr) = var.attributes().get("grid_mapping")
+            && let Ok(gm_var_name) = gm_attr.value().as_text()
+        {
+            // Check grid mapping variable exists
+            if let Some(gm_var) = variables.get(gm_var_name) {
+                // Check grid_mapping_name attribute
+                if let Some(gmn_attr) = gm_var.attributes().get("grid_mapping_name") {
+                    if let Ok(gm_name) = gmn_attr.value().as_text() {
+                        let gm_type = GridMappingType::from_cf_name(gm_name);
+                        if gm_type == GridMappingType::Unknown {
+                            report.add_issue(
+                                CfValidationIssue::new(
+                                    CfComplianceLevel::Recommended,
+                                    CfIssueType::InvalidGridMapping,
+                                    format!("Unknown grid_mapping_name '{}'", gm_name),
+                                )
+                                .with_variable(gm_var_name)
+                                .with_section("5.6"),
+                            );
                         }
-                    } else {
-                        report.add_issue(
-                            CfValidationIssue::new(
-                                CfComplianceLevel::Required,
-                                CfIssueType::InvalidGridMapping,
-                                format!("Grid mapping variable '{}' missing 'grid_mapping_name' attribute", gm_var_name),
-                            )
-                            .with_variable(gm_var_name)
-                            .with_section("5.6"),
-                        );
                     }
                 } else {
                     report.add_issue(
@@ -521,14 +505,27 @@ impl CfValidator {
                             CfComplianceLevel::Required,
                             CfIssueType::InvalidGridMapping,
                             format!(
-                                "Grid mapping variable '{}' referenced by '{}' not found",
-                                gm_var_name, var_name
+                                "Grid mapping variable '{}' missing 'grid_mapping_name' attribute",
+                                gm_var_name
                             ),
                         )
-                        .with_variable(var_name)
+                        .with_variable(gm_var_name)
                         .with_section("5.6"),
                     );
                 }
+            } else {
+                report.add_issue(
+                    CfValidationIssue::new(
+                        CfComplianceLevel::Required,
+                        CfIssueType::InvalidGridMapping,
+                        format!(
+                            "Grid mapping variable '{}' referenced by '{}' not found",
+                            gm_var_name, var_name
+                        ),
+                    )
+                    .with_variable(var_name)
+                    .with_section("5.6"),
+                );
             }
         }
     }
@@ -568,21 +565,21 @@ impl CfValidator {
                 // (This would require data access, so we just check attributes)
 
                 // Check for axis attribute (recommended for coordinate variables)
-                if var.attributes().get("axis").is_none() {
-                    if let Some(_axis) = self.coordinate_detector.detect_axis(var) {
-                        report.add_issue(
-                            CfValidationIssue::new(
-                                CfComplianceLevel::Recommended,
-                                CfIssueType::MissingAttribute,
-                                format!(
-                                    "Coordinate variable '{}' should have 'axis' attribute",
-                                    var.name()
-                                ),
-                            )
-                            .with_variable(var.name())
-                            .with_section("4"),
-                        );
-                    }
+                if var.attributes().get("axis").is_none()
+                    && let Some(_axis) = self.coordinate_detector.detect_axis(var)
+                {
+                    report.add_issue(
+                        CfValidationIssue::new(
+                            CfComplianceLevel::Recommended,
+                            CfIssueType::MissingAttribute,
+                            format!(
+                                "Coordinate variable '{}' should have 'axis' attribute",
+                                var.name()
+                            ),
+                        )
+                        .with_variable(var.name())
+                        .with_section("4"),
+                    );
                 }
             }
         }
@@ -596,37 +593,37 @@ impl CfValidator {
         report: &mut CfValidationReport,
     ) {
         for var in variables.iter() {
-            if let Some(bounds_attr) = var.attributes().get("bounds") {
-                if let Ok(bounds_var_name) = bounds_attr.value().as_text() {
-                    if let Some(bounds_var) = variables.get(bounds_var_name) {
-                        // Validate bounds structure
-                        let bounds = BoundsVariable::new(bounds_var_name, var.name(), 2);
-                        if let Err(e) = bounds.validate(var, bounds_var, dimensions) {
-                            report.add_issue(
-                                CfValidationIssue::new(
-                                    CfComplianceLevel::Required,
-                                    CfIssueType::InvalidBounds,
-                                    format!("Invalid bounds variable '{}': {}", bounds_var_name, e),
-                                )
-                                .with_variable(var.name())
-                                .with_section("7.1"),
-                            );
-                        }
-                    } else {
+            if let Some(bounds_attr) = var.attributes().get("bounds")
+                && let Ok(bounds_var_name) = bounds_attr.value().as_text()
+            {
+                if let Some(bounds_var) = variables.get(bounds_var_name) {
+                    // Validate bounds structure
+                    let bounds = BoundsVariable::new(bounds_var_name, var.name(), 2);
+                    if let Err(e) = bounds.validate(var, bounds_var, dimensions) {
                         report.add_issue(
                             CfValidationIssue::new(
                                 CfComplianceLevel::Required,
-                                CfIssueType::MissingBounds,
-                                format!(
-                                    "Bounds variable '{}' referenced by '{}' not found",
-                                    bounds_var_name,
-                                    var.name()
-                                ),
+                                CfIssueType::InvalidBounds,
+                                format!("Invalid bounds variable '{}': {}", bounds_var_name, e),
                             )
                             .with_variable(var.name())
                             .with_section("7.1"),
                         );
                     }
+                } else {
+                    report.add_issue(
+                        CfValidationIssue::new(
+                            CfComplianceLevel::Required,
+                            CfIssueType::MissingBounds,
+                            format!(
+                                "Bounds variable '{}' referenced by '{}' not found",
+                                bounds_var_name,
+                                var.name()
+                            ),
+                        )
+                        .with_variable(var.name())
+                        .with_section("7.1"),
+                    );
                 }
             }
         }

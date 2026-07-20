@@ -4,9 +4,10 @@
 //! multiple chunks to be stored together in a single "shard" for improved
 //! performance with cloud storage.
 
-use crate::codecs::{Codec, CodecChain};
+use crate::codecs::CodecChain;
+use crate::codecs::dispatch::build_codec_from_metadata;
 use crate::error::{Result, ShardError, ZarrError};
-use crate::metadata::v3::{CodecMetadata, ShardingConfig};
+use crate::metadata::v3::ShardingConfig;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -240,8 +241,6 @@ pub struct ShardReader {
     index: ShardIndex,
     /// Codec for sub-chunks
     codec: CodecChain,
-    /// Index location ("start" or "end")
-    index_location: IndexLocation,
 }
 
 impl ShardReader {
@@ -256,43 +255,40 @@ impl ShardReader {
         index_codec: CodecChain,
         index_location: IndexLocation,
     ) -> Result<Self> {
+        // Per ZEP-0002: the index occupies exactly n_inner_chunks * 16 bytes.
+        // There is no trailing/leading size field — the size is determined purely
+        // by the product of chunks_per_shard dimensions.
+        let n_inner_chunks: usize = chunks_per_shard.iter().product();
+        let index_byte_len = n_inner_chunks * 16;
+
         // Extract and decode index
-        let index_data = match index_location {
+        let index_data: &[u8] = match index_location {
             IndexLocation::Start => {
-                // Index is at the beginning, followed by chunk data
-                // For now, we'll implement end-based indexing
-                return Err(ZarrError::Shard(ShardError::UnsupportedIndexLocation {
-                    location: "start".to_string(),
-                }));
-            }
-            IndexLocation::End => {
-                // Index is at the end
-                // Last 8 bytes contain the index size
-                if shard_data.len() < 8 {
-                    return Err(ZarrError::Shard(ShardError::InvalidShardData {
-                        reason: "Shard data too small for index size".to_string(),
-                    }));
-                }
-
-                let mut cursor = Cursor::new(&shard_data[shard_data.len() - 8..]);
-                let index_size = cursor
-                    .read_u64::<LittleEndian>()
-                    .map_err(|e| ZarrError::Shard(ShardError::IndexDecodeFailed { source: e }))?
-                    as usize;
-
-                if shard_data.len() < index_size + 8 {
+                // Index at the beginning: shard = [index_bytes][chunk_data]
+                if shard_data.len() < index_byte_len {
                     return Err(ZarrError::Shard(ShardError::InvalidShardData {
                         reason: format!(
-                            "Shard data too small for index (need {}, got {})",
-                            index_size + 8,
+                            "Shard data too small for start index (need {}, got {})",
+                            index_byte_len,
                             shard_data.len()
                         ),
                     }));
                 }
-
-                let index_start = shard_data.len() - index_size - 8;
-                let index_end = shard_data.len() - 8;
-                &shard_data[index_start..index_end]
+                &shard_data[..index_byte_len]
+            }
+            IndexLocation::End => {
+                // Index at the end: shard = [chunk_data][index_bytes]
+                if shard_data.len() < index_byte_len {
+                    return Err(ZarrError::Shard(ShardError::InvalidShardData {
+                        reason: format!(
+                            "Shard data too small for end index (need {}, got {})",
+                            index_byte_len,
+                            shard_data.len()
+                        ),
+                    }));
+                }
+                let index_start = shard_data.len() - index_byte_len;
+                &shard_data[index_start..]
             }
         };
 
@@ -304,7 +300,6 @@ impl ShardReader {
             data: shard_data,
             index,
             codec,
-            index_location,
         })
     }
 
@@ -319,10 +314,39 @@ impl ShardReader {
             return Ok(None);
         }
 
-        let offset = entry.offset as usize;
-        let size = entry.size as usize;
+        // `entry.offset`/`entry.size` come straight from untrusted shard-file
+        // bytes (only the exact `is_missing()` sentinel is validated above),
+        // so both the `u64 -> usize` casts and the `offset + size` addition
+        // must be checked -- a corrupted or malicious shard could otherwise
+        // wrap the addition (spuriously passing the bounds check) or, on
+        // 32-bit targets, silently truncate a huge `u64` into a small,
+        // in-bounds `usize`. Either failure mode would previously panic on
+        // the subsequent slice index instead of returning a typed error.
+        let offset = usize::try_from(entry.offset).map_err(|_| {
+            ZarrError::Shard(ShardError::InvalidChunkRange {
+                offset: usize::MAX,
+                size: usize::try_from(entry.size).unwrap_or(usize::MAX),
+                shard_size: self.data.len(),
+            })
+        })?;
+        let size = usize::try_from(entry.size).map_err(|_| {
+            ZarrError::Shard(ShardError::InvalidChunkRange {
+                offset,
+                size: usize::MAX,
+                shard_size: self.data.len(),
+            })
+        })?;
 
-        if offset + size > self.data.len() {
+        let end =
+            offset
+                .checked_add(size)
+                .ok_or(ZarrError::Shard(ShardError::InvalidChunkRange {
+                    offset,
+                    size,
+                    shard_size: self.data.len(),
+                }))?;
+
+        if end > self.data.len() {
             return Err(ZarrError::Shard(ShardError::InvalidChunkRange {
                 offset,
                 size,
@@ -330,7 +354,7 @@ impl ShardReader {
             }));
         }
 
-        let compressed_data = self.data[offset..offset + size].to_vec();
+        let compressed_data = self.data[offset..end].to_vec();
         let decompressed_data = self.codec.decode(compressed_data)?;
 
         Ok(Some(decompressed_data))
@@ -402,52 +426,88 @@ impl ShardWriter {
         Ok(())
     }
 
-    /// Finalizes the shard and returns the encoded data
+    /// Finalizes the shard and returns the encoded data.
+    ///
+    /// Per ZEP-0002, no leading/trailing 8-byte size field is written.
+    /// Layout for `IndexLocation::End`:   `[chunk_data][index_bytes]`
+    /// Layout for `IndexLocation::Start`: `[index_bytes][chunk_data]`
+    /// For `IndexLocation::Start`, offsets must be absolute file positions, so
+    /// a two-pass approach is used: first compress all chunks to learn their
+    /// sizes, compute the encoded-index size, then rewrite offsets accordingly.
     ///
     /// # Errors
     /// Returns error if finalization fails
     pub fn finalize(self) -> Result<Vec<u8>> {
-        let mut index = ShardIndex::new(self.chunks_per_shard.clone());
-        let mut shard_data = Vec::new();
-
         // Sort chunks for deterministic output
         let mut sorted_coords: Vec<_> = self.chunks.keys().cloned().collect();
         sorted_coords.sort();
 
-        // Write chunks and build index
+        // Pass 1: compress all chunks, record (compressed_data, size) pairs
+        let mut compressed_chunks: Vec<(Vec<usize>, Vec<u8>)> = Vec::new();
         for coords in sorted_coords {
             if let Some(chunk_data) = self.chunks.get(&coords) {
-                let offset = shard_data.len() as u64;
                 let compressed = self.codec.encode(chunk_data.clone())?;
-                let size = compressed.len() as u64;
-
-                shard_data.extend_from_slice(&compressed);
-                index.set(&coords, ShardIndexEntry::new(offset, size))?;
+                compressed_chunks.push((coords, compressed));
             }
         }
 
-        // Encode and compress index
-        let index_bytes = index.encode()?;
-        let compressed_index = self.index_codec.encode(index_bytes)?;
-
         match self.index_location {
-            IndexLocation::Start => {
-                // Index at start: [index_size][index][chunks]
-                let mut result = Vec::new();
-                result
-                    .write_u64::<LittleEndian>(compressed_index.len() as u64)
-                    .map_err(|e| ZarrError::Shard(ShardError::IndexEncodeFailed { source: e }))?;
-                result.extend_from_slice(&compressed_index);
-                result.extend_from_slice(&shard_data);
-                Ok(result)
-            }
             IndexLocation::End => {
-                // Index at end: [chunks][index][index_size]
-                shard_data.extend_from_slice(&compressed_index);
-                shard_data
-                    .write_u64::<LittleEndian>(compressed_index.len() as u64)
-                    .map_err(|e| ZarrError::Shard(ShardError::IndexEncodeFailed { source: e }))?;
-                Ok(shard_data)
+                // Layout: [chunk_data][index_bytes]
+                // Offsets are relative to the start of the file (before the index).
+                let mut index = ShardIndex::new(self.chunks_per_shard.clone());
+                let mut chunk_section = Vec::new();
+
+                for (coords, compressed) in compressed_chunks {
+                    let offset = chunk_section.len() as u64;
+                    let size = compressed.len() as u64;
+                    chunk_section.extend_from_slice(&compressed);
+                    index.set(&coords, ShardIndexEntry::new(offset, size))?;
+                }
+
+                let index_bytes = index.encode()?;
+                let encoded_index = self.index_codec.encode(index_bytes)?;
+
+                chunk_section.extend_from_slice(&encoded_index);
+                Ok(chunk_section)
+            }
+            IndexLocation::Start => {
+                // Layout: [index_bytes][chunk_data]
+                // Offsets must be absolute positions in the shard file.
+                // Two-pass: first determine index size, then compute correct offsets.
+
+                // Pass 1b: build a temporary index with placeholder offsets to
+                // measure the encoded index size.
+                let mut placeholder_index = ShardIndex::new(self.chunks_per_shard.clone());
+                let mut chunk_sizes: Vec<(Vec<usize>, u64)> = Vec::new();
+                for (coords, compressed) in &compressed_chunks {
+                    let size = compressed.len() as u64;
+                    // placeholder offset = 0; will be fixed after we know index_size
+                    placeholder_index.set(coords, ShardIndexEntry::new(0, size))?;
+                    chunk_sizes.push((coords.clone(), size));
+                }
+
+                let placeholder_raw = placeholder_index.encode()?;
+                let encoded_placeholder = self.index_codec.encode(placeholder_raw)?;
+                let index_size = encoded_placeholder.len() as u64;
+
+                // Pass 2: rebuild index with correct absolute offsets
+                let mut final_index = ShardIndex::new(self.chunks_per_shard.clone());
+                let mut abs_offset = index_size;
+                for (coords, size) in &chunk_sizes {
+                    final_index.set(coords, ShardIndexEntry::new(abs_offset, *size))?;
+                    abs_offset += size;
+                }
+
+                let final_index_raw = final_index.encode()?;
+                let final_encoded_index = self.index_codec.encode(final_index_raw)?;
+
+                // Assemble: [index_bytes][chunk_data]
+                let mut result = final_encoded_index;
+                for (_coords, compressed) in compressed_chunks {
+                    result.extend_from_slice(&compressed);
+                }
+                Ok(result)
             }
         }
     }
@@ -516,83 +576,6 @@ pub fn parse_sharding_config(config: &ShardingConfig) -> Result<(CodecChain, Cod
     let index_codec_chain = CodecChain::new(index_codecs);
 
     Ok((chunk_codec_chain, index_codec_chain))
-}
-
-/// Builds a codec from metadata by dispatching to the appropriate codec implementation
-fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<dyn Codec>> {
-    use crate::codecs::NullCodec;
-    use crate::error::CodecError;
-
-    match metadata {
-        CodecMetadata::Gzip { configuration } => {
-            #[cfg(feature = "gzip")]
-            {
-                use crate::codecs::gzip::GzipCodec;
-                let level = configuration.as_ref().and_then(|c| c.level).unwrap_or(6);
-                Ok(Box::new(GzipCodec::new(level)?))
-            }
-            #[cfg(not(feature = "gzip"))]
-            {
-                let _ = configuration;
-                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
-                    codec: "gzip".to_string(),
-                }))
-            }
-        }
-        CodecMetadata::Zstd { configuration } => {
-            #[cfg(feature = "zstd")]
-            {
-                use crate::codecs::zstd_codec::ZstdCodec;
-                let level = configuration.as_ref().and_then(|c| c.level).unwrap_or(3);
-                Ok(Box::new(ZstdCodec::new(level)?))
-            }
-            #[cfg(not(feature = "zstd"))]
-            {
-                let _ = configuration;
-                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
-                    codec: "zstd".to_string(),
-                }))
-            }
-        }
-        CodecMetadata::Blosc { configuration } => {
-            #[cfg(feature = "blosc")]
-            {
-                use crate::codecs::blosc::BloscCodec;
-                Ok(Box::new(BloscCodec::new(
-                    configuration.cname.clone(),
-                    configuration.clevel,
-                    configuration.shuffle,
-                    configuration.blocksize,
-                )?))
-            }
-            #[cfg(not(feature = "blosc"))]
-            {
-                let _ = configuration;
-                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
-                    codec: "blosc".to_string(),
-                }))
-            }
-        }
-        // Transpose is an array-to-array codec; treat as identity in byte pipeline
-        CodecMetadata::Transpose { .. } => Ok(Box::new(NullCodec)),
-        // Bytes and Endian codecs perform byte-order transformations;
-        // treated as identity here since chunk data is already serialised
-        CodecMetadata::Bytes { .. } | CodecMetadata::Endian { .. } => Ok(Box::new(NullCodec)),
-        // Checksum-only codecs: pass through without verification (warn so callers are aware)
-        CodecMetadata::Crc32c { .. } => {
-            tracing::warn!(
-                "crc32c checksum codec is not fully implemented in sharding pipeline; \
-                 using passthrough (NullCodec)"
-            );
-            Ok(Box::new(NullCodec))
-        }
-        // Sharding-indexed is handled at a higher level; treat as identity here
-        CodecMetadata::ShardingIndexed { .. } => Ok(Box::new(NullCodec)),
-        // Unknown / unrecognised codec
-        CodecMetadata::Generic => Err(ZarrError::Codec(CodecError::UnknownCodec {
-            codec: "unknown (Generic)".to_string(),
-        })),
-    }
 }
 
 #[cfg(test)]
@@ -712,5 +695,241 @@ mod tests {
 
         assert_eq!(IndexLocation::Start.as_str(), "start");
         assert_eq!(IndexLocation::End.as_str(), "end");
+    }
+
+    #[test]
+    fn test_shard_reader_end_location_two_inner_chunks() {
+        // Two inner chunks, each 4 bytes
+        // chunk0=[1,2,3,4] at offset 0, chunk1=[5,6,7,8] at offset 4
+        // Index: entry0=(offset=0, nbytes=4), entry1=(offset=4, nbytes=4)
+        // Layout: [chunk_data(8 bytes)][index(32 bytes)]
+        let mut shard_data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        // index entry 0: offset=0 (LE u64), size=4 (LE u64)
+        shard_data.extend_from_slice(&0u64.to_le_bytes());
+        shard_data.extend_from_slice(&4u64.to_le_bytes());
+        // index entry 1: offset=4 (LE u64), size=4 (LE u64)
+        shard_data.extend_from_slice(&4u64.to_le_bytes());
+        shard_data.extend_from_slice(&4u64.to_le_bytes());
+
+        let reader = ShardReader::new(
+            shard_data,
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        )
+        .expect("create shard reader");
+
+        assert_eq!(
+            reader.read_chunk(&[0]).expect("read 0"),
+            Some(vec![1u8, 2, 3, 4])
+        );
+        assert_eq!(
+            reader.read_chunk(&[1]).expect("read 1"),
+            Some(vec![5u8, 6, 7, 8])
+        );
+    }
+
+    #[test]
+    fn test_shard_reader_missing_slot_returns_none() {
+        let mut shard_data = vec![1u8, 2, 3, 4]; // only chunk0 data
+        // entry 0: offset=0, size=4
+        shard_data.extend_from_slice(&0u64.to_le_bytes());
+        shard_data.extend_from_slice(&4u64.to_le_bytes());
+        // entry 1: sentinel (u64::MAX, u64::MAX)
+        shard_data.extend_from_slice(&u64::MAX.to_le_bytes());
+        shard_data.extend_from_slice(&u64::MAX.to_le_bytes());
+
+        let reader = ShardReader::new(
+            shard_data,
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        )
+        .expect("create shard reader");
+
+        assert_eq!(
+            reader.read_chunk(&[0]).expect("read 0"),
+            Some(vec![1u8, 2, 3, 4])
+        );
+        assert_eq!(reader.read_chunk(&[1]).expect("read 1"), None);
+    }
+
+    #[test]
+    fn test_shard_reader_start_location() {
+        // Index at START: entry0=(offset=32, size=2), entry1=(offset=34, size=2)
+        // Then chunk data: [10,20] at byte 32, [30,40] at byte 34
+        let mut shard_data = Vec::new();
+        // entry 0: offset=32, size=2
+        shard_data.extend_from_slice(&32u64.to_le_bytes());
+        shard_data.extend_from_slice(&2u64.to_le_bytes());
+        // entry 1: offset=34, size=2
+        shard_data.extend_from_slice(&34u64.to_le_bytes());
+        shard_data.extend_from_slice(&2u64.to_le_bytes());
+        // chunk data
+        shard_data.extend_from_slice(&[10u8, 20]);
+        shard_data.extend_from_slice(&[30u8, 40]);
+
+        let reader = ShardReader::new(
+            shard_data,
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::Start,
+        )
+        .expect("create shard reader start");
+
+        assert_eq!(
+            reader.read_chunk(&[0]).expect("read 0"),
+            Some(vec![10u8, 20])
+        );
+        assert_eq!(
+            reader.read_chunk(&[1]).expect("read 1"),
+            Some(vec![30u8, 40])
+        );
+    }
+
+    #[test]
+    fn test_shard_reader_2d_inner_chunks() {
+        // chunks_per_shard=[2,2] => 4 inner chunks, C-order:
+        // [0,0]=0, [0,1]=1, [1,0]=2, [1,1]=3
+        // Each chunk = 4 bytes. Shard data = 16 bytes + 64-byte index (4*16)
+        let chunk0 = [1u8, 2, 3, 4];
+        let chunk1 = [5u8, 6, 7, 8];
+        let chunk2 = [9u8, 10, 11, 12];
+        let chunk3 = [13u8, 14, 15, 16];
+
+        let mut shard_data = Vec::new();
+        shard_data.extend_from_slice(&chunk0);
+        shard_data.extend_from_slice(&chunk1);
+        shard_data.extend_from_slice(&chunk2);
+        shard_data.extend_from_slice(&chunk3);
+
+        // Index: 4 entries, each (offset, size) as LE u64 pairs
+        for i in 0..4u64 {
+            shard_data.extend_from_slice(&(i * 4).to_le_bytes());
+            shard_data.extend_from_slice(&4u64.to_le_bytes());
+        }
+
+        let reader = ShardReader::new(
+            shard_data,
+            vec![2, 2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        )
+        .expect("create 2d reader");
+
+        assert_eq!(
+            reader.read_chunk(&[0, 0]).expect("00"),
+            Some(chunk0.to_vec())
+        );
+        assert_eq!(
+            reader.read_chunk(&[0, 1]).expect("01"),
+            Some(chunk1.to_vec())
+        );
+        assert_eq!(
+            reader.read_chunk(&[1, 0]).expect("10"),
+            Some(chunk2.to_vec())
+        );
+        assert_eq!(
+            reader.read_chunk(&[1, 1]).expect("11"),
+            Some(chunk3.to_vec())
+        );
+    }
+
+    #[test]
+    fn test_shard_writer_roundtrip_end() {
+        let codec = CodecChain::empty();
+        let index_codec = CodecChain::empty();
+        let mut writer = ShardWriter::new(vec![2], codec, index_codec, IndexLocation::End);
+        writer
+            .write_chunk(vec![0], vec![1u8, 2, 3, 4])
+            .expect("write 0");
+        writer
+            .write_chunk(vec![1], vec![5u8, 6, 7, 8])
+            .expect("write 1");
+        let shard_bytes = writer.finalize().expect("finalize");
+
+        let reader = ShardReader::new(
+            shard_bytes,
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        )
+        .expect("create reader");
+
+        assert_eq!(
+            reader.read_chunk(&[0]).expect("read 0"),
+            Some(vec![1u8, 2, 3, 4])
+        );
+        assert_eq!(
+            reader.read_chunk(&[1]).expect("read 1"),
+            Some(vec![5u8, 6, 7, 8])
+        );
+    }
+
+    #[test]
+    fn test_shard_writer_roundtrip_start() {
+        let codec = CodecChain::empty();
+        let index_codec = CodecChain::empty();
+        let mut writer = ShardWriter::new(vec![2], codec, index_codec, IndexLocation::Start);
+        writer
+            .write_chunk(vec![0], vec![10u8, 20])
+            .expect("write 0");
+        writer
+            .write_chunk(vec![1], vec![30u8, 40])
+            .expect("write 1");
+        let shard_bytes = writer.finalize().expect("finalize");
+
+        let reader = ShardReader::new(
+            shard_bytes,
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::Start,
+        )
+        .expect("create reader start");
+
+        assert_eq!(
+            reader.read_chunk(&[0]).expect("read 0"),
+            Some(vec![10u8, 20])
+        );
+        assert_eq!(
+            reader.read_chunk(&[1]).expect("read 1"),
+            Some(vec![30u8, 40])
+        );
+    }
+
+    #[test]
+    fn test_shard_reader_overflowing_offset_size_errors_not_panics() {
+        // entry.offset = u64::MAX - 10, entry.size = 20: not the `missing`
+        // sentinel (that requires both fields == u64::MAX), but
+        // offset + size overflows u64/usize arithmetic. This must return a
+        // typed error, not panic (debug-mode overflow) or wrap into a
+        // spurious in-bounds slice (release-mode overflow).
+        let mut shard_data = vec![0u8; 8]; // small backing buffer
+        shard_data.extend_from_slice(&(u64::MAX - 10).to_le_bytes());
+        shard_data.extend_from_slice(&20u64.to_le_bytes());
+
+        let reader = ShardReader::new(
+            shard_data,
+            vec![1],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        )
+        .expect("create shard reader");
+
+        let result = reader.read_chunk(&[0]);
+        assert!(
+            matches!(
+                result,
+                Err(ZarrError::Shard(ShardError::InvalidChunkRange { .. }))
+            ),
+            "expected InvalidChunkRange error, got {result:?}"
+        );
     }
 }

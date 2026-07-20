@@ -5,7 +5,7 @@
 //! and gracefully skip when no wgpu backend is available, matching the pattern
 //! used in `texture_compress_test.rs` and `texture_resample_test.rs`.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{
     DispatchIndirectArgs, IndirectDispatchBuffer, args_for_elements, dispatch_indirect_on_pass,
@@ -388,7 +388,10 @@ fn main() {
             }
         }
 
-        let mapped = staging_buf.slice(..).get_mapped_range();
+        let mapped = staging_buf
+            .slice(..)
+            .get_mapped_range()
+            .expect("get_mapped_range should succeed after successful map_async");
         let value = u32::from_le_bytes(
             mapped[0..4]
                 .try_into()

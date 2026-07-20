@@ -1036,6 +1036,7 @@ impl Default for NamedDimensions {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

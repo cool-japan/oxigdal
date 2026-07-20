@@ -2,7 +2,7 @@
 
 > **Purpose:** Real-time WebSocket communication (raw `tokio-tungstenite`) for OxiGDAL — broadcasting, pub/sub, live tile/feature updates.
 > **Status (2026-05-16):** 7,223 LoC · 248 tests · 1 real-code stub
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wire `GeoBboxFilter::should_deliver` to actually consult message coordinates (currently accepts all)

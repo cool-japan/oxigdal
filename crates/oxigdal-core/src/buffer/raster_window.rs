@@ -1,5 +1,8 @@
 //! Sub-region window into a raster dataset.
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use crate::error::{OxiGdalError, Result};
 use core::fmt;
 

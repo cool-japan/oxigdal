@@ -620,6 +620,41 @@ fn test_like_match() {
 }
 
 #[test]
+fn test_like_is_case_sensitive() {
+    // Standard SQL LIKE is case-sensitive.
+    assert!(!JoinValue::like_match("Hello", "hello"));
+    assert!(!JoinValue::like_match("hello", "HELLO"));
+    assert!(!JoinValue::like_match("Hello", "h%"));
+    assert!(JoinValue::like_match("Hello", "H%"));
+
+    let text = JoinValue::String("Hello".to_string());
+    let lower = JoinValue::String("hello".to_string());
+    assert_eq!(text.matches_like(&lower), Some(false));
+}
+
+#[test]
+fn test_ilike_is_case_insensitive() {
+    let text = JoinValue::String("Hello".to_string());
+    assert_eq!(
+        text.matches_ilike(&JoinValue::String("hello".to_string())),
+        Some(true)
+    );
+    assert_eq!(
+        text.matches_ilike(&JoinValue::String("h%".to_string())),
+        Some(true)
+    );
+    assert_eq!(
+        text.matches_ilike(&JoinValue::String("world".to_string())),
+        Some(false)
+    );
+    // Non-string operands yield None.
+    assert_eq!(
+        JoinValue::Integer(3).matches_ilike(&JoinValue::String("%".to_string())),
+        None
+    );
+}
+
+#[test]
 fn test_join_value_arithmetic() {
     let a = JoinValue::Integer(10);
     let b = JoinValue::Integer(3);

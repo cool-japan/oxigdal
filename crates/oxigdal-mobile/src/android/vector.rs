@@ -8,6 +8,8 @@
 use crate::check_null;
 use crate::ffi::error::set_last_error;
 use crate::ffi::types::*;
+use crate::ffi::vector::feature::FeatureHandle;
+use crate::ffi::vector::geometry::FfiGeometry;
 use crate::ffi::vector::layer::LayerHandle;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_int, c_void};
@@ -513,6 +515,71 @@ fn extract_points_from_geometry(geometry: &Geometry) -> Vec<Point2D> {
     }
 }
 
+/// Converts a coordinate triple (x, y, optional z) to a 2D point, dropping any Z.
+fn coord_to_point2d(coord: &(f64, f64, Option<f64>)) -> Point2D {
+    Point2D {
+        x: coord.0,
+        y: coord.1,
+    }
+}
+
+/// Converts a slice of coordinate triples to a vector of 2D points.
+fn coords_to_points2d(coords: &[(f64, f64, Option<f64>)]) -> Vec<Point2D> {
+    coords.iter().map(coord_to_point2d).collect()
+}
+
+/// Converts an FFI geometry (as produced by the shared feature/layer machinery)
+/// into the internal `Geometry` representation used for Android Path rendering.
+///
+/// Returns `None` for geometry kinds that have no direct internal representation
+/// (currently `GeometryCollection`), matching the null-on-failure convention
+/// used throughout this module.
+fn ffi_geometry_to_geometry(geometry: &FfiGeometry) -> Option<Geometry> {
+    match geometry {
+        FfiGeometry::Point { x, y, .. } => Some(Geometry::Point(Point2D { x: *x, y: *y })),
+        FfiGeometry::LineString { coords } => {
+            Some(Geometry::LineString(coords_to_points2d(coords)))
+        }
+        FfiGeometry::Polygon {
+            exterior,
+            interiors,
+        } => {
+            let mut rings = Vec::with_capacity(1 + interiors.len());
+            rings.push(coords_to_points2d(exterior));
+            for interior in interiors {
+                rings.push(coords_to_points2d(interior));
+            }
+            Some(Geometry::Polygon(rings))
+        }
+        FfiGeometry::MultiPoint { points } => {
+            Some(Geometry::MultiPoint(coords_to_points2d(points)))
+        }
+        FfiGeometry::MultiLineString { line_strings } => Some(Geometry::MultiLineString(
+            line_strings
+                .iter()
+                .map(|ls| coords_to_points2d(ls))
+                .collect(),
+        )),
+        FfiGeometry::MultiPolygon { polygons } => Some(Geometry::MultiPolygon(
+            polygons
+                .iter()
+                .map(|(exterior, interiors)| {
+                    let mut rings = Vec::with_capacity(1 + interiors.len());
+                    rings.push(coords_to_points2d(exterior));
+                    for interior in interiors {
+                        rings.push(coords_to_points2d(interior));
+                    }
+                    rings
+                })
+                .collect(),
+        )),
+        // GeometryCollection has no direct equivalent in the internal `Geometry`
+        // enum used for Android Path rendering; callers get a clear error instead
+        // of a silently wrong path.
+        FfiGeometry::GeometryCollection { .. } => None,
+    }
+}
+
 // ============================================================================
 // Android Path Conversion
 // ============================================================================
@@ -796,24 +863,10 @@ pub unsafe extern "C" fn oxigdal_android_load_geojson(
 
     if let Some(features) = features {
         for feature in features {
-            if let Some(geometry) = feature.get("geometry") {
-                if let Some(geom) = parse_geojson_geometry(geometry) {
-                    // Update bbox
-                    let points = extract_points_from_geometry(&geom);
-                    for p in &points {
-                        min_x = min_x.min(p.x);
-                        min_y = min_y.min(p.y);
-                        max_x = max_x.max(p.x);
-                        max_y = max_y.max(p.y);
-                    }
-                    geometries.push(geom);
-                }
-            }
-        }
-    } else if json.get("type").and_then(|t| t.as_str()) == Some("Feature") {
-        // Handle single Feature
-        if let Some(geometry) = json.get("geometry") {
-            if let Some(geom) = parse_geojson_geometry(geometry) {
+            if let Some(geometry) = feature.get("geometry")
+                && let Some(geom) = parse_geojson_geometry(geometry)
+            {
+                // Update bbox
                 let points = extract_points_from_geometry(&geom);
                 for p in &points {
                     min_x = min_x.min(p.x);
@@ -823,6 +876,20 @@ pub unsafe extern "C" fn oxigdal_android_load_geojson(
                 }
                 geometries.push(geom);
             }
+        }
+    } else if json.get("type").and_then(|t| t.as_str()) == Some("Feature") {
+        // Handle single Feature
+        if let Some(geometry) = json.get("geometry")
+            && let Some(geom) = parse_geojson_geometry(geometry)
+        {
+            let points = extract_points_from_geometry(&geom);
+            for p in &points {
+                min_x = min_x.min(p.x);
+                min_y = min_y.min(p.y);
+                max_x = max_x.max(p.x);
+                max_y = max_y.max(p.y);
+            }
+            geometries.push(geom);
         }
     } else if let Some(geom) = parse_geojson_geometry(&json) {
         // Handle bare geometry
@@ -1184,13 +1251,33 @@ pub unsafe extern "C" fn oxigdal_android_feature_to_path(
         return std::ptr::null_mut();
     }
 
-    // For now, create a simple point geometry as placeholder
-    // In a full implementation, the feature would contain geometry data
-    let geometry = Geometry::Point(Point2D { x: 0.0, y: 0.0 });
+    let handle = unsafe { &*(feature as *const FeatureHandle) };
+
+    let ffi_geometry = match &handle.inner().geometry {
+        Some(geom) => geom,
+        None => {
+            set_last_error("Feature has no geometry".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    let geometry = match ffi_geometry_to_geometry(ffi_geometry) {
+        Some(geom) => geom,
+        None => {
+            set_last_error(format!(
+                "Unsupported geometry type for Android Path: {}",
+                ffi_geometry.geometry_type()
+            ));
+            return std::ptr::null_mut();
+        }
+    };
 
     match geometry_to_android_path(&geometry) {
         Some(path) => Box::into_raw(Box::new(path)) as *mut c_void,
-        None => std::ptr::null_mut(),
+        None => {
+            set_last_error("Failed to convert geometry to path".to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -1613,5 +1700,126 @@ mod tests {
         let result =
             unsafe { oxigdal_android_layer_to_markers(std::ptr::null(), coords.as_mut_ptr(), 5) };
         assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_ffi_geometry_to_geometry_point() {
+        let ffi_geom = FfiGeometry::Point {
+            x: 1.5,
+            y: 2.5,
+            z: None,
+        };
+        let geom = ffi_geometry_to_geometry(&ffi_geom).expect("point should convert");
+        match geom {
+            Geometry::Point(p) => {
+                assert_eq!(p.x, 1.5);
+                assert_eq!(p.y, 2.5);
+            }
+            _ => panic!("expected Geometry::Point"),
+        }
+    }
+
+    #[test]
+    fn test_ffi_geometry_to_geometry_linestring() {
+        let ffi_geom = FfiGeometry::LineString {
+            coords: vec![(0.0, 0.0, None), (1.0, 1.0, None), (2.0, 0.0, Some(10.0))],
+        };
+        let geom = ffi_geometry_to_geometry(&ffi_geom).expect("linestring should convert");
+        match geom {
+            Geometry::LineString(points) => {
+                assert_eq!(points.len(), 3);
+                assert_eq!(points[2].x, 2.0);
+                assert_eq!(points[2].y, 0.0);
+            }
+            _ => panic!("expected Geometry::LineString"),
+        }
+    }
+
+    #[test]
+    fn test_ffi_geometry_to_geometry_polygon_with_hole() {
+        let ffi_geom = FfiGeometry::Polygon {
+            exterior: vec![
+                (0.0, 0.0, None),
+                (10.0, 0.0, None),
+                (10.0, 10.0, None),
+                (0.0, 0.0, None),
+            ],
+            interiors: vec![vec![
+                (1.0, 1.0, None),
+                (2.0, 1.0, None),
+                (1.0, 2.0, None),
+                (1.0, 1.0, None),
+            ]],
+        };
+        let geom = ffi_geometry_to_geometry(&ffi_geom).expect("polygon should convert");
+        match geom {
+            Geometry::Polygon(rings) => {
+                assert_eq!(rings.len(), 2); // exterior + 1 interior
+                assert_eq!(rings[0].len(), 4);
+                assert_eq!(rings[1].len(), 4);
+            }
+            _ => panic!("expected Geometry::Polygon"),
+        }
+    }
+
+    #[test]
+    fn test_ffi_geometry_to_geometry_geometry_collection_unsupported() {
+        let ffi_geom = FfiGeometry::GeometryCollection {
+            geometries: vec![FfiGeometry::Point {
+                x: 0.0,
+                y: 0.0,
+                z: None,
+            }],
+        };
+        assert!(ffi_geometry_to_geometry(&ffi_geom).is_none());
+    }
+
+    #[test]
+    fn test_feature_to_path_null_feature() {
+        let result = unsafe { oxigdal_android_feature_to_path(std::ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_feature_to_path_no_geometry() {
+        let feature = crate::ffi::vector::feature::FfiFeature::new(1);
+        let handle = Box::new(FeatureHandle::new(feature));
+        let ptr = Box::into_raw(handle) as *const OxiGdalFeature;
+
+        let result = unsafe { oxigdal_android_feature_to_path(ptr) };
+        assert!(result.is_null());
+
+        unsafe {
+            drop(Box::from_raw(ptr as *mut FeatureHandle));
+        }
+    }
+
+    #[test]
+    fn test_feature_to_path_uses_real_geometry() {
+        // A 3-point LineString should NOT collapse to a single Point(0,0) path.
+        let mut feature = crate::ffi::vector::feature::FfiFeature::new(1);
+        feature.geometry = Some(FfiGeometry::LineString {
+            coords: vec![(10.0, 20.0, None), (30.0, 40.0, None), (50.0, 60.0, None)],
+        });
+        let handle = Box::new(FeatureHandle::new(feature));
+        let ptr = Box::into_raw(handle) as *const OxiGdalFeature;
+
+        let path_ptr = unsafe { oxigdal_android_feature_to_path(ptr) };
+        assert!(!path_ptr.is_null());
+
+        unsafe {
+            let path = &*(path_ptr as *const AndroidPath);
+            // MoveTo + 2 LineTo = 3 commands, not the degenerate single-point case.
+            assert_eq!(path.command_count, 3);
+            let x0 = *path.x_coords;
+            let y0 = *path.y_coords;
+            assert_eq!(x0, 10.0);
+            assert_eq!(y0, 20.0);
+        }
+
+        unsafe {
+            oxigdal_android_free_path(path_ptr);
+            drop(Box::from_raw(ptr as *mut FeatureHandle));
+        }
     }
 }

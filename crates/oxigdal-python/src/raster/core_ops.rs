@@ -36,6 +36,7 @@ use crate::expression::{Evaluator, parse_expression};
 #[pyfunction]
 #[pyo3(signature = (path, mode="r", driver=None, options=None))]
 pub fn open_raster(
+    py: Python<'_>,
     path: &str,
     mode: &str,
     driver: Option<&str>,
@@ -75,7 +76,9 @@ pub fn open_raster(
         }
     }
 
-    Dataset::open(path, mode)
+    // Opening for read eagerly loads and parses file metadata, which is
+    // blocking disk I/O; release the GIL while it runs.
+    py.detach(|| Dataset::open(path, mode))
 }
 
 /// Creates a new raster file.
@@ -137,12 +140,12 @@ pub fn create_raster(
         ));
     }
 
-    if let Some(ref gt) = geotransform {
-        if gt.len() != 6 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "GeoTransform must have 6 elements",
-            ));
-        }
+    if let Some(ref gt) = geotransform
+        && gt.len() != 6
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "GeoTransform must have 6 elements",
+        ));
     }
 
     // Validate dtype
@@ -322,13 +325,9 @@ pub fn calc<'py>(
     let mut var_names: Vec<String> = array_map.keys().cloned().collect();
     var_names.sort(); // Ensure consistent ordering
 
-    // Create the evaluator with variable mapping
-    let evaluator = Evaluator::with_variables(&var_names);
-
-    // Convert arrays to slices in the same order as var_names
+    // Convert arrays to owned slices in the same order as var_names. This
+    // touches NumPy-managed memory and needs the GIL.
     let mut array_slices: Vec<Vec<f64>> = Vec::with_capacity(var_names.len());
-    let mut array_refs: Vec<&[f64]> = Vec::with_capacity(var_names.len());
-
     for name in &var_names {
         let arr = array_map.get(name).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(format!("Array '{}' not found", name))
@@ -340,23 +339,28 @@ pub fn calc<'py>(
         array_slices.push(slice.to_vec());
     }
 
-    // Build refs after all data is collected
-    for slice in &array_slices {
-        array_refs.push(slice.as_slice());
-    }
+    // Expression evaluation over the full raster is CPU-bound; release the
+    // GIL while it runs.
+    let result = py.detach(|| -> PyResult<Vec<Vec<f64>>> {
+        // Create the evaluator with variable mapping
+        let evaluator = Evaluator::with_variables(&var_names);
 
-    // Evaluate the expression
-    let result_data = evaluator
-        .evaluate(&parsed_expr, &array_refs, width, height)
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("Evaluation error: {}", e))
-        })?;
+        // Build refs after all data is collected
+        let array_refs: Vec<&[f64]> = array_slices.iter().map(|s| s.as_slice()).collect();
 
-    // Convert to 2D array
-    let result: Vec<Vec<f64>> = result_data
-        .chunks(width)
-        .map(|chunk| chunk.to_vec())
-        .collect();
+        // Evaluate the expression
+        let result_data = evaluator
+            .evaluate(&parsed_expr, &array_refs, width, height)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Evaluation error: {}", e))
+            })?;
+
+        // Convert to 2D array
+        Ok(result_data
+            .chunks(width)
+            .map(|chunk| chunk.to_vec())
+            .collect())
+    })?;
 
     numpy::PyArray2::from_vec2(py, &result).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create result array: {}", e))

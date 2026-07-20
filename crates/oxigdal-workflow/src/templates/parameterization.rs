@@ -190,11 +190,26 @@ impl TemplateParameterizer {
             result = result.replace(&placeholder, &replacement);
         }
 
-        // Check for remaining placeholders
-        if result.contains(&self.placeholder_prefix) && result.contains(&self.placeholder_suffix) {
-            return Err(WorkflowError::template(
-                "Template contains unreplaced placeholders",
-            ));
+        // Check for unreplaced placeholders.
+        //
+        // We inspect the *source* template rather than the substituted result: a
+        // blind substring scan of the output false-positives whenever a parameter
+        // value legitimately contains the placeholder markers (e.g. a JSON value
+        // with literal `{{`/`}}`), and scanning the result would also mistake such
+        // literal braces for a dangling placeholder. Extracting the paired
+        // placeholders from the original template and checking them against the
+        // supplied parameters detects genuinely missing values without those
+        // false positives.
+        let missing: Vec<String> = self
+            .extract_placeholders(template)
+            .into_iter()
+            .filter(|name| !params.contains_key(name))
+            .collect();
+        if !missing.is_empty() {
+            return Err(WorkflowError::template(format!(
+                "Template contains unreplaced placeholders: {}",
+                missing.join(", ")
+            )));
         }
 
         Ok(result)
@@ -339,6 +354,61 @@ mod tests {
             .expect("Failed to apply");
 
         assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_apply_allows_value_with_literal_braces() {
+        // A substituted value that itself contains the placeholder markers must
+        // not be mistaken for an unreplaced placeholder.
+        let parameterizer = TemplateParameterizer::new();
+        let template = "value = {{payload}}";
+
+        let mut params = HashMap::new();
+        params.insert(
+            "payload".to_string(),
+            ParameterValue::String("literal {{brace}} text".to_string()),
+        );
+
+        let result = parameterizer
+            .apply_parameters(template, &params)
+            .expect("value containing braces should not be rejected");
+        assert_eq!(result, "value = literal {{brace}} text");
+    }
+
+    #[test]
+    fn test_apply_detects_missing_placeholder() {
+        // A genuinely unprovided placeholder must still be reported (by name).
+        let parameterizer = TemplateParameterizer::new();
+        let template = "{{provided}} and {{missing}}";
+
+        let mut params = HashMap::new();
+        params.insert(
+            "provided".to_string(),
+            ParameterValue::String("ok".to_string()),
+        );
+
+        let err = parameterizer
+            .apply_parameters(template, &params)
+            .expect_err("missing placeholder should error");
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn test_apply_allows_array_value_with_braces() {
+        // JSON-encoded array/object values contain literal braces; they must pass.
+        let parameterizer = TemplateParameterizer::new();
+        let template = r#"{"items": {{items}}}"#;
+
+        let mut params = HashMap::new();
+        params.insert(
+            "items".to_string(),
+            ParameterValue::Array(vec![ParameterValue::Integer(1), ParameterValue::Integer(2)]),
+        );
+
+        let result = parameterizer
+            .apply_parameters(template, &params)
+            .expect("array value should not be rejected");
+        assert!(result.contains("[1,2]"));
     }
 
     #[test]

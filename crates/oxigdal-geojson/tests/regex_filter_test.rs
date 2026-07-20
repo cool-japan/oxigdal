@@ -1,5 +1,5 @@
 //! Tests for regex-based property filtering in oxigdal-geojson-stream.
-#![allow(clippy::unwrap_used, clippy::panic, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
 use oxigdal_geojson_stream::filter::{
     CompiledRegexFilter, FeatureFilter, FilterExpr, FilterOp, PropertyFilter,

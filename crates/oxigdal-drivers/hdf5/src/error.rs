@@ -277,6 +277,34 @@ pub enum Hdf5Error {
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
 
+    /// Invalid operation for the current object state
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
+    /// A required file could not be found
+    #[error("File not found: {0}")]
+    FileNotFound(String),
+
+    /// Timed out while acquiring a file lock (SWMR coordination)
+    #[error("Lock acquisition timed out for {path} after {timeout_secs}s")]
+    LockTimeout {
+        /// Path to the lock file
+        path: String,
+        /// Timeout in seconds
+        timeout_secs: u64,
+    },
+
+    /// A lock is already held by another process
+    #[error("Lock already held: {path}")]
+    LockExists {
+        /// Path to the lock file
+        path: String,
+    },
+
+    /// Concurrency error (e.g. a poisoned lock)
+    #[error("Concurrency error: {0}")]
+    ConcurrencyError(String),
+
     /// OxiGDAL core error
     #[error("OxiGDAL core error: {0}")]
     Core(#[from] oxigdal_core::error::OxiGdalError),
@@ -416,6 +444,11 @@ impl Hdf5Error {
             Self::Internal(_) => "H055",
             Self::Utf8Error(_) => "H056",
             Self::TryFromIntError(_) => "H057",
+            Self::InvalidOperation(_) => "H059",
+            Self::FileNotFound(_) => "H060",
+            Self::LockTimeout { .. } => "H061",
+            Self::LockExists { .. } => "H062",
+            Self::ConcurrencyError(_) => "H063",
             Self::Core(_) => "H058",
         }
     }
@@ -534,6 +567,19 @@ impl Hdf5Error {
             }
             Self::Utf8Error(_) => Some("Invalid UTF-8 encoding in string data"),
             Self::TryFromIntError(_) => Some("Integer conversion overflow. The value is too large"),
+            Self::InvalidOperation(_) => {
+                Some("This operation is not valid for the current object state")
+            }
+            Self::FileNotFound(_) => Some("Check that the referenced file exists and is readable"),
+            Self::LockTimeout { .. } => {
+                Some("Another process holds the file lock. Retry later or increase the timeout")
+            }
+            Self::LockExists { .. } => {
+                Some("The file is locked by another process. Remove a stale lock file if needed")
+            }
+            Self::ConcurrencyError(_) => {
+                Some("A shared lock was poisoned by a panicking thread. Recreate the cache")
+            }
             Self::Core(_) => Some("Check the underlying error message for details"),
         }
     }
@@ -693,6 +739,21 @@ impl Hdf5Error {
             }
             Self::TryFromIntError(e) => {
                 ErrorContext::new("int_conversion_error").with_detail("error", e.to_string())
+            }
+            Self::InvalidOperation(msg) => {
+                ErrorContext::new("invalid_operation").with_detail("message", msg.clone())
+            }
+            Self::FileNotFound(path) => {
+                ErrorContext::new("file_not_found").with_detail("path", path.clone())
+            }
+            Self::LockTimeout { path, timeout_secs } => ErrorContext::new("lock_timeout")
+                .with_detail("path", path.clone())
+                .with_detail("timeout_secs", timeout_secs.to_string()),
+            Self::LockExists { path } => {
+                ErrorContext::new("lock_exists").with_detail("path", path.clone())
+            }
+            Self::ConcurrencyError(msg) => {
+                ErrorContext::new("concurrency_error").with_detail("message", msg.clone())
             }
             Self::Core(e) => ErrorContext::new("core_error").with_detail("error", e.to_string()),
         }

@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn test_new_shared_pipeline_cache_is_empty() {
         let shared = new_shared_pipeline_cache();
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let guard = shared.lock().map_err(|_| "poisoned").unwrap();
         assert!(guard.is_empty());
     }

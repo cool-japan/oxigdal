@@ -128,6 +128,28 @@ impl AndroidMemoryStats {
     }
 }
 
+/// A real memory sample supplied by the host Android app.
+///
+/// Host apps read these fields via JNI (e.g. `ActivityManager.getMemoryInfo()`
+/// for `total_ram`/`available_ram`/`low_memory_threshold`, and
+/// `android.os.Debug` for the app/native/Dalvik figures) and push them into an
+/// [`AndroidMemoryManager`] through [`AndroidMemoryManager::update_stats_with`].
+#[derive(Debug, Clone, Copy)]
+pub struct AndroidMemorySample {
+    /// Total device RAM in bytes (`ActivityManager.MemoryInfo.totalMem`).
+    pub total_ram: u64,
+    /// Available RAM in bytes (`ActivityManager.MemoryInfo.availMem`).
+    pub available_ram: u64,
+    /// Low-memory threshold in bytes (`ActivityManager.MemoryInfo.threshold`).
+    pub low_memory_threshold: u64,
+    /// Total app memory usage in bytes (`Debug.MemoryInfo.getTotalPss`).
+    pub app_memory: u64,
+    /// Native heap size in bytes (`Debug.getNativeHeapSize`).
+    pub native_heap: u64,
+    /// Dalvik/ART heap size in bytes.
+    pub dalvik_heap: u64,
+}
+
 /// Android memory manager
 pub struct AndroidMemoryManager {
     #[allow(dead_code)]
@@ -146,10 +168,19 @@ impl AndroidMemoryManager {
         }
     }
 
-    /// Update memory statistics
-    pub fn update_stats(&self) -> Result<()> {
-        // In a real implementation, this would use Android APIs
-        // (ActivityManager.MemoryInfo, Debug.MemoryInfo, etc.)
+    /// Read the currently-recorded trim level, if any.
+    fn current_trim_level(&self) -> Option<TrimLevel> {
+        self.current_stats
+            .read()
+            .as_ref()
+            .and_then(|s| s.trim_level)
+    }
+
+    /// Build a heuristic memory snapshot derived from the device's performance
+    /// tier. This is only used as a documented fallback when live OS telemetry
+    /// is unavailable (e.g. an unsupported host); the values are estimates, not
+    /// live device readings.
+    fn tier_estimate_stats(&self) -> AndroidMemoryStats {
         let total_ram = match self.performance_tier {
             PerformanceTier::Low => 2 * 1024 * 1024 * 1024u64, // 2 GB
             PerformanceTier::Medium => 4 * 1024 * 1024 * 1024u64, // 4 GB
@@ -157,18 +188,71 @@ impl AndroidMemoryManager {
             PerformanceTier::Premium => 8 * 1024 * 1024 * 1024u64, // 8 GB
         };
 
-        let available_ram = total_ram / 3; // Mock: 33% available
-        let low_memory_threshold = total_ram / 10; // 10% threshold
-
-        let stats = AndroidMemoryStats {
+        AndroidMemoryStats {
             total_ram,
-            available_ram,
-            low_memory_threshold,
-            app_memory: 128 * 1024 * 1024, // 128 MB app usage
-            native_heap: 64 * 1024 * 1024, // 64 MB native
-            dalvik_heap: 64 * 1024 * 1024, // 64 MB dalvik
-            trim_level: None,
+            available_ram: total_ram / 3, // heuristic estimate only
+            low_memory_threshold: total_ram / 10,
+            app_memory: 0,
+            native_heap: 0,
+            dalvik_heap: 0,
+            trim_level: self.current_trim_level(),
             timestamp: Instant::now(),
+        }
+    }
+
+    /// Inject a real memory sample obtained by the host Android app.
+    ///
+    /// Java/ART heap figures ([`AndroidMemorySample::native_heap`],
+    /// [`AndroidMemorySample::dalvik_heap`]) and the exact
+    /// `ActivityManager.MemoryInfo.threshold` are only reachable through JNI at
+    /// the host-app call site. Host apps should call this from their lifecycle
+    /// callbacks with values read from `ActivityManager.getMemoryInfo()` and
+    /// `android.os.Debug` so that [`Self::current_stats`] reflects live ART/LMK
+    /// state. The current trim level (from `onTrimMemory`) is preserved.
+    pub fn update_stats_with(&self, sample: AndroidMemorySample) -> Result<()> {
+        let stats = AndroidMemoryStats {
+            total_ram: sample.total_ram,
+            available_ram: sample.available_ram,
+            low_memory_threshold: sample.low_memory_threshold,
+            app_memory: sample.app_memory,
+            native_heap: sample.native_heap,
+            dalvik_heap: sample.dalvik_heap,
+            trim_level: self.current_trim_level(),
+            timestamp: Instant::now(),
+        };
+        *self.current_stats.write() = Some(stats);
+        Ok(())
+    }
+
+    /// Update memory statistics from live operating-system telemetry.
+    ///
+    /// Total/available/used device RAM and the app's resident-set size are read
+    /// from the OS (via `sysinfo`, which uses `/proc`/`sysinfo(2)` on Android),
+    /// so low-memory decisions respond to genuine device conditions rather than
+    /// a static per-tier guess. The Java/ART-heap figures (`native_heap`,
+    /// `dalvik_heap`) are left as `0` (unknown) unless a host app supplies them
+    /// via [`Self::update_stats_with`], and `low_memory_threshold` falls back to
+    /// a 10%-of-RAM heuristic when the exact `ActivityManager` threshold has not
+    /// been injected. The `onTrimMemory` trim level is preserved across updates.
+    ///
+    /// If the platform cannot report physical memory at all, a documented
+    /// performance-tier estimate is used as a last resort instead of failing.
+    pub fn update_stats(&self) -> Result<()> {
+        let stats = match crate::sys_probe::sample_physical_memory() {
+            Ok(mem) => AndroidMemoryStats {
+                total_ram: mem.total,
+                available_ram: mem.available,
+                // Exact ActivityManager.MemoryInfo.threshold requires JNI; use a
+                // conservative 10%-of-RAM heuristic until a host app injects it.
+                low_memory_threshold: mem.total / 10,
+                app_memory: mem.process,
+                // Native/Dalvik heap sizes require android.os.Debug via JNI.
+                native_heap: 0,
+                dalvik_heap: 0,
+                trim_level: self.current_trim_level(),
+                timestamp: Instant::now(),
+            },
+            Err(_) => self.tier_estimate_stats(),
         };
 
         *self.current_stats.write() = Some(stats);
@@ -187,9 +271,25 @@ impl AndroidMemoryManager {
 
     /// Handle memory trim callback
     pub fn on_trim_memory(&self, level: TrimLevel) -> Result<TrimResponse> {
-        let mut stats = self.current_stats.write();
-        if let Some(ref mut s) = *stats {
-            s.trim_level = Some(level);
+        {
+            let mut stats = self.current_stats.write();
+            match *stats {
+                Some(ref mut s) => s.trim_level = Some(level),
+                None => {
+                    // No sample recorded yet: retain the real OS trim signal so
+                    // it is not silently dropped before the first stats refresh.
+                    *stats = Some(AndroidMemoryStats {
+                        total_ram: 0,
+                        available_ram: 0,
+                        low_memory_threshold: 0,
+                        app_memory: 0,
+                        native_heap: 0,
+                        dalvik_heap: 0,
+                        trim_level: Some(level),
+                        timestamp: Instant::now(),
+                    });
+                }
+            }
         }
 
         Ok(TrimResponse {
@@ -439,5 +539,51 @@ mod tests {
     fn test_gc_strategy() {
         assert!(GCStrategy::ConcurrentCopying.handles_large_objects_well());
         assert!(!GCStrategy::ConcurrentMarkSweep.handles_large_objects_well());
+    }
+
+    #[test]
+    fn test_update_stats_reports_real_ram() {
+        // Regression guard: RAM figures must come from the OS, not from the
+        // performance tier. Two managers created with different tiers must both
+        // observe the same real host RAM (the tier no longer fabricates it).
+        let low = AndroidMemoryManager::new(AndroidApiLevel::TIRAMISU, PerformanceTier::Low);
+        let premium =
+            AndroidMemoryManager::new(AndroidApiLevel::TIRAMISU, PerformanceTier::Premium);
+
+        let s_low = low.current_stats().expect("real stats");
+        let s_premium = premium.current_stats().expect("real stats");
+
+        assert!(s_low.total_ram > 0);
+        assert!(s_low.available_ram <= s_low.total_ram);
+        // Real host RAM is independent of the (now cosmetic-for-RAM) tier.
+        assert_eq!(s_low.total_ram, s_premium.total_ram);
+    }
+
+    #[test]
+    fn test_update_stats_with_injection_and_trim_preserved() {
+        let manager = AndroidMemoryManager::new(AndroidApiLevel::TIRAMISU, PerformanceTier::Medium);
+
+        // Host records a real OS trim callback first.
+        manager
+            .on_trim_memory(TrimLevel::RunningCritical)
+            .expect("trim");
+
+        // Host injects real ActivityManager/Debug values.
+        let sample = AndroidMemorySample {
+            total_ram: 4 * 1024 * 1024 * 1024,
+            available_ram: 200 * 1024 * 1024,
+            low_memory_threshold: 300 * 1024 * 1024,
+            app_memory: 150 * 1024 * 1024,
+            native_heap: 40 * 1024 * 1024,
+            dalvik_heap: 30 * 1024 * 1024,
+        };
+        manager.update_stats_with(sample).expect("inject");
+
+        let stats = manager.current_stats.read().clone().expect("stats present");
+        assert_eq!(stats.available_ram, 200 * 1024 * 1024);
+        assert_eq!(stats.dalvik_heap, 30 * 1024 * 1024);
+        assert!(stats.is_low_memory()); // 200MB available < 300MB threshold
+        // The trim level recorded via onTrimMemory must survive the injection.
+        assert_eq!(stats.trim_level, Some(TrimLevel::RunningCritical));
     }
 }

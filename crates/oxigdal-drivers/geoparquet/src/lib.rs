@@ -82,7 +82,11 @@ pub mod metadata;
 #[cfg(feature = "std")]
 pub mod partitioning;
 #[cfg(feature = "std")]
+pub mod plan;
+#[cfg(feature = "std")]
 pub mod predicate;
+#[cfg(feature = "std")]
+pub mod pushdown;
 #[cfg(feature = "std")]
 pub mod spatial;
 #[cfg(feature = "std")]
@@ -103,9 +107,15 @@ pub use error::{GeoParquetError, Result};
 #[cfg(feature = "std")]
 pub use filter::{AttributePredicates, ColumnCondition, CompareOp, LogicOp};
 #[cfg(feature = "std")]
-pub use metadata::{CoordDim, Crs, EncodingType, GeoParquetMetadata, GeometryColumnMetadata};
+pub use metadata::{
+    CoordDim, Covering, CoveringBbox, Crs, EncodingType, GeoParquetMetadata, GeometryColumnMetadata,
+};
 #[cfg(feature = "std")]
-pub use predicate::{AttributeFilter, ScalarValue};
+pub use plan::{ColumnChunkRange, PushdownPlan, plan_pushdown, prune_row_groups};
+#[cfg(feature = "std")]
+pub use predicate::{AttributeFilter, CmpOp, ScalarValue};
+#[cfg(feature = "std")]
+pub use pushdown::execute_pushdown;
 #[cfg(feature = "std")]
 pub use reader::GeoParquetReader;
 #[cfg(feature = "std")]

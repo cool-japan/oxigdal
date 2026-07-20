@@ -4,6 +4,7 @@ pub mod cloud;
 pub mod creation_options;
 pub mod inspector;
 pub mod parallel;
+pub mod profiler;
 pub mod progress;
 pub mod raster;
 pub mod vector;

@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure Rust COPC (Cloud Optimized Point Cloud) reader for OxiGDAL — LAS/LAZ format with spatial index.
 > **Status (2026-05-16):** ~4,132 Rust LoC · 139 tests · 0 in-source `TODO:` markers (gaps are absences in the module tree).
-> **Roadmap:** v0.1.5 (current slice) → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 (current slice) → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

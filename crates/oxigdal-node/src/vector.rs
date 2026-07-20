@@ -162,14 +162,14 @@ impl Feature {
         };
 
         let mut properties = HashMap::new();
-        if let Some(props_val) = obj.get("properties") {
-            if let Some(props_obj) = props_val.as_object() {
-                for (key, value) in props_obj {
-                    if let Some(str_val) = value.as_str() {
-                        properties.insert(key.clone(), str_val.to_string());
-                    } else {
-                        properties.insert(key.clone(), value.to_string());
-                    }
+        if let Some(props_val) = obj.get("properties")
+            && let Some(props_obj) = props_val.as_object()
+        {
+            for (key, value) in props_obj {
+                if let Some(str_val) = value.as_str() {
+                    properties.insert(key.clone(), str_val.to_string());
+                } else {
+                    properties.insert(key.clone(), value.to_string());
                 }
             }
         }

@@ -1034,3 +1034,99 @@ html, body {
     color: var(--gray-900);
     font-weight: 600;
 }
+
+/* ── Section hint text (Terrain Analysis, etc.) ───────────────────────────── */
+.section-hint {
+    font-size: 0.75rem;
+    color: var(--gray-500);
+    line-height: 1.5;
+    margin-bottom: var(--spacing-md);
+}
+
+/* ── Drag & drop zone (local GeoTIFF, in-browser decode) ──────────────────── */
+.drop-zone {
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-lg) var(--spacing-md);
+    border: 2px dashed var(--gray-300);
+    border-radius: var(--radius-md);
+    background: var(--gray-50);
+    text-align: center;
+    transition: all var(--transition-fast);
+}
+
+.drop-zone.drop-zone-hover {
+    border-color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.06);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.drop-zone-icon {
+    font-size: 1.75rem;
+    margin-bottom: var(--spacing-xs);
+    opacity: 0.85;
+}
+
+.drop-zone-text {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--gray-700);
+}
+
+.drop-zone-or {
+    font-size: 0.75rem;
+    color: var(--gray-400);
+    margin: var(--spacing-xs) 0;
+}
+
+.drop-zone-btn {
+    display: inline-flex;
+    margin: 0 auto;
+}
+
+.file-input-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.drop-zone-note {
+    font-size: 0.6875rem;
+    color: var(--gray-500);
+    margin-top: var(--spacing-sm);
+    line-height: 1.4;
+}
+
+/* ── Terrain Analysis panel ───────────────────────────────────────────────── */
+.terrain-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
+}
+
+.terrain-btn {
+    width: 100%;
+    padding: var(--spacing-sm) var(--spacing-xs);
+    font-size: 0.8125rem;
+}
+
+.terrain-btn-active {
+    background: var(--primary-color);
+    color: white;
+}
+
+.terrain-btn-active:hover {
+    background: var(--primary-dark);
+}
+
+/* ── Honest network metric badges ─────────────────────────────────────────── */
+.feature-badge-metric {
+    background: var(--gray-700);
+    font-variant-numeric: tabular-nums;
+}

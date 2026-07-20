@@ -57,6 +57,15 @@ pub enum DistributedError {
     #[error("Arrow error: {0}")]
     Arrow(String),
 
+    /// The requested operation is recognized but not yet implemented on this node.
+    #[error("Operation not implemented: {0}")]
+    OperationNotImplemented(String),
+
+    /// The operation is malformed or references invalid inputs (bad expression,
+    /// unknown column, unsupported column type, out-of-range band index, ...).
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     /// Core OxiGDAL error.
     #[error("OxiGDAL core error: {0}")]
     Core(#[from] oxigdal_core::error::OxiGdalError),
@@ -143,6 +152,16 @@ impl DistributedError {
         Self::Arrow(msg.into())
     }
 
+    /// Create an "operation not implemented" error.
+    pub fn operation_not_implemented<S: Into<String>>(msg: S) -> Self {
+        Self::OperationNotImplemented(msg.into())
+    }
+
+    /// Create an "invalid operation" error.
+    pub fn invalid_operation<S: Into<String>>(msg: S) -> Self {
+        Self::InvalidOperation(msg.into())
+    }
+
     /// Create a custom error.
     pub fn custom<S: Into<String>>(msg: S) -> Self {
         Self::Custom(msg.into())
@@ -193,6 +212,12 @@ impl From<DistributedError> for tonic::Status {
             }
             DistributedError::Arrow(msg) => {
                 tonic::Status::internal(format!("Arrow error: {}", msg))
+            }
+            DistributedError::OperationNotImplemented(msg) => {
+                tonic::Status::unimplemented(format!("Operation not implemented: {}", msg))
+            }
+            DistributedError::InvalidOperation(msg) => {
+                tonic::Status::invalid_argument(format!("Invalid operation: {}", msg))
             }
             DistributedError::Core(err) => tonic::Status::internal(format!("Core error: {}", err)),
             DistributedError::Io(err) => tonic::Status::internal(format!("I/O error: {}", err)),

@@ -319,19 +319,12 @@ impl Optimizer {
                     }
                 }
 
-                // x * 0 = 0
-                if op == BinaryOp::Multiply {
-                    if let Expr::Number(n) = &right_opt {
-                        if n.abs() < f64::EPSILON {
-                            return Expr::Number(0.0);
-                        }
-                    }
-                    if let Expr::Number(n) = &left_opt {
-                        if n.abs() < f64::EPSILON {
-                            return Expr::Number(0.0);
-                        }
-                    }
-                }
+                // NOTE: `x * 0 = 0` and `0 * x = 0` are intentionally NOT simplified here.
+                // Per IEEE-754, `NaN * 0.0 == NaN` and `Inf * 0.0 == NaN`, not `0.0`. This
+                // crate's raster-algebra evaluator uses NaN as a NoData sentinel (e.g. from
+                // division by near-zero), so folding `x * 0` to a constant `0.0` would
+                // silently turn per-pixel NoData into a false constant zero. See the
+                // `test_algebraic_simplify_mul_zero_preserves_nan_semantics` regression test.
 
                 // x * 1 = x
                 if op == BinaryOp::Multiply {
@@ -557,7 +550,11 @@ mod tests {
     }
 
     #[test]
-    fn test_algebraic_simplify_mul_zero() {
+    fn test_algebraic_simplify_mul_zero_not_folded() {
+        // `x * 0` and `0 * x` must NOT be simplified to a constant `Number(0.0)`.
+        // Per IEEE-754, NaN * 0.0 == NaN and Inf * 0.0 == NaN (not 0.0), and this
+        // crate's raster-algebra evaluator relies on NaN as a NoData sentinel.
+        // Folding this to a constant would silently turn per-pixel NoData into 0.0.
         let expr = Expr::Binary {
             left: Box::new(Expr::Band(1)),
             op: BinaryOp::Multiply,
@@ -568,7 +565,58 @@ mod tests {
         let opt = Optimizer::new(OptLevel::Standard);
         let result = opt.optimize_expr(expr);
 
-        assert!(matches!(result, Expr::Number(n) if n.abs() < 1e-10));
+        // Must remain a Binary(Band(1) * 0), not collapse to Number(0.0).
+        assert!(matches!(
+            result,
+            Expr::Binary {
+                op: BinaryOp::Multiply,
+                ..
+            }
+        ));
+        assert!(!matches!(result, Expr::Number(_)));
+
+        // Same for the commuted form `0 * x`.
+        let expr_commuted = Expr::Binary {
+            left: Box::new(Expr::Number(0.0)),
+            op: BinaryOp::Multiply,
+            right: Box::new(Expr::Band(1)),
+            ty: Type::Raster,
+        };
+        let result_commuted = opt.optimize_expr(expr_commuted);
+        assert!(!matches!(result_commuted, Expr::Number(_)));
+    }
+
+    #[test]
+    fn test_algebraic_simplify_mul_zero_preserves_nan_semantics() {
+        // Regression test: `(B1 / B2) * 0` must NOT silently turn per-pixel NoData
+        // (NaN, produced by division-by-near-zero) into a false constant `0.0`.
+        //
+        // The evaluator treats NaN as the NoData sentinel; the algebraic simplifier
+        // must not fold `x * 0` to `0` since `NaN * 0.0 == NaN` (and `Inf * 0.0 ==
+        // NaN`) under IEEE-754, not `0.0`.
+        use crate::dsl::RasterDsl;
+        use oxigdal_core::buffer::RasterBuffer;
+        use oxigdal_core::types::RasterDataType;
+
+        let mut b1 = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let mut b2 = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        // B1 = 1.0, B2 = 0.0 => B1 / B2 evaluates to NaN (NoData) in this evaluator.
+        assert!(b1.set_pixel(0, 0, 1.0).is_ok());
+        assert!(b2.set_pixel(0, 0, 0.0).is_ok());
+
+        let dsl = RasterDsl::new();
+        let result = dsl
+            .execute("(B1 / B2) * 0", &[b1, b2])
+            .expect("DSL expression should execute successfully");
+
+        let pixel = result
+            .get_pixel(0, 0)
+            .expect("pixel (0, 0) should be readable");
+
+        assert!(
+            pixel.is_nan(),
+            "expected NoData (NaN) to survive `* 0`, got {pixel} instead"
+        );
     }
 
     #[test]

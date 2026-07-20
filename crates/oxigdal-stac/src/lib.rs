@@ -38,7 +38,7 @@
 //! # STAC API Search
 //!
 //! ```rust,no_run
-//! # #[cfg(all(feature = "reqwest", feature = "async"))]
+//! # #[cfg(feature = "async")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use oxigdal_stac::StacClient;
 //!
@@ -91,10 +91,10 @@ pub mod item;
 pub mod transaction;
 pub mod version;
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 pub mod pagination;
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 pub mod search;
 
 // Public exports
@@ -126,10 +126,10 @@ pub use item::{Item, ItemProperties, Link, link_rel};
 pub use transaction::{StacItemStore, TransactionOp, TransactionResult};
 pub use version::StacVersion;
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 pub use pagination::{CursorPagination, PagePagination, Paginator, TokenPagination};
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 pub use search::{SearchContext, SearchParams, SearchResults, SortBy, SortDirection, StacClient};
 
 /// STAC version supported by this crate.

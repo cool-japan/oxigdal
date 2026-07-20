@@ -1,908 +1,758 @@
-//! HDF5 ScaleOffset filter implementation.
+//! HDF5 ScaleOffset filter (`H5Z_SCALEOFFSET`, filter id 6) — true on-disk codec.
 //!
-//! The ScaleOffset filter provides lossy compression for floating-point data
-//! and lossless compression for integer data by:
+//! This module implements the **real** libhdf5 `H5Zscaleoffset.c` on-disk
+//! layout, so chunks produced by h5py / netcdf-c decode correctly, and chunks
+//! produced here are byte-compatible with libhdf5.
 //!
-//! 1. Finding the minimum value in the dataset
-//! 2. Subtracting the minimum (offset) from all values
-//! 3. For floating-point data, quantizing to integers with given decimal precision
-//! 4. Packing the offset values using the minimum number of bits needed
+//! ## Parameter contract (`cd_values`)
 //!
-//! ## Scale Types
+//! The filter is driven by the dataset filter-pipeline `cd_values` array, which
+//! libhdf5 fills in at write time (`H5Z_set_local_scaleoffset`). The layout is:
 //!
-//! - `H5Z_SO_FLOAT_DSCALE` (0): Fixed decimal precision for floating-point data.
-//!   The `scale_factor` specifies the number of decimal digits to preserve.
-//! - `H5Z_SO_INT` (2): Automatic minimum-bits for integer data.
-//!   The range of values determines the bit width.
+//! | Index | Field        | Meaning                                             |
+//! |-------|--------------|-----------------------------------------------------|
+//! | 0     | scale_type   | 0 = `H5Z_SO_FLOAT_DSCALE`, 2 = `H5Z_SO_INT`         |
+//! | 1     | scale_factor | float: decimal digits (D); integer: min-bits (0=auto)|
+//! | 2     | nelmts       | number of elements in the chunk                     |
+//! | 3     | class        | 0 = integer, 1 = floating-point                     |
+//! | 4     | size         | datatype size in bytes                              |
+//! | 5     | sign         | 0 = unsigned, 1 = signed (two's complement)         |
+//! | 6     | order        | 0 = little-endian, 1 = big-endian                   |
+//! | 7     | filavail     | 0 = fill undefined, 1 = fill value defined          |
+//! | 8..   | filval       | fill value (native representation, little-endian)   |
 //!
-//! ## Header Format
+//! When only the "user" parameters `[scale_type, scale_factor]` are supplied
+//! (the short form used internally by [`crate::filters::FilterPipeline`]), the
+//! datatype class / size / sign are taken from the `datatype` argument, the byte
+//! order defaults to little-endian, and no fill value is assumed. The number of
+//! elements is then supplied out-of-band (from the chunk dimensions).
 //!
-//! The compressed data includes a header followed by packed bit data:
+//! ## Per-chunk on-disk layout
 //!
-//! | Offset | Size | Field            | Description                          |
-//! |--------|------|------------------|--------------------------------------|
-//! | 0      | 1    | version          | Header version (currently 1)         |
-//! | 1      | 1    | dtype_class      | 0=signed int, 1=unsigned int, 2=f32, 3=f64 |
-//! | 2      | 1    | orig_elem_size   | Original element size in bytes       |
-//! | 3      | 1    | bits_per_value   | Bits per packed value (1..=64)       |
-//! | 4      | 4    | scale_factor     | Scale factor as i32 (LE)             |
-//! | 8      | 4    | num_elements     | Number of elements as u32 (LE)       |
-//! | 12     | 8    | min_value        | Minimum value as i64 (LE)            |
-//! | 20     | var  | packed_data      | Bit-packed delta values              |
+//! Each compressed chunk begins with a fixed **21-byte header** followed by the
+//! packed payload:
+//!
+//! | Offset | Size | Field   | Description                                       |
+//! |--------|------|---------|---------------------------------------------------|
+//! | 0      | 4    | minbits | bits per packed value (little-endian `u32`)       |
+//! | 4      | 1    | 0x08    | constant (`sizeof(unsigned long long)`)           |
+//! | 5      | 8    | minval  | minimum value (integer) or IEEE bits of min float |
+//! | 13     | 8    | (zero)  | reserved, always zero                             |
+//! | 21     | var  | payload | MSB-first bit-packed codes, or raw passthrough    |
+//!
+//! * If `minbits >= size*8` the payload is the raw little-endian element values
+//!   (uncompressed passthrough) and `minval` is zero.
+//! * Otherwise each element is stored as a `minbits`-wide MSB-first code. The
+//!   value is reconstructed as `minval + code` (integer) or
+//!   `min_float + code / 10^D` (float).
+//! * When a fill value is defined, the all-ones code `(1<<minbits)-1` is reserved
+//!   to denote fill-valued elements; the encoder guarantees real codes never
+//!   reach it (`minbits = bit_length(span+1)`).
 
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
-use byteorder::{ByteOrder, LittleEndian};
+use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use super::bitpack::{BitReader, BitWriter, min_bits_for_value};
 
-/// ScaleOffset header size in bytes
-const HEADER_SIZE: usize = 20;
+/// Fixed on-disk header size in bytes.
+const HEADER_SIZE: usize = 21;
+/// Offset of the `minval` field inside the header.
+const MINVAL_OFFSET: usize = 5;
+/// Width of the `minval` field in bytes (`sizeof(unsigned long long)`).
+const MINVAL_WIDTH: usize = 8;
 
-/// Current header version
-const HEADER_VERSION: u8 = 1;
+/// Scale type: floating-point, D-scaling (`H5Z_SO_FLOAT_DSCALE`).
+pub const SO_FLOAT_DSCALE: u32 = 0;
+/// Scale type: floating-point, E-scaling (`H5Z_SO_FLOAT_ESCALE`, not implemented
+/// by libhdf5 itself).
+pub const SO_FLOAT_ESCALE: u32 = 1;
+/// Scale type: integer, automatic minimum bits (`H5Z_SO_INT`).
+pub const SO_INT: u32 = 2;
 
-/// Scale type: float decimal scale (H5Z_SO_FLOAT_DSCALE)
-const SO_FLOAT_DSCALE: u32 = 0;
+// `cd_values` indices (see the module documentation table).
+const PARM_SCALETYPE: usize = 0;
+const PARM_SCALEFACTOR: usize = 1;
+const PARM_NELMTS: usize = 2;
+const PARM_ORDER: usize = 6;
+const PARM_FILAVAIL: usize = 7;
+const PARM_FILVAL: usize = 8;
 
-/// Scale type: integer auto (H5Z_SO_INT)
-const SO_INT: u32 = 2;
+/// Fill value existence flag: fill value is defined.
+const FILL_DEFINED: u32 = 1;
+/// Byte order flag: big-endian.
+const ORDER_BE: u32 = 1;
 
-/// Dtype class identifiers for the header
-const DTYPE_SIGNED_INT: u8 = 0;
-const DTYPE_UNSIGNED_INT: u8 = 1;
-const DTYPE_FLOAT32: u8 = 2;
-const DTYPE_FLOAT64: u8 = 3;
+/// Resolved parameters describing a single chunk decode/encode.
+struct Params {
+    scale_factor: i32,
+    size: usize,
+    is_float: bool,
+    order_be: bool,
+    filavail: bool,
+    filval: u64,
+    d_nelmts: usize,
+}
 
-/// Apply ScaleOffset filter in the forward (compression) direction.
-///
-/// # Arguments
-/// * `data` - Raw byte data
-/// * `params` - Filter parameters: `[scale_type, scale_factor]`
-/// * `datatype` - The HDF5 datatype of the elements
-pub fn apply_scale_offset_forward(
-    data: &[u8],
-    params: &[u32],
-    datatype: &Datatype,
-) -> Result<Vec<u8>> {
-    let scale_type = params.first().copied().unwrap_or(SO_INT);
-    let scale_factor = params.get(1).copied().unwrap_or(0) as i32;
+impl Params {
+    /// Resolve parameters from the `cd_values` array, the element datatype and a
+    /// caller-supplied element-count hint (from the chunk dimensions).
+    fn resolve(cd_values: &[u32], datatype: &Datatype, d_nelmts_hint: usize) -> Result<Self> {
+        let size = datatype.size();
+        let is_float = datatype.is_float();
+        if !is_float && !datatype.is_integer() {
+            return Err(Hdf5Error::UnsupportedDatatype(format!(
+                "ScaleOffset: unsupported datatype {datatype:?} (integer or float only)"
+            )));
+        }
 
-    match (scale_type, datatype) {
-        (SO_FLOAT_DSCALE, Datatype::Float32) => compress_float32(data, scale_factor),
-        (SO_FLOAT_DSCALE, Datatype::Float64) => compress_float64(data, scale_factor),
-        (SO_INT, dt) if dt.is_integer() => compress_integer(data, datatype),
-        // Also handle integer scale_type=0 by treating as auto
-        (SO_FLOAT_DSCALE, dt) if dt.is_integer() => compress_integer(data, datatype),
-        _ => Err(Hdf5Error::Compression(format!(
-            "ScaleOffset: unsupported scale_type={} for datatype {:?}",
-            scale_type, datatype
-        ))),
+        let scale_type = cd_values
+            .get(PARM_SCALETYPE)
+            .copied()
+            .unwrap_or(if is_float { SO_FLOAT_DSCALE } else { SO_INT });
+        let scale_factor = cd_values.get(PARM_SCALEFACTOR).copied().unwrap_or(0) as i32;
+        let order_be = cd_values.get(PARM_ORDER).copied() == Some(ORDER_BE);
+        let filavail = cd_values.get(PARM_FILAVAIL).copied() == Some(FILL_DEFINED);
+
+        // Reconstruct the fill value from the little-endian `u32` words.
+        let mut filval: u64 = 0;
+        for i in 0..MINVAL_WIDTH.div_ceil(4) {
+            if let Some(&word) = cd_values.get(PARM_FILVAL + i) {
+                filval |= (word as u64) << (32 * i);
+            }
+        }
+
+        // The real filter-pipeline form carries the element count in cd_values;
+        // it is authoritative. The short form relies on the chunk-dimension hint.
+        let d_nelmts = match cd_values.get(PARM_NELMTS).copied() {
+            Some(n) if cd_values.len() > PARM_NELMTS && n > 0 => n as usize,
+            _ => d_nelmts_hint,
+        };
+
+        if is_float && scale_type == SO_FLOAT_ESCALE {
+            return Err(Hdf5Error::UnsupportedCompressionFilter(
+                "ScaleOffset: E-scaling (H5Z_SO_FLOAT_ESCALE) is not supported".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            scale_factor,
+            size,
+            is_float,
+            order_be,
+            filavail,
+            filval,
+            d_nelmts,
+        })
     }
 }
 
-/// Apply ScaleOffset filter in the reverse (decompression) direction.
+/// Decode a ScaleOffset chunk (reverse / decompression direction).
 ///
-/// # Arguments
-/// * `data` - Compressed byte data (header + packed bits)
-/// * `params` - Filter parameters: `[scale_type, scale_factor]`
-/// * `datatype` - The HDF5 datatype of the elements
+/// * `data` — the compressed chunk (21-byte header + payload).
+/// * `cd_values` — filter parameters (see the module documentation).
+/// * `datatype` — element datatype.
+/// * `d_nelmts` — number of elements in the chunk (from the chunk dimensions);
+///   used when `cd_values` does not carry the count.
 pub fn apply_scale_offset_reverse(
     data: &[u8],
-    _params: &[u32],
+    cd_values: &[u32],
     datatype: &Datatype,
+    d_nelmts: usize,
 ) -> Result<Vec<u8>> {
-    if data.len() < HEADER_SIZE {
-        return Err(Hdf5Error::Decompression(
-            "ScaleOffset: data too short for header".to_string(),
-        ));
-    }
+    let params = Params::resolve(cd_values, datatype, d_nelmts)?;
 
-    let version = data[0];
-    if version != HEADER_VERSION {
+    if data.len() < HEADER_SIZE {
         return Err(Hdf5Error::Decompression(format!(
-            "ScaleOffset: unsupported header version {}",
-            version
+            "ScaleOffset: chunk of {} bytes is smaller than the {}-byte header",
+            data.len(),
+            HEADER_SIZE
         )));
     }
 
-    let dtype_class = data[1];
-    let _orig_elem_size = data[2];
-    let bits_per_value = data[3];
-    let scale_factor = LittleEndian::read_i32(&data[4..8]);
-    let num_elements = LittleEndian::read_u32(&data[8..12]) as usize;
-    let min_value = LittleEndian::read_i64(&data[12..20]);
-    let packed_data = &data[HEADER_SIZE..];
+    let minbits = LittleEndian::read_u32(&data[0..4]);
+    let minval_bytes = &data[MINVAL_OFFSET..MINVAL_OFFSET + MINVAL_WIDTH];
+    let minval = if params.order_be {
+        BigEndian::read_u64(minval_bytes)
+    } else {
+        LittleEndian::read_u64(minval_bytes)
+    };
 
-    match dtype_class {
-        DTYPE_SIGNED_INT => decompress_signed_int(
-            packed_data,
-            num_elements,
-            bits_per_value,
-            min_value,
-            datatype,
-        ),
-        DTYPE_UNSIGNED_INT => decompress_unsigned_int(
-            packed_data,
-            num_elements,
-            bits_per_value,
-            min_value,
-            datatype,
-        ),
-        DTYPE_FLOAT32 => decompress_float32(
-            packed_data,
-            num_elements,
-            bits_per_value,
-            min_value,
-            scale_factor,
-        ),
-        DTYPE_FLOAT64 => decompress_float64(
-            packed_data,
-            num_elements,
-            bits_per_value,
-            min_value,
-            scale_factor,
-        ),
-        _ => Err(Hdf5Error::Decompression(format!(
-            "ScaleOffset: unknown dtype class {}",
-            dtype_class
-        ))),
+    let size = params.size;
+    let full_bits = (size as u32) * 8;
+    let n = params.d_nelmts;
+    let mut output = vec![0u8; n * size];
+
+    // Defensive: minbits == 0 means every element equals the minimum. libhdf5
+    // never emits this (it uses bit_length(span+1) >= 1) but we handle it rather
+    // than misread the payload.
+    if minbits == 0 {
+        for i in 0..n {
+            write_int_element(&mut output[i * size..(i + 1) * size], minval, size);
+        }
+        return Ok(output);
     }
+
+    // Uncompressed passthrough: raw little-endian (or big-endian) element values.
+    if minbits >= full_bits {
+        let payload = &data[HEADER_SIZE..];
+        if payload.len() < n * size {
+            return Err(Hdf5Error::Decompression(format!(
+                "ScaleOffset: passthrough payload {} bytes, need {}",
+                payload.len(),
+                n * size
+            )));
+        }
+        for i in 0..n {
+            let chunk = &payload[i * size..(i + 1) * size];
+            let raw = if params.order_be {
+                read_uint_be(chunk, size)
+            } else {
+                read_uint_le(chunk, size)
+            };
+            let value = minval.wrapping_add(raw);
+            write_int_element(&mut output[i * size..(i + 1) * size], value, size);
+        }
+        return Ok(output);
+    }
+
+    // Bit-packed codes.
+    let minbits_u8 = u8::try_from(minbits).map_err(|_| {
+        Hdf5Error::Decompression(format!("ScaleOffset: minbits {minbits} exceeds 255"))
+    })?;
+    let all_ones: u64 = if minbits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << minbits) - 1
+    };
+
+    let mut reader = BitReader::new(&data[HEADER_SIZE..]);
+    for i in 0..n {
+        let code = reader.read_bits(minbits_u8)?;
+        let dst = &mut output[i * size..(i + 1) * size];
+
+        if params.filavail && code == all_ones {
+            write_int_element(dst, params.filval, size);
+            continue;
+        }
+
+        if params.is_float {
+            write_float_element(dst, minval, code, params.scale_factor, size)?;
+        } else {
+            write_int_element(dst, minval.wrapping_add(code), size);
+        }
+    }
+
+    Ok(output)
 }
 
-// =============================================================================
-// Integer compression
-// =============================================================================
-
-/// Compress integer data using ScaleOffset.
-fn compress_integer(data: &[u8], datatype: &Datatype) -> Result<Vec<u8>> {
-    let elem_size = datatype.size();
-    if data.is_empty() || data.len() % elem_size != 0 {
+/// Encode raw element bytes with the ScaleOffset filter (forward / compression).
+///
+/// Produces the exact libhdf5 on-disk layout (21-byte header + payload), so the
+/// result round-trips through [`apply_scale_offset_reverse`] and is readable by
+/// libhdf5 / h5py. The internal short form does not reserve a fill value.
+pub fn apply_scale_offset_forward(
+    data: &[u8],
+    cd_values: &[u32],
+    datatype: &Datatype,
+) -> Result<Vec<u8>> {
+    let size = datatype.size();
+    if size == 0 {
+        return Err(Hdf5Error::Compression(
+            "ScaleOffset: zero-sized datatype".to_string(),
+        ));
+    }
+    if data.is_empty() || !data.len().is_multiple_of(size) {
         return Err(Hdf5Error::Compression(format!(
-            "ScaleOffset: data length {} not divisible by element size {}",
+            "ScaleOffset: data length {} is not a positive multiple of element size {}",
             data.len(),
-            elem_size
+            size
         )));
     }
-    let num_elements = data.len() / elem_size;
+    let d_nelmts = data.len() / size;
+    let params = Params::resolve(cd_values, datatype, d_nelmts)?;
 
-    let is_signed = matches!(
+    // Compute the offset codes and the minimum value.
+    let (codes, minval) = if params.is_float {
+        encode_float_codes(data, size, params.scale_factor)?
+    } else {
+        encode_int_codes(data, size, datatype)?
+    };
+
+    let span = codes.iter().copied().max().unwrap_or(0);
+    let mut minbits = min_bits_for_value(span.saturating_add(1)) as u32;
+    let full_bits = (size as u32) * 8;
+
+    // Passthrough when the codes need the full precision (no compression gain).
+    if minbits >= full_bits {
+        let mut out = Vec::with_capacity(HEADER_SIZE + d_nelmts * size);
+        write_header(&mut out, full_bits, 0);
+        out.extend_from_slice(data);
+        return Ok(out);
+    }
+
+    if minbits == 0 {
+        minbits = 1;
+    }
+    let minbits_u8 = u8::try_from(minbits).map_err(|_| {
+        Hdf5Error::Compression(format!("ScaleOffset: minbits {minbits} exceeds 255"))
+    })?;
+
+    let total_bits = (d_nelmts as u64) * (minbits as u64);
+    let mut out = Vec::with_capacity(HEADER_SIZE + (total_bits / 8) as usize + 1);
+    write_header(&mut out, minbits, minval);
+
+    let mut writer = BitWriter::with_capacity((total_bits / 8) as usize + 1);
+    for &code in &codes {
+        writer.write_bits(code, minbits_u8);
+    }
+    let mut payload = writer.finish();
+    // libhdf5 always reserves a trailing partial byte; append one when the packed
+    // bits fill whole bytes exactly so the layout matches byte-for-byte.
+    if total_bits.is_multiple_of(8) {
+        payload.push(0);
+    }
+    out.extend_from_slice(&payload);
+    Ok(out)
+}
+
+/// Compute integer offset codes (`value - min`) and the raw `minval` word.
+fn encode_int_codes(data: &[u8], size: usize, datatype: &Datatype) -> Result<(Vec<u64>, u64)> {
+    let n = data.len() / size;
+    let signed = matches!(
         datatype,
         Datatype::Int8 | Datatype::Int16 | Datatype::Int32 | Datatype::Int64
     );
 
-    if is_signed {
-        compress_signed_int_impl(data, datatype, num_elements, elem_size)
+    if signed {
+        let mut values = Vec::with_capacity(n);
+        for i in 0..n {
+            values.push(read_int_le(&data[i * size..(i + 1) * size], size));
+        }
+        let min = values.iter().copied().min().unwrap_or(0);
+        let codes = values
+            .iter()
+            .map(|&v| (v.wrapping_sub(min)) as u64)
+            .collect();
+        Ok((codes, min as u64))
     } else {
-        compress_unsigned_int_impl(data, datatype, num_elements, elem_size)
+        let mut values = Vec::with_capacity(n);
+        for i in 0..n {
+            values.push(read_uint_le(&data[i * size..(i + 1) * size], size));
+        }
+        let min = values.iter().copied().min().unwrap_or(0);
+        let codes = values.iter().map(|&v| v - min).collect();
+        Ok((codes, min))
     }
 }
 
-/// Compress signed integer data.
-fn compress_signed_int_impl(
-    data: &[u8],
-    datatype: &Datatype,
-    num_elements: usize,
-    elem_size: usize,
-) -> Result<Vec<u8>> {
-    // Read all values as i64
-    let mut values = Vec::with_capacity(num_elements);
-    for i in 0..num_elements {
-        let offset = i * elem_size;
-        let chunk = &data[offset..offset + elem_size];
-        let val = read_signed_value(chunk, datatype)?;
-        values.push(val);
+/// Compute floating-point D-scaled offset codes and the IEEE bits of the minimum.
+fn encode_float_codes(data: &[u8], size: usize, scale_factor: i32) -> Result<(Vec<u64>, u64)> {
+    let n = data.len() / size;
+    let mult = 10f64.powi(scale_factor);
+    let mut values = Vec::with_capacity(n);
+    for i in 0..n {
+        let chunk = &data[i * size..(i + 1) * size];
+        let v = match size {
+            4 => LittleEndian::read_f32(chunk) as f64,
+            8 => LittleEndian::read_f64(chunk),
+            _ => {
+                return Err(Hdf5Error::Compression(format!(
+                    "ScaleOffset: unsupported float element size {size}"
+                )));
+            }
+        };
+        values.push(v);
     }
 
-    // Find min value
-    let min_val = values.iter().copied().min().unwrap_or(0);
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let min = if min.is_finite() { min } else { 0.0 };
 
-    // Compute deltas (all non-negative)
-    let deltas: Vec<u64> = values.iter().map(|&v| (v - min_val) as u64).collect();
-
-    // Find maximum delta to determine bit width
-    let max_delta = deltas.iter().copied().max().unwrap_or(0);
-    let bits_per_value = min_bits_for_value(max_delta);
-
-    // Pack into output
-    pack_with_header(
-        &deltas,
-        bits_per_value,
-        DTYPE_SIGNED_INT,
-        elem_size as u8,
-        0, // scale_factor not used for integers
-        num_elements,
-        min_val,
-    )
-}
-
-/// Compress unsigned integer data.
-fn compress_unsigned_int_impl(
-    data: &[u8],
-    datatype: &Datatype,
-    num_elements: usize,
-    elem_size: usize,
-) -> Result<Vec<u8>> {
-    // Read all values as u64
-    let mut values = Vec::with_capacity(num_elements);
-    for i in 0..num_elements {
-        let offset = i * elem_size;
-        let chunk = &data[offset..offset + elem_size];
-        let val = read_unsigned_value(chunk, datatype)?;
-        values.push(val);
-    }
-
-    // Find min value
-    let min_val = values.iter().copied().min().unwrap_or(0);
-
-    // Compute deltas
-    let deltas: Vec<u64> = values.iter().map(|&v| v - min_val).collect();
-
-    // Find maximum delta
-    let max_delta = deltas.iter().copied().max().unwrap_or(0);
-    let bits_per_value = min_bits_for_value(max_delta);
-
-    // Store min_val as i64 (safe for unsigned values up to i64::MAX range)
-    pack_with_header(
-        &deltas,
-        bits_per_value,
-        DTYPE_UNSIGNED_INT,
-        elem_size as u8,
-        0,
-        num_elements,
-        min_val as i64,
-    )
-}
-
-// =============================================================================
-// Float compression
-// =============================================================================
-
-/// Compress f32 data using ScaleOffset with decimal scaling.
-fn compress_float32(data: &[u8], scale_factor: i32) -> Result<Vec<u8>> {
-    let elem_size = 4;
-    if data.is_empty() || data.len() % elem_size != 0 {
-        return Err(Hdf5Error::Compression(format!(
-            "ScaleOffset: data length {} not divisible by f32 element size {}",
-            data.len(),
-            elem_size
-        )));
-    }
-    let num_elements = data.len() / elem_size;
-    let multiplier = 10.0_f64.powi(scale_factor);
-
-    // Read all f32 values, scale to integer domain
-    let mut scaled_values = Vec::with_capacity(num_elements);
-    for i in 0..num_elements {
-        let offset = i * elem_size;
-        let val = LittleEndian::read_f32(&data[offset..offset + elem_size]) as f64;
-        let scaled = (val * multiplier).round() as i64;
-        scaled_values.push(scaled);
-    }
-
-    // Find min
-    let min_val = scaled_values.iter().copied().min().unwrap_or(0);
-
-    // Compute deltas
-    let deltas: Vec<u64> = scaled_values
+    let codes = values
         .iter()
-        .map(|&v| (v - min_val) as u64)
+        .map(|&v| {
+            let d = ((v - min) * mult).round();
+            if d < 0.0 { 0 } else { d as u64 }
+        })
         .collect();
 
-    let max_delta = deltas.iter().copied().max().unwrap_or(0);
-    let bits_per_value = min_bits_for_value(max_delta);
-
-    pack_with_header(
-        &deltas,
-        bits_per_value,
-        DTYPE_FLOAT32,
-        elem_size as u8,
-        scale_factor,
-        num_elements,
-        min_val,
-    )
+    let minval = match size {
+        4 => (min as f32).to_bits() as u64,
+        _ => min.to_bits(),
+    };
+    Ok((codes, minval))
 }
 
-/// Compress f64 data using ScaleOffset with decimal scaling.
-fn compress_float64(data: &[u8], scale_factor: i32) -> Result<Vec<u8>> {
-    let elem_size = 8;
-    if data.is_empty() || data.len() % elem_size != 0 {
-        return Err(Hdf5Error::Compression(format!(
-            "ScaleOffset: data length {} not divisible by f64 element size {}",
-            data.len(),
-            elem_size
-        )));
-    }
-    let num_elements = data.len() / elem_size;
-    let multiplier = 10.0_f64.powi(scale_factor);
-
-    // Read all f64 values, scale to integer domain
-    let mut scaled_values = Vec::with_capacity(num_elements);
-    for i in 0..num_elements {
-        let offset = i * elem_size;
-        let val = LittleEndian::read_f64(&data[offset..offset + elem_size]);
-        let scaled = (val * multiplier).round() as i64;
-        scaled_values.push(scaled);
-    }
-
-    // Find min
-    let min_val = scaled_values.iter().copied().min().unwrap_or(0);
-
-    // Compute deltas
-    let deltas: Vec<u64> = scaled_values
-        .iter()
-        .map(|&v| (v - min_val) as u64)
-        .collect();
-
-    let max_delta = deltas.iter().copied().max().unwrap_or(0);
-    let bits_per_value = min_bits_for_value(max_delta);
-
-    pack_with_header(
-        &deltas,
-        bits_per_value,
-        DTYPE_FLOAT64,
-        elem_size as u8,
-        scale_factor,
-        num_elements,
-        min_val,
-    )
+/// Write the 21-byte header (`minbits`, constant `0x08`, `minval`, zero pad).
+fn write_header(out: &mut Vec<u8>, minbits: u32, minval: u64) {
+    let mut header = [0u8; HEADER_SIZE];
+    LittleEndian::write_u32(&mut header[0..4], minbits);
+    header[4] = MINVAL_WIDTH as u8;
+    LittleEndian::write_u64(
+        &mut header[MINVAL_OFFSET..MINVAL_OFFSET + MINVAL_WIDTH],
+        minval,
+    );
+    out.extend_from_slice(&header);
 }
 
-// =============================================================================
-// Decompression
-// =============================================================================
-
-/// Decompress signed integer data.
-fn decompress_signed_int(
-    packed_data: &[u8],
-    num_elements: usize,
-    bits_per_value: u8,
-    min_value: i64,
-    datatype: &Datatype,
-) -> Result<Vec<u8>> {
-    let elem_size = datatype.size();
-    let deltas = unpack_deltas(packed_data, num_elements, bits_per_value)?;
-
-    let mut output = vec![0u8; num_elements * elem_size];
-    for (i, &delta) in deltas.iter().enumerate() {
-        let val = min_value.wrapping_add(delta as i64);
-        let offset = i * elem_size;
-        write_signed_value(&mut output[offset..offset + elem_size], val, datatype)?;
-    }
-
-    Ok(output)
-}
-
-/// Decompress unsigned integer data.
-fn decompress_unsigned_int(
-    packed_data: &[u8],
-    num_elements: usize,
-    bits_per_value: u8,
-    min_value: i64,
-    datatype: &Datatype,
-) -> Result<Vec<u8>> {
-    let elem_size = datatype.size();
-    let deltas = unpack_deltas(packed_data, num_elements, bits_per_value)?;
-
-    let min_unsigned = min_value as u64;
-    let mut output = vec![0u8; num_elements * elem_size];
-    for (i, &delta) in deltas.iter().enumerate() {
-        let val = min_unsigned.wrapping_add(delta);
-        let offset = i * elem_size;
-        write_unsigned_value(&mut output[offset..offset + elem_size], val, datatype)?;
-    }
-
-    Ok(output)
-}
-
-/// Decompress f32 data.
-fn decompress_float32(
-    packed_data: &[u8],
-    num_elements: usize,
-    bits_per_value: u8,
-    min_value: i64,
+/// Reconstruct and write a floating-point element from `min_float + code / 10^D`.
+fn write_float_element(
+    dst: &mut [u8],
+    minval_bits: u64,
+    code: u64,
     scale_factor: i32,
-) -> Result<Vec<u8>> {
-    let elem_size = 4;
-    let divisor = 10.0_f64.powi(scale_factor);
-    let deltas = unpack_deltas(packed_data, num_elements, bits_per_value)?;
-
-    let mut output = vec![0u8; num_elements * elem_size];
-    for (i, &delta) in deltas.iter().enumerate() {
-        let scaled_val = min_value + delta as i64;
-        let float_val = (scaled_val as f64) / divisor;
-        let offset = i * elem_size;
-        LittleEndian::write_f32(&mut output[offset..offset + elem_size], float_val as f32);
-    }
-
-    Ok(output)
-}
-
-/// Decompress f64 data.
-fn decompress_float64(
-    packed_data: &[u8],
-    num_elements: usize,
-    bits_per_value: u8,
-    min_value: i64,
-    scale_factor: i32,
-) -> Result<Vec<u8>> {
-    let elem_size = 8;
-    let divisor = 10.0_f64.powi(scale_factor);
-    let deltas = unpack_deltas(packed_data, num_elements, bits_per_value)?;
-
-    let mut output = vec![0u8; num_elements * elem_size];
-    for (i, &delta) in deltas.iter().enumerate() {
-        let scaled_val = min_value + delta as i64;
-        let float_val = (scaled_val as f64) / divisor;
-        let offset = i * elem_size;
-        LittleEndian::write_f64(&mut output[offset..offset + elem_size], float_val);
-    }
-
-    Ok(output)
-}
-
-// =============================================================================
-// Helper functions
-// =============================================================================
-
-/// Pack deltas with a standard header into the output buffer.
-fn pack_with_header(
-    deltas: &[u64],
-    bits_per_value: u8,
-    dtype_class: u8,
-    orig_elem_size: u8,
-    scale_factor: i32,
-    num_elements: usize,
-    min_value: i64,
-) -> Result<Vec<u8>> {
-    // Estimate output size: header + packed bits
-    let packed_bits = (num_elements as u64) * (bits_per_value as u64);
-    let packed_bytes = packed_bits.div_ceil(8) as usize;
-    let total_size = HEADER_SIZE + packed_bytes;
-
-    let mut output = Vec::with_capacity(total_size);
-
-    // Write header
-    output.push(HEADER_VERSION);
-    output.push(dtype_class);
-    output.push(orig_elem_size);
-    output.push(bits_per_value);
-
-    let mut sf_bytes = [0u8; 4];
-    LittleEndian::write_i32(&mut sf_bytes, scale_factor);
-    output.extend_from_slice(&sf_bytes);
-
-    let mut ne_bytes = [0u8; 4];
-    let ne_u32 = u32::try_from(num_elements).map_err(|_| {
-        Hdf5Error::Compression("ScaleOffset: num_elements exceeds u32 range".to_string())
-    })?;
-    LittleEndian::write_u32(&mut ne_bytes, ne_u32);
-    output.extend_from_slice(&ne_bytes);
-
-    let mut mv_bytes = [0u8; 8];
-    LittleEndian::write_i64(&mut mv_bytes, min_value);
-    output.extend_from_slice(&mv_bytes);
-
-    // Pack deltas
-    let mut writer = BitWriter::with_capacity(packed_bytes);
-    for &delta in deltas {
-        writer.write_bits(delta, bits_per_value);
-    }
-    output.extend_from_slice(&writer.finish());
-
-    Ok(output)
-}
-
-/// Unpack deltas from packed bit data.
-fn unpack_deltas(packed_data: &[u8], num_elements: usize, bits_per_value: u8) -> Result<Vec<u64>> {
-    let mut reader = BitReader::new(packed_data);
-    let mut deltas = Vec::with_capacity(num_elements);
-    for _ in 0..num_elements {
-        let delta = reader.read_bits(bits_per_value)?;
-        deltas.push(delta);
-    }
-    Ok(deltas)
-}
-
-/// Read a signed integer value from bytes based on datatype.
-fn read_signed_value(chunk: &[u8], datatype: &Datatype) -> Result<i64> {
-    match datatype {
-        Datatype::Int8 => {
-            if chunk.is_empty() {
-                return Err(Hdf5Error::Decompression("Empty data for Int8".to_string()));
-            }
-            Ok(chunk[0] as i8 as i64)
-        }
-        Datatype::Int16 => {
-            if chunk.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for Int16".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_i16(chunk) as i64)
-        }
-        Datatype::Int32 => {
-            if chunk.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for Int32".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_i32(chunk) as i64)
-        }
-        Datatype::Int64 => {
-            if chunk.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for Int64".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_i64(chunk))
-        }
-        _ => Err(Hdf5Error::Compression(format!(
-            "ScaleOffset: expected signed integer type, got {:?}",
-            datatype
-        ))),
-    }
-}
-
-/// Read an unsigned integer value from bytes based on datatype.
-fn read_unsigned_value(chunk: &[u8], datatype: &Datatype) -> Result<u64> {
-    match datatype {
-        Datatype::UInt8 => {
-            if chunk.is_empty() {
-                return Err(Hdf5Error::Decompression("Empty data for UInt8".to_string()));
-            }
-            Ok(chunk[0] as u64)
-        }
-        Datatype::UInt16 => {
-            if chunk.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for UInt16".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_u16(chunk) as u64)
-        }
-        Datatype::UInt32 => {
-            if chunk.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for UInt32".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_u32(chunk) as u64)
-        }
-        Datatype::UInt64 => {
-            if chunk.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for UInt64".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_u64(chunk))
-        }
-        _ => Err(Hdf5Error::Compression(format!(
-            "ScaleOffset: expected unsigned integer type, got {:?}",
-            datatype
-        ))),
-    }
-}
-
-/// Write a signed integer value to bytes based on datatype.
-fn write_signed_value(buf: &mut [u8], value: i64, datatype: &Datatype) -> Result<()> {
-    match datatype {
-        Datatype::Int8 => {
-            if buf.is_empty() {
-                return Err(Hdf5Error::Decompression(
-                    "Empty buffer for Int8".to_string(),
-                ));
-            }
-            buf[0] = value as i8 as u8;
+    size: usize,
+) -> Result<()> {
+    let divisor = 10f64.powi(scale_factor);
+    match size {
+        4 => {
+            let min_f = f32::from_bits(minval_bits as u32) as f64;
+            let value = (min_f + (code as f64) / divisor) as f32;
+            LittleEndian::write_f32(dst, value);
             Ok(())
         }
-        Datatype::Int16 => {
-            if buf.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for Int16".to_string(),
-                ));
-            }
-            LittleEndian::write_i16(buf, value as i16);
-            Ok(())
-        }
-        Datatype::Int32 => {
-            if buf.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for Int32".to_string(),
-                ));
-            }
-            LittleEndian::write_i32(buf, value as i32);
-            Ok(())
-        }
-        Datatype::Int64 => {
-            if buf.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for Int64".to_string(),
-                ));
-            }
-            LittleEndian::write_i64(buf, value);
+        8 => {
+            let min_f = f64::from_bits(minval_bits);
+            let value = min_f + (code as f64) / divisor;
+            LittleEndian::write_f64(dst, value);
             Ok(())
         }
         _ => Err(Hdf5Error::Decompression(format!(
-            "ScaleOffset: cannot write signed value to {:?}",
-            datatype
+            "ScaleOffset: unsupported float element size {size}"
         ))),
     }
 }
 
-/// Write an unsigned integer value to bytes based on datatype.
-fn write_unsigned_value(buf: &mut [u8], value: u64, datatype: &Datatype) -> Result<()> {
-    match datatype {
-        Datatype::UInt8 => {
-            if buf.is_empty() {
-                return Err(Hdf5Error::Decompression(
-                    "Empty buffer for UInt8".to_string(),
-                ));
-            }
-            buf[0] = value as u8;
-            Ok(())
-        }
-        Datatype::UInt16 => {
-            if buf.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for UInt16".to_string(),
-                ));
-            }
-            LittleEndian::write_u16(buf, value as u16);
-            Ok(())
-        }
-        Datatype::UInt32 => {
-            if buf.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for UInt32".to_string(),
-                ));
-            }
-            LittleEndian::write_u32(buf, value as u32);
-            Ok(())
-        }
-        Datatype::UInt64 => {
-            if buf.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for UInt64".to_string(),
-                ));
-            }
-            LittleEndian::write_u64(buf, value);
-            Ok(())
-        }
-        _ => Err(Hdf5Error::Decompression(format!(
-            "ScaleOffset: cannot write unsigned value to {:?}",
-            datatype
-        ))),
+/// Write the low `size` bytes of `value` in little-endian order.
+fn write_int_element(dst: &mut [u8], value: u64, size: usize) {
+    let bytes = value.to_le_bytes();
+    let n = size.min(bytes.len()).min(dst.len());
+    dst[..n].copy_from_slice(&bytes[..n]);
+}
+
+/// Read a little-endian unsigned integer of `size` bytes (1..=8).
+fn read_uint_le(chunk: &[u8], size: usize) -> u64 {
+    let mut buf = [0u8; 8];
+    let n = size.min(chunk.len()).min(8);
+    buf[..n].copy_from_slice(&chunk[..n]);
+    u64::from_le_bytes(buf)
+}
+
+/// Read a big-endian unsigned integer of `size` bytes (1..=8).
+fn read_uint_be(chunk: &[u8], size: usize) -> u64 {
+    let mut buf = [0u8; 8];
+    let n = size.min(chunk.len()).min(8);
+    // Right-align the big-endian bytes.
+    buf[8 - n..].copy_from_slice(&chunk[..n]);
+    u64::from_be_bytes(buf)
+}
+
+/// Read a little-endian signed integer of `size` bytes, sign-extended to `i64`.
+fn read_int_le(chunk: &[u8], size: usize) -> i64 {
+    let raw = read_uint_le(chunk, size);
+    let bits = (size * 8) as u32;
+    if bits >= 64 {
+        raw as i64
+    } else if (raw >> (bits - 1)) & 1 == 1 {
+        (raw | (!0u64 << bits)) as i64
+    } else {
+        raw as i64
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
-    fn make_i32_data(values: &[i32]) -> Vec<u8> {
+    fn make_i32(values: &[i32]) -> Vec<u8> {
         let mut data = vec![0u8; values.len() * 4];
         for (i, &v) in values.iter().enumerate() {
             LittleEndian::write_i32(&mut data[i * 4..(i + 1) * 4], v);
         }
         data
     }
-
-    fn read_i32_data(data: &[u8]) -> Vec<i32> {
-        let mut values = Vec::new();
-        for chunk in data.chunks(4) {
-            if chunk.len() == 4 {
-                values.push(LittleEndian::read_i32(chunk));
-            }
-        }
-        values
+    fn read_i32(data: &[u8]) -> Vec<i32> {
+        data.chunks_exact(4).map(LittleEndian::read_i32).collect()
     }
-
-    fn make_u16_data(values: &[u16]) -> Vec<u8> {
+    fn make_u16(values: &[u16]) -> Vec<u8> {
         let mut data = vec![0u8; values.len() * 2];
         for (i, &v) in values.iter().enumerate() {
             LittleEndian::write_u16(&mut data[i * 2..(i + 1) * 2], v);
         }
         data
     }
-
-    fn read_u16_data(data: &[u8]) -> Vec<u16> {
-        let mut values = Vec::new();
-        for chunk in data.chunks(2) {
-            if chunk.len() == 2 {
-                values.push(LittleEndian::read_u16(chunk));
-            }
-        }
-        values
+    fn read_u16(data: &[u8]) -> Vec<u16> {
+        data.chunks_exact(2).map(LittleEndian::read_u16).collect()
+    }
+    fn read_f32(data: &[u8]) -> Vec<f32> {
+        data.chunks_exact(4).map(LittleEndian::read_f32).collect()
     }
 
-    fn make_f32_data(values: &[f32]) -> Vec<u8> {
+    // Full 20-element cd_values as libhdf5 writes them.
+    #[allow(clippy::too_many_arguments)]
+    fn so_cd(
+        scale_type: u32,
+        scale_factor: i32,
+        nelmts: u32,
+        class: u32,
+        size: u32,
+        sign: u32,
+        filavail: u32,
+        filval: u32,
+    ) -> Vec<u32> {
+        let mut cd = vec![0u32; 20];
+        cd[0] = scale_type;
+        cd[1] = scale_factor as u32;
+        cd[2] = nelmts;
+        cd[3] = class;
+        cd[4] = size;
+        cd[5] = sign;
+        cd[6] = 0; // order LE
+        cd[7] = filavail;
+        cd[8] = filval;
+        cd
+    }
+
+    // ------------------------------------------------------------------
+    // Interop: decode real libhdf5 (h5py 3.16.0 / hdf5 2.0.0) chunk bytes.
+    //
+    // These hex byte strings were extracted with h5py's `read_direct_chunk`
+    // from files written by libhdf5 (not by this crate). They validate that
+    // the on-disk layout decodes bit-for-bit against a real HDF5 producer.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn interop_hdf5_i32_no_fill_present() {
+        // int32 [100,105,110,103,108,115,100,120], scaleoffset=0, default fill (0, unused)
+        let raw = hex("050000000864000000000000000000000000000000", "0154343c1400");
+        let cd = so_cd(SO_INT, 0, 8, 0, 4, 1, FILL_DEFINED, 0);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Int32, 8).unwrap();
+        assert_eq!(read_i32(&out), vec![100, 105, 110, 103, 108, 115, 100, 120]);
+    }
+
+    #[test]
+    fn interop_hdf5_i32_with_fill_valued_element() {
+        // int32 with fillvalue=999 and one fill-valued element -> all-ones code.
+        let raw = hex("050000000864000000000000000000000000000000", "0154343c1f00");
+        let cd = so_cd(SO_INT, 0, 8, 0, 4, 1, FILL_DEFINED, 999);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Int32, 8).unwrap();
+        assert_eq!(read_i32(&out), vec![100, 105, 110, 103, 108, 115, 100, 999]);
+    }
+
+    #[test]
+    fn interop_hdf5_i32_full_precision_passthrough() {
+        // int32 spanning the full range -> minbits==32 passthrough, minval==0.
+        let raw = hex(
+            "200000000800000000000000000000000000000000",
+            "00000080ffffff7f0000000005000000",
+        );
+        let cd = so_cd(SO_INT, 0, 4, 0, 4, 1, FILL_DEFINED, 0);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Int32, 4).unwrap();
+        assert_eq!(read_i32(&out), vec![i32::MIN, i32::MAX, 0, 5]);
+    }
+
+    #[test]
+    fn interop_hdf5_u8_full_precision_passthrough() {
+        let raw = hex(
+            "080000000800000000000000000000000000000000",
+            "00ff8001fe07c809",
+        );
+        let cd = so_cd(SO_INT, 0, 8, 0, 1, 0, FILL_DEFINED, 0);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::UInt8, 8).unwrap();
+        assert_eq!(out, vec![0, 255, 128, 1, 254, 7, 200, 9]);
+    }
+
+    #[test]
+    fn interop_hdf5_i32_2d_chunk_nelmts_from_cd() {
+        // 2x3 chunk -> nelmts=6 (taken from cd_values, hint ignored).
+        let raw = hex("030000000801000000000000000000000000000000", "053940");
+        let cd = so_cd(SO_INT, 0, 6, 0, 4, 1, FILL_DEFINED, 0);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Int32, 0).unwrap();
+        assert_eq!(read_i32(&out), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn interop_hdf5_f32_dscale() {
+        // float32 D=1, min=20.1; decoded values must match libhdf5 within f32 ULP.
+        let raw = hex("0400000008cdcca041000000000000000000000000", "4562708300");
+        let cd = so_cd(SO_FLOAT_DSCALE, 1, 8, 1, 4, 0, FILL_DEFINED, 0);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Float32, 8).unwrap();
+        let got = read_f32(&out);
+        let expected = [20.5f32, 20.6, 20.7, 20.3, 20.8, 20.1, 20.9, 20.4];
+        for (g, e) in got.iter().zip(expected.iter()) {
+            assert!((g - e).abs() < 1e-4, "got {g}, expected {e}");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Hand-built spec-layout bytes (exact assertions).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn handbuilt_minbits_and_packing_exact() {
+        // Build a chunk by hand: minbits=3, minval=10, codes [0,1,2,3,4,5,6,7].
+        let mut raw = vec![0u8; HEADER_SIZE];
+        LittleEndian::write_u32(&mut raw[0..4], 3);
+        raw[4] = 8;
+        LittleEndian::write_u64(&mut raw[5..13], 10);
+        // codes 000 001 010 011 100 101 110 111 -> pack MSB-first.
+        let mut w = BitWriter::new();
+        for c in 0u64..8 {
+            w.write_bits(c, 3);
+        }
+        raw.extend_from_slice(&w.finish());
+        let cd = so_cd(SO_INT, 0, 8, 0, 4, 1, 0, 0);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Int32, 8).unwrap();
+        assert_eq!(read_i32(&out), vec![10, 11, 12, 13, 14, 15, 16, 17]);
+    }
+
+    #[test]
+    fn handbuilt_fill_code_maps_to_fill_value() {
+        // minbits=3 reserves code 7 as fill; fill value = -1.
+        let mut raw = vec![0u8; HEADER_SIZE];
+        LittleEndian::write_u32(&mut raw[0..4], 3);
+        raw[4] = 8;
+        LittleEndian::write_u64(&mut raw[5..13], 100);
+        let mut w = BitWriter::new();
+        for c in [0u64, 1, 7, 2] {
+            w.write_bits(c, 3);
+        }
+        raw.extend_from_slice(&w.finish());
+        // fill value -1 stored as its two's-complement u32 word.
+        let cd = so_cd(SO_INT, 0, 4, 0, 4, 1, FILL_DEFINED, (-1i32) as u32);
+        let out = apply_scale_offset_reverse(&raw, &cd, &Datatype::Int32, 4).unwrap();
+        assert_eq!(read_i32(&out), vec![100, 101, -1, 102]);
+    }
+
+    // ------------------------------------------------------------------
+    // Self round-trip (encode -> decode) across types and edge cases.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_i32() {
+        let values = vec![100i32, 105, 110, 103, 108, 115, 100, 120];
+        let data = make_i32(&values);
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Int32).unwrap();
+        assert!(comp.len() < data.len());
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::Int32, values.len()).unwrap();
+        assert_eq!(read_i32(&out), values);
+    }
+
+    #[test]
+    fn roundtrip_forward_matches_hdf5_bytes() {
+        // Our encoder must reproduce libhdf5's exact chunk for this input.
+        let data = make_i32(&[100, 105, 110, 103, 108, 115, 100, 120]);
+        let comp = apply_scale_offset_forward(&data, &[SO_INT, 0], &Datatype::Int32).unwrap();
+        let expected = hex("050000000864000000000000000000000000000000", "0154343c1400");
+        assert_eq!(comp, expected);
+    }
+
+    #[test]
+    fn roundtrip_i32_negative() {
+        let values = vec![-50i32, -45, -40, -55, -30, -60, -35, -42];
+        let data = make_i32(&values);
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Int32).unwrap();
+        // Byte-exact against libhdf5.
+        let expected = hex("0500000008c4ffffffffffffff0000000000000000", "53e85f033200");
+        assert_eq!(comp, expected);
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::Int32, values.len()).unwrap();
+        assert_eq!(read_i32(&out), values);
+    }
+
+    #[test]
+    fn roundtrip_u16() {
+        let values = vec![1000u16, 1001, 1002, 1003, 1004, 1005, 1006, 1007];
+        let data = make_u16(&values);
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::UInt16).unwrap();
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::UInt16, values.len()).unwrap();
+        assert_eq!(read_u16(&out), values);
+    }
+
+    #[test]
+    fn roundtrip_constant() {
+        let values = vec![42i32; 100];
+        let data = make_i32(&values);
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Int32).unwrap();
+        assert!(comp.len() < 40);
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::Int32, values.len()).unwrap();
+        assert_eq!(read_i32(&out), values);
+    }
+
+    #[test]
+    fn roundtrip_single_element() {
+        let data = make_i32(&[42]);
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Int32).unwrap();
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::Int32, 1).unwrap();
+        assert_eq!(read_i32(&out), vec![42]);
+    }
+
+    #[test]
+    fn roundtrip_i8() {
+        let byte_values: Vec<i8> = vec![-10, -5, 0, 5, 10, 15, 20, -3];
+        let data: Vec<u8> = byte_values.iter().map(|&v| v as u8).collect();
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Int8).unwrap();
+        let out =
+            apply_scale_offset_reverse(&comp, &cd, &Datatype::Int8, byte_values.len()).unwrap();
+        let got: Vec<i8> = out.iter().map(|&b| b as i8).collect();
+        assert_eq!(got, byte_values);
+    }
+
+    #[test]
+    fn roundtrip_f32() {
+        let values = [20.5f32, 20.6, 20.7, 20.3, 20.8, 20.1, 20.9, 20.4];
         let mut data = vec![0u8; values.len() * 4];
         for (i, &v) in values.iter().enumerate() {
             LittleEndian::write_f32(&mut data[i * 4..(i + 1) * 4], v);
         }
-        data
-    }
-
-    fn read_f32_data(data: &[u8]) -> Vec<f32> {
-        let mut values = Vec::new();
-        for chunk in data.chunks(4) {
-            if chunk.len() == 4 {
-                values.push(LittleEndian::read_f32(chunk));
-            }
-        }
-        values
-    }
-
-    fn make_f64_data(values: &[f64]) -> Vec<u8> {
-        let mut data = vec![0u8; values.len() * 8];
-        for (i, &v) in values.iter().enumerate() {
-            LittleEndian::write_f64(&mut data[i * 8..(i + 1) * 8], v);
-        }
-        data
-    }
-
-    fn read_f64_data(data: &[u8]) -> Vec<f64> {
-        let mut values = Vec::new();
-        for chunk in data.chunks(8) {
-            if chunk.len() == 8 {
-                values.push(LittleEndian::read_f64(chunk));
-            }
-        }
-        values
-    }
-
-    #[test]
-    fn test_scale_offset_i32_roundtrip() {
-        let values = vec![100i32, 105, 110, 103, 108, 115, 100, 120];
-        let data = make_i32_data(&values);
-        let params = [SO_INT, 0];
-
-        let compressed =
-            apply_scale_offset_forward(&data, &params, &Datatype::Int32).expect("compress failed");
-
-        // Should be smaller than original (8 values * 4 bytes = 32 bytes)
-        // Range is 0-20, needs 5 bits, so 8*5 = 40 bits = 5 bytes + 20 header = 25 bytes
-        assert!(compressed.len() < data.len());
-
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Int32)
-            .expect("decompress failed");
-        let result = read_i32_data(&decompressed);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_scale_offset_u16_roundtrip() {
-        let values = vec![1000u16, 1001, 1002, 1003, 1004, 1005, 1006, 1007];
-        let data = make_u16_data(&values);
-        let params = [SO_INT, 0];
-
-        let compressed =
-            apply_scale_offset_forward(&data, &params, &Datatype::UInt16).expect("compress failed");
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::UInt16)
-            .expect("decompress failed");
-        let result = read_u16_data(&decompressed);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_scale_offset_constant_values() {
-        // All same value - should compress very well (1 bit per value)
-        let values = vec![42i32; 100];
-        let data = make_i32_data(&values);
-        let params = [SO_INT, 0];
-
-        let compressed =
-            apply_scale_offset_forward(&data, &params, &Datatype::Int32).expect("compress failed");
-
-        // With all same values, delta is 0 for all, needs only 1 bit each
-        // 100 bits = 13 bytes + 20 header = 33 bytes vs 400 bytes original
-        assert!(compressed.len() < 40);
-
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Int32)
-            .expect("decompress failed");
-        let result = read_i32_data(&decompressed);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_scale_offset_negative_values() {
-        let values = vec![-50i32, -45, -40, -55, -30, -60, -35, -42];
-        let data = make_i32_data(&values);
-        let params = [SO_INT, 0];
-
-        let compressed =
-            apply_scale_offset_forward(&data, &params, &Datatype::Int32).expect("compress failed");
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Int32)
-            .expect("decompress failed");
-        let result = read_i32_data(&decompressed);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_scale_offset_f32_roundtrip() {
-        let values = vec![20.5f32, 20.6, 20.7, 20.3, 20.8, 20.1, 20.9, 20.4];
-        let data = make_f32_data(&values);
-        // 1 decimal digit of precision
-        let params = [SO_FLOAT_DSCALE, 1];
-
-        let compressed = apply_scale_offset_forward(&data, &params, &Datatype::Float32)
-            .expect("compress failed");
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Float32)
-            .expect("decompress failed");
-        let result = read_f32_data(&decompressed);
-
-        // Check values match within the precision of 1 decimal digit
-        for (orig, decoded) in values.iter().zip(result.iter()) {
-            assert!(
-                (orig - decoded).abs() < 0.1,
-                "Mismatch: orig={orig}, decoded={decoded}"
-            );
+        let cd = [SO_FLOAT_DSCALE, 1];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Float32).unwrap();
+        // Byte-exact against libhdf5.
+        let expected = hex("0400000008cdcca041000000000000000000000000", "4562708300");
+        assert_eq!(comp, expected);
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::Float32, values.len()).unwrap();
+        for (g, e) in read_f32(&out).iter().zip(values.iter()) {
+            assert!((g - e).abs() < 0.1);
         }
     }
 
     #[test]
-    fn test_scale_offset_f64_roundtrip() {
-        let values = vec![100.123f64, 100.456, 100.789, 100.012, 100.345, 100.678];
-        let data = make_f64_data(&values);
-        // 3 decimal digits of precision
-        let params = [SO_FLOAT_DSCALE, 3];
-
-        let compressed = apply_scale_offset_forward(&data, &params, &Datatype::Float64)
-            .expect("compress failed");
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Float64)
-            .expect("decompress failed");
-        let result = read_f64_data(&decompressed);
-
-        for (orig, decoded) in values.iter().zip(result.iter()) {
-            assert!(
-                (orig - decoded).abs() < 0.001,
-                "Mismatch: orig={orig}, decoded={decoded}"
-            );
-        }
+    fn roundtrip_i32_full_range_passthrough() {
+        let values = vec![i32::MIN, i32::MAX, 0, 5];
+        let data = make_i32(&values);
+        let cd = [SO_INT, 0];
+        let comp = apply_scale_offset_forward(&data, &cd, &Datatype::Int32).unwrap();
+        // Passthrough: 21-byte header + 4*4 raw bytes.
+        assert_eq!(comp.len(), HEADER_SIZE + 16);
+        let out = apply_scale_offset_reverse(&comp, &cd, &Datatype::Int32, values.len()).unwrap();
+        assert_eq!(read_i32(&out), values);
     }
 
     #[test]
-    fn test_scale_offset_single_element() {
-        let values = vec![42i32];
-        let data = make_i32_data(&values);
-        let params = [SO_INT, 0];
-
-        let compressed =
-            apply_scale_offset_forward(&data, &params, &Datatype::Int32).expect("compress failed");
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Int32)
-            .expect("decompress failed");
-        let result = read_i32_data(&decompressed);
-        assert_eq!(result, values);
+    fn reverse_rejects_short_chunk() {
+        let data = vec![0u8; 10];
+        let res = apply_scale_offset_reverse(&data, &[SO_INT, 0], &Datatype::Int32, 1);
+        assert!(res.is_err());
     }
 
     #[test]
-    fn test_scale_offset_i8_roundtrip() {
-        let byte_values: Vec<i8> = vec![-10, -5, 0, 5, 10, 15, 20, -3];
-        let data: Vec<u8> = byte_values.iter().map(|&v| v as u8).collect();
-        let params = [SO_INT, 0];
-
-        let compressed =
-            apply_scale_offset_forward(&data, &params, &Datatype::Int8).expect("compress failed");
-        let decompressed = apply_scale_offset_reverse(&compressed, &params, &Datatype::Int8)
-            .expect("decompress failed");
-        let result: Vec<i8> = decompressed.iter().map(|&b| b as i8).collect();
-        assert_eq!(result, byte_values);
+    fn forward_rejects_empty() {
+        let res = apply_scale_offset_forward(&[], &[SO_INT, 0], &Datatype::Int32);
+        assert!(res.is_err());
     }
 
-    #[test]
-    fn test_scale_offset_empty_data_error() {
-        let data: Vec<u8> = vec![];
-        let params = [SO_INT, 0];
-        let result = apply_scale_offset_forward(&data, &params, &Datatype::Int32);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_scale_offset_header_too_short_error() {
-        let data = vec![0u8; 10]; // Less than HEADER_SIZE
-        let params = [SO_INT, 0];
-        let result = apply_scale_offset_reverse(&data, &params, &Datatype::Int32);
-        assert!(result.is_err());
+    fn hex(a: &str, b: &str) -> Vec<u8> {
+        let mut s = String::from(a);
+        s.push_str(b);
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+            .collect()
     }
 }

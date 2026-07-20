@@ -2,7 +2,7 @@
 
 > **Purpose:** 3-D geospatial — point clouds (LAS/LAZ, COPC, EPT), TINs, meshes (OBJ, glTF 2.0/GLB), 3D Tiles (Cesium), classification (ground/vegetation/building).
 > **Status (2026-05-16):** 4,585 LoC · 78 tests · 9 real stubs in `pointcloud/copc.rs` (VLR parse, hierarchy read, LAZ decompression, header parse), `pointcloud/ept.rs:279` (decompression dispatch), `classification.rs:300` ("simplified planarity"), `terrain/dem_to_mesh.rs:438` ("simplified mesh" test comment).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Real COPC reader — parse COPC VLR + hierarchy pages

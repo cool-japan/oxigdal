@@ -7,8 +7,10 @@
 //! # Architecture Support
 //!
 //! - **aarch64**: NEON intrinsics for row-wise processing, FMA for multiply-accumulate
-//! - **x86-64**: SSE2/AVX2 for wider row processing
-//! - **Other**: Scalar fallback
+//! - **All other targets (including x86-64)**: Scalar loop relying on the
+//!   compiler's auto-vectorizer; there is no hand-written SSE2/AVX2 path in
+//!   this module today. On x86-64 this still benefits from auto-vectorization
+//!   but does not use explicit intrinsics.
 //!
 //! # Supported Filters
 //!

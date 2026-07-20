@@ -1,4 +1,5 @@
 //! Integration tests for lineage tracking.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::lineage::{
     EdgeType, LineageEdge, LineageEvent, LineageNode, NodeType, graph::LineageGraph,

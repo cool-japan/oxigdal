@@ -25,11 +25,11 @@ export declare function area(geometry: GeometryWrapper, method: string): number
 /** Simplifies a geometry using the specified method */
 export declare function simplify(geometry: GeometryWrapper, tolerance: number, method: string): GeometryWrapper
 /** Computes hillshade from a DEM */
-export declare function hillshade(dem: BufferWrapper, azimuth: number, altitude: number, zFactor: number): BufferWrapper
+export declare function hillshade(dem: BufferWrapper, azimuth: number, altitude: number, zFactor: number, pixelSize: number): BufferWrapper
 /** Computes slope from a DEM */
-export declare function slope(dem: BufferWrapper, zFactor: number, asPercent: boolean): BufferWrapper
+export declare function slope(dem: BufferWrapper, pixelSize: number, zFactor: number, asPercent: boolean): BufferWrapper
 /** Computes aspect from a DEM */
-export declare function aspect(dem: BufferWrapper): BufferWrapper
+export declare function aspect(dem: BufferWrapper, pixelSize: number): BufferWrapper
 /** Computes zonal statistics */
 export declare function zonalStats(raster: BufferWrapper, zones: BufferWrapper): Array<ZonalStatistics>
 /** Zonal statistics result */
@@ -53,11 +53,11 @@ export declare function writeGeojsonAsync(path: string, collection: FeatureColle
 /** Resamples a buffer asynchronously */
 export declare function resampleAsync(buffer: BufferWrapper, newWidth: number, newHeight: number, method: ResamplingMethod): Promise<BufferWrapper>
 /** Computes hillshade asynchronously */
-export declare function hillshadeAsync(dem: BufferWrapper, azimuth: number, altitude: number, zFactor: number): Promise<BufferWrapper>
+export declare function hillshadeAsync(dem: BufferWrapper, azimuth: number, altitude: number, zFactor: number, pixelSize: number): Promise<BufferWrapper>
 /** Computes slope asynchronously */
-export declare function slopeAsync(dem: BufferWrapper, zFactor: number, asPercent: boolean): Promise<BufferWrapper>
+export declare function slopeAsync(dem: BufferWrapper, pixelSize: number, zFactor: number, asPercent: boolean): Promise<BufferWrapper>
 /** Computes aspect asynchronously */
-export declare function aspectAsync(dem: BufferWrapper): Promise<BufferWrapper>
+export declare function aspectAsync(dem: BufferWrapper, pixelSize: number): Promise<BufferWrapper>
 /** Computes zonal statistics asynchronously */
 export declare function zonalStatsAsync(raster: BufferWrapper, zones: BufferWrapper): Promise<Array<ZonalStatistics>>
 /** Buffer operation asynchronously */
@@ -68,8 +68,24 @@ export declare function areaAsync(geometry: GeometryWrapper, method: string): Pr
 export declare function simplifyAsync(geometry: GeometryWrapper, tolerance: number, method: string): Promise<GeometryWrapper>
 /** Batch processes multiple rasters asynchronously */
 export declare function batchProcessRasters(paths: Array<string>, outputDir: string, operation: string): Promise<Array<string>>
-/** Progress callback for long-running operations */
+/**
+ * Registers a progress callback for long-running operations.
+ *
+ * The callback is invoked from Rust worker threads (via
+ * `napi_call_threadsafe_function`) with a progress fraction in
+ * `[0.0, 1.0]` at meaningful checkpoints during operations such as
+ * {@link batchProcessRasters} and {@link processRasterParallel}. Registering a
+ * new callback replaces any previously registered one.
+ */
 export declare function setProgressCallback(callback: (progress: number) => void): void
+/**
+ * Removes any previously registered progress callback.
+ *
+ * After calling this, long-running operations stop invoking any JS
+ * callback (progress notifications become no-ops) until
+ * {@link setProgressCallback} is called again.
+ */
+export declare function clearProgressCallback(): void
 /** Parallel processing configuration */
 export interface ParallelConfig {
   /** Number of threads to use (0 = automatic) */

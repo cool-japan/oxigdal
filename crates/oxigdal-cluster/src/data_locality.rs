@@ -213,7 +213,7 @@ impl DataLocalityOptimizer {
 
         // Update affinity if enabled
         if self.inner.config.enable_affinity
-            && access_count % self.inner.config.affinity_update_interval == 0
+            && access_count.is_multiple_of(self.inner.config.affinity_update_interval)
         {
             self.update_affinity(data_key, worker_id)?;
         }

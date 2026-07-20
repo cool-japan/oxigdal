@@ -1,7 +1,7 @@
 //! Operation composition utilities
 
 use crate::SyncResult;
-use crate::ot::{TextOperation, Transform};
+use crate::ot::{Priority, TextOperation, Transform};
 
 /// Composes multiple text operations into a single operation
 pub struct OperationComposer {
@@ -66,7 +66,12 @@ impl Default for OperationComposer {
 /// - a' is a transformed against b
 /// - b' is b transformed against a
 ///
-/// After transformation: apply(a, apply(b, s)) == apply(b', apply(a', s))
+/// After transformation: apply(b', apply(a, s)) == apply(a', apply(b, s))
+/// for any starting document `s` -- this is the standard OT convergence
+/// property (TP1). To guarantee it, `a` is given [`Priority::Left`] and `b`
+/// is given [`Priority::Right`] so that if both operations insert content at
+/// the same position, both resulting operations agree that `a`'s insertion
+/// comes first.
 ///
 /// # Arguments
 ///
@@ -80,8 +85,8 @@ pub fn transform_pair(
     a: &TextOperation,
     b: &TextOperation,
 ) -> SyncResult<(TextOperation, TextOperation)> {
-    let a_prime = a.transform(b)?;
-    let b_prime = b.transform(a)?;
+    let a_prime = a.transform(b, Priority::Left)?;
+    let b_prime = b.transform(a, Priority::Right)?;
     Ok((a_prime, b_prime))
 }
 
@@ -107,7 +112,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "OT compose algorithm needs review - length tracking issue"]
     fn test_composer_compose() -> SyncResult<()> {
         let mut composer = OperationComposer::new();
 
@@ -132,7 +136,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "OT transform algorithm needs review - convergence property"]
     fn test_transform_pair() -> SyncResult<()> {
         let mut op_a = TextOperation::with_base_length(0);
         op_a.insert("A".to_string());

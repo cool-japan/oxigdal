@@ -210,8 +210,21 @@ impl Pipeline {
         PipelineBuilder::new()
     }
 
-    /// Run the pipeline in batch mode
+    /// Run the pipeline in batch mode, consuming it.
+    ///
+    /// This is a thin wrapper over [`Pipeline::run_ref`] retained for the common one-shot case
+    /// where the pipeline is not reused. Schedulers and other callers that need to execute the
+    /// same pipeline repeatedly should hold the [`Pipeline`] and call [`Pipeline::run_ref`].
     pub async fn run(self) -> Result<PipelineStats> {
+        self.run_ref().await
+    }
+
+    /// Run the pipeline in batch mode without consuming it.
+    ///
+    /// Every source/transform/sink operation already operates through `&self`, so the pipeline
+    /// can be executed repeatedly (e.g. by [`crate::scheduler::Scheduler`]). Each invocation
+    /// re-opens the source stream and produces a fresh [`PipelineStats`].
+    pub async fn run_ref(&self) -> Result<PipelineStats> {
         info!(
             "Starting pipeline '{}' in {:?} mode",
             self.config.id, self.config.mode
@@ -298,7 +311,7 @@ impl Pipeline {
 
                 // Checkpoint if needed
                 if self.config.stream.checkpointing
-                    && items_processed % self.config.stream.checkpoint_interval == 0
+                    && items_processed.is_multiple_of(self.config.stream.checkpoint_interval)
                 {
                     debug!("Creating checkpoint at {} items", items_processed);
                     state_manager

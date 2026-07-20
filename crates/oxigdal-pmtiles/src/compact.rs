@@ -21,8 +21,10 @@
 //!    to obtain the raw payload.
 //! 4. When [`CompactOptions::deduplicate`] is `true`, track already-seen
 //!    content via a `HashMap<Vec<u8>, u64>` (bytes → first tile_id) and note
-//!    duplicates for statistics; the builder's own FNV-1a hash ensures the
-//!    physical payload is shared in the output regardless.
+//!    duplicates for statistics; the builder's own dedup logic (an FNV-1a
+//!    hash pre-filter verified by a full byte-for-byte comparison) ensures
+//!    the physical payload is shared in the output regardless, with no risk
+//!    of a hash collision merging distinct content.
 //! 5. Feed all tiles into a fresh [`PmTilesBuilder`] via `add_tile_by_id`.
 //! 6. Propagate header fields (tile type, zoom, bounds, centre) from the source
 //!    when [`CompactOptions::preserve_metadata`] is `true`.
@@ -44,12 +46,15 @@ use crate::writer::PmTilesBuilder;
 #[derive(Debug, Clone)]
 pub struct CompactOptions {
     /// When `true`, tiles with identical byte content share a single physical
-    /// payload in the output archive.  The builder already deduplicates by
-    /// FNV-1a hash; this flag additionally tracks duplicate dispatches so that
+    /// payload in the output archive.  The builder already deduplicates
+    /// (an FNV-1a hash pre-filter followed by a mandatory byte-for-byte
+    /// comparison, so a hash collision can never merge distinct content);
+    /// this flag additionally tracks duplicate dispatches so that
     /// [`CompactStats::tiles_deduplicated`] is accurate.
     ///
     /// When `false`, every tile is dispatched to the builder individually,
-    /// but the builder still deduplicates by content hash unless disabled.
+    /// but the builder still deduplicates by verified content equality
+    /// unless disabled.
     ///
     /// Default: `true`.
     pub deduplicate: bool,
@@ -238,10 +243,12 @@ fn compact_inner(
     // -----------------------------------------------------------------------
     // Step 4: Feed tiles into the builder.
     //
-    // `content_map` tracks already-seen raw bytes (keyed by the byte vector)
-    // purely for statistics when `deduplicate == true`.  The builder always
-    // deduplicates by FNV-1a hash regardless of this flag, but `content_map`
-    // lets us count how many tiles were "duplicate" from a logical perspective.
+    // `content_map` tracks already-seen raw bytes (keyed by the byte vector
+    // itself, so no hash-collision ambiguity is possible here) purely for
+    // statistics when `deduplicate == true`.  The builder always deduplicates
+    // (FNV-1a pre-filter plus a mandatory byte-for-byte comparison) regardless
+    // of this flag, but `content_map` lets us count how many tiles were
+    // "duplicate" from a logical perspective.
     //
     // All tiles are dispatched to the builder (we never skip a tile_id from
     // the directory), so that every tile_id remains addressable in the output.

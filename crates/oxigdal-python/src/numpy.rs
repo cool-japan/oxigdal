@@ -580,11 +580,112 @@ impl ZeroCopyBuffer {
         Ok(array.into_any().unbind())
     }
 
-    /// Converts complex data to NumPy array
+    /// Converts complex data to a NumPy array with a native complex dtype.
+    ///
+    /// `CFloat32` buffers (8 bytes/element = 2 x f32) map to `numpy.complex64`
+    /// and `CFloat64` buffers (16 bytes/element = 2 x f64) map to
+    /// `numpy.complex128`, preserving both real and imaginary components
+    /// exactly. Byte order is native (matching how the buffer was produced).
     fn to_numpy_complex<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        // For now, return as float array with interleaved real/imaginary
-        // TODO: Use proper complex dtype when pyo3 supports it
-        self.to_numpy_typed::<f64>(py)
+        let height = self.height as usize;
+        let width = self.width as usize;
+
+        match self.data_type {
+            RasterDataType::CFloat32 => {
+                const ELEM_SIZE: usize = 8; // 2 x f32
+                let expected = height * width * ELEM_SIZE;
+                if self.data.len() < expected {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Complex64 buffer too small: expected {} bytes for {}x{}, got {}",
+                        expected,
+                        width,
+                        height,
+                        self.data.len()
+                    )));
+                }
+
+                let mut nested: Vec<Vec<numpy::Complex32>> = Vec::with_capacity(height);
+                for y in 0..height {
+                    let mut row = Vec::with_capacity(width);
+                    for x in 0..width {
+                        let off = (y * width + x) * ELEM_SIZE;
+                        let re = f32::from_ne_bytes(
+                            self.data[off..off + 4].try_into().map_err(|_| {
+                                pyo3::exceptions::PyValueError::new_err(
+                                    "Invalid complex64 slice",
+                                )
+                            })?,
+                        );
+                        let im = f32::from_ne_bytes(
+                            self.data[off + 4..off + 8].try_into().map_err(|_| {
+                                pyo3::exceptions::PyValueError::new_err(
+                                    "Invalid complex64 slice",
+                                )
+                            })?,
+                        );
+                        row.push(numpy::Complex32::new(re, im));
+                    }
+                    nested.push(row);
+                }
+
+                let array = PyArray2::from_vec2(py, &nested).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Failed to create complex64 NumPy array: {}",
+                        e
+                    ))
+                })?;
+                Ok(array.into_any().unbind())
+            }
+            RasterDataType::CFloat64 => {
+                const ELEM_SIZE: usize = 16; // 2 x f64
+                let expected = height * width * ELEM_SIZE;
+                if self.data.len() < expected {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Complex128 buffer too small: expected {} bytes for {}x{}, got {}",
+                        expected,
+                        width,
+                        height,
+                        self.data.len()
+                    )));
+                }
+
+                let mut nested: Vec<Vec<numpy::Complex64>> = Vec::with_capacity(height);
+                for y in 0..height {
+                    let mut row = Vec::with_capacity(width);
+                    for x in 0..width {
+                        let off = (y * width + x) * ELEM_SIZE;
+                        let re = f64::from_ne_bytes(
+                            self.data[off..off + 8].try_into().map_err(|_| {
+                                pyo3::exceptions::PyValueError::new_err(
+                                    "Invalid complex128 slice",
+                                )
+                            })?,
+                        );
+                        let im = f64::from_ne_bytes(
+                            self.data[off + 8..off + 16].try_into().map_err(|_| {
+                                pyo3::exceptions::PyValueError::new_err(
+                                    "Invalid complex128 slice",
+                                )
+                            })?,
+                        );
+                        row.push(numpy::Complex64::new(re, im));
+                    }
+                    nested.push(row);
+                }
+
+                let array = PyArray2::from_vec2(py, &nested).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Failed to create complex128 NumPy array: {}",
+                        e
+                    ))
+                })?;
+                Ok(array.into_any().unbind())
+            }
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "to_numpy_complex called on non-complex dtype {:?}",
+                other
+            ))),
+        }
     }
 }
 
@@ -1636,5 +1737,82 @@ mod tests {
         assert!(validate_array_shape(&[10, 20], 2, "test").is_ok());
         assert!(validate_array_shape(&[10, 20], 3, "test").is_err());
         assert!(validate_array_shape(&[5, 10, 15], 3, "test").is_ok());
+    }
+
+    #[test]
+    fn test_complex64_roundtrip_to_numpy() {
+        use numpy::{PyArray2, PyArrayMethods};
+
+        // 2x2 CFloat32 buffer with known (re, im) values including negatives/zeros.
+        let values: [(f32, f32); 4] =
+            [(1.0, -2.0), (0.0, 0.0), (3.5, 4.5), (-1.0, 0.0)];
+        let mut data = Vec::with_capacity(4 * 8);
+        for (re, im) in values {
+            data.extend_from_slice(&re.to_ne_bytes());
+            data.extend_from_slice(&im.to_ne_bytes());
+        }
+
+        let zc = ZeroCopyBuffer::new(data, 2, 2, RasterDataType::CFloat32, NoDataValue::None)
+            .expect("zero-copy buffer construction should succeed in test");
+
+        Python::initialize();
+        Python::attach(|py| {
+            let obj = zc
+                .to_numpy(py)
+                .expect("to_numpy should produce a complex64 array in test");
+            let bound = obj.bind(py);
+
+            // dtype must be complex64 (a downcast to Complex32 only succeeds
+            // when the underlying numpy dtype is complex64).
+            let arr = bound
+                .downcast::<PyArray2<numpy::Complex32>>()
+                .expect("array should be complex64 in test");
+            let ro = arr.readonly();
+            let slice = ro
+                .as_slice()
+                .expect("complex array should be contiguous in test");
+
+            assert_eq!(slice.len(), 4);
+            assert_eq!(slice[0], numpy::Complex32::new(1.0, -2.0));
+            assert_eq!(slice[1], numpy::Complex32::new(0.0, 0.0));
+            assert_eq!(slice[2], numpy::Complex32::new(3.5, 4.5));
+            assert_eq!(slice[3], numpy::Complex32::new(-1.0, 0.0));
+        });
+    }
+
+    #[test]
+    fn test_complex128_roundtrip_to_numpy() {
+        use numpy::{PyArray2, PyArrayMethods};
+
+        // 1x2 CFloat64 buffer.
+        let values: [(f64, f64); 2] = [(2.5, -3.5), (-7.0, 8.0)];
+        let mut data = Vec::with_capacity(2 * 16);
+        for (re, im) in values {
+            data.extend_from_slice(&re.to_ne_bytes());
+            data.extend_from_slice(&im.to_ne_bytes());
+        }
+
+        let zc = ZeroCopyBuffer::new(data, 2, 1, RasterDataType::CFloat64, NoDataValue::None)
+            .expect("zero-copy buffer construction should succeed in test");
+
+        Python::initialize();
+        Python::attach(|py| {
+            let obj = zc
+                .to_numpy(py)
+                .expect("to_numpy should produce a complex128 array in test");
+            let bound = obj.bind(py);
+
+            let arr = bound
+                .downcast::<PyArray2<numpy::Complex64>>()
+                .expect("array should be complex128 in test");
+            let ro = arr.readonly();
+            let slice = ro
+                .as_slice()
+                .expect("complex array should be contiguous in test");
+
+            assert_eq!(slice.len(), 2);
+            assert_eq!(slice[0], numpy::Complex64::new(2.5, -3.5));
+            assert_eq!(slice[1], numpy::Complex64::new(-7.0, 8.0));
+        });
     }
 }

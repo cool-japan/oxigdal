@@ -3,7 +3,7 @@
 //! All tests here exercise purely in-process logic — no wgpu device is
 //! created, so these pass on machines without GPU hardware.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{
     GpuError,

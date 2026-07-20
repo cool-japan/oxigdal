@@ -328,7 +328,7 @@ impl TrendAnalyzer {
             .collect();
 
         intercepts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        if intercepts.len() % 2 == 0 {
+        if intercepts.len().is_multiple_of(2) {
             (intercepts[intercepts.len() / 2 - 1] + intercepts[intercepts.len() / 2]) / 2.0
         } else {
             intercepts[intercepts.len() / 2]

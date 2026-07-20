@@ -19,6 +19,9 @@
 //! makes `count_set`, `all_unset`, and `any_set` trivially correct without
 //! any per-call tail masking.
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use crate::error::{OxiGdalError, Result};
 
 /// A 2-D boolean bitmask for a raster region.
@@ -69,11 +72,11 @@ impl Mask {
     fn clear_tail_bits(&mut self) {
         let pixel_count = self.width * self.height;
         let tail = pixel_count % 64;
-        if tail != 0 {
-            if let Some(last) = self.data.last_mut() {
-                // Keep only the lower `tail` bits.
-                *last &= (1u64 << tail).wrapping_sub(1);
-            }
+        if tail != 0
+            && let Some(last) = self.data.last_mut()
+        {
+            // Keep only the lower `tail` bits.
+            *last &= (1u64 << tail).wrapping_sub(1);
         }
     }
 

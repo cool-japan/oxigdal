@@ -46,6 +46,12 @@ impl Style {
         self.poly_style = Some(poly_style);
         self
     }
+
+    /// Set label style.
+    pub fn with_label_style(mut self, label_style: LabelStyle) -> Self {
+        self.label_style = Some(label_style);
+        self
+    }
 }
 
 /// Icon style for points.
@@ -186,6 +192,25 @@ pub struct LabelStyle {
     pub scale: f64,
 }
 
+impl LabelStyle {
+    /// Create new label style.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set color.
+    pub fn with_color<S: Into<String>>(mut self, color: S) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+
+    /// Set scale.
+    pub fn with_scale(mut self, scale: f64) -> Self {
+        self.scale = scale;
+        self
+    }
+}
+
 impl Default for LabelStyle {
     fn default() -> Self {
         Self {
@@ -258,6 +283,16 @@ mod tests {
 
         assert!(poly.fill);
         assert!(!poly.outline);
+    }
+
+    #[test]
+    fn test_label_style() {
+        let label = LabelStyle::new().with_color("ff0000ff").with_scale(2.0);
+        assert_eq!(label.color, Some("ff0000ff".to_string()));
+        assert_eq!(label.scale, 2.0);
+
+        let style = Style::new().with_label_style(label);
+        assert!(style.label_style.is_some());
     }
 
     #[test]

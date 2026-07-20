@@ -180,15 +180,18 @@ fn test_rtree_interior_node_routes_to_leaf() {
     // Node 2 is a leaf with one entry.
     let leaf_blob = build_leaf_node_blob(2, &[(55, 3.0, 6.0, 3.0, 6.0)]);
 
-    // Node 1 is an interior node with one cell pointing to node 2.
+    // Node 1 is an interior node (root, depth 1: one level above the leaf)
+    // with one cell pointing to node 2.
     // Cell format reuses build_interior_node_blob: (child_node_id, min_x, max_x, min_y, max_y).
-    let root_blob = build_interior_node_blob(1, &[(2, 0.0, 10.0, 0.0, 10.0)]);
+    let root_blob = build_interior_node_blob(1, 1, &[(2, 0.0, 10.0, 0.0, 10.0)]);
 
     let mut nodes = HashMap::new();
     nodes.insert(1i64, root_blob);
     nodes.insert(2i64, leaf_blob);
 
-    // max_node_id = 2 so that node id=2 is recognised as a node pointer.
+    // Leaf/interior classification is driven by the root's declared depth
+    // (encoded in root_blob's header above), not by max_node_id; the second
+    // argument here only feeds the informational max_node_id() accessor.
     let reader = GpkgRTreeReader::for_testing(nodes, 2);
 
     assert_eq!(reader.len(), 2, "reader must hold 2 nodes");

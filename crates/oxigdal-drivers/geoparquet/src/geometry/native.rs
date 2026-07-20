@@ -758,10 +758,10 @@ fn list_of_points_bbox_mask(
         }
         let start = offsets[i] as usize;
         let end = offsets[i + 1] as usize;
-        if let Some((xmin, ymin, xmax, ymax)) = coord_range_bbox(&coords, start, end) {
-            if bbox_intersects(xmin, ymin, xmax, ymax, qxmin, qymin, qxmax, qymax) {
-                *m = true;
-            }
+        if let Some((xmin, ymin, xmax, ymax)) = coord_range_bbox(&coords, start, end)
+            && bbox_intersects(xmin, ymin, xmax, ymax, qxmin, qymin, qxmax, qymax)
+        {
+            *m = true;
         }
     }
     Ok(mask)
@@ -799,10 +799,10 @@ fn list_of_list_of_points_bbox_mask(
                 });
             }
         }
-        if let Some((xmin, ymin, xmax, ymax)) = overall {
-            if bbox_intersects(xmin, ymin, xmax, ymax, qxmin, qymin, qxmax, qymax) {
-                *m = true;
-            }
+        if let Some((xmin, ymin, xmax, ymax)) = overall
+            && bbox_intersects(xmin, ymin, xmax, ymax, qxmin, qymin, qxmax, qymax)
+        {
+            *m = true;
         }
     }
     Ok(mask)
@@ -847,10 +847,10 @@ fn list_of_list_of_list_of_points_bbox_mask(
                 }
             }
         }
-        if let Some((xmin, ymin, xmax, ymax)) = overall {
-            if bbox_intersects(xmin, ymin, xmax, ymax, qxmin, qymin, qxmax, qymax) {
-                *m = true;
-            }
+        if let Some((xmin, ymin, xmax, ymax)) = overall
+            && bbox_intersects(xmin, ymin, xmax, ymax, qxmin, qymin, qxmax, qymax)
+        {
+            *m = true;
         }
     }
     Ok(mask)

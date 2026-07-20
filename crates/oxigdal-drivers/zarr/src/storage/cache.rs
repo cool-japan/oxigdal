@@ -89,10 +89,10 @@ impl<S: Store> CachingStorage<S> {
             }
 
             for key in to_remove {
-                if let Some(entry) = cache.remove(&key) {
-                    if let Ok(mut size) = self.current_size.write() {
-                        *size = size.saturating_sub(entry.value.len());
-                    }
+                if let Some(entry) = cache.remove(&key)
+                    && let Ok(mut size) = self.current_size.write()
+                {
+                    *size = size.saturating_sub(entry.value.len());
                 }
             }
         }
@@ -104,11 +104,11 @@ impl<S: Store> Store for CachingStorage<S> {
         let cache_key = key.as_str().to_string();
 
         // Check cache first
-        if let Ok(mut cache) = self.cache.write() {
-            if let Some(entry) = cache.get_mut(&cache_key) {
-                entry.access_count += 1;
-                return Ok(entry.value.clone());
-            }
+        if let Ok(mut cache) = self.cache.write()
+            && let Some(entry) = cache.get_mut(&cache_key)
+        {
+            entry.access_count += 1;
+            return Ok(entry.value.clone());
         }
 
         // Fetch from underlying storage
@@ -136,12 +136,11 @@ impl<S: Store> Store for CachingStorage<S> {
     fn set(&mut self, key: &StoreKey, value: &[u8]) -> Result<()> {
         // Invalidate cache entry
         let cache_key = key.as_str().to_string();
-        if let Ok(mut cache) = self.cache.write() {
-            if let Some(entry) = cache.remove(&cache_key) {
-                if let Ok(mut size) = self.current_size.write() {
-                    *size = size.saturating_sub(entry.value.len());
-                }
-            }
+        if let Ok(mut cache) = self.cache.write()
+            && let Some(entry) = cache.remove(&cache_key)
+            && let Ok(mut size) = self.current_size.write()
+        {
+            *size = size.saturating_sub(entry.value.len());
         }
 
         self.inner.set(key, value)
@@ -150,12 +149,11 @@ impl<S: Store> Store for CachingStorage<S> {
     fn delete(&mut self, key: &StoreKey) -> Result<()> {
         // Invalidate cache entry
         let cache_key = key.as_str().to_string();
-        if let Ok(mut cache) = self.cache.write() {
-            if let Some(entry) = cache.remove(&cache_key) {
-                if let Ok(mut size) = self.current_size.write() {
-                    *size = size.saturating_sub(entry.value.len());
-                }
-            }
+        if let Ok(mut cache) = self.cache.write()
+            && let Some(entry) = cache.remove(&cache_key)
+            && let Ok(mut size) = self.current_size.write()
+        {
+            *size = size.saturating_sub(entry.value.len());
         }
 
         self.inner.delete(key)
@@ -164,10 +162,10 @@ impl<S: Store> Store for CachingStorage<S> {
     fn exists(&self, key: &StoreKey) -> Result<bool> {
         // Check cache first
         let cache_key = key.as_str().to_string();
-        if let Ok(cache) = self.cache.read() {
-            if cache.contains_key(&cache_key) {
-                return Ok(true);
-            }
+        if let Ok(cache) = self.cache.read()
+            && cache.contains_key(&cache_key)
+        {
+            return Ok(true);
         }
 
         self.inner.exists(key)

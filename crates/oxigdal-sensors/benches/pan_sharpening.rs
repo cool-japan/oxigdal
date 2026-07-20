@@ -8,13 +8,14 @@ use std::hint::black_box;
 
 fn bench_brovey(c: &mut Criterion) {
     let size = 1000;
-    let ms = Array2::from_elem((size, size), 0.5);
-    let pan = Array2::from_elem((size, size), 0.8);
+    let ms = Array2::from_elem((size, size), 0.5_f64);
+    let pan = Array2::from_elem((size, size), 0.8_f64);
     let transform = BroveyTransform;
 
     c.bench_function("brovey_1000x1000", |b| {
         b.iter(|| {
-            let result = transform.sharpen(&black_box(ms.clone()), &black_box(pan.clone()));
+            let bands = [ms.view(), ms.view(), ms.view()];
+            let result = transform.sharpen(black_box(&bands), black_box(&pan.view()));
             black_box(result)
         })
     });
@@ -22,13 +23,14 @@ fn bench_brovey(c: &mut Criterion) {
 
 fn bench_ihs(c: &mut Criterion) {
     let size = 1000;
-    let ms = Array2::from_elem((size, size), 0.5);
-    let pan = Array2::from_elem((size, size), 0.8);
+    let ms = Array2::from_elem((size, size), 0.5_f64);
+    let pan = Array2::from_elem((size, size), 0.8_f64);
     let transform = IHSPanSharpening;
 
     c.bench_function("ihs_1000x1000", |b| {
         b.iter(|| {
-            let result = transform.sharpen(&black_box(ms.clone()), &black_box(pan.clone()));
+            let bands = [ms.view(), ms.view(), ms.view()];
+            let result = transform.sharpen(black_box(&bands), black_box(&pan.view()));
             black_box(result)
         })
     });

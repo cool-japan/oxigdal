@@ -106,15 +106,12 @@ impl ResponseTransformer {
             .transform_request_headers(path, method, &mut transformed.headers)?;
 
         // Transform body if needed
-        if !transformed.body.is_empty() {
-            if let Some(content_type) = transformed.content_type() {
-                transformed.body = self.engine.transform_request_body(
-                    path,
-                    method,
-                    transformed.body,
-                    content_type,
-                )?;
-            }
+        if !transformed.body.is_empty()
+            && let Some(content_type) = transformed.content_type()
+        {
+            transformed.body =
+                self.engine
+                    .transform_request_body(path, method, transformed.body, content_type)?;
         }
 
         Ok(transformed)

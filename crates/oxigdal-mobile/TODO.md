@@ -2,7 +2,7 @@
 
 > **Purpose:** C-compatible FFI bindings exposing OxiGDAL to iOS (Swift) and Android (Kotlin/JNI) apps. Includes `cbindgen.toml` header generation and Swift/Kotlin scaffolding under `bindings/`.
 > **Status (2026-05-17):** 12,978 LoC · 178 #[test] attributes · 5 real-code placeholders.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace placeholder Android vector geometry with real feature payload

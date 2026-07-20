@@ -331,7 +331,7 @@ pub fn compress_bc4_block_cpu(r_block: &[u8; 16]) -> [u8; 8] {
 /// Returns [`GpuError::InvalidKernelParams`] when either dimension is not a
 /// multiple of 4.
 pub fn validate_texture_dimensions(width: u32, height: u32) -> GpuResult<()> {
-    if width % 4 != 0 || height % 4 != 0 {
+    if !width.is_multiple_of(4) || !height.is_multiple_of(4) {
         Err(GpuError::invalid_kernel_params(
             "width and height must be multiples of 4",
         ))
@@ -1023,7 +1023,9 @@ impl TextureCompressor {
             .map_err(|_| GpuError::buffer_mapping("TC staging channel closed"))?
             .map_err(|e| GpuError::buffer_mapping(e.to_string()))?;
 
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|e| GpuError::buffer_mapping(e.to_string()))?;
         let output_u32: &[u32] = bytemuck::cast_slice(&mapped[..total_blocks * 8]);
         let out_bytes: Vec<u8> = bytemuck::cast_slice(output_u32)[..output_bytes].to_vec();
         drop(mapped);

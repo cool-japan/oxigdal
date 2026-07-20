@@ -1,7 +1,7 @@
 //! Coordinate transformation operations.
 //!
 //! This module provides coordinate transformation capabilities between different CRS
-//! using the proj4rs library for pure Rust implementations, as well as native pure-Rust
+//! using the OxiProj library for pure Rust implementations, as well as native pure-Rust
 //! implementations of many map projections.
 //!
 //! # Module Structure
@@ -32,6 +32,16 @@ use alloc::format;
 use core::fmt;
 #[cfg(feature = "std")]
 use std::sync::Mutex;
+
+#[cfg(feature = "std")]
+thread_local! {
+    /// Per-thread cache of `oxiproj::Transformer` objects keyed by
+    /// `(src_proj_string, tgt_proj_string)`.  Avoids rebuilding the
+    /// transformation pipeline on every call to `transform_impl`.
+    static OXI_TRANSFORMER_CACHE: std::cell::RefCell<
+        std::collections::HashMap<(String, String), oxiproj::Transformer>
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
 
 #[cfg(feature = "std")]
 use crate::proj_string::ProjString;
@@ -277,11 +287,13 @@ pub struct AreaOfUseWarning {
 pub struct Transformer {
     source_crs: Crs,
     target_crs: Crs,
-    proj: Option<proj4rs::Proj>,
+    /// OxiProj source and target CRS pair used to build a transformer on demand.
+    /// `None` when the transformation is an identity (same CRS, compound, or engineering).
+    oxi_crs_pair: Option<(oxiproj::Crs, oxiproj::Crs)>,
     /// When `true` (the default), `transform` rejects points that lie outside
     /// the source CRS's declared area of use by returning
     /// [`Error::OutOfAreaOfUse`].  When `false`, the check is skipped and the
-    /// underlying proj4rs transform is attempted unconditionally.
+    /// underlying OxiProj transform is attempted unconditionally.
     strict: bool,
     /// Opt-in per-instance area-of-use validation mode (orthogonal to the
     /// legacy `strict` boolean above which only fires for geographic source
@@ -337,27 +349,33 @@ impl Transformer {
         // an opaque WKT-conversion error.
         let either_engineering = source_crs.is_engineering() || target_crs.is_engineering();
 
-        let proj = if is_compound || either_engineering || source_crs.is_equivalent(&target_crs) {
-            None
-        } else {
-            // Initialize proj4rs transformation for non-compound CRS pairs.
-            let source_proj_str = source_crs.to_proj_string()?;
-            let target_proj_str = target_crs.to_proj_string()?;
-
-            let _source_proj = proj4rs::Proj::from_proj_string(&source_proj_str)
-                .map_err(|e| Error::projection_init_error(format!("Source CRS: {:?}", e)))?;
-
-            let target_proj = proj4rs::Proj::from_proj_string(&target_proj_str)
-                .map_err(|e| Error::projection_init_error(format!("Target CRS: {:?}", e)))?;
-
-            // We'll store the target proj for now, and use proj4rs::transform later
-            Some(target_proj)
-        };
+        let oxi_crs_pair =
+            if is_compound || either_engineering || source_crs.is_equivalent(&target_crs) {
+                None
+            } else {
+                let oxi_src = crs_to_oxi(&source_crs)?;
+                let oxi_tgt = crs_to_oxi(&target_crs)?;
+                // Build once, both to validate that the transformer can be
+                // constructed (errors surface here rather than being deferred
+                // to the first `.transform()` call) AND to prime this
+                // thread's `OXI_TRANSFORMER_CACHE` (used by `transform_impl`)
+                // with the already-built instance. Without this, every
+                // freshly constructed `Transformer` paid for a second,
+                // redundant `oxiproj::Transformer::new` on its very first
+                // `.transform()` call.
+                let validated = oxiproj::Transformer::new(oxi_src.clone(), oxi_tgt.clone())
+                    .map_err(crate::error::Error::from)?;
+                let cache_key = (oxi_crs_key(&oxi_src), oxi_crs_key(&oxi_tgt));
+                OXI_TRANSFORMER_CACHE.with(|cell| {
+                    cell.borrow_mut().entry(cache_key).or_insert(validated);
+                });
+                Some((oxi_src, oxi_tgt))
+            };
 
         Ok(Self {
             source_crs,
             target_crs,
-            proj,
+            oxi_crs_pair,
             strict: true,
             area_of_use_check: AreaOfUseCheck::default(),
             last_warning: Mutex::new(None),
@@ -614,7 +632,7 @@ impl Transformer {
         self.check_area_of_use(coord.x, coord.y)?;
 
         // If no transformation needed, return as-is
-        if self.proj.is_none() {
+        if self.oxi_crs_pair.is_none() {
             return Ok(*coord);
         }
 
@@ -631,19 +649,19 @@ impl Transformer {
         // comparing them against degree-based AoU bounds is meaningless.
         // `area_of_use()` returns None for CRS created from PROJ strings, WKT, or
         // custom definitions, in which case the check is skipped silently.
-        if self.strict && self.source_crs.is_geographic() {
-            if let Some(aou) = self.source_crs.area_of_use() {
-                if !aou.contains(coord.x, coord.y) {
-                    return Err(Error::out_of_area_of_use(
-                        coord.x,
-                        coord.y,
-                        self.source_crs.to_string(),
-                    ));
-                }
-            }
+        if self.strict
+            && self.source_crs.is_geographic()
+            && let Some(aou) = self.source_crs.area_of_use()
+            && !aou.contains(coord.x, coord.y)
+        {
+            return Err(Error::out_of_area_of_use(
+                coord.x,
+                coord.y,
+                self.source_crs.to_string(),
+            ));
         }
 
-        // Perform transformation using proj4rs
+        // Perform transformation using OxiProj
         self.transform_impl(coord)
     }
 
@@ -669,6 +687,31 @@ impl Transformer {
     /// The coordinate convention is: `coord.x` = geodetic longitude (degrees),
     /// `coord.y` = geodetic latitude (degrees), `coord.z` = ellipsoidal height
     /// (metres).
+    ///
+    /// ## Ordinary (non-compound, non-ITRF) datum-changing 3-D transforms
+    ///
+    /// For a plain horizontal-datum change between two **geographic** CRS
+    /// (e.g. NAD27 → WGS84, ED50 → WGS84, Tokyo → WGS84, OSGB36 → WGS84)
+    /// where [`Crs::datum`] resolves to one of the datum names this crate
+    /// ships a published Bursa-Wolf preset for (see
+    /// [`crate::datum_transform::BursaWolfParams`]), the point is routed
+    /// through the full geodetic → ECEF → 7-parameter Helmert → ECEF →
+    /// geodetic round trip, so the returned height is adjusted consistently
+    /// with the horizontal shift (mirroring the ITRF-epoch branch above).
+    ///
+    /// **For every other CRS pair** — an unrecognised/custom datum name, a
+    /// projected CRS on either side (where `x`/`y` are eastings/northings,
+    /// not lon/lat, so no geodetic Helmert shift can be applied without
+    /// first un-projecting), or CRS sourced from a PROJ string/WKT/custom
+    /// definition (which carry no datum name at all) — only the horizontal
+    /// `(x, y)` is transformed and `z` is passed through **unchanged**.
+    /// This is a known, deliberate limitation, not a bug: a horizontal
+    /// datum shift generally *does* change ellipsoidal height, so treat the
+    /// returned height as unreliable whenever the source/target datum names
+    /// are not both one of the recognised pairs above. Callers that need a
+    /// hard guarantee should either restrict themselves to the recognised
+    /// datum pairs, or perform their own geodetic Helmert shift via
+    /// [`crate::datum_transform::BursaWolfParams::transform_geodetic`].
     pub fn transform_3d(&self, coord: &Coordinate3D) -> Result<Coordinate3D> {
         // ITRF epoch-aware branch: applies before all other transformations.
         if let (Some((params, ref_epoch)), Some(t0), Some(t1)) =
@@ -787,7 +830,7 @@ impl Transformer {
             return Ok(Coordinate3D::new(transformed_xy.x, transformed_xy.y, z));
         }
 
-        if self.proj.is_none() {
+        if self.oxi_crs_pair.is_none() {
             return Ok(*coord);
         }
 
@@ -797,11 +840,43 @@ impl Transformer {
             ));
         }
 
+        // Height-consistent horizontal datum shift: when both CRS are
+        // geographic (so `coord.x`/`coord.y` are genuinely lon/lat degrees,
+        // not projected eastings/northings) and their datum names resolve
+        // to a known published Bursa-Wolf preset, route the point through
+        // the full geodetic -> ECEF -> 7-parameter Helmert -> ECEF ->
+        // geodetic round trip. This adjusts height consistently with the
+        // horizontal shift instead of leaving it untouched.
+        if self.source_crs.is_geographic()
+            && self.target_crs.is_geographic()
+            && let (Some(src_datum), Some(dst_datum)) =
+                (self.source_crs.datum(), self.target_crs.datum())
+            && let Some(shift) = known_horizontal_datum_shift(src_datum, dst_datum)
+        {
+            let lat_rad = coord.y.to_radians();
+            let lon_rad = coord.x.to_radians();
+            let (lat_out_rad, lon_out_rad, h_out) = shift.params.transform_geodetic(
+                lat_rad,
+                lon_rad,
+                coord.z,
+                &shift.source_ellipsoid,
+                &shift.target_ellipsoid,
+            );
+            return Ok(Coordinate3D::new(
+                lon_out_rad.to_degrees(),
+                lat_out_rad.to_degrees(),
+                h_out,
+            ));
+        }
+
         // Transform 2D part
         let coord_2d = coord.to_2d();
         let transformed_2d = self.transform_impl(&coord_2d)?;
 
-        // Keep Z coordinate (proper 3D transformation would require more complex logic)
+        // No known height-consistent datum-shift preset applies to this CRS
+        // pair (see the "Ordinary ... 3-D transforms" section of this
+        // method's doc comment for the exact scope): Z is passed through
+        // unchanged rather than fabricated.
         Ok(Coordinate3D::new(
             transformed_2d.x,
             transformed_2d.y,
@@ -850,7 +925,7 @@ impl Transformer {
         }
 
         // We only accelerate Geographic → Projected (forward) transforms.
-        // Projected → Geographic (inverse) falls back to proj4rs.
+        // Projected → Geographic (inverse) falls back to OxiProj.
         if !self.source_crs.is_geographic() || !self.target_crs.is_projected() {
             return None;
         }
@@ -1104,7 +1179,7 @@ impl Transformer {
     ///
     /// Returns an error if the transformation fails.
     pub fn transform_bbox(&self, bbox: &BoundingBox) -> Result<BoundingBox> {
-        if self.proj.is_none() {
+        if self.oxi_crs_pair.is_none() {
             return Ok(*bbox);
         }
 
@@ -1128,48 +1203,156 @@ impl Transformer {
         BoundingBox::new(min_x, min_y, max_x, max_y)
     }
 
-    /// Internal implementation of coordinate transformation using proj4rs.
+    /// Internal implementation of coordinate transformation using OxiProj.
+    ///
+    /// The underlying [`oxiproj::Transformer`] is cached per thread keyed by
+    /// the (src, tgt) CRS identifier pair, so subsequent calls for the same
+    /// CRS pair reuse the already-built pipeline without re-initialisation.
     fn transform_impl(&self, coord: &Coordinate) -> Result<Coordinate> {
-        let source_proj_str = self.source_crs.to_proj_string()?;
-        let target_proj_str = self.target_crs.to_proj_string()?;
+        match &self.oxi_crs_pair {
+            Some((oxi_src, oxi_tgt)) => {
+                let src_key = oxi_crs_key(oxi_src);
+                let tgt_key = oxi_crs_key(oxi_tgt);
+                let cache_key = (src_key, tgt_key);
 
-        let source_proj = proj4rs::Proj::from_proj_string(&source_proj_str)
-            .map_err(|e| Error::from_proj4rs(format!("{:?}", e)))?;
+                let oxi_coord = oxiproj::Coordinate {
+                    x: coord.x,
+                    y: coord.y,
+                };
 
-        let target_proj = proj4rs::Proj::from_proj_string(&target_proj_str)
-            .map_err(|e| Error::from_proj4rs(format!("{:?}", e)))?;
+                let out = OXI_TRANSFORMER_CACHE.with(|cell| -> Result<oxiproj::Coordinate> {
+                    let mut map = cell.borrow_mut();
+                    // Use entry API to build the transformer only on first use for
+                    // this (src, tgt) key, then call transform on the cached value.
+                    let entry = map.entry(cache_key);
+                    let t = match entry {
+                        std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(v) => {
+                            let transformer =
+                                oxiproj::Transformer::new(oxi_src.clone(), oxi_tgt.clone())
+                                    .map_err(crate::error::Error::from)?;
+                            v.insert(transformer)
+                        }
+                    };
+                    t.transform(&oxi_coord).map_err(crate::error::Error::from)
+                })?;
 
-        // Convert to radians if source is geographic
-        let mut x = coord.x;
-        let mut y = coord.y;
-
-        if self.source_crs.is_geographic() {
-            x = x.to_radians();
-            y = y.to_radians();
+                let result = Coordinate { x: out.x, y: out.y };
+                if !result.is_valid() {
+                    return Err(Error::transformation_error(
+                        "Transformation resulted in non-finite values",
+                    ));
+                }
+                Ok(result)
+            }
+            None => Ok(*coord),
         }
+    }
+}
 
-        // Perform transformation using a mutable array (proj4rs requires slice)
-        let mut points = [(x, y)];
-        proj4rs::transform::transform(&source_proj, &target_proj, &mut points[..])
-            .map_err(|e| Error::transformation_error(format!("{:?}", e)))?;
+/// A known 7-parameter Helmert datum-shift preset, together with the
+/// source/target reference ellipsoids the preset's ECEF rotation and
+/// translation were fitted against. Used by [`Transformer::transform_3d`]'s
+/// general (non-compound, non-ITRF) 3-D fallback to compute a
+/// height-consistent horizontal datum shift.
+#[cfg(feature = "std")]
+struct HorizontalDatumShift {
+    params: crate::datum_transform::BursaWolfParams,
+    source_ellipsoid: crate::datum_transform::Ellipsoid,
+    target_ellipsoid: crate::datum_transform::Ellipsoid,
+}
 
-        let (mut result_x, mut result_y) = points[0];
+/// Looks up a known, published Bursa-Wolf datum-shift preset for the given
+/// `(source_datum, target_datum)` name pair (case-insensitive), matching
+/// either the forward ("named datum → WGS84") or inverse ("WGS84 → named
+/// datum") direction.
+///
+/// This intentionally covers only the small set of named datums this crate
+/// already ships hard-coded EPSG transformation parameters for
+/// ([`crate::datum_transform::BursaWolfParams::nad27_to_wgs84_conus`],
+/// `ed50_to_wgs84`, `tokyo_to_wgs84`, `osgb36_to_wgs84`). Unknown or
+/// unrecognised datum name pairs return `None`, in which case
+/// [`Transformer::transform_3d`] falls back to a documented
+/// height-preserving passthrough.
+#[cfg(feature = "std")]
+fn known_horizontal_datum_shift(
+    source_datum: &str,
+    target_datum: &str,
+) -> Option<HorizontalDatumShift> {
+    use crate::datum_transform::{BursaWolfParams, Ellipsoid};
 
-        // Convert from radians if target is geographic
-        if self.target_crs.is_geographic() {
-            result_x = result_x.to_degrees();
-            result_y = result_y.to_degrees();
+    /// `(non-WGS84 datum name as it appears in the EPSG registry `datum`
+    /// field, that datum's reference ellipsoid, the "named datum → WGS84"
+    /// preset constructor)`.
+    type DatumPreset = (&'static str, Ellipsoid, fn() -> BursaWolfParams);
+
+    let src = source_datum.to_ascii_uppercase();
+    let tgt = target_datum.to_ascii_uppercase();
+
+    let presets: [DatumPreset; 4] = [
+        (
+            "NAD27",
+            Ellipsoid::CLARKE1866,
+            BursaWolfParams::nad27_to_wgs84_conus,
+        ),
+        (
+            "ED50",
+            Ellipsoid::INTERNATIONAL,
+            BursaWolfParams::ed50_to_wgs84,
+        ),
+        ("TOKYO", Ellipsoid::BESSEL, BursaWolfParams::tokyo_to_wgs84),
+        ("OSGB36", Ellipsoid::AIRY, BursaWolfParams::osgb36_to_wgs84),
+    ];
+
+    for (name, ellipsoid, preset_fn) in presets {
+        if src == name && tgt == "WGS84" {
+            return Some(HorizontalDatumShift {
+                params: preset_fn(),
+                source_ellipsoid: ellipsoid,
+                target_ellipsoid: Ellipsoid::WGS84,
+            });
         }
-
-        let transformed = Coordinate::new(result_x, result_y);
-
-        if !transformed.is_valid() {
-            return Err(Error::transformation_error(
-                "Transformation resulted in non-finite values",
-            ));
+        if tgt == name && src == "WGS84" {
+            return Some(HorizontalDatumShift {
+                params: preset_fn().inverse(),
+                source_ellipsoid: Ellipsoid::WGS84,
+                target_ellipsoid: ellipsoid,
+            });
         }
+    }
 
-        Ok(transformed)
+    None
+}
+
+/// Returns a stable string key for an [`oxiproj::Crs`] suitable for use as
+/// a cache key.  Tries the EPSG code first (cheap, stable), then falls back
+/// to the PROJ string representation.
+#[cfg(feature = "std")]
+fn oxi_crs_key(crs: &oxiproj::Crs) -> String {
+    if let Some(code) = crs.epsg_code() {
+        return format!("epsg:{code}");
+    }
+    crs.to_proj_string()
+        .unwrap_or_else(|_| crs.name().unwrap_or("unknown").to_string())
+}
+
+/// Converts an [`oxigdal_proj::Crs`] to an [`oxiproj::Crs`] for use with the
+/// OxiProj transformation engine.
+#[cfg(feature = "std")]
+fn crs_to_oxi(crs: &Crs) -> Result<oxiproj::Crs> {
+    match crs.source() {
+        // `oxiproj::Crs::from_epsg` only exists when `oxiproj/epsg` is enabled, which by
+        // design happens solely under the opt-in `proj-db` feature (it pulls `oxiproj-db`,
+        // i.e. tokio + std process/fs, and is not wasm-safe). Without `proj-db`, an
+        // EPSG-sourced CRS is resolved via the pure-Rust embedded registry
+        // (`to_proj_string` → `lookup_epsg`) and `oxiproj::Crs::from_proj`, keeping the
+        // default and wasm builds free of oxiproj-db.
+        #[cfg(feature = "proj-db")]
+        CrsSource::Epsg(code) => oxiproj::Crs::from_epsg(*code).map_err(crate::error::Error::from),
+        _ => {
+            let proj_str = crs.to_proj_string()?;
+            oxiproj::Crs::from_proj(&proj_str).map_err(crate::error::Error::from)
+        }
     }
 }
 
@@ -1279,7 +1462,39 @@ pub fn transform_coordinate(
     transformer.transform(coord)
 }
 
+/// Process-wide cache of [`Transformer`] instances keyed by
+/// `(src_epsg, dst_epsg)`, backing [`transform_epsg`].
+///
+/// Without this cache, every call to `transform_epsg` paid the full cost of
+/// [`Transformer::from_epsg`] — `Crs::from_epsg` × 2, `crs_to_oxi` × 2 (PROJ
+/// string parsing, and EPSG-database resolution when the opt-in `proj-db`
+/// feature is active), plus an `oxiproj::Transformer` construction — on
+/// *every single coordinate*. For bulk workloads (one coordinate at a time
+/// through a dense GeoJSON geometry, a tile pipeline, …) this dominated
+/// runtime. Reusing the same `Arc<Transformer>` across calls for a repeated
+/// EPSG pair amortises that cost to a single build.
+///
+/// Capacity is a pragmatic default sized for typical ETL/tile pipelines that
+/// cycle through a modest number of distinct EPSG pairs. Callers with wider
+/// fan-out, or who want explicit control over the cache's lifetime/capacity,
+/// should build their own [`crate::cache::TransformerCache`] (or construct
+/// and reuse a bare [`Transformer`] directly) instead of calling
+/// `transform_epsg` in a hot loop.
+#[cfg(feature = "std")]
+static GLOBAL_TRANSFORMER_CACHE: once_cell::sync::Lazy<crate::cache::TransformerCache> =
+    once_cell::sync::Lazy::new(|| crate::cache::TransformerCache::new(64));
+
 /// Transforms coordinates from one EPSG code to another (convenience function).
+///
+/// Internally reuses a process-wide, thread-safe cache of already-built
+/// [`Transformer`] instances keyed by `(source_epsg, target_epsg)` — see
+/// `GLOBAL_TRANSFORMER_CACHE` — so repeated calls with the same EPSG pair
+/// do not re-resolve the CRS or reinitialise the underlying `oxiproj`
+/// transformer pipeline. For transforming many coordinates through the same
+/// pair, prefer building a [`Transformer`] once (via
+/// [`Transformer::from_epsg`]) and calling [`Transformer::transform`]
+/// directly, or reuse a [`crate::cache::TransformerCache`] handle — both
+/// avoid this function's per-call cache lookup overhead.
 #[cfg(feature = "std")]
 ///
 /// # Arguments
@@ -1296,7 +1511,7 @@ pub fn transform_epsg(
     source_epsg: u32,
     target_epsg: u32,
 ) -> Result<Coordinate> {
-    let transformer = Transformer::from_epsg(source_epsg, target_epsg)?;
+    let transformer = GLOBAL_TRANSFORMER_CACHE.get_or_build(source_epsg, target_epsg)?;
     transformer.transform(coord)
 }
 
@@ -1482,6 +1697,72 @@ mod tests {
         assert_eq!(result.expect("should transform"), coord);
     }
 
+    /// Regression test for the `transform_epsg` reusable-Transformer cache:
+    /// repeated calls for the same `(src, dst)` EPSG pair must all return
+    /// bit-for-bit identical results — this is a pure performance refactor
+    /// (route through `GLOBAL_TRANSFORMER_CACHE` instead of rebuilding a
+    /// fresh `Transformer` on every call), not a behavior change.
+    #[test]
+    fn test_transform_epsg_repeated_calls_are_consistent() {
+        let coord = Coordinate::new(139.7671, 35.6812);
+
+        let first = transform_epsg(&coord, 4326, 32654).expect("first call");
+        for _ in 0..25 {
+            let repeat = transform_epsg(&coord, 4326, 32654).expect("repeat call");
+            assert_eq!(
+                repeat, first,
+                "cached transform_epsg must be deterministic across calls"
+            );
+        }
+    }
+
+    /// `transform_epsg` (cached) must produce the exact same result as
+    /// explicitly building a fresh [`Transformer`] via [`Transformer::from_epsg`]
+    /// for the same EPSG pair — proving the cache reuse introduced no
+    /// numerical drift relative to the uncached path.
+    #[test]
+    fn test_transform_epsg_matches_fresh_transformer_from_epsg() {
+        let coord = Coordinate::new(-122.4194, 37.7749);
+
+        let via_cache = transform_epsg(&coord, 4326, 32610).expect("cached path");
+        let fresh_transformer = Transformer::from_epsg(4326, 32610).expect("fresh transformer");
+        let via_fresh = fresh_transformer
+            .transform(&coord)
+            .expect("fresh transform");
+
+        assert!(
+            (via_cache.x - via_fresh.x).abs() < 1e-9,
+            "x mismatch: cached={} fresh={}",
+            via_cache.x,
+            via_fresh.x
+        );
+        assert!(
+            (via_cache.y - via_fresh.y).abs() < 1e-9,
+            "y mismatch: cached={} fresh={}",
+            via_cache.y,
+            via_fresh.y
+        );
+    }
+
+    /// The cache is keyed by `(src_epsg, dst_epsg)`: interleaving calls for
+    /// several distinct EPSG pairs must not corrupt or cross-contaminate
+    /// results for any one pair.
+    #[test]
+    fn test_transform_epsg_distinct_pairs_do_not_interfere() {
+        let tokyo = Coordinate::new(139.7671, 35.6812);
+        let sf = Coordinate::new(-122.4194, 37.7749);
+
+        let tokyo_expected = transform_epsg(&tokyo, 4326, 32654).expect("tokyo baseline");
+        let sf_expected = transform_epsg(&sf, 4326, 32610).expect("sf baseline");
+
+        for _ in 0..10 {
+            let tokyo_out = transform_epsg(&tokyo, 4326, 32654).expect("tokyo repeat");
+            let sf_out = transform_epsg(&sf, 4326, 32610).expect("sf repeat");
+            assert_eq!(tokyo_out, tokyo_expected);
+            assert_eq!(sf_out, sf_expected);
+        }
+    }
+
     #[test]
     fn test_transform_invalid_coordinate() {
         let transformer = Transformer::from_epsg(4326, 3857).expect("should create");
@@ -1579,5 +1860,91 @@ mod tests {
         assert!((output.x - input.x).abs() < 1e-9);
         assert!((output.y - input.y).abs() < 1e-9);
         assert!((output.z - input.z).abs() < 1e-9);
+    }
+
+    /// Regression test: an ordinary (non-compound, non-ITRF) cross-datum 3-D
+    /// transform between two geographic CRS with a recognised named datum
+    /// pair (NAD27 → WGS84) must adjust height consistently with the
+    /// horizontal shift, instead of silently leaving `z` untouched.
+    #[test]
+    fn test_transform_3d_nad27_to_wgs84_adjusts_height() {
+        // EPSG:4267 = NAD27 geographic, EPSG:4326 = WGS84 geographic.
+        let transformer = Transformer::from_epsg(4267, 4326).expect("NAD27 -> WGS84");
+        let input = Coordinate3D::new(-100.0, 40.0, 200.0);
+        let output = transformer
+            .transform_3d(&input)
+            .expect("should transform NAD27 -> WGS84 3D");
+
+        // The NAD27 CONUS Bursa-Wolf preset has translations on the order of
+        // tens to hundreds of metres, so the resulting height must move by
+        // a physically significant amount (bounded well below the ~200 m
+        // scale of the translation itself, but unmistakably non-zero).
+        assert!(
+            (output.z - input.z).abs() > 1.0,
+            "expected height to change measurably under NAD27 -> WGS84, got {} vs {}",
+            output.z,
+            input.z
+        );
+        // Horizontal position must also move (NAD27 and WGS84 differ).
+        assert!(
+            (output.x - input.x).abs() > 1e-6 || (output.y - input.y).abs() > 1e-6,
+            "expected horizontal position to change under NAD27 -> WGS84"
+        );
+        assert!(output.is_valid());
+    }
+
+    /// The inverse direction (WGS84 → NAD27) must also apply the
+    /// height-consistent shift (using the preset's `.inverse()`).
+    #[test]
+    fn test_transform_3d_wgs84_to_nad27_adjusts_height() {
+        let transformer = Transformer::from_epsg(4326, 4267).expect("WGS84 -> NAD27");
+        let input = Coordinate3D::new(-100.0, 40.0, 200.0);
+        let output = transformer
+            .transform_3d(&input)
+            .expect("should transform WGS84 -> NAD27 3D");
+
+        assert!(
+            (output.z - input.z).abs() > 1.0,
+            "expected height to change measurably under WGS84 -> NAD27, got {} vs {}",
+            output.z,
+            input.z
+        );
+        assert!(output.is_valid());
+    }
+
+    /// Round-tripping NAD27 -> WGS84 -> NAD27 through `transform_3d` must
+    /// recover the original (lon, lat, height) to within the Bursa-Wolf
+    /// linearisation + Bowring iteration error budget.
+    #[test]
+    fn test_transform_3d_nad27_wgs84_round_trip() {
+        let fwd = Transformer::from_epsg(4267, 4326).expect("NAD27 -> WGS84");
+        let inv = Transformer::from_epsg(4326, 4267).expect("WGS84 -> NAD27");
+
+        let original = Coordinate3D::new(-100.0, 40.0, 200.0);
+        let transformed = fwd.transform_3d(&original).expect("forward NAD27 -> WGS84");
+        let recovered = inv
+            .transform_3d(&transformed)
+            .expect("inverse WGS84 -> NAD27");
+
+        assert!((recovered.x - original.x).abs() < 1e-6);
+        assert!((recovered.y - original.y).abs() < 1e-6);
+        assert!((recovered.z - original.z).abs() < 1e-2);
+    }
+
+    /// A datum pair with no known Bursa-Wolf preset (e.g. WGS84 ->
+    /// EPSG:4283, GDA94 — no preset registered) must keep the documented
+    /// passthrough behavior: `z` unchanged. This is the intentional
+    /// remaining scope of the limitation, not a regression.
+    #[test]
+    fn test_transform_3d_unknown_datum_pair_still_passes_z_through() {
+        let transformer = Transformer::from_epsg(4326, 4283).expect("WGS84 -> GDA94");
+        let input = Coordinate3D::new(140.0, -30.0, 123.456);
+        let output = transformer
+            .transform_3d(&input)
+            .expect("should transform WGS84 -> GDA94 3D");
+        assert!(
+            (output.z - input.z).abs() < 1e-9,
+            "z must still pass through for datum pairs without a known preset"
+        );
     }
 }

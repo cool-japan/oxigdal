@@ -22,6 +22,14 @@ Advanced mobile platform optimizations for iOS and Android geospatial applicatio
 - Cellular data usage minimization
 - Smart prefetching strategies
 
+> **Note on network type detection:** a pure-Rust library cannot observe the
+> active connection type on its own. The host app must report it from
+> `NWPathMonitor` (iOS) / `ConnectivityManager` (Android) via
+> `NetworkOptimizer::set_network_type` (and optionally real measurements via
+> `set_network_quality`). Until the host reports one, `detect_network_type()`
+> returns `NetworkType::Unknown`, which is handled conservatively as a metered
+> link — it never assumes an unmetered WiFi connection.
+
 ### Background Task Management
 - Priority-based task scheduling
 - Platform-aware execution limits
@@ -39,19 +47,35 @@ Advanced mobile platform optimizations for iOS and Android geospatial applicatio
 ### iOS-Specific Features
 - Metal GPU acceleration hints
 - Core Image integration support
-- iOS memory pressure handling
+- iOS memory pressure handling (live physical-memory telemetry)
+- Device/OS-version introspection via `sysctl` on iOS targets
 - Background execution management
 - Hardware accelerated image decoding
 - Texture compression
+
+> **Note:** on an actual iOS target, `IOSPlatform::current()` reads the real
+> device class and OS version (`hw.machine` / `kern.osproductversion`), and
+> `IOSMemoryManager::update_stats()` reads live physical memory. On non-iOS
+> builds (desktop/CI) these return documented best-effort defaults or an explicit
+> error — never silently fabricated device data.
 
 ### Android-Specific Features
 - RenderScript acceleration hints (legacy)
 - Vulkan/OpenGL GPU acceleration
 - ART runtime optimizations
 - Lifecycle-aware processing
-- Low Memory Killer awareness
+- Low Memory Killer awareness (real `onTrimMemory` trim level threading)
 - Hardware bitmap support
 - Dalvik/ART heap monitoring
+
+> **Note:** on an actual Android target, `AndroidDevice::current()` reads the
+> real API level (`ro.build.version.sdk`) and derives the performance tier from
+> real device RAM, and `AndroidMemoryManager::update_stats()` reads live
+> total/available RAM and app RSS. Java/ART-heap sizes and the exact
+> `ActivityManager` low-memory threshold require JNI at the host-app call site;
+> without a live JNI context those specific fields are `0`/heuristic estimates,
+> not live telemetry, until the host injects them via
+> `AndroidMemoryManager::update_stats_with`.
 
 ## Installation
 
@@ -59,14 +83,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-mobile-enhanced = "0.1.5"
+oxigdal-mobile-enhanced = "0.1.7"
 ```
 
 ### Feature Flags
 
 - `std` (default): Standard library support
-- `ios`: Enable iOS-specific optimizations
-- `android`: Enable Android-specific optimizations
+- `ios`: Enable iOS-specific optimizations (uses `sysinfo` for live memory and `libc` for `sysctl` device introspection)
+- `android`: Enable Android-specific optimizations (uses `sysinfo` for live memory and `libc` for system-property introspection)
 - `battery-aware`: Enable battery monitoring (requires `sysinfo`)
 - `network-optimization`: Enable network optimization features
 - `gesture-support`: Enable gesture-based interaction support

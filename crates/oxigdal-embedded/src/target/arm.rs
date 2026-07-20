@@ -77,9 +77,15 @@ pub fn memory_barrier() {
 }
 
 /// Get cycle count from ARM performance counter
+///
+/// The performance-counter registers (`PMCCNTR`/`PMCCNTR_EL0`) are only
+/// accessible from privileged modes, so the register reads are emitted solely
+/// for bare-metal targets (`target_os = "none"`). On a hosted OS (including an
+/// `aarch64` development host) reading them from user space would trap with an
+/// illegal-instruction fault, so this returns `None` there instead.
 #[inline]
 pub fn cycle_count() -> Option<u64> {
-    #[cfg(target_arch = "arm")]
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
     {
         // Read PMCCNTR (Performance Monitors Cycle Count Register)
         // Note: This requires appropriate permissions and setup
@@ -94,7 +100,7 @@ pub fn cycle_count() -> Option<u64> {
         Some(count as u64)
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     {
         // Read PMCCNTR_EL0 (Performance Monitors Cycle Count Register)
         let count: u64;
@@ -108,7 +114,7 @@ pub fn cycle_count() -> Option<u64> {
         Some(count)
     }
 
-    #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    #[cfg(not(all(any(target_arch = "arm", target_arch = "aarch64"), target_os = "none")))]
     {
         None
     }
@@ -215,6 +221,61 @@ pub mod cache {
     /// Invalidate data cache for the specified address range (no-op on non-ARM)
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     pub unsafe fn invalidate_dcache(_addr: usize, _size: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// ARM power management
+///
+/// These primitives use ISA-level instructions (WFI/WFE) that are portable
+/// across ARM cores. CPU frequency scaling and peripheral clock gating are
+/// SoC-specific (they live in vendor clock/power controllers, not the ARM ISA)
+/// and are therefore not provided here.
+pub mod power {
+    use crate::error::Result;
+
+    /// Wait for interrupt (WFI) — halt the CPU until an interrupt arrives
+    ///
+    /// On Cortex-M/Cortex-A this suspends execution and drops the core into a
+    /// low-power state until a wake event (interrupt) occurs. This is a real,
+    /// ISA-level power reduction.
+    ///
+    /// The instruction is only emitted for bare-metal targets
+    /// (`target_os = "none"`); on a hosted OS (including an `aarch64` dev host)
+    /// executing `WFI` from user space can trap, so this is a no-op there.
+    #[cfg(all(any(target_arch = "arm", target_arch = "aarch64"), target_os = "none"))]
+    pub fn wait_for_interrupt() -> Result<()> {
+        // SAFETY: WFI has no memory or stack effects; it only affects the core
+        // power state and returns on the next interrupt.
+        unsafe {
+            core::arch::asm!("wfi", options(nostack, nomem));
+        }
+        Ok(())
+    }
+
+    /// Wait for interrupt (no-op on non-bare-metal / non-ARM targets)
+    #[cfg(not(all(any(target_arch = "arm", target_arch = "aarch64"), target_os = "none")))]
+    pub fn wait_for_interrupt() -> Result<()> {
+        Ok(())
+    }
+
+    /// Wait for event (WFE) — halt the CPU until an event or interrupt arrives
+    ///
+    /// Emitted only for bare-metal targets (`target_os = "none"`); a no-op on a
+    /// hosted OS where `WFE` from user space can trap.
+    #[cfg(all(any(target_arch = "arm", target_arch = "aarch64"), target_os = "none"))]
+    pub fn wait_for_event() -> Result<()> {
+        // SAFETY: WFE has no memory or stack effects; it only affects the core
+        // power state and returns on the next event/interrupt.
+        unsafe {
+            core::arch::asm!("wfe", options(nostack, nomem));
+        }
+        Ok(())
+    }
+
+    /// Wait for event (no-op on non-bare-metal / non-ARM targets)
+    #[cfg(not(all(any(target_arch = "arm", target_arch = "aarch64"), target_os = "none")))]
+    pub fn wait_for_event() -> Result<()> {
         Ok(())
     }
 }

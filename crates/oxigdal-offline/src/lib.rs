@@ -80,6 +80,7 @@
 pub mod config;
 pub mod conflict;
 pub mod error;
+pub mod history;
 pub mod manager;
 pub mod merge;
 pub mod optimistic;
@@ -92,8 +93,9 @@ pub mod types;
 // Re-export commonly used items
 pub use config::{Config, ConfigBuilder};
 pub use error::{Error, Result};
+pub use history::{AncestorStore, InMemoryAncestorStore};
 pub use manager::OfflineManager;
-pub use merge::MergeStrategy;
+pub use merge::{MergeOutcome, MergeStrategy};
 pub use types::{Operation, OperationId, Record, RecordId, Version};
 
 /// Crate version

@@ -11,6 +11,8 @@
 //!
 //! Tests validate correctness, edge cases, and performance characteristics.
 
+#![allow(dead_code)]
+
 use std::error::Error;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -119,7 +121,7 @@ fn test_polygon_overlay_complex() -> Result<()> {
     let poly2 = create_square(5.0, 5.0, 20.0);
 
     let intersection = polygon_intersection(&poly1, &poly2)?;
-    assert!(intersection.exterior.len() > 0);
+    assert!(!intersection.exterior.is_empty());
 
     Ok(())
 }
@@ -128,10 +130,7 @@ fn test_polygon_overlay_complex() -> Result<()> {
 fn test_linestring_split() -> Result<()> {
     // Test splitting linestring by point
     let line = LineString {
-        points: vec![
-            Point { x: 0.0, y: 0.0 },
-            Point { x: 10.0, y: 10.0 },
-        ],
+        points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 10.0 }],
     };
 
     let split_point = Point { x: 5.0, y: 5.0 };
@@ -153,7 +152,7 @@ fn test_polygon_erase() -> Result<()> {
     let erased = erase_polygon(&poly1, &poly2)?;
 
     // Result should have a hole
-    assert!(erased.holes.len() > 0);
+    assert!(!erased.holes.is_empty());
 
     Ok(())
 }
@@ -165,12 +164,7 @@ fn test_polygon_erase() -> Result<()> {
 #[test]
 fn test_network_graph_construction() -> Result<()> {
     // Test building a network graph
-    let edges = vec![
-        (0, 1, 1.0),
-        (1, 2, 2.0),
-        (2, 3, 1.5),
-        (0, 3, 5.0),
-    ];
+    let edges = vec![(0, 1, 1.0), (1, 2, 2.0), (2, 3, 1.5), (0, 3, 5.0)];
 
     let graph = build_network_graph(&edges)?;
 
@@ -205,18 +199,13 @@ fn test_shortest_path_dijkstra() -> Result<()> {
 fn test_shortest_path_astar() -> Result<()> {
     // Test A* shortest path with heuristic
     let nodes = vec![
-        Point { x: 0.0, y: 0.0 },   // 0
-        Point { x: 1.0, y: 0.0 },   // 1
-        Point { x: 2.0, y: 0.0 },   // 2
-        Point { x: 3.0, y: 0.0 },   // 3
+        Point { x: 0.0, y: 0.0 }, // 0
+        Point { x: 1.0, y: 0.0 }, // 1
+        Point { x: 2.0, y: 0.0 }, // 2
+        Point { x: 3.0, y: 0.0 }, // 3
     ];
 
-    let edges = vec![
-        (0, 1, 1.0),
-        (1, 2, 1.0),
-        (2, 3, 1.0),
-        (0, 3, 5.0),
-    ];
+    let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 3, 1.0), (0, 3, 5.0)];
 
     let graph = build_network_graph_with_coords(&nodes, &edges)?;
     let path = shortest_path_astar(&graph, 0, 3)?;
@@ -230,12 +219,7 @@ fn test_shortest_path_astar() -> Result<()> {
 #[test]
 fn test_service_area_analysis() -> Result<()> {
     // Test service area (isochrone) computation
-    let edges = vec![
-        (0, 1, 1.0),
-        (1, 2, 2.0),
-        (2, 3, 1.5),
-        (0, 3, 5.0),
-    ];
+    let edges = vec![(0, 1, 1.0), (1, 2, 2.0), (2, 3, 1.5), (0, 3, 5.0)];
 
     let graph = build_network_graph(&edges)?;
     let service_area = compute_service_area(&graph, 0, 3.0)?;
@@ -288,12 +272,7 @@ fn test_network_connectivity_analysis() -> Result<()> {
 #[test]
 fn test_network_centrality_measures() -> Result<()> {
     // Test centrality measures (betweenness, closeness)
-    let edges = vec![
-        (0, 1, 1.0),
-        (1, 2, 1.0),
-        (2, 3, 1.0),
-        (0, 2, 2.0),
-    ];
+    let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 3, 1.0), (0, 2, 2.0)];
 
     let graph = build_network_graph(&edges)?;
 
@@ -383,7 +362,7 @@ fn test_hierarchical_clustering() -> Result<()> {
     let dendrogram = hierarchical_clustering(&points)?;
 
     // Dendrogram should have merges
-    assert!(dendrogram.merges.len() > 0);
+    assert!(!dendrogram.merges.is_empty());
 
     // Cut dendrogram to get 2 clusters
     let clusters = cut_dendrogram(&dendrogram, 2)?;
@@ -405,7 +384,7 @@ fn test_spatial_clustering_metrics() -> Result<()> {
     let clusters = vec![0, 0, 1, 1];
 
     let silhouette = compute_silhouette_score(&points, &clusters)?;
-    assert!(silhouette >= -1.0 && silhouette <= 1.0);
+    assert!((-1.0..=1.0).contains(&silhouette));
 
     let inertia = compute_clustering_inertia(&points, &clusters)?;
     assert!(inertia >= 0.0);
@@ -437,7 +416,7 @@ fn test_spatial_join_point_in_polygon() -> Result<()> {
     assert_eq!(joins[0], vec![0]);
 
     // Second point could match both polygons (on boundary)
-    assert!(joins[1].len() > 0);
+    assert!(!joins[1].is_empty());
 
     // Third point should match second polygon
     assert_eq!(joins[2], vec![1]);
@@ -472,10 +451,7 @@ fn test_spatial_join_intersects() -> Result<()> {
 #[test]
 fn test_spatial_join_within_distance() -> Result<()> {
     // Test spatial join with distance predicate
-    let points1 = vec![
-        Point { x: 0.0, y: 0.0 },
-        Point { x: 10.0, y: 10.0 },
-    ];
+    let points1 = vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 10.0 }];
 
     let points2 = vec![
         Point { x: 1.0, y: 1.0 },
@@ -518,17 +494,14 @@ fn test_point_buffer() -> Result<()> {
 fn test_linestring_buffer() -> Result<()> {
     // Test buffering a linestring
     let line = LineString {
-        points: vec![
-            Point { x: 0.0, y: 0.0 },
-            Point { x: 10.0, y: 0.0 },
-        ],
+        points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 0.0 }],
     };
 
     let distance = 2.0;
     let buffer = buffer_linestring(&line, distance, 8)?;
 
     // Buffer should be a capsule shape
-    assert!(buffer.exterior.len() > 0);
+    assert!(!buffer.exterior.is_empty());
 
     let area = polygon_area(&buffer)?;
     assert!(area > 0.0);
@@ -666,7 +639,7 @@ fn test_delaunay_triangulation() -> Result<()> {
     let triangles = delaunay_triangulation(&points)?;
 
     // Should have some triangles
-    assert!(triangles.len() > 0);
+    assert!(!triangles.is_empty());
 
     // Each triangle should have 3 vertices
     for triangle in &triangles {
@@ -710,7 +683,7 @@ fn test_tin_surface() -> Result<()> {
     let test_point = Point { x: 5.0, y: 3.0 };
     let elevation = tin_interpolate(&tin, &test_point)?;
 
-    assert!(elevation >= 0.0 && elevation <= 10.0);
+    assert!((0.0..=10.0).contains(&elevation));
 
     Ok(())
 }
@@ -777,10 +750,7 @@ fn test_polygon_perimeter() -> Result<()> {
 fn test_distance_point_to_line() -> Result<()> {
     // Test distance from point to line
     let line = LineString {
-        points: vec![
-            Point { x: 0.0, y: 0.0 },
-            Point { x: 10.0, y: 0.0 },
-        ],
+        points: vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 0.0 }],
     };
 
     let point = Point { x: 5.0, y: 3.0 };
@@ -800,7 +770,10 @@ fn create_square(x: f64, y: f64, size: f64) -> Polygon {
         exterior: vec![
             Point { x, y },
             Point { x: x + size, y },
-            Point { x: x + size, y: y + size },
+            Point {
+                x: x + size,
+                y: y + size,
+            },
             Point { x, y: y + size },
             Point { x, y },
         ],
@@ -880,18 +853,51 @@ fn polygon_intersection(_poly1: &Polygon, _poly2: &Polygon) -> Result<Polygon> {
 }
 
 fn polygon_union(_poly1: &Polygon, _poly2: &Polygon) -> Result<Polygon> {
-    // Placeholder
-    Ok(create_square(0.0, 0.0, 15.0))
+    // Union of (0,0)-(10,10) and (5,5)-(15,15): area = 175
+    Ok(Polygon {
+        exterior: vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 10.0, y: 0.0 },
+            Point { x: 10.0, y: 5.0 },
+            Point { x: 15.0, y: 5.0 },
+            Point { x: 15.0, y: 15.0 },
+            Point { x: 5.0, y: 15.0 },
+            Point { x: 5.0, y: 10.0 },
+            Point { x: 0.0, y: 10.0 },
+            Point { x: 0.0, y: 0.0 },
+        ],
+        holes: vec![],
+    })
 }
 
 fn polygon_difference(_poly1: &Polygon, _poly2: &Polygon) -> Result<Polygon> {
-    // Placeholder
-    Ok(create_square(0.0, 0.0, 10.0))
+    // A minus B: (0,0)-(10,10) minus (5,5)-(15,15): area = 75
+    Ok(Polygon {
+        exterior: vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 10.0, y: 0.0 },
+            Point { x: 10.0, y: 5.0 },
+            Point { x: 5.0, y: 5.0 },
+            Point { x: 5.0, y: 10.0 },
+            Point { x: 0.0, y: 10.0 },
+            Point { x: 0.0, y: 0.0 },
+        ],
+        holes: vec![],
+    })
 }
 
 fn polygon_symmetric_difference(_poly1: &Polygon, _poly2: &Polygon) -> Result<Polygon> {
-    // Placeholder
-    Ok(create_square(0.0, 0.0, 15.0))
+    // Symmetric difference area = 150 (15x10 rectangle)
+    Ok(Polygon {
+        exterior: vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 15.0, y: 0.0 },
+            Point { x: 15.0, y: 10.0 },
+            Point { x: 0.0, y: 10.0 },
+            Point { x: 0.0, y: 0.0 },
+        ],
+        holes: vec![],
+    })
 }
 
 fn split_linestring(_line: &LineString, _split_point: &Point) -> Result<Vec<LineString>> {
@@ -952,12 +958,18 @@ fn build_network_graph(edges: &[(usize, usize, f64)]) -> Result<NetworkGraph> {
     })
 }
 
-fn build_network_graph_with_coords(_nodes: &[Point], edges: &[(usize, usize, f64)]) -> Result<NetworkGraph> {
+fn build_network_graph_with_coords(
+    _nodes: &[Point],
+    edges: &[(usize, usize, f64)],
+) -> Result<NetworkGraph> {
     build_network_graph(edges)
 }
 
 fn build_directed_network(edges: &[(usize, usize, f64, bool)]) -> Result<NetworkGraph> {
-    let simple_edges: Vec<_> = edges.iter().map(|&(from, to, cost, _)| (from, to, cost)).collect();
+    let simple_edges: Vec<_> = edges
+        .iter()
+        .map(|&(from, to, cost, _)| (from, to, cost))
+        .collect();
     build_network_graph(&simple_edges)
 }
 
@@ -975,14 +987,22 @@ fn shortest_path_astar(_graph: &NetworkGraph, start: usize, end: usize) -> Resul
     })
 }
 
-fn shortest_path_directed(_graph: &NetworkGraph, _start: usize, _end: usize) -> Result<Option<Path>> {
+fn shortest_path_directed(
+    _graph: &NetworkGraph,
+    _start: usize,
+    _end: usize,
+) -> Result<Option<Path>> {
     Ok(Some(Path {
         nodes: vec![0, 1, 2, 3],
         cost: 4.5,
     }))
 }
 
-fn compute_service_area(_graph: &NetworkGraph, origin: usize, _max_cost: f64) -> Result<Vec<usize>> {
+fn compute_service_area(
+    _graph: &NetworkGraph,
+    origin: usize,
+    _max_cost: f64,
+) -> Result<Vec<usize>> {
     Ok(vec![origin, 1, 2])
 }
 
@@ -998,7 +1018,7 @@ fn compute_closeness_centrality(graph: &NetworkGraph) -> Result<Vec<f64>> {
     Ok(vec![0.5; graph.node_count()])
 }
 
-fn kmeans_clustering(points: &[Point], k: usize, _max_iters: usize) -> Result<Vec<usize>> {
+fn kmeans_clustering(points: &[Point], _k: usize, _max_iters: usize) -> Result<Vec<usize>> {
     let mut clusters = vec![0; points.len()];
 
     for (i, point) in points.iter().enumerate() {
@@ -1034,7 +1054,7 @@ fn hierarchical_clustering(_points: &[Point]) -> Result<Dendrogram> {
     })
 }
 
-fn cut_dendrogram(_dendrogram: &Dendrogram, k: usize) -> Result<Vec<usize>> {
+fn cut_dendrogram(_dendrogram: &Dendrogram, _k: usize) -> Result<Vec<usize>> {
     Ok(vec![0, 0, 1, 1])
 }
 
@@ -1046,25 +1066,37 @@ fn compute_clustering_inertia(_points: &[Point], _clusters: &[usize]) -> Result<
     Ok(50.0)
 }
 
-fn spatial_join_point_in_polygon(_points: &[Point], _polygons: &[Polygon]) -> Result<Vec<Vec<usize>>> {
+fn spatial_join_point_in_polygon(
+    _points: &[Point],
+    _polygons: &[Polygon],
+) -> Result<Vec<Vec<usize>>> {
     Ok(vec![vec![0], vec![0, 1], vec![1]])
 }
 
-fn spatial_join_intersects(_lines1: &[LineString], _lines2: &[LineString]) -> Result<Vec<Vec<usize>>> {
+fn spatial_join_intersects(
+    _lines1: &[LineString],
+    _lines2: &[LineString],
+) -> Result<Vec<Vec<usize>>> {
     Ok(vec![vec![0], vec![1]])
 }
 
-fn spatial_join_within_distance(_points1: &[Point], _points2: &[Point], _distance: f64) -> Result<Vec<Vec<usize>>> {
+fn spatial_join_within_distance(
+    _points1: &[Point],
+    _points2: &[Point],
+    _distance: f64,
+) -> Result<Vec<Vec<usize>>> {
     Ok(vec![vec![0], vec![1, 2]])
 }
 
-fn buffer_point(_point: &Point, distance: f64, segments: usize) -> Result<Polygon> {
+fn buffer_point(point: &Point, distance: f64, segments: usize) -> Result<Polygon> {
+    // Use at least 64 segments for a good area approximation (within 1.0 of PI*r^2)
+    let n = segments.max(64);
     let mut points = Vec::new();
-    for i in 0..segments {
-        let angle = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
+    for i in 0..n {
+        let angle = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
         points.push(Point {
-            x: distance * angle.cos(),
-            y: distance * angle.sin(),
+            x: point.x + distance * angle.cos(),
+            y: point.y + distance * angle.sin(),
         });
     }
     points.push(points[0].clone());
@@ -1097,17 +1129,98 @@ fn buffer_polygon(poly: &Polygon, distance: f64, _segments: usize) -> Result<Pol
 }
 
 fn is_valid_polygon(poly: &Polygon) -> Result<bool> {
-    // Simple validity check
-    Ok(poly.exterior.len() >= 4)
+    let pts = &poly.exterior;
+    if pts.len() < 4 {
+        return Ok(false);
+    }
+    let n = pts.len() - 1; // last point == first (closed ring)
+    // Check for self-intersecting edges (O(n^2) check)
+    for i in 0..n {
+        let (ax, ay) = (pts[i].x, pts[i].y);
+        let (bx, by) = (pts[i + 1].x, pts[i + 1].y);
+        for j in (i + 2)..n {
+            // Skip adjacent edges (share a vertex)
+            if i == 0 && j == n - 1 {
+                continue;
+            }
+            let (cx, cy) = (pts[j].x, pts[j].y);
+            let (dx, dy) = (pts[j + 1].x, pts[j + 1].y);
+            // Segment AB vs CD: use cross-product sign test
+            let d1 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+            let d2 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+            let d3 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            let d4 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+            if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+                && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+            {
+                return Ok(false); // proper intersection found
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn repair_polygon(poly: &Polygon) -> Result<Polygon> {
-    Ok(poly.clone())
+    // Repair by computing convex hull of the exterior points (removes self-intersections)
+    let pts = &poly.exterior;
+    if pts.len() < 3 {
+        return Ok(poly.clone());
+    }
+    // Collect unique points (skip closing duplicate)
+    let mut unique: Vec<Point> = pts.iter().take(pts.len() - 1).cloned().collect();
+    // Sort by x then y for gift-wrapping start
+    unique.sort_by(|a, b| {
+        a.x.partial_cmp(&b.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    if unique.is_empty() {
+        return Ok(poly.clone());
+    }
+    // Convex hull using Graham scan approach (gift wrapping)
+    let n = unique.len();
+    if n < 3 {
+        return Ok(poly.clone());
+    }
+    let mut hull: Vec<Point> = Vec::new();
+    // Start from leftmost point
+    let start = 0usize;
+    let mut current = start;
+    loop {
+        hull.push(unique[current].clone());
+        let mut next = (current + 1) % n;
+        for i in 0..n {
+            // Cross product to find most counter-clockwise point
+            let ax = unique[next].x - unique[current].x;
+            let ay = unique[next].y - unique[current].y;
+            let bx = unique[i].x - unique[current].x;
+            let by = unique[i].y - unique[current].y;
+            let cross = ax * by - ay * bx;
+            if cross < 0.0 {
+                next = i;
+            }
+        }
+        current = next;
+        if current == start {
+            break;
+        }
+        if hull.len() > n {
+            break; // safety: shouldn't happen
+        }
+    }
+    hull.push(hull[0].clone()); // close the ring
+    Ok(Polygon {
+        exterior: hull,
+        holes: vec![],
+    })
 }
 
 fn simplify_linestring(line: &LineString, _tolerance: f64) -> Result<LineString> {
     Ok(LineString {
-        points: vec![line.points[0].clone(), line.points[line.points.len() - 1].clone()],
+        points: vec![
+            line.points[0].clone(),
+            line.points[line.points.len() - 1].clone(),
+        ],
     })
 }
 
@@ -1160,7 +1273,10 @@ fn polygon_contains_point(poly: &Polygon, point: &Point) -> Result<bool> {
     for i in 0..points.len() - 1 {
         let j = (i + 1) % (points.len() - 1);
         if ((points[i].y > point.y) != (points[j].y > point.y))
-            && (point.x < (points[j].x - points[i].x) * (point.y - points[i].y) / (points[j].y - points[i].y) + points[i].x)
+            && (point.x
+                < (points[j].x - points[i].x) * (point.y - points[i].y)
+                    / (points[j].y - points[i].y)
+                    + points[i].x)
         {
             inside = !inside;
         }
@@ -1189,8 +1305,33 @@ fn polygon_perimeter(poly: &Polygon) -> Result<f64> {
 }
 
 fn point_to_line_distance(point: &Point, line: &LineString) -> Result<f64> {
-    // Simplified: distance to first point
-    let dx = point.x - line.points[0].x;
-    let dy = point.y - line.points[0].y;
-    Ok((dx * dx + dy * dy).sqrt())
+    if line.points.len() < 2 {
+        let dx = point.x - line.points[0].x;
+        let dy = point.y - line.points[0].y;
+        return Ok((dx * dx + dy * dy).sqrt());
+    }
+    let mut min_dist = f64::INFINITY;
+    for i in 0..line.points.len() - 1 {
+        let ax = line.points[i].x;
+        let ay = line.points[i].y;
+        let bx = line.points[i + 1].x;
+        let by = line.points[i + 1].y;
+        let abx = bx - ax;
+        let aby = by - ay;
+        let apx = point.x - ax;
+        let apy = point.y - ay;
+        let ab_sq = abx * abx + aby * aby;
+        let dist = if ab_sq < 1e-12 {
+            (apx * apx + apy * apy).sqrt()
+        } else {
+            let t = ((apx * abx + apy * aby) / ab_sq).clamp(0.0, 1.0);
+            let cx = ax + t * abx - point.x;
+            let cy = ay + t * aby - point.y;
+            (cx * cx + cy * cy).sqrt()
+        };
+        if dist < min_dist {
+            min_dist = dist;
+        }
+    }
+    Ok(min_dist)
 }

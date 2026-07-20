@@ -46,6 +46,8 @@ lru = { workspace = true }
 
 # Compression
 oxiarc-zstd = { workspace = true }
+oxiarc-lz4 = { workspace = true }
+oxiarc-snappy = { workspace = true }
 
 # System info
 sysinfo = { workspace = true }
@@ -73,3 +75,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

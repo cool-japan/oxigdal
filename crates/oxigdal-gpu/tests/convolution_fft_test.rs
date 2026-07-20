@@ -5,7 +5,7 @@
 //! when no wgpu adapter is available, following the `try_gpu_context` /
 //! `catch_unwind` pattern used throughout this test suite.
 
-#![allow(clippy::unwrap_used, clippy::panic, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
 use oxigdal_gpu::{
     GpuContext,

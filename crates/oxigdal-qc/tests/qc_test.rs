@@ -129,8 +129,8 @@ fn test_rules_engine() {
 
     let engine = RulesEngine::new(ruleset);
 
-    let mut data = HashMap::new();
-    data.insert("max_value".to_string(), 150.0);
+    let mut data: HashMap<String, QcValue> = HashMap::new();
+    data.insert("max_value".to_string(), QcValue::Number(150.0));
 
     let result = engine.execute_all(&data);
     assert!(result.is_ok());
@@ -138,6 +138,61 @@ fn test_rules_engine() {
     let issues = result.expect("rules engine should execute successfully and return issues");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].severity, Severity::Major);
+}
+
+#[test]
+fn test_rules_engine_enumeration_pattern_custom() {
+    let mut ruleset = RuleSet::new("Test Rules", "Test rule set");
+
+    ruleset.add_rule(
+        RuleBuilder::new("R-ENUM", "Category Check")
+            .enumeration("category", vec!["a".to_string(), "b".to_string()])
+            .severity(Severity::Minor)
+            .build(),
+    );
+    ruleset.add_rule(
+        RuleBuilder::new("R-PATTERN", "Code Format Check")
+            .pattern("code", r"^[A-Z]{3}\d{2}$")
+            .severity(Severity::Minor)
+            .build(),
+    );
+    ruleset.add_rule(
+        RuleBuilder::new("R-CUSTOM", "Custom Check")
+            .custom("is_even")
+            .severity(Severity::Minor)
+            .build(),
+    );
+
+    let mut engine = RulesEngine::new(ruleset);
+    engine.register_custom_fn("is_even", |data| {
+        !matches!(data.get("count").and_then(QcValue::as_number), Some(n) if (n as i64) % 2 == 0)
+    });
+
+    let mut data: HashMap<String, QcValue> = HashMap::new();
+    data.insert("category".to_string(), QcValue::Text("a".to_string()));
+    data.insert("code".to_string(), QcValue::Text("ABC12".to_string()));
+    data.insert("count".to_string(), QcValue::Number(4.0));
+
+    let issues = engine
+        .execute_all(&data)
+        .expect("rules engine should execute enumeration/pattern/custom rules successfully");
+    assert!(
+        issues.is_empty(),
+        "all three rules should pass for valid data, got: {issues:?}"
+    );
+
+    data.insert("category".to_string(), QcValue::Text("z".to_string()));
+    data.insert("code".to_string(), QcValue::Text("nope".to_string()));
+    data.insert("count".to_string(), QcValue::Number(3.0));
+
+    let issues = engine
+        .execute_all(&data)
+        .expect("rules engine should execute enumeration/pattern/custom rules successfully");
+    assert_eq!(
+        issues.len(),
+        3,
+        "all three rules should be violated for invalid data, got: {issues:?}"
+    );
 }
 
 #[test]

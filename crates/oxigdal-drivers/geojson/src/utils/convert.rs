@@ -23,15 +23,14 @@ pub fn feature_collection_to_bbox(fc: &FeatureCollection) -> Option<BBox> {
     let mut max_y = f64::NEG_INFINITY;
 
     for feature in &fc.features {
-        if let Some(ref geometry) = feature.geometry {
-            if let Some(bbox) = geometry.compute_bbox() {
-                if bbox.len() >= 4 {
-                    min_x = min_x.min(bbox[0]);
-                    min_y = min_y.min(bbox[1]);
-                    max_x = max_x.max(bbox[2]);
-                    max_y = max_y.max(bbox[3]);
-                }
-            }
+        if let Some(ref geometry) = feature.geometry
+            && let Some(bbox) = geometry.compute_bbox()
+            && bbox.len() >= 4
+        {
+            min_x = min_x.min(bbox[0]);
+            min_y = min_y.min(bbox[1]);
+            max_x = max_x.max(bbox[2]);
+            max_y = max_y.max(bbox[3]);
         }
     }
 

@@ -110,12 +110,12 @@ fn bench_coalescing(c: &mut Criterion) {
 
             for (offset, (block_offset, size, is_free)) in black_box(&blocks).iter() {
                 if *is_free {
-                    if let Some(prev_off) = prev_offset {
-                        if let Some((_, prev_size, prev_free)) = blocks.get(&prev_off) {
-                            if *prev_free && prev_off + prev_size == *offset {
-                                adjacent.push(*offset);
-                            }
-                        }
+                    if let Some(prev_off) = prev_offset
+                        && let Some((_, prev_size, prev_free)) = blocks.get(&prev_off)
+                        && *prev_free
+                        && prev_off + prev_size == *offset
+                    {
+                        adjacent.push(*offset);
                     }
                     prev_offset = Some(*offset);
                 } else {

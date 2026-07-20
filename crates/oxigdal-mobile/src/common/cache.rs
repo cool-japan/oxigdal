@@ -76,10 +76,10 @@ impl TileCache {
             .min_by_key(|(_, tile)| tile.last_access)
             .map(|(key, _)| key.clone());
 
-        if let Some(key) = oldest_key {
-            if let Some(tile) = self.entries.remove(&key) {
-                self.current_size_bytes -= tile.size_bytes;
-            }
+        if let Some(key) = oldest_key
+            && let Some(tile) = self.entries.remove(&key)
+        {
+            self.current_size_bytes -= tile.size_bytes;
         }
         super::set_tiles_cached(self.entries.len());
     }

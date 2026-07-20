@@ -107,7 +107,7 @@ fn bench_preprocessing(c: &mut Criterion) {
     let params = NormalizationParams::imagenet();
 
     group.bench_function("normalize_512x512", |b| {
-        b.iter(|| normalize(black_box(&input), black_box(&params)).ok());
+        b.iter(|| normalize(black_box(&input), black_box(&params), black_box(0)).ok());
     });
 
     // Tiling benchmark

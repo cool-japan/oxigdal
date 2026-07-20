@@ -180,10 +180,10 @@ impl PerformanceHistory {
         self.records.entry(codec).or_default().push(metadata);
 
         // Keep only recent records (last 100)
-        if let Some(records) = self.records.get_mut(&codec) {
-            if records.len() > 100 {
-                records.drain(0..records.len() - 100);
-            }
+        if let Some(records) = self.records.get_mut(&codec)
+            && records.len() > 100
+        {
+            records.drain(0..records.len() - 100);
         }
     }
 

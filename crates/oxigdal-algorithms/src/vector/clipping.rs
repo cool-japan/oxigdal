@@ -1035,7 +1035,18 @@ fn fallback_vertex_clip(
         };
     }
 
-    // Order the points to form a valid polygon (convex hull as approximation)
+    // Order the points to form a valid polygon. This centroid-angle ordering
+    // only reconstructs a correct boundary for star-shaped (convex-ish) vertex
+    // sets; for genuinely concave intersection/difference regions it yields an
+    // approximate (convex-hull-like) shape. Surface this explicitly rather than
+    // returning a silently-wrong result, so callers can detect degraded output
+    // in logs. The area sanity checks below still reject grossly invalid shapes.
+    tracing::warn!(
+        operation = ?op,
+        vertices = result_coords.len(),
+        "Weiler-Atherton tracing failed; using approximate centroid-angle \
+         reconstruction. Result may be geometrically inaccurate for concave regions."
+    );
     order_points_ccw(&mut result_coords);
     close_ring(&mut result_coords);
 

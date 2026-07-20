@@ -1,0 +1,17 @@
+This directory is bind-mounted read-only into the `nginx` service at /etc/nginx/ssl (see
+docker/docker-compose.yml). It intentionally ships empty: docker/config/nginx.conf does not
+reference any certificate files by default, so nginx serves plain HTTP on port 80 out of the
+box and this directory can stay empty for local/dev use.
+
+To enable TLS termination in nginx for production use:
+
+  1. Place your certificate and private key here, e.g.:
+       docker/config/ssl/fullchain.pem
+       docker/config/ssl/privkey.pem
+     (Do not commit real certificates/keys to version control.)
+
+  2. Add a `listen 443 ssl;` server block to docker/config/nginx.conf referencing them:
+       ssl_certificate     /etc/nginx/ssl/fullchain.pem;
+       ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+
+  3. Restart the `nginx` service: `docker compose restart nginx`.

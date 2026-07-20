@@ -40,7 +40,7 @@ fn point3d_new_defaults() {
     assert_eq!(p.return_number, 1);
     assert_eq!(p.number_of_returns, 1);
     assert_eq!(p.classification, 0);
-    assert_eq!(p.scan_angle_rank, 0);
+    assert_eq!(p.scan_angle_rank, 0.0);
     assert_eq!(p.user_data, 0);
     assert_eq!(p.point_source_id, 0);
     assert!(p.gps_time.is_none());

@@ -462,6 +462,64 @@ fn write_synthetic_tiff(name: &str) -> std::path::PathBuf {
     path
 }
 
+/// Write a synthetic multi-band GeoTIFF (chunky / pixel-interleaved) for
+/// exercising multi-band conversion round-trips.
+///
+/// The image is `4×4`, `band_count` bands, `UInt8`, with a distinct value per
+/// `(pixel, band)`.  When `nodata` is `Some`, it is recorded in the header.
+#[cfg(feature = "geotiff")]
+fn write_multiband_tiff(name: &str, band_count: u16, nodata: Option<i64>) -> std::path::PathBuf {
+    use oxigdal::core_types::types::{GeoTransform, NoDataValue, RasterDataType};
+    use oxigdal::geotiff::{
+        GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
+        tiff::{Compression, PhotometricInterpretation, Predictor},
+    };
+
+    let dir = std::env::temp_dir();
+    let path = dir.join(name);
+
+    let width = 4u32;
+    let height = 4u32;
+    let nodata_val = match nodata {
+        Some(v) => NoDataValue::Integer(v),
+        None => NoDataValue::None,
+    };
+
+    let config = WriterConfig {
+        width: u64::from(width),
+        height: u64::from(height),
+        band_count,
+        data_type: RasterDataType::UInt8,
+        compression: Compression::None,
+        predictor: Predictor::None,
+        tile_width: None,
+        tile_height: None,
+        photometric: PhotometricInterpretation::BlackIsZero,
+        geo_transform: Some(GeoTransform::north_up(10.0, 50.0, 1.0, -1.0)),
+        epsg_code: Some(4326),
+        nodata: nodata_val,
+        use_bigtiff: false,
+        generate_overviews: false,
+        overview_resampling: OverviewResampling::Average,
+        overview_levels: vec![],
+    };
+
+    // Chunky / pixel-interleaved: for each of the 16 pixels, one byte per band.
+    let mut pixel_data: Vec<u8> =
+        Vec::with_capacity((width * height) as usize * band_count as usize);
+    for p in 0..(width * height) {
+        for b in 0..band_count {
+            pixel_data.push(((p as u16 * band_count + b) % 251) as u8);
+        }
+    }
+
+    let mut writer = GeoTiffWriter::create(&path, config, GeoTiffWriterOptions::default())
+        .expect("create multiband tiff");
+    writer.write(&pixel_data).expect("write multiband tiff");
+
+    path
+}
+
 /// `Dataset::statistics` on a synthetic 8×8 GeoTIFF.
 ///
 /// Verifies: `min <= mean <= max` and `valid_count == 64`.
@@ -765,6 +823,94 @@ fn test_dataset_convert_raster_identity() {
 
     assert_eq!(dst_ds.format(), oxigdal::DatasetFormat::GeoTiff);
     assert!(dst_path.exists(), "output TIFF file should exist on disk");
+}
+
+/// Multi-band GeoTIFF → GeoTIFF conversion round-trips band count, pixel data,
+/// and the NoData value.
+///
+/// Regression for the bug where `convert_geotiff_to_geotiff` looped over
+/// `band_count`, appending the full pixel-interleaved image once per band. That
+/// produced a buffer `band_count×` too large and tripped the writer's length
+/// validation, so every multi-band conversion failed. It also dropped the
+/// source NoData value unconditionally.
+#[cfg(feature = "geotiff")]
+#[test]
+fn test_dataset_convert_multiband_roundtrip() {
+    use oxigdal::ConversionOptions;
+    use oxigdal::core_types::io::FileDataSource;
+    use oxigdal::core_types::types::NoDataValue;
+    use oxigdal::geotiff::GeoTiffReader;
+
+    let src_path = write_multiband_tiff("test_convert_multiband_src.tif", 3, Some(255));
+    let dst_path = std::env::temp_dir().join("test_convert_multiband_dst.tif");
+
+    let src_ds = oxigdal::Dataset::open(src_path.to_str().expect("path")).expect("open src");
+    let dst_ds = src_ds
+        .convert(
+            &dst_path,
+            oxigdal::DatasetFormat::GeoTiff,
+            ConversionOptions::default(),
+        )
+        .expect("multi-band GeoTiff→GeoTiff conversion should succeed");
+
+    assert_eq!(dst_ds.format(), oxigdal::DatasetFormat::GeoTiff);
+    assert!(dst_path.exists(), "output TIFF file should exist on disk");
+
+    let src_reader =
+        GeoTiffReader::open(FileDataSource::open(&src_path).expect("src source")).expect("src rdr");
+    let dst_reader =
+        GeoTiffReader::open(FileDataSource::open(&dst_path).expect("dst source")).expect("dst rdr");
+
+    assert_eq!(dst_reader.band_count(), 3, "output should preserve 3 bands");
+    assert_eq!(dst_reader.width(), src_reader.width());
+    assert_eq!(dst_reader.height(), src_reader.height());
+    assert_eq!(
+        dst_reader.read_band(0, 0).expect("dst pixels"),
+        src_reader.read_band(0, 0).expect("src pixels"),
+        "pixel data should round-trip byte-for-byte"
+    );
+    assert_eq!(
+        dst_reader.nodata(),
+        NoDataValue::Integer(255),
+        "source NoData value should be preserved across conversion"
+    );
+}
+
+/// GeoJSON → Shapefile conversion tolerates multi-byte UTF-8 property names.
+///
+/// Regression for the byte-index slice `&key[..10]` that panicked with "byte
+/// index 10 is not a char boundary" on non-ASCII field names longer than 10
+/// bytes (Japanese, emoji, accented text).
+#[cfg(all(feature = "geojson", feature = "shapefile"))]
+#[test]
+fn test_dataset_convert_geojson_shapefile_multibyte_keys() {
+    use oxigdal::ConversionOptions;
+    use std::io::Write;
+
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("test_convert_multibyte_keys.geojson");
+    // Property key "日本語フィールド名前" is 30 UTF-8 bytes; byte 10 lands
+    // mid-character. Emoji key "🌍🌏🌎longitude" also straddles the boundary.
+    let content = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},
+         "properties":{"日本語フィールド名前":"値","🌍🌏🌎region":"east"}}
+    ]}"#;
+    std::fs::File::create(&src_path)
+        .and_then(|mut f| f.write_all(content.as_bytes()))
+        .expect("write geojson");
+
+    let dst_path = dir.join("test_convert_multibyte_keys.shp");
+    let src_ds = oxigdal::Dataset::open(src_path.to_str().expect("path")).expect("open src");
+    // Must not panic; conversion should complete.
+    let result = src_ds.convert(
+        &dst_path,
+        oxigdal::DatasetFormat::Shapefile,
+        ConversionOptions::default(),
+    );
+    assert!(
+        result.is_ok(),
+        "multi-byte property keys should not panic or fail: {result:?}"
+    );
 }
 
 /// Converting raster to vector returns NotSupported.
@@ -1267,6 +1413,39 @@ fn test_build_vrt_single_source() {
     assert!(
         xml.contains("VRTRasterBand"),
         "VRT should have VRTRasterBand"
+    );
+    // The synthetic source is Float32, so the VRT dataType must be Float32.
+    assert!(
+        xml.contains("dataType=\"Float32\""),
+        "Float32 source should yield dataType=\"Float32\", got: {xml}"
+    );
+}
+
+/// `Dataset::build_vrt` emits the source's real pixel type, not a hardcoded
+/// `Float32`.
+///
+/// Regression for `read_source_meta` unconditionally stamping every band as
+/// `Float32`, which made VRT readers misinterpret UInt8 imagery as 4-byte floats.
+#[cfg(feature = "geotiff")]
+#[test]
+fn test_build_vrt_preserves_uint8_datatype() {
+    use oxigdal::vrt_builder::VrtOptions;
+
+    let src_path = write_multiband_tiff("test_vrt_uint8_src.tif", 1, None);
+    let vrt_path = std::env::temp_dir().join("test_vrt_uint8.vrt");
+
+    oxigdal::Dataset::build_vrt(&[src_path.as_path()], &vrt_path, VrtOptions::default())
+        .expect("build_vrt");
+
+    let xml = std::fs::read_to_string(&vrt_path).expect("read vrt");
+    // GDAL spells 8-bit unsigned as "Byte".
+    assert!(
+        xml.contains("dataType=\"Byte\""),
+        "UInt8 source should yield dataType=\"Byte\", got: {xml}"
+    );
+    assert!(
+        !xml.contains("dataType=\"Float32\""),
+        "UInt8 source must not be mislabeled as Float32: {xml}"
     );
 }
 

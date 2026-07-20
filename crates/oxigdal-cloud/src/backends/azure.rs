@@ -137,9 +137,89 @@ impl AzureBlobBackend {
     }
 }
 
-// Note: The azure_storage_blobs crate provides a Pure Rust implementation
-// For this implementation, we'll create a simplified version that can be
-// extended with the actual Azure SDK when the feature is enabled.
+// The azure_storage_blobs 0.21 crate provides a Pure Rust implementation.
+// Authentication is performed via `StorageCredentials` (access_key, sas_token,
+// bearer_token, or anonymous).  We prefer account_key when available, falling
+// back to sas_token and finally anonymous.
+
+#[cfg(all(feature = "azure-blob", feature = "async"))]
+use azure_storage::{CloudLocation, StorageCredentials};
+#[cfg(all(feature = "azure-blob", feature = "async"))]
+use azure_storage_blobs::prelude::{AccessTier as SdkAccessTier, ClientBuilder};
+
+#[cfg(all(feature = "azure-blob", feature = "async"))]
+impl From<AccessTier> for SdkAccessTier {
+    fn from(tier: AccessTier) -> Self {
+        match tier {
+            AccessTier::Hot => SdkAccessTier::Hot,
+            AccessTier::Cool => SdkAccessTier::Cool,
+            AccessTier::Archive => SdkAccessTier::Archive,
+        }
+    }
+}
+
+#[cfg(all(feature = "azure-blob", feature = "async"))]
+impl AzureBlobBackend {
+    /// Builds `StorageCredentials` from the backend's auth fields.
+    fn storage_credentials(&self) -> Result<StorageCredentials> {
+        if let Some(ref key) = self.account_key {
+            // `StorageCredentials::access_key` accepts `K: Into<Secret>` where
+            // `Secret` is from `azure_core 0.21` (re-exported by `azure_storage`).
+            // Passing a `String` works because `azure_core 0.21` implements
+            // `From<String> for Secret`.
+            Ok(StorageCredentials::access_key(
+                self.account_name.clone(),
+                key.clone(),
+            ))
+        } else if let Some(ref token) = self.sas_token {
+            StorageCredentials::sas_token(token).map_err(|e| {
+                CloudError::Azure(AzureError::InvalidSasToken {
+                    message: format!("Invalid SAS token: {e}"),
+                })
+            })
+        } else {
+            // Fall back to anonymous credentials — operations will fail unless
+            // the container has public access enabled.
+            Ok(StorageCredentials::anonymous())
+        }
+    }
+
+    /// Returns a `ClientBuilder` pre-configured for the backend.
+    ///
+    /// When [`hierarchical_namespace`](Self::with_hierarchical_namespace) is
+    /// enabled, requests are routed to the account's `*.dfs.core.windows.net`
+    /// Data Lake Gen2 endpoint instead of the default `*.blob.core.windows.net`
+    /// endpoint.
+    fn client_builder(&self) -> Result<ClientBuilder> {
+        let creds = self.storage_credentials()?;
+        let cloud_location = if self.hierarchical_namespace {
+            CloudLocation::Custom {
+                account: self.account_name.clone(),
+                uri: self.get_blob_endpoint(),
+            }
+        } else {
+            CloudLocation::Public {
+                account: self.account_name.clone(),
+            }
+        };
+        Ok(ClientBuilder::with_location(cloud_location, creds))
+    }
+
+    /// Checks whether an error string represents a 404 / not-found condition.
+    ///
+    /// `azure_storage_blobs` 0.21 uses `azure_core` 0.21 internally while the
+    /// workspace depends on `azure_core` 1.0; we cannot call the 0.21
+    /// `as_http_error()` method directly from this crate.  String matching on
+    /// the formatted error is the safe cross-version approach (mirrors the S3
+    /// backend's pattern).
+    fn is_not_found(err_msg: &str) -> bool {
+        err_msg.contains("404")
+            || err_msg.contains("NotFound")
+            || err_msg.contains("BlobNotFound")
+            || err_msg.contains("ContainerNotFound")
+            || err_msg.contains("ResourceNotFound")
+    }
+}
 
 #[cfg(all(feature = "azure-blob", feature = "async"))]
 #[async_trait::async_trait]
@@ -150,9 +230,6 @@ impl CloudStorageBackend for AzureBlobBackend {
         executor
             .execute(|| async {
                 let blob_name = self.full_blob_name(key);
-
-                // In a real implementation, this would use azure_storage_blobs
-                // For now, we'll return an error indicating the feature needs proper setup
                 tracing::debug!(
                     "Getting blob: {}/{}/{}",
                     self.account_name,
@@ -160,35 +237,69 @@ impl CloudStorageBackend for AzureBlobBackend {
                     blob_name
                 );
 
-                // Placeholder for Azure SDK integration
-                Err(CloudError::Azure(AzureError::Sdk {
-                    message: "Azure SDK integration pending - requires azure_storage_blobs setup"
-                        .to_string(),
-                }))
+                let builder = self.client_builder()?;
+                let blob_client = builder
+                    .blob_service_client()
+                    .container_client(&self.container)
+                    .blob_client(&blob_name);
+
+                let data = blob_client.get_content().await.map_err(|e| {
+                    let msg = format!("{e}");
+                    if Self::is_not_found(&msg) {
+                        CloudError::Azure(AzureError::BlobNotFound {
+                            blob: format!("{}/{}", self.container, blob_name),
+                        })
+                    } else {
+                        CloudError::Azure(AzureError::Sdk {
+                            message: format!(
+                                "Failed to get blob '{}/{}/{}': {e}",
+                                self.account_name, self.container, blob_name
+                            ),
+                        })
+                    }
+                })?;
+
+                Ok(Bytes::from(data))
             })
             .await
     }
 
     async fn put(&self, key: &str, data: &[u8]) -> Result<()> {
         let mut executor = RetryExecutor::new(self.retry_config.clone());
+        let data_owned = data.to_vec();
 
         executor
             .execute(|| async {
                 let blob_name = self.full_blob_name(key);
-
                 tracing::debug!(
                     "Putting blob: {}/{}/{} ({} bytes)",
                     self.account_name,
                     self.container,
                     blob_name,
-                    data.len()
+                    data_owned.len()
                 );
 
-                // Placeholder for Azure SDK integration
-                Err(CloudError::Azure(AzureError::Sdk {
-                    message: "Azure SDK integration pending - requires azure_storage_blobs setup"
-                        .to_string(),
-                }))
+                let builder = self.client_builder()?;
+                let blob_client = builder
+                    .blob_service_client()
+                    .container_client(&self.container)
+                    .blob_client(&blob_name);
+
+                blob_client
+                    .put_block_blob(bytes::Bytes::copy_from_slice(&data_owned))
+                    .content_type("application/octet-stream")
+                    .access_tier(SdkAccessTier::from(self.access_tier))
+                    .await
+                    .map_err(|e| {
+                        CloudError::Azure(AzureError::Sdk {
+                            message: format!(
+                                "Failed to put blob '{}/{}/{}': {e}",
+                                self.account_name, self.container, blob_name
+                            ),
+                        })
+                    })?;
+
+                Ok(())
             })
             .await
     }
@@ -199,7 +310,6 @@ impl CloudStorageBackend for AzureBlobBackend {
         executor
             .execute(|| async {
                 let blob_name = self.full_blob_name(key);
-
                 tracing::debug!(
                     "Deleting blob: {}/{}/{}",
                     self.account_name,
@@ -207,18 +317,28 @@ impl CloudStorageBackend for AzureBlobBackend {
                     blob_name
                 );
 
-                // Placeholder for Azure SDK integration
-                Err(CloudError::Azure(AzureError::Sdk {
-                    message: "Azure SDK integration pending - requires azure_storage_blobs setup"
-                        .to_string(),
-                }))
+                let builder = self.client_builder()?;
+                let blob_client = builder
+                    .blob_service_client()
+                    .container_client(&self.container)
+                    .blob_client(&blob_name);
+
+                blob_client.delete().await.map_err(|e| {
+                    CloudError::Azure(AzureError::Sdk {
+                        message: format!(
+                            "Failed to delete blob '{}/{}/{}': {e}",
+                            self.account_name, self.container, blob_name
+                        ),
+                    })
+                })?;
+
+                Ok(())
             })
             .await
     }
 
     async fn exists(&self, key: &str) -> Result<bool> {
         let blob_name = self.full_blob_name(key);
-
         tracing::debug!(
             "Checking blob exists: {}/{}/{}",
             self.account_name,
@@ -226,16 +346,29 @@ impl CloudStorageBackend for AzureBlobBackend {
             blob_name
         );
 
-        // Placeholder for Azure SDK integration
-        Err(CloudError::Azure(AzureError::Sdk {
-            message: "Azure SDK integration pending - requires azure_storage_blobs setup"
-                .to_string(),
-        }))
+        let builder = self.client_builder()?;
+        let blob_client = builder
+            .blob_service_client()
+            .container_client(&self.container)
+            .blob_client(&blob_name);
+
+        // `blob_client.exists()` internally calls `get_properties()` and maps
+        // a 404 response to `Ok(false)` using azure_core 0.21's typed error API,
+        // so we only need to translate non-404 errors into our error type.
+        blob_client.exists().await.map_err(|e| {
+            CloudError::Azure(AzureError::Sdk {
+                message: format!(
+                    "Failed to check blob existence '{}/{}/{}': {e}",
+                    self.account_name, self.container, blob_name
+                ),
+            })
+        })
     }
 
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let full_prefix = self.full_blob_name(prefix);
+        use futures::StreamExt;
 
+        let full_prefix = self.full_blob_name(prefix);
         tracing::debug!(
             "Listing blobs: {}/{} with prefix {}",
             self.account_name,
@@ -243,16 +376,45 @@ impl CloudStorageBackend for AzureBlobBackend {
             full_prefix
         );
 
-        // Placeholder for Azure SDK integration
-        Err(CloudError::Azure(AzureError::Sdk {
-            message: "Azure SDK integration pending - requires azure_storage_blobs setup"
-                .to_string(),
-        }))
+        let builder = self.client_builder()?;
+        let container_client = builder
+            .blob_service_client()
+            .container_client(&self.container);
+
+        let mut stream = container_client
+            .list_blobs()
+            .prefix(full_prefix.clone())
+            .into_stream();
+
+        let mut results = Vec::new();
+
+        while let Some(page_result) = stream.next().await {
+            let page = page_result.map_err(|e| {
+                CloudError::Azure(AzureError::Sdk {
+                    message: format!("Failed to list blobs with prefix '{full_prefix}': {e}"),
+                })
+            })?;
+
+            for blob in page.blobs.blobs() {
+                // Strip the configured prefix so callers get paths relative to it.
+                let relative_key = if !self.prefix.is_empty() {
+                    blob.name
+                        .strip_prefix(&format!("{}/", self.prefix))
+                        .unwrap_or(&blob.name)
+                        .to_string()
+                } else {
+                    blob.name.clone()
+                };
+                results.push(relative_key);
+            }
+        }
+
+        Ok(results)
     }
 
     fn is_readonly(&self) -> bool {
-        // If only SAS token is provided, check if it has write permissions
-        // For now, assume not readonly
+        // If only SAS token is provided, check if it has write permissions.
+        // For now, assume not readonly.
         false
     }
 }
@@ -307,5 +469,65 @@ mod tests {
             backend_dfs.get_blob_endpoint(),
             "https://myaccount.dfs.core.windows.net"
         );
+    }
+
+    #[cfg(all(feature = "azure-blob", feature = "async"))]
+    #[test]
+    fn test_client_builder_uses_public_endpoint_by_default() {
+        let backend = AzureBlobBackend::new("myaccount", "container")
+            .with_account_key("dGVzdC1hY2NvdW50LWtleQ==");
+
+        let builder = backend
+            .client_builder()
+            .expect("client_builder should succeed with account key credentials");
+        let url = builder
+            .blob_service_client()
+            .url()
+            .expect("service client should produce a URL");
+
+        assert_eq!(
+            url.host_str(),
+            Some("myaccount.blob.core.windows.net"),
+            "default (non-hierarchical) backend must hit the standard blob endpoint"
+        );
+    }
+
+    #[cfg(all(feature = "azure-blob", feature = "async"))]
+    #[test]
+    fn test_client_builder_uses_dfs_endpoint_when_hierarchical_namespace_enabled() {
+        let backend = AzureBlobBackend::new("myaccount", "container")
+            .with_account_key("dGVzdC1hY2NvdW50LWtleQ==")
+            .with_hierarchical_namespace(true);
+
+        let builder = backend
+            .client_builder()
+            .expect("client_builder should succeed with account key credentials");
+        let url = builder
+            .blob_service_client()
+            .url()
+            .expect("service client should produce a URL");
+
+        assert_eq!(
+            url.host_str(),
+            Some("myaccount.dfs.core.windows.net"),
+            "hierarchical_namespace(true) must route to the Data Lake Gen2 endpoint"
+        );
+    }
+
+    #[cfg(all(feature = "azure-blob", feature = "async"))]
+    #[test]
+    fn test_access_tier_conversion_to_sdk_type() {
+        assert!(matches!(
+            SdkAccessTier::from(AccessTier::Hot),
+            SdkAccessTier::Hot
+        ));
+        assert!(matches!(
+            SdkAccessTier::from(AccessTier::Cool),
+            SdkAccessTier::Cool
+        ));
+        assert!(matches!(
+            SdkAccessTier::from(AccessTier::Archive),
+            SdkAccessTier::Archive
+        ));
     }
 }

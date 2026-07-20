@@ -142,10 +142,10 @@ where
             let centre = dem[[y, x]];
 
             // nodata at the centre: leave NaN and continue.
-            if let Some(nd) = nodata {
-                if is_nodata(centre, nd) {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(centre, nd)
+            {
+                continue;
             }
 
             // Read the 3×3 window. If any neighbour is nodata we cannot fit

@@ -370,16 +370,246 @@ fn conv2d(@builtin(global_invocation_id) global_id: vec3<u32>) {
         .to_string()
     }
 
+    /// Generate a **separable Gaussian filter** as two WGSL compute passes.
+    ///
+    /// The MPS `MPSImageGaussianBlur` primitive is implemented on-GPU as a
+    /// separable convolution: a 1-D Gaussian kernel applied horizontally, then
+    /// the same kernel applied vertically.  This shader exposes two entry
+    /// points — `gaussian_horizontal` and `gaussian_vertical` — that share the
+    /// same bind-group layout so the caller can ping-pong `src`→`dst` between
+    /// them with an intermediate buffer.
+    ///
+    /// Bindings:
+    /// * `@group(0) @binding(0)` — `src` input samples (row-major `f32`).
+    /// * `@group(0) @binding(1)` — `weights`, the 1-D kernel of length
+    ///   `2 * radius + 1` (should sum to 1 for an energy-preserving blur).
+    /// * `@group(0) @binding(2)` — `dst` output samples.
+    /// * `@group(1) @binding(0)` — `FilterParams { width, height, radius }`.
+    ///
+    /// Out-of-bounds taps clamp to the edge (`GL_CLAMP_TO_EDGE` semantics).
     fn generate_filter_shader(&self) -> String {
-        "// MPS image filter shader placeholder\n".to_string()
+        r#"
+// Metal-style separable Gaussian filter (two passes share this layout).
+@group(0) @binding(0) var<storage, read>       src: array<f32>;
+@group(0) @binding(1) var<storage, read>       weights: array<f32>;
+@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
+
+struct FilterParams {
+    width: u32,
+    height: u32,
+    radius: u32,
+    _pad: u32,
+}
+
+@group(1) @binding(0) var<uniform> params: FilterParams;
+
+@compute @workgroup_size(16, 16)
+fn gaussian_horizontal(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let x = global_id.x;
+    let y = global_id.y;
+    if (x >= params.width || y >= params.height) {
+        return;
+    }
+    let r = i32(params.radius);
+    var acc = 0.0;
+    for (var k = -r; k <= r; k = k + 1) {
+        var sx = i32(x) + k;
+        if (sx < 0) { sx = 0; }
+        if (sx > i32(params.width) - 1) { sx = i32(params.width) - 1; }
+        let w = weights[u32(k + r)];
+        acc = acc + w * src[y * params.width + u32(sx)];
+    }
+    dst[y * params.width + x] = acc;
+}
+
+@compute @workgroup_size(16, 16)
+fn gaussian_vertical(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let x = global_id.x;
+    let y = global_id.y;
+    if (x >= params.width || y >= params.height) {
+        return;
+    }
+    let r = i32(params.radius);
+    var acc = 0.0;
+    for (var k = -r; k <= r; k = k + 1) {
+        var sy = i32(y) + k;
+        if (sy < 0) { sy = 0; }
+        if (sy > i32(params.height) - 1) { sy = i32(params.height) - 1; }
+        let w = weights[u32(k + r)];
+        acc = acc + w * src[u32(sy) * params.width + x];
+    }
+    dst[y * params.width + x] = acc;
+}
+"#
+        .to_string()
     }
 
+    /// Generate a **two-pass workgroup reduction** (sum / min / max).
+    ///
+    /// Each workgroup cooperatively reduces a 256-element chunk into one
+    /// partial via shared memory and a `workgroupBarrier()` tree reduction,
+    /// writing `partials[workgroup_id.x]`.  Reducing a buffer of `N` elements
+    /// to a single scalar is a two-pass operation: dispatch over the `N`
+    /// inputs (producing `ceil(N / 256)` partials), then dispatch the same
+    /// kernel over those partials.
+    ///
+    /// Three entry points are provided — `reduce_sum`, `reduce_min`,
+    /// `reduce_max` — using the identity element (`0`, `+3.4e38`, `-3.4e38`)
+    /// for out-of-range invocations.
+    ///
+    /// Bindings:
+    /// * `@group(0) @binding(0)` — `input` (row-major `f32`).
+    /// * `@group(0) @binding(1)` — `partials` output (`read_write`).
+    /// * `@group(1) @binding(0)` — `ReduceParams { n }` element count.
     fn generate_reduction_shader(&self) -> String {
-        "// MPS reduction shader placeholder\n".to_string()
+        r#"
+// Metal-style two-pass workgroup reduction.
+@group(0) @binding(0) var<storage, read>       input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> partials: array<f32>;
+
+struct ReduceParams {
+    n: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(1) @binding(0) var<uniform> params: ReduceParams;
+
+const REDUCE_WG: u32 = 256u;
+var<workgroup> red_scratch: array<f32, 256>;
+
+@compute @workgroup_size(256)
+fn reduce_sum(@builtin(global_invocation_id) gid: vec3<u32>,
+              @builtin(local_invocation_index) lid: u32,
+              @builtin(workgroup_id) wid: vec3<u32>) {
+    var v = 0.0;
+    if (gid.x < params.n) { v = input[gid.x]; }
+    red_scratch[lid] = v;
+    workgroupBarrier();
+    var stride = REDUCE_WG / 2u;
+    loop {
+        if (stride == 0u) { break; }
+        if (lid < stride) {
+            red_scratch[lid] = red_scratch[lid] + red_scratch[lid + stride];
+        }
+        workgroupBarrier();
+        stride = stride / 2u;
+    }
+    if (lid == 0u) { partials[wid.x] = red_scratch[0]; }
+}
+
+@compute @workgroup_size(256)
+fn reduce_min(@builtin(global_invocation_id) gid: vec3<u32>,
+              @builtin(local_invocation_index) lid: u32,
+              @builtin(workgroup_id) wid: vec3<u32>) {
+    var v = 3.4e38;
+    if (gid.x < params.n) { v = input[gid.x]; }
+    red_scratch[lid] = v;
+    workgroupBarrier();
+    var stride = REDUCE_WG / 2u;
+    loop {
+        if (stride == 0u) { break; }
+        if (lid < stride) {
+            red_scratch[lid] = min(red_scratch[lid], red_scratch[lid + stride]);
+        }
+        workgroupBarrier();
+        stride = stride / 2u;
+    }
+    if (lid == 0u) { partials[wid.x] = red_scratch[0]; }
+}
+
+@compute @workgroup_size(256)
+fn reduce_max(@builtin(global_invocation_id) gid: vec3<u32>,
+              @builtin(local_invocation_index) lid: u32,
+              @builtin(workgroup_id) wid: vec3<u32>) {
+    var v = -3.4e38;
+    if (gid.x < params.n) { v = input[gid.x]; }
+    red_scratch[lid] = v;
+    workgroupBarrier();
+    var stride = REDUCE_WG / 2u;
+    loop {
+        if (stride == 0u) { break; }
+        if (lid < stride) {
+            red_scratch[lid] = max(red_scratch[lid], red_scratch[lid + stride]);
+        }
+        workgroupBarrier();
+        stride = stride / 2u;
+    }
+    if (lid == 0u) { partials[wid.x] = red_scratch[0]; }
+}
+"#
+        .to_string()
     }
 
+    /// Generate a **ReLU + tiled matrix multiply** compute shader.
+    ///
+    /// Models the fused GEMM+activation building block used by MPS neural
+    /// network graphs: `C = relu(A × B)` where `A` is `M × K`, `B` is `K × N`,
+    /// both row-major.  The kernel loads 16 × 16 tiles of `A` and `B` into
+    /// workgroup-shared memory, accumulates the tile products with a
+    /// `workgroupBarrier()` between tiles, then applies `max(sum, 0)`.
+    ///
+    /// Bindings:
+    /// * `@group(0) @binding(0)` — `mat_a` (`M × K`, `f32`).
+    /// * `@group(0) @binding(1)` — `mat_b` (`K × N`, `f32`).
+    /// * `@group(0) @binding(2)` — `mat_c` output (`M × N`, `read_write`).
+    /// * `@group(1) @binding(0)` — `NnDims { M, N, K }`.
     fn generate_nn_shader(&self) -> String {
-        "// MPS neural network shader placeholder\n".to_string()
+        r#"
+// Metal-style fused ReLU + tiled GEMM: C = relu(A * B).
+@group(0) @binding(0) var<storage, read>       mat_a: array<f32>;
+@group(0) @binding(1) var<storage, read>       mat_b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> mat_c: array<f32>;
+
+struct NnDims {
+    M: u32,
+    N: u32,
+    K: u32,
+    _pad: u32,
+}
+
+@group(1) @binding(0) var<uniform> dims: NnDims;
+
+const TILE: u32 = 16u;
+var<workgroup> tile_a: array<f32, 256>;
+var<workgroup> tile_b: array<f32, 256>;
+
+@compute @workgroup_size(16, 16)
+fn matmul_relu(@builtin(global_invocation_id) gid: vec3<u32>,
+               @builtin(local_invocation_id) lid: vec3<u32>) {
+    let row = gid.y;
+    let col = gid.x;
+    let num_tiles = (dims.K + TILE - 1u) / TILE;
+
+    var sum = 0.0;
+    for (var t = 0u; t < num_tiles; t = t + 1u) {
+        let a_col = t * TILE + lid.x;
+        if (row < dims.M && a_col < dims.K) {
+            tile_a[lid.y * TILE + lid.x] = mat_a[row * dims.K + a_col];
+        } else {
+            tile_a[lid.y * TILE + lid.x] = 0.0;
+        }
+        let b_row = t * TILE + lid.y;
+        if (b_row < dims.K && col < dims.N) {
+            tile_b[lid.y * TILE + lid.x] = mat_b[b_row * dims.N + col];
+        } else {
+            tile_b[lid.y * TILE + lid.x] = 0.0;
+        }
+        workgroupBarrier();
+
+        for (var k = 0u; k < TILE; k = k + 1u) {
+            sum = sum + tile_a[lid.y * TILE + k] * tile_b[k * TILE + lid.x];
+        }
+        workgroupBarrier();
+    }
+
+    if (row < dims.M && col < dims.N) {
+        mat_c[row * dims.N + col] = max(sum, 0.0);
+    }
+}
+"#
+        .to_string()
     }
 }
 
@@ -651,59 +881,179 @@ impl ThreadgroupMemoryAllocator {
 }
 
 /// SIMD group operations for Metal.
+///
+/// Metal `simd_shuffle*` / `simd_sum` intrinsics compile to MSL and are gated
+/// on real Metal hardware.  The WGSL emitted here maps each onto the portable
+/// WGSL subgroup built-ins when the device exposes
+/// `wgpu::Features::SUBGROUP` (`native == true`); otherwise it emits a
+/// `workgroupBarrier()`-synchronised workgroup-shared-memory emulation with
+/// matching semantics *within a workgroup*.  Every helper takes trailing
+/// `(lid: u32, n: u32)` — the invocation's `local_invocation_index` and the
+/// active-invocation count — which the native path ignores.
 pub struct SimdGroupOperations;
 
 impl SimdGroupOperations {
-    /// Generate shader code for SIMD group operations.
-    pub fn simd_shuffle_shader() -> &'static str {
-        r#"
-// SIMD group shuffle operations (Metal-style)
-fn simd_shuffle(value: f32, lane: u32) -> f32 {
-    // Placeholder for Metal's simd_shuffle
-    return value;
+    /// Generate shader code for SIMD group shuffle operations.
+    pub fn simd_shuffle_shader(native: bool) -> String {
+        if native {
+            r#"
+// Native SIMD-group shuffle == WGSL subgroup shuffle (Features::SUBGROUP).
+fn simd_shuffle(value: f32, lane: u32, lid: u32, n: u32) -> f32 { return subgroupShuffle(value, lane); }
+fn simd_shuffle_down(value: f32, delta: u32, lid: u32, n: u32) -> f32 { return subgroupShuffleDown(value, delta); }
+fn simd_shuffle_up(value: f32, delta: u32, lid: u32, n: u32) -> f32 { return subgroupShuffleUp(value, delta); }
+fn simd_shuffle_xor(value: f32, mask: u32, lid: u32, n: u32) -> f32 { return subgroupShuffleXor(value, mask); }
+"#
+            .to_string()
+        } else {
+            r#"
+// Emulated SIMD-group shuffle — workgroup-shared memory + workgroupBarrier().
+// Out-of-range source lanes return the caller's own value.
+var<workgroup> simd_shfl_scratch: array<f32, 256>;
+fn simd_shuffle(value: f32, lane: u32, lid: u32, n: u32) -> f32 {
+    simd_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lane;
+    if (idx >= n) { idx = lid; }
+    let result = simd_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
-
-fn simd_shuffle_down(value: f32, delta: u32) -> f32 {
-    // Placeholder for Metal's simd_shuffle_down
-    return value;
+fn simd_shuffle_down(value: f32, delta: u32, lid: u32, n: u32) -> f32 {
+    simd_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lid + delta;
+    if (idx >= n) { idx = lid; }
+    let result = simd_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
-
-fn simd_shuffle_up(value: f32, delta: u32) -> f32 {
-    // Placeholder for Metal's simd_shuffle_up
-    return value;
+fn simd_shuffle_up(value: f32, delta: u32, lid: u32, n: u32) -> f32 {
+    simd_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lid;
+    if (lid >= delta) { idx = lid - delta; }
+    let result = simd_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
-
-fn simd_shuffle_xor(value: f32, mask: u32) -> f32 {
-    // Placeholder for Metal's simd_shuffle_xor
-    return value;
+fn simd_shuffle_xor(value: f32, mask: u32, lid: u32, n: u32) -> f32 {
+    simd_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lid ^ mask;
+    if (idx >= n) { idx = lid; }
+    let result = simd_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
 "#
+            .to_string()
+        }
     }
 
     /// Generate shader code for SIMD group reductions.
-    pub fn simd_reduce_shader() -> &'static str {
-        r#"
-// SIMD group reduction operations
-fn simd_sum(value: f32) -> f32 {
-    // Placeholder for Metal's simd_sum
-    return value;
+    ///
+    /// Native reductions broadcast the reduced value to every lane of the
+    /// subgroup (matching Metal's `simd_sum` family).  The emulation reduces
+    /// across the whole workgroup (`n` active invocations, `n <= 256`) and
+    /// likewise returns the result on every invocation.
+    pub fn simd_reduce_shader(native: bool) -> String {
+        if native {
+            r#"
+// Native SIMD-group reduction == WGSL subgroup reduction (Features::SUBGROUP).
+fn simd_sum(value: f32, lid: u32, n: u32) -> f32 { return subgroupAdd(value); }
+fn simd_max(value: f32, lid: u32, n: u32) -> f32 { return subgroupMax(value); }
+fn simd_min(value: f32, lid: u32, n: u32) -> f32 { return subgroupMin(value); }
+fn simd_product(value: f32, lid: u32, n: u32) -> f32 { return subgroupMul(value); }
+"#
+            .to_string()
+        } else {
+            r#"
+// Emulated SIMD-group reduction — workgroup-wide tree reduction via shared
+// memory + workgroupBarrier(); result broadcast to every invocation.
+var<workgroup> simd_red_scratch: array<f32, 256>;
+fn simd_sum(value: f32, lid: u32, n: u32) -> f32 {
+    simd_red_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            simd_red_scratch[idx] = simd_red_scratch[idx] + simd_red_scratch[idx + stride];
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = simd_red_scratch[0];
+    workgroupBarrier();
+    return result;
 }
-
-fn simd_max(value: f32) -> f32 {
-    // Placeholder for Metal's simd_max
-    return value;
+fn simd_max(value: f32, lid: u32, n: u32) -> f32 {
+    simd_red_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            simd_red_scratch[idx] = max(simd_red_scratch[idx], simd_red_scratch[idx + stride]);
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = simd_red_scratch[0];
+    workgroupBarrier();
+    return result;
 }
-
-fn simd_min(value: f32) -> f32 {
-    // Placeholder for Metal's simd_min
-    return value;
+fn simd_min(value: f32, lid: u32, n: u32) -> f32 {
+    simd_red_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            simd_red_scratch[idx] = min(simd_red_scratch[idx], simd_red_scratch[idx + stride]);
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = simd_red_scratch[0];
+    workgroupBarrier();
+    return result;
 }
-
-fn simd_product(value: f32) -> f32 {
-    // Placeholder for Metal's simd_product
-    return value;
+fn simd_product(value: f32, lid: u32, n: u32) -> f32 {
+    simd_red_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            simd_red_scratch[idx] = simd_red_scratch[idx] * simd_red_scratch[idx + stride];
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = simd_red_scratch[0];
+    workgroupBarrier();
+    return result;
 }
 "#
+            .to_string()
+        }
+    }
+
+    /// Return `true` when the device exposes native subgroup intrinsics.
+    ///
+    /// Convenience wrapper to pick the `native` argument for
+    /// [`Self::simd_shuffle_shader`] / [`Self::simd_reduce_shader`] from a live
+    /// [`GpuContext`].
+    pub fn native_subgroups(context: &GpuContext) -> bool {
+        context
+            .device()
+            .features()
+            .contains(wgpu::Features::SUBGROUP)
     }
 }
 

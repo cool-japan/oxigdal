@@ -134,6 +134,27 @@ pub enum AlgorithmError {
     /// Path not found
     #[cfg_attr(feature = "std", error("Path not found: {0}"))]
     PathNotFound(String),
+
+    /// Expression nesting depth exceeded
+    ///
+    /// Raised by the raster-algebra expression front-ends when an input
+    /// expression nests more deeply than [`crate::MAX_EXPRESSION_DEPTH`].
+    /// The limit exists so that untrusted expressions cannot exhaust the
+    /// thread stack via unbounded recursive descent.
+    #[cfg_attr(
+        feature = "std",
+        error(
+            "Expression nesting too deep in {context}: depth {depth} exceeds the maximum of {max}"
+        )
+    )]
+    NestingTooDeep {
+        /// Where the limit was hit (e.g. `"dsl"`, `"expression"`)
+        context: &'static str,
+        /// Observed (or conservatively estimated) nesting depth
+        depth: usize,
+        /// Maximum permitted nesting depth
+        max: usize,
+    },
 }
 
 #[cfg(not(feature = "std"))]
@@ -177,6 +198,14 @@ impl fmt::Display for AlgorithmError {
             }
             Self::SimdNotAvailable => write!(f, "SIMD instructions not available"),
             Self::PathNotFound(message) => write!(f, "Path not found: {message}"),
+            Self::NestingTooDeep {
+                context,
+                depth,
+                max,
+            } => write!(
+                f,
+                "Expression nesting too deep in {context}: depth {depth} exceeds the maximum of {max}"
+            ),
         }
     }
 }
@@ -203,6 +232,7 @@ impl AlgorithmError {
             Self::AllocationFailed { .. } => "A013",
             Self::SimdNotAvailable => "A014",
             Self::PathNotFound(_) => "A015",
+            Self::NestingTooDeep { .. } => "A016",
         }
     }
 
@@ -264,6 +294,9 @@ impl AlgorithmError {
                 "SIMD operations are not supported on this CPU. The algorithm will use scalar fallback",
             ),
             Self::PathNotFound(_) => Some("Verify the path exists and is accessible"),
+            Self::NestingTooDeep { .. } => Some(
+                "Reduce the nesting of the expression, or split it into intermediate `let` bindings",
+            ),
         }
     }
 
@@ -320,6 +353,14 @@ impl AlgorithmError {
             Self::PathNotFound(path) => {
                 ErrorContext::new("path_not_found").with_detail("path", path.clone())
             }
+            Self::NestingTooDeep {
+                context,
+                depth,
+                max,
+            } => ErrorContext::new("nesting_too_deep")
+                .with_detail("context", context.to_string())
+                .with_detail("depth", depth.to_string())
+                .with_detail("max", max.to_string()),
         }
     }
 }

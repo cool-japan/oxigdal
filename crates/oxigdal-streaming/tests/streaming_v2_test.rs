@@ -6,6 +6,8 @@
 //!  - StreamJoin                 (15 tests)
 //!  - Checkpoint                 (15 tests)
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use oxigdal_streaming::v2::backpressure::{BackpressureConsumer, BackpressureProducer, CreditPool};

@@ -287,7 +287,15 @@ impl CloudBackend {
     }
 
     /// Gets data from the cloud backend
-    #[cfg(feature = "async")]
+    #[cfg(all(
+        feature = "async",
+        any(
+            feature = "s3",
+            feature = "azure-blob",
+            feature = "gcs",
+            feature = "http"
+        )
+    ))]
     pub async fn get(&self) -> Result<bytes::Bytes> {
         use backends::CloudStorageBackend;
 
@@ -307,7 +315,15 @@ impl CloudBackend {
     }
 
     /// Puts data to the cloud backend
-    #[cfg(feature = "async")]
+    #[cfg(all(
+        feature = "async",
+        any(
+            feature = "s3",
+            feature = "azure-blob",
+            feature = "gcs",
+            feature = "http"
+        )
+    ))]
     pub async fn put(&self, data: &[u8]) -> Result<()> {
         use backends::CloudStorageBackend;
 
@@ -329,7 +345,15 @@ impl CloudBackend {
     }
 
     /// Checks if the object exists
-    #[cfg(feature = "async")]
+    #[cfg(all(
+        feature = "async",
+        any(
+            feature = "s3",
+            feature = "azure-blob",
+            feature = "gcs",
+            feature = "http"
+        )
+    ))]
     pub async fn exists(&self) -> Result<bool> {
         use backends::CloudStorageBackend;
 

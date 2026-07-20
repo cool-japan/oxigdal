@@ -79,7 +79,7 @@ oxigdal-netcdf = { workspace = true, optional = true }
 oxigdal-hdf5 = { workspace = true, optional = true }
 oxigdal-zarr = { workspace = true, optional = true }
 oxigdal-grib = { workspace = true, optional = true }
-oxigdal-stac = { workspace = true, optional = true, features = ["std", "reqwest"] }
+oxigdal-stac = { workspace = true, optional = true, features = ["std", "async"] }
 oxigdal-terrain = { workspace = true, optional = true }
 oxigdal-vrt = { workspace = true, optional = true }
 oxigdal-flatgeobuf = { workspace = true, optional = true }
@@ -88,7 +88,7 @@ oxigdal-jpeg2000 = { workspace = true, optional = true }
 # Advanced (all optional)
 oxigdal-cloud = { workspace = true, optional = true }
 oxigdal-proj = { workspace = true, optional = true }
-oxigdal-algorithms = { workspace = true, optional = true }
+oxigdal-algorithms = { workspace = true, optional = true, default-features = true }
 oxigdal-analytics = { workspace = true, optional = true }
 oxigdal-streaming = { workspace = true, optional = true }
 oxigdal-ml = { workspace = true, optional = true }

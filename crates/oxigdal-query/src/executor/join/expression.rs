@@ -284,6 +284,16 @@ impl Join {
                 Some(b) => JoinValue::Boolean(!b),
                 None => JoinValue::Null,
             }),
+
+            BinaryOperator::ILike => Ok(match left.matches_ilike(right) {
+                Some(b) => JoinValue::Boolean(b),
+                None => JoinValue::Null,
+            }),
+
+            BinaryOperator::NotILike => Ok(match left.matches_ilike(right) {
+                Some(b) => JoinValue::Boolean(!b),
+                None => JoinValue::Null,
+            }),
         }
     }
 

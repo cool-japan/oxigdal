@@ -164,12 +164,10 @@ impl WebSocketManager {
                 .as_ref()
                 .map(|uid| uid == user_id)
                 .unwrap_or(false)
+                && let Some(sender) = self.senders.get(&conn.id)
+                && sender.send(message.clone()).is_ok()
             {
-                if let Some(sender) = self.senders.get(&conn.id) {
-                    if sender.send(message.clone()).is_ok() {
-                        count += 1;
-                    }
-                }
+                count += 1;
             }
         }
 

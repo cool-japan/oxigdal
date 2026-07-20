@@ -3,11 +3,14 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxigdal_drivers_advanced::gml::*;
+#[cfg(feature = "geopackage")]
 use oxigdal_drivers_advanced::gpkg::*;
 use oxigdal_drivers_advanced::jp2::*;
 use oxigdal_drivers_advanced::kml::*;
 use std::hint::black_box;
+#[cfg(feature = "geopackage")]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "geopackage")]
 use tempfile::NamedTempFile;
 
 fn bench_jp2_image_creation(c: &mut Criterion) {
@@ -60,6 +63,7 @@ fn bench_jp2_metadata(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "geopackage")]
 fn bench_gpkg_creation(c: &mut Criterion) {
     c.bench_function("gpkg_create", |b| {
         b.iter(|| {
@@ -72,27 +76,29 @@ fn bench_gpkg_creation(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "geopackage")]
 fn bench_gpkg_feature_table(c: &mut Criterion) {
     let temp_file = NamedTempFile::new().ok();
-    if let Some(f) = temp_file {
-        if let Ok(mut gpkg) = GeoPackage::create(f.path()) {
-            static COUNTER: AtomicU32 = AtomicU32::new(0);
-            c.bench_function("gpkg_create_feature_table", |b| {
-                b.iter(|| {
-                    let table_name = format!(
-                        "table_{}",
-                        black_box(COUNTER.fetch_add(1, Ordering::Relaxed))
-                    );
-                    let table = gpkg
-                        .create_feature_table(&table_name, GeometryType::Point, 4326)
-                        .ok();
-                    black_box(table);
-                });
+    if let Some(f) = temp_file
+        && let Ok(mut gpkg) = GeoPackage::create(f.path())
+    {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        c.bench_function("gpkg_create_feature_table", |b| {
+            b.iter(|| {
+                let table_name = format!(
+                    "table_{}",
+                    black_box(COUNTER.fetch_add(1, Ordering::Relaxed))
+                );
+                let table = gpkg
+                    .create_feature_table(&table_name, GeometryType::Point, 4326)
+                    .ok();
+                black_box(table);
             });
-        }
+        });
     }
 }
 
+#[cfg(feature = "geopackage")]
 fn bench_gpkg_extent(c: &mut Criterion) {
     c.bench_function("gpkg_extent_operations", |b| {
         b.iter(|| {
@@ -217,6 +223,7 @@ fn bench_gml_geometry(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "geopackage")]
 criterion_group!(
     benches,
     bench_jp2_image_creation,
@@ -225,6 +232,20 @@ criterion_group!(
     bench_gpkg_creation,
     bench_gpkg_feature_table,
     bench_gpkg_extent,
+    bench_kml_document_creation,
+    bench_kml_write,
+    bench_kml_coordinates,
+    bench_gml_feature_collection,
+    bench_gml_write,
+    bench_gml_geometry,
+);
+
+#[cfg(not(feature = "geopackage"))]
+criterion_group!(
+    benches,
+    bench_jp2_image_creation,
+    bench_jp2_pixel_operations,
+    bench_jp2_metadata,
     bench_kml_document_creation,
     bench_kml_write,
     bench_kml_coordinates,

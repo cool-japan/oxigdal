@@ -453,25 +453,25 @@ impl DatasetCreateBuilder {
 
     fn validate(&self) -> Result<()> {
         // tile_size: both dimensions must be non-zero
-        if let Some((w, h)) = self.options.tile_size {
-            if w == 0 || h == 0 {
-                return Err(OxiGdalError::InvalidParameter {
-                    parameter: "tile_size",
-                    message: format!("tile dimensions must be non-zero, got ({w}, {h})"),
-                });
-            }
+        if let Some((w, h)) = self.options.tile_size
+            && (w == 0 || h == 0)
+        {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "tile_size",
+                message: format!("tile dimensions must be non-zero, got ({w}, {h})"),
+            });
         }
 
         // predictor: only valid values are 1, 2, 3
-        if let Some(p) = self.options.predictor {
-            if p == 0 || p > 3 {
-                return Err(OxiGdalError::InvalidParameter {
-                    parameter: "predictor",
-                    message: format!(
-                        "predictor must be 1 (none), 2 (horizontal), or 3 (float), got {p}"
-                    ),
-                });
-            }
+        if let Some(p) = self.options.predictor
+            && (p == 0 || p > 3)
+        {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "predictor",
+                message: format!(
+                    "predictor must be 1 (none), 2 (horizontal), or 3 (float), got {p}"
+                ),
+            });
         }
 
         // JPEG compression is only sensible for GeoTIFF
@@ -727,15 +727,28 @@ impl DatasetWriter {
         Ok(())
     }
 
-    /// Finalise the dataset, writing to disk.
+    /// Finalise the dataset, writing a real file in the requested format to disk.
     ///
-    /// Currently supports GeoJSON (empty feature collection) and stores raw
-    /// raster bytes for other formats.  Future versions will dispatch to
-    /// format-specific driver crates.
+    /// - `GeoJson` writes a (currently empty) GeoJSON FeatureCollection.
+    /// - `GeoTiff` dispatches to the in-tree GeoTIFF driver ([`GeoTiffWriter`]),
+    ///   producing a valid TIFF from the configured dimensions, data type,
+    ///   compression, geo-transform, CRS, and per-band buffers. Requires the
+    ///   `geotiff` feature.
+    /// - All other formats (`Shapefile`, `GeoPackage`, `GeoParquet`,
+    ///   `FlatGeobuf`, `Vrt`) are not yet wired into this raster-oriented writer
+    ///   and return [`OxiGdalError::NotSupported`] — the caller should use the
+    ///   corresponding driver crate directly. `finalize()` never writes a
+    ///   placeholder file and reports success for an unsupported format.
+    ///
+    /// [`GeoTiffWriter`]: oxigdal_geotiff::GeoTiffWriter
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be created.
+    /// - [`OxiGdalError::NotSupported`] — the output format has no writer wired
+    ///   into `DatasetWriter` yet, or an unsupported compression was requested.
+    /// - [`OxiGdalError::InvalidParameter`] — required raster configuration
+    ///   (dimensions, data type, band buffers) is missing or inconsistent.
+    /// - [`OxiGdalError::Io`] — the file cannot be created or written.
     pub fn finalize(&mut self) -> Result<()> {
         if self.finalized {
             return Err(OxiGdalError::InvalidParameter {
@@ -743,7 +756,6 @@ impl DatasetWriter {
                 message: "already finalized".to_string(),
             });
         }
-        self.finalized = true;
 
         match self.options.format {
             OutputFormat::GeoJson => {
@@ -759,30 +771,156 @@ impl DatasetWriter {
                 std::fs::write(&self.path, content.as_bytes())
                     .map_err(|e| OxiGdalError::io_error(e.to_string()))?;
             }
-            _ => {
-                // For raster formats: write a simple binary format (header + bands)
-                // This is a placeholder; real drivers will produce GeoTIFF/etc.
-                if !self.bands.is_empty() {
-                    let mut buf = Vec::new();
-                    // Simple header: magic + dimensions
-                    buf.extend_from_slice(b"OXIG"); // magic
-                    let w = self.width.unwrap_or(0);
-                    let h = self.height.unwrap_or(0);
-                    let bc = self.band_count.unwrap_or(0);
-                    let dt = self.data_type.unwrap_or_default() as u8;
-                    buf.extend_from_slice(&w.to_le_bytes());
-                    buf.extend_from_slice(&h.to_le_bytes());
-                    buf.extend_from_slice(&bc.to_le_bytes());
-                    buf.push(dt);
-                    // Band data
-                    for band in &self.bands {
-                        buf.extend_from_slice(band);
-                    }
-                    std::fs::write(&self.path, &buf)
-                        .map_err(|e| OxiGdalError::io_error(e.to_string()))?;
+            OutputFormat::GeoTiff => {
+                #[cfg(feature = "geotiff")]
+                {
+                    self.write_geotiff()?;
+                }
+                #[cfg(not(feature = "geotiff"))]
+                {
+                    return Err(OxiGdalError::NotSupported {
+                        operation: "DatasetWriter::finalize() for GeoTiff requires the \
+                                    'geotiff' feature"
+                            .to_string(),
+                    });
                 }
             }
+            other => {
+                return Err(OxiGdalError::NotSupported {
+                    operation: format!(
+                        "DatasetWriter::finalize() does not yet support output format '{other}'; \
+                         use the corresponding driver crate directly"
+                    ),
+                });
+            }
         }
+
+        self.finalized = true;
+        Ok(())
+    }
+
+    /// Write the configured raster as a real GeoTIFF via the in-tree driver.
+    ///
+    /// Validates that dimensions, data type, and all band buffers are present
+    /// and correctly sized, interleaves the per-band planes into the chunky /
+    /// pixel-interleaved layout the writer expects, and forwards compression,
+    /// predictor, tiling, geo-transform, CRS, and NoData.
+    #[cfg(feature = "geotiff")]
+    fn write_geotiff(&self) -> Result<()> {
+        use oxigdal_core::types::NoDataValue;
+        use oxigdal_geotiff::{
+            GeoTiffWriter, GeoTiffWriterOptions, WriterConfig,
+            tiff::{Compression as TiffCompression, PhotometricInterpretation, Predictor},
+        };
+
+        let (w, h, bc, dt) = self.require_raster_config()?;
+
+        if self.bands.len() != bc as usize {
+            return Err(OxiGdalError::InvalidParameter {
+                parameter: "bands",
+                message: format!(
+                    "expected {bc} band(s) written before finalize(), got {}",
+                    self.bands.len()
+                ),
+            });
+        }
+
+        let bps = dt.size_bytes();
+        let band_bytes = w as usize * h as usize * bps;
+        for (i, band) in self.bands.iter().enumerate() {
+            if band.len() != band_bytes {
+                return Err(OxiGdalError::InvalidParameter {
+                    parameter: "band data",
+                    message: format!(
+                        "band {} has {} bytes, expected {band_bytes} ({w}×{h}×{bps})",
+                        i + 1,
+                        band.len()
+                    ),
+                });
+            }
+        }
+
+        // Interleave BSQ per-band planes into chunky / pixel-interleaved order,
+        // which is what GeoTiffWriter::write expects.
+        let pixel_count = w as usize * h as usize;
+        let bc_usize = bc as usize;
+        let mut interleaved = vec![0u8; band_bytes * bc_usize];
+        for (b, band) in self.bands.iter().enumerate() {
+            for p in 0..pixel_count {
+                let src = p * bps;
+                let dst = (p * bc_usize + b) * bps;
+                interleaved[dst..dst + bps].copy_from_slice(&band[src..src + bps]);
+            }
+        }
+
+        let compression = match self.options.compression {
+            CompressionType::None => TiffCompression::None,
+            CompressionType::Deflate => TiffCompression::AdobeDeflate,
+            CompressionType::Lzw => TiffCompression::Lzw,
+            CompressionType::Zstd => TiffCompression::Zstd,
+            other => {
+                return Err(OxiGdalError::NotSupported {
+                    operation: format!(
+                        "DatasetWriter::finalize(): compression '{other}' is not supported \
+                         for GeoTIFF output"
+                    ),
+                });
+            }
+        };
+
+        let predictor = match self.options.predictor {
+            Some(2) => Predictor::HorizontalDifferencing,
+            Some(3) => Predictor::FloatingPoint,
+            _ => Predictor::None,
+        };
+
+        let (tile_width, tile_height) = match self.options.tile_size {
+            Some((tw, th)) => (Some(tw), Some(th)),
+            None => (None, None),
+        };
+
+        let epsg_code = self
+            .options
+            .crs
+            .as_deref()
+            .and_then(crate::extract_epsg_from_crs_string);
+
+        let nodata = match self.options.nodata {
+            Some(v) => NoDataValue::Float(v),
+            None => NoDataValue::None,
+        };
+
+        let config = WriterConfig {
+            width: u64::from(w),
+            height: u64::from(h),
+            band_count: u16::try_from(bc).unwrap_or(1),
+            data_type: dt,
+            compression,
+            predictor,
+            tile_width,
+            tile_height,
+            photometric: PhotometricInterpretation::BlackIsZero,
+            geo_transform: self.geo_transform,
+            epsg_code,
+            nodata,
+            use_bigtiff: false,
+            generate_overviews: false,
+            overview_resampling: oxigdal_geotiff::OverviewResampling::Average,
+            overview_levels: Vec::new(),
+        };
+
+        let mut writer = GeoTiffWriter::create(&self.path, config, GeoTiffWriterOptions::default())
+            .map_err(|e| {
+                OxiGdalError::Io(oxigdal_core::error::IoError::Write {
+                    message: format!("failed to create GeoTIFF '{}': {e}", self.path.display()),
+                })
+            })?;
+        writer.write(&interleaved).map_err(|e| {
+            OxiGdalError::Io(oxigdal_core::error::IoError::Write {
+                message: format!("failed to write GeoTIFF data: {e}"),
+            })
+        })?;
+
         Ok(())
     }
 
@@ -1120,11 +1258,16 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(feature = "geotiff")]
     #[test]
-    fn test_writer_finalize_raster() {
+    fn test_writer_finalize_geotiff_roundtrip() {
+        use oxigdal_core::io::FileDataSource;
+        use oxigdal_geotiff::GeoTiffReader;
+
         let dir = std::env::temp_dir();
-        let path = dir.join("writer_finalize_raster_test.bin");
+        let path = dir.join("writer_finalize_geotiff_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .with_crs("EPSG:4326")
             .create()
             .expect("create");
         w.set_dimensions(2, 2, 1).expect("dims");
@@ -1133,12 +1276,45 @@ mod tests {
         w.finalize().expect("finalize");
         assert!(w.is_finalized());
 
-        let bytes = std::fs::read(&path).expect("read");
-        // Header: OXIG (4) + width (4) + height (4) + band_count (4) + dt (1) = 17
-        assert!(bytes.len() >= 17 + 4);
-        assert_eq!(&bytes[0..4], b"OXIG");
-        // Band data starts at offset 17
-        assert_eq!(&bytes[17..21], &[10, 20, 30, 40]);
+        // The output must be a *real* GeoTIFF, readable by the driver reader.
+        let reader = GeoTiffReader::open(FileDataSource::open(&path).expect("source"))
+            .expect("output must be a valid GeoTIFF");
+        assert_eq!(reader.width(), 2);
+        assert_eq!(reader.height(), 2);
+        assert_eq!(reader.band_count(), 1);
+        assert_eq!(
+            reader.read_band(0, 0).expect("read pixels"),
+            vec![10, 20, 30, 40],
+            "pixel data should round-trip through the real GeoTIFF writer"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_finalize_unsupported_format_errors() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("writer_finalize_gpkg_test.gpkg");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoPackage)
+            .create()
+            .expect("create");
+        w.set_dimensions(2, 2, 1).expect("dims");
+        w.set_data_type(RasterDataType::UInt8);
+        // GeoPackage has no writer wired into DatasetWriter yet — finalize must
+        // return an explicit NotSupported error, never a bogus placeholder file
+        // plus Ok(()).
+        let result = w.finalize();
+        assert!(
+            matches!(result, Err(OxiGdalError::NotSupported { .. })),
+            "unsupported format should return NotSupported, got {result:?}"
+        );
+        assert!(
+            !w.is_finalized(),
+            "writer must not be marked finalized after a failed finalize"
+        );
+        assert!(
+            !path.exists(),
+            "no placeholder file should be written for an unsupported format"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

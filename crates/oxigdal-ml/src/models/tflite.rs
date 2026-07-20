@@ -691,6 +691,7 @@ mod num_cpus {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

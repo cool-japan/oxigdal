@@ -9,10 +9,10 @@
 //!
 //! # Features
 //!
-//! - `streams` - Kinesis Data Streams support (default)
-//! - `firehose` - Kinesis Firehose support (default)
-//! - `analytics` - Kinesis Analytics support (default)
-//! - `monitoring` - CloudWatch monitoring and metrics (default)
+//! - `streams` - Kinesis Data Streams support
+//! - `firehose` - Kinesis Firehose support
+//! - `analytics` - Kinesis Analytics support
+//! - `monitoring` - CloudWatch monitoring and metrics
 //! - `checkpointing` - DynamoDB checkpointing for consumers
 //! - `enhanced-fanout` - Enhanced fan-out consumer support
 //! - `compression` - Data compression support
@@ -237,13 +237,17 @@ mod tests {
 
     #[test]
     fn test_kinesis_client_creation() {
+        #[cfg_attr(not(feature = "firehose"), allow(unused_variables))]
         let client = KinesisClient::new();
+        #[cfg(feature = "firehose")]
         assert!(client.firehose().is_none());
     }
 
     #[test]
     fn test_kinesis_client_default() {
+        #[cfg_attr(not(feature = "firehose"), allow(unused_variables))]
         let client = KinesisClient::default();
+        #[cfg(feature = "firehose")]
         assert!(client.firehose().is_none());
     }
 }

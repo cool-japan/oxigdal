@@ -311,7 +311,7 @@ impl<const N: usize> AlignedBuffer<N> {
 
     /// Verify the buffer is properly aligned
     pub fn verify_alignment(&self) -> bool {
-        self.as_ptr() as usize % 64 == 0
+        (self.as_ptr() as usize).is_multiple_of(64)
     }
 }
 

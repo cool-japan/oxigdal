@@ -536,11 +536,11 @@ mod edge_case_tests {
         }
         #[test]
         fn test_huffman_single_symbol() {
-            let data = vec![42; 100];
+            let data = vec![42u8; 100];
             let compressed = HuffmanCompressor::compress(&data);
-            // Note: Huffman decompression is not yet implemented
-            // TODO: Implement full Huffman codec or use existing library
-            assert!(!compressed.is_empty(), "Compression should produce output");
+            let decompressed =
+                HuffmanCompressor::decompress(&compressed).expect("decompress failed");
+            assert_eq!(decompressed, data);
         }
         #[test]
         fn test_lz77_no_matches() {

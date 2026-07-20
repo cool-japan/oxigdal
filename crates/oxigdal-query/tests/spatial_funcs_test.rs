@@ -5,7 +5,7 @@
 //! the SQL parser and the executor's filter pipeline.
 
 #![allow(clippy::panic)]
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::iter_cloned_collect)]
 
 use oxigdal_query::Result;

@@ -226,7 +226,13 @@ pub mod power {
     use crate::error::Result;
 
     /// Wait for interrupt (low power mode)
-    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    ///
+    /// Emitted only for bare-metal targets (`target_os = "none"`); on a hosted
+    /// OS `WFI` from user mode can trap, so this is a no-op there.
+    #[cfg(all(
+        any(target_arch = "riscv32", target_arch = "riscv64"),
+        target_os = "none"
+    ))]
     pub fn wait_for_interrupt() -> Result<()> {
         unsafe {
             // WFI instruction
@@ -235,8 +241,11 @@ pub mod power {
         Ok(())
     }
 
-    /// Wait for interrupt (stub for non-RISC-V targets)
-    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+    /// Wait for interrupt (no-op on non-bare-metal / non-RISC-V targets)
+    #[cfg(not(all(
+        any(target_arch = "riscv32", target_arch = "riscv64"),
+        target_os = "none"
+    )))]
     pub fn wait_for_interrupt() -> Result<()> {
         Ok(())
     }

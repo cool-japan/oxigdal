@@ -573,7 +573,10 @@ fn read_staging_buffer_blocking(
 
     map_result.map_err(|e| GpuError::buffer_mapping(format!("map_async failed: {e}")))?;
 
-    let view = staging_buffer.slice(..).get_mapped_range();
+    let view = staging_buffer
+        .slice(..)
+        .get_mapped_range()
+        .map_err(|e| GpuError::buffer_mapping(e.to_string()))?;
     let bytes = view[..staging_size as usize].to_vec();
     drop(view);
     staging_buffer.unmap();

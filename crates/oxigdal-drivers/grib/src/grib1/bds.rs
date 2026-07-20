@@ -4,6 +4,8 @@
 
 use crate::error::{GribError, Result};
 use byteorder::{BigEndian, ReadBytesExt};
+#[cfg(test)]
+use std::io::Cursor;
 use std::io::Read;
 
 /// GRIB1 Binary Data Section
@@ -51,8 +53,17 @@ impl BinaryDataSection {
             ));
         }
 
-        // Binary scale factor (signed 16-bit)
-        let binary_scale = reader.read_i16::<BigEndian>()?;
+        // Binary scale factor. WMO GRIB1 (Manual on Codes / FM 92-XI Ext.
+        // GRIB) defines this as `signed[2]` (confirmed against eccodes'
+        // definitions/grib1/section.4.def), i.e. sign-and-magnitude: the
+        // MSB is a sign flag and the low 15 bits are the magnitude. This is
+        // NOT two's complement, so it must not be read with `read_i16`.
+        let raw_scale = reader.read_u16::<BigEndian>()?;
+        let binary_scale = if raw_scale & 0x8000 != 0 {
+            -((raw_scale & 0x7FFF) as i16)
+        } else {
+            raw_scale as i16
+        };
 
         // Reference value (IEEE 754 32-bit float, big endian)
         let reference_value = reader.read_f32::<BigEndian>()?;
@@ -105,5 +116,40 @@ mod tests {
             packed_data: vec![],
         };
         assert_eq!(bds.scale_multiplier(), 4.0);
+    }
+
+    /// Regression test driving a negative binary scale factor through
+    /// `from_reader` (not the struct-literal shortcut), confirming the
+    /// sign-and-magnitude decode is applied during actual parsing.
+    #[test]
+    fn test_from_reader_negative_binary_scale() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&11u32.to_be_bytes()[1..]); // section length = 11 (3 bytes)
+        data.push(0x00); // flag: num_bits=0, no spherical harmonics/complex packing
+        data.extend_from_slice(&[0x80, 0x03]); // binary scale = sign-magnitude -3
+        data.extend_from_slice(&0.0f32.to_be_bytes()); // reference value
+
+        let mut cursor = Cursor::new(data);
+        let bds =
+            BinaryDataSection::from_reader(&mut cursor).expect("failed to parse BDS from_reader");
+
+        assert_eq!(bds.binary_scale, -3);
+        assert_eq!(bds.scale_multiplier(), 0.125);
+    }
+
+    #[test]
+    fn test_from_reader_positive_binary_scale() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&11u32.to_be_bytes()[1..]);
+        data.push(0x00);
+        data.extend_from_slice(&[0x00, 0x03]); // binary scale = +3 (sign bit clear)
+        data.extend_from_slice(&0.0f32.to_be_bytes());
+
+        let mut cursor = Cursor::new(data);
+        let bds =
+            BinaryDataSection::from_reader(&mut cursor).expect("failed to parse BDS from_reader");
+
+        assert_eq!(bds.binary_scale, 3);
+        assert_eq!(bds.scale_multiplier(), 8.0);
     }
 }

@@ -43,7 +43,9 @@ tokio-tungstenite.workspace = true
 
 # Authentication
 jsonwebtoken.workspace = true
-oauth2.workspace = true
+# Enable the crate's own async reqwest/rustls HTTP client (workspace pins
+# default-features = false; these named features are unioned on top and stay Pure Rust).
+oauth2 = { workspace = true, features = ["reqwest", "rustls-tls"] }
 hmac.workspace = true
 sha2.workspace = true
 
@@ -95,3 +97,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

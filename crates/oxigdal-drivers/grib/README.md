@@ -26,14 +26,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-grib = "0.1.0"
+oxigdal-grib = "0.1.7"
 ```
 
 ### Feature Flags
 
 ```toml
 [dependencies]
-oxigdal-grib = { version = "0.1.0", features = ["grib1", "grib2"] }
+oxigdal-grib = { version = "0.1.7", features = ["grib1", "grib2"] }
 ```
 
 Available features:

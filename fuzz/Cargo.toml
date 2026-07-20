@@ -9,10 +9,18 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 oxigdal-geotiff = { path = "../crates/oxigdal-drivers/geotiff" }
 oxigdal-jpeg2000 = { path = "../crates/oxigdal-drivers/jpeg2000" }
 oxigdal-grib = { path = "../crates/oxigdal-drivers/grib" }
 oxigdal-geoparquet = { path = "../crates/oxigdal-drivers/geoparquet" }
+oxigdal-shapefile = { path = "../crates/oxigdal-drivers/shapefile" }
+oxigdal-flatgeobuf = { path = "../crates/oxigdal-drivers/flatgeobuf" }
+oxigdal-zarr = { path = "../crates/oxigdal-drivers/zarr" }
+oxigdal-gpkg = { path = "../crates/oxigdal-gpkg" }
+oxigdal-mbtiles = { path = "../crates/oxigdal-mbtiles", features = ["sqlite"] }
+oxigdal-pmtiles = { path = "../crates/oxigdal-pmtiles" }
+oxigdal-copc = { path = "../crates/oxigdal-copc" }
 
 # Prevent this crate from being included in normal workspace builds
 [workspace]
@@ -44,5 +52,47 @@ doc = false
 [[bin]]
 name = "fuzz_wkb_decode"
 path = "fuzz_targets/fuzz_wkb_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_shapefile_header"
+path = "fuzz_targets/fuzz_shapefile_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_flatgeobuf_root"
+path = "fuzz_targets/fuzz_flatgeobuf_root.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_zarr_metadata"
+path = "fuzz_targets/fuzz_zarr_metadata.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_gpkg_header"
+path = "fuzz_targets/fuzz_gpkg_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_mbtiles_header"
+path = "fuzz_targets/fuzz_mbtiles_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_pmtiles_header"
+path = "fuzz_targets/fuzz_pmtiles_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_copc_header"
+path = "fuzz_targets/fuzz_copc_header.rs"
 test = false
 doc = false

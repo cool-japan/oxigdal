@@ -39,6 +39,16 @@ impl Default for ValidationConfig {
     }
 }
 
+/// The role a linear ring plays within a polygon, used to determine the
+/// RFC 7946 §3.1.6 expected winding order when `validate_winding` is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingRole {
+    /// The outer boundary of a polygon; RFC 7946 expects counterclockwise winding.
+    Exterior,
+    /// An interior boundary (hole) of a polygon; RFC 7946 expects clockwise winding.
+    Hole,
+}
+
 /// GeoJSON validator
 pub struct Validator {
     config: ValidationConfig,
@@ -116,7 +126,21 @@ impl Validator {
     }
 
     /// Validates a linear ring
+    ///
+    /// This treats the ring as an exterior ring for winding-order purposes.
+    /// Use [`Validator::validate_linear_ring_with_role`] to validate a hole,
+    /// which is expected to have the opposite orientation.
     pub fn validate_linear_ring(&mut self, ring: &CoordinateSequence) -> Result<()> {
+        self.validate_linear_ring_with_role(ring, RingRole::Exterior)
+    }
+
+    /// Validates a linear ring, checking winding order according to its role
+    /// (exterior ring vs. hole) per RFC 7946 §3.1.6.
+    pub fn validate_linear_ring_with_role(
+        &mut self,
+        ring: &CoordinateSequence,
+        role: RingRole,
+    ) -> Result<()> {
         if ring.len() < 4 {
             return Err(GeoJsonError::invalid_coordinates(
                 "Linear ring must have at least 4 positions",
@@ -130,28 +154,42 @@ impl Validator {
         }
 
         // Check if ring is closed
-        if self.config.validate_closed_rings {
-            if let (Some(first), Some(last)) = (ring.first(), ring.last()) {
-                if first != last {
-                    return Err(GeoJsonError::topology(
-                        "Linear ring must be closed (first and last positions must be equal)",
-                    ));
-                }
-            }
+        if self.config.validate_closed_rings
+            && let (Some(first), Some(last)) = (ring.first(), ring.last())
+            && first != last
+        {
+            return Err(GeoJsonError::topology(
+                "Linear ring must be closed (first and last positions must be equal)",
+            ));
         }
 
-        // Validate winding order (right-hand rule for exterior rings)
-        // Note: This validation is optional and can be disabled
-        // RFC 7946 recommends but does not require specific winding order
+        // Degenerate (near-zero area) rings are always rejected, independent of
+        // the `validate_winding` flag: a ring with no measurable area cannot
+        // have a meaningful orientation and is not usable geometry.
+        let area = compute_signed_area(ring);
+        if area.abs() < 1e-10 {
+            return Err(GeoJsonError::validation(
+                "Linear ring has near-zero area (potentially degenerate)",
+            ));
+        }
+
+        // Validate winding order (right-hand rule, RFC 7946 §3.1.6): exterior
+        // rings SHOULD be counterclockwise (positive signed area with the
+        // shoelace formula in (lon, lat) order), holes SHOULD be clockwise
+        // (negative signed area).
         if self.config.validate_winding {
-            let area = compute_signed_area(ring);
-            // In GeoJSON (lon, lat), exterior rings should be counterclockwise (positive area)
-            // However, many existing GeoJSON files don't follow this strictly
-            // So we just warn if the area is very small (potentially degenerate)
-            if area.abs() < 1e-10 {
-                return Err(GeoJsonError::validation(
-                    "Linear ring has near-zero area (potentially degenerate)",
-                ));
+            match role {
+                RingRole::Exterior if area <= 0.0 => {
+                    return Err(GeoJsonError::validation(format!(
+                        "Exterior ring has clockwise winding (signed area {area}); RFC 7946 §3.1.6 expects counterclockwise"
+                    )));
+                }
+                RingRole::Hole if area >= 0.0 => {
+                    return Err(GeoJsonError::validation(format!(
+                        "Hole has counterclockwise winding (signed area {area}); RFC 7946 §3.1.6 expects clockwise"
+                    )));
+                }
+                RingRole::Exterior | RingRole::Hole => {}
             }
         }
 
@@ -202,25 +240,14 @@ impl Validator {
 
         // Validate exterior ring
         if let Some(exterior) = polygon.coordinates.first() {
-            self.validate_linear_ring(exterior)
+            self.validate_linear_ring_with_role(exterior, RingRole::Exterior)
                 .map_err(|e| GeoJsonError::validation_at(e.to_string(), "exterior_ring"))?;
         }
 
         // Validate holes
         for (i, hole) in polygon.coordinates.iter().skip(1).enumerate() {
-            self.validate_linear_ring(hole)
+            self.validate_linear_ring_with_role(hole, RingRole::Hole)
                 .map_err(|e| GeoJsonError::validation_at(e.to_string(), format!("hole/{i}")))?;
-
-            // Holes validation (optional)
-            if self.config.validate_winding {
-                let area = compute_signed_area(hole);
-                // Just check for degenerate holes
-                if area.abs() < 1e-10 {
-                    return Err(GeoJsonError::validation(format!(
-                        "Hole {i} has near-zero area (potentially degenerate)"
-                    )));
-                }
-            }
         }
 
         if let Some(bbox) = &polygon.bbox {
@@ -282,9 +309,15 @@ impl Validator {
             }
 
             for (j, ring) in polygon.iter().enumerate() {
-                self.validate_linear_ring(ring).map_err(|e| {
-                    GeoJsonError::validation_at(e.to_string(), format!("polygon/{i}/ring/{j}"))
-                })?;
+                let role = if j == 0 {
+                    RingRole::Exterior
+                } else {
+                    RingRole::Hole
+                };
+                self.validate_linear_ring_with_role(ring, role)
+                    .map_err(|e| {
+                        GeoJsonError::validation_at(e.to_string(), format!("polygon/{i}/ring/{j}"))
+                    })?;
             }
         }
 
@@ -655,6 +688,104 @@ mod tests {
         let collection = FeatureCollection::new(vec![feature]);
 
         assert!(validator.validate_feature_collection(&collection).is_ok());
+    }
+
+    #[test]
+    fn test_validate_winding_clockwise_exterior_rejected() {
+        let mut validator = Validator::new();
+
+        // Clockwise exterior ring (negative signed area) violates RFC 7946 §3.1.6.
+        let clockwise = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 0.0],
+            vec![0.0, 0.0],
+        ];
+        assert!(validator.validate_linear_ring(&clockwise).is_err());
+    }
+
+    #[test]
+    fn test_validate_winding_disabled_allows_clockwise_exterior() {
+        let config = ValidationConfig {
+            validate_winding: false,
+            ..Default::default()
+        };
+        let mut validator = Validator::with_config(config);
+
+        let clockwise = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 0.0],
+            vec![0.0, 0.0],
+        ];
+        assert!(validator.validate_linear_ring(&clockwise).is_ok());
+    }
+
+    #[test]
+    fn test_validate_winding_counterclockwise_hole_rejected() {
+        let mut validator = Validator::new();
+
+        // Counterclockwise hole (positive signed area) violates RFC 7946 §3.1.6.
+        let counterclockwise = vec![
+            vec![0.0, 0.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![0.0, 1.0],
+            vec![0.0, 0.0],
+        ];
+        assert!(
+            validator
+                .validate_linear_ring_with_role(&counterclockwise, RingRole::Hole)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_validate_winding_correctly_wound_polygon_passes() {
+        let mut validator = Validator::new();
+
+        // CCW exterior with a CW hole: correctly wound per RFC 7946 §3.1.6.
+        let exterior = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![10.0, 10.0],
+            vec![0.0, 10.0],
+            vec![0.0, 0.0],
+        ];
+        let hole = vec![
+            vec![2.0, 2.0],
+            vec![2.0, 4.0],
+            vec![4.0, 4.0],
+            vec![4.0, 2.0],
+            vec![2.0, 2.0],
+        ];
+        let polygon = Polygon::new(vec![exterior, hole]).expect("valid polygon with hole");
+        assert!(validator.validate_polygon(&polygon).is_ok());
+    }
+
+    #[test]
+    fn test_validate_winding_wrongly_wound_hole_in_polygon_rejected() {
+        let mut validator = Validator::new();
+
+        let exterior = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![10.0, 10.0],
+            vec![0.0, 10.0],
+            vec![0.0, 0.0],
+        ];
+        // Counterclockwise hole (should be clockwise).
+        let bad_hole = vec![
+            vec![2.0, 2.0],
+            vec![4.0, 2.0],
+            vec![4.0, 4.0],
+            vec![2.0, 4.0],
+            vec![2.0, 2.0],
+        ];
+        let polygon = Polygon::new(vec![exterior, bad_hole]).expect("valid polygon with hole");
+        assert!(validator.validate_polygon(&polygon).is_err());
     }
 
     #[test]

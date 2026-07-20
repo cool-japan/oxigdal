@@ -2,7 +2,7 @@
 
 > **Purpose:** High-performance SIMD-optimized raster and vector algorithms for OxiGDAL — Pure Rust geospatial processing.
 > **Status (2026-05-16):** 63,448 Rust LoC · 1,478 tests · 3 real stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

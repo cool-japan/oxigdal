@@ -4,7 +4,7 @@
 //! including georeferencing accuracy, GCP validation, and resolution validation.
 
 use crate::error::{QcError, QcIssue, QcResult, Severity};
-use oxigdal_core::buffer::RasterBuffer;
+use oxigdal_core::buffer::{BufferStatistics, RasterBuffer};
 use oxigdal_core::types::{BoundingBox, GeoTransform};
 
 /// Result of raster accuracy analysis.
@@ -213,6 +213,19 @@ pub struct AccuracyConfig {
 
     /// Whether to assess orthorectification quality.
     pub assess_ortho_quality: bool,
+
+    /// Minimum elevation difference (in the DEM's own vertical units) between
+    /// a pixel and *every* one of its 8 valid neighbors for that pixel to be
+    /// counted as a candidate pit/peak artifact. `None` derives a threshold
+    /// from the buffer's own statistics at check time (a multiple of the
+    /// standard deviation), so the check self-calibrates to the DEM's
+    /// elevation units instead of assuming meters.
+    pub dem_artifact_threshold: Option<f64>,
+
+    /// Fraction of valid pixels that must be flagged as local extrema before
+    /// `has_artifacts` is reported as `true`. Guards against a single noisy
+    /// pixel or a nodata border triggering a false positive.
+    pub dem_artifact_pixel_fraction: f64,
 }
 
 impl Default for AccuracyConfig {
@@ -225,6 +238,8 @@ impl Default for AccuracyConfig {
             expected_elevation_range: None,
             check_dem_artifacts: true,
             assess_ortho_quality: false,
+            dem_artifact_threshold: None,
+            dem_artifact_pixel_fraction: 0.001,
         }
     }
 }
@@ -541,8 +556,7 @@ impl AccuracyChecker {
                 stats.min >= -500.0 && stats.max <= 9000.0
             };
 
-        // Simple artifact detection (would be more sophisticated in full implementation)
-        let has_artifacts = self.detect_dem_artifacts(buffer)?;
+        let has_artifacts = self.detect_dem_artifacts(buffer, &stats)?;
 
         Ok(Some(DemAccuracy {
             elevation_range,
@@ -554,10 +568,86 @@ impl AccuracyChecker {
         }))
     }
 
-    /// Detects DEM artifacts (pits/peaks).
-    fn detect_dem_artifacts(&self, _buffer: &RasterBuffer) -> QcResult<bool> {
-        // Simplified implementation - full version would use morphological analysis
-        Ok(false)
+    /// Detects DEM artifacts (pits/peaks) via an 8-neighborhood local-extrema scan.
+    ///
+    /// A pixel is a candidate pit/peak artifact when it differs from *every*
+    /// one of its eight neighbors by more than `threshold`, and all eight
+    /// differences share the same sign — the center is either lower than
+    /// every neighbor (a pit) or higher than every neighbor (a peak).
+    /// Pixels touching nodata are skipped entirely (all 8 neighbors must be
+    /// valid data), which keeps nodata borders from generating false
+    /// positives. The threshold defaults to `4 * std_dev` of the buffer's
+    /// own elevation statistics (self-calibrating to the DEM's vertical
+    /// units) unless `AccuracyConfig::dem_artifact_threshold` overrides it.
+    /// `has_artifacts` is only reported `true` once the flagged-pixel count
+    /// exceeds `dem_artifact_pixel_fraction` of the total valid pixel count,
+    /// so a single noisy pixel in a large raster doesn't trip the check.
+    fn detect_dem_artifacts(
+        &self,
+        buffer: &RasterBuffer,
+        stats: &BufferStatistics,
+    ) -> QcResult<bool> {
+        let width = buffer.width();
+        let height = buffer.height();
+
+        // Need at least one full ring of neighbors around a center pixel.
+        if width < 3 || height < 3 {
+            return Ok(false);
+        }
+
+        let threshold = self
+            .config
+            .dem_artifact_threshold
+            .unwrap_or(4.0 * stats.std_dev)
+            .max(1e-9);
+
+        let mut flagged = 0u64;
+
+        for y in 1..height - 1 {
+            for x in 1..width - 1 {
+                let center = buffer.get_pixel(x, y)?;
+                if buffer.is_nodata(center) || !center.is_finite() {
+                    continue;
+                }
+
+                let mut diffs = [0.0f64; 8];
+                let mut all_valid = true;
+                let mut idx = 0usize;
+                'neighbors: for dy in -1i64..=1 {
+                    for dx in -1i64..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        // Safe: x, y range over [1, width-2] / [1, height-2],
+                        // so x+dx and y+dy always land within [0, width-1] /
+                        // [0, height-1].
+                        let nx = (x as i64 + dx) as u64;
+                        let ny = (y as i64 + dy) as u64;
+                        let neighbor = buffer.get_pixel(nx, ny)?;
+                        if buffer.is_nodata(neighbor) || !neighbor.is_finite() {
+                            all_valid = false;
+                            break 'neighbors;
+                        }
+                        if let Some(slot) = diffs.get_mut(idx) {
+                            *slot = neighbor - center;
+                        }
+                        idx += 1;
+                    }
+                }
+
+                if !all_valid {
+                    continue;
+                }
+
+                let is_pit = diffs.iter().all(|&d| d > threshold);
+                let is_peak = diffs.iter().all(|&d| d < -threshold);
+                if is_pit || is_peak {
+                    flagged += 1;
+                }
+            }
+        }
+
+        Ok(flagged as f64 > self.config.dem_artifact_pixel_fraction * stats.valid_count as f64)
     }
 }
 
@@ -667,5 +757,125 @@ mod tests {
         let result = result.expect("GCP validation should succeed");
         assert_eq!(result.gcp_count, 4);
         assert!(result.rmse_total < 1.0);
+    }
+
+    // ── DEM artifact (pit/peak) detection ──────────────────────────────────
+
+    #[test]
+    fn test_dem_artifacts_flat_surface_none_detected() {
+        // Perfectly flat DEM: no local extrema anywhere, so has_artifacts
+        // must stay false regardless of the (auto-derived) threshold.
+        let buffer = RasterBuffer::zeros(5, 5, RasterDataType::Float32);
+
+        let checker = AccuracyChecker::new();
+        let result = checker
+            .check_dem_accuracy(&buffer)
+            .expect("DEM accuracy check should succeed")
+            .expect("flat DEM should yield a DemAccuracy result");
+
+        assert!(
+            !result.has_artifacts,
+            "flat surface must not be flagged as having artifacts"
+        );
+    }
+
+    #[test]
+    fn test_dem_artifacts_single_deep_pit_detected() {
+        // Flat 5x5 DEM at elevation 100.0 with a single deep pit (10.0) in
+        // the center. In a small buffer, one flagged pixel is well above the
+        // default 0.1% fraction threshold, so it must be reported.
+        let mut buffer = RasterBuffer::zeros(5, 5, RasterDataType::Float32);
+        buffer.fill_value(100.0);
+        buffer
+            .set_pixel(2, 2, 10.0)
+            .expect("setting the pit pixel should succeed");
+
+        let checker = AccuracyChecker::new();
+        let result = checker
+            .check_dem_accuracy(&buffer)
+            .expect("DEM accuracy check should succeed")
+            .expect("DEM with a pit should yield a DemAccuracy result");
+
+        assert!(
+            result.has_artifacts,
+            "single-pixel pit exceeding the derived threshold should be detected"
+        );
+    }
+
+    #[test]
+    fn test_dem_artifacts_single_sharp_peak_detected() {
+        // Same as the pit test, but the anomaly is a sharp peak instead.
+        let mut buffer = RasterBuffer::zeros(5, 5, RasterDataType::Float32);
+        buffer.fill_value(100.0);
+        buffer
+            .set_pixel(2, 2, 500.0)
+            .expect("setting the peak pixel should succeed");
+
+        let checker = AccuracyChecker::new();
+        let result = checker
+            .check_dem_accuracy(&buffer)
+            .expect("DEM accuracy check should succeed")
+            .expect("DEM with a peak should yield a DemAccuracy result");
+
+        assert!(
+            result.has_artifacts,
+            "single-pixel peak exceeding the derived threshold should be detected"
+        );
+    }
+
+    #[test]
+    fn test_dem_artifacts_nodata_border_no_false_positive() {
+        // Flat interior surrounded by a ring of nodata pixels. Border-
+        // adjacent pixels can't be evaluated (a full 8-neighborhood of valid
+        // data is required), and the flat interior has no local extrema, so
+        // has_artifacts must stay false.
+        let nodata = oxigdal_core::types::NoDataValue::Float(-9999.0);
+        let mut buffer = RasterBuffer::nodata_filled(6, 6, RasterDataType::Float32, nodata);
+
+        for y in 1..5u64 {
+            for x in 1..5u64 {
+                buffer
+                    .set_pixel(x, y, 100.0)
+                    .expect("setting interior pixel should succeed");
+            }
+        }
+
+        let checker = AccuracyChecker::new();
+        let result = checker
+            .check_dem_accuracy(&buffer)
+            .expect("DEM accuracy check should succeed")
+            .expect("DEM with nodata border should yield a DemAccuracy result");
+
+        assert!(
+            !result.has_artifacts,
+            "flat interior bordered by nodata must not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_dem_artifacts_explicit_threshold_override() {
+        // With an explicit threshold that no diff in this DEM can exceed,
+        // even a fairly large bump must not be flagged.
+        let mut buffer = RasterBuffer::zeros(5, 5, RasterDataType::Float32);
+        buffer.fill_value(100.0);
+        buffer
+            .set_pixel(2, 2, 150.0)
+            .expect("setting the bump pixel should succeed");
+
+        let config = AccuracyConfig {
+            dem_artifact_threshold: Some(1000.0),
+            ..AccuracyConfig::default()
+        };
+        let checker = AccuracyChecker::with_config(config);
+
+        let result = checker
+            .check_dem_accuracy(&buffer)
+            .expect("DEM accuracy check should succeed")
+            .expect("DEM with a bump should yield a DemAccuracy result");
+
+        assert!(
+            !result.has_artifacts,
+            "a diff smaller than an explicit override threshold must not be flagged"
+        );
     }
 }

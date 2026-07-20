@@ -3,8 +3,10 @@
 //! Note: These tests require a running Kafka instance.
 //! Set KAFKA_BROKERS environment variable to override default localhost:9092
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use oxigdal_kafka::config::{Acks, CompressionType, IsolationLevel, OffsetReset};
-use oxigdal_kafka::consumer::{ConsumerConfig, KafkaConsumer};
+use oxigdal_kafka::consumer::{CommitStrategy, ConsumerConfig, KafkaConsumer};
 use oxigdal_kafka::producer::{KafkaProducer, ProducerConfig};
 use std::time::Duration;
 
@@ -218,7 +220,11 @@ async fn test_producer_consumer_roundtrip() {
                 "Received message from partition {} at offset {}",
                 msg.partition, msg.offset
             );
-            assert_eq!(msg.payload.as_ref(), test_message);
+            assert_eq!(
+                msg.payload.as_deref(),
+                Some(test_message.as_slice()),
+                "expected a non-tombstone payload matching the sent message"
+            );
         }
         Err(e) => {
             println!("Did not receive message within timeout: {}", e);
@@ -332,4 +338,70 @@ async fn test_transactional_producer() {
     );
 
     println!("Transaction completed successfully");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_consumer_auto_per_message_commit() {
+    // Regression test for the `CommitStrategy::AutoPerMessage` strategy:
+    // offsets must be committed to the broker automatically after each
+    // `receive_with_timeout()` call, with no manual `.commit()` needed.
+    let topic = format!("test-auto-commit-{}", uuid::Uuid::new_v4());
+    let group_id = format!("test-auto-commit-group-{}", uuid::Uuid::new_v4());
+
+    let producer_config = assert_ok!(
+        ProducerConfig::builder()
+            .bootstrap_servers(get_kafka_brokers())
+            .acks(Acks::All)
+            .build(),
+        "Failed to build producer config"
+    );
+    let producer = assert_ok!(
+        KafkaProducer::new(producer_config).await,
+        "Failed to create producer"
+    );
+
+    let consumer_config = assert_ok!(
+        ConsumerConfig::builder()
+            .bootstrap_servers(get_kafka_brokers())
+            .group_id(group_id)
+            .auto_offset_reset(OffsetReset::Earliest)
+            .commit_strategy(CommitStrategy::AutoPerMessage)
+            .build(),
+        "Failed to build consumer config"
+    );
+    let consumer = assert_ok!(
+        KafkaConsumer::new(consumer_config).await,
+        "Failed to create consumer"
+    );
+    assert_ok!(consumer.subscribe(&[&topic]).await, "Failed to subscribe");
+
+    assert_ok!(
+        producer
+            .send(&topic, Some(b"key"), b"auto-commit-test-value")
+            .await,
+        "Failed to send message"
+    );
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    match consumer.receive_with_timeout(Duration::from_secs(10)).await {
+        Ok(msg) => {
+            // No manual `.commit()` call here: the AutoPerMessage strategy
+            // must have committed the offset by itself inside `receive_with_timeout`.
+            let committed = assert_ok!(
+                consumer.committed_offsets(&topic, &[msg.partition]).await,
+                "Failed to fetch committed offsets"
+            );
+            assert_eq!(
+                committed.get(&msg.partition),
+                Some(&(msg.offset + 1)),
+                "expected AutoPerMessage strategy to have committed offset {} + 1 automatically",
+                msg.offset
+            );
+        }
+        Err(e) => {
+            println!("Did not receive message within timeout: {}", e);
+        }
+    }
 }

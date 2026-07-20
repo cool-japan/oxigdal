@@ -43,10 +43,16 @@ async function main() {
   console.log(`  Elevation range: ${demStats.min.toFixed(1)}m - ${demStats.max.toFixed(1)}m`);
   console.log(`  Mean elevation: ${demStats.mean.toFixed(1)}m`);
 
+  // Ground distance covered by one DEM pixel, in the same units as elevation
+  // (meters here). This must match the real cell size of a georeferenced
+  // DEM -- passing the wrong value skews every slope/aspect/hillshade output
+  // by the ratio of the true cell size to whatever was passed.
+  const pixelSize = 30.0;
+
   // Compute hillshade (synchronous)
   console.log('\nComputing hillshade (sync)...');
   const hillshadeStart = Date.now();
-  const hillshade = oxigdal.hillshade(dem, 315, 45, 1.0);
+  const hillshade = oxigdal.hillshade(dem, 315, 45, 1.0, pixelSize);
   const hillshadeTime = Date.now() - hillshadeStart;
   console.log(`  Completed in ${hillshadeTime}ms`);
   console.log(`  Output range: ${hillshade.statistics().min.toFixed(0)} - ${hillshade.statistics().max.toFixed(0)}`);
@@ -54,7 +60,7 @@ async function main() {
   // Compute slope (async)
   console.log('\nComputing slope (async, degrees)...');
   const slopeStart = Date.now();
-  const slope = await oxigdal.slopeAsync(dem, 1.0, false);
+  const slope = await oxigdal.slopeAsync(dem, pixelSize, 1.0, false);
   const slopeTime = Date.now() - slopeStart;
   console.log(`  Completed in ${slopeTime}ms`);
   const slopeStats = slope.statistics();
@@ -63,7 +69,7 @@ async function main() {
 
   // Compute slope as percent
   console.log('\nComputing slope (percent)...');
-  const slopePercent = await oxigdal.slopeAsync(dem, 1.0, true);
+  const slopePercent = await oxigdal.slopeAsync(dem, pixelSize, 1.0, true);
   const slopePercentStats = slopePercent.statistics();
   console.log(`  Slope range: ${slopePercentStats.min.toFixed(2)}% - ${slopePercentStats.max.toFixed(2)}%`);
   console.log(`  Mean slope: ${slopePercentStats.mean.toFixed(2)}%`);
@@ -71,7 +77,7 @@ async function main() {
   // Compute aspect
   console.log('\nComputing aspect...');
   const aspectStart = Date.now();
-  const aspect = await oxigdal.aspectAsync(dem);
+  const aspect = await oxigdal.aspectAsync(dem, pixelSize);
   const aspectTime = Date.now() - aspectStart;
   console.log(`  Completed in ${aspectTime}ms`);
   const aspectStats = aspect.statistics();

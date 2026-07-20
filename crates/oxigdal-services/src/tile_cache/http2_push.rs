@@ -332,23 +332,23 @@ impl TileServer {
             },
             Some((data, etag)) => {
                 // Check conditional request
-                if let Some(inm) = if_none_match {
-                    if !ETagValidator::check_none_match(inm, &etag) {
-                        // ETag matched → 304
-                        let headers = vec![
-                            ("ETag".to_owned(), etag),
-                            (
-                                "Cache-Control".to_owned(),
-                                "public, max-age=3600".to_owned(),
-                            ),
-                        ];
-                        return TileResponse {
-                            status: TileResponseStatus::NotModified,
-                            data: None,
-                            headers,
-                            push_hints: vec![],
-                        };
-                    }
+                if let Some(inm) = if_none_match
+                    && !ETagValidator::check_none_match(inm, &etag)
+                {
+                    // ETag matched → 304
+                    let headers = vec![
+                        ("ETag".to_owned(), etag),
+                        (
+                            "Cache-Control".to_owned(),
+                            "public, max-age=3600".to_owned(),
+                        ),
+                    ];
+                    return TileResponse {
+                        status: TileResponseStatus::NotModified,
+                        data: None,
+                        headers,
+                        push_hints: vec![],
+                    };
                 }
 
                 // Full 200 response

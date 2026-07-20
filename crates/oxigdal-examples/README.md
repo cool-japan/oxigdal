@@ -19,6 +19,17 @@ Collection of example programs demonstrating OxiGDAL usage for geospatial data p
 - **100% Pure Rust**: All examples work without C/Fortran dependencies
 - **Error Handling**: Proper error handling throughout with no unwrap() calls
 
+## Example Programs (`cargo run --example <name>`)
+
+In addition to the binaries below, this crate's `examples/` directory holds
+~30 `cargo run --example <name>` programs: a 10-part tutorial series
+(`tutorial_01_quickstart` .. `tutorial_10_mobile_integration`), cookbook
+recipes (`cookbook_*`), and deeper single-purpose pipelines (`cog_pipeline`,
+`ml_inference`, `satellite_processing`, `timeseries_analysis`,
+`vector_postgis`, and more). Run `cargo run -p oxigdal-examples --example`
+with no name to list them all. See the top-level
+[`examples/README.md`](../../examples/README.md) for an overview.
+
 ## Available Examples
 
 | Example | Binary | Description |

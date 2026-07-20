@@ -72,3 +72,22 @@ harness = false
 
 [lints]
 workspace = true
+
+# NOTE: docs.rs has no GPU hardware/drivers, so we build with the pure
+# wgpu/WGSL backend surface only (no `cuda`/`directml`/`backend-optimizations`,
+# which name non-wgpu accelerator paths) instead of `all-features = true`.
+#
+# `metal` and `dx12` only gate the corresponding `wgpu/*` backend cargo
+# features; wgpu compiles those backend crates (ash/gpu-allocator/etc.) on
+# every host via `cfg(target_os = ...)` internally, so they do not require
+# Apple/Windows toolchains to build docs. Verified 2026-07-17 with
+# `cargo doc -p oxigdal-gpu --no-deps --target x86_64-unknown-linux-gnu
+# --features "auto-backend,vulkan,metal,dx12,webgpu,all-native-backends,
+# multi-gpu,shader-hot-reload"` (docs.rs's default target) — builds clean,
+# no non-Linux/FFI blockers in the resolved dependency tree.
+[package.metadata.docs.rs]
+features = [
+    "auto-backend", "vulkan", "metal", "dx12", "webgpu",
+    "all-native-backends", "multi-gpu", "shader-hot-reload",
+]
+rustdoc-args = ["--cfg", "docsrs"]

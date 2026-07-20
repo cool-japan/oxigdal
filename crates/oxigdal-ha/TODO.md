@@ -2,7 +2,7 @@
 
 > **Purpose:** High availability, disaster recovery, and automatic failover for OxiGDAL — active-active replication, Raft-style leader election, PITR/WAL recovery, multi-site DR.
 > **Status (2026-05-16):** 5,171 LoC (src) · 46 tests (32 inline + 14 in tests/) · 4 simulated/placeholder code paths
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace simulated network send in active-active replication with a real transport.

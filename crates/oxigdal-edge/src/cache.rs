@@ -207,17 +207,17 @@ impl Cache {
         drop(cache);
 
         // Try persistent storage if enabled
-        if let Some(db) = &self.persistent_storage {
-            if let Some(value) = db.get(key).map_err(|e| EdgeError::storage(e.to_string()))? {
-                let entry: CacheEntry = serde_json::from_slice(&value)
-                    .map_err(|e| EdgeError::deserialization(e.to_string()))?;
+        if let Some(db) = &self.persistent_storage
+            && let Some(value) = db.get(key).map_err(|e| EdgeError::storage(e.to_string()))?
+        {
+            let entry: CacheEntry = serde_json::from_slice(&value)
+                .map_err(|e| EdgeError::deserialization(e.to_string()))?;
 
-                if !entry.is_expired() {
-                    // Restore to memory cache
-                    let mut cache = self.lru_cache.write();
-                    cache.put(key.to_string(), entry.clone());
-                    return Ok(Some(entry.data));
-                }
+            if !entry.is_expired() {
+                // Restore to memory cache
+                let mut cache = self.lru_cache.write();
+                cache.put(key.to_string(), entry.clone());
+                return Ok(Some(entry.data));
             }
         }
 

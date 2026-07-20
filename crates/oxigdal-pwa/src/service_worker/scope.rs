@@ -49,11 +49,19 @@ impl ServiceWorkerScope {
             return Ok(false);
         }
 
-        // Check if path starts with scope path
+        // Check if the target path is within the scope path, using a
+        // path-segment boundary rather than a raw string prefix: a scope of
+        // "/app" must match "/app" and "/app/anything" but must NOT match
+        // "/application" or "/app-legacy", which a bare `starts_with` would
+        // incorrectly accept.
         let scope_path = self.normalize_path(&self.scope_path);
         let target_path = self.normalize_path(target_url.path());
 
-        Ok(target_path.starts_with(&scope_path))
+        if scope_path == "/" {
+            return Ok(true);
+        }
+
+        Ok(target_path == scope_path || target_path.starts_with(&format!("{scope_path}/")))
     }
 
     /// Normalize a path by ensuring it starts with / and ends without /
@@ -209,6 +217,38 @@ mod tests {
         assert!(scope.is_in_scope("https://example.com/app")?);
         assert!(!scope.is_in_scope("https://example.com/other")?);
         assert!(!scope.is_in_scope("https://other.com/app")?);
+
+        Ok(())
+    }
+
+    /// Regression test: a scope of "/app" must not match a path that merely
+    /// shares "/app" as a raw string prefix (e.g. "/application/secret" or
+    /// "/app-legacy"), since Service Worker scope is a path-segment boundary,
+    /// not a plain string prefix. Previously `is_in_scope` used a bare
+    /// `starts_with`, which made "/app" spuriously match "/application/...".
+    #[test]
+    fn test_scope_is_in_scope_rejects_prefix_collision() -> Result<()> {
+        let scope = ServiceWorkerScope::new("https://example.com", "/app")?;
+
+        assert!(!scope.is_in_scope("https://example.com/application/secret")?);
+        assert!(!scope.is_in_scope("https://example.com/app-legacy")?);
+        assert!(!scope.is_in_scope("https://example.com/appendix")?);
+
+        // But real sub-paths and the exact scope path itself still match.
+        assert!(scope.is_in_scope("https://example.com/app")?);
+        assert!(scope.is_in_scope("https://example.com/app/")?);
+        assert!(scope.is_in_scope("https://example.com/app/sub/page")?);
+
+        Ok(())
+    }
+
+    /// A root scope ("/") must still match arbitrary paths under the origin.
+    #[test]
+    fn test_scope_root_matches_any_path() -> Result<()> {
+        let scope = ServiceWorkerScope::new("https://example.com", "/")?;
+
+        assert!(scope.is_in_scope("https://example.com/")?);
+        assert!(scope.is_in_scope("https://example.com/anything/at/all")?);
 
         Ok(())
     }

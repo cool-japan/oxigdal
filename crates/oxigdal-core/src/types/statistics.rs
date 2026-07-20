@@ -12,6 +12,9 @@
 //! [`Statistics::from_buffer_statistics`] or the [`From`] impl.
 
 use crate::buffer::BufferStatistics;
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 
 /// Band-level raster statistics suitable for [`crate::types::RasterMetadata`].
 ///

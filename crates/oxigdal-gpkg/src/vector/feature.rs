@@ -99,21 +99,21 @@ impl FeatureTable {
         let mut found = false;
 
         for row in &self.features {
-            if let Some(geom) = &row.geometry {
-                if let Some((gx0, gy0, gx1, gy1)) = geom.bbox() {
-                    found = true;
-                    if gx0 < min_x {
-                        min_x = gx0;
-                    }
-                    if gy0 < min_y {
-                        min_y = gy0;
-                    }
-                    if gx1 > max_x {
-                        max_x = gx1;
-                    }
-                    if gy1 > max_y {
-                        max_y = gy1;
-                    }
+            if let Some(geom) = &row.geometry
+                && let Some((gx0, gy0, gx1, gy1)) = geom.bbox()
+            {
+                found = true;
+                if gx0 < min_x {
+                    min_x = gx0;
+                }
+                if gy0 < min_y {
+                    min_y = gy0;
+                }
+                if gx1 > max_x {
+                    max_x = gx1;
+                }
+                if gy1 > max_y {
+                    max_y = gy1;
                 }
             }
         }
@@ -139,11 +139,11 @@ impl FeatureTable {
         self.features
             .iter()
             .filter(|row| {
-                if let Some(geom) = &row.geometry {
-                    if let Some((gx0, gy0, gx1, gy1)) = geom.bbox() {
-                        // AABB intersects when not separated on either axis
-                        return gx0 <= max_x && gx1 >= min_x && gy0 <= max_y && gy1 >= min_y;
-                    }
+                if let Some(geom) = &row.geometry
+                    && let Some((gx0, gy0, gx1, gy1)) = geom.bbox()
+                {
+                    // AABB intersects when not separated on either axis
+                    return gx0 <= max_x && gx1 >= min_x && gy0 <= max_y && gy1 >= min_y;
                 }
                 false
             })
@@ -156,10 +156,11 @@ impl FeatureTable {
     pub fn distinct_values(&self, field_name: &str) -> Vec<FieldValue> {
         let mut seen: Vec<FieldValue> = Vec::new();
         for row in &self.features {
-            if let Some(val) = row.fields.get(field_name) {
-                if !val.is_null() && !seen.contains(val) {
-                    seen.push(val.clone());
-                }
+            if let Some(val) = row.fields.get(field_name)
+                && !val.is_null()
+                && !seen.contains(val)
+            {
+                seen.push(val.clone());
             }
         }
         seen

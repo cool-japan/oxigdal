@@ -2,7 +2,7 @@
 
 > **Purpose:** GRIB1/GRIB2 meteorological data format driver for OxiGDAL - Pure Rust implementation
 > **Status (2026-05-16):** 4,753 Rust LoC (incl. tests) - 65 tests - 1 verified behavior gap (DRT 5.2/5.3/5.40/5.41 errors out)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

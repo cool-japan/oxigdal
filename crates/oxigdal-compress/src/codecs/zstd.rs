@@ -77,21 +77,44 @@ impl Default for ZstdLevel {
 }
 
 /// Zstd codec configuration
+///
+/// # Feature support matrix
+///
+/// Not every field is honored by every method on [`ZstdCodec`], because the
+/// underlying [`oxiarc_zstd`] engine does not expose the same knobs on its
+/// buffer API ([`ZstdCodec::compress`]) and its streaming API
+/// ([`ZstdCodec::compress_stream`] / [`ZstdCodec::compress_stream_with_dictionary`]):
+///
+/// | Field                     | `compress()`          | `compress_stream()` / `*_with_dictionary()` |
+/// |----------------------------|-----------------------|-----------------------------------------------|
+/// | `checksum`                 | honored                | honored only when `true` (the streaming encoder always writes a checksum; requesting `false` is a [`CompressionError::ZstdError`]) |
+/// | `dictionary`                | honored                | ignored (pass the dictionary explicitly via `*_with_dictionary`) |
+/// | `threads`                   | `0` honored; any other value is a [`CompressionError::ZstdError`] (parallel block compression skips LZ77 matching entirely, so it cannot transparently substitute for the requested compression level) | `0` honored; any other value errors |
+/// | `long_distance_matching`    | `false` honored; `true` is a [`CompressionError::ZstdError`] (not implemented by `oxiarc_zstd`) | `false` honored; `true` errors |
+///
+/// Every field that cannot be honored produces an explicit
+/// [`CompressionError::ZstdError`] rather than being silently ignored.
 #[derive(Debug, Clone)]
 pub struct ZstdConfig {
     /// Compression level
     pub level: ZstdLevel,
 
-    /// Enable content checksum
+    /// Enable content checksum. See the field support matrix on
+    /// [`ZstdConfig`] for which methods honor this.
     pub checksum: bool,
 
-    /// Dictionary for compression (for similar data)
+    /// Dictionary for compression (for similar data). Only honored by
+    /// [`ZstdCodec::compress`]; the streaming methods require the
+    /// dictionary to be passed explicitly via `*_with_dictionary`.
     pub dictionary: Option<Vec<u8>>,
 
-    /// Number of threads for compression (0 = auto)
+    /// Number of threads for compression (`0` = single-threaded, the only
+    /// supported value today). See the field support matrix on
+    /// [`ZstdConfig`].
     pub threads: usize,
 
-    /// Enable long-distance matching
+    /// Enable long-distance matching. Not implemented by the underlying
+    /// `oxiarc_zstd` encoder; requesting `true` is a configuration error.
     pub long_distance_matching: bool,
 }
 
@@ -116,25 +139,33 @@ impl ZstdConfig {
         })
     }
 
-    /// Enable/disable checksum
+    /// Enable/disable checksum. See the field support matrix on
+    /// [`ZstdConfig`]: disabling checksums is only honored by
+    /// [`ZstdCodec::compress`], not the streaming methods.
     pub fn with_checksum(mut self, checksum: bool) -> Self {
         self.checksum = checksum;
         self
     }
 
-    /// Set compression dictionary
+    /// Set compression dictionary. Only honored by [`ZstdCodec::compress`].
     pub fn with_dictionary(mut self, dict: Vec<u8>) -> Self {
         self.dictionary = Some(dict);
         self
     }
 
-    /// Set number of threads
+    /// Set number of threads. Only `0` (single-threaded) is currently
+    /// supported; any other value causes compression methods to return a
+    /// [`CompressionError::ZstdError`] rather than silently compressing
+    /// single-threaded or with degraded (raw/RLE-only) parallel blocks.
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.threads = threads;
         self
     }
 
-    /// Enable long-distance matching
+    /// Enable long-distance matching. Not implemented by the underlying
+    /// `oxiarc_zstd` encoder: enabling this causes compression methods to
+    /// return a [`CompressionError::ZstdError`] instead of silently
+    /// compressing without it.
     pub fn with_long_distance_matching(mut self, enabled: bool) -> Self {
         self.long_distance_matching = enabled;
         self
@@ -453,13 +484,66 @@ impl ZstdCodec {
         Self { config }
     }
 
+    /// Validate configuration knobs that neither compression path can
+    /// honor today, rather than silently ignoring them.
+    ///
+    /// `long_distance_matching` is not implemented anywhere in the
+    /// underlying `oxiarc_zstd` encoder. `threads` cannot be forwarded to
+    /// `oxiarc_zstd`'s parallel block compressor because that path skips
+    /// LZ77 matching entirely (raw/RLE blocks only) and would silently
+    /// change the effective compression level the caller asked for.
+    fn validate_common_config(&self) -> Result<()> {
+        if self.config.long_distance_matching {
+            return Err(CompressionError::ZstdError(
+                "ZstdConfig::long_distance_matching is not implemented by the oxiarc_zstd \
+                 encoder; disable it or leave it at the default (false)"
+                    .to_string(),
+            ));
+        }
+        if self.config.threads != 0 {
+            return Err(CompressionError::ZstdError(format!(
+                "ZstdConfig::threads = {} is not supported: oxiarc_zstd's parallel block \
+                 compressor skips LZ77 matching entirely and cannot transparently honor the \
+                 requested compression level; only threads = 0 is supported",
+                self.config.threads
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate configuration knobs that the *streaming* compression path
+    /// additionally cannot honor: `oxiarc_zstd`'s streaming encoder always
+    /// writes a content checksum, so requesting `checksum = false` would
+    /// otherwise be silently ignored.
+    fn validate_streaming_config(&self) -> Result<()> {
+        if !self.config.checksum {
+            return Err(CompressionError::ZstdError(
+                "ZstdConfig::checksum = false is not supported by the streaming Zstd encoder \
+                 (it always writes a content checksum); use ZstdCodec::compress instead, or \
+                 leave checksum at the default (true)"
+                    .to_string(),
+            ));
+        }
+        self.validate_common_config()
+    }
+
     /// Compress data using Zstd
     pub fn compress(&self, input: &[u8]) -> Result<Vec<u8>> {
         if input.is_empty() {
             return Ok(Vec::new());
         }
 
-        let compressed = oxiarc_zstd::compress_with_level(input, self.config.level.value())
+        self.validate_common_config()?;
+
+        let mut encoder = oxiarc_zstd::ZstdEncoder::new();
+        encoder.set_level(self.config.level.value());
+        encoder.set_checksum(self.config.checksum);
+        if let Some(dict) = self.config.dictionary.as_deref() {
+            encoder.set_dictionary(dict);
+        }
+
+        let compressed = encoder
+            .compress(input)
             .map_err(|e| CompressionError::ZstdError(e.to_string()))?;
 
         Ok(compressed)
@@ -479,13 +563,7 @@ impl ZstdCodec {
 
     /// Compress data using Zstd stream
     pub fn compress_stream<R: Read, W: Write>(&self, mut reader: R, writer: W) -> Result<usize> {
-        // Note: checksum, long_distance_matching, and threads are configuration
-        // options; oxiarc_zstd streaming encoder handles core compression.
-        let _ = (
-            self.config.checksum,
-            self.config.long_distance_matching,
-            self.config.threads,
-        );
+        self.validate_streaming_config()?;
 
         let mut encoder = ZstdStreamEncoder::new(writer, self.config.level.value());
 
@@ -604,6 +682,12 @@ impl ZstdCodec {
             ));
         }
 
+        // `compress_with_dictionary` goes through the streaming encoder
+        // internally (dictionary support only exists on that path), so it
+        // is subject to the same checksum/LDM/threads limitations as
+        // `compress_stream`.
+        self.validate_streaming_config()?;
+
         // Create streaming encoder with dictionary
         let mut encoder = ZstdStreamEncoder::with_dictionary(
             Vec::new(),
@@ -671,7 +755,7 @@ impl ZstdCodec {
             ));
         }
 
-        let _ = (self.config.checksum, self.config.long_distance_matching);
+        self.validate_streaming_config()?;
 
         // Create streaming encoder with dictionary
         let mut encoder = ZstdStreamEncoder::with_dictionary(
@@ -1233,5 +1317,133 @@ mod tests {
         // (For small samples, dictionary might not help due to overhead)
         assert!(!with_dict.is_empty());
         assert!(!without_dict.is_empty());
+    }
+
+    // ==================== Config Fidelity Regression Tests ====================
+    //
+    // Regression coverage for ZstdConfig.checksum/threads/long_distance_matching
+    // previously being accepted by the builder and then silently discarded by
+    // compress()/compress_stream()/compress_with_dictionary().
+
+    #[test]
+    fn test_zstd_compress_honors_checksum_disabled() {
+        // Disabling the checksum on the buffer path must actually shrink the
+        // output by the 4-byte Content_Checksum trailer (RFC 8878: lower 32
+        // bits of the XXH64 digest) relative to the checksummed encoding,
+        // proving the flag reaches the encoder rather than being dropped.
+        let data = b"checksum fidelity test payload".repeat(20);
+
+        let with_checksum = ZstdCodec::with_config(ZstdConfig::default().with_checksum(true));
+        let without_checksum = ZstdCodec::with_config(ZstdConfig::default().with_checksum(false));
+
+        let compressed_with = with_checksum.compress(&data).expect("compression failed");
+        let compressed_without = without_checksum
+            .compress(&data)
+            .expect("compression failed");
+
+        assert_eq!(
+            compressed_with.len(),
+            compressed_without.len() + 4,
+            "disabling checksum must remove exactly the 4-byte Content_Checksum trailer"
+        );
+
+        let decompressed = without_checksum
+            .decompress(&compressed_without, None)
+            .expect("decompression failed");
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn test_zstd_compress_honors_dictionary() {
+        // ZstdConfig::dictionary was previously never read by compress();
+        // using it must materially change the encoded output for data that
+        // matches the dictionary content, and the result must be decodable
+        // with that same dictionary.
+        let dict_data = b"repeated-pattern-".repeat(50);
+        let payload = b"repeated-pattern-repeated-pattern-repeated-pattern-tail".to_vec();
+
+        let plain = ZstdCodec::new();
+        let with_dict =
+            ZstdCodec::with_config(ZstdConfig::default().with_dictionary(dict_data.clone()));
+
+        let compressed_plain = plain.compress(&payload).expect("compression failed");
+        let compressed_dict = with_dict.compress(&payload).expect("compression failed");
+
+        assert_ne!(
+            compressed_plain, compressed_dict,
+            "ZstdConfig::dictionary must influence compress() output"
+        );
+
+        let decompressed = oxiarc_zstd::decompress_with_dict(&compressed_dict, &dict_data)
+            .expect("dictionary decompression failed");
+        assert_eq!(decompressed, payload);
+    }
+
+    #[test]
+    fn test_zstd_compress_rejects_long_distance_matching() {
+        let codec = ZstdCodec::with_config(ZstdConfig::default().with_long_distance_matching(true));
+        let result = codec.compress(b"some data to compress");
+        assert!(
+            result.is_err(),
+            "requesting unsupported long_distance_matching must error, not silently ignore"
+        );
+    }
+
+    #[test]
+    fn test_zstd_compress_rejects_nonzero_threads() {
+        let codec = ZstdCodec::with_config(ZstdConfig::default().with_threads(4));
+        let result = codec.compress(b"some data to compress");
+        assert!(
+            result.is_err(),
+            "requesting unsupported threads > 0 must error, not silently ignore"
+        );
+    }
+
+    #[test]
+    fn test_zstd_compress_stream_rejects_checksum_disabled() {
+        let codec = ZstdCodec::with_config(ZstdConfig::default().with_checksum(false));
+        let mut output = Vec::new();
+        let result = codec.compress_stream(Cursor::new(b"stream payload".to_vec()), &mut output);
+        assert!(
+            result.is_err(),
+            "streaming encoder cannot omit the checksum; disabling it must error, not be ignored"
+        );
+    }
+
+    #[test]
+    fn test_zstd_compress_stream_rejects_long_distance_matching() {
+        let codec = ZstdCodec::with_config(ZstdConfig::default().with_long_distance_matching(true));
+        let mut output = Vec::new();
+        let result = codec.compress_stream(Cursor::new(b"stream payload".to_vec()), &mut output);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zstd_compress_stream_rejects_nonzero_threads() {
+        let codec = ZstdCodec::with_config(ZstdConfig::default().with_threads(2));
+        let mut output = Vec::new();
+        let result = codec.compress_stream(Cursor::new(b"stream payload".to_vec()), &mut output);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zstd_compress_stream_default_config_still_works() {
+        // The default config (checksum = true, threads = 0,
+        // long_distance_matching = false) must remain a fully working,
+        // error-free streaming round trip.
+        let codec = ZstdCodec::new();
+        let data = b"default streaming config still works".repeat(50);
+
+        let mut compressed = Vec::new();
+        codec
+            .compress_stream(Cursor::new(data.clone()), &mut compressed)
+            .expect("streaming compression with default config must succeed");
+
+        let mut decompressed = Vec::new();
+        codec
+            .decompress_stream(Cursor::new(compressed), &mut decompressed)
+            .expect("streaming decompression must succeed");
+
+        assert_eq!(decompressed, data);
     }
 }

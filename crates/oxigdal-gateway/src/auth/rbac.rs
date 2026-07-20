@@ -206,7 +206,10 @@ impl Role {
     }
 
     /// Adds multiple permissions to this role.
-    pub fn with_permissions(mut self, permission_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_permissions(
+        mut self,
+        permission_ids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         for perm in permission_ids {
             self.permissions.insert(perm.into());
         }
@@ -264,18 +267,20 @@ impl RbacManager {
     /// Initializes default system roles.
     fn init_default_roles(&self) {
         // Super admin role
-        let super_admin = Role::system("super_admin", "Super Administrator", "Full system access", 1000)
-            .with_permission("*");
+        let super_admin = Role::system(
+            "super_admin",
+            "Super Administrator",
+            "Full system access",
+            1000,
+        )
+        .with_permission("*");
         self.roles.insert(super_admin.id.clone(), super_admin);
 
         // Admin role
-        let admin = Role::system("admin", "Administrator", "Administrative access", 900)
-            .with_permissions(vec![
-                "dataset.admin",
-                "layer.admin",
-                "user.admin",
-                "system.read",
-            ]);
+        let admin =
+            Role::system("admin", "Administrator", "Administrative access", 900).with_permissions(
+                vec!["dataset.admin", "layer.admin", "user.admin", "system.read"],
+            );
         self.roles.insert(admin.id.clone(), admin);
 
         // Editor role
@@ -293,11 +298,7 @@ impl RbacManager {
 
         // Viewer role
         let viewer = Role::system("viewer", "Viewer", "Read-only access", 100)
-            .with_permissions(vec![
-                "dataset.read",
-                "layer.read",
-                "feature.read",
-            ]);
+            .with_permissions(vec!["dataset.read", "layer.read", "feature.read"]);
         self.roles.insert(viewer.id.clone(), viewer);
 
         // Anonymous/guest role
@@ -363,7 +364,8 @@ impl RbacManager {
         self.permissions.insert(system_read.id.clone(), system_read);
 
         let system_admin = Permission::admin("system");
-        self.permissions.insert(system_admin.id.clone(), system_admin);
+        self.permissions
+            .insert(system_admin.id.clone(), system_admin);
 
         // Public read permission
         let public_read = Permission::read("public");
@@ -404,12 +406,12 @@ impl RbacManager {
         }
 
         // Check if trying to update system role
-        if let Some(existing) = self.roles.get(&role.id) {
-            if existing.is_system {
-                return Err(GatewayError::AuthorizationFailed(
-                    "Cannot modify system roles".to_string(),
-                ));
-            }
+        if let Some(existing) = self.roles.get(&role.id)
+            && existing.is_system
+        {
+            return Err(GatewayError::AuthorizationFailed(
+                "Cannot modify system roles".to_string(),
+            ));
         }
 
         self.roles.insert(role.id.clone(), role);
@@ -419,12 +421,12 @@ impl RbacManager {
 
     /// Deletes a role.
     pub fn delete_role(&self, role_id: &str) -> Result<()> {
-        if let Some(existing) = self.roles.get(role_id) {
-            if existing.is_system {
-                return Err(GatewayError::AuthorizationFailed(
-                    "Cannot delete system roles".to_string(),
-                ));
-            }
+        if let Some(existing) = self.roles.get(role_id)
+            && existing.is_system
+        {
+            return Err(GatewayError::AuthorizationFailed(
+                "Cannot delete system roles".to_string(),
+            ));
         }
 
         self.roles
@@ -479,7 +481,7 @@ impl RbacManager {
 
         self.user_roles
             .entry(user_id.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(role_id.to_string());
 
         // Invalidate user's effective permissions cache
@@ -787,6 +789,132 @@ impl AccessPolicy for TimeBasedPolicy {
     }
 }
 
+/// A parsed IP network: either an IPv4 network (address masked to a `0..=32`-bit prefix) or
+/// an IPv6 network (address masked to a `0..=128`-bit prefix). Built lazily from a configured
+/// prefix string at evaluation time -- see [`IpNetwork::parse`] for the accepted syntaxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpNetwork {
+    /// IPv4 network (address already masked down to `prefix_len` bits).
+    V4 {
+        network: std::net::Ipv4Addr,
+        prefix_len: u32,
+    },
+    /// IPv6 network (address already masked down to `prefix_len` bits).
+    V6 {
+        network: std::net::Ipv6Addr,
+        prefix_len: u32,
+    },
+}
+
+impl IpNetwork {
+    /// Parses a prefix specification into an IP network, at octet/bit boundaries rather than
+    /// raw string comparison. Accepts:
+    ///   - Explicit CIDR notation: `"10.1.1.0/24"`, `"2001:db8::/32"`.
+    ///   - A full IPv4 address (`"192.168.1.100"`) or IPv6 address (`"::1"`), treated as an
+    ///     exact `/32`/`/128` host match.
+    ///   - A partial dotted-decimal IPv4 prefix (`"10.1.1"`, `"192.168."`) -- the number of
+    ///     non-empty octet groups present determines the implied prefix length (1 octet ->
+    ///     `/8`, 2 -> `/16`, 3 -> `/24`), so `"10.1.1"` means the `10.1.1.0/24` network and
+    ///     correctly excludes `10.1.10.x`/`10.1.100.x`, unlike a raw string-prefix match.
+    ///
+    /// Returns `None` for anything that cannot be unambiguously parsed; callers must treat
+    /// that as "never matches" rather than falling back to permissive behavior.
+    fn parse(spec: &str) -> Option<Self> {
+        let spec = spec.trim();
+
+        if let Some((addr_part, len_part)) = spec.split_once('/') {
+            let prefix_len: u32 = len_part.trim().parse().ok()?;
+            if let Ok(addr) = addr_part.trim().parse::<std::net::Ipv4Addr>() {
+                if prefix_len > 32 {
+                    return None;
+                }
+                return Some(Self::V4 {
+                    network: mask_v4(addr, prefix_len),
+                    prefix_len,
+                });
+            }
+            if let Ok(addr) = addr_part.trim().parse::<std::net::Ipv6Addr>() {
+                if prefix_len > 128 {
+                    return None;
+                }
+                return Some(Self::V6 {
+                    network: mask_v6(addr, prefix_len),
+                    prefix_len,
+                });
+            }
+            return None;
+        }
+
+        if spec.contains(':') {
+            let addr: std::net::Ipv6Addr = spec.parse().ok()?;
+            return Some(Self::V6 {
+                network: addr,
+                prefix_len: 128,
+            });
+        }
+
+        let octets: Vec<&str> = spec.split('.').filter(|s| !s.is_empty()).collect();
+        if octets.is_empty() || octets.len() > 4 {
+            return None;
+        }
+
+        let mut bytes = [0u8; 4];
+        for (index, octet) in octets.iter().enumerate() {
+            bytes[index] = octet.parse::<u8>().ok()?;
+        }
+
+        let prefix_len = (octets.len() as u32) * 8;
+        let addr = std::net::Ipv4Addr::from(bytes);
+        Some(Self::V4 {
+            network: mask_v4(addr, prefix_len),
+            prefix_len,
+        })
+    }
+
+    /// Whether `ip` falls within this network.
+    fn contains(&self, ip: &std::net::IpAddr) -> bool {
+        match (self, ip) {
+            (
+                Self::V4 {
+                    network,
+                    prefix_len,
+                },
+                std::net::IpAddr::V4(ip),
+            ) => mask_v4(*ip, *prefix_len) == *network,
+            (
+                Self::V6 {
+                    network,
+                    prefix_len,
+                },
+                std::net::IpAddr::V6(ip),
+            ) => mask_v6(*ip, *prefix_len) == *network,
+            _ => false,
+        }
+    }
+}
+
+/// Masks an IPv4 address down to its leading `prefix_len` bits (0..=32).
+fn mask_v4(addr: std::net::Ipv4Addr, prefix_len: u32) -> std::net::Ipv4Addr {
+    let bits = u32::from(addr);
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len.min(32))
+    };
+    std::net::Ipv4Addr::from(bits & mask)
+}
+
+/// Masks an IPv6 address down to its leading `prefix_len` bits (0..=128).
+fn mask_v6(addr: std::net::Ipv6Addr, prefix_len: u32) -> std::net::Ipv6Addr {
+    let bits = u128::from(addr);
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix_len.min(128))
+    };
+    std::net::Ipv6Addr::from(bits & mask)
+}
+
 /// IP-based access policy.
 pub struct IpBasedPolicy {
     /// Allowed IP prefixes
@@ -825,20 +953,51 @@ impl Default for IpBasedPolicy {
 
 impl AccessPolicy for IpBasedPolicy {
     fn evaluate(&self, context: &PolicyContext, _rbac: &RbacManager) -> AccessDecision {
-        if let Some(ip) = context.attributes.get("client_ip") {
-            // Check blocked first
-            for blocked in &self.blocked_prefixes {
-                if ip.starts_with(blocked) {
+        let Some(ip_str) = context.attributes.get("client_ip") else {
+            return AccessDecision::Defer;
+        };
+
+        // An unparseable client IP can't be safely evaluated against the configured
+        // networks -- fail closed (deny) rather than silently letting it through.
+        let Ok(ip) = ip_str.parse::<std::net::IpAddr>() else {
+            return AccessDecision::Deny(format!("client IP '{}' could not be parsed", ip_str));
+        };
+
+        // Check blocked first, using octet/bit-boundary network matching rather than raw
+        // string prefix comparison (which would e.g. let block_prefix("10.1.1") also match
+        // 10.1.10.x / 10.1.100.x).
+        for blocked in &self.blocked_prefixes {
+            match IpNetwork::parse(blocked) {
+                Some(network) if network.contains(&ip) => {
                     return AccessDecision::Deny(format!("IP '{}' is blocked", ip));
                 }
-            }
-
-            // If allowed list is not empty, check it
-            if !self.allowed_prefixes.is_empty() {
-                let is_allowed = self.allowed_prefixes.iter().any(|prefix| ip.starts_with(prefix));
-                if !is_allowed {
-                    return AccessDecision::Deny(format!("IP '{}' is not in allowed list", ip));
+                Some(_) => {}
+                None => {
+                    tracing::warn!(
+                        prefix = %blocked,
+                        "ip_based policy: unparseable blocked_prefixes entry, ignoring"
+                    );
                 }
+            }
+        }
+
+        // If allowed list is not empty, check it
+        if !self.allowed_prefixes.is_empty() {
+            let is_allowed =
+                self.allowed_prefixes
+                    .iter()
+                    .any(|prefix| match IpNetwork::parse(prefix) {
+                        Some(network) => network.contains(&ip),
+                        None => {
+                            tracing::warn!(
+                                prefix = %prefix,
+                                "ip_based policy: unparseable allowed_prefixes entry, ignoring"
+                            );
+                            false
+                        }
+                    });
+            if !is_allowed {
+                return AccessDecision::Deny(format!("IP '{}' is not in allowed list", ip));
             }
         }
 
@@ -880,7 +1039,8 @@ impl PolicyEngine {
     pub fn add_policy(&mut self, policy: Arc<dyn AccessPolicy>) {
         self.policies.push(policy);
         // Sort by priority (highest first)
-        self.policies.sort_by_key(|p| std::cmp::Reverse(p.priority()));
+        self.policies
+            .sort_by_key(|p| std::cmp::Reverse(p.priority()));
     }
 
     /// Evaluates all policies for the given context.
@@ -995,13 +1155,16 @@ mod tests {
             .with_parent("viewer")
             .with_permission("analysis.execute");
 
-        assert!(rbac.register_permission(Permission::new(
-            "analysis.execute",
-            "Execute Analysis",
-            "Can run data analysis",
-            "analysis",
-            PermissionAction::Execute,
-        )).is_ok());
+        assert!(
+            rbac.register_permission(Permission::new(
+                "analysis.execute",
+                "Execute Analysis",
+                "Can run data analysis",
+                "analysis",
+                PermissionAction::Execute,
+            ))
+            .is_ok()
+        );
 
         assert!(rbac.register_role(custom_role).is_ok());
         assert!(rbac.assign_role("scientist1", "data_scientist").is_ok());
@@ -1076,14 +1239,118 @@ mod tests {
 
         let context = PolicyContext::new("user1", "resource", PermissionAction::Read)
             .with_attribute("client_ip", "192.168.1.50");
-        assert!(matches!(policy.evaluate(&context, &rbac), AccessDecision::Defer));
+        assert!(matches!(
+            policy.evaluate(&context, &rbac),
+            AccessDecision::Defer
+        ));
 
         let context = PolicyContext::new("user1", "resource", PermissionAction::Read)
             .with_attribute("client_ip", "192.168.1.100");
-        assert!(matches!(policy.evaluate(&context, &rbac), AccessDecision::Deny(_)));
+        assert!(matches!(
+            policy.evaluate(&context, &rbac),
+            AccessDecision::Deny(_)
+        ));
 
         let context = PolicyContext::new("user1", "resource", PermissionAction::Read)
             .with_attribute("client_ip", "10.0.0.1");
-        assert!(matches!(policy.evaluate(&context, &rbac), AccessDecision::Deny(_)));
+        assert!(matches!(
+            policy.evaluate(&context, &rbac),
+            AccessDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn test_ip_based_policy_respects_octet_boundaries() {
+        // block_prefix("10.1.1") must mean the 10.1.1.0/24 network, not a raw string prefix
+        // -- so it must NOT block 10.1.10.x or 10.1.100.x, only 10.1.1.x.
+        let policy = IpBasedPolicy::new().block_prefix("10.1.1");
+        let rbac = RbacManager::new();
+
+        let blocked = PolicyContext::new("user1", "resource", PermissionAction::Read)
+            .with_attribute("client_ip", "10.1.1.42");
+        assert!(matches!(
+            policy.evaluate(&blocked, &rbac),
+            AccessDecision::Deny(_)
+        ));
+
+        for ip in ["10.1.10.5", "10.1.100.99", "10.1.15.0"] {
+            let context = PolicyContext::new("user1", "resource", PermissionAction::Read)
+                .with_attribute("client_ip", ip);
+            assert!(
+                matches!(policy.evaluate(&context, &rbac), AccessDecision::Defer),
+                "expected {ip} to NOT be blocked by block_prefix(\"10.1.1\")"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ip_based_policy_allow_prefix_respects_octet_boundaries() {
+        // allow_prefix("10.1.1") must mean the 10.1.1.0/24 network -- it must not
+        // over-admit 10.1.10.x or 10.1.100.x.
+        let policy = IpBasedPolicy::new().allow_prefix("10.1.1");
+        let rbac = RbacManager::new();
+
+        let allowed = PolicyContext::new("user1", "resource", PermissionAction::Read)
+            .with_attribute("client_ip", "10.1.1.7");
+        assert!(matches!(
+            policy.evaluate(&allowed, &rbac),
+            AccessDecision::Defer
+        ));
+
+        for ip in ["10.1.10.5", "10.1.100.99"] {
+            let context = PolicyContext::new("user1", "resource", PermissionAction::Read)
+                .with_attribute("client_ip", ip);
+            assert!(
+                matches!(policy.evaluate(&context, &rbac), AccessDecision::Deny(_)),
+                "expected {ip} to NOT be admitted by allow_prefix(\"10.1.1\")"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ip_based_policy_explicit_cidr_notation() {
+        let policy = IpBasedPolicy::new().block_prefix("10.1.1.0/24");
+        let rbac = RbacManager::new();
+
+        let blocked = PolicyContext::new("user1", "resource", PermissionAction::Read)
+            .with_attribute("client_ip", "10.1.1.200");
+        assert!(matches!(
+            policy.evaluate(&blocked, &rbac),
+            AccessDecision::Deny(_)
+        ));
+
+        let not_blocked = PolicyContext::new("user1", "resource", PermissionAction::Read)
+            .with_attribute("client_ip", "10.1.2.1");
+        assert!(matches!(
+            policy.evaluate(&not_blocked, &rbac),
+            AccessDecision::Defer
+        ));
+    }
+
+    #[test]
+    fn test_ip_based_policy_unparseable_client_ip_fails_closed() {
+        let policy = IpBasedPolicy::new().block_prefix("10.1.1");
+        let rbac = RbacManager::new();
+
+        let context = PolicyContext::new("user1", "resource", PermissionAction::Read)
+            .with_attribute("client_ip", "not-an-ip-address");
+        assert!(matches!(
+            policy.evaluate(&context, &rbac),
+            AccessDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn test_ip_network_parse_and_contains() {
+        let network = IpNetwork::parse("10.1.1").expect("should parse partial octet prefix");
+        assert!(network.contains(&"10.1.1.255".parse().expect("valid ip")));
+        assert!(!network.contains(&"10.1.2.0".parse().expect("valid ip")));
+
+        let exact = IpNetwork::parse("192.168.1.100").expect("should parse exact IPv4");
+        assert!(exact.contains(&"192.168.1.100".parse().expect("valid ip")));
+        assert!(!exact.contains(&"192.168.1.101".parse().expect("valid ip")));
+
+        assert!(IpNetwork::parse("not-an-ip").is_none());
+        assert!(IpNetwork::parse("10.1.1.1.1").is_none());
     }
 }

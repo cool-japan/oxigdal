@@ -238,6 +238,52 @@ fn test_fgdc_to_iso_transform() {
 }
 
 #[test]
+fn test_fgdc_to_iso_transform_parses_temporal_range() {
+    let mut fgdc = FgdcMetadata::builder()
+        .title("FGDC Temporal Transform")
+        .abstract_text("Testing begdate/enddate round-trip")
+        .build()
+        .expect("Failed to build FGDC metadata for temporal transform test");
+
+    fgdc.idinfo.timeperd.timeinfo = TimeInfo::Range {
+        begdate: "20200101".to_string(),
+        enddate: "20201231".to_string(),
+    };
+
+    let iso = transform::fgdc_to_iso19115(&fgdc).expect("Failed to transform FGDC to ISO19115");
+    let extent = iso.identification_info[0]
+        .extent
+        .temporal_extent
+        .as_ref()
+        .expect("temporal extent should be populated from begdate/enddate");
+
+    let start = extent.start.expect("start date should be parsed");
+    let end = extent.end.expect("end date should be parsed");
+    assert_eq!(start.format("%Y%m%d").to_string(), "20200101");
+    assert_eq!(end.format("%Y%m%d").to_string(), "20201231");
+}
+
+#[test]
+fn test_fgdc_to_iso_transform_ignores_malformed_dates() {
+    let mut fgdc = FgdcMetadata::builder()
+        .title("FGDC Bad Dates")
+        .abstract_text("Malformed begdate/enddate should not panic")
+        .build()
+        .expect("Failed to build FGDC metadata for malformed date test");
+
+    fgdc.idinfo.timeperd.timeinfo = TimeInfo::Range {
+        begdate: "not-a-date".to_string(),
+        enddate: "also-bad".to_string(),
+    };
+
+    let iso = transform::fgdc_to_iso19115(&fgdc).expect("Failed to transform FGDC to ISO19115");
+    assert!(
+        iso.identification_info[0].extent.temporal_extent.is_none(),
+        "malformed dates should leave temporal_extent unset rather than panicking or faking a value"
+    );
+}
+
+#[test]
 fn test_datacite_to_iso_transform() {
     let datacite = DataCiteMetadata::builder()
         .identifier("10.0000/test", IdentifierType::Doi)

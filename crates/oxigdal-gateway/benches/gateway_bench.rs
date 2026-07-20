@@ -97,12 +97,20 @@ fn bench_cors_headers(c: &mut Criterion) {
     c.bench_function("cors_headers", |b| {
         b.iter(|| {
             runtime.block_on(async {
+                let mut origin_headers = HashMap::new();
+                origin_headers.insert("Origin".to_string(), "https://example.com".to_string());
+                let request = oxigdal_gateway::middleware::Request {
+                    method: "GET".to_string(),
+                    path: "/".to_string(),
+                    headers: origin_headers,
+                    body: Vec::new(),
+                };
                 let mut response = Response {
                     status: 200,
                     headers: HashMap::new(),
                     body: Vec::new(),
                 };
-                let _ = middleware.after_response(&mut response).await;
+                let _ = middleware.after_response(&request, &mut response).await;
             })
         })
     });
@@ -128,6 +136,13 @@ fn bench_compression_throughput(c: &mut Criterion) {
                 .ok()
                 .unwrap_or_else(|| panic!("Failed to create runtime"));
 
+            let request = oxigdal_gateway::middleware::Request {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                headers: HashMap::new(),
+                body: Vec::new(),
+            };
+
             b.iter(|| {
                 runtime.block_on(async {
                     let mut response = Response {
@@ -135,7 +150,7 @@ fn bench_compression_throughput(c: &mut Criterion) {
                         headers: HashMap::new(),
                         body: body.clone(),
                     };
-                    let _ = middleware.after_response(&mut response).await;
+                    let _ = middleware.after_response(&request, &mut response).await;
                 })
             });
         });

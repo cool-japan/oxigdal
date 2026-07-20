@@ -71,22 +71,22 @@ impl TileCache {
     pub async fn get(&self, coord: &TileCoordinate) -> Option<TileResponse> {
         // Check memory cache
         let mut cache = self.memory_cache.write().await;
-        if let Some(cached) = cache.get(coord) {
-            if !self.is_expired(&cached.cached_at) {
-                debug!("Memory cache hit for tile {}", coord);
-                return Some(cached.response.clone());
-            }
+        if let Some(cached) = cache.get(coord)
+            && !self.is_expired(&cached.cached_at)
+        {
+            debug!("Memory cache hit for tile {}", coord);
+            return Some(cached.response.clone());
         }
         drop(cache);
 
         // Check disk cache
-        if let Some(path) = self.disk_cache_map.get(coord) {
-            if let Ok(response) = self.load_from_disk(coord, path.value()).await {
-                debug!("Disk cache hit for tile {}", coord);
-                // Promote to memory cache
-                self.put_memory(coord, response.clone()).await.ok();
-                return Some(response);
-            }
+        if let Some(path) = self.disk_cache_map.get(coord)
+            && let Ok(response) = self.load_from_disk(coord, path.value()).await
+        {
+            debug!("Disk cache hit for tile {}", coord);
+            // Promote to memory cache
+            self.put_memory(coord, response.clone()).await.ok();
+            return Some(response);
         }
 
         None
@@ -175,12 +175,12 @@ impl TileCache {
 
         self.disk_cache_map.clear();
 
-        if let Some(cache_dir) = &self.config.disk_cache_dir {
-            if cache_dir.exists() {
-                fs::remove_dir_all(cache_dir)
-                    .await
-                    .map_err(StreamingError::Io)?;
-            }
+        if let Some(cache_dir) = &self.config.disk_cache_dir
+            && cache_dir.exists()
+        {
+            fs::remove_dir_all(cache_dir)
+                .await
+                .map_err(StreamingError::Io)?;
         }
 
         Ok(())

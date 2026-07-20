@@ -175,16 +175,18 @@ async fn test_backpressure_controller() {
     assert!(!controller.should_throttle());
 }
 #[tokio::test]
-/// Ignored: Long-running async test (timeout >120s)
-#[ignore]
 async fn test_delta_encoder() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let encoder = DeltaEncoder::new();
     let tile1 = TileData::new(0, 0, 5, vec![1, 2, 3, 4, 5], "image/png".to_string());
     let delta1 = encoder.encode(&tile1)?;
-    assert_eq!(delta1.len(), 5);
+    // Cache miss: 1 tag byte + the 5 raw tile bytes.
+    assert_eq!(delta1.len(), 6);
     let tile2 = TileData::new(0, 0, 5, vec![1, 2, 9, 4, 5], "image/png".to_string());
     let delta2 = encoder.encode(&tile2)?;
-    assert!(delta2.len() < tile2.size() || !delta2.is_empty());
+    // A single-byte change must shrink, not expand, relative to the raw tile.
+    assert!(delta2.len() < tile2.size());
+    let restored = DeltaEncoder::apply_delta(&tile1.data, &delta2)?;
+    assert_eq!(restored, tile2.data.to_vec());
     assert_eq!(encoder.cache_size(), 1);
     encoder.clear();
     assert_eq!(encoder.cache_size(), 0);

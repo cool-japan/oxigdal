@@ -110,6 +110,65 @@ struct PendingBandData {
     data: Vec<f64>,
 }
 
+/// De-interleaves a single band's samples out of a pixel-interleaved (BIP /
+/// "chunky") raw buffer covering all bands.
+///
+/// `GeoTiffReader::read_band` (oxigdal-geotiff) currently returns the full
+/// interleaved buffer for *every* band regardless of the requested band
+/// index -- there is no `PlanarConfiguration` support on either side, and
+/// every writer in this crate always produces chunky-interleaved data (see
+/// `write_geotiff_data`'s "for each pixel, all bands" layout). So for
+/// `band_count == 1` the raw buffer already *is* the single band and is
+/// returned unchanged; for `band_count > 1` this slices out the requested
+/// band's samples using that known, fixed stride.
+fn de_interleave_band(
+    raw: &[u8],
+    width: u64,
+    height: u64,
+    band_count: u32,
+    band: u32,
+    data_type: RasterDataType,
+) -> PyResult<Vec<u8>> {
+    let band_count = band_count.max(1) as usize;
+    if band_count == 1 {
+        return Ok(raw.to_vec());
+    }
+
+    if band < 1 || band as usize > band_count {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Band {} out of range (1-{})",
+            band, band_count
+        )));
+    }
+
+    let pixel_count = (width * height) as usize;
+    let bytes_per_sample = data_type.size_bytes();
+    let stride = bytes_per_sample * band_count;
+    let expected_total = pixel_count * stride;
+
+    if raw.len() != expected_total {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "Unexpected interleaved band data size: expected {} bytes for \
+             {}x{}x{} bands ({} bytes/sample), got {}",
+            expected_total,
+            width,
+            height,
+            band_count,
+            bytes_per_sample,
+            raw.len()
+        )));
+    }
+
+    let band_offset = bytes_per_sample * (band as usize - 1);
+    let mut out = vec![0u8; pixel_count * bytes_per_sample];
+    for px in 0..pixel_count {
+        let src = px * stride + band_offset;
+        let dst = px * bytes_per_sample;
+        out[dst..dst + bytes_per_sample].copy_from_slice(&raw[src..src + bytes_per_sample]);
+    }
+    Ok(out)
+}
+
 /// A geospatial dataset that can be read from or written to.
 ///
 /// This class represents an opened dataset (raster or vector) and provides
@@ -300,8 +359,12 @@ impl Dataset {
         let height = reader.height();
         let data_type = reader.data_type().unwrap_or(RasterDataType::Float64);
         let nodata = reader.nodata();
+        let band_count = reader.metadata().band_count;
 
-        // Read the raw band data
+        // Read the raw band data. Note: the underlying reader returns the
+        // full pixel-interleaved buffer for *all* bands regardless of the
+        // index passed here; `de_interleave_band` below extracts just the
+        // requested band.
         let raw_data = reader.read_band(0, (band - 1) as usize).map_err(|e| {
             pyo3::exceptions::PyIOError::new_err(format!(
                 "Failed to read band {} from '{}': {}",
@@ -311,9 +374,11 @@ impl Dataset {
             ))
         })?;
 
+        let band_data = de_interleave_band(&raw_data, width, height, band_count, band, data_type)?;
+
         // Convert raw bytes to f64 buffer
         let buffer =
-            RasterBuffer::new(raw_data, width, height, data_type, nodata).map_err(|e| {
+            RasterBuffer::new(band_data, width, height, data_type, nodata).map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create buffer: {}", e))
             })?;
 
@@ -563,9 +628,11 @@ impl Dataset {
         let height = metadata.height;
         let data_type = metadata.data_type;
 
-        // Try to read actual data from file
+        // Try to read actual data from file. The decode is blocking I/O plus a
+        // full pixel-by-pixel copy, so release the GIL while it runs.
         if self.path.exists() && (self.mode == "r" || self.mode == "r+") {
-            match self.read_band_data(band) {
+            let read_result = py.detach(|| self.read_band_data(band));
+            match read_result {
                 Ok((values, w, _h, _dt)) => {
                     let nested: Vec<Vec<f64>> = values
                         .chunks(w as usize)
@@ -723,12 +790,11 @@ impl Dataset {
                 .ok()
                 .flatten()
                 .and_then(|v| v.extract::<Vec<f64>>().ok())
+                && gt_list.len() == 6
             {
-                if gt_list.len() == 6 {
-                    metadata.geo_transform = Some(GeoTransform::from_gdal_array([
-                        gt_list[0], gt_list[1], gt_list[2], gt_list[3], gt_list[4], gt_list[5],
-                    ]));
-                }
+                metadata.geo_transform = Some(GeoTransform::from_gdal_array([
+                    gt_list[0], gt_list[1], gt_list[2], gt_list[3], gt_list[4], gt_list[5],
+                ]));
             }
 
             // Update writer config if available
@@ -747,10 +813,11 @@ impl Dataset {
     ///     >>> ds = oxigdal.open("output.tif", "w")
     ///     >>> ds.write_band(1, data)
     ///     >>> ds.close()
-    pub fn close(&mut self) -> PyResult<()> {
-        // Flush pending writes if in write mode
+    pub fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+        // Flush pending writes if in write mode. The encode + file write is
+        // blocking work, so release the GIL while it runs.
         if (self.mode == "w" || self.mode == "r+") && !self.pending_bands.is_empty() {
-            self.flush_write()?;
+            py.detach(|| self.flush_write())?;
             self.pending_bands.clear();
         }
         Ok(())
@@ -770,11 +837,12 @@ impl Dataset {
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
         &mut self,
+        py: Python<'_>,
         _exc_type: Option<&Bound<'_, PyAny>>,
         _exc_value: Option<&Bound<'_, PyAny>>,
         _traceback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
-        self.close()?;
+        self.close(py)?;
         Ok(false)
     }
 }
@@ -900,6 +968,9 @@ pub fn read_geotiff_band(path: &str, band: u32) -> PyResult<(Vec<f64>, u64, u64,
     let data_type = reader.data_type().unwrap_or(RasterDataType::Float64);
     let nodata = reader.nodata();
 
+    // Note: the underlying reader returns the full pixel-interleaved buffer
+    // for *all* bands regardless of the index passed here; `de_interleave_band`
+    // below extracts just the requested band.
     let raw_data = reader.read_band(0, (band - 1) as usize).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!(
             "Failed to read band {} from '{}': {}",
@@ -907,7 +978,16 @@ pub fn read_geotiff_band(path: &str, band: u32) -> PyResult<(Vec<f64>, u64, u64,
         ))
     })?;
 
-    let buffer = RasterBuffer::new(raw_data, width, height, data_type, nodata).map_err(|e| {
+    let band_data = de_interleave_band(
+        &raw_data,
+        width,
+        height,
+        metadata.band_count,
+        band,
+        data_type,
+    )?;
+
+    let buffer = RasterBuffer::new(band_data, width, height, data_type, nodata).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create buffer: {}", e))
     })?;
 

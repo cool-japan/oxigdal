@@ -69,7 +69,7 @@ impl DictionaryCodec {
 
         let symbol_size = self.config.symbol_size;
 
-        if input.len() % symbol_size != 0 {
+        if !input.len().is_multiple_of(symbol_size) {
             return Err(CompressionError::InvalidBufferSize(format!(
                 "Input size {} must be multiple of symbol size {}",
                 input.len(),
@@ -230,7 +230,7 @@ impl DictionaryCodec {
 
     /// Estimate unique values in data
     pub fn count_unique(input: &[u8], symbol_size: usize) -> usize {
-        if input.is_empty() || input.len() % symbol_size != 0 {
+        if input.is_empty() || !input.len().is_multiple_of(symbol_size) {
             return 0;
         }
 

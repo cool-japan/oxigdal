@@ -170,23 +170,23 @@ impl FlowController {
             return Ok(());
         }
 
-        if let Some(ref bucket) = self.token_bucket {
-            if !bucket.try_acquire(count).await {
-                let wait_time = bucket.wait_for_tokens(count).await;
+        if let Some(ref bucket) = self.token_bucket
+            && !bucket.try_acquire(count).await
+        {
+            let wait_time = bucket.wait_for_tokens(count).await;
 
-                if wait_time > Duration::ZERO {
-                    self.throttled_count.fetch_add(1, Ordering::Relaxed);
-                    self.total_delay_ms
-                        .fetch_add(wait_time.as_millis() as u64, Ordering::Relaxed);
+            if wait_time > Duration::ZERO {
+                self.throttled_count.fetch_add(1, Ordering::Relaxed);
+                self.total_delay_ms
+                    .fetch_add(wait_time.as_millis() as u64, Ordering::Relaxed);
 
-                    sleep(wait_time).await;
+                sleep(wait_time).await;
 
-                    // Try again after waiting
-                    if !bucket.try_acquire(count).await {
-                        return Err(StreamingError::Other(
-                            "Failed to acquire tokens after waiting".to_string(),
-                        ));
-                    }
+                // Try again after waiting
+                if !bucket.try_acquire(count).await {
+                    return Err(StreamingError::Other(
+                        "Failed to acquire tokens after waiting".to_string(),
+                    ));
                 }
             }
         }

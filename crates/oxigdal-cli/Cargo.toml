@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # Internal dependencies
 oxigdal-core.workspace = true
-oxigdal-algorithms.workspace = true
+oxigdal-algorithms = { workspace = true, default-features = true }
 # Workspace declares oxigdal-proj with default-features = false; oxigdal-proj is
 # not no_std-clean, so std must be re-enabled here (mirrors oxigdal-geojson).
 oxigdal-proj = { workspace = true, features = ["std"] }
@@ -28,6 +28,13 @@ oxigdal-flatgeobuf.workspace = true
 oxigdal-shapefile.workspace = true
 oxigdal-geoparquet.workspace = true
 oxigdal-rs3gw.workspace = true
+oxigdal-gpkg.workspace = true
+oxigdal-jpeg2000.workspace = true
+oxigdal-copc.workspace = true
+oxigdal-pmtiles.workspace = true
+# `sqlite` pulls in the Pure-Rust OxiSQL engine so `info`/`stats` can open
+# real on-disk `.mbtiles` archives (SQLite IS the MBTiles container format).
+oxigdal-mbtiles = { workspace = true, features = ["sqlite"] }
 
 # CLI dependencies
 clap = { workspace = true, features = ["derive", "cargo", "color", "suggestions", "wrap_help"] }
@@ -58,6 +65,12 @@ tokio.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Used only by tests to synthesize a real on-disk `.mbtiles` (SQLite) fixture,
+# mirroring the pattern in oxigdal-mbtiles/tests/reader_test.rs.
+oxisql-core.workspace = true
+oxisql-sqlite-compat.workspace = true
 
 [lints]
 workspace = true

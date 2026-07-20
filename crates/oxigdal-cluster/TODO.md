@@ -2,7 +2,7 @@
 
 > **Purpose:** Distributed orchestration for OxiGDAL — task graph, work-stealing scheduler, worker pool, Raft-based coordinator, distributed cache (coherency), replication, fault tolerance (circuit breaker, bulkhead, health checks), autoscaler, workflow engine, monitoring, security/RBAC.
 > **Status (2026-05-16):** 11,394 LoC · 90 tests · 5 surfaced "simulated / simplified" sites (Raft `request_votes` in-process, scheduler/advanced worker selection, scheduler/advanced batch-fit, coordinator log update, network compression simplified) — overall: skeleton with most network paths conceptual.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real network transport for inter-node communication (gRPC over tonic)

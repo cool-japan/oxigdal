@@ -213,7 +213,7 @@ fn generate_hits_response(
 }
 
 /// Create a legacy database source from a connection string
-fn create_legacy_database_source(conn_string: &str, table_name: &str) -> DatabaseSource {
+pub(crate) fn create_legacy_database_source(conn_string: &str, table_name: &str) -> DatabaseSource {
     // Infer database type from connection string
     let db_type =
         if conn_string.starts_with("postgresql://") || conn_string.starts_with("postgres://") {
@@ -277,13 +277,13 @@ fn apply_memory_filters<'a>(
 
 /// Check if a feature is within a bounding box
 fn feature_in_bbox(feature: &geojson::Feature, bbox: &BboxFilter) -> bool {
-    if let Some(ref geom_bbox) = feature.bbox {
-        if geom_bbox.len() >= 4 {
-            return geom_bbox[0] <= bbox.max_x
-                && geom_bbox[2] >= bbox.min_x
-                && geom_bbox[1] <= bbox.max_y
-                && geom_bbox[3] >= bbox.min_y;
-        }
+    if let Some(ref geom_bbox) = feature.bbox
+        && geom_bbox.len() >= 4
+    {
+        return geom_bbox[0] <= bbox.max_x
+            && geom_bbox[2] >= bbox.min_x
+            && geom_bbox[1] <= bbox.max_y
+            && geom_bbox[3] >= bbox.min_y;
     }
 
     // If no bbox on feature, check geometry bounds
@@ -364,7 +364,7 @@ fn geometry_intersects_bbox(geometry: &geojson::Geometry, bbox: &BboxFilter) -> 
 }
 
 /// Check if feature matches a filter expression (simplified)
-fn feature_matches_filter(feature: &geojson::Feature, filter_str: &str) -> bool {
+pub(crate) fn feature_matches_filter(feature: &geojson::Feature, filter_str: &str) -> bool {
     // Simplified filter matching - parse basic property comparisons
     // Full CQL parsing is handled by the CqlFilter type for databases
 
@@ -432,19 +432,12 @@ async fn generate_geojson_response(
         let mut features = match &ft.source {
             FeatureSource::Memory(features) => features.clone(),
             FeatureSource::File(path) => load_features_from_file(path)?,
-            FeatureSource::Database(_) => {
-                return Err(ServiceError::Internal(
-                    "Database sources not yet implemented".to_string(),
-                ));
+            FeatureSource::Database(conn_string) => {
+                let db_source = create_legacy_database_source(conn_string, type_name);
+                load_features_from_database(&db_source, params).await?
             }
             FeatureSource::DatabaseSource(db_source) => {
-                // DatabaseSource provides full configuration for database-backed features
-                // Currently, feature retrieval requires oxigdal-postgis or oxigdal-db-connectors integration
-                return Err(ServiceError::Internal(format!(
-                    "DatabaseSource feature retrieval not yet implemented for table '{}'. \
-                     Use oxigdal-postgis for PostGIS connections.",
-                    db_source.table_name
-                )));
+                load_features_from_database(db_source, params).await?
             }
         };
 
@@ -574,8 +567,98 @@ fn generate_feature_schema(
     Ok(([(header::CONTENT_TYPE, "application/xml")], xml).into_response())
 }
 
+/// Load features from a database source as GeoJSON features.
+///
+/// With the `postgis` feature enabled this issues a `SELECT` against the
+/// configured table, projecting the geometry column through `ST_AsGeoJSON` and
+/// the remaining attributes through `to_jsonb(row) - geometry_column`, and maps
+/// each returned row to a [`geojson::Feature`]. BBOX and CQL filters as well as
+/// `startIndex`/`count` pagination are translated into the query. Without the
+/// feature a descriptive [`ServiceError`] is returned.
+#[cfg_attr(not(feature = "postgis"), allow(clippy::unused_async))]
+async fn load_features_from_database(
+    source: &DatabaseSource,
+    params: &GetFeatureParams,
+) -> ServiceResult<Vec<geojson::Feature>> {
+    #[cfg(feature = "postgis")]
+    {
+        use crate::wfs::database::build_where_clause;
+
+        let bbox_filter = match params.bbox.as_ref() {
+            Some(s) => Some(BboxFilter::from_bbox_string(s)?),
+            None => None,
+        };
+        let cql_filter = params.filter.as_ref().map(CqlFilter::new);
+        let where_clause = build_where_clause(source, cql_filter.as_ref(), bbox_filter.as_ref())?;
+
+        let table = source.qualified_table_name();
+        let geom = &source.geometry_column;
+        // Note: BBOX/CQL filtering is pushed to SQL, but `startIndex`/`count`
+        // pagination is intentionally left to the shared post-processing in the
+        // caller so every source type paginates identically.
+        let sql = format!(
+            "SELECT ST_AsGeoJSON(\"{geom}\") AS __geometry, \
+             (to_jsonb(t) - '{geom}') AS __properties FROM {table} AS t{where_clause}"
+        );
+
+        let pool =
+            oxigdal_postgis::ConnectionPool::from_connection_string(&source.connection_string)
+                .map_err(|e| {
+                    ServiceError::Internal(format!("PostGIS connection setup failed: {e}"))
+                })?;
+        let client = pool
+            .get()
+            .await
+            .map_err(|e| ServiceError::Internal(format!("PostGIS pool error: {e}")))?;
+        let rows = client
+            .query(&sql, &[])
+            .await
+            .map_err(|e| ServiceError::Internal(format!("GetFeature query failed: {e}")))?;
+
+        let mut features = Vec::with_capacity(rows.len());
+        for row in rows {
+            let geom_json: Option<String> = row.get("__geometry");
+            let props_val: Option<serde_json::Value> = row.get("__properties");
+
+            let geometry = match geom_json {
+                Some(s) => Some(
+                    serde_json::from_str::<geojson::Geometry>(&s)
+                        .map_err(|e| ServiceError::InvalidGeoJson(e.to_string()))?,
+                ),
+                None => None,
+            };
+            let properties = match props_val {
+                Some(serde_json::Value::Object(map)) => Some(map),
+                _ => None,
+            };
+
+            features.push(geojson::Feature {
+                bbox: None,
+                geometry,
+                id: None,
+                properties,
+                foreign_members: None,
+            });
+        }
+
+        Ok(features)
+    }
+
+    #[cfg(not(feature = "postgis"))]
+    {
+        let _ = params;
+        Err(ServiceError::Internal(format!(
+            "PostGIS support is not compiled in; cannot retrieve features for table '{}'. \
+             Rebuild oxigdal-services with the 'postgis' feature.",
+            source.table_name
+        )))
+    }
+}
+
 /// Load features from file
-fn load_features_from_file(path: &std::path::Path) -> ServiceResult<Vec<geojson::Feature>> {
+pub(crate) fn load_features_from_file(
+    path: &std::path::Path,
+) -> ServiceResult<Vec<geojson::Feature>> {
     let contents = std::fs::read_to_string(path)?;
 
     match path.extension().and_then(|e| e.to_str()) {

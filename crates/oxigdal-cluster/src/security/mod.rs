@@ -463,10 +463,10 @@ impl SecurityManager {
             .ok_or_else(|| ClusterError::SecretNotFound(key.to_string()))?;
 
         // Check expiration
-        if let Some(expires) = secret.expires_at {
-            if SystemTime::now() > expires {
-                return Err(ClusterError::SecretNotFound("Secret expired".to_string()));
-            }
+        if let Some(expires) = secret.expires_at
+            && SystemTime::now() > expires
+        {
+            return Err(ClusterError::SecretNotFound("Secret expired".to_string()));
         }
 
         Ok(secret.value.clone())

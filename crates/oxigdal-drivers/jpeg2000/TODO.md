@@ -2,11 +2,11 @@
 
 > **Purpose:** Pure Rust JPEG2000 (JP2/J2K) driver for OxiGDAL - JP2 box parsing and JPEG2000 codestream decoding
 > **Status (2026-05-16):** 12,821 Rust LoC (incl. tests) - 332 tests - 1 high-impact real stub
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
-- [ ] Wire EBCOT tier-1 decoder into `decode_rgb()` (currently returns flat 128 placeholder)
+- [x] Wire EBCOT tier-1 decoder into `decode_rgb()` (currently returns flat 128 placeholder)
   - **Verified gap:** `src/reader.rs:447` - `// For now, return a placeholder image` and `src/reader.rs:457` - `let placeholder = vec![128u8; width * height * 3];`. Note that `src/tier1/decoder.rs` already implements the full 3-pass EBCOT algorithm; the high-level `decode_rgb()` simply ignores it.
   - **Goal:** Decoding a real `.jp2` file returns its actual pixel data, not a uniform gray plane.
   - **Design:** Replace the placeholder path with: (1) parse codestream tile-by-tile (already in `codestream.rs`); (2) for each tile, dispatch packets via `tier2/packet.rs`; (3) decode each code-block with the existing `tier1::CodeBlockDecoder` (real EBCOT in `tier1/decoder.rs`); (4) apply inverse quantization; (5) apply inverse DWT (5/3 or 9/7 selected by SIZ/COD markers; already in `wavelet.rs`); (6) reverse multi-component transform (RCT/ICT in `color.rs`); (7) DC level shift back. Honours ISO/IEC 15444-1 (JPEG 2000 Part 1) clause-by-clause.

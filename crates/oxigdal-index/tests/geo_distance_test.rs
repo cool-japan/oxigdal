@@ -7,7 +7,7 @@
 //! * Geographic radius filter: correctness of filtering threshold.
 //! * `geo_bbox_extent_m`: metric extents of well-known bounding boxes.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxigdal_index::{
     GeoPoint, SpatialQuery, geo_bbox_extent_m, geo_nearest_k, geo_within_radius, haversine_m,

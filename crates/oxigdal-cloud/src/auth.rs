@@ -213,6 +213,25 @@ impl Credentials {
             _ => false,
         }
     }
+
+    /// Returns a short, secret-free name for the credentials variant.
+    ///
+    /// Intended for diagnostics/error messages where the full `Debug`
+    /// representation would risk leaking secret material (access keys,
+    /// tokens, service account JSON, etc.).
+    #[must_use]
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::ApiKey { .. } => "ApiKey",
+            Self::AccessKey { .. } => "AccessKey",
+            Self::OAuth2 { .. } => "OAuth2",
+            Self::ServiceAccount { .. } => "ServiceAccount",
+            Self::SasToken { .. } => "SasToken",
+            Self::IamRole { .. } => "IamRole",
+            Self::Custom { .. } => "Custom",
+        }
+    }
 }
 
 /// Credential provider trait for dynamic credential loading

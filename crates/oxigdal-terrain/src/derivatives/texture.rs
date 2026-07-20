@@ -104,11 +104,11 @@ where
         let x = idx % width;
 
         let center = dem[[y, x]];
-        if let Some(nd) = nodata {
-            if is_nodata(center, nd) {
-                // Leave all features at 0.0
-                continue;
-            }
+        if let Some(nd) = nodata
+            && is_nodata(center, nd)
+        {
+            // Leave all features at 0.0
+            continue;
         }
 
         // Build GLCM for this window
@@ -222,10 +222,10 @@ where
                 let vi = dem[[iy as usize, ix as usize]];
                 let vj = dem[[jy as usize, jx as usize]];
 
-                if let Some(nd) = nodata {
-                    if is_nodata(vi, nd) || is_nodata(vj, nd) {
-                        continue;
-                    }
+                if let Some(nd) = nodata
+                    && (is_nodata(vi, nd) || is_nodata(vj, nd))
+                {
+                    continue;
                 }
 
                 let qi = quantise(vi.into(), global_min, range, levels);
@@ -323,10 +323,10 @@ where
     let mut max_val = f64::NEG_INFINITY;
 
     for &v in dem.iter() {
-        if let Some(nd) = nodata {
-            if is_nodata(v, nd) {
-                continue;
-            }
+        if let Some(nd) = nodata
+            && is_nodata(v, nd)
+        {
+            continue;
         }
         let f: f64 = v.into();
         if f < min_val {

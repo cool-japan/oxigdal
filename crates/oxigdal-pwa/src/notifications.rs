@@ -182,6 +182,12 @@ impl NotificationConfig {
             options.set_data(&js_data);
         }
 
+        if !self.actions.is_empty() {
+            let js_actions = serde_wasm_bindgen::to_value(&self.actions)
+                .map_err(|e| PwaError::Serialization(format!("{:?}", e)))?;
+            options.set_actions(&js_actions);
+        }
+
         Ok(options)
     }
 }
@@ -234,18 +240,16 @@ impl NotificationManager {
                     .ok()
                     .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
 
-            if let Some(notification) = notification_class {
-                if let Ok(permission) =
+            if let Some(notification) = notification_class
+                && let Ok(permission) =
                     js_sys::Reflect::get(&notification, &JsValue::from_str("permission"))
-                {
-                    if let Some(perm_str) = permission.as_string() {
-                        return match perm_str.as_str() {
-                            "granted" => Permission::Granted,
-                            "denied" => Permission::Denied,
-                            _ => Permission::Default,
-                        };
-                    }
-                }
+                && let Some(perm_str) = permission.as_string()
+            {
+                return match perm_str.as_str() {
+                    "granted" => Permission::Granted,
+                    "denied" => Permission::Denied,
+                    _ => Permission::Default,
+                };
             }
         }
 
@@ -537,5 +541,41 @@ mod tests {
         assert_eq!(action.action, "view");
         assert_eq!(action.title, "View");
         assert_eq!(action.icon, Some("/view.png".to_string()));
+    }
+
+    #[test]
+    fn test_add_action_populates_actions_field() {
+        // Regression guard for the silent-failure bug where actions added via
+        // `add_action()` never reached `to_options()` / the browser. This part
+        // (the Rust-side data model) is testable without a JS engine; the
+        // JS-bridging half is covered by `test_to_options_includes_actions`
+        // below, which requires a wasm32 + JS environment to execute.
+        let config = NotificationConfig::new("Test")
+            .add_action(NotificationAction::new("view", "View"))
+            .add_action(NotificationAction::new("dismiss", "Dismiss"));
+
+        assert_eq!(config.actions.len(), 2);
+        assert_eq!(config.actions[0].action, "view");
+        assert_eq!(config.actions[1].action, "dismiss");
+    }
+
+    /// Regression test for `to_options()` dropping the `actions` field:
+    /// confirms `set_actions` is actually called on the underlying
+    /// `web_sys::NotificationOptions` object. Requires a JS engine, so it
+    /// only runs when this crate is compiled/tested for wasm32 (e.g. via
+    /// `wasm-pack test`).
+    #[test]
+    #[cfg(target_arch = "wasm32")]
+    fn test_to_options_includes_actions() {
+        let config = NotificationConfig::new("Test")
+            .add_action(NotificationAction::new("view", "View").with_icon("/view.png"));
+
+        let options = config.to_options().expect("to_options should succeed");
+        let actions_val = js_sys::Reflect::get(&options, &JsValue::from_str("actions"))
+            .expect("actions property should be readable");
+
+        assert!(!actions_val.is_undefined(), "actions must be set");
+        let array = js_sys::Array::from(&actions_val);
+        assert_eq!(array.length(), 1);
     }
 }

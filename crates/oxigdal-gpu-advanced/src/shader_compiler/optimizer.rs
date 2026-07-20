@@ -227,12 +227,12 @@ impl ShaderOptimizer {
                 }
 
                 // Fold unary operations
-                if let Expression::Unary { op, expr: operand } = expr {
-                    if let Ok(Expression::Literal(lit)) = function.expressions.try_get(*operand) {
-                        let folded = self.fold_unary_op(*op, lit);
-                        if let Some(result) = folded {
-                            modifications.push((expr_handle, Expression::Literal(result)));
-                        }
+                if let Expression::Unary { op, expr: operand } = expr
+                    && let Ok(Expression::Literal(lit)) = function.expressions.try_get(*operand)
+                {
+                    let folded = self.fold_unary_op(*op, lit);
+                    if let Some(result) = folded {
+                        modifications.push((expr_handle, Expression::Literal(result)));
                     }
                 }
             }
@@ -264,14 +264,13 @@ impl ShaderOptimizer {
                 }
 
                 // Fold unary operations
-                if let Expression::Unary { op, expr: operand } = expr {
-                    if let Ok(Expression::Literal(lit)) =
+                if let Expression::Unary { op, expr: operand } = expr
+                    && let Ok(Expression::Literal(lit)) =
                         entry.function.expressions.try_get(*operand)
-                    {
-                        let folded = self.fold_unary_op(*op, lit);
-                        if let Some(result) = folded {
-                            modifications.push((expr_handle, Expression::Literal(result)));
-                        }
+                {
+                    let folded = self.fold_unary_op(*op, lit);
+                    if let Some(result) = folded {
+                        modifications.push((expr_handle, Expression::Literal(result)));
                     }
                 }
             }
@@ -419,26 +418,22 @@ impl ShaderOptimizer {
                     let right_val = function.expressions.try_get(*right);
 
                     // x * 1 = x
-                    if matches!(op, BinaryOperator::Multiply) {
-                        if let Ok(Expression::Literal(lit)) = right_val {
-                            if matches!(lit, Literal::I32(1))
-                                || matches!(lit, Literal::F32(v) if *v == 1.0)
-                            {
-                                // Identify candidate for replacement
-                                // Full implementation would rebuild expression arena
-                            }
-                        }
+                    if matches!(op, BinaryOperator::Multiply)
+                        && let Ok(Expression::Literal(lit)) = right_val
+                        && (matches!(lit, Literal::I32(1))
+                            || matches!(lit, Literal::F32(v) if *v == 1.0))
+                    {
+                        // Identify candidate for replacement
+                        // Full implementation would rebuild expression arena
                     }
 
                     // x + 0 = x
-                    if matches!(op, BinaryOperator::Add) {
-                        if let Ok(Expression::Literal(lit)) = right_val {
-                            if matches!(lit, Literal::I32(0))
-                                || matches!(lit, Literal::F32(v) if *v == 0.0)
-                            {
-                                // Identify candidate for replacement
-                            }
-                        }
+                    if matches!(op, BinaryOperator::Add)
+                        && let Ok(Expression::Literal(lit)) = right_val
+                        && (matches!(lit, Literal::I32(0))
+                            || matches!(lit, Literal::F32(v) if *v == 0.0))
+                    {
+                        // Identify candidate for replacement
                     }
                 }
             }

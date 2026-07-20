@@ -4,26 +4,32 @@
 
 [![Crates.io](https://img.shields.io/crates/v/oxigdal.svg)](https://crates.io/crates/oxigdal)
 [![Documentation](https://docs.rs/oxigdal/badge.svg)](https://docs.rs/oxigdal)
-[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![COOLJAPAN](https://img.shields.io/badge/COOLJAPAN-Ecosystem-brightgreen.svg)](https://github.com/cool-japan)
 
-OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Released as **v0.1.6** on 2026-06-15, it delivers ~580K Rust SLoC across **78 workspace crates**, covering 18 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+> **Note:** OxiGDAL is being renamed to **OxiGeo**. v0.1.7 is the final release under the OxiGDAL name; development continues as OxiGeo from v0.2.0. This project is an independent reimplementation and is not affiliated with the GDAL project.
+
+[![OxiGDAL GeoSentinel — Sentinel-2 change detection running entirely in the browser in Pure-Rust WebAssembly: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
+
+**GeoSentinel**: watch any place on Earth for change — and tell no one where you're looking. It searches the public Earth Search STAC API for a cloud-filtered Sentinel-2 scene pair, streams only the needed COG windows via HTTP range requests, and runs the whole change-detection pipeline — NDVI difference, thresholding, polygonization, geodesic areas, GeoJSON export — 100% client-side in Pure-Rust WebAssembly; your area of interest never leaves your machine. **[Try it live](https://cooljapan.tech/geosentinel/)** — one of **four** hosted [demos](#demos) below, alongside [GeoLab](#geolab--terrain-analysis-on-streamed-cogs), [GeoVault](#geovault--sovereign-clean-room-workstation), and [GeoParquet Live](#geoparquet-live--query-59-gb-with-no-database).
+
+OxiGDAL is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. **v0.1.7** completed production-hardening validation on 2026-07-20 (v0.1.6 released 2026-06-15; 0.1.7 has not yet been published to crates.io — publication is a separate, not-yet-taken step), and delivers ~747K Rust SLoC across **76 workspace crates**, covering 17 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.1.6 (released 2026-06-15) |
-| **Rust SLoC** | ~580K across 1,934 `.rs` files |
-| **Total SLoC** | 565,681 (all languages) |
-| **Workspace crates** | 78 |
-| **Tests** | 14,605 passing (58 skipped), 0 failures; 405 doc tests passing |
-| **Format drivers** | 18 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles, GPX, KML, TopoJSON) |
+| **Version** | 0.1.7 (production-hardening validation complete 2026-07-20; not yet published — v0.1.6 released 2026-06-15) |
+| **Rust SLoC** | ~747K across 2,448 `.rs` files (via `tokei`) |
+| **Total SLoC** | ~785K (all languages, via `tokei`) |
+| **Workspace crates** | 76 |
+| **Tests** | 16,909 passing (85 skipped), 0 failures; 409 doc tests passing |
+| **Format drivers** | 17 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles, KML, TopoJSON) |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
-| **Estimated dev cost** | $20.97M equivalent (COCOMO) |
+| **Estimated dev cost** | $29.59M equivalent (COCOMO) |
 
 ## Why OxiGDAL?
 
@@ -55,14 +61,243 @@ fn main() -> oxigdal::Result<()> {
     let dataset = Dataset::open("world.tif")?;
     println!("Format : {}", dataset.format());
     println!("Size   : {}x{}", dataset.width(), dataset.height());
-    println!("CRS    : {}", dataset.crs().name());
+    println!("CRS    : {}", dataset.crs().unwrap_or("unknown"));
     Ok(())
 }
 ```
 
+## Demos
+
+Four live, hosted demos — each one runs 100% client-side: Pure-Rust WebAssembly
+in your browser tab, no server-side processing, no accounts, no telemetry.
+
+| Demo | One-liner | Live |
+|------|-----------|------|
+| **GeoLab** | Stream, decode, and terrain-analyze Cloud-Optimized GeoTIFFs | [cooljapan.tech/geolab](https://cooljapan.tech/geolab/) |
+| **GeoSentinel** | Watch any place on Earth for change — and tell no one where you're looking | [cooljapan.tech/geosentinel](https://cooljapan.tech/geosentinel/) |
+| **GeoVault** | A clean-room workstation that seals a signed, tamper-evident ledger of everything it did | [cooljapan.tech/geovault](https://cooljapan.tech/geovault/) |
+| **GeoParquet Live** | Query a dataset bigger than your laptop, over the network, with no database | [cooljapan.tech/geoparquet](https://cooljapan.tech/geoparquet/) |
+
+### GeoLab — terrain analysis on streamed COGs
+
+The [GeoLab](https://cooljapan.tech/geolab/) viewer is a Pure-Rust WebAssembly
+build of the raster pipeline — GeoTIFF decode, `combined_hillshade`, and colormap
+rendering all run in the browser tab, not on a server.
+
+![GeoLab terrain interaction: dragging the sun-azimuth and exaggeration sliders re-renders the San Francisco DEM's hillshade in real time, entirely client-side.](docs/media/geolab-terrain.gif)
+
+Hosted, nothing to install: **[cooljapan.tech/geolab](https://cooljapan.tech/geolab/)**
+
+Or run it locally (builds the WASM module, then serves the static demo):
+
+```sh
+cd crates/oxigdal-wasm
+wasm-pack build --scope cooljapan --target web --out-dir pkg --release
+cd ../../demo/cog-viewer
+python3 -m http.server 8080
+# open http://localhost:8080
+```
+
+#### Native-render gallery
+
+The same algorithms, invoked directly from Rust (no browser, no WASM) against the
+San Francisco / Marin Headlands SRTM DEM:
+
+<table>
+<tr>
+<td align="center">
+<img src="docs/media/geolab-render-terrain.jpg" width="380" alt="Multidirectional hillshade multiply-blended with a terrain colormap over the San Francisco DEM"><br>
+<sub><code>combined_hillshade</code> × <code>Colormap::Terrain</code></sub>
+</td>
+<td align="center">
+<img src="docs/media/geolab-render-slope.jpg" width="380" alt="Slope-angle raster over the San Francisco DEM, spectral colormap"><br>
+<sub><code>slope()</code> × <code>Colormap::Spectral</code></sub>
+</td>
+</tr>
+<tr>
+<td align="center">
+<img src="docs/media/geolab-render-aspect.jpg" width="380" alt="Aspect (slope-facing direction) raster over the San Francisco DEM, jet colormap, flat areas masked gray"><br>
+<sub><code>aspect()</code> masked by <code>slope()</code> × <code>Colormap::Jet</code></sub>
+</td>
+<td align="center">
+<img src="docs/media/geolab-render-elevation.jpg" width="380" alt="Raw elevation raster over the San Francisco DEM, viridis colormap"><br>
+<sub>elevation × <code>Colormap::Viridis</code></sub>
+</td>
+</tr>
+</table>
+
+> Every image on this page — the hero screenshots, the interaction GIFs, the
+> demo galleries, and the four native renders above — is a real capture or
+> render produced by this repository's own code, not a mockup. Reproduce the
+> native gallery yourself with:
+> `cargo run -p oxigdal-server --example render_hero --release -- --mode all`
+
+### GeoSentinel — in-browser Sentinel-2 change detection
+
+[![OxiGDAL GeoSentinel — Sentinel-2 change detection running entirely in the browser: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
+
+**Watch any place on Earth for change — and tell no one where you're looking.**
+GeoSentinel searches the public Earth Search STAC API for a cloud-filtered
+Sentinel-2 L2A scene pair, streams only the needed COG windows (red + NIR
+bands) via HTTP range requests, and runs the whole change-detection pipeline —
+NDVI difference, fixed or Otsu thresholding, polygonization, Karney geodesic
+areas, GeoJSON export — inside WebAssembly. **[Try it live](https://cooljapan.tech/geosentinel/)**
+
+![GeoSentinel demo: drawing an area of interest over Lahaina, running change detection, then crossfading the before/after true-color scenes with the detected burn-scar polygons overlaid.](docs/media/geosentinel-demo.gif)
+
+Hosted, nothing to install: **[cooljapan.tech/geosentinel](https://cooljapan.tech/geosentinel/)**
+
+Or run it locally (builds the WASM package if missing, then serves the demo):
+
+```sh
+cd demo/geosentinel
+./run.sh
+# open http://localhost:8080
+```
+
+<table>
+<tr>
+<td align="center">
+<img src="docs/media/geosentinel-before.jpg" width="380" alt="Sentinel-2 true-color scene of Lahaina before the August 2023 wildfire"><br>
+<sub>Scene A — true color (before)</sub>
+</td>
+<td align="center">
+<img src="docs/media/geosentinel-after.jpg" width="380" alt="Sentinel-2 true-color scene of Lahaina after the August 2023 wildfire"><br>
+<sub>Scene B — true color (after)</sub>
+</td>
+</tr>
+<tr>
+<td align="center">
+<img src="docs/media/geosentinel-diff.jpg" width="380" alt="NDVI-drop heatmap between the two Lahaina scenes, red marking vegetation loss"><br>
+<sub>NDVI-drop heatmap (red = vegetation loss)</sub>
+</td>
+<td align="center">
+<img src="docs/media/geosentinel-polygons.jpg" width="380" alt="Vectorized change polygons with per-polygon hectare areas over Lahaina"><br>
+<sub>Change polygons + geodesic hectares (GeoJSON export)</sub>
+</td>
+</tr>
+</table>
+
+> **Honest notes** — the analysis (NDVI, thresholding, polygonization,
+> geodesic areas) runs locally in your tab; the Sentinel-2 imagery is streamed
+> directly from the AWS open-data bucket (`sentinel-cogs` S3, found via the
+> public Earth Search STAC API); your location and area of interest are never
+> sent to any backend of ours — there isn't one. Verified example: the Lahaina
+> wildfire preset detects **713 ha** of burn scar (≈880 ha ground truth) from
+> **9.0 MB** of streamed imagery.
+
+### GeoVault — sovereign clean-room workstation
+
+[![OxiGDAL GeoVault — sovereign analysis workstation with a live tamper-evident session ledger and seal-session attestation](docs/media/geovault-hero.png)](https://cooljapan.tech/geovault/)
+
+**Analyze sensitive terrain data in a browser clean-room that can prove its
+session log afterwards.** Every operation is appended to a blake3 hash chain,
+rolled up into a Merkle root, and sealed with an Ed25519 signature — producing
+a downloadable attestation that an independent verifier page (or a native Rust
+example) re-checks from the JSON alone, while a strict Content-Security-Policy
+forbids every external connection during the session.
+**[Try it live](https://cooljapan.tech/geovault/)**
+
+![GeoVault demo: loading the synthetic Site K-7 DEM, running hillshade and anomaly detection while the session ledger grows, then sealing the session and verifying the downloaded attestation.](docs/media/geovault-demo.gif)
+
+Hosted, nothing to install: **[cooljapan.tech/geovault](https://cooljapan.tech/geovault/)**
+
+Or run it locally (shares the GeoLab/GeoSentinel WASM package):
+
+```sh
+wasm-pack build crates/oxigdal-wasm --target web --out-dir pkg   # once, from repo root
+cd demo/geovault
+python3 -m http.server 8080
+# open http://localhost:8080
+```
+
+<table>
+<tr>
+<td align="center">
+<img src="docs/media/geovault-workstation.jpg" width="380" alt="GeoVault workstation: hillshaded Site K-7 DEM with the session ledger recording each operation"><br>
+<sub>Workstation — every action lands in the session ledger</sub>
+</td>
+<td align="center">
+<img src="docs/media/geovault-anomaly.jpg" width="380" alt="Anomaly detection overlay highlighting the planted excavation pit in the synthetic DEM"><br>
+<sub>Anomaly detection (Z-score / IQR / modified-Z)</sub>
+</td>
+</tr>
+<tr>
+<td align="center">
+<img src="docs/media/geovault-seal.jpg" width="380" alt="Seal-session modal showing Merkle root, public key, and Ed25519 signature with attestation download"><br>
+<sub>Seal session — Merkle root + Ed25519 signature</sub>
+</td>
+<td align="center">
+<img src="docs/media/geovault-verify.jpg" width="380" alt="Independent verify page re-checking chain, Merkle root, and signature of the attestation"><br>
+<sub>Independent verifier — chain ✓ · root ✓ · signature ✓</sub>
+</td>
+</tr>
+</table>
+
+> **Trust model, stated honestly** — the attestation cryptographically proves
+> that the recorded operation log is complete and unaltered since sealing
+> (blake3 chain → Merkle root → Ed25519 seal); the zero-egress claim is
+> **enforced** by a browser Content-Security-Policy and **observed** by
+> in-page fetch/XHR/beacon hooks — it is not mathematically proven, because no
+> browser page can prove what other software on the machine did. Log
+> integrity: proven. No-egress: enforced and observed.
+
+### GeoParquet Live — query 5.9 GB with no database
+
+[![OxiGDAL GeoParquet Live — bounding-box and SQL queries against a 5.9 GB remote GeoParquet, pruned to a handful of row groups in the browser](docs/media/geoparquet-hero.png)](https://cooljapan.tech/geoparquet/)
+
+**Query a dataset bigger than your laptop, over the network, with no
+database.** The browser points at the VIDA Japan building-footprints
+GeoParquet — **5.9 GB, 47.66 million rows, 9,533 row groups** — and answers
+bounding-box + attribute queries by downloading only the byte ranges that
+survive metadata pruning: the Shinjuku preset prunes 9,533 row groups down to
+**7 survivors**, fetches **4.7 MB** of column chunks, and refines the exact
+matches in **13 ms**. **[Try it live](https://cooljapan.tech/geoparquet/)**
+
+![GeoParquet Live demo: dragging a query box over Tokyo while the plan preview updates, then running the query — the row-group strip lights up the surviving row groups and buildings render on the map.](docs/media/geoparquet-demo.gif)
+
+Hosted, nothing to install: **[cooljapan.tech/geoparquet](https://cooljapan.tech/geoparquet/)**
+
+Or run it locally (`serve.py` answers HTTP Range requests with `206`, which
+stock `python3 -m http.server` does not):
+
+```sh
+cd demo/geoparquet
+./build.sh              # wasm-pack build of crates/oxigdal-wasm-geoparquet (once)
+python3 serve.py 8080
+# open http://127.0.0.1:8080
+```
+
+<table>
+<tr>
+<td align="center">
+<img src="docs/media/geoparquet-strip.jpg" width="380" alt="Row-group strip: 9,533 cells — grey pruned, amber plan survivors, green actually fetched"><br>
+<sub>All 9,533 row groups — grey pruned · amber survivors · green fetched</sub>
+</td>
+<td align="center">
+<img src="docs/media/geoparquet-results.jpg" width="380" alt="Query results: building footprints rendered on the map, colored by dataset confidence"><br>
+<sub>Confidence-colored footprints on a Leaflet canvas</sub>
+</td>
+</tr>
+<tr>
+<td align="center" colspan="2">
+<img src="docs/media/geoparquet-badges.jpg" width="380" alt="Honesty badges reading: dataset 5.9 GB, fetched a few MB, uploaded 0, server none"><br>
+<sub><code>dataset: 5.9 GB · fetched: N MB · uploaded: 0 · server: none</code></sub>
+</td>
+</tr>
+</table>
+
+> **Honest notes** — the 17.8 MB Parquet footer is fetched once, on first open
+> only (the browser Cache API serves it on later visits); snappy-compressed
+> GeoParquet is supported via the pure-Rust `snap` codec, while zstd-compressed
+> files are not — no pure-Rust parquet zstd path exists yet (documented
+> limitation); `plan()` previews row groups / bytes / request count before a
+> single data byte is fetched, and over-broad queries are refused rather than
+> silently downloaded.
+
 ## Architecture
 
-78 workspace crates organized into functional layers:
+76 workspace crates organized into functional layers:
 
 ```
 Core & Algorithms
@@ -73,15 +308,15 @@ Core & Algorithms
   oxigdal-index              Spatial indexing (R-tree, grid, geometry validation/operations)
   oxigdal-qc                 Data validation, anomaly detection, quality scoring
 
-Format Drivers (15 formats)
+Format Drivers (16 formats)
   geotiff      GeoTIFF/COG   BigTIFF, HTTP range, overviews, DEFLATE/LZW/ZSTD/JPEG
   geojson      GeoJSON       RFC 7946, streaming parser, GeoArrow zero-copy
   geoparquet   GeoParquet    Arrow native, spatial predicate pushdown, 10x faster
   zarr         Zarr v2/v3    Sharding, codec pipeline, consolidated metadata
   flatgeobuf   FlatGeobuf    Packed Hilbert R-tree, spatial filter during decode
   shapefile    Shapefile     SHP/SHX/DBF, full attribute table support
-  netcdf       NetCDF        CF conventions, unlimited dims, group hierarchies
-  hdf5         HDF5          Hierarchical, chunking, compression, attributes
+  netcdf       NetCDF        CF conventions, unlimited dims, root group (pure-Rust oxinetcdf)
+  hdf5         HDF5          Hierarchical, attributes, real read/write (pure-Rust oxih5)
   grib         GRIB1/2       Meteorological parameter/level tables
   jpeg2000     JPEG2000      Wavelet DWT, full EBCOT tier-1 decoder (MQ coder, 3-pass)
   vrt          VRT           Band math, source mosaicking, on-the-fly processing
@@ -169,13 +404,13 @@ Tooling
 | Zarr v2/v3 | yes | yes | yes | yes | Sharding, codec pipeline |
 | FlatGeobuf | yes | yes | yes | yes | Spatial filter during decode |
 | Shapefile | yes | yes | — | — | SHP/SHX/DBF |
-| NetCDF | yes | partial | — | — | CF conventions, unlimited dims |
-| HDF5 | yes | partial | — | — | Chunking, groups, attributes |
+| NetCDF | yes | partial | — | — | Pure-Rust `oxinetcdf`; CF conventions, unlimited dims; reader surfaces the root group; `scale_factor`/`add_offset`/`_FillValue` exposed as attributes, not auto-applied |
+| HDF5 | yes | partial | — | — | Pure-Rust `oxih5`; v0-superblock files read fully, v2/v3-superblock files open but currently yield an empty tree (best-effort); write produces real contiguous HDF5 (no chunking/compression on write) |
 | GRIB1/GRIB2 | yes | — | — | — | Meteorological parameter tables |
 | JPEG2000 | yes | — | — | — | Wavelet DWT, tier-1 |
 | VRT | yes | yes | — | — | Band math, mosaic |
 | COPC/LAS | yes | — | — | — | Point cloud, octree spatial index |
-| GeoPackage | yes | — | — | — | SQLite-based, vector features + tiles |
+| GeoPackage | yes | partial | — | — | SQLite-based, vector features + tiles (write: point feature tables only, single-page B-tree) |
 | MBTiles | yes | yes | — | — | Tile storage, TMS/XYZ |
 | PMTiles v3 | yes | yes | — | — | Hilbert curve, single-file archive |
 
@@ -225,34 +460,59 @@ let tile = reader.read_tile(0, 0, 0)?;
 ### CRS Transformation
 
 ```rust
-use oxigdal_proj::{Crs, Transformer};
+use oxigdal_proj::{Coordinate, Crs, Transformer};
 
 let wgs84  = Crs::from_epsg(4326)?;
 let utm54n = Crs::from_epsg(32654)?;   // UTM Zone 54N (Japan)
-let tf     = Transformer::new(&wgs84, &utm54n)?;
+let tf     = Transformer::new(wgs84, utm54n)?;   // takes ownership of both CRS
 
-// SIMD-vectorized batch: < 10ms for 1M points
-let (easting, northing) = tf.transform(139.7671, 35.6812)?;
+let tokyo = Coordinate::from_lon_lat(139.7671, 35.6812);
+let utm   = tf.transform(&tokyo)?;
+println!("{:.2}, {:.2}", utm.x, utm.y);
+
+// SIMD-vectorized batch transform (Transverse Mercator / Mercator / LCC
+// projections get a dedicated SIMD kernel; other projections fall back to
+// scalar per-point transformation)
+let points = vec![tokyo; 1_000_000];
+let batch  = tf.transform_batch(&points)?;
+
+// Reuse a cached, thread-safe Transformer across many calls instead of
+// rebuilding the PROJ pipeline every time:
+use oxigdal_proj::TransformerCache;
+let cache   = TransformerCache::new(16);
+let cached  = cache.get_or_build(4326, 32654)?;
+let utm2    = cached.transform(&tokyo)?;
 ```
 
 ### Raster Algorithms
 
 ```rust
-use oxigdal_algorithms::raster::{hillshade, reproject, ResamplingMethod};
+use oxigdal_algorithms::raster::{hillshade, HillshadeParams};
+use oxigdal_algorithms::{Resampler, ResamplingMethod};
 
 // SIMD hillshade (AVX2 / NEON auto-selected at runtime)
-let shaded = hillshade(&dem, 315.0, 45.0)?;
-let warped = reproject(&src, &target_crs, ResamplingMethod::Bilinear)?;
+let shaded = hillshade(&dem, HillshadeParams::standard())?;
+
+// SIMD-accelerated resampling (nearest / bilinear / bicubic / lanczos)
+let resized = Resampler::new(ResamplingMethod::Bilinear).resample(&dem, 512, 512)?;
+
+// Full CRS reprojection combines a `Transformer` (oxigdal-proj, per-pixel
+// coordinate mapping) with a `Resampler` — see `oxigdal-cli`'s `warp`
+// command (crates/oxigdal-cli/src/commands/warp.rs) for the reference
+// implementation, or invoke it directly: `oxigdal warp --t-srs EPSG:32654 in.tif out.tif`
 ```
 
 ### GeoParquet (Arrow)
 
 ```rust
+use oxigdal_core::types::BoundingBox;
 use oxigdal_geoparquet::GeoParquetReader;
 
-let reader   = GeoParquetReader::open("buildings.parquet")?;
-let filter   = BoundingBox::new(135.0, 34.0, 137.0, 36.0)?;
-let features = reader.read_with_bbox_filter(&filter)?;
+let mut reader = GeoParquetReader::open("buildings.parquet")?;
+let bbox       = BoundingBox::new(135.0, 34.0, 137.0, 36.0)?;
+
+// Row-group pruning via the spatial index, then an exact per-row bbox check
+let batches = reader.read_filtered_exact(bbox)?;
 ```
 
 ### Python Bindings
@@ -260,9 +520,13 @@ let features = reader.read_with_bbox_filter(&filter)?;
 ```python
 import oxigdal
 
-ds  = oxigdal.open("satellite.tif")
-arr = ds.read(1)           # returns numpy ndarray
-gdf = oxigdal.read_geoparquet("buildings.parquet")  # Arrow-native
+ds   = oxigdal.open("satellite.tif")     # mode="r" by default
+data = ds.read_band(1)                   # returns a NumPy ndarray
+meta = ds.get_metadata()
+print(f"Size: {meta['width']}x{meta['height']}")
+
+result = oxigdal.calc("A * 2", A=data)   # raster algebra
+oxigdal.write("output.tif", result, metadata=meta)
 ```
 
 ### WebAssembly
@@ -283,8 +547,8 @@ ctx.putImageData(imageData, 0, 0);
 ```bash
 oxigdal info world.tif
 oxigdal convert input.shp output.fgb
-oxigdal dem --hillshade elevation.tif hillshade.tif
-oxigdal warp --t_srs EPSG:32654 input.tif output.tif
+oxigdal dem hillshade elevation.tif hillshade.tif --azimuth 315 --altitude 45
+oxigdal warp --t-srs EPSG:32654 input.tif output.tif
 ```
 
 ## Enterprise Features
@@ -377,6 +641,7 @@ oxigdal warp --t_srs EPSG:32654 input.tif output.tif
 | **v0.1.4** | 2026-04-19 (released) | Wave 1 algorithms (Weiler-Atherton clipping, Karney geodesic, DE-9IM, marching squares), Wave 2 R-tree+SIMD+NoAlloc+PMTiles reader+COPC+GeoPackage B-tree, ort→oxionnx ML migration, pyo3 0.28, 12,064 tests |
 | **v0.1.5** | 2026-05-22 (released) | oxigdal-gpu WGSL RayMarchUniforms layout fix eliminated 120s GPU test hang (Metal compute kernel), 78 crates, 14,605 tests |
 | **v0.1.6** | 2026-06-15 (released) | Pure-Rust SQLite migration (rusqlite → oxisql-sqlite-compat), non-UTF-8 DBF encoding via encoding_rs, WKT→PROJ string conversion, W-TinyLFU + Count-Min Sketch cache eviction, HDF5 v2/v3 superblock, Delaunay triangulation, batch QC runner + GPKG/STAC/radiometric validators, Gaussian MLC sensor classification, terrain GLCM textures/TPI/geomorphons/cost-distance, Whittaker + Savitzky-Golay time-series smoothers, GPX/KML/TopoJSON vector formats, 14,605 tests |
+| **v0.1.7** | 2026-07-20 (validated; not yet published) | Production-hardening campaign: 233 verified defects fixed across 69 crates (GeoTIFF float-predictor silent-corruption fix, JPEG2000 MQ-decoder spec conformance + real Tier-2 packet/precinct decode, real FlatGeobuf FlatBuffers wire format, LERC2 bit-stuffed decoder, HDF5 ScaleOffset/N-Bit real filters, RBAC pattern-match bypass fix), 3 new hosted demos (GeoSentinel change detection, GeoVault attestation workstation, GeoParquet Live), security attestation module (blake3 chain → Merkle root → Ed25519 seal), multicloud S3/GCS/Azure `build_backend()` factory, pure-Rust ONNX export encoder, WFS-T/WCS real transactions, 76 crates, 16,909 tests |
 | **v0.2.0** | Q2 2026 | 100+ projections, GPU expansion, advanced ML pipelines, JPEG2000 tier-2 |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |
@@ -401,12 +666,12 @@ See `crates/oxigdal-examples/src/` for runnable examples.
 | Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Drivers | [docs/DRIVERS.md](docs/DRIVERS.md) |
 | Algorithms | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) |
-| GDAL Migration | [docs/MIGRATION.md](docs/MIGRATION.md) |
+| GDAL Migration | [docs/MIGRATION_FROM_GDAL.md](docs/MIGRATION_FROM_GDAL.md) |
 | CHANGELOG | [CHANGELOG.md](CHANGELOG.md) |
 
 ## Contributing
 
-Follow [COOLJAPAN policies](docs/BEST_PRACTICES.md):
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Short version — follow [COOLJAPAN policies](docs/BEST_PRACTICES.md):
 
 1. No `unwrap()` or `expect()` in production code
 2. Files must stay under 2,000 lines (use `splitrs` for refactoring)

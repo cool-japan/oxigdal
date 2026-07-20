@@ -31,7 +31,7 @@ describe('Algorithms', () => {
       }
     }
 
-    const hillshade = oxigdal.hillshade(dem, 315, 45, 1.0);
+    const hillshade = oxigdal.hillshade(dem, 315, 45, 1.0, 1.0);
     expect(hillshade.width).toBe(50);
     expect(hillshade.height).toBe(50);
     expect(hillshade.dataType).toBe('uint8');
@@ -51,7 +51,7 @@ describe('Algorithms', () => {
       }
     }
 
-    const slope = oxigdal.slope(dem, 1.0, false);
+    const slope = oxigdal.slope(dem, 1.0, 1.0, false);
     expect(slope.width).toBe(50);
     expect(slope.height).toBe(50);
     expect(slope.dataType).toBe('float32');
@@ -71,7 +71,7 @@ describe('Algorithms', () => {
       }
     }
 
-    const aspect = oxigdal.aspect(dem);
+    const aspect = oxigdal.aspect(dem, 1.0);
     expect(aspect.width).toBe(50);
     expect(aspect.height).toBe(50);
 

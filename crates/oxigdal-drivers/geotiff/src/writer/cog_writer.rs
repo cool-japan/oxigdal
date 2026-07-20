@@ -405,6 +405,7 @@ impl CogWriter {
             self.config.band_count as usize,
             self.config.compression,
             self.config.predictor,
+            self.options.byte_order,
         );
 
         processor.process_all_tiles(data)
@@ -574,6 +575,7 @@ impl CogWriter {
             self.config.band_count as usize,
             self.config.overview_resampling,
             self.config.data_type,
+            self.options.byte_order,
         );
 
         let overviews = generator.generate_overviews(data, &self.config.overview_levels)?;

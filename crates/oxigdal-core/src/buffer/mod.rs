@@ -73,6 +73,8 @@
 
 use core::fmt;
 
+#[cfg(not(feature = "std"))]
+use crate::compat::*;
 use crate::error::{OxiGdalError, Result};
 use crate::types::{NoDataValue, RasterDataType};
 
@@ -85,6 +87,7 @@ pub use raster_window::RasterWindow;
 pub mod mask;
 pub use mask::Mask;
 
+#[cfg(feature = "std")]
 pub use crate::simd_buffer::{ArenaTile, TileIteratorArena};
 
 #[cfg(feature = "arrow")]

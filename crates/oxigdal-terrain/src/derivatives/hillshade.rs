@@ -5,7 +5,7 @@
 
 use crate::derivatives::slope::EdgeStrategy;
 use crate::error::{Result, TerrainError};
-use num_traits::Float;
+use num_traits::{Float, NumCast};
 use scirs2_core::prelude::*;
 
 /// Hillshade algorithm type
@@ -58,11 +58,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    hillshade[[y, x]] = 0;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                hillshade[[y, x]] = 0;
+                continue;
             }
 
             // Get 3x3 neighborhood
@@ -239,7 +239,7 @@ fn validate_inputs<T>(dem: &Array2<T>, cell_size: f64, azimuth: f64, altitude: f
     Ok(())
 }
 
-fn get_value<T: Copy>(dem: &Array2<T>, y: usize, x: usize, strategy: EdgeStrategy) -> T {
+fn get_value<T: Copy + NumCast>(dem: &Array2<T>, y: usize, x: usize, strategy: EdgeStrategy) -> T {
     let (height, width) = dem.dim();
 
     if y < height && x < width {
@@ -251,7 +251,22 @@ fn get_value<T: Copy>(dem: &Array2<T>, y: usize, x: usize, strategy: EdgeStrateg
                 let x_clamped = x.min(width - 1);
                 dem[[y_clamped, x_clamped]]
             }
-            _ => dem[[0, 0]],
+            EdgeStrategy::Mirror => {
+                let y_mirror = if y >= height { 2 * height - y - 2 } else { y };
+                let x_mirror = if x >= width { 2 * width - x - 2 } else { x };
+                dem[[y_mirror, x_mirror]]
+            }
+            EdgeStrategy::Constant(val) => {
+                // Convert the supplied i32 constant into T. If the type
+                // cannot represent the value, fall back to edge-extend
+                // (corner pixel) rather than silently returning a
+                // mistaken value or panicking.
+                NumCast::from(val).unwrap_or_else(|| {
+                    let y_clamped = y.min(height - 1);
+                    let x_clamped = x.min(width - 1);
+                    dem[[y_clamped, x_clamped]]
+                })
+            }
         }
     }
 }
@@ -356,5 +371,33 @@ mod tests {
 
         // Higher z-factor should create more pronounced shading
         assert_ne!(shade1[[2, 2]], shade2[[2, 2]]);
+    }
+
+    #[test]
+    fn test_get_value_constant_returns_supplied_constant() {
+        let mut dem = Array2::zeros((3, 3));
+        for y in 0..3 {
+            for x in 0..3 {
+                dem[[y, x]] = (y * 3 + x) as f64;
+            }
+        }
+
+        // Out-of-bounds access with Constant(42) must return 42.0, not
+        // dem[[0, 0]] (which is 0.0).
+        assert_eq!(get_value(&dem, 5, 5, EdgeStrategy::Constant(42)), 42.0);
+        assert_eq!(get_value(&dem, 3, 1, EdgeStrategy::Constant(-7)), -7.0);
+    }
+
+    #[test]
+    fn test_get_value_mirror() {
+        let mut dem = Array2::zeros((3, 3));
+        for y in 0..3 {
+            for x in 0..3 {
+                dem[[y, x]] = (y * 3 + x) as f64;
+            }
+        }
+
+        // y == height (3) mirrors to row height-2 == 1.
+        assert_eq!(get_value(&dem, 3, 1, EdgeStrategy::Mirror), dem[[1, 1]]);
     }
 }

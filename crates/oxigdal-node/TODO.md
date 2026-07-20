@@ -2,7 +2,7 @@
 
 > **Purpose:** napi-rs v3 (N-API v8) bindings exposing raster/vector ops to Node.js + Deno + Bun with async/await and zero-copy Buffer.
 > **Status (2026-05-17):** 3,081 LoC · 50 #[test] / `__test__/` attributes · 3 real-code soft stubs.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wire `set_progress_callback` from placeholder to functioning `ThreadsafeFunction` plumbing

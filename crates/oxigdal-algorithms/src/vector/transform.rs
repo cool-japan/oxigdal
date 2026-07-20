@@ -58,15 +58,47 @@ impl CommonCrs {
     }
 }
 
+/// Policy for coordinates that fall outside the source CRS's declared area of use.
+///
+/// Some CRS pairs (via the `crs-transform` proj backend) can report that a point
+/// lies outside the region for which the transformation is defined. This policy
+/// controls what happens then.
+///
+/// The default is [`OutOfAreaPolicy::PassThrough`], preserving historical
+/// behaviour (the coordinate is returned unchanged, in the *source* CRS, with a
+/// debug-level log). Use [`OutOfAreaPolicy::Error`] to have such points fail
+/// loudly instead of silently mixing coordinate systems within one geometry, or
+/// [`CrsTransformer::transform_coordinates_reporting`] to detect which indices
+/// fell out of area without aborting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutOfAreaPolicy {
+    /// Return the untransformed source coordinate (logged at debug level).
+    ///
+    /// Backward-compatible default. Note this can leave a multi-vertex geometry
+    /// with some vertices in the target CRS and some in the source CRS.
+    #[default]
+    PassThrough,
+    /// Return an error for any point outside the source CRS's area of use.
+    Error,
+}
+
 /// Transformer for coordinate reference system conversions
 ///
 /// When the `crs-transform` feature is enabled, this uses the `oxigdal-proj`
 /// backend (pure-Rust proj4rs) for arbitrary CRS pairs.  The two hardcoded
 /// paths (WGS84↔Web Mercator) are kept as a fallback so that the API behaves
 /// identically when the feature is disabled.
+///
+/// # Area-of-use handling
+///
+/// A point that lies outside the source CRS's declared area of use is handled
+/// according to [`CrsTransformer`]'s `OutOfAreaPolicy` (default
+/// `OutOfAreaPolicy::PassThrough`). See [`CrsTransformer::with_out_of_area_policy`]
+/// and [`CrsTransformer::transform_coordinates_reporting`].
 pub struct CrsTransformer {
     source_crs: String,
     target_crs: String,
+    out_of_area_policy: OutOfAreaPolicy,
     #[cfg(feature = "crs-transform")]
     proj_transformer: Option<oxigdal_proj::Transformer>,
 }
@@ -98,15 +130,41 @@ impl CrsTransformer {
             });
         }
 
+        // Default policy is PassThrough, which corresponds to non-strict
+        // area-of-use validation in the proj backend.
         #[cfg(feature = "crs-transform")]
-        let proj_transformer = Self::build_proj_transformer(&source, &target);
+        let proj_transformer = Self::build_proj_transformer(&source, &target, false);
 
         Ok(Self {
             source_crs: source,
             target_crs: target,
+            out_of_area_policy: OutOfAreaPolicy::default(),
             #[cfg(feature = "crs-transform")]
             proj_transformer,
         })
+    }
+
+    /// Sets the policy for coordinates outside the source CRS's area of use.
+    ///
+    /// Returns `self` for builder-style chaining. Under
+    /// `OutOfAreaPolicy::Error`, the proj backend (when the `crs-transform`
+    /// feature is enabled) is rebuilt with strict area-of-use validation so that
+    /// out-of-area points are actually detected and surfaced as errors rather
+    /// than silently transformed or passed through.
+    pub fn with_out_of_area_policy(mut self, policy: OutOfAreaPolicy) -> Self {
+        self.out_of_area_policy = policy;
+        #[cfg(feature = "crs-transform")]
+        {
+            let strict = matches!(policy, OutOfAreaPolicy::Error);
+            self.proj_transformer =
+                Self::build_proj_transformer(&self.source_crs, &self.target_crs, strict);
+        }
+        self
+    }
+
+    /// Returns the currently configured `OutOfAreaPolicy`.
+    pub fn out_of_area_policy(&self) -> OutOfAreaPolicy {
+        self.out_of_area_policy
     }
 
     /// Attempts to construct an `oxigdal_proj::Transformer` from CRS strings.
@@ -115,11 +173,15 @@ impl CrsTransformer {
     /// any initialisation failure is logged at debug level and returns `None`,
     /// which causes `transform_coordinate` to fall back to the hardcoded paths.
     #[cfg(feature = "crs-transform")]
-    fn build_proj_transformer(source: &str, target: &str) -> Option<oxigdal_proj::Transformer> {
+    fn build_proj_transformer(
+        source: &str,
+        target: &str,
+        strict: bool,
+    ) -> Option<oxigdal_proj::Transformer> {
         let src_crs = Self::parse_crs_string(source).ok()?;
         let tgt_crs = Self::parse_crs_string(target).ok()?;
         match oxigdal_proj::Transformer::new(src_crs, tgt_crs) {
-            Ok(t) => Some(t.with_strict(false)),
+            Ok(t) => Some(t.with_strict(strict)),
             Err(e) => {
                 tracing::debug!(
                     "oxigdal-proj: could not initialise transformer {} → {}: {}",
@@ -169,13 +231,36 @@ impl CrsTransformer {
     ///
     /// Transformed coordinate in target CRS
     ///
+    /// # Area of use
+    ///
+    /// When the `crs-transform` feature is enabled, a point that lies outside
+    /// the source CRS's declared area of use is handled per the configured
+    /// `OutOfAreaPolicy` (see [`Self::with_out_of_area_policy`]). Under the
+    /// default `OutOfAreaPolicy::PassThrough` such a point is returned
+    /// **unchanged in the source CRS** (with a debug-level log); under
+    /// `OutOfAreaPolicy::Error` it produces an error. To transform a whole
+    /// geometry and learn which vertices fell out of area without aborting, use
+    /// [`Self::transform_coordinates_reporting`].
+    ///
     /// # Errors
     ///
-    /// Returns error if transformation fails
+    /// Returns error if transformation fails, or if a coordinate is outside the
+    /// area of use and the policy is `OutOfAreaPolicy::Error`.
     pub fn transform_coordinate(&self, coord: &Coordinate) -> Result<Coordinate> {
+        self.transform_coordinate_checked(coord).map(|(c, _)| c)
+    }
+
+    /// Transforms a single coordinate, also reporting whether it fell outside
+    /// the source CRS's area of use (and was therefore passed through).
+    ///
+    /// The boolean is always `false` unless the `crs-transform` feature is
+    /// enabled, the proj backend is active, and the point is out of area under
+    /// [`OutOfAreaPolicy::PassThrough`]. Under [`OutOfAreaPolicy::Error`] an
+    /// out-of-area point returns `Err` instead.
+    fn transform_coordinate_checked(&self, coord: &Coordinate) -> Result<(Coordinate, bool)> {
         // Special case: Identity transformation — always fast-path, no proj needed.
         if self.source_crs == self.target_crs {
-            return Ok(*coord);
+            return Ok((*coord, false));
         }
 
         // When the `crs-transform` feature is active and the proj backend was
@@ -184,19 +269,19 @@ impl CrsTransformer {
         // when the feature is disabled or proj initialisation failed for this pair.
         #[cfg(feature = "crs-transform")]
         if let Some(ref t) = self.proj_transformer {
-            return Self::transform_via_proj(t, coord);
+            return self.transform_via_proj(t, coord);
         }
 
         // Hardcoded fast paths (feature off, or proj backend unavailable for pair).
 
         // WGS84 to Web Mercator (common transformation)
         if self.source_crs == "EPSG:4326" && self.target_crs == "EPSG:3857" {
-            return self.wgs84_to_web_mercator(coord);
+            return self.wgs84_to_web_mercator(coord).map(|c| (c, false));
         }
 
         // Web Mercator to WGS84
         if self.source_crs == "EPSG:3857" && self.target_crs == "EPSG:4326" {
-            return self.web_mercator_to_wgs84(coord);
+            return self.web_mercator_to_wgs84(coord).map(|c| (c, false));
         }
 
         // For other transformations, proj integration is required
@@ -210,23 +295,35 @@ impl CrsTransformer {
 
     /// Delegates a single coordinate transformation to `oxigdal_proj::Transformer`.
     ///
-    /// Error mapping:
-    /// - `OutOfAreaOfUse` → coordinate returned unchanged (logged at debug level, not an error).
-    ///   This preserves backward-compatibility: callers that worked without the proj backend
-    ///   would have received no area-of-use validation at all.
-    /// - All other errors → `AlgorithmError::UnsupportedOperation`.
+    /// Area-of-use handling depends on [`Self::out_of_area_policy`]:
+    /// - [`OutOfAreaPolicy::PassThrough`] → the source coordinate is returned
+    ///   unchanged (logged at debug level) and flagged `true`.
+    /// - [`OutOfAreaPolicy::Error`] → an `AlgorithmError` is returned.
+    ///
+    /// All other proj errors map to `AlgorithmError::UnsupportedOperation`.
     #[cfg(feature = "crs-transform")]
-    fn transform_via_proj(t: &oxigdal_proj::Transformer, coord: &Coordinate) -> Result<Coordinate> {
+    fn transform_via_proj(
+        &self,
+        t: &oxigdal_proj::Transformer,
+        coord: &Coordinate,
+    ) -> Result<(Coordinate, bool)> {
         let proj_coord = oxigdal_proj::Coordinate::new(coord.x, coord.y);
         match t.transform(&proj_coord) {
-            Ok(out) => Ok(Coordinate::new_2d(out.x, out.y)),
+            Ok(out) => Ok((Coordinate::new_2d(out.x, out.y), false)),
             Err(oxigdal_proj::Error::OutOfAreaOfUse { lon, lat, .. }) => {
-                tracing::debug!(
-                    "oxigdal-proj: point ({}, {}) is outside area of use — returning unchanged",
-                    lon,
-                    lat
-                );
-                Ok(*coord)
+                match self.out_of_area_policy {
+                    OutOfAreaPolicy::Error => Err(AlgorithmError::ComputationError(format!(
+                        "coordinate ({lon}, {lat}) is outside the source CRS's area of use"
+                    ))),
+                    OutOfAreaPolicy::PassThrough => {
+                        tracing::debug!(
+                            "oxigdal-proj: point ({}, {}) is outside area of use — returning unchanged",
+                            lon,
+                            lat
+                        );
+                        Ok((*coord, true))
+                    }
+                }
             }
             Err(e) => Err(AlgorithmError::UnsupportedOperation {
                 operation: format!("Coordinate transformation failed: {}", e),
@@ -240,6 +337,35 @@ impl CrsTransformer {
             .iter()
             .map(|c| self.transform_coordinate(c))
             .collect()
+    }
+
+    /// Transforms multiple coordinates, reporting the indices of any that fell
+    /// outside the source CRS's area of use (and were passed through unchanged).
+    ///
+    /// This lets callers detect and reject/filter a geometry that would
+    /// otherwise silently mix coordinate systems, without switching to the
+    /// hard-error `OutOfAreaPolicy::Error`. The returned index list is always
+    /// empty unless the `crs-transform` feature is active and the current policy
+    /// is `OutOfAreaPolicy::PassThrough`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any transformation error (including out-of-area errors when
+    /// the policy is `OutOfAreaPolicy::Error`).
+    pub fn transform_coordinates_reporting(
+        &self,
+        coords: &[Coordinate],
+    ) -> Result<(Vec<Coordinate>, Vec<usize>)> {
+        let mut out = Vec::with_capacity(coords.len());
+        let mut out_of_area = Vec::new();
+        for (i, c) in coords.iter().enumerate() {
+            let (transformed, was_out_of_area) = self.transform_coordinate_checked(c)?;
+            out.push(transformed);
+            if was_out_of_area {
+                out_of_area.push(i);
+            }
+        }
+        Ok((out, out_of_area))
     }
 
     /// Transforms a point
@@ -773,5 +899,61 @@ mod tests {
             "Web Mercator Y at lat=0 must be ~0, got {}",
             result.y
         );
+    }
+
+    #[test]
+    fn test_out_of_area_policy_default_and_builder() {
+        let t = CrsTransformer::new("EPSG:4326", "EPSG:3857").expect("must construct");
+        assert_eq!(
+            t.out_of_area_policy(),
+            OutOfAreaPolicy::PassThrough,
+            "default policy must be PassThrough for backward compatibility"
+        );
+
+        let t = t.with_out_of_area_policy(OutOfAreaPolicy::Error);
+        assert_eq!(t.out_of_area_policy(), OutOfAreaPolicy::Error);
+
+        // In-area transforms must still succeed under the Error policy.
+        let origin = Coordinate::new_2d(0.0, 0.0);
+        let out = t
+            .transform_coordinate(&origin)
+            .expect("origin is in area of use for WGS84→WebMercator");
+        assert!(out.x.abs() < 1.0 && out.y.abs() < 1.0);
+    }
+
+    #[test]
+    fn test_transform_coordinates_reporting_in_area() {
+        let t = CrsTransformer::new("EPSG:4326", "EPSG:3857").expect("must construct");
+        let coords = vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(10.0, 10.0),
+            Coordinate::new_2d(-20.0, 30.0),
+        ];
+        let (out, out_of_area) = t
+            .transform_coordinates_reporting(&coords)
+            .expect("reporting transform must succeed");
+
+        assert_eq!(out.len(), 3, "all coordinates must be transformed");
+        for c in &out {
+            assert!(c.x.is_finite() && c.y.is_finite());
+        }
+        // These well-known in-area points must not be flagged out of area.
+        assert!(
+            out_of_area.is_empty(),
+            "no in-area points should be reported, got {out_of_area:?}"
+        );
+    }
+
+    #[test]
+    fn test_transform_coordinates_reporting_identity() {
+        // Identity transform never reports out-of-area regardless of backend.
+        let t = CrsTransformer::new("EPSG:4326", "EPSG:4326").expect("must construct");
+        let coords = vec![Coordinate::new_2d(200.0, 95.0)]; // even a wild point
+        let (out, out_of_area) = t
+            .transform_coordinates_reporting(&coords)
+            .expect("identity reporting must succeed");
+        assert_eq!(out.len(), 1);
+        assert!(out_of_area.is_empty());
+        assert!((out[0].x - 200.0).abs() < f64::EPSILON);
     }
 }

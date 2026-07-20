@@ -1,7 +1,7 @@
 //! CRS reprojection for GeoJSON feature collections.
 //!
 //! Provides [`Reprojector`], which transforms every coordinate in a
-//! [`GeoJsonFeatureCollection`], a [`GeoJsonFeature`], or a single
+//! [`FeatureCollection`], a [`GeoJsonFeature`], or a single
 //! [`GeoJsonGeometry`] from a source CRS to a target CRS.
 //!
 //! Currently supports:

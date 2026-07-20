@@ -266,23 +266,28 @@ impl MonitoringManager {
         value: f64,
         labels: HashMap<String, String>,
     ) -> Result<()> {
-        let entry = self
-            .metrics
-            .get(&metric_id)
-            .ok_or_else(|| ClusterError::MetricNotFound(metric_id.clone()))?;
+        // Push the datapoint under a scoped lock so the metric series lock is
+        // released before `evaluate_alerts` runs. RateOfChange evaluation re-reads
+        // this same series, so holding the write lock here would deadlock.
+        {
+            let entry = self
+                .metrics
+                .get(&metric_id)
+                .ok_or_else(|| ClusterError::MetricNotFound(metric_id.clone()))?;
 
-        let mut series = entry.write();
+            let mut series = entry.write();
 
-        let datapoint = DataPoint {
-            timestamp: SystemTime::now(),
-            value,
-            labels,
-        };
+            let datapoint = DataPoint {
+                timestamp: SystemTime::now(),
+                value,
+                labels,
+            };
 
-        series.datapoints.push_back(datapoint);
+            series.datapoints.push_back(datapoint);
 
-        if series.datapoints.len() > series.max_points {
-            series.datapoints.pop_front();
+            if series.datapoints.len() > series.max_points {
+                series.datapoints.pop_front();
+            }
         }
 
         // Record for anomaly detection
@@ -316,6 +321,42 @@ impl MonitoringManager {
         Ok(id)
     }
 
+    /// Compute the rate of change (units per second) of a metric over `period`.
+    ///
+    /// `current_value` is the freshly recorded value and is treated as the value
+    /// at "now". The method looks back through the stored datapoints for the most
+    /// recent point at or before `now - period` and returns
+    /// `(current_value - past_value) / elapsed_seconds`. Returns `None` when there
+    /// is not yet enough history spanning the requested period, so a rule with
+    /// insufficient data simply does not fire (it never panics).
+    fn compute_rate_of_change(
+        &self,
+        metric_id: &MetricId,
+        current_value: f64,
+        period: Duration,
+    ) -> Option<f64> {
+        let now = SystemTime::now();
+        let cutoff = now.checked_sub(period)?;
+
+        let entry = self.metrics.get(metric_id)?;
+        let series = entry.read();
+
+        // Datapoints are appended chronologically, so scanning from the back finds
+        // the most recent point at or before the cutoff without indexing.
+        let past = series
+            .datapoints
+            .iter()
+            .rev()
+            .find(|dp| dp.timestamp <= cutoff)?;
+
+        let elapsed = now.duration_since(past.timestamp).ok()?.as_secs_f64();
+        if elapsed <= 0.0 {
+            return None;
+        }
+
+        Some((current_value - past.value) / elapsed)
+    }
+
     /// Evaluate alert rules for a metric.
     fn evaluate_alerts(&self, metric_id: &MetricId, value: f64) -> Result<()> {
         for entry in self.alert_rules.iter() {
@@ -329,7 +370,10 @@ impl MonitoringManager {
                 AlertCondition::GreaterThan => value > rule.threshold,
                 AlertCondition::LessThan => value < rule.threshold,
                 AlertCondition::Equal => (value - rule.threshold).abs() < 0.001,
-                AlertCondition::RateOfChange { .. } => false, // Simplified
+                AlertCondition::RateOfChange { period } => self
+                    .compute_rate_of_change(metric_id, value, period)
+                    .map(|rate| rate.abs() > rule.threshold)
+                    .unwrap_or(false),
             };
 
             if triggered && !self.active_alerts.contains_key(&rule.id) {
@@ -531,5 +575,120 @@ mod tests {
 
         // Abnormal value should be anomaly
         assert!(detector.detect_anomaly(&"metric1".to_string(), 500.0));
+    }
+
+    #[test]
+    fn test_rate_of_change_alert_fires_on_spike() {
+        let manager = MonitoringManager::new();
+        manager
+            .register_metric("throughput".to_string(), MetricType::Gauge)
+            .expect("register metric");
+
+        let period = Duration::from_millis(50);
+        let rule = AlertRule {
+            id: uuid::Uuid::new_v4(),
+            name: "Throughput spike".to_string(),
+            metric: "throughput".to_string(),
+            condition: AlertCondition::RateOfChange { period },
+            threshold: 50.0, // units per second
+            duration: Duration::from_millis(0),
+            severity: AlertSeverity::Warning,
+            enabled: true,
+            notify: vec![],
+        };
+        manager.create_alert_rule(rule).expect("create rule");
+
+        // Baseline datapoint, then wait past the period so it lands before cutoff.
+        manager
+            .record_metric("throughput".to_string(), 10.0, HashMap::new())
+            .expect("record baseline");
+        std::thread::sleep(Duration::from_millis(70));
+
+        // Sudden jump: (100 - 10) / ~0.07s ~= 1285 units/s, far above threshold.
+        manager
+            .record_metric("throughput".to_string(), 100.0, HashMap::new())
+            .expect("record spike");
+
+        let alerts = manager.get_active_alerts();
+        assert!(
+            !alerts.is_empty(),
+            "RateOfChange alert should fire on a sudden spike"
+        );
+    }
+
+    #[test]
+    fn test_rate_of_change_alert_resolves_when_flat() {
+        let manager = MonitoringManager::new();
+        manager
+            .register_metric("throughput".to_string(), MetricType::Gauge)
+            .expect("register metric");
+
+        let period = Duration::from_millis(50);
+        let rule = AlertRule {
+            id: uuid::Uuid::new_v4(),
+            name: "Throughput spike".to_string(),
+            metric: "throughput".to_string(),
+            condition: AlertCondition::RateOfChange { period },
+            threshold: 50.0,
+            duration: Duration::from_millis(0),
+            severity: AlertSeverity::Warning,
+            enabled: true,
+            notify: vec![],
+        };
+        manager.create_alert_rule(rule).expect("create rule");
+
+        manager
+            .record_metric("throughput".to_string(), 10.0, HashMap::new())
+            .expect("record baseline");
+        std::thread::sleep(Duration::from_millis(70));
+        manager
+            .record_metric("throughput".to_string(), 100.0, HashMap::new())
+            .expect("record spike");
+        assert!(!manager.get_active_alerts().is_empty());
+
+        // Now hold flat across another period: rate ~0, alert should resolve.
+        std::thread::sleep(Duration::from_millis(70));
+        manager
+            .record_metric("throughput".to_string(), 100.0, HashMap::new())
+            .expect("record flat");
+
+        assert!(
+            manager.get_active_alerts().is_empty(),
+            "RateOfChange alert should resolve when the metric goes flat"
+        );
+    }
+
+    #[test]
+    fn test_rate_of_change_no_fire_without_history() {
+        let manager = MonitoringManager::new();
+        manager
+            .register_metric("throughput".to_string(), MetricType::Gauge)
+            .expect("register metric");
+
+        let rule = AlertRule {
+            id: uuid::Uuid::new_v4(),
+            name: "Throughput spike".to_string(),
+            metric: "throughput".to_string(),
+            condition: AlertCondition::RateOfChange {
+                period: Duration::from_secs(60),
+            },
+            threshold: 0.1,
+            duration: Duration::from_millis(0),
+            severity: AlertSeverity::Warning,
+            enabled: true,
+            notify: vec![],
+        };
+        manager.create_alert_rule(rule).expect("create rule");
+
+        // Only a single datapoint: no point exists before now - 60s, so no rate can
+        // be computed and the alert must not fire.
+        manager
+            .record_metric("throughput".to_string(), 999.0, HashMap::new())
+            .expect("record single point");
+
+        assert!(
+            manager.get_active_alerts().is_empty(),
+            "RateOfChange must not fire without enough history"
+        );
     }
 }

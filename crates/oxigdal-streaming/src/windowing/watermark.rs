@@ -132,21 +132,19 @@ impl WatermarkGenerator for PeriodicWatermarkGenerator {
             true
         };
 
-        if should_emit {
-            if let Some(max_ts) = self.max_timestamp {
-                let new_watermark = match self.config.strategy {
-                    WatermarkStrategy::Ascending => Watermark::new(max_ts),
-                    WatermarkStrategy::BoundedOutOfOrderness => {
-                        Watermark::new(max_ts - self.config.max_out_of_orderness)
-                    }
-                    _ => self.current_watermark,
-                };
-
-                if new_watermark > self.current_watermark {
-                    self.current_watermark = new_watermark;
-                    self.last_emit = Some(now);
-                    return Some(new_watermark);
+        if should_emit && let Some(max_ts) = self.max_timestamp {
+            let new_watermark = match self.config.strategy {
+                WatermarkStrategy::Ascending => Watermark::new(max_ts),
+                WatermarkStrategy::BoundedOutOfOrderness => {
+                    Watermark::new(max_ts - self.config.max_out_of_orderness)
                 }
+                _ => self.current_watermark,
+            };
+
+            if new_watermark > self.current_watermark {
+                self.current_watermark = new_watermark;
+                self.last_emit = Some(now);
+                return Some(new_watermark);
             }
         }
 
@@ -195,14 +193,14 @@ impl WatermarkGenerator for PunctuatedWatermarkGenerator {
             self.max_timestamp = Some(element.event_time);
         }
 
-        if self.should_emit_watermark(element) {
-            if let Some(max_ts) = self.max_timestamp {
-                let new_watermark = Watermark::new(max_ts - self.config.max_out_of_orderness);
+        if self.should_emit_watermark(element)
+            && let Some(max_ts) = self.max_timestamp
+        {
+            let new_watermark = Watermark::new(max_ts - self.config.max_out_of_orderness);
 
-                if new_watermark > self.current_watermark {
-                    self.current_watermark = new_watermark;
-                    return Some(new_watermark);
-                }
+            if new_watermark > self.current_watermark {
+                self.current_watermark = new_watermark;
+                return Some(new_watermark);
             }
         }
 

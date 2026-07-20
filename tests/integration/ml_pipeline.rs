@@ -2,6 +2,10 @@
 //!
 //! Tests complete ML workflows from data loading to inference.
 
+#![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::let_unit_value)]
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Test complete image classification pipeline
@@ -35,7 +39,7 @@ fn test_object_detection_pipeline() -> Result<()> {
 
     // Verify detections format
     for detection in &detections {
-        assert!(detection.confidence >= 0.0 && detection.confidence <= 1.0);
+        assert!((0.0..=1.0).contains(&detection.confidence));
     }
 
     Ok(())
@@ -95,7 +99,10 @@ fn test_time_series_prediction() -> Result<()> {
 fn test_model_training() -> Result<()> {
     // Prepare training data
     let train_features = vec![vec![1.0, 2.0]; 100];
-    let train_labels = vec![0; 50].into_iter().chain(vec![1; 50]).collect::<Vec<_>>();
+    let train_labels = vec![0; 50]
+        .into_iter()
+        .chain(vec![1; 50])
+        .collect::<Vec<_>>();
 
     // Train model
     let _model = train_classifier(&train_features, &train_labels, TrainingConfig::default())?;
@@ -170,7 +177,11 @@ fn normalize_data(data: &[f32], min: f32, max: f32) -> Result<Vec<f32>> {
     Ok(data.iter().map(|&v| (v - min) / (max - min)).collect())
 }
 
-fn extract_patches(data: &[f32], _patch_width: usize, _patch_height: usize) -> Result<Vec<Vec<f32>>> {
+fn extract_patches(
+    data: &[f32],
+    _patch_width: usize,
+    _patch_height: usize,
+) -> Result<Vec<Vec<f32>>> {
     Ok(vec![data.to_vec(); 10])
 }
 

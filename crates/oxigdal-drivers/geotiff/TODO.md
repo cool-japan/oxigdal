@@ -2,7 +2,7 @@
 
 > **Purpose:** GeoTIFF/COG driver for OxiGDAL — Pure Rust GDAL reimplementation with cloud-optimized reading and writing
 > **Status (2026-05-16):** 12,091 Rust LoC · 460 tests · 1 real-code stub (`CogConverter::convert` returns placeholder result), plus 2 documented partial features (FloatingPoint predictor branch, JPEG/WebP codecs already in TODO)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
 - [ ] Implement JPEG compression codec (currently placeholder, `jpeg` feature)

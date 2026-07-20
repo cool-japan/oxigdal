@@ -3,7 +3,7 @@
 //! No GPU device or wgpu adapter is required.  All tile_fn callbacks use a
 //! simple passthrough or arithmetic transform so the tests run everywhere.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::panic)]
 
 use oxigdal_gpu::{

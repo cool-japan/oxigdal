@@ -5,11 +5,13 @@
 //! detection, and change detection.
 
 pub mod cache;
+#[cfg(feature = "model-download")]
 pub mod download;
 pub mod models;
 pub mod registry;
 
 pub use cache::{CachePolicy, ModelCache};
+#[cfg(feature = "model-download")]
 pub use download::{DownloadProgress, ModelDownloader};
 pub use models::{
     DeepLabV3Segmenter, EfficientNetClassifier, ResNetClassifier, UNetSegmenter, YoloDetector,
@@ -24,6 +26,7 @@ use tracing::info;
 pub struct ModelZoo {
     registry: ModelRegistry,
     cache: ModelCache,
+    #[cfg(feature = "model-download")]
     downloader: ModelDownloader,
 }
 
@@ -47,6 +50,7 @@ impl ModelZoo {
         Ok(Self {
             registry: ModelRegistry::new(),
             cache: ModelCache::new(cache_path),
+            #[cfg(feature = "model-download")]
             downloader: ModelDownloader::new(),
         })
     }
@@ -99,9 +103,16 @@ impl ModelZoo {
 
         // Download model
         info!("Downloading model from {:?}", model_info.source);
-        let path = self.downloader.download(model_info, &mut self.cache)?;
-
-        Ok(path)
+        #[cfg(feature = "model-download")]
+        {
+            let path = self.downloader.download(model_info, &mut self.cache)?;
+            Ok(path)
+        }
+        #[cfg(not(feature = "model-download"))]
+        return Err(crate::error::MlError::FeatureNotAvailable {
+            feature: "model-download".to_string(),
+            flag: "model-download".to_string(),
+        });
     }
 
     /// Clears the model cache

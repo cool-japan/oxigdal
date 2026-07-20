@@ -49,6 +49,31 @@ pub struct MfaChallenge {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Compares two byte slices for equality in constant time (with respect to
+/// their contents).
+///
+/// `subtle` is not part of this workspace's dependency set, so this is a
+/// small local implementation rather than pulling in a new external crate
+/// (COOLJAPAN Pure-Rust / minimal-dependency policy). Lengths are compared
+/// first and this is *not* constant-time with respect to length: every
+/// value compared here (TOTP codes, backup codes) has a fixed, publicly
+/// known format/length, so the length itself is not a secret. Once lengths
+/// match, every byte pair is visited and folded into a single accumulator
+/// with bitwise OR, so no early return reveals which byte position (if
+/// any) first differed.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+
+    diff == 0
+}
+
 impl MfaAuthenticator {
     /// Creates a new MFA authenticator.
     pub fn new() -> Self {
@@ -96,27 +121,46 @@ impl MfaAuthenticator {
     }
 
     /// Verifies a TOTP code.
+    ///
+    /// Per [RFC 6238 §5.2](https://www.rfc-editor.org/rfc/rfc6238#section-5.2),
+    /// a validation system should accept a small number of time-steps
+    /// adjacent to the current one to tolerate clock skew between the
+    /// client and server. This checks the previous, current, and next
+    /// 30-second time-step (a ±30s window) against the submitted code.
+    ///
+    /// The submitted code is compared against every candidate with a
+    /// constant-time comparison, and all three candidates are always
+    /// evaluated (no short-circuiting on the first match), so neither
+    /// which window matched nor the content of the code can be inferred
+    /// from response timing.
     pub fn verify_totp(&self, user_id: &str, code: &str) -> Result<bool> {
         let secret = self
             .totp_secrets
             .get(user_id)
             .ok_or_else(|| GatewayError::InvalidToken("TOTP not configured".to_string()))?;
 
-        // Generate current TOTP code
-        let current_code = self.generate_totp_code(&secret.secret)?;
+        let current_time_step = chrono::Utc::now().timestamp() / 30;
+        let submitted = code.as_bytes();
 
-        Ok(code == current_code)
+        let mut matched = false;
+        for offset in [-1i64, 0, 1] {
+            let candidate =
+                self.generate_totp_code_for_counter(&secret.secret, current_time_step + offset)?;
+            matched |= constant_time_eq(submitted, candidate.as_bytes());
+        }
+
+        Ok(matched)
     }
 
-    /// Generates a TOTP code from a secret.
-    fn generate_totp_code(&self, secret: &[u8]) -> Result<String> {
+    /// Generates a TOTP code from a secret for an explicit 30-second time
+    /// step ("counter" in RFC 6238 terms), so [`Self::verify_totp`] can
+    /// evaluate the adjacent time-steps for clock-skew tolerance.
+    fn generate_totp_code_for_counter(&self, secret: &[u8], time_step: i64) -> Result<String> {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
         type HmacSha256 = Hmac<Sha256>;
 
-        // Get current time step (30-second intervals)
-        let time_step = chrono::Utc::now().timestamp() / 30;
         let time_bytes = time_step.to_be_bytes();
 
         // HMAC-SHA256
@@ -221,13 +265,27 @@ impl MfaAuthenticator {
     }
 
     /// Verifies and consumes a backup code.
+    ///
+    /// Each stored code is compared against the submitted code with a
+    /// constant-time comparison, and every stored code is checked (no
+    /// early exit on the first match), so response timing does not reveal
+    /// which stored code (if any) matched or how many bytes of a near
+    /// match were correct.
     pub fn verify_backup_code(&self, user_id: &str, code: &str) -> Result<bool> {
         let mut codes = self
             .backup_codes
             .get_mut(user_id)
             .ok_or_else(|| GatewayError::InvalidToken("Backup codes not configured".to_string()))?;
 
-        if let Some(pos) = codes.iter().position(|c| c == code) {
+        let submitted = code.as_bytes();
+        let mut matched_pos: Option<usize> = None;
+        for (index, stored) in codes.iter().enumerate() {
+            if constant_time_eq(stored.as_bytes(), submitted) {
+                matched_pos = Some(index);
+            }
+        }
+
+        if let Some(pos) = matched_pos {
             codes.remove(pos);
             Ok(true)
         } else {
@@ -289,8 +347,9 @@ mod tests {
         let secret = mfa.totp_secrets.get("user123");
         assert!(secret.is_some());
 
+        let current_time_step = chrono::Utc::now().timestamp() / 30;
         let code = if let Some(secret_ref) = secret {
-            mfa.generate_totp_code(&secret_ref.secret)
+            mfa.generate_totp_code_for_counter(&secret_ref.secret, current_time_step)
         } else {
             return; // Test fails if no secret
         };
@@ -364,5 +423,103 @@ mod tests {
         let result = mfa.verify_backup_code("user123", &code);
         assert!(result.is_ok());
         assert!(!result.unwrap_or(true));
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq(b"123456", b"123456"));
+        assert!(!constant_time_eq(b"123456", b"123457"));
+        // Different lengths must never compare equal.
+        assert!(!constant_time_eq(b"123456", b"1234567"));
+        assert!(!constant_time_eq(b"1234567", b"123456"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn test_verify_totp_rejects_wrong_code() {
+        let mfa = MfaAuthenticator::new();
+        let _secret = mfa.generate_totp_secret("user123".to_string());
+
+        let secret = mfa.totp_secrets.get("user123");
+        let secret_bytes = match secret {
+            Some(secret_ref) => secret_ref.secret.clone(),
+            None => panic!("secret was not created"),
+        };
+
+        let current_time_step = chrono::Utc::now().timestamp() / 30;
+        let current_code = mfa
+            .generate_totp_code_for_counter(&secret_bytes, current_time_step)
+            .unwrap_or_default();
+
+        // Flip the last digit to obtain a code that is guaranteed wrong.
+        let mut wrong_code: Vec<u8> = current_code.into_bytes();
+        if let Some(last) = wrong_code.last_mut() {
+            *last = if *last == b'9' { b'0' } else { *last + 1 };
+        }
+        let wrong_code = String::from_utf8(wrong_code).unwrap_or_default();
+
+        let result = mfa.verify_totp("user123", &wrong_code);
+        assert!(result.is_ok());
+        assert!(!result.unwrap_or(true));
+
+        // A code of the wrong length must also be rejected (exercises the
+        // constant-time comparison's length-mismatch path).
+        let result = mfa.verify_totp("user123", "1");
+        assert!(result.is_ok());
+        assert!(!result.unwrap_or(true));
+    }
+
+    #[test]
+    fn test_verify_totp_accepts_previous_time_step_skew() {
+        let mfa = MfaAuthenticator::new();
+        let _secret = mfa.generate_totp_secret("user123".to_string());
+
+        let secret = mfa.totp_secrets.get("user123");
+        let secret_bytes = match secret {
+            Some(secret_ref) => secret_ref.secret.clone(),
+            None => panic!("secret was not created"),
+        };
+
+        // Simulate a client whose clock is ~30s behind the server: the
+        // client computes its code for the *previous* 30-second time-step,
+        // but the server verifies "now". Per RFC 6238 §5.2 this must still
+        // be accepted.
+        let current_time_step = chrono::Utc::now().timestamp() / 30;
+        let previous_step_code = mfa
+            .generate_totp_code_for_counter(&secret_bytes, current_time_step - 1)
+            .unwrap_or_default();
+
+        let result = mfa.verify_totp("user123", &previous_step_code);
+        assert!(result.is_ok());
+        assert!(result.unwrap_or(false));
+
+        // A code that is two time-steps (60s) skewed falls outside the
+        // ±1 window and must be rejected.
+        let far_step_code = mfa
+            .generate_totp_code_for_counter(&secret_bytes, current_time_step - 2)
+            .unwrap_or_default();
+        // Guard against the astronomically unlikely case that the far-step
+        // code happens to collide with one of the three accepted codes.
+        if far_step_code != previous_step_code {
+            let result = mfa.verify_totp("user123", &far_step_code);
+            assert!(result.is_ok());
+            assert!(!result.unwrap_or(true));
+        }
+    }
+
+    #[test]
+    fn test_verify_backup_code_rejects_wrong_code() {
+        let mfa = MfaAuthenticator::new();
+        let codes = mfa
+            .generate_backup_codes("user123".to_string(), 5)
+            .unwrap_or_default();
+        assert_eq!(codes.len(), 5);
+
+        let result = mfa.verify_backup_code("user123", "not-a-real-backup-code");
+        assert!(result.is_ok());
+        assert!(!result.unwrap_or(true));
+
+        // All original codes must remain unconsumed.
+        assert_eq!(mfa.get_backup_code_count("user123"), 5);
     }
 }

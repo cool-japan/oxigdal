@@ -228,7 +228,12 @@ fn read_source_meta(path: &Path) -> Result<SourceMeta> {
             let width = info.width.unwrap_or(1);
             let height = info.height.unwrap_or(1);
             let pixel_height = gt.pixel_height.abs();
-            let data_type_str = "Float32".to_string(); // best-effort default
+            // Parse the real pixel type (BitsPerSample / SampleFormat) rather
+            // than assuming Float32 — UInt8/UInt16 imagery would otherwise be
+            // misinterpreted as 4-byte floats by VRT readers.
+            let data_type_str = crate::open::extract_tiff_data_type(path)
+                .map(|dt| dt.name().to_string())
+                .unwrap_or_else(|| "Float32".to_string());
             Ok(SourceMeta {
                 pixel_width: gt.pixel_width,
                 pixel_height,

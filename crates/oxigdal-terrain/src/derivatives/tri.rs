@@ -33,11 +33,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    tri_result[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                tri_result[[y, x]] = f64::NAN;
+                continue;
             }
 
             let center_val = center.into();
@@ -57,10 +57,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let neighbor = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(neighbor, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(neighbor, nd)
+                        {
+                            continue;
                         }
 
                         let diff = neighbor.into() - center_val;
@@ -102,11 +102,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    tri_result[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                tri_result[[y, x]] = f64::NAN;
+                continue;
             }
 
             let center_val: f64 = center.into();
@@ -125,10 +125,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let neighbor = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(neighbor, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(neighbor, nd)
+                        {
+                            continue;
                         }
 
                         let diff: f64 = neighbor.into() - center_val;
@@ -164,10 +164,10 @@ where
             let x = idx % width;
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    return f64::NAN;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                return f64::NAN;
             }
 
             let center_val = center.into();
@@ -186,10 +186,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let neighbor = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(neighbor, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(neighbor, nd)
+                        {
+                            continue;
                         }
 
                         let diff = neighbor.into() - center_val;

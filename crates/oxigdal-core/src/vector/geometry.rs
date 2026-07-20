@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::vec::Vec;
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
-use alloc::vec::Vec;
+use alloc::{string::ToString, vec::Vec};
 
 /// Coordinate in 2D, 3D, or 4D space
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

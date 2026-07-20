@@ -72,10 +72,10 @@ impl<K: Clone + Hash + Eq> LruEviction<K> {
 
     fn move_to_front(&mut self, key: &K) {
         // Remove from current position
-        if let Some(pos) = self.key_set.get(key) {
-            if *pos < self.access_order.len() {
-                self.access_order.remove(*pos);
-            }
+        if let Some(pos) = self.key_set.get(key)
+            && *pos < self.access_order.len()
+        {
+            self.access_order.remove(*pos);
         }
 
         // Add to front
@@ -115,12 +115,12 @@ impl<K: Clone + Hash + Eq + Send + Sync + 'static> EvictionPolicy<K> for LruEvic
     }
 
     fn on_remove(&mut self, key: &K) {
-        if let Some(pos) = self.key_set.remove(key) {
-            if pos < self.access_order.len() {
-                self.access_order.remove(pos);
-                self.rebuild_positions();
-                self.stats.items_tracked = self.stats.items_tracked.saturating_sub(1);
-            }
+        if let Some(pos) = self.key_set.remove(key)
+            && pos < self.access_order.len()
+        {
+            self.access_order.remove(pos);
+            self.rebuild_positions();
+            self.stats.items_tracked = self.stats.items_tracked.saturating_sub(1);
         }
     }
 

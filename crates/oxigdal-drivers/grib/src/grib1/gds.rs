@@ -208,11 +208,19 @@ impl<R: Read> ReadI24Ext for R {
             ((buf[2] as i32) << 16) | ((buf[1] as i32) << 8) | (buf[0] as i32)
         };
 
-        // Sign extend
-        if value & 0x800000 != 0 {
-            Ok(value | !0xFFFFFF)
+        // WMO sign-and-magnitude decoding (Manual on Codes / FM 92-XI Ext.
+        // GRIB Regulation 92.1.5, confirmed against eccodes'
+        // `grib_decode_signed_long`, definitions/grib1/grid_definition_lambert.def
+        // and grid_definition_latlon.def, which declare La1/Lo1/La2/Lo2/LoV/
+        // Latin1/Latin2/latitudeOfSouthernPole/longitudeOfSouthernPole as
+        // `signed[3]`): the MSB of the most-significant octet is a sign
+        // flag, and the remaining 23 bits are the magnitude. This is NOT
+        // two's-complement sign extension.
+        let magnitude = value & 0x007F_FFFF;
+        if value & 0x0080_0000 != 0 {
+            Ok(-magnitude)
         } else {
-            Ok(value)
+            Ok(magnitude)
         }
     }
 }
@@ -246,15 +254,44 @@ mod tests {
 
     #[test]
     fn test_read_i24() {
-        let data = [0x00, 0x01, 0x00]; // 256
+        let data = [0x00, 0x01, 0x00]; // positive: 256
         let mut cursor = Cursor::new(&data);
         let value = ReadI24Ext::read_i24::<BigEndian>(&mut cursor).expect("read_i24 failed");
         assert_eq!(value, 256);
 
-        let data = [0xFF, 0xFF, 0xFF]; // -1
+        // Sign-and-magnitude -1: sign bit set, magnitude = 1 (NOT the
+        // two's-complement bit pattern for -1, which would be 0xFFFFFF).
+        let data = [0x80, 0x00, 0x01];
         let mut cursor = Cursor::new(&data);
         let value = ReadI24Ext::read_i24::<BigEndian>(&mut cursor).expect("read_i24 failed");
         assert_eq!(value, -1);
+
+        // All-magnitude-bits-set is the largest representable negative
+        // magnitude under sign-and-magnitude, NOT -1 as two's complement
+        // would decode it.
+        let data = [0xFF, 0xFF, 0xFF];
+        let mut cursor = Cursor::new(&data);
+        let value = ReadI24Ext::read_i24::<BigEndian>(&mut cursor).expect("read_i24 failed");
+        assert_eq!(value, -8_388_607);
+    }
+
+    /// Regression test: a stored La1 of -10.000 degrees is encoded per WMO
+    /// sign-and-magnitude as sign bit set + magnitude 10000 (millidegrees),
+    /// i.e. raw bytes 0x80, 0x27, 0x10. A plain two's-complement decode of
+    /// the same bytes would incorrectly yield a huge negative value.
+    #[test]
+    fn test_read_i24_sign_magnitude_negative_coordinate() {
+        let data = [0x80, 0x27, 0x10];
+        let mut cursor = Cursor::new(&data);
+        let value = ReadI24Ext::read_i24::<BigEndian>(&mut cursor).expect("read_i24 failed");
+        assert_eq!(value, -10_000);
+        assert!((value as f64 / 1000.0 - (-10.0)).abs() < 1e-9);
+
+        // The positive counterpart (sign bit clear) must decode unchanged.
+        let data = [0x00, 0x27, 0x10];
+        let mut cursor = Cursor::new(&data);
+        let value = ReadI24Ext::read_i24::<BigEndian>(&mut cursor).expect("read_i24 failed");
+        assert_eq!(value, 10_000);
     }
 
     #[test]
@@ -263,5 +300,42 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let value = ReadU24Ext::read_u24::<BigEndian>(&mut cursor).expect("read_u24 failed");
         assert_eq!(value, 65536);
+    }
+
+    /// Full `from_reader` round-trip for a regular lat/lon grid (type 0)
+    /// spanning the southern hemisphere, confirming the whole GDS parse
+    /// path (not just the low-level `read_i24` helper) produces correct
+    /// coordinates for negative La1/La2.
+    #[test]
+    fn test_from_reader_latlon_grid_negative_coordinates() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x20]); // section length (unused)
+        data.push(0); // NV
+        data.push(0); // PV/PL
+        data.push(0); // grid type: regular lat/lon
+        data.extend_from_slice(&2u16.to_be_bytes()); // Ni
+        data.extend_from_slice(&2u16.to_be_bytes()); // Nj
+        data.extend_from_slice(&[0x80, 0x27, 0x10]); // La1 = -10.000
+        data.extend_from_slice(&[0x02, 0x49, 0xF0]); // Lo1 = 150.000
+        data.push(0); // resolution flags
+        data.extend_from_slice(&[0x80, 0x4E, 0x20]); // La2 = -20.000
+        data.extend_from_slice(&[0x02, 0x71, 0x00]); // Lo2 = 160.000
+        data.extend_from_slice(&1000u16.to_be_bytes()); // Di
+        data.extend_from_slice(&1000u16.to_be_bytes()); // Dj
+        data.push(0); // scan flags
+
+        let mut cursor = Cursor::new(data);
+        let gds = GridDefinitionSection::from_reader(&mut cursor)
+            .expect("failed to parse regular lat/lon GDS");
+
+        match gds.grid {
+            GridDefinition::LatLon(grid) => {
+                assert!((grid.la1 - (-10.0)).abs() < 1e-9);
+                assert!((grid.lo1 - 150.0).abs() < 1e-9);
+                assert!((grid.la2 - (-20.0)).abs() < 1e-9);
+                assert!((grid.lo2 - 160.0).abs() < 1e-9);
+            }
+            other => panic!("expected LatLon grid, got {other:?}"),
+        }
     }
 }

@@ -59,7 +59,7 @@ impl EnvelopeEncryptor {
     /// Encrypt data using envelope encryption.
     pub fn encrypt(&self, plaintext: &[u8], aad: Option<&[u8]>) -> Result<EnvelopeEncryptedData> {
         // Generate random DEK
-        let dek = AtRestEncryptor::generate_key(self.dek_algorithm);
+        let dek = AtRestEncryptor::generate_key(self.dek_algorithm)?;
 
         // Encrypt plaintext with DEK
         let dek_id = uuid::Uuid::new_v4().to_string();
@@ -117,7 +117,7 @@ pub struct InMemoryKekProvider {
 impl InMemoryKekProvider {
     /// Create a new in-memory KEK provider.
     pub fn new(kek_id: String) -> Result<Self> {
-        let kek = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let kek = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)?;
         let encryptor = AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, kek, kek_id.clone())?;
 
         Ok(Self { kek_id, encryptor })
@@ -215,7 +215,8 @@ mod tests {
         let provider =
             InMemoryKekProvider::new("test-kek".to_string()).expect("Failed to create provider");
 
-        let dek = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let dek = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encrypted_dek = provider.encrypt_dek(&dek).expect("Encryption failed");
 
         assert_ne!(encrypted_dek, dek);
@@ -275,7 +276,8 @@ mod tests {
             Some(Box::new(secondary)),
         );
 
-        let dek = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let dek = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encrypted_dek = multi.encrypt_dek(&dek).expect("Encryption failed");
 
         let decrypted_dek = multi

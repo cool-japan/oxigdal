@@ -323,17 +323,17 @@ impl PmTilesV2Reader {
 fn detect_tile_type_from_metadata(metadata_json: &str) -> TileType {
     // Use a minimal JSON parse via serde_json to extract the "format" field.
     // If serde_json is unavailable or the parse fails, default to Unknown.
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata_json) {
-        if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
-            return match format.to_ascii_lowercase().as_str() {
-                "png" => TileType::Png,
-                "jpg" | "jpeg" => TileType::Jpeg,
-                "webp" => TileType::Webp,
-                "avif" => TileType::Avif,
-                "pbf" | "mvt" => TileType::Mvt,
-                _ => TileType::Unknown,
-            };
-        }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata_json)
+        && let Some(format) = value.get("format").and_then(|v| v.as_str())
+    {
+        return match format.to_ascii_lowercase().as_str() {
+            "png" => TileType::Png,
+            "jpg" | "jpeg" => TileType::Jpeg,
+            "webp" => TileType::Webp,
+            "avif" => TileType::Avif,
+            "pbf" | "mvt" => TileType::Mvt,
+            _ => TileType::Unknown,
+        };
     }
     TileType::Unknown
 }

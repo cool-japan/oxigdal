@@ -130,6 +130,17 @@ impl From<oxigdal_algorithms::error::AlgorithmError> for NodeError {
                 "PATH_NOT_FOUND".to_string(),
                 format!("Path not found: {}", msg),
             ),
+            oxigdal_algorithms::error::AlgorithmError::NestingTooDeep {
+                context,
+                depth,
+                max,
+            } => (
+                "NESTING_TOO_DEEP".to_string(),
+                format!(
+                    "Expression nesting too deep in {}: depth {} exceeds the maximum of {}",
+                    context, depth, max
+                ),
+            ),
         };
 
         NodeError { message, code }

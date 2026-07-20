@@ -447,7 +447,9 @@ fn finish_staging_f32_read(
         .map_err(|_| GpuError::buffer_mapping("staging channel closed unexpectedly"))?
         .map_err(|e| GpuError::buffer_mapping(e.to_string()))?;
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .map_err(|e| GpuError::buffer_mapping(e.to_string()))?;
     let floats: &[f32] = bytemuck::cast_slice(&mapped[..count * 4]);
     let out = floats.to_vec();
     drop(mapped);

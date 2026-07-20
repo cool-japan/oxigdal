@@ -2,7 +2,7 @@
 
 > **Purpose:** wgpu 29 backed GPU acceleration for OxiGDAL raster ops — WGSL compute kernels (element-wise, resampling, convolution, statistics, FFT), pipelines, memory pool, multi-GPU primitives, backend-specific paths (CUDA/Vulkan/Metal stubs).
 > **Status (2026-05-16):** 13,242 LoC · 324 tests (hardware-gated GPU tests remain `#[ignore]`) · 5 real stubs (multi-GPU gather, CUDA workgroup memory, three Metal MPS shaders, Vulkan future-support stubs).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Lanczos resampling with configurable window size (completed 2026-05-16)

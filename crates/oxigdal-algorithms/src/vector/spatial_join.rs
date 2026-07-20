@@ -2,7 +2,7 @@
 //!
 //! Efficient spatial joins using R-tree and other spatial indices.
 
-use crate::error::Result;
+use crate::error::{AlgorithmError, Result};
 use oxigdal_core::vector::Point;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
@@ -86,6 +86,12 @@ impl PointDistance for IndexedPoint {
 ///
 /// Join result with matching pairs
 ///
+/// # Errors
+///
+/// Returns [`AlgorithmError::UnsupportedOperation`] if `options.predicate` is
+/// `Contains`, `Within`, or `Touches` — only `Intersects` and `WithinDistance`
+/// are meaningful for point-only joins.
+///
 /// # Examples
 ///
 /// ```
@@ -120,6 +126,24 @@ pub fn spatial_join_points(
     right_points: &[Point],
     options: &SpatialJoinOptions,
 ) -> Result<SpatialJoinResult> {
+    // Only `Intersects` and `WithinDistance` are meaningful for point-only
+    // joins. Previously the other predicates silently produced zero matches
+    // (indistinguishable from a legitimate "no matches" result), masking
+    // predicate misconfiguration. Reject them explicitly instead.
+    match options.predicate {
+        SpatialJoinPredicate::Intersects | SpatialJoinPredicate::WithinDistance => {}
+        SpatialJoinPredicate::Contains
+        | SpatialJoinPredicate::Within
+        | SpatialJoinPredicate::Touches => {
+            return Err(AlgorithmError::UnsupportedOperation {
+                operation: format!(
+                    "{:?} predicate on point geometries (only Intersects and WithinDistance are supported)",
+                    options.predicate
+                ),
+            });
+        }
+    }
+
     if left_points.is_empty() || right_points.is_empty() {
         return Ok(SpatialJoinResult {
             matches: Vec::new(),
@@ -374,5 +398,55 @@ mod tests {
 
         let dist = point_distance(&p1, &p2);
         assert!((dist - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_unsupported_predicates_error_not_silent_empty() {
+        let left = vec![Point::new(0.0, 0.0), Point::new(1.0, 1.0)];
+        let right = vec![Point::new(0.0, 0.0), Point::new(2.0, 2.0)];
+
+        for predicate in [
+            SpatialJoinPredicate::Contains,
+            SpatialJoinPredicate::Within,
+            SpatialJoinPredicate::Touches,
+        ] {
+            for use_index in [true, false] {
+                let options = SpatialJoinOptions {
+                    predicate,
+                    distance: 0.0,
+                    use_index,
+                };
+                let result = spatial_join_points(&left, &right, &options);
+                assert!(
+                    matches!(result, Err(AlgorithmError::UnsupportedOperation { .. })),
+                    "predicate {predicate:?} (use_index={use_index}) must return \
+                     UnsupportedOperation, got {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_supported_predicates_still_ok() {
+        let left = vec![Point::new(0.0, 0.0)];
+        let right = vec![Point::new(0.0, 0.0)];
+
+        for predicate in [
+            SpatialJoinPredicate::Intersects,
+            SpatialJoinPredicate::WithinDistance,
+        ] {
+            for use_index in [true, false] {
+                let options = SpatialJoinOptions {
+                    predicate,
+                    distance: 1.0,
+                    use_index,
+                };
+                let result = spatial_join_points(&left, &right, &options);
+                assert!(
+                    result.is_ok(),
+                    "predicate {predicate:?} (use_index={use_index}) must succeed"
+                );
+            }
+        }
     }
 }

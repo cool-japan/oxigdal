@@ -554,7 +554,10 @@ mod tests {
         let val = r.get_pixel(0, 0).expect("Should get pixel");
         assert!((val - 10.0).abs() < f64::EPSILON);
 
-        // x * 0 = 0
+        // x * 0: evaluates to 0 for finite inputs, but is deliberately NOT
+        // algebraically folded to a constant `0` by the optimizer — see
+        // `test_optimizer_mul_zero_does_not_fold_nodata_to_zero` below for why
+        // (NaN/Inf * 0 must stay NaN, not become a false constant 0.0).
         let result = RasterCalculator::evaluate("B1 * 0", &[b1.clone()]);
         assert!(result.is_ok());
         let r = result.expect("Should succeed");
@@ -567,6 +570,32 @@ mod tests {
         let r = result.expect("Should succeed");
         let val = r.get_pixel(0, 0).expect("Should get pixel");
         assert!((val - 10.0).abs() < f64::EPSILON);
+    }
+
+    /// Regression test: the `x * 0` algebraic simplification rule must NOT
+    /// fold unconditionally, because `NaN * 0.0 == NaN` and `Inf * 0.0 == NaN`
+    /// under IEEE-754 (not `0.0`). This evaluator emits `f64::NAN` as a
+    /// NoData sentinel for division by a near-zero band, so an expression
+    /// like `(B1 / B2) * 0` must preserve that NaN rather than silently
+    /// collapsing to a false constant `0.0`.
+    #[test]
+    fn test_optimizer_mul_zero_does_not_fold_nodata_to_zero() {
+        let mut b1 = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let mut b2 = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        b1.set_pixel(0, 0, 1.0).ok();
+        b2.set_pixel(0, 0, 0.0).ok(); // B2 = 0 => B1 / B2 is NoData (NaN)
+
+        // Both operand orders must preserve NaN.
+        for expr in ["(B1 / B2) * 0", "0 * (B1 / B2)"] {
+            let result = RasterCalculator::evaluate(expr, &[b1.clone(), b2.clone()]);
+            assert!(result.is_ok(), "evaluation failed for {expr}");
+            let r = result.expect("Should succeed");
+            let val = r.get_pixel(0, 0).expect("Should get pixel");
+            assert!(
+                val.is_nan(),
+                "expected NoData (NaN) to survive `{expr}`, got {val} instead"
+            );
+        }
     }
 
     #[test]
@@ -696,6 +725,88 @@ mod tests {
                     val
                 );
             }
+        }
+    }
+
+    // ===================================================================
+    // Nesting-depth limit
+    //
+    // This parser is recursive descent, so before the depth guard a deeply
+    // nested expression aborted the process with a stack overflow. The same
+    // class of bug exists in the sibling `dsl` front-end and is fixed there
+    // too; both share `crate::MAX_EXPRESSION_DEPTH`.
+    // ===================================================================
+
+    fn calc_nested_parens(depth: usize) -> std::string::String {
+        let mut expr = std::string::String::from("B1");
+        for _ in 0..depth {
+            expr = std::format!("({expr} + 1)");
+        }
+        expr
+    }
+
+    #[test]
+    fn test_calculator_accepts_expression_at_the_depth_limit() {
+        let band = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let expr = calc_nested_parens(crate::MAX_EXPRESSION_DEPTH);
+        let result = RasterCalculator::evaluate(&expr, &[band]);
+        assert!(
+            result.is_ok(),
+            "an expression exactly at the limit must still evaluate"
+        );
+    }
+
+    #[test]
+    fn test_calculator_rejects_one_level_past_the_depth_limit() {
+        let band = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let expr = calc_nested_parens(crate::MAX_EXPRESSION_DEPTH + 1);
+        let err = RasterCalculator::evaluate(&expr, &[band])
+            .expect_err("one level past the limit must be rejected");
+        assert!(
+            matches!(err, AlgorithmError::NestingTooDeep { max, .. }
+                     if max == crate::MAX_EXPRESSION_DEPTH),
+            "expected NestingTooDeep, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_calculator_rejects_deep_nesting_without_overflowing() {
+        let band = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let err = RasterCalculator::evaluate(&calc_nested_parens(5000), &[band])
+            .expect_err("deep nesting must be rejected");
+        assert!(matches!(err, AlgorithmError::NestingTooDeep { .. }));
+        assert!(
+            err.to_string()
+                .contains(&crate::MAX_EXPRESSION_DEPTH.to_string())
+        );
+    }
+
+    #[test]
+    fn test_calculator_rejects_deep_unary_chain_without_overflowing() {
+        let band = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let mut expr = "-".repeat(20000);
+        expr.push_str("B1");
+        let err = RasterCalculator::evaluate(&expr, &[band])
+            .expect_err("deep unary chain must be rejected");
+        assert!(matches!(err, AlgorithmError::NestingTooDeep { .. }));
+    }
+
+    #[test]
+    fn test_calculator_depth_limit_allows_realistic_expressions() {
+        let bands = [
+            RasterBuffer::zeros(2, 2, RasterDataType::Float32),
+            RasterBuffer::zeros(2, 2, RasterDataType::Float32),
+        ];
+        for case in [
+            "(B1 - B2) / (B1 + B2)",
+            "sqrt(B1 * B1 + B2 * B2)",
+            "if B1 > 0 then B1 * 2 else B1",
+            "-B1 + -B2",
+        ] {
+            assert!(
+                RasterCalculator::evaluate(case, &bands).is_ok(),
+                "should evaluate: {case}"
+            );
         }
     }
 }

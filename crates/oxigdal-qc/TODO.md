@@ -2,7 +2,7 @@
 
 > **Purpose:** Quality control and validation suite for OxiGDAL — comprehensive data integrity checks for geospatial data.
 > **Status (2026-05-16):** 6,849 Rust LoC · 89 tests · 0 real stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

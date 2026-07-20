@@ -278,8 +278,19 @@ impl<T: Pod> GpuBuffer<T> {
             .map_err(|e| GpuError::buffer_mapping(Self::map_error_to_string(e)))?;
 
         // Read the data
-        let data = buffer_slice.get_mapped_range();
-        let result: Vec<T> = bytemuck::cast_slice(&data).to_vec();
+        let data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| GpuError::buffer_mapping(e.to_string()))?;
+        let mut result: Vec<T> = bytemuck::cast_slice(&data).to_vec();
+
+        // The GPU buffer byte size is rounded up to COPY_BUFFER_ALIGNMENT in
+        // `calculate_size`, so for element types whose size does not evenly
+        // divide the alignment (e.g. `u8` with a non-multiple-of-4 length, or
+        // `u16`/`f16` with an odd length) the mapped range spans additional
+        // padding bytes. Truncate to the logical element count so the returned
+        // Vec upholds the documented `result.len() == self.len` contract and
+        // never leaks padding as bogus values.
+        result.truncate(self.len);
 
         // Unmap the buffer
         drop(data);
@@ -617,6 +628,56 @@ mod tests {
             for (a, b) in result.iter().zip(data.iter()) {
                 assert!((a - b).abs() < 1e-6);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_truncates_u8_padding() {
+        // `u8` with a length that is not a multiple of COPY_BUFFER_ALIGNMENT (4)
+        // forces the aligned GPU allocation to be larger than the logical size
+        // (len 5 -> 8 bytes). read() must return exactly `len` elements, not the
+        // padded byte count. We write an *aligned* 8-byte payload directly into
+        // the underlying buffer because `GpuBuffer::write` would reject a 5-byte
+        // copy under COPY_BUFFER_ALIGNMENT — the last 3 bytes are padding that
+        // read() must NOT surface.
+        if let Ok(context) = GpuContext::new().await {
+            let staging: GpuBuffer<u8> = GpuBuffer::staging(&context, 5).unwrap_or_else(|e| {
+                panic!("Failed to create staging buffer: {}", e);
+            });
+            let padded: [u8; 8] = [1, 2, 3, 4, 5, 0xAA, 0xBB, 0xCC];
+            context.queue().write_buffer(&staging.buffer, 0, &padded);
+
+            let result = staging
+                .read()
+                .await
+                .unwrap_or_else(|e| panic!("Failed to read buffer: {}", e));
+
+            assert_eq!(result.len(), 5, "read() must not return padding");
+            assert_eq!(result, vec![1, 2, 3, 4, 5]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_truncates_u16_padding() {
+        // `u16` with an odd length: 3 * 2 = 6 bytes -> aligned up to 8 bytes,
+        // which would decode as 4 elements without truncation. The trailing
+        // u16 is padding that read() must drop.
+        if let Ok(context) = GpuContext::new().await {
+            let staging: GpuBuffer<u16> = GpuBuffer::staging(&context, 3).unwrap_or_else(|e| {
+                panic!("Failed to create staging buffer: {}", e);
+            });
+            let padded: [u16; 4] = [100, 200, 300, 0xFFFF];
+            context
+                .queue()
+                .write_buffer(&staging.buffer, 0, bytemuck::cast_slice(&padded));
+
+            let result = staging
+                .read()
+                .await
+                .unwrap_or_else(|e| panic!("Failed to read buffer: {}", e));
+
+            assert_eq!(result.len(), 3, "read() must not return padding");
+            assert_eq!(result, vec![100, 200, 300]);
         }
     }
 

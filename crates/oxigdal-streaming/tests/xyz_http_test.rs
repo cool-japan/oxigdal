@@ -4,6 +4,7 @@
 //! enough HTTP/1.1 to exercise the protocol implementation.
 
 #![cfg(feature = "tile-http")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use oxigdal_streaming::error::StreamingError;
 use oxigdal_streaming::tile::protocol::{

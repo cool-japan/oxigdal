@@ -68,3 +68,17 @@ wasm-bindgen-test.workspace = true
 
 [lints]
 workspace = true
+
+# `all-features = true` enables `native` (oxisql-core/oxisql-sqlite-compat,
+# pure-Rust, no rusqlite/libsqlite3), `wasm` (wasm-bindgen/js-sys/web-sys —
+# these compile as inert stubs off the wasm32 target, they are not
+# wasm32-gated in their own Cargo.toml) and `serde` together. Verified
+# 2026-07-17 with `cargo doc -p oxigdal-offline --no-deps --target
+# x86_64-unknown-linux-gnu --all-features` (docs.rs's default target) —
+# builds clean, no non-Linux/FFI deps resolved. (Unrelated pre-existing
+# rustdoc private-intra-doc-link warnings in src/conflict.rs and
+# src/history.rs were observed but do not fail the docs.rs build; out of
+# scope for this docs.rs-metadata lane — flagged for the owning lane.)
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

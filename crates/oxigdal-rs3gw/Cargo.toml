@@ -13,14 +13,14 @@ categories = ["science", "filesystem"]
 
 [features]
 default = ["local"]
-local = []
-s3 = []
+local = ["rs3gw/local"]
+s3 = ["rs3gw/s3"]
 minio = ["s3"]
-gcs = []
-azure = []
+gcs = ["rs3gw/gcs"]
+azure = ["rs3gw/azure"]
 all-backends = ["local", "s3", "gcs", "azure"]
 dedup = []
-encryption = ["getrandom", "hmac", "sha2"]
+encryption = ["getrandom", "hmac", "sha2", "aes-gcm", "chacha20poly1305"]
 ml-cache = []
 zarr = ["oxigdal-zarr"]
 async = ["oxigdal-core/async", "async-trait", "oxigdal-zarr?/async"]
@@ -59,6 +59,8 @@ serde_json = { workspace = true }
 getrandom = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -68,6 +70,14 @@ criterion = { workspace = true }
 
 [lints]
 workspace = true
+
+# NOTE: `s3`/`minio` (ring, aws-lc-sys), `gcs` (aws-lc-sys) and `azure`
+# (aws-lc-sys, native-tls) all pull non-Pure-Rust TLS/crypto backends via
+# rs3gw's cloud backends. `local`, `dedup`, `encryption`, `ml-cache`, `zarr`
+# and `async` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["local", "dedup", "encryption", "ml-cache", "zarr", "async"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [[bench]]
 name = "datasource_benchmarks"

@@ -299,10 +299,10 @@ fn test_wfs_state_with_geojson_features() {
     let retrieved = state.get_feature_type("cities");
     assert!(retrieved.is_some());
 
-    if let Some(ft) = retrieved {
-        if let FeatureSource::Memory(features) = ft.source {
-            assert_eq!(features.len(), 1);
-        }
+    if let Some(ft) = retrieved
+        && let FeatureSource::Memory(features) = ft.source
+    {
+        assert_eq!(features.len(), 1);
     }
 }
 

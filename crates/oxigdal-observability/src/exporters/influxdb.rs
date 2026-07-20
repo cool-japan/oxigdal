@@ -9,6 +9,7 @@ pub struct InfluxDbExporter {
     endpoint: String,
     #[allow(dead_code)]
     database: String,
+    #[cfg(feature = "http-exporter")]
     #[allow(dead_code)]
     client: reqwest::Client,
 }
@@ -19,6 +20,7 @@ impl InfluxDbExporter {
         Self {
             endpoint,
             database,
+            #[cfg(feature = "http-exporter")]
             client: reqwest::Client::new(),
         }
     }

@@ -118,6 +118,12 @@ struct ScheduledTask {
     state: RwLock<TaskState>,
     last_run: RwLock<Option<std::time::Instant>>,
     retries: RwLock<usize>,
+    /// Wall-clock creation time, used as the anchor for the first cron evaluation.
+    #[cfg(feature = "scheduler")]
+    created_at: chrono::DateTime<chrono::Utc>,
+    /// Wall-clock time of the last cron-triggered fire, used to decide the next due time.
+    #[cfg(feature = "scheduler")]
+    last_cron_fire: RwLock<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 impl ScheduledTask {
@@ -128,6 +134,10 @@ impl ScheduledTask {
             state: RwLock::new(TaskState::Idle),
             last_run: RwLock::new(None),
             retries: RwLock::new(0),
+            #[cfg(feature = "scheduler")]
+            created_at: chrono::Utc::now(),
+            #[cfg(feature = "scheduler")]
+            last_cron_fire: RwLock::new(None),
         }
     }
 
@@ -155,25 +165,20 @@ impl ScheduledTask {
             .into());
         }
 
+        // Fail fast on misconfiguration rather than burning the whole retry budget on a task
+        // that can never succeed.
+        if self.pipeline.read().await.is_none() {
+            return Err(SchedulerError::ExecutionFailed {
+                message: "No pipeline configured".to_string(),
+            }
+            .into());
+        }
+
         *self.state.write().await = TaskState::Running;
         let start = std::time::Instant::now();
         let mut retries = 0;
 
         loop {
-            // Clone pipeline for execution (we need to move it)
-            let pipeline_guard = self.pipeline.read().await;
-            let _pipeline =
-                pipeline_guard
-                    .as_ref()
-                    .ok_or_else(|| SchedulerError::ExecutionFailed {
-                        message: "No pipeline configured".to_string(),
-                    })?;
-
-            // Note: We can't actually run the pipeline here because it consumes self
-            // In a real implementation, we'd need to restructure Pipeline to be reusable
-            // For now, we'll simulate execution
-            drop(pipeline_guard);
-
             match self.execute_with_timeout().await {
                 Ok(_) => {
                     *self.state.write().await = TaskState::Completed;
@@ -214,12 +219,54 @@ impl ScheduledTask {
         }
     }
 
+    /// Actually execute the configured pipeline, honoring `config.timeout`.
+    ///
+    /// The pipeline is run in place through [`Pipeline::run_ref`] (no `self`-consuming clone
+    /// needed), and its real `Result` is propagated so a failing pipeline surfaces as a failed
+    /// task rather than a fabricated success. When a timeout is configured, exceeding it maps to
+    /// a [`SchedulerError::ExecutionFailed`] that feeds the retry loop.
     async fn execute_with_timeout(&self) -> Result<()> {
-        // Simulate execution
-        // In real implementation, run pipeline here
-        sleep(Duration::from_millis(100)).await;
-        Ok(())
+        let pipeline_guard = self.pipeline.read().await;
+        let pipeline = pipeline_guard
+            .as_ref()
+            .ok_or_else(|| SchedulerError::ExecutionFailed {
+                message: "No pipeline configured".to_string(),
+            })?;
+
+        match self.config.timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, pipeline.run_ref()).await {
+                Ok(result) => {
+                    result?;
+                    Ok(())
+                }
+                Err(_) => Err(SchedulerError::ExecutionFailed {
+                    message: format!("Pipeline execution timed out after {:?}", timeout),
+                }
+                .into()),
+            },
+            None => {
+                pipeline.run_ref().await?;
+                Ok(())
+            }
+        }
     }
+}
+
+/// Returns `true` if a cron `schedule` has a firing instant in the window `(anchor, now]`.
+///
+/// The next occurrence strictly after `anchor` is computed; the task is due when that instant is
+/// at or before `now`. Anchoring on the last fire (or task creation) guarantees each scheduled
+/// instant is triggered exactly once regardless of the poll cadence.
+#[cfg(feature = "scheduler")]
+fn cron_is_due(
+    schedule: &cron::Schedule,
+    anchor: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    schedule
+        .after(&anchor)
+        .next()
+        .is_some_and(|next| next <= now)
 }
 
 /// ETL Scheduler
@@ -375,10 +422,76 @@ impl Scheduler {
             let mut rx = event_rx.write().await;
 
             while *running.read().await {
-                if let Some(task_id) = rx.recv().await {
-                    if let Some(entry) = tasks.get(&task_id) {
-                        let task = Arc::clone(entry.value());
+                if let Some(task_id) = rx.recv().await
+                    && let Some(entry) = tasks.get(&task_id)
+                {
+                    let task = Arc::clone(entry.value());
 
+                    tokio::spawn(async move {
+                        match task.execute().await {
+                            Ok(result) => {
+                                if result.success {
+                                    info!("Task '{}' completed successfully", result.task_id);
+                                } else {
+                                    error!("Task '{}' failed: {:?}", result.task_id, result.error);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Task execution error: {}", e);
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /// Start cron-based scheduler
+    #[cfg(feature = "scheduler")]
+    async fn start_cron_scheduler(&self) {
+        use std::str::FromStr;
+
+        let tasks = Arc::clone(&self.tasks);
+        let running = Arc::clone(&self.running);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60)); // Check every minute
+
+            while *running.read().await {
+                interval.tick().await;
+
+                for entry in tasks.iter() {
+                    let task = entry.value();
+
+                    let Schedule::Cron(expr) = &task.config.schedule else {
+                        continue;
+                    };
+
+                    // Parse the cron expression. An invalid expression is logged and skipped
+                    // rather than aborting the whole cron loop for every task.
+                    let schedule = match cron::Schedule::from_str(expr) {
+                        Ok(schedule) => schedule,
+                        Err(e) => {
+                            error!("Invalid cron expression '{}': {}", expr, e);
+                            continue;
+                        }
+                    };
+
+                    let now = chrono::Utc::now();
+                    // Anchor the "next occurrence" search at the last fire (or task creation
+                    // for the first evaluation) so each scheduled instant fires exactly once.
+                    let anchor = task.last_cron_fire.read().await.unwrap_or(task.created_at);
+                    let due = cron_is_due(&schedule, anchor, now);
+
+                    debug!(
+                        "Cron task '{}' expr='{}' anchor={} due={}",
+                        task.config.name, expr, anchor, due
+                    );
+
+                    if due && task.can_run().await {
+                        *task.last_cron_fire.write().await = Some(now);
+
+                        let task = Arc::clone(task);
                         tokio::spawn(async move {
                             match task.execute().await {
                                 Ok(result) => {
@@ -396,31 +509,6 @@ impl Scheduler {
                                 }
                             }
                         });
-                    }
-                }
-            }
-        });
-    }
-
-    /// Start cron-based scheduler
-    #[cfg(feature = "scheduler")]
-    async fn start_cron_scheduler(&self) {
-        let tasks = Arc::clone(&self.tasks);
-        let running = Arc::clone(&self.running);
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60)); // Check every minute
-
-            while *running.read().await {
-                interval.tick().await;
-
-                for entry in tasks.iter() {
-                    let task = entry.value();
-
-                    if let Schedule::Cron(expr) = &task.config.schedule {
-                        // In real implementation, parse cron expression and check if should run
-                        // For now, just log
-                        debug!("Checking cron task: {}", expr);
                     }
                 }
             }
@@ -475,5 +563,185 @@ mod tests {
         scheduler.stop().await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!scheduler.is_running().await);
+    }
+
+    // --- Real-pipeline execution regression tests -------------------------------------------
+
+    use crate::sink::FileSink;
+    use crate::source::{FileSource, Source};
+    use crate::stream::{BoxStream, StreamItem};
+    use std::io::Write;
+
+    fn unique_temp_path(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("oxigdal-etl-sched-{}-{}", tag, nanos))
+    }
+
+    #[tokio::test]
+    async fn test_execute_reports_success_for_valid_pipeline() {
+        // A well-formed pipeline over an existing input file must report success:true and
+        // actually move the bytes to the sink (proving the pipeline really ran).
+        let input_path = unique_temp_path("ok-in");
+        let output_path = unique_temp_path("ok-out");
+        {
+            let mut f = std::fs::File::create(&input_path).expect("create input");
+            f.write_all(b"hello etl scheduler").expect("write input");
+        }
+
+        let pipeline = Pipeline::builder()
+            .source(Box::new(FileSource::new(input_path.clone())))
+            .sink(Box::new(FileSink::new(output_path.clone())))
+            .build()
+            .expect("build pipeline");
+
+        let config = TaskConfig::new("ok".to_string(), "OK Task".to_string(), Schedule::Once);
+        let task = ScheduledTask::new(config);
+        task.set_pipeline(pipeline).await;
+
+        let result = task.execute().await.expect("execute returns Ok");
+        assert!(result.success, "valid pipeline should report success");
+        assert!(result.error.is_none());
+
+        let written = std::fs::read(&output_path).expect("read output");
+        assert_eq!(written, b"hello etl scheduler");
+
+        let _ = std::fs::remove_file(&input_path);
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[tokio::test]
+    async fn test_execute_reports_failure_when_pipeline_errors() {
+        // Source file does not exist -> Pipeline::run_ref returns Err -> the task must report
+        // success:false (NOT a fabricated success), after exhausting retries.
+        let missing_input = unique_temp_path("missing-in");
+        let output_path = unique_temp_path("fail-out");
+
+        let pipeline = Pipeline::builder()
+            .source(Box::new(FileSource::new(missing_input)))
+            .sink(Box::new(FileSink::new(output_path.clone())))
+            .build()
+            .expect("build pipeline");
+
+        let config = TaskConfig::new("fail".to_string(), "Fail Task".to_string(), Schedule::Once)
+            .max_retries(2)
+            .retry_backoff(Duration::from_millis(1));
+        let task = ScheduledTask::new(config);
+        task.set_pipeline(pipeline).await;
+
+        let result = task
+            .execute()
+            .await
+            .expect("execute returns Ok(TaskResult)");
+        assert!(
+            !result.success,
+            "a failing pipeline must report success:false"
+        );
+        assert!(
+            result.error.is_some(),
+            "failure must carry an error message"
+        );
+        assert_eq!(result.retries, 2, "should have exhausted the retry budget");
+
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[tokio::test]
+    async fn test_execute_without_pipeline_errors() {
+        // No pipeline configured -> execute must surface an error, never a success.
+        let config = TaskConfig::new("nopipe".to_string(), "No Pipe".to_string(), Schedule::Once);
+        let task = ScheduledTask::new(config);
+        let result = task.execute().await;
+        assert!(result.is_err(), "missing pipeline must be an error");
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn test_cron_is_due() {
+        use std::str::FromStr;
+
+        // Every day at 00:00.
+        let schedule = cron::Schedule::from_str("0 0 0 * * * *").expect("valid cron");
+
+        let anchor = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("anchor")
+            .with_timezone(&chrono::Utc);
+
+        // `now` still on the same day before the next midnight -> not due yet.
+        let before = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+            .expect("before")
+            .with_timezone(&chrono::Utc);
+        assert!(
+            !cron_is_due(&schedule, anchor, before),
+            "no midnight has elapsed since anchor"
+        );
+
+        // `now` past the next midnight -> due.
+        let after = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:01Z")
+            .expect("after")
+            .with_timezone(&chrono::Utc);
+        assert!(
+            cron_is_due(&schedule, anchor, after),
+            "the 2026-01-02 midnight occurrence is due"
+        );
+    }
+
+    /// A source that blocks far longer than the task timeout, to exercise timeout handling.
+    struct SlowSource;
+
+    #[async_trait::async_trait]
+    impl Source for SlowSource {
+        async fn stream(&self) -> Result<BoxStream<StreamItem>> {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        fn name(&self) -> &str {
+            "SlowSource"
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_honors_timeout() {
+        // The pipeline would take 30s; a 50ms timeout must abort it and, after retries, report
+        // failure with a timeout error rather than hanging or fabricating success.
+        let output_path = unique_temp_path("timeout-out");
+
+        let pipeline = Pipeline::builder()
+            .source(Box::new(SlowSource))
+            .sink(Box::new(FileSink::new(output_path.clone())))
+            .build()
+            .expect("build pipeline");
+
+        let config = TaskConfig::new(
+            "timeout".to_string(),
+            "Timeout Task".to_string(),
+            Schedule::Once,
+        )
+        .max_retries(2)
+        .retry_backoff(Duration::from_millis(1))
+        .timeout(Duration::from_millis(50));
+        let task = ScheduledTask::new(config);
+        task.set_pipeline(pipeline).await;
+
+        let result = task
+            .execute()
+            .await
+            .expect("execute returns Ok(TaskResult)");
+        assert!(!result.success, "timed-out pipeline must report failure");
+        let error = result.error.expect("timeout must carry an error");
+        assert!(
+            error.contains("timed out"),
+            "error should mention the timeout, got: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(&output_path);
     }
 }

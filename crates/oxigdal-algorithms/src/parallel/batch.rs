@@ -160,7 +160,7 @@ impl BatchProgress {
 
     /// Logs progress
     fn log_progress(&self, current: usize) {
-        if current % 10 == 0 || current == self.total {
+        if current.is_multiple_of(10) || current == self.total {
             let percent = (current * 100) / self.total;
             let succeeded = self.succeeded.load(Ordering::Relaxed);
             let failed = self.failed.load(Ordering::Relaxed);

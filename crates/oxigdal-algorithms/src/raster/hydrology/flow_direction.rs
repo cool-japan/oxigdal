@@ -150,7 +150,7 @@ impl D8Direction {
 /// Returns the distance factor for a D8 neighbour index (1.0 cardinal, sqrt(2) diagonal)
 #[inline]
 fn d8_distance(idx: usize) -> f64 {
-    if idx % 2 == 0 {
+    if idx.is_multiple_of(2) {
         1.0
     } else {
         std::f64::consts::SQRT_2

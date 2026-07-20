@@ -51,7 +51,7 @@ impl CountMinSketch {
     fn get_cell(&self, row: usize, col: usize) -> u8 {
         let idx = self.linear_idx(row, col);
         let byte = self.counters[idx / 2];
-        if idx % 2 == 0 {
+        if idx.is_multiple_of(2) {
             byte & 0x0F
         } else {
             (byte >> 4) & 0x0F
@@ -63,7 +63,7 @@ impl CountMinSketch {
     fn set_cell(&mut self, row: usize, col: usize, val: u8) {
         let idx = self.linear_idx(row, col);
         let clamped = val.min(15);
-        if idx % 2 == 0 {
+        if idx.is_multiple_of(2) {
             self.counters[idx / 2] = (self.counters[idx / 2] & 0xF0) | clamped;
         } else {
             self.counters[idx / 2] = (self.counters[idx / 2] & 0x0F) | (clamped << 4);

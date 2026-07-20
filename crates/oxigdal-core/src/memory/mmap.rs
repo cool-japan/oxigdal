@@ -516,7 +516,7 @@ impl MemoryMap {
     pub fn as_typed_slice<T: bytemuck::Pod>(&self) -> Result<&[T]> {
         self.record_access();
 
-        if self.len % std::mem::size_of::<T>() != 0 {
+        if !self.len.is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Mapping size not aligned to type size".to_string(),
@@ -539,7 +539,7 @@ impl MemoryMap {
 
         self.record_access();
 
-        if self.len % std::mem::size_of::<T>() != 0 {
+        if !self.len.is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Mapping size not aligned to type size".to_string(),

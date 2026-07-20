@@ -99,46 +99,46 @@ impl CfMetadata {
     pub fn from_attributes(attrs: &Attributes) -> Self {
         let mut cf = Self::new();
 
-        if let Some(value) = attrs.get_value("Conventions") {
-            if let Ok(s) = value.as_text() {
-                cf.conventions = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("Conventions")
+            && let Ok(s) = value.as_text()
+        {
+            cf.conventions = Some(s.to_string());
         }
 
-        if let Some(value) = attrs.get_value("title") {
-            if let Ok(s) = value.as_text() {
-                cf.title = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("title")
+            && let Ok(s) = value.as_text()
+        {
+            cf.title = Some(s.to_string());
         }
 
-        if let Some(value) = attrs.get_value("institution") {
-            if let Ok(s) = value.as_text() {
-                cf.institution = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("institution")
+            && let Ok(s) = value.as_text()
+        {
+            cf.institution = Some(s.to_string());
         }
 
-        if let Some(value) = attrs.get_value("source") {
-            if let Ok(s) = value.as_text() {
-                cf.source = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("source")
+            && let Ok(s) = value.as_text()
+        {
+            cf.source = Some(s.to_string());
         }
 
-        if let Some(value) = attrs.get_value("history") {
-            if let Ok(s) = value.as_text() {
-                cf.history = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("history")
+            && let Ok(s) = value.as_text()
+        {
+            cf.history = Some(s.to_string());
         }
 
-        if let Some(value) = attrs.get_value("references") {
-            if let Ok(s) = value.as_text() {
-                cf.references = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("references")
+            && let Ok(s) = value.as_text()
+        {
+            cf.references = Some(s.to_string());
         }
 
-        if let Some(value) = attrs.get_value("comment") {
-            if let Ok(s) = value.as_text() {
-                cf.comment = Some(s.to_string());
-            }
+        if let Some(value) = attrs.get_value("comment")
+            && let Ok(s) = value.as_text()
+        {
+            cf.comment = Some(s.to_string());
         }
 
         cf

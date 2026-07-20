@@ -27,8 +27,8 @@
 //! const stats = band.statistics();
 //! console.log(`Mean: ${stats.mean}, StdDev: ${stats.stddev}`);
 //!
-//! // Compute hillshade
-//! const hillshade = oxigdal.hillshade(band, 315, 45, 1.0);
+//! // Compute hillshade (pixel_size is the DEM's ground resolution, e.g. meters)
+//! const hillshade = oxigdal.hillshade(band, 315, 45, 1.0, 30.0);
 //!
 //! // Save result
 //! const output = oxigdal.createRaster(dataset.width, dataset.height, 1, 'uint8');
@@ -44,7 +44,7 @@
 //! async function processRaster() {
 //!   const dataset = await oxigdal.openRasterAsync('input.tif');
 //!   const band = dataset.readBand(0);
-//!   const slope = await oxigdal.slopeAsync(band, 1.0, false);
+//!   const slope = await oxigdal.slopeAsync(band, 30.0, 1.0, false);
 //!
 //!   const output = oxigdal.createRaster(dataset.width, dataset.height, 1, 'float32');
 //!   output.writeBand(0, slope);

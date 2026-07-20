@@ -1498,14 +1498,32 @@ mod tests {
 
     #[tokio::test]
     async fn test_compute_pipeline() {
+        // Only the GPU-context creation is treated as an environment guard; once
+        // a context exists every fallible step must succeed and the computed
+        // values are asserted, so the test can actually fail if add/multiply
+        // produce wrong results.
         if let Ok(context) = GpuContext::new().await {
             let data: Vec<f32> = (0..100).map(|i| i as f32).collect();
 
-            if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 10, 10) {
-                if let Ok(result) = pipeline.add(5.0).and_then(|p| p.multiply(2.0)) {
-                    // Pipeline executed successfully
-                    let _ = result.finish();
-                }
+            let pipeline = ComputePipeline::from_data(&context, &data, 10, 10)
+                .expect("pipeline creation must succeed with a valid GPU context");
+            let result = pipeline
+                .add(5.0)
+                .and_then(|p| p.multiply(2.0))
+                .expect("add/multiply chain must succeed");
+
+            let output = result
+                .read()
+                .await
+                .expect("reading the pipeline result back to the CPU must succeed");
+
+            assert_eq!(output.len(), data.len());
+            for (i, &value) in output.iter().enumerate() {
+                let expected = (i as f32 + 5.0) * 2.0;
+                assert!(
+                    (value - expected).abs() < 1e-3,
+                    "element {i}: expected (i + 5) * 2 = {expected}, got {value}"
+                );
             }
         }
     }
@@ -1516,16 +1534,15 @@ mod tests {
         if let Ok(context) = GpuContext::new().await {
             let data: Vec<f32> = vec![1.0; 64 * 64];
 
-            if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 64, 64) {
-                if let Ok(result) = pipeline
+            if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 64, 64)
+                && let Ok(result) = pipeline
                     .add(10.0)
                     .and_then(|p| p.multiply(2.0))
                     .and_then(|p| p.clamp(0.0, 100.0))
-                {
-                    let stats = result.statistics().await;
-                    if let Ok(stats) = stats {
-                        println!("Mean: {}", stats.mean());
-                    }
+            {
+                let stats = result.statistics().await;
+                if let Ok(stats) = stats {
+                    println!("Mean: {}", stats.mean());
                 }
             }
         }
@@ -1698,13 +1715,13 @@ mod tests {
 
             if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 2, 2) {
                 // Apply y = 2x + 10
-                if let Ok(result) = pipeline.linear_transform(2.0, 10.0) {
-                    if let Ok(output) = result.read_blocking() {
-                        assert!((output[0] - 12.0).abs() < 1e-4); // 2*1 + 10
-                        assert!((output[1] - 14.0).abs() < 1e-4); // 2*2 + 10
-                        assert!((output[2] - 16.0).abs() < 1e-4); // 2*3 + 10
-                        assert!((output[3] - 18.0).abs() < 1e-4); // 2*4 + 10
-                    }
+                if let Ok(result) = pipeline.linear_transform(2.0, 10.0)
+                    && let Ok(output) = result.read_blocking()
+                {
+                    assert!((output[0] - 12.0).abs() < 1e-4); // 2*1 + 10
+                    assert!((output[1] - 14.0).abs() < 1e-4); // 2*2 + 10
+                    assert!((output[2] - 16.0).abs() < 1e-4); // 2*3 + 10
+                    assert!((output[3] - 18.0).abs() < 1e-4); // 2*4 + 10
                 }
             }
         }
@@ -1719,13 +1736,13 @@ mod tests {
 
             if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 2, 2) {
                 // Normalize to [0, 1]
-                if let Ok(result) = pipeline.normalize_range(0.0, 100.0, 0.0, 1.0) {
-                    if let Ok(output) = result.read_blocking() {
-                        assert!(output[0].abs() < 1e-4); // 0 -> 0
-                        assert!((output[1] - 0.5).abs() < 1e-4); // 50 -> 0.5
-                        assert!((output[2] - 1.0).abs() < 1e-4); // 100 -> 1.0
-                        assert!((output[3] - 0.25).abs() < 1e-4); // 25 -> 0.25
-                    }
+                if let Ok(result) = pipeline.normalize_range(0.0, 100.0, 0.0, 1.0)
+                    && let Ok(output) = result.read_blocking()
+                {
+                    assert!(output[0].abs() < 1e-4); // 0 -> 0
+                    assert!((output[1] - 0.5).abs() < 1e-4); // 50 -> 0.5
+                    assert!((output[2] - 1.0).abs() < 1e-4); // 100 -> 1.0
+                    assert!((output[3] - 0.25).abs() < 1e-4); // 25 -> 0.25
                 }
             }
         }
@@ -1739,11 +1756,11 @@ mod tests {
 
             if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 2, 2) {
                 // Identity transform should be a no-op
-                if let Ok(result) = pipeline.scale_offset(1.0, 0.0) {
-                    if let Ok(output) = result.read_blocking() {
-                        for (i, &v) in output.iter().enumerate() {
-                            assert!((v - data[i]).abs() < 1e-6);
-                        }
+                if let Ok(result) = pipeline.scale_offset(1.0, 0.0)
+                    && let Ok(output) = result.read_blocking()
+                {
+                    for (i, &v) in output.iter().enumerate() {
+                        assert!((v - data[i]).abs() < 1e-6);
                     }
                 }
             }

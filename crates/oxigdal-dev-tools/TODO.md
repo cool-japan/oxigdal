@@ -2,7 +2,7 @@
 
 > **Purpose:** Developer utilities for OxiGDAL — file inspection, profiling, benchmarking, debugging, test data generation, validation.
 > **Status (2026-05-16):** 2,353 LoC · 43 tests · 1 real-code stub (GeoTIFF generator)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace `FileGenerator::generate_geotiff` stub with a real GeoTIFF writer

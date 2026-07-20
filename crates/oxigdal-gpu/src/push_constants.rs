@@ -134,14 +134,14 @@ impl PushConstantRange {
             )));
         }
 
-        if self.start % PUSH_CONSTANTS_ALIGNMENT != 0 {
+        if !self.start.is_multiple_of(PUSH_CONSTANTS_ALIGNMENT) {
             return Err(GpuError::invalid_kernel_params(format!(
                 "push-constant range start {} is not {}-byte aligned",
                 self.start, PUSH_CONSTANTS_ALIGNMENT
             )));
         }
 
-        if self.end % PUSH_CONSTANTS_ALIGNMENT != 0 {
+        if !self.end.is_multiple_of(PUSH_CONSTANTS_ALIGNMENT) {
             return Err(GpuError::invalid_kernel_params(format!(
                 "push-constant range end {} is not {}-byte aligned",
                 self.end, PUSH_CONSTANTS_ALIGNMENT
@@ -212,7 +212,7 @@ impl PushConstantsLayout {
     /// `total_size` exceeds [`MAX_PUSH_CONSTANTS_SIZE_BYTES`] or is not
     /// 4-byte aligned.
     pub fn validate(&self) -> GpuResult<()> {
-        if self.total_size % PUSH_CONSTANTS_ALIGNMENT != 0 {
+        if !self.total_size.is_multiple_of(PUSH_CONSTANTS_ALIGNMENT) {
             return Err(GpuError::invalid_kernel_params(format!(
                 "push-constants total_size {} is not {}-byte aligned",
                 self.total_size, PUSH_CONSTANTS_ALIGNMENT

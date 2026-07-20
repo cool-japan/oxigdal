@@ -5,7 +5,7 @@
 use oxigdal_core::error::Result;
 
 use crate::compression;
-use crate::tiff::{Compression, Predictor};
+use crate::tiff::{ByteOrderType, Compression, Predictor};
 
 /// Information about a tile
 #[derive(Debug, Clone)]
@@ -39,6 +39,8 @@ pub struct TileProcessor {
     compression: Compression,
     /// Predictor
     predictor: Predictor,
+    /// On-disk byte order (needed to correctly apply/reverse multi-byte-sample predictors)
+    byte_order: ByteOrderType,
 }
 
 impl TileProcessor {
@@ -53,6 +55,7 @@ impl TileProcessor {
         samples_per_pixel: usize,
         compression: Compression,
         predictor: Predictor,
+        byte_order: ByteOrderType,
     ) -> Self {
         Self {
             tile_width,
@@ -63,6 +66,7 @@ impl TileProcessor {
             samples_per_pixel,
             compression,
             predictor,
+            byte_order,
         }
     }
 
@@ -121,7 +125,8 @@ impl TileProcessor {
             self.bytes_per_sample,
             self.samples_per_pixel,
             self.tile_width as usize,
-        );
+            self.byte_order,
+        )?;
 
         // Compress
         let compressed = compression::compress(&tile_data, self.compression)?;
@@ -198,6 +203,8 @@ pub struct StripProcessor {
     compression: Compression,
     /// Predictor
     predictor: Predictor,
+    /// On-disk byte order (needed to correctly apply/reverse multi-byte-sample predictors)
+    byte_order: ByteOrderType,
 }
 
 impl StripProcessor {
@@ -211,6 +218,7 @@ impl StripProcessor {
         samples_per_pixel: usize,
         compression: Compression,
         predictor: Predictor,
+        byte_order: ByteOrderType,
     ) -> Self {
         Self {
             image_width,
@@ -220,6 +228,7 @@ impl StripProcessor {
             samples_per_pixel,
             compression,
             predictor,
+            byte_order,
         }
     }
 
@@ -255,7 +264,8 @@ impl StripProcessor {
             self.bytes_per_sample,
             self.samples_per_pixel,
             self.image_width as usize,
-        );
+            self.byte_order,
+        )?;
 
         // Compress
         compression::compress(&strip_data, self.compression)
@@ -292,6 +302,7 @@ mod tests {
             1,
             Compression::None,
             Predictor::None,
+            ByteOrderType::LittleEndian,
         );
 
         assert_eq!(processor.tiles_across(), 4);
@@ -310,6 +321,7 @@ mod tests {
             1,
             Compression::None,
             Predictor::None,
+            ByteOrderType::LittleEndian,
         );
 
         assert_eq!(processor.tiles_across(), 4); // ceil(1000/256) = 4
@@ -319,8 +331,16 @@ mod tests {
 
     #[test]
     fn test_strip_processor_dimensions() {
-        let processor =
-            StripProcessor::new(1024, 1024, 256, 1, 1, Compression::None, Predictor::None);
+        let processor = StripProcessor::new(
+            1024,
+            1024,
+            256,
+            1,
+            1,
+            Compression::None,
+            Predictor::None,
+            ByteOrderType::LittleEndian,
+        );
 
         assert_eq!(processor.strip_count(), 4); // 1024 / 256 = 4
     }
@@ -335,7 +355,17 @@ mod tests {
             13, 14, 15, 16, //
         ];
 
-        let processor = TileProcessor::new(2, 2, 4, 4, 1, 1, Compression::None, Predictor::None);
+        let processor = TileProcessor::new(
+            2,
+            2,
+            4,
+            4,
+            1,
+            1,
+            Compression::None,
+            Predictor::None,
+            ByteOrderType::LittleEndian,
+        );
 
         // Extract top-left tile
         let tile = processor.extract_tile(&data, 0, 0, 2, 2);

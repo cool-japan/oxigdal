@@ -20,7 +20,7 @@ fn benchmark_normalization(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let _ = normalize(black_box(&buffer), black_box(&params));
+                let _ = normalize(black_box(&buffer), black_box(&params), black_box(0));
             });
         });
     }

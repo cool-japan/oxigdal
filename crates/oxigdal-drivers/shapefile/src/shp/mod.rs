@@ -213,19 +213,43 @@ impl ShapeRecord {
         }
     }
 
-    /// Reads a shape record from a reader
+    /// Reads a shape record from a reader.
+    ///
+    /// The record header declares `content_length` in 16-bit words, covering
+    /// the shape-type field and the geometry body. We bound the geometry read
+    /// to exactly that many bytes via [`Read::take`] so that shapes with an
+    /// optional trailing section (notably the optional M block of PolyLineZ /
+    /// PolygonZ / MultiPointZ / MultiPatch, which this crate's writer omits when
+    /// no measures are present) cannot speculatively read past the record and
+    /// desync the stream by consuming the next record's header/geometry bytes.
     pub fn read<R: Read>(reader: &mut R) -> Result<Self> {
         // Read record header (big endian)
         let record_number = reader
             .read_i32::<BigEndian>()
             .map_err(|_| ShapefileError::unexpected_eof("reading record number"))?;
 
-        let _content_length = reader
+        let content_length = reader
             .read_i32::<BigEndian>()
             .map_err(|_| ShapefileError::unexpected_eof("reading content length"))?;
 
-        // Read shape (little endian)
-        let shape = Shape::read(reader)?;
+        if content_length < 0 {
+            return Err(ShapefileError::invalid_geometry(format!(
+                "negative record content length: {content_length}"
+            )));
+        }
+
+        // content_length is in 16-bit words and includes the 4-byte shape type.
+        let content_bytes = (content_length as u64) * 2;
+
+        // Bound the geometry read to this record so optional trailing sections
+        // (e.g. an absent M block) produce a record-scoped EOF instead of
+        // spilling into the following record.
+        let mut limited = reader.take(content_bytes);
+        let shape = Shape::read(&mut limited)?;
+
+        // Drain any bytes the shape parser did not consume (e.g. alignment
+        // padding) so the underlying reader is positioned at the next record.
+        std::io::copy(&mut limited, &mut std::io::sink()).map_err(ShapefileError::Io)?;
 
         Ok(Self {
             record_number,
@@ -497,6 +521,54 @@ mod tests {
         } else {
             panic!("Expected PolygonM shape");
         }
+    }
+
+    /// Regression: multiple PolygonZ records with Z set but M omitted must not
+    /// desync the record stream. Before bounding each record body to its
+    /// declared `content_length`, `MultiPartShapeZ::read` speculatively read an
+    /// `m_min` f64 out of the *next* record, corrupting record boundaries and
+    /// eventually raising `InvalidShapeType`.
+    #[test]
+    fn test_multi_record_polygon_z_without_m_no_desync() {
+        let make = |x: f64| -> Shape {
+            let points = vec![
+                Point::new(x, 0.0),
+                Point::new(x + 10.0, 0.0),
+                Point::new(x + 10.0, 10.0),
+                Point::new(x, 0.0),
+            ];
+            let z_values = vec![1.0, 2.0, 3.0, 1.0];
+            let shape_z = MultiPartShapeZ::new(vec![0], points, z_values, None)
+                .expect("valid PolygonZ without M");
+            Shape::PolygonZ(shape_z)
+        };
+
+        // Serialize three records back to back.
+        let mut buffer = Vec::new();
+        for (i, x) in [0.0_f64, 100.0, 200.0].into_iter().enumerate() {
+            let record = ShapeRecord::new((i + 1) as i32, make(x));
+            record.write(&mut buffer).expect("write record");
+        }
+
+        // Read all three back and confirm they round-trip without desync.
+        let mut cursor = Cursor::new(buffer);
+        for (i, x) in [0.0_f64, 100.0, 200.0].into_iter().enumerate() {
+            let rec = ShapeRecord::read(&mut cursor).expect("read record without desync");
+            assert_eq!(rec.record_number, (i + 1) as i32);
+            match rec.shape {
+                Shape::PolygonZ(sz) => {
+                    assert_eq!(sz.base.num_points, 4);
+                    assert!(sz.m_values.is_none(), "M must remain absent");
+                    assert!((sz.base.points[0].x - x).abs() < f64::EPSILON);
+                }
+                other => panic!("expected PolygonZ, got {:?}", other.shape_type()),
+            }
+        }
+
+        // Stream must be fully consumed (no leftover bytes).
+        let mut rest = Vec::new();
+        cursor.read_to_end(&mut rest).expect("read remainder");
+        assert!(rest.is_empty(), "no bytes should remain after 3 records");
     }
 
     #[test]

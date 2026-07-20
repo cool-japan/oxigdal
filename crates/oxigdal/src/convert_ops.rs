@@ -128,8 +128,10 @@ impl Dataset {
         let data_type = reader
             .data_type()
             .unwrap_or(oxigdal_core::types::RasterDataType::UInt8);
+        // Preserve the source's NoData value across the round-trip so downstream
+        // consumers (stats, hillshade, colorizers) keep masking former nodata pixels.
+        let nodata = reader.nodata();
 
-        use oxigdal_core::types::NoDataValue;
         use oxigdal_geotiff::tiff::{
             Compression as TiffCompression, PhotometricInterpretation, Predictor,
         };
@@ -144,12 +146,14 @@ impl Dataset {
             Some(Compression::None) | None => TiffCompression::None,
         };
 
-        // Collect all band data into a single contiguous buffer (band-sequential).
-        let mut all_band_data: Vec<u8> = Vec::new();
-        for band_idx in 0..band_count {
-            let raw = reader.read_band(0, band_idx as usize)?;
-            all_band_data.extend_from_slice(&raw);
-        }
+        // `GeoTiffReader::read_band` returns the *entire* pixel-interleaved image
+        // (all bands, chunky/row-major) in a single call — the band argument is
+        // not a per-band selector. Reading it once yields exactly the buffer the
+        // GeoTIFF/COG writers expect (`width × height × band_count ×
+        // bytes_per_sample`, chunky). Looping over `band_count` would append that
+        // full image `band_count` times and trip the writers' length validation,
+        // breaking every multi-band conversion.
+        let all_band_data: Vec<u8> = reader.read_band(0, 0)?;
 
         if options.cog {
             // COG path: tiling is mandatory; default to 256 × 256 when not specified.
@@ -177,7 +181,7 @@ impl Dataset {
                     .crs
                     .as_deref()
                     .and_then(crate::extract_epsg_from_crs_string),
-                nodata: NoDataValue::None,
+                nodata,
                 use_bigtiff: false,
                 generate_overviews: true,
                 overview_resampling: oxigdal_geotiff::OverviewResampling::Average,
@@ -220,7 +224,7 @@ impl Dataset {
                     .crs
                     .as_deref()
                     .and_then(crate::extract_epsg_from_crs_string),
-                nodata: NoDataValue::None,
+                nodata,
                 use_bigtiff: false,
                 generate_overviews,
                 overview_resampling: oxigdal_geotiff::OverviewResampling::Average,
@@ -516,7 +520,19 @@ fn infer_shapefile_schema(
     for feature in features {
         if let Some(props) = &feature.properties {
             for (key, val) in props {
-                let short_key = if key.len() > 10 { &key[..10] } else { key };
+                // DBF field names are capped at 10 bytes. `key.len()` is a byte
+                // length, so slicing `&key[..10]` would panic when byte 10 lands
+                // mid-character (Japanese, emoji, accented Latin, …). Back off to
+                // the nearest UTF-8 char boundary at or below 10 bytes.
+                let short_key = if key.len() > 10 {
+                    let mut end = 10;
+                    while end > 0 && !key.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    &key[..end]
+                } else {
+                    key.as_str()
+                };
                 let width = match val {
                     serde_json::Value::String(s) => u8::try_from(s.len().min(254)).unwrap_or(254),
                     other => u8::try_from(other.to_string().len().min(254)).unwrap_or(254),

@@ -266,6 +266,28 @@ impl SectionHeader {
 
         Ok(Self { length, number })
     }
+
+    /// Returns the section payload length (the parsed `length` minus
+    /// `header_octets`, the number of octets already consumed by the
+    /// section's fixed-size header before the variable-length payload).
+    ///
+    /// Validates that `length >= header_octets` first, returning
+    /// [`GribError::InvalidSectionLength`] instead of underflowing the
+    /// `usize` subtraction. A crafted or corrupt GRIB2 message can set a
+    /// section's length field below the minimum header size (e.g. 0-4 for a
+    /// 5-octet section header, 0-5 for the 6-octet bitmap-section header);
+    /// without this check the subtraction wraps to near-`usize::MAX` in
+    /// release builds, and the resulting slice range panics.
+    pub fn payload_len(&self, header_octets: usize) -> Result<usize> {
+        let length = self.length as usize;
+        if length < header_octets {
+            return Err(GribError::InvalidSectionLength {
+                expected: header_octets,
+                actual: length,
+            });
+        }
+        Ok(length - header_octets)
+    }
 }
 
 #[cfg(test)]
@@ -329,5 +351,54 @@ mod tests {
         let mut iter = MessageIterator::new(Cursor::new(data));
         assert!(iter.next().is_none());
         assert_eq!(iter.count(), 0);
+    }
+
+    #[test]
+    fn test_payload_len_valid() {
+        let header = SectionHeader {
+            length: 21,
+            number: SectionNumber::GridDefinition,
+        };
+        assert_eq!(
+            header.payload_len(5).expect("21 - 5 must not underflow"),
+            16
+        );
+    }
+
+    /// Regression test: a crafted/corrupt section length smaller than the
+    /// header size must return a typed error instead of underflowing the
+    /// `usize` subtraction (which would wrap to near-`usize::MAX` in
+    /// release builds and panic at the subsequent slice operation).
+    #[test]
+    fn test_payload_len_underflow_returns_error() {
+        for length in 0..5u32 {
+            let header = SectionHeader {
+                length,
+                number: SectionNumber::GridDefinition,
+            };
+            let result = header.payload_len(5);
+            assert!(
+                result.is_err(),
+                "length {length} < header_octets 5 must error, not underflow"
+            );
+        }
+
+        // Boundary: length == header_octets must yield a zero-length payload.
+        let header = SectionHeader {
+            length: 5,
+            number: SectionNumber::GridDefinition,
+        };
+        assert_eq!(header.payload_len(5).expect("5 - 5 = 0"), 0);
+    }
+
+    #[test]
+    fn test_payload_len_underflow_bitmap_header() {
+        for length in 0..6u32 {
+            let header = SectionHeader {
+                length,
+                number: SectionNumber::BitMap,
+            };
+            assert!(header.payload_len(6).is_err());
+        }
     }
 }

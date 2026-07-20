@@ -55,6 +55,15 @@ pub enum EmbeddedError {
     /// Power mode transition failed
     PowerModeTransitionFailed,
 
+    /// A real hardware power transition was requested but no board-support
+    /// `PowerController` is installed (see the `power` module).
+    ///
+    /// This is returned only by the strict transition APIs (e.g.
+    /// `PowerManager::request_mode_strict`). It exists so callers that genuinely
+    /// need silicon-level control can fail loudly instead of silently recording a
+    /// mode change that never reached hardware.
+    NoPowerController,
+
     /// Real-time deadline missed
     DeadlineMissed {
         /// Actual time taken (microseconds)
@@ -131,6 +140,7 @@ impl EmbeddedError {
             Self::InvalidParameter => 6,
             Self::OutOfBounds { .. } => 7,
             Self::PowerModeTransitionFailed => 8,
+            Self::NoPowerController => 17,
             Self::DeadlineMissed { .. } => 9,
             Self::ResourceBusy => 10,
             Self::Timeout => 11,
@@ -168,6 +178,9 @@ impl fmt::Display for EmbeddedError {
                 write!(f, "Out of bounds: index {} exceeds max {}", index, max)
             }
             Self::PowerModeTransitionFailed => write!(f, "Power mode transition failed"),
+            Self::NoPowerController => {
+                write!(f, "No hardware power controller installed")
+            }
             Self::DeadlineMissed {
                 actual_us,
                 deadline_us,

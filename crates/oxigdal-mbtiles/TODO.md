@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure Rust MBTiles tile archive reader for OxiGDAL — SQLite-based tile pyramid support.
 > **Status (2026-05-16):** ~1,553 Rust LoC · 123 tests · 0 in-source `TODO:` markers (gap is in the type's prose contract).
-> **Roadmap:** v0.1.5 (current slice) → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 (current slice) → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

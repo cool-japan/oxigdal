@@ -603,6 +603,7 @@ pub fn find_all_intersections(segments: &[Segment]) -> Vec<IntersectionPoint> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

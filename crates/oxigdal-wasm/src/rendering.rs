@@ -262,20 +262,36 @@ pub struct ViewportTransform {
     pub sy: f64,
     /// Rotation angle in radians
     pub rotation: f64,
+    /// Shear along X (how much X shifts per unit Y, applied before scale/rotate)
+    pub shx: f64,
+    /// Shear along Y (how much Y shifts per unit X, applied before scale/rotate)
+    pub shy: f64,
 }
 
 impl ViewportTransform {
-    /// Creates a new transform with specified parameters (affine matrix form)
-    /// Parameters: sx, shy, shx, sy, tx, ty (2D affine transform)
-    /// For simpler cases, use identity(), translate(), scale(), or rotate()
-    pub const fn new(sx: f64, _shy: f64, _shx: f64, sy: f64, tx: f64, ty: f64) -> Self {
-        // Simplified: ignores shear components for now
+    /// Creates a new transform with specified parameters (affine matrix form).
+    ///
+    /// Parameters: `sx, shy, shx, sy, tx, ty` (matches the CSS/SVG
+    /// `matrix(a, b, c, d, e, f)` parameter order).
+    ///
+    /// The point mapping applied by [`Self::transform_point`] is, in order:
+    /// shear → scale → rotate → translate. When `rotation` is left at its
+    /// default of `0.0` (as it is here) and `sx == sy == 1.0`, this reduces
+    /// to the textbook 2D affine map `x' = sx*x + shx*y + tx`,
+    /// `y' = shy*x + sy*y + ty`; for non-unit scale the shear and scale
+    /// terms compose (shear is applied in the pre-scale coordinate frame)
+    /// rather than being independent raw matrix entries. For simpler cases
+    /// with no shear, use [`Self::identity`], [`Self::translate`],
+    /// [`Self::scale`], or [`Self::rotate`].
+    pub const fn new(sx: f64, shy: f64, shx: f64, sy: f64, tx: f64, ty: f64) -> Self {
         Self {
             tx,
             ty,
             sx,
             sy,
             rotation: 0.0,
+            shx,
+            shy,
         }
     }
 
@@ -287,6 +303,8 @@ impl ViewportTransform {
             sx: 1.0,
             sy: 1.0,
             rotation: 0.0,
+            shx: 0.0,
+            shy: 0.0,
         }
     }
 
@@ -298,6 +316,8 @@ impl ViewportTransform {
             sx: 1.0,
             sy: 1.0,
             rotation: 0.0,
+            shx: 0.0,
+            shy: 0.0,
         }
     }
 
@@ -309,6 +329,8 @@ impl ViewportTransform {
             sx,
             sy,
             rotation: 0.0,
+            shx: 0.0,
+            shy: 0.0,
         }
     }
 
@@ -325,16 +347,28 @@ impl ViewportTransform {
             sx: 1.0,
             sy: 1.0,
             rotation,
+            shx: 0.0,
+            shy: 0.0,
         }
     }
 
-    /// Transforms a point
+    /// Transforms a point.
+    ///
+    /// Applies, in order: shear, scale, rotate, translate. `shx`/`shy` are
+    /// no-ops when both are `0.0` (the default for every constructor except
+    /// [`Self::new`]), so this is a strict generalization of the previous
+    /// shear-less behavior.
     pub fn transform_point(&self, x: f64, y: f64) -> (f64, f64) {
         let cos_r = self.rotation.cos();
         let sin_r = self.rotation.sin();
 
-        let x_scaled = x * self.sx;
-        let y_scaled = y * self.sy;
+        // Shear (uses the original, un-sheared x/y for both components so
+        // the two axes shear independently of one another).
+        let x_sheared = x + self.shx * y;
+        let y_sheared = y + self.shy * x;
+
+        let x_scaled = x_sheared * self.sx;
+        let y_scaled = y_sheared * self.sy;
 
         let x_rotated = x_scaled * cos_r - y_scaled * sin_r;
         let y_rotated = x_scaled * sin_r + y_scaled * cos_r;
@@ -342,7 +376,10 @@ impl ViewportTransform {
         (x_rotated + self.tx, y_rotated + self.ty)
     }
 
-    /// Inverse transforms a point
+    /// Inverse transforms a point.
+    ///
+    /// Exactly undoes [`Self::transform_point`]: inverse-translate,
+    /// inverse-rotate, inverse-scale, then inverse-shear.
     pub fn inverse_transform_point(&self, x: f64, y: f64) -> (f64, f64) {
         let cos_r = self.rotation.cos();
         let sin_r = self.rotation.sin();
@@ -353,7 +390,21 @@ impl ViewportTransform {
         let x_rotated = x_translated * cos_r + y_translated * sin_r;
         let y_rotated = -x_translated * sin_r + y_translated * cos_r;
 
-        (x_rotated / self.sx, y_rotated / self.sy)
+        let x_scaled = x_rotated / self.sx;
+        let y_scaled = y_rotated / self.sy;
+
+        // Undo the shear: x_sheared = x + shx*y, y_sheared = y + shy*x
+        // solved as a 2x2 linear system for (x, y) given (x_sheared, y_sheared).
+        let det = 1.0 - self.shx * self.shy;
+        if det.abs() < f64::EPSILON {
+            // Degenerate shear (shx*shy == 1): fall back to the sheared
+            // values rather than dividing by (near-)zero.
+            (x_scaled, y_scaled)
+        } else {
+            let x_unsheared = (x_scaled - self.shx * y_scaled) / det;
+            let y_unsheared = (y_scaled - self.shy * x_scaled) / det;
+            (x_unsheared, y_unsheared)
+        }
     }
 
     /// Composes two transforms
@@ -364,6 +415,8 @@ impl ViewportTransform {
             sx: self.sx * other.sx,
             sy: self.sy * other.sy,
             rotation: self.rotation + other.rotation,
+            shx: self.shx + other.shx,
+            shy: self.shy + other.shy,
         }
     }
 }

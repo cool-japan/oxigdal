@@ -48,6 +48,11 @@ pub enum ObservabilityError {
     #[error("Failed to route alert: {0}")]
     AlertRoutingFailed(String),
 
+    /// Operation could not be carried out because a required Cargo feature
+    /// (e.g. `http-exporter`) was not enabled at build time.
+    #[error("Feature not enabled: {0}")]
+    ExporterFeatureDisabled(String),
+
     /// Alert deduplication error.
     #[error("Alert deduplication error: {0}")]
     AlertDeduplicationError(String),
@@ -73,6 +78,7 @@ pub enum ObservabilityError {
     Serialization(#[from] serde_json::Error),
 
     /// HTTP client error.
+    #[cfg(feature = "http-exporter")]
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 

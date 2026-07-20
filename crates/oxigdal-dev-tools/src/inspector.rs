@@ -95,12 +95,17 @@ impl FileInspector {
 
         let format = Self::detect_format(&path, extension.as_deref())?;
 
+        // `Permissions::readonly()` reports whether the write bit is unset; it says
+        // nothing about read permission. Determine actual readability by attempting
+        // to open the file for reading rather than deriving it from `readonly()`.
+        let readable = std::fs::File::open(&path).is_ok();
+
         let info = FileInfo {
             path: path.display().to_string(),
             size,
             extension,
             format: Some(format),
-            readable: metadata.permissions().readonly(),
+            readable,
             writable: !metadata.permissions().readonly(),
         };
 
@@ -256,6 +261,29 @@ mod tests {
 
         let inspector = FileInspector::new(temp_file.path())?;
         assert_eq!(inspector.info().format, Some(FileFormat::GeoTiff));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_readable_reports_true_for_writable_file() -> Result<()> {
+        // A freshly created temp file has default (writable) permissions and is
+        // openable for reading, so `readable` must be true and `writable` true.
+        // Regression test: previously `readable` was derived from
+        // `Permissions::readonly()`, which inverted the meaning and reported a
+        // normal writable file as unreadable.
+        let mut temp_file = NamedTempFile::new()?;
+        temp_file.write_all(b"test data")?;
+
+        let inspector = FileInspector::new(temp_file.path())?;
+        assert!(
+            inspector.info().readable,
+            "a readable temp file must report readable: true"
+        );
+        assert!(
+            inspector.info().writable,
+            "a writable temp file must report writable: true"
+        );
 
         Ok(())
     }

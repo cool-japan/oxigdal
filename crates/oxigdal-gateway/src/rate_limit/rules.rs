@@ -4,8 +4,7 @@
 //! per-endpoint, and combined rules.
 
 use crate::error::{GatewayError, Result};
-use crate::rate_limit::{Decision, RateLimitKey, RateLimiter};
-use std::sync::Arc;
+use crate::rate_limit::{Algorithm, Decision, RateLimitKey, Storage};
 use std::time::Duration;
 
 /// Rate limit rule configuration.
@@ -148,17 +147,28 @@ impl RuleContext {
 }
 
 /// Rule engine for evaluating rate limit rules.
-pub struct RuleEngine<L: RateLimiter> {
+///
+/// Unlike [`crate::rate_limit::StandardRateLimiter`], which bakes a single fixed
+/// `(limit, window)` pair into a [`crate::rate_limit::RateLimiter`] at construction time,
+/// `RuleEngine` dispatches each matched [`RateLimitRule`]'s own `limit`/`window` straight
+/// through to the [`Algorithm`] on every call -- so distinct rules (e.g. a strict
+/// per-endpoint rule vs. a generous enterprise tier) are actually enforced with their own
+/// configured thresholds against a shared [`Storage`] backend, keyed apart by
+/// [`RateLimitRule::id`].
+pub struct RuleEngine<S: Storage, A: Algorithm> {
     rules: Vec<RateLimitRule>,
-    limiter: Arc<L>,
+    storage: S,
+    algorithm: A,
 }
 
-impl<L: RateLimiter> RuleEngine<L> {
-    /// Creates a new rule engine.
-    pub fn new(limiter: L) -> Self {
+impl<S: Storage, A: Algorithm> RuleEngine<S, A> {
+    /// Creates a new rule engine over the given storage backend and algorithm. Each rule
+    /// added via [`Self::add_rule`] is enforced with its own `limit`/`window`.
+    pub fn new(storage: S, algorithm: A) -> Self {
         Self {
             rules: Vec::new(),
-            limiter: Arc::new(limiter),
+            storage,
+            algorithm,
         }
     }
 
@@ -174,24 +184,41 @@ impl<L: RateLimiter> RuleEngine<L> {
         self.rules.iter().find(|rule| rule.matches(context))
     }
 
-    /// Checks rate limit with rule engine.
+    /// Checks rate limit with rule engine, enforced against the matched rule's own
+    /// `limit`/`window` rather than any other rule's.
     pub async fn check(&self, context: &RuleContext) -> Result<Decision> {
         let rule = self
             .find_matching_rule(context)
             .ok_or_else(|| GatewayError::ConfigError("No matching rule found".to_string()))?;
 
-        let key = self.build_key(context, rule);
-        self.limiter.check(&key).await
+        let key = self.build_key(context, rule).to_key();
+        let allowed = self
+            .algorithm
+            .check(&self.storage, &key, rule.limit, rule.window)
+            .await?;
+
+        if allowed {
+            Ok(Decision::Allowed)
+        } else {
+            let current = self.storage.get(&key).await?.unwrap_or(0);
+            Ok(Decision::Limited {
+                retry_after: rule.window,
+                limit: rule.limit,
+                current,
+            })
+        }
     }
 
-    /// Records request with rule engine.
+    /// Records request with rule engine, against the matched rule's own `limit`/`window`.
     pub async fn record(&self, context: &RuleContext) -> Result<()> {
         let rule = self
             .find_matching_rule(context)
             .ok_or_else(|| GatewayError::ConfigError("No matching rule found".to_string()))?;
 
-        let key = self.build_key(context, rule);
-        self.limiter.record(&key).await
+        let key = self.build_key(context, rule).to_key();
+        self.algorithm
+            .record(&self.storage, &key, rule.limit, rule.window)
+            .await
     }
 
     fn build_key(&self, context: &RuleContext, rule: &RateLimitRule) -> RateLimitKey {
@@ -362,5 +389,71 @@ mod tests {
         let pro = RateLimitProfiles::pro_tier();
         assert_eq!(pro.limit, 100_000);
         assert_eq!(pro.priority, 20);
+    }
+
+    #[tokio::test]
+    async fn test_rule_engine_enforces_each_rules_own_limit() {
+        use crate::rate_limit::{FixedWindow, MemoryStorage};
+
+        let storage = MemoryStorage::new();
+        let algorithm = FixedWindow;
+        let mut engine = RuleEngine::new(storage, algorithm);
+
+        // A tight per-endpoint rule (limit 3) and a much looser catch-all tier (limit
+        // 1_000_000) registered on the same engine.
+        engine.add_rule(
+            RateLimitRule::new(
+                "strict_endpoint",
+                3,
+                Duration::from_secs(60),
+                RuleMatcher::Endpoint("/api/limited".to_string()),
+            )
+            .with_priority(100),
+        );
+        engine.add_rule(RateLimitProfiles::enterprise_tier());
+
+        let strict_context = RuleContext::new().with_endpoint("/api/limited");
+
+        // First 3 requests against the strict rule should be allowed.
+        for _ in 0..3 {
+            let decision = engine
+                .check(&strict_context)
+                .await
+                .ok()
+                .unwrap_or(Decision::Allowed);
+            assert_eq!(decision, Decision::Allowed);
+            engine.record(&strict_context).await.ok();
+        }
+
+        // The 4th request must be limited, and the reported limit must be the strict rule's
+        // own limit (3) -- not the enterprise tier's 1_000_000, and not any hardcoded value.
+        let decision = engine
+            .check(&strict_context)
+            .await
+            .ok()
+            .unwrap_or(Decision::Allowed);
+        match decision {
+            Decision::Limited { limit, .. } => assert_eq!(limit, 3),
+            Decision::Allowed => {
+                panic!("expected the strict_endpoint rule to be rate limited after 3 requests")
+            }
+        }
+
+        // A different context, matched only by the permissive enterprise tier rule, must
+        // stay well within its own much larger limit at the same request count.
+        let other_context = RuleContext::new().with_endpoint("/other/path");
+        for _ in 0..3 {
+            let decision = engine
+                .check(&other_context)
+                .await
+                .ok()
+                .unwrap_or(Decision::Limited {
+                    retry_after: Duration::from_secs(0),
+                    limit: 0,
+                    current: 0,
+                });
+            assert_eq!(decision, Decision::Allowed);
+            engine.record(&other_context).await.ok();
+        }
     }
 }

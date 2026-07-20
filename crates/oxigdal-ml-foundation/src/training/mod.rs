@@ -101,14 +101,14 @@ impl TrainingConfig {
             ));
         }
 
-        if let Some(clip) = self.gradient_clip {
-            if clip <= 0.0 {
-                return Err(Error::invalid_parameter(
-                    "gradient_clip",
-                    clip,
-                    "must be positive if specified",
-                ));
-            }
+        if let Some(clip) = self.gradient_clip
+            && clip <= 0.0
+        {
+            return Err(Error::invalid_parameter(
+                "gradient_clip",
+                clip,
+                "must be positive if specified",
+            ));
         }
 
         if self.accumulation_steps == 0 {

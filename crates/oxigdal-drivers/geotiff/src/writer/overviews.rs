@@ -4,6 +4,8 @@
 
 use oxigdal_core::error::{OxiGdalError, Result};
 
+use crate::tiff::ByteOrderType;
+
 /// Resampling method for overview generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewResampling {
@@ -44,10 +46,18 @@ pub struct OverviewGenerator {
     resampling: OverviewResampling,
     /// Data type (for proper floating-point handling)
     data_type: oxigdal_core::types::RasterDataType,
+    /// On-disk byte order of the sample data (must match the writer's output
+    /// byte order, since overview resampling reads and rewrites raw samples).
+    byte_order: ByteOrderType,
 }
 
 impl OverviewGenerator {
-    /// Creates a new overview generator
+    /// Creates a new overview generator.
+    ///
+    /// `byte_order` must match the byte order the input `data` samples are
+    /// encoded in (i.e. the writer's configured output byte order); overview
+    /// resampling decodes each multi-byte sample, averages/selects, and
+    /// re-encodes it, so a mismatched byte order corrupts every overview pixel.
     #[must_use]
     pub const fn new(
         width: u64,
@@ -56,6 +66,7 @@ impl OverviewGenerator {
         samples_per_pixel: usize,
         resampling: OverviewResampling,
         data_type: oxigdal_core::types::RasterDataType,
+        byte_order: ByteOrderType,
     ) -> Self {
         Self {
             width,
@@ -64,6 +75,7 @@ impl OverviewGenerator {
             samples_per_pixel,
             resampling,
             data_type,
+            byte_order,
         }
     }
 
@@ -405,35 +417,28 @@ impl OverviewGenerator {
         mode
     }
 
-    /// Reads a sample value based on bytes_per_sample
+    /// Reads a sample value based on bytes_per_sample, honoring the byte order.
     fn read_sample(&self, data: &[u8]) -> u64 {
         match self.bytes_per_sample {
-            1 => u64::from(data[0]),
-            2 => u64::from(u16::from_le_bytes([data[0], data[1]])),
-            4 => u64::from(u32::from_le_bytes([data[0], data[1], data[2], data[3]])),
-            8 => u64::from_le_bytes([
-                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-            ]),
+            1 if !data.is_empty() => u64::from(data[0]),
+            2 if data.len() >= 2 => u64::from(self.byte_order.read_u16(data)),
+            4 if data.len() >= 4 => u64::from(self.byte_order.read_u32(data)),
+            8 if data.len() >= 8 => self.byte_order.read_u64(data),
             _ => 0,
         }
     }
 
-    /// Writes a sample value based on bytes_per_sample
+    /// Writes a sample value based on bytes_per_sample, honoring the byte order.
     fn write_sample(&self, data: &mut [u8], value: u64) {
         match self.bytes_per_sample {
-            1 => data[0] = value as u8,
-            2 => {
-                let bytes = (value as u16).to_le_bytes();
-                data[0..2].copy_from_slice(&bytes);
+            1 => {
+                if let Some(b) = data.first_mut() {
+                    *b = value as u8;
+                }
             }
-            4 => {
-                let bytes = (value as u32).to_le_bytes();
-                data[0..4].copy_from_slice(&bytes);
-            }
-            8 => {
-                let bytes = value.to_le_bytes();
-                data[0..8].copy_from_slice(&bytes);
-            }
+            2 if data.len() >= 2 => self.byte_order.write_u16(data, value as u16),
+            4 if data.len() >= 4 => self.byte_order.write_u32(data, value as u32),
+            8 if data.len() >= 8 => self.byte_order.write_u64(data, value),
             _ => {}
         }
     }
@@ -448,38 +453,20 @@ impl OverviewGenerator {
         )
     }
 
-    /// Reads a floating-point sample value
+    /// Reads a floating-point sample value, honoring the byte order.
     fn read_sample_float(&self, data: &[u8]) -> f64 {
         match self.bytes_per_sample {
-            4 => {
-                // Float32
-                let bytes = [data[0], data[1], data[2], data[3]];
-                f64::from(f32::from_le_bytes(bytes))
-            }
-            8 => {
-                // Float64
-                let bytes = [
-                    data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-                ];
-                f64::from_le_bytes(bytes)
-            }
+            4 if data.len() >= 4 => f64::from(self.byte_order.read_f32(data)),
+            8 if data.len() >= 8 => self.byte_order.read_f64(data),
             _ => 0.0,
         }
     }
 
-    /// Writes a floating-point sample value
+    /// Writes a floating-point sample value, honoring the byte order.
     fn write_sample_float(&self, data: &mut [u8], value: f64) {
         match self.bytes_per_sample {
-            4 => {
-                // Float32
-                let bytes = (value as f32).to_le_bytes();
-                data[0..4].copy_from_slice(&bytes);
-            }
-            8 => {
-                // Float64
-                let bytes = value.to_le_bytes();
-                data[0..8].copy_from_slice(&bytes);
-            }
+            4 if data.len() >= 4 => self.byte_order.write_f32(data, value as f32),
+            8 if data.len() >= 8 => self.byte_order.write_f64(data, value),
             _ => {}
         }
     }
@@ -498,6 +485,7 @@ mod tests {
             1,
             OverviewResampling::Nearest,
             oxigdal_core::types::RasterDataType::UInt8,
+            ByteOrderType::LittleEndian,
         );
 
         let data = vec![128u8; 1024 * 1024];
@@ -529,6 +517,7 @@ mod tests {
             1,
             OverviewResampling::Nearest,
             oxigdal_core::types::RasterDataType::UInt8,
+            ByteOrderType::LittleEndian,
         );
         let overview = generator
             .generate_overview(&data, 2)
@@ -552,6 +541,7 @@ mod tests {
             1,
             OverviewResampling::Mode,
             oxigdal_core::types::RasterDataType::UInt8,
+            ByteOrderType::LittleEndian,
         );
 
         let values = vec![1, 2, 2, 3, 3, 3, 4];
@@ -570,10 +560,78 @@ mod tests {
             1,
             OverviewResampling::Nearest,
             oxigdal_core::types::RasterDataType::UInt8,
+            ByteOrderType::LittleEndian,
         );
         let data = vec![0u8; 1024 * 1024];
 
         let result = generator.generate_overviews(&data, &[1]); // Invalid: factor < 2
         assert!(result.is_err());
+    }
+
+    /// Regression: with big-endian output, overview resampling must decode and
+    /// re-encode multi-byte samples in big-endian order. Previously the sample
+    /// I/O was hardcoded little-endian, corrupting every overview pixel of a
+    /// big-endian UInt16/Float32/Float64 file.
+    #[test]
+    fn test_average_resampling_big_endian_uint16() {
+        // 2x2 image, single-band UInt16, all four samples == 1000.
+        // A 2x average must yield exactly 1000, encoded big-endian.
+        let value: u16 = 1000;
+        let mut data = Vec::new();
+        for _ in 0..4 {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+
+        let generator = OverviewGenerator::new(
+            2,
+            2,
+            2, // bytes_per_sample
+            1,
+            OverviewResampling::Average,
+            oxigdal_core::types::RasterDataType::UInt16,
+            ByteOrderType::BigEndian,
+        );
+
+        let overview = generator
+            .generate_overview(&data, 2)
+            .expect("Should generate overview");
+
+        assert_eq!(overview.width, 1);
+        assert_eq!(overview.height, 1);
+        // Must decode as big-endian 1000, not the byte-swapped 0xE803 = 59395.
+        let decoded = u16::from_be_bytes([overview.data[0], overview.data[1]]);
+        assert_eq!(decoded, 1000);
+    }
+
+    /// Big-endian Float32 average resampling round-trips the sample value.
+    #[test]
+    fn test_average_resampling_big_endian_float32() {
+        let value: f32 = 3.5;
+        let mut data = Vec::new();
+        for _ in 0..4 {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+
+        let generator = OverviewGenerator::new(
+            2,
+            2,
+            4,
+            1,
+            OverviewResampling::Average,
+            oxigdal_core::types::RasterDataType::Float32,
+            ByteOrderType::BigEndian,
+        );
+
+        let overview = generator
+            .generate_overview(&data, 2)
+            .expect("Should generate overview");
+
+        let decoded = f32::from_be_bytes([
+            overview.data[0],
+            overview.data[1],
+            overview.data[2],
+            overview.data[3],
+        ]);
+        assert!((decoded - 3.5).abs() < f32::EPSILON);
     }
 }

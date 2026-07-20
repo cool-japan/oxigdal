@@ -143,7 +143,7 @@ impl FilterOperator {
                 let counter = counter.clone();
                 Box::pin(async move {
                     let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok(count % n == 0)
+                    Ok(count.is_multiple_of(n))
                 })
             },
         ))
@@ -202,12 +202,17 @@ impl GeoFilterOperator {
                         }
                     })?;
 
-                    // Extract bbox from GeoJSON
+                    // Extract bbox from GeoJSON, preferring an explicit `bbox` member and
+                    // falling back to computing the extent from the geometry coordinates.
                     let item_bbox = if let Some(bbox_val) = json.get("bbox") {
                         extract_bbox_array(bbox_val)?
+                    } else if let Some(computed) = compute_bbox_from_geometry(&json) {
+                        computed
                     } else {
-                        // Calculate from geometry if no bbox present
-                        return Ok(true); // Simplified - always pass for now
+                        // A feature with no `bbox` member and no numeric coordinates has no
+                        // spatial extent, so it cannot intersect the query box: filter it out
+                        // rather than silently letting it pass.
+                        return Ok(false);
                     };
 
                     // Check intersection
@@ -231,12 +236,11 @@ impl GeoFilterOperator {
                         }
                     })?;
 
-                    if let Some(geometry) = json.get("geometry") {
-                        if let Some(type_val) = geometry.get("type") {
-                            if let Some(type_str) = type_val.as_str() {
-                                return Ok(type_str == geom_type);
-                            }
-                        }
+                    if let Some(geometry) = json.get("geometry")
+                        && let Some(type_val) = geometry.get("type")
+                        && let Some(type_str) = type_val.as_str()
+                    {
+                        return Ok(type_str == geom_type);
                     }
 
                     Ok(false)
@@ -259,12 +263,11 @@ impl GeoFilterOperator {
                         }
                     })?;
 
-                    if let Some(properties) = json.get("properties") {
-                        if let Some(value) = properties.get(&property) {
-                            if let Some(num) = value.as_f64() {
-                                return Ok(num >= min && num <= max);
-                            }
-                        }
+                    if let Some(properties) = json.get("properties")
+                        && let Some(value) = properties.get(&property)
+                        && let Some(num) = value.as_f64()
+                    {
+                        return Ok(num >= min && num <= max);
                     }
 
                     Ok(false)
@@ -301,38 +304,119 @@ impl GeoFilterOperator {
 
 /// Helper function to extract bbox array from JSON value
 fn extract_bbox_array(value: &serde_json::Value) -> Result<[f64; 4]> {
-    if let Some(arr) = value.as_array() {
-        if arr.len() >= 4 {
-            let bbox = [
-                arr[0]
-                    .as_f64()
-                    .ok_or_else(|| crate::error::TransformError::InvalidInput {
-                        message: "Invalid bbox value".to_string(),
-                    })?,
-                arr[1]
-                    .as_f64()
-                    .ok_or_else(|| crate::error::TransformError::InvalidInput {
-                        message: "Invalid bbox value".to_string(),
-                    })?,
-                arr[2]
-                    .as_f64()
-                    .ok_or_else(|| crate::error::TransformError::InvalidInput {
-                        message: "Invalid bbox value".to_string(),
-                    })?,
-                arr[3]
-                    .as_f64()
-                    .ok_or_else(|| crate::error::TransformError::InvalidInput {
-                        message: "Invalid bbox value".to_string(),
-                    })?,
-            ];
-            return Ok(bbox);
-        }
+    if let Some(arr) = value.as_array()
+        && arr.len() >= 4
+    {
+        let bbox = [
+            arr[0]
+                .as_f64()
+                .ok_or_else(|| crate::error::TransformError::InvalidInput {
+                    message: "Invalid bbox value".to_string(),
+                })?,
+            arr[1]
+                .as_f64()
+                .ok_or_else(|| crate::error::TransformError::InvalidInput {
+                    message: "Invalid bbox value".to_string(),
+                })?,
+            arr[2]
+                .as_f64()
+                .ok_or_else(|| crate::error::TransformError::InvalidInput {
+                    message: "Invalid bbox value".to_string(),
+                })?,
+            arr[3]
+                .as_f64()
+                .ok_or_else(|| crate::error::TransformError::InvalidInput {
+                    message: "Invalid bbox value".to_string(),
+                })?,
+        ];
+        return Ok(bbox);
     }
 
     Err(crate::error::TransformError::InvalidInput {
         message: "Invalid bbox format".to_string(),
     }
     .into())
+}
+
+/// Compute the `[west, south, east, north]` bounding box of a GeoJSON value from its geometry
+/// coordinates.
+///
+/// Walks the document looking for `"coordinates"` members (handling bare geometries, `Feature`,
+/// `FeatureCollection` and `GeometryCollection` without geometry-type-specific logic) and folds
+/// every leaf `[x, y(, z)]` tuple into a running extent. Returns `None` when the value contains
+/// no numeric coordinate tuples (e.g. a geometry-less feature), so callers can distinguish
+/// "no spatial extent" from a real bounding box.
+fn compute_bbox_from_geometry(value: &serde_json::Value) -> Option<[f64; 4]> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    accumulate_coordinates(value, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+
+    if min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite() {
+        Some([min_x, min_y, max_x, max_y])
+    } else {
+        None
+    }
+}
+
+/// Recursively descends a JSON value looking for GeoJSON `"coordinates"` members and folds each
+/// coordinate tuple found beneath them into the running extent.
+fn accumulate_coordinates(
+    value: &serde_json::Value,
+    min_x: &mut f64,
+    min_y: &mut f64,
+    max_x: &mut f64,
+    max_y: &mut f64,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "coordinates" {
+                    accumulate_coordinate_array(child, min_x, min_y, max_x, max_y);
+                } else {
+                    accumulate_coordinates(child, min_x, min_y, max_x, max_y);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                accumulate_coordinates(item, min_x, min_y, max_x, max_y);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Folds a GeoJSON `"coordinates"` value (nested to any depth) into the running extent.
+fn accumulate_coordinate_array(
+    value: &serde_json::Value,
+    min_x: &mut f64,
+    min_y: &mut f64,
+    max_x: &mut f64,
+    max_y: &mut f64,
+) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
+
+    let is_leaf_tuple = !items.is_empty() && items.iter().all(serde_json::Value::is_number);
+    if is_leaf_tuple {
+        if let (Some(x), Some(y)) = (
+            items.first().and_then(serde_json::Value::as_f64),
+            items.get(1).and_then(serde_json::Value::as_f64),
+        ) {
+            *min_x = min_x.min(x);
+            *min_y = min_y.min(y);
+            *max_x = max_x.max(x);
+            *max_y = max_y.max(y);
+        }
+    } else {
+        for item in items {
+            accumulate_coordinate_array(item, min_x, min_y, max_x, max_y);
+        }
+    }
 }
 
 /// Check if two bounding boxes intersect
@@ -411,5 +495,100 @@ mod tests {
 
         let bbox3 = [20.0, 20.0, 30.0, 30.0];
         assert!(!bboxes_intersect(&bbox1, &bbox3));
+    }
+
+    #[test]
+    fn test_compute_bbox_from_point_geometry() {
+        let json = serde_json::json!({
+            "type": "Feature",
+            "geometry": { "type": "Point", "coordinates": [5.0, 7.0] }
+        });
+        assert_eq!(
+            compute_bbox_from_geometry(&json),
+            Some([5.0, 7.0, 5.0, 7.0])
+        );
+    }
+
+    #[test]
+    fn test_compute_bbox_from_polygon_geometry() {
+        let json = serde_json::json!({
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[10.0, 20.0], [15.0, 25.0], [5.0, 30.0], [10.0, 20.0]]]
+            }
+        });
+        assert_eq!(
+            compute_bbox_from_geometry(&json),
+            Some([5.0, 20.0, 15.0, 30.0])
+        );
+    }
+
+    #[test]
+    fn test_compute_bbox_none_without_coordinates() {
+        let json = serde_json::json!({"type": "Feature", "properties": {"name": "x"}});
+        assert_eq!(compute_bbox_from_geometry(&json), None);
+    }
+
+    #[tokio::test]
+    async fn test_intersects_bbox_geometry_inside() {
+        // Query box [0,0,10,10]; point geometry at (5,5) with no explicit bbox must pass.
+        let filter = GeoFilterOperator::intersects_bbox([0.0, 0.0, 10.0, 10.0]);
+        let json = serde_json::json!({
+            "type": "Feature",
+            "geometry": { "type": "Point", "coordinates": [5.0, 5.0] }
+        });
+        let item = serde_json::to_vec(&json).expect("serialize");
+        let result = filter.transform(item).await.expect("transform");
+        assert_eq!(result.len(), 1, "geometry inside query box should pass");
+    }
+
+    #[tokio::test]
+    async fn test_intersects_bbox_geometry_outside() {
+        // Query box [0,0,10,10]; point geometry at (50,50) with no explicit bbox must be dropped.
+        let filter = GeoFilterOperator::intersects_bbox([0.0, 0.0, 10.0, 10.0]);
+        let json = serde_json::json!({
+            "type": "Feature",
+            "geometry": { "type": "Point", "coordinates": [50.0, 50.0] }
+        });
+        let item = serde_json::to_vec(&json).expect("serialize");
+        let result = filter.transform(item).await.expect("transform");
+        assert_eq!(
+            result.len(),
+            0,
+            "geometry outside query box must be filtered out, not passed through"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_intersects_bbox_no_geometry_filtered() {
+        // A feature with neither `bbox` nor coordinates has no spatial extent and is dropped.
+        let filter = GeoFilterOperator::intersects_bbox([0.0, 0.0, 10.0, 10.0]);
+        let json = serde_json::json!({"type": "Feature", "properties": {}});
+        let item = serde_json::to_vec(&json).expect("serialize");
+        let result = filter.transform(item).await.expect("transform");
+        assert_eq!(
+            result.len(),
+            0,
+            "feature without geometry must be filtered out"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_intersects_bbox_explicit_bbox_still_used() {
+        // An explicit `bbox` member takes precedence and is honored.
+        let filter = GeoFilterOperator::intersects_bbox([0.0, 0.0, 10.0, 10.0]);
+        let json = serde_json::json!({
+            "type": "Feature",
+            "bbox": [20.0, 20.0, 30.0, 30.0],
+            "geometry": { "type": "Point", "coordinates": [5.0, 5.0] }
+        });
+        let item = serde_json::to_vec(&json).expect("serialize");
+        let result = filter.transform(item).await.expect("transform");
+        assert_eq!(
+            result.len(),
+            0,
+            "explicit non-intersecting bbox must take precedence over geometry"
+        );
     }
 }

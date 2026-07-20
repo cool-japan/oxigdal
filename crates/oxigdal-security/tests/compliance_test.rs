@@ -1,4 +1,5 @@
 //! Integration tests for compliance.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::compliance::{gdpr::GdprCompliance, reports::ComplianceReport};
 

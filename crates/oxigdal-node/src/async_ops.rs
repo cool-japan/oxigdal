@@ -3,14 +3,59 @@
 //! This module provides Promise-based async operations for I/O and processing.
 
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{
+    ThreadsafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+};
 use napi::tokio;
 use napi_derive::napi;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use crate::buffer::BufferWrapper;
 use crate::error::NodeError;
 use crate::raster::Dataset;
 use crate::vector::FeatureCollection;
+
+/// Type of the threadsafe function used to relay progress notifications
+/// (a fraction in `[0.0, 1.0]`) back into JavaScript from Rust worker
+/// threads spawned via `tokio::task::spawn_blocking`.
+type ProgressTsfn = ThreadsafeFunction<f64, (), f64, Status, false, false, 0>;
+
+/// Global slot for the currently registered progress callback. `None` means
+/// no callback is registered; progress notifications are then silently
+/// skipped (there is nobody to notify), which is the intended default
+/// behavior rather than a silent failure.
+static PROGRESS_CALLBACK: OnceLock<Mutex<Option<ProgressTsfn>>> = OnceLock::new();
+
+/// Converts a poisoned-lock condition into a proper JS-facing error instead
+/// of panicking (`Mutex::lock().unwrap()` would violate the no-panic policy).
+fn lock_progress_callback() -> Result<std::sync::MutexGuard<'static, Option<ProgressTsfn>>> {
+    PROGRESS_CALLBACK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| {
+            NodeError {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "Progress callback lock was poisoned".to_string(),
+            }
+            .into()
+        })
+}
+
+/// Sends a best-effort progress notification (fraction in `[0.0, 1.0]`) to
+/// the currently registered JS callback, if any. Progress reporting is
+/// inherently non-critical: if no callback is registered, or the lock is
+/// (rarely) poisoned, or the JS side has been torn down, this quietly does
+/// nothing rather than failing the long-running operation it was called
+/// from.
+fn report_progress(progress: f64) {
+    if let Some(cell) = PROGRESS_CALLBACK.get()
+        && let Ok(guard) = cell.lock()
+        && let Some(tsfn) = guard.as_ref()
+    {
+        let _ = tsfn.call(progress, ThreadsafeFunctionCallMode::NonBlocking);
+    }
+}
 
 /// Opens a raster dataset asynchronously
 #[allow(dead_code)]
@@ -104,10 +149,11 @@ pub async fn hillshade_async(
     azimuth: f64,
     altitude: f64,
     z_factor: f64,
+    pixel_size: f64,
 ) -> Result<BufferWrapper> {
     let dem_clone = dem.clone();
     tokio::task::spawn_blocking(move || {
-        crate::algorithms::hillshade(&dem_clone, azimuth, altitude, z_factor)
+        crate::algorithms::hillshade(&dem_clone, azimuth, altitude, z_factor, pixel_size)
     })
     .await
     .map_err(|e| NodeError {
@@ -121,24 +167,27 @@ pub async fn hillshade_async(
 #[napi]
 pub async fn slope_async(
     dem: &BufferWrapper,
+    pixel_size: f64,
     z_factor: f64,
     as_percent: bool,
 ) -> Result<BufferWrapper> {
     let dem_clone = dem.clone();
-    tokio::task::spawn_blocking(move || crate::algorithms::slope(&dem_clone, z_factor, as_percent))
-        .await
-        .map_err(|e| NodeError {
-            code: "TASK_ERROR".to_string(),
-            message: format!("Task execution failed: {}", e),
-        })?
+    tokio::task::spawn_blocking(move || {
+        crate::algorithms::slope(&dem_clone, pixel_size, z_factor, as_percent)
+    })
+    .await
+    .map_err(|e| NodeError {
+        code: "TASK_ERROR".to_string(),
+        message: format!("Task execution failed: {}", e),
+    })?
 }
 
 /// Computes aspect asynchronously
 #[allow(dead_code)]
 #[napi]
-pub async fn aspect_async(dem: &BufferWrapper) -> Result<BufferWrapper> {
+pub async fn aspect_async(dem: &BufferWrapper, pixel_size: f64) -> Result<BufferWrapper> {
     let dem_clone = dem.clone();
-    tokio::task::spawn_blocking(move || crate::algorithms::aspect(&dem_clone))
+    tokio::task::spawn_blocking(move || crate::algorithms::aspect(&dem_clone, pixel_size))
         .await
         .map_err(|e| NodeError {
             code: "TASK_ERROR".to_string(),
@@ -253,24 +302,52 @@ pub async fn batch_process_rasters(
         tasks.push(task);
     }
 
+    let total = tasks.len();
     let mut results = Vec::new();
-    for task in tasks {
+    for (completed, task) in tasks.into_iter().enumerate() {
         let result = task.await.map_err(|e| NodeError {
             code: "TASK_ERROR".to_string(),
             message: format!("Task execution failed: {}", e),
         })??;
         results.push(result);
+
+        if total > 0 {
+            report_progress((completed + 1) as f64 / total as f64);
+        }
     }
 
     Ok(results)
 }
 
-/// Progress callback for long-running operations
+/// Registers a progress callback for long-running operations.
+///
+/// The callback is invoked from Rust worker threads (via
+/// `napi_call_threadsafe_function`) with a progress fraction in
+/// `[0.0, 1.0]` at meaningful checkpoints during operations such as
+/// [`batch_process_rasters`] and [`process_raster_parallel`]. Registering a
+/// new callback replaces any previously registered one.
 #[allow(dead_code)]
 #[napi(ts_args_type = "callback: (progress: number) => void")]
-pub fn set_progress_callback(_callback: Function<'_, Unknown<'_>>) -> Result<()> {
-    // Store callback for use in long-running operations
-    // This is a placeholder for actual implementation
+pub fn set_progress_callback(callback: Function<f64, ()>) -> Result<()> {
+    let tsfn: ProgressTsfn = callback
+        .build_threadsafe_function::<f64>()
+        .build_callback(|ctx: ThreadsafeCallContext<f64>| Ok(ctx.value))?;
+
+    let mut guard = lock_progress_callback()?;
+    *guard = Some(tsfn);
+    Ok(())
+}
+
+/// Removes any previously registered progress callback.
+///
+/// After calling this, long-running operations stop invoking any JS
+/// callback (progress notifications become no-ops) until
+/// [`set_progress_callback`] is called again.
+#[allow(dead_code)]
+#[napi]
+pub fn clear_progress_callback() -> Result<()> {
+    let mut guard = lock_progress_callback()?;
+    *guard = None;
     Ok(())
 }
 
@@ -341,10 +418,14 @@ pub async fn process_raster_parallel(
     operation: String,
     config: Option<ParallelConfig>,
 ) -> Result<Dataset> {
-    let _cfg = config.unwrap_or_default();
+    let cfg = config.unwrap_or_default();
     let ds_clone = dataset.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<Dataset> {
+    if cfg.report_progress {
+        report_progress(0.0);
+    }
+
+    let result = tokio::task::spawn_blocking(move || -> Result<Dataset> {
         // This is a simplified implementation
         // In production, would process tiles in parallel
         match operation.as_str() {
@@ -360,7 +441,13 @@ pub async fn process_raster_parallel(
     .map_err(|e| NodeError {
         code: "TASK_ERROR".to_string(),
         message: format!("Task execution failed: {}", e),
-    })?
+    })??;
+
+    if cfg.report_progress {
+        report_progress(1.0);
+    }
+
+    Ok(result)
 }
 
 /// Stream processing for large datasets
@@ -415,5 +502,45 @@ impl RasterStream {
         } else {
             self.current_row as f64 / self.dataset.height() as f64
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    // NOTE: constructing a real `Function<f64, ()>` requires a live N-API
+    // `Env`, which is unavailable in plain `cargo test`. These tests instead
+    // cover the parts that were previously entirely unreachable: the
+    // callback registry no longer silently discards its input, `call`ing
+    // `report_progress` with nothing registered is a safe no-op (not a
+    // panic), and `clear_progress_callback` actually empties the slot.
+
+    #[test]
+    fn report_progress_without_callback_is_a_noop() {
+        clear_progress_callback().expect("clear should not fail even with nothing registered");
+        // Must not panic, error, or block indefinitely.
+        report_progress(0.0);
+        report_progress(0.5);
+        report_progress(1.0);
+    }
+
+    #[test]
+    fn clear_progress_callback_leaves_slot_empty() {
+        clear_progress_callback().expect("clear should succeed");
+        let guard = lock_progress_callback().expect("lock should succeed");
+        assert!(
+            guard.is_none(),
+            "PROGRESS_CALLBACK slot must be empty after clear_progress_callback"
+        );
+    }
+
+    #[test]
+    fn lock_progress_callback_initializes_lazily() {
+        // Calling this before any `set_progress_callback` call must not
+        // panic (regression guard for the OnceLock initialization path).
+        let guard = lock_progress_callback().expect("lock should succeed on first use");
+        drop(guard);
     }
 }

@@ -70,10 +70,32 @@ impl SessionWindow {
                 let new_end = timestamp + self.config.gap;
                 let mut new_window = Window::new(window.start, new_end)?;
 
-                if let Some(max_dur) = self.config.max_duration {
-                    if new_window.duration() > max_dur {
-                        new_window = Window::new(new_window.end - max_dur, new_window.end)?;
-                    }
+                if let Some(max_dur) = self.config.max_duration
+                    && new_window.duration() > max_dur
+                {
+                    new_window = Window::new(new_window.end - max_dur, new_window.end)?;
+                }
+
+                if let Some(existing) = merged_window {
+                    merged_window = existing.merge(&new_window);
+                } else {
+                    merged_window = Some(new_window);
+                }
+
+                windows_to_remove.push(*start);
+            } else if timestamp < window.start && window.start - timestamp < self.config.gap {
+                // Backward extension: a late / out-of-order event arrives with a
+                // timestamp earlier than an existing session's start, but within
+                // the inactivity gap. The session must be extended backward to
+                // begin at the new (earlier) event rather than fragmenting into
+                // a disjoint overlapping session.
+                let new_start = timestamp;
+                let mut new_window = Window::new(new_start, window.end)?;
+
+                if let Some(max_dur) = self.config.max_duration
+                    && new_window.duration() > max_dur
+                {
+                    new_window = Window::new(new_window.end - max_dur, new_window.end)?;
                 }
 
                 if let Some(existing) = merged_window {
@@ -199,6 +221,69 @@ mod tests {
 
         assert!(!w1.contains(&ts2));
         assert!(!w2.contains(&ts1));
+    }
+
+    #[test]
+    fn test_session_window_late_arrival() {
+        // Out-of-order (late) event earlier than an existing session start, but
+        // within the gap, must merge backward into a single session.
+        let mut window = SessionWindow::new(Duration::seconds(60));
+
+        let ts1 =
+            DateTime::from_timestamp(1000, 0).expect("Test timestamp creation should succeed");
+        // Establishes session [1000, 1060).
+        window
+            .assign(ts1)
+            .expect("Session window assignment should succeed in test");
+
+        // A late event 10s before the session start, within the 60s gap.
+        let ts_late = ts1 - Duration::seconds(10);
+        let merged = window
+            .assign(ts_late)
+            .expect("Session window assignment should succeed in test");
+
+        // The merged session must cover both the late event and the original.
+        assert!(
+            merged.contains(&ts_late),
+            "merged session must contain the late event"
+        );
+        assert!(
+            merged.contains(&ts1),
+            "merged session must contain the original event"
+        );
+
+        // There must be exactly one session, not two disjoint/overlapping ones.
+        assert_eq!(
+            window.active_sessions().len(),
+            1,
+            "late arrival within gap must not fragment into a new session"
+        );
+
+        // The single session must start at the late event.
+        let sessions = window.active_sessions();
+        assert_eq!(sessions[0].start, ts_late);
+        assert_eq!(sessions[0].end, ts1 + Duration::seconds(60));
+    }
+
+    #[test]
+    fn test_session_window_late_arrival_beyond_gap() {
+        // A late event further back than the gap must NOT merge; it stays a
+        // separate session (symmetric to test_session_window_separate).
+        let mut window = SessionWindow::new(Duration::seconds(60));
+
+        let ts1 =
+            DateTime::from_timestamp(1000, 0).expect("Test timestamp creation should succeed");
+        window
+            .assign(ts1)
+            .expect("Session window assignment should succeed in test");
+
+        let ts_far = ts1 - Duration::seconds(120);
+        let w = window
+            .assign(ts_far)
+            .expect("Session window assignment should succeed in test");
+
+        assert!(!w.contains(&ts1));
+        assert_eq!(window.active_sessions().len(), 2);
     }
 
     #[test]

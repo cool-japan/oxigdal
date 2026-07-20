@@ -2,7 +2,7 @@
 
 > **Purpose:** STAC (SpatioTemporal Asset Catalog) 1.0.0 support for OxiGDAL — Pure Rust cloud-native geospatial catalog.
 > **Status (2026-05-16):** ~7,700 Rust LoC · 372 tests · 0 in-source `TODO:` markers.
-> **Roadmap:** v0.1.5 (current slice) → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 (current slice) → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

@@ -75,6 +75,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_arc_cache_oversized_entry_does_not_hang() {
+        // Regression test: a single entry larger than max_memory_size on an
+        // otherwise empty ArcCache must not spin forever inside `put`.
+        let config = CacheConfig::new().with_max_memory_size(16);
+        let cache = eviction::ArcCache::new(config);
+        let data = Bytes::from(vec![0u8; 1024]);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            cache.put("huge-key".to_string(), data.clone(), None),
+        )
+        .await;
+        let put_result = outcome.expect("ArcCache::put hung on an oversized entry");
+        put_result.expect("Put failed");
+        let retrieved = cache
+            .get(&"huge-key".to_string())
+            .await
+            .expect("Get failed");
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
     async fn test_tile_cache() {
         let config = CacheConfig::new().with_max_memory_size(1024 * 1024);
         let cache = backends::TileCache::new(config);

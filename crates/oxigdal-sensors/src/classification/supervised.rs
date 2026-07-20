@@ -203,16 +203,16 @@ fn fit(
     }
 
     // --- validate priors length if provided ---
-    if let Some(p) = priors {
-        if p.len() != n_classes {
-            return Err(SensorError::invalid_parameter(
-                "priors",
-                format!(
-                    "length {} does not match number of classes {n_classes}",
-                    p.len()
-                ),
-            ));
-        }
+    if let Some(p) = priors
+        && p.len() != n_classes
+    {
+        return Err(SensorError::invalid_parameter(
+            "priors",
+            format!(
+                "length {} does not match number of classes {n_classes}",
+                p.len()
+            ),
+        ));
     }
 
     // --- log-normalise priors ---

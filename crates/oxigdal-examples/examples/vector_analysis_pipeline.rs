@@ -500,10 +500,10 @@ impl VectorPipeline {
         let mut final_coords = simplified_coords;
         if final_coords.len() >= 3 {
             let first = final_coords[0];
-            if let Some(last) = final_coords.last() {
-                if last.x() != first.x() || last.y() != first.y() {
-                    final_coords.push(first);
-                }
+            if let Some(last) = final_coords.last()
+                && (last.x() != first.x() || last.y() != first.y())
+            {
+                final_coords.push(first);
             }
         }
 

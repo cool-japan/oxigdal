@@ -10,7 +10,7 @@ metadata:
   labels:
     app.kubernetes.io/name: oxigdal
     app.kubernetes.io/component: server
-    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/version: "0.0.0-UNRENDERED"
 spec:
   replicas: 3
   strategy:
@@ -27,7 +27,7 @@ spec:
       labels:
         app.kubernetes.io/name: oxigdal
         app.kubernetes.io/component: server
-        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/version: "0.0.0-UNRENDERED"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8081"
@@ -63,6 +63,13 @@ spec:
         - name: metrics
           containerPort: 8081
           protocol: TCP
+
+        # Explicit --config as defense in depth alongside the OXIGDAL_CONFIG env var below;
+        # crates/oxigdal-server also reads OXIGDAL_CONFIG directly via clap's `env` attribute,
+        # so either mechanism alone is sufficient to load the mounted ConfigMap.
+        args:
+        - "--config"
+        - "/config/server.toml"
 
         env:
         - name: RUST_LOG

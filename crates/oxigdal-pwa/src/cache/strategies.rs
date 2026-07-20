@@ -1,7 +1,7 @@
 //! Cache strategies for different use cases.
 
 use crate::error::{PwaError, Result};
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -150,10 +150,10 @@ impl CacheStrategy {
     /// Cache-first handler: Try cache first, fall back to network.
     async fn cache_first_handler(&self, request: &Request) -> Result<Response> {
         // Try cache first
-        if let Some(response) = self.match_cache(request).await? {
-            if !self.is_expired(&response).await {
-                return Ok(response);
-            }
+        if let Some(response) = self.match_cache(request).await?
+            && !self.is_expired(&response).await
+        {
+            return Ok(response);
         }
 
         // Fall back to network
@@ -318,19 +318,94 @@ impl CacheStrategy {
         Ok(response)
     }
 
-    /// Check if a response is expired.
-    async fn is_expired(&self, _response: &Response) -> bool {
-        // Check cache-control headers and custom expiration
-        if let Some(_expiration) = &self.config.cache_expiration {
-            // In a real implementation, we would:
-            // 1. Check Date header
-            // 2. Check Cache-Control max-age
-            // 3. Compare with config.cache_expiration
-            // For now, return false (not expired)
-            false
-        } else {
-            false
+    /// Check if a cached response is expired.
+    ///
+    /// Freshness is determined, in priority order, by:
+    /// 1. `Cache-Control: no-store` / `no-cache` on the response, which always
+    ///    forces revalidation.
+    /// 2. `Cache-Control: max-age=<seconds>` on the response, if present.
+    /// 3. The strategy's configured `cache_expiration`, if no `max-age` directive
+    ///    was sent.
+    ///
+    /// The response's `Date` header supplies "when was this cached", since the
+    /// Cache API does not otherwise expose a per-entry cached-at timestamp. If
+    /// neither an applicable TTL nor a parseable `Date` header is available,
+    /// the response is treated as not expired (conservative default: we cannot
+    /// prove staleness, so we do not force an unnecessary re-fetch).
+    async fn is_expired(&self, response: &Response) -> bool {
+        let headers = response.headers();
+        let cache_control = headers.get("cache-control").ok().flatten();
+        let date_header = headers.get("date").ok().flatten();
+
+        Self::compute_is_expired(
+            cache_control.as_deref(),
+            date_header.as_deref(),
+            self.config.cache_expiration,
+            Utc::now(),
+        )
+    }
+
+    /// Pure freshness computation, factored out of [`Self::is_expired`] so it
+    /// can be exercised without a browser `Response`/`Headers` object.
+    fn compute_is_expired(
+        cache_control: Option<&str>,
+        date_header: Option<&str>,
+        configured_ttl: Option<Duration>,
+        now: DateTime<Utc>,
+    ) -> bool {
+        if let Some(cc) = cache_control
+            && Self::cache_control_forces_revalidate(cc)
+        {
+            return true;
         }
+
+        let ttl_seconds = cache_control
+            .and_then(Self::parse_max_age)
+            .or_else(|| configured_ttl.map(|d| d.num_seconds()));
+
+        let Some(ttl_seconds) = ttl_seconds else {
+            // No max-age directive and no configured expiration: this
+            // strategy has no freshness policy, so nothing can be stale.
+            return false;
+        };
+
+        let Some(cached_at) = date_header.and_then(Self::parse_http_date) else {
+            // No usable Date header: we cannot compute an age, so we cannot
+            // prove the entry is stale.
+            return false;
+        };
+
+        let age = now.signed_duration_since(cached_at);
+        age.num_seconds() > ttl_seconds
+    }
+
+    /// Parse the `max-age=<seconds>` directive out of a `Cache-Control` header
+    /// value. Returns `None` if no such directive is present or it is not a
+    /// valid non-negative integer.
+    fn parse_max_age(cache_control: &str) -> Option<i64> {
+        cache_control
+            .split(',')
+            .map(str::trim)
+            .find_map(|directive| directive.strip_prefix("max-age="))
+            .and_then(|value| value.trim().parse::<i64>().ok())
+    }
+
+    /// Whether a `Cache-Control` header value contains `no-store` or
+    /// `no-cache`, either of which means the cached copy must never be served
+    /// without revalidation.
+    fn cache_control_forces_revalidate(cache_control: &str) -> bool {
+        cache_control.split(',').map(str::trim).any(|directive| {
+            directive.eq_ignore_ascii_case("no-store") || directive.eq_ignore_ascii_case("no-cache")
+        })
+    }
+
+    /// Parse an HTTP-date (RFC 7231 IMF-fixdate, e.g.
+    /// `"Wed, 21 Oct 2015 07:28:00 GMT"`) as commonly sent in `Date` /
+    /// `Expires` response headers.
+    fn parse_http_date(value: &str) -> Option<DateTime<Utc>> {
+        chrono::NaiveDateTime::parse_from_str(value.trim(), "%a, %d %b %Y %H:%M:%S GMT")
+            .ok()
+            .map(|naive| naive.and_utc())
     }
 
     /// Get the strategy configuration.
@@ -375,5 +450,118 @@ mod tests {
         assert_eq!(config.cache_name, "default-cache");
         assert_eq!(config.network_timeout, Some(5000));
         assert_eq!(config.max_entries, Some(50));
+    }
+
+    // -- Regression tests for CacheStrategy::is_expired() (previously always
+    //    returned false, so cache_expiration had zero effect). These exercise
+    //    the pure `compute_is_expired`/`parse_max_age`/`parse_http_date`
+    //    helpers directly, since they need no browser Headers/Response object.
+
+    #[test]
+    fn test_parse_max_age() {
+        assert_eq!(CacheStrategy::parse_max_age("max-age=3600"), Some(3600));
+        assert_eq!(
+            CacheStrategy::parse_max_age("public, max-age=60, must-revalidate"),
+            Some(60)
+        );
+        assert_eq!(CacheStrategy::parse_max_age("no-cache"), None);
+        assert_eq!(CacheStrategy::parse_max_age("max-age=not-a-number"), None);
+    }
+
+    #[test]
+    fn test_cache_control_forces_revalidate() {
+        assert!(CacheStrategy::cache_control_forces_revalidate("no-store"));
+        assert!(CacheStrategy::cache_control_forces_revalidate(
+            "public, no-cache"
+        ));
+        assert!(!CacheStrategy::cache_control_forces_revalidate(
+            "max-age=3600"
+        ));
+    }
+
+    #[test]
+    fn test_parse_http_date() {
+        let parsed = CacheStrategy::parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT");
+        assert!(parsed.is_some());
+        if let Some(dt) = parsed {
+            assert_eq!(dt.to_string(), "2015-10-21 07:28:00 UTC");
+        }
+
+        assert!(CacheStrategy::parse_http_date("not a date").is_none());
+    }
+
+    #[test]
+    fn test_compute_is_expired_no_policy_never_expires() {
+        // No max-age directive and no configured cache_expiration: nothing
+        // can be considered stale.
+        let now = Utc::now();
+        assert!(!CacheStrategy::compute_is_expired(None, None, None, now));
+    }
+
+    #[test]
+    fn test_compute_is_expired_no_store_always_expires() {
+        let now = Utc::now();
+        assert!(CacheStrategy::compute_is_expired(
+            Some("no-store"),
+            None,
+            Some(Duration::days(7)),
+            now
+        ));
+    }
+
+    #[test]
+    fn test_compute_is_expired_respects_configured_ttl() {
+        let cached_at = "Wed, 01 Jan 2020 00:00:00 GMT";
+        let now_fresh = DateTime::parse_from_rfc3339("2020-01-01T00:00:30Z")
+            .map(|dt| dt.to_utc())
+            .unwrap_or_else(|_| Utc::now());
+        let now_stale = DateTime::parse_from_rfc3339("2020-01-01T01:00:01Z")
+            .map(|dt| dt.to_utc())
+            .unwrap_or_else(|_| Utc::now());
+
+        // 1 hour TTL: 30 seconds in is fresh, 1h00m01s in is expired.
+        assert!(!CacheStrategy::compute_is_expired(
+            None,
+            Some(cached_at),
+            Some(Duration::hours(1)),
+            now_fresh
+        ));
+        assert!(CacheStrategy::compute_is_expired(
+            None,
+            Some(cached_at),
+            Some(Duration::hours(1)),
+            now_stale
+        ));
+    }
+
+    #[test]
+    fn test_compute_is_expired_max_age_overrides_config() {
+        let cached_at = "Wed, 01 Jan 2020 00:00:00 GMT";
+        // 2 minutes after caching.
+        let now = DateTime::parse_from_rfc3339("2020-01-01T00:02:00Z")
+            .map(|dt| dt.to_utc())
+            .unwrap_or_else(|_| Utc::now());
+
+        // Server says max-age=60 (1 minute): should be expired even though
+        // the strategy's own configured TTL is 7 days.
+        assert!(CacheStrategy::compute_is_expired(
+            Some("max-age=60"),
+            Some(cached_at),
+            Some(Duration::days(7)),
+            now
+        ));
+    }
+
+    #[test]
+    fn test_compute_is_expired_missing_date_header_not_expired() {
+        // A TTL exists but we have no Date header to compute age from, so we
+        // cannot prove staleness.
+        let now = Utc::now();
+        assert!(!CacheStrategy::compute_is_expired(
+            None,
+            None,
+            Some(Duration::seconds(1)),
+            now
+        ));
     }
 }

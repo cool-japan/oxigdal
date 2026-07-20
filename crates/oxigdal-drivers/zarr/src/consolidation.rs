@@ -232,18 +232,17 @@ impl<S: Store> Store for ConsolidatedStore<S> {
         // Check if this is a metadata file and we have it consolidated
         if let Some(ref consolidated) = self.consolidated {
             let key_str = key.as_str();
-            if key_str.ends_with(".zarray")
+            if (key_str.ends_with(".zarray")
                 || key_str.ends_with(".zgroup")
-                || key_str.ends_with(".zattrs")
+                || key_str.ends_with(".zattrs"))
+                && let Some(metadata) = consolidated.get_metadata(key_str)
             {
-                if let Some(metadata) = consolidated.get_metadata(key_str) {
-                    // Return the consolidated metadata as JSON
-                    return serde_json::to_vec(metadata).map_err(|e| {
-                        ZarrError::Metadata(MetadataError::InvalidJson {
-                            message: format!("Failed to serialize metadata: {e}"),
-                        })
-                    });
-                }
+                // Return the consolidated metadata as JSON
+                return serde_json::to_vec(metadata).map_err(|e| {
+                    ZarrError::Metadata(MetadataError::InvalidJson {
+                        message: format!("Failed to serialize metadata: {e}"),
+                    })
+                });
             }
         }
 

@@ -2,12 +2,12 @@
 //!
 //! This module provides utilities for paginated STAC API searches.
 
-#[cfg(all(feature = "reqwest", feature = "async"))]
+#[cfg(feature = "async")]
 use crate::error::Result;
 use crate::search::{SearchParams, SearchResults, StacClient};
 
 /// Paginator for iterating through STAC search results.
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 #[derive(Debug, Clone)]
 pub struct Paginator {
     /// STAC client.
@@ -20,7 +20,7 @@ pub struct Paginator {
     has_more: bool,
 }
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 impl Paginator {
     /// Creates a new paginator.
     ///
@@ -122,7 +122,7 @@ impl Paginator {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # #[cfg(all(feature = "reqwest", feature = "async"))]
+    /// # #[cfg(feature = "async")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// use futures::{StreamExt, pin_mut};
     /// use oxigdal_stac::{SearchParams, StacClient};
@@ -218,9 +218,13 @@ pub struct PagePagination {
 
 impl PagePagination {
     /// Creates a new page pagination.
+    ///
+    /// `page` is 1-indexed; `0` is normalized to `1` (there is no "page
+    /// zero") so that callers can never construct an instance whose
+    /// [`offset()`][Self::offset] computation would underflow or panic.
     pub fn new(page: u32, per_page: u32) -> Self {
         Self {
-            page,
+            page: page.max(1),
             per_page,
             total_pages: None,
             total_items: None,
@@ -228,8 +232,16 @@ impl PagePagination {
     }
 
     /// Returns the offset for the current page.
+    ///
+    /// `page` is documented as 1-indexed, but this struct derives
+    /// `Deserialize` with fully public fields, so a value with `page == 0`
+    /// can still reach this method (e.g. parsed from an untrusted STAC
+    /// server's pagination metadata, or built via a struct literal that
+    /// bypasses [`new()`][Self::new]). Treat `page == 0` the same as
+    /// `page == 1` (offset `0`) instead of underflowing, and widen to `u64`
+    /// before multiplying to avoid a `u32` overflow for large `per_page`.
     pub fn offset(&self) -> u64 {
-        u64::from((self.page - 1) * self.per_page)
+        u64::from(self.page.saturating_sub(1)) * u64::from(self.per_page)
     }
 
     /// Returns whether there is a next page.
@@ -289,7 +301,7 @@ impl SearchResults {
 }
 
 #[cfg(test)]
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 mod tests {
     use super::*;
 
@@ -305,6 +317,37 @@ mod tests {
     fn test_page_pagination_offset() {
         let pagination = PagePagination::new(3, 20);
         assert_eq!(pagination.offset(), 40);
+    }
+
+    #[test]
+    fn test_page_pagination_new_normalizes_page_zero() {
+        // `new(0, ..)` must not underflow/panic; page 0 is treated as page 1.
+        let pagination = PagePagination::new(0, 10);
+        assert_eq!(pagination.page, 1);
+        assert_eq!(pagination.offset(), 0);
+    }
+
+    #[test]
+    fn test_page_pagination_offset_page_zero_struct_literal() {
+        // Public fields let callers bypass `new()` entirely; `offset()` must
+        // still not underflow/panic when `page == 0`.
+        let pagination = PagePagination {
+            page: 0,
+            per_page: 10,
+            total_pages: None,
+            total_items: None,
+        };
+        assert_eq!(pagination.offset(), 0);
+    }
+
+    #[test]
+    fn test_page_pagination_offset_page_zero_deserialized() {
+        // An untrusted STAC server's pagination metadata could deserialize
+        // to `page: 0`; `offset()` must not underflow/panic in that case.
+        let pagination: PagePagination =
+            serde_json::from_str(r#"{"page":0,"per_page":10}"#).expect("valid JSON");
+        assert_eq!(pagination.page, 0);
+        assert_eq!(pagination.offset(), 0);
     }
 
     #[test]

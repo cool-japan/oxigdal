@@ -1,5 +1,5 @@
 //! Integration tests for [`SpatialHashGrid`].
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_index::{Bbox2D, SpatialHashGrid};
 

@@ -45,48 +45,47 @@ pub(super) fn filter_geojson_features(
     where_clause: Option<&str>,
 ) -> PyResult<JsonValue> {
     // Only filter if this is a FeatureCollection
-    if let JsonValue::Object(map) = json {
-        if map.get("type").and_then(|v| v.as_str()) == Some("FeatureCollection") {
-            if let Some(JsonValue::Array(features)) = map.get("features") {
-                // Apply filters
-                let filtered_features: Vec<JsonValue> = features
-                    .iter()
-                    .filter(|feature| {
-                        // Apply bbox filter
-                        if let Some(b) = bbox {
-                            if !feature_intersects_bbox(feature, b) {
-                                return false;
-                            }
-                        }
-                        // Apply where clause filter
-                        if let Some(where_str) = where_clause {
-                            if !apply_geojson_where_filter(feature, where_str) {
-                                return false;
-                            }
-                        }
-                        true
-                    })
-                    .cloned()
-                    .collect();
-
-                // Rebuild FeatureCollection with filtered features
-                let mut result_map = serde_json::Map::new();
-                result_map.insert(
-                    "type".to_string(),
-                    JsonValue::String("FeatureCollection".to_string()),
-                );
-                result_map.insert("features".to_string(), JsonValue::Array(filtered_features));
-
-                // Copy other top-level properties (like crs, bbox, etc.)
-                for (key, value) in map {
-                    if key != "type" && key != "features" {
-                        result_map.insert(key.clone(), value.clone());
-                    }
+    if let JsonValue::Object(map) = json
+        && map.get("type").and_then(|v| v.as_str()) == Some("FeatureCollection")
+        && let Some(JsonValue::Array(features)) = map.get("features")
+    {
+        // Apply filters
+        let filtered_features: Vec<JsonValue> = features
+            .iter()
+            .filter(|feature| {
+                // Apply bbox filter
+                if let Some(b) = bbox
+                    && !feature_intersects_bbox(feature, b)
+                {
+                    return false;
                 }
+                // Apply where clause filter
+                if let Some(where_str) = where_clause
+                    && !apply_geojson_where_filter(feature, where_str)
+                {
+                    return false;
+                }
+                true
+            })
+            .cloned()
+            .collect();
 
-                return Ok(JsonValue::Object(result_map));
+        // Rebuild FeatureCollection with filtered features
+        let mut result_map = serde_json::Map::new();
+        result_map.insert(
+            "type".to_string(),
+            JsonValue::String("FeatureCollection".to_string()),
+        );
+        result_map.insert("features".to_string(), JsonValue::Array(filtered_features));
+
+        // Copy other top-level properties (like crs, bbox, etc.)
+        for (key, value) in map {
+            if key != "type" && key != "features" {
+                result_map.insert(key.clone(), value.clone());
             }
         }
+
+        return Ok(JsonValue::Object(result_map));
     }
 
     // Not a FeatureCollection or no features, return as-is
@@ -140,10 +139,10 @@ fn get_geometry_bounds(geometry: &JsonValue) -> Option<(f64, f64, f64, f64)> {
             let rings = coords.as_array()?;
             let mut bounds: Option<(f64, f64, f64, f64)> = None;
             for ring in rings {
-                if let Some(ring_arr) = ring.as_array() {
-                    if let Some(ring_bounds) = compute_coords_bounds(ring_arr) {
-                        bounds = Some(merge_bounds(bounds, ring_bounds));
-                    }
+                if let Some(ring_arr) = ring.as_array()
+                    && let Some(ring_bounds) = compute_coords_bounds(ring_arr)
+                {
+                    bounds = Some(merge_bounds(bounds, ring_bounds));
                 }
             }
             bounds
@@ -154,10 +153,10 @@ fn get_geometry_bounds(geometry: &JsonValue) -> Option<(f64, f64, f64, f64)> {
             for polygon in polygons {
                 if let Some(rings) = polygon.as_array() {
                     for ring in rings {
-                        if let Some(ring_arr) = ring.as_array() {
-                            if let Some(ring_bounds) = compute_coords_bounds(ring_arr) {
-                                bounds = Some(merge_bounds(bounds, ring_bounds));
-                            }
+                        if let Some(ring_arr) = ring.as_array()
+                            && let Some(ring_bounds) = compute_coords_bounds(ring_arr)
+                        {
+                            bounds = Some(merge_bounds(bounds, ring_bounds));
                         }
                     }
                 }
@@ -186,15 +185,14 @@ fn compute_coords_bounds(coords: &[JsonValue]) -> Option<(f64, f64, f64, f64)> {
     let mut maxy = f64::NEG_INFINITY;
 
     for coord in coords {
-        if let Some(arr) = coord.as_array() {
-            if arr.len() >= 2 {
-                if let (Some(x), Some(y)) = (arr[0].as_f64(), arr[1].as_f64()) {
-                    minx = minx.min(x);
-                    miny = miny.min(y);
-                    maxx = maxx.max(x);
-                    maxy = maxy.max(y);
-                }
-            }
+        if let Some(arr) = coord.as_array()
+            && arr.len() >= 2
+            && let (Some(x), Some(y)) = (arr[0].as_f64(), arr[1].as_f64())
+        {
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
         }
     }
 

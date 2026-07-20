@@ -40,9 +40,20 @@ use crate::error::Result;
 #[cfg(feature = "ml")]
 pub mod layers;
 
-// Temporarily disabled until full backend implementation
-// #[cfg(feature = "ml")]
-// pub mod scirs2_backend;
+// Pure-Rust ONNX model export (protobuf writer) for UNet / ResNet architectures.
+#[cfg(feature = "onnx")]
+pub mod onnx_export;
+
+// NOTE: the former `scirs2_backend` (scirs2-neural forward-only) and
+// `autograd_backend` (scirs2-autograd trainable) modules were removed: they had
+// drifted irrecoverably against the current scirs2 APIs (the redesigned
+// `VariableEnvironment`/`Context` variable-access surface, the missing
+// `tensor_ops::upsample2d`, the now-generic `layers::ConvBlock`, and renamed
+// `UNetConfig` fields), so re-enabling them was blocked by upstream API gaps
+// rather than a local edit. The supported, fully-tested path for serializing a
+// model architecture is [`onnx_export`]; [`layers`] provides forward-pass
+// building blocks. Trainable backends will return once the scirs2-autograd
+// variable/upsample surface stabilizes.
 
 /// Trait for ML backend implementations
 ///

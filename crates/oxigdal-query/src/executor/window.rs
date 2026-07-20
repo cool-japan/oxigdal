@@ -444,14 +444,14 @@ pub fn evaluate_window_batch(
         .copied()
         .max();
 
-    if let Some(max_column) = max_column {
-        if max_column >= batch.columns.len() {
-            return Err(QueryError::execution(format!(
-                "Window column index {} out of bounds (batch has {} columns)",
-                max_column,
-                batch.columns.len()
-            )));
-        }
+    if let Some(max_column) = max_column
+        && max_column >= batch.columns.len()
+    {
+        return Err(QueryError::execution(format!(
+            "Window column index {} out of bounds (batch has {} columns)",
+            max_column,
+            batch.columns.len()
+        )));
     }
 
     if func.reads_target() && target_column >= batch.columns.len() {

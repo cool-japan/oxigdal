@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use crate::context::GpuContext;
-use crate::error::GpuResult;
+use crate::error::{GpuError, GpuResult};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Component types
@@ -541,7 +541,14 @@ pub fn build_cooperative_matrix_gemm_pipeline(
 ///
 /// `dim` specifies the **logical** matrix dimensions (M, N, K) used to
 /// calculate the number of workgroups dispatched in X and Y.  Each workgroup
-/// covers a `(16 × 16)` tile (matching the kernel's `@workgroup_size`).
+/// collaboratively computes one `config.dim.m × config.dim.n` tile of `C`
+/// (the tile size baked into the shader by [`make_gemm_wgsl`]), so the number
+/// of workgroups launched is `ceil(M / tile_m) × ceil(N / tile_n)`.
+///
+/// `config` MUST be the same configuration used to build `pipeline` via
+/// [`build_cooperative_matrix_gemm_pipeline`]; the tile dimensions it carries
+/// drive the dispatch math and must not drift from the tile size compiled into
+/// the shader, otherwise parts of `C` are left uncomputed.
 ///
 /// # GPU-memory layout (all row-major)
 ///
@@ -553,10 +560,13 @@ pub fn build_cooperative_matrix_gemm_pipeline(
 ///
 /// # Errors
 ///
-/// Returns `GpuError::ExecutionFailed` if the queue submission fails.
+/// Returns `GpuError::invalid_buffer` if `config.dim.m` or `config.dim.n` is
+/// zero (a degenerate tile size), or `GpuError::ExecutionFailed` if the queue
+/// submission fails.
 pub fn dispatch_cooperative_gemm(
     ctx: &GpuContext,
     pipeline: &wgpu::ComputePipeline,
+    config: &CoopMatrixGemmConfig,
     a: &wgpu::Buffer,
     b: &wgpu::Buffer,
     c: &wgpu::Buffer,
@@ -602,10 +612,20 @@ pub fn dispatch_cooperative_gemm(
         ],
     });
 
-    // Tile size matches the shader's @workgroup_size.
-    const TILE: u32 = 16;
-    let wg_x = dim.m.div_ceil(TILE);
-    let wg_y = dim.n.div_ceil(TILE);
+    // The per-workgroup C-tile size is baked into the shader from the config's
+    // `dim` (see `make_gemm_wgsl`), NOT a fixed 16. Dispatch enough workgroups
+    // to cover the logical matrix with these actual tile dimensions, otherwise
+    // a config with a smaller tile than 16 would under-dispatch and leave the
+    // upper rows/cols of C uncomputed.
+    let tile_m = config.dim.m;
+    let tile_n = config.dim.n;
+    if tile_m == 0 || tile_n == 0 {
+        return Err(GpuError::invalid_buffer(
+            "cooperative GEMM tile dimensions (config.dim.m/n) must be non-zero",
+        ));
+    }
+    let wg_x = dim.m.div_ceil(tile_m);
+    let wg_y = dim.n.div_ceil(tile_n);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("coop_matrix_gemm_encoder"),

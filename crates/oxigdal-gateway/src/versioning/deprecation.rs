@@ -122,17 +122,17 @@ impl DeprecationWarning {
         }
 
         // Sunset header
-        if let Some(sunset) = self.sunset_date {
-            if let Ok(value) = HeaderValue::from_str(&sunset.to_rfc2822()) {
-                headers.insert("Sunset", value);
-            }
+        if let Some(sunset) = self.sunset_date
+            && let Ok(value) = HeaderValue::from_str(&sunset.to_rfc2822())
+        {
+            headers.insert("Sunset", value);
         }
 
         // Link header for documentation
-        if let Some(ref link) = self.link {
-            if let Ok(value) = HeaderValue::from_str(&format!("<{}>; rel=\"deprecation\"", link)) {
-                headers.insert("Link", value);
-            }
+        if let Some(ref link) = self.link
+            && let Ok(value) = HeaderValue::from_str(&format!("<{}>; rel=\"deprecation\"", link))
+        {
+            headers.insert("Link", value);
         }
 
         headers

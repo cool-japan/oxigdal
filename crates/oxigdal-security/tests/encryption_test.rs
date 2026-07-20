@@ -1,4 +1,5 @@
 //! Integration tests for encryption.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::encryption::{
     EncryptionAlgorithm, at_rest::AtRestEncryptor, envelope::EnvelopeEncryptor,
@@ -7,7 +8,8 @@ use oxigdal_security::encryption::{
 
 #[test]
 fn test_encryption_end_to_end() {
-    let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+    let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+        .expect("Failed to generate key");
     let encryptor =
         AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, key, "test-key".to_string())
             .expect("Failed to create encryptor");

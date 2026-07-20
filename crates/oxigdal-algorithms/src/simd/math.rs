@@ -1,18 +1,22 @@
 //! SIMD-accelerated mathematical operations
 //!
-//! This module provides high-performance mathematical functions optimized with
-//! architecture-specific SIMD intrinsics. Key operations (sqrt, abs, floor, ceil,
-//! round) use hardware instructions directly. Transcendental functions (exp, log,
-//! sin, cos) use fast polynomial approximations evaluated in SIMD registers.
+//! This module provides mathematical functions with an architecture-specific
+//! fast path for a subset of operations. Key operations (sqrt, abs, floor, ceil,
+//! round) use NEON hardware instructions directly on aarch64. Transcendental
+//! functions (exp, log, sin, cos, ...) currently call the standard library's
+//! scalar libm implementation (e.g. `f32::exp`, `f32::ln`) on every target,
+//! including aarch64 — there is no SIMD polynomial approximation implemented
+//! for transcendentals today.
 //!
 //! # Architecture Support
 //!
-//! - **aarch64**: NEON intrinsics for sqrt (vrsqrteq_f32), abs (vabsq_f32),
-//!   floor/ceil/round (vrndmq_f32/vrndpq_f32/vrndnq_f32), and polynomial
-//!   evaluations using FMA (vfmaq_f32)
-//! - **x86-64**: SSE2 for basic ops, SSE4.1 for floor/ceil/round (_mm_floor_ps),
-//!   AVX2 for wider operations
-//! - **Other**: Scalar fallback with auto-vectorization hints
+//! - **aarch64**: NEON intrinsics for sqrt (vsqrtq_f32), abs (vabsq_f32), and
+//!   floor/ceil/round (vrndmq_f32/vrndpq_f32/vrndaq_f32). Transcendental
+//!   functions (exp, ln, log2, log10, sin, cos, ...) fall back to scalar
+//!   libm calls even on this target.
+//! - **All other targets (including x86-64)**: Scalar fallback with
+//!   auto-vectorization hints for every operation; there is no hand-written
+//!   SSE2/SSE4.1/AVX2 path in this module today.
 //!
 //! # Supported Operations
 //!
@@ -271,9 +275,10 @@ pub fn sqrt_f32(data: &[f32], out: &mut [f32]) -> Result<()> {
     Ok(())
 }
 
-/// Compute natural logarithm (ln) element-wise using SIMD polynomial approximation
+/// Compute natural logarithm (ln) element-wise
 ///
-/// Uses a fast polynomial approximation on NEON with ~2e-7 relative error.
+/// Calls the scalar libm `f32::ln` per element on every target; there is no
+/// SIMD polynomial approximation implemented for this operation.
 ///
 /// # Errors
 ///
@@ -355,9 +360,10 @@ pub fn log2_f32(data: &[f32], out: &mut [f32]) -> Result<()> {
     Ok(())
 }
 
-/// Compute exponential (e^x) element-wise using SIMD polynomial approximation
+/// Compute exponential (e^x) element-wise
 ///
-/// Uses a Cephes-style polynomial with ~1e-7 relative error for |x| < 88.
+/// Calls the scalar libm `f32::exp` per element on every target; there is no
+/// SIMD polynomial approximation implemented for this operation.
 ///
 /// # Errors
 ///

@@ -264,7 +264,7 @@ fn push_column_projections(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;

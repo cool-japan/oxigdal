@@ -9,19 +9,43 @@
 //! - Data anonymization
 //! - Compliance reporting (GDPR, HIPAA, FedRAMP)
 //! - Security scanning
+//!
+//! # Cargo features
+//!
+//! - `enterprise` (default): the full server-side surface listed above
+//!   (async audit/lineage/multitenancy, encryption at rest, scanning, ...).
+//! - `tls` (default): TLS-in-transit support via the pure-Rust OxiTLS stack;
+//!   implies `enterprise`.
+//! - `attestation` (default): lightweight, wasm-friendly crypto dependencies
+//!   (blake3 hash chain / Merkle root / Ed25519 session seal) for
+//!   tamper-evident session ledgers. The attestation module itself lands in a
+//!   follow-up work package; today the feature only enables its dependencies.
+//!
+//! With `--no-default-features` the crate exposes only [`SecurityConfig`] and
+//! the [`error`] module.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "enterprise")]
 pub mod access_control;
+#[cfg(feature = "enterprise")]
 pub mod anonymization;
+#[cfg(feature = "attestation")]
+pub mod attestation;
+#[cfg(feature = "enterprise")]
 pub mod audit;
+#[cfg(feature = "enterprise")]
 pub mod compliance;
+#[cfg(feature = "enterprise")]
 pub mod encryption;
 pub mod error;
+#[cfg(feature = "enterprise")]
 pub mod lineage;
+#[cfg(feature = "enterprise")]
 pub mod multitenancy;
+#[cfg(feature = "enterprise")]
 pub mod scanning;
 
 pub use error::{Result, SecurityError};

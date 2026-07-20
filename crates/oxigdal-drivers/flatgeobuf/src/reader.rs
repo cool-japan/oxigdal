@@ -7,11 +7,12 @@
 
 use crate::MAGIC_BYTES;
 use crate::error::{FlatGeobufError, Result};
+use crate::feature_codec;
 use crate::geometry::GeometryCodec;
-use crate::header::{Column, Header};
+use crate::header::Header;
 use crate::index::{BoundingBox, PackedRTree};
 use byteorder::{LittleEndian, ReadBytesExt};
-use oxigdal_core::vector::{Feature, FieldValue};
+use oxigdal_core::vector::Feature;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
 /// `FlatGeobuf` reader for synchronous I/O
@@ -41,11 +42,11 @@ impl<R: Read + Seek> FlatGeobufReader<R> {
             });
         }
 
-        // Read header size
-        let _header_size = buf_reader.read_u32::<LittleEndian>()?;
-
-        // Read header
-        let header = Header::read(&mut buf_reader)?;
+        // Read the size-prefixed header FlatBuffer.
+        let header_size = buf_reader.read_u32::<LittleEndian>()? as usize;
+        let mut header_bytes = vec![0u8; header_size];
+        buf_reader.read_exact(&mut header_bytes)?;
+        let header = Header::from_bytes(&header_bytes)?;
 
         // Create geometry codec
         let geometry_codec = GeometryCodec::new(header.has_z, header.has_m);
@@ -117,83 +118,9 @@ impl<R: Read + Seek> FlatGeobufReader<R> {
         Ok(Some(feature))
     }
 
-    /// Parses feature from bytes
+    /// Parses a feature from its `FlatBuffers` `Feature` message bytes.
     fn parse_feature(&self, data: &[u8]) -> Result<Feature> {
-        let mut cursor = std::io::Cursor::new(data);
-
-        // Read geometry if present
-        let has_geometry = cursor.read_u8()? != 0;
-        let geometry = if has_geometry {
-            Some(
-                self.geometry_codec
-                    .decode(&mut cursor, self.header.geometry_type)?,
-            )
-        } else {
-            None
-        };
-
-        let mut feature = if let Some(geom) = geometry {
-            Feature::new(geom)
-        } else {
-            Feature::new_attribute_only()
-        };
-
-        // Read properties
-        for column in &self.header.columns {
-            let is_null = cursor.read_u8()? != 0;
-            if is_null {
-                feature.set_property(column.name.clone(), FieldValue::Null);
-                continue;
-            }
-
-            let value = self.read_property_value(&mut cursor, column)?;
-            feature.set_property(column.name.clone(), value);
-        }
-
-        Ok(feature)
-    }
-
-    /// Reads a property value based on column type
-    fn read_property_value<D: Read>(&self, reader: &mut D, column: &Column) -> Result<FieldValue> {
-        use crate::header::ColumnType;
-
-        match column.column_type {
-            ColumnType::Byte => Ok(FieldValue::Integer(i64::from(reader.read_i8()?))),
-            ColumnType::UByte => Ok(FieldValue::UInteger(u64::from(reader.read_u8()?))),
-            ColumnType::Bool => Ok(FieldValue::Bool(reader.read_u8()? != 0)),
-            ColumnType::Short => Ok(FieldValue::Integer(i64::from(
-                reader.read_i16::<LittleEndian>()?,
-            ))),
-            ColumnType::UShort => Ok(FieldValue::UInteger(u64::from(
-                reader.read_u16::<LittleEndian>()?,
-            ))),
-            ColumnType::Int => Ok(FieldValue::Integer(i64::from(
-                reader.read_i32::<LittleEndian>()?,
-            ))),
-            ColumnType::UInt => Ok(FieldValue::UInteger(u64::from(
-                reader.read_u32::<LittleEndian>()?,
-            ))),
-            ColumnType::Long => Ok(FieldValue::Integer(reader.read_i64::<LittleEndian>()?)),
-            ColumnType::ULong => Ok(FieldValue::UInteger(reader.read_u64::<LittleEndian>()?)),
-            ColumnType::Float => Ok(FieldValue::Float(f64::from(
-                reader.read_f32::<LittleEndian>()?,
-            ))),
-            ColumnType::Double => Ok(FieldValue::Float(reader.read_f64::<LittleEndian>()?)),
-            ColumnType::String | ColumnType::Json | ColumnType::DateTime => {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                let s = String::from_utf8(bytes)?;
-                Ok(FieldValue::String(s))
-            }
-            ColumnType::Binary => {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                // Store as string for now - could be improved
-                Ok(FieldValue::String(format!("Binary({len} bytes)")))
-            }
-        }
+        feature_codec::decode_feature(&self.header, &self.geometry_codec, data)
     }
 
     /// Returns an iterator over all features
@@ -341,10 +268,7 @@ impl<R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin> AsyncFlatGeobufRead
         let mut header_bytes = vec![0u8; header_size as usize];
         reader.read_exact(&mut header_bytes).await?;
 
-        let header = {
-            let mut cursor = std::io::Cursor::new(&header_bytes);
-            Header::read(&mut cursor)?
-        };
+        let header = Header::from_bytes(&header_bytes)?;
 
         let geometry_codec = GeometryCodec::new(header.has_z, header.has_m);
 
@@ -415,81 +339,9 @@ impl<R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin> AsyncFlatGeobufRead
         Ok(Some(feature))
     }
 
-    /// Parses feature from bytes (same as sync version)
+    /// Parses a feature from its `FlatBuffers` `Feature` message bytes.
     fn parse_feature(&self, data: &[u8]) -> Result<Feature> {
-        let mut cursor = std::io::Cursor::new(data);
-
-        let has_geometry = cursor.read_u8()? != 0;
-        let geometry = if has_geometry {
-            Some(
-                self.geometry_codec
-                    .decode(&mut cursor, self.header.geometry_type)?,
-            )
-        } else {
-            None
-        };
-
-        let mut feature = if let Some(geom) = geometry {
-            Feature::new(geom)
-        } else {
-            Feature::new_attribute_only()
-        };
-
-        // Read properties
-        for column in &self.header.columns {
-            let is_null = cursor.read_u8()? != 0;
-            if is_null {
-                feature.set_property(column.name.clone(), FieldValue::Null);
-                continue;
-            }
-
-            let value = self.read_property_value(&mut cursor, column)?;
-            feature.set_property(column.name.clone(), value);
-        }
-
-        Ok(feature)
-    }
-
-    /// Reads property value (same as sync version)
-    fn read_property_value<D: Read>(&self, reader: &mut D, column: &Column) -> Result<FieldValue> {
-        use crate::header::ColumnType;
-
-        match column.column_type {
-            ColumnType::Byte => Ok(FieldValue::Integer(i64::from(reader.read_i8()?))),
-            ColumnType::UByte => Ok(FieldValue::UInteger(u64::from(reader.read_u8()?))),
-            ColumnType::Bool => Ok(FieldValue::Bool(reader.read_u8()? != 0)),
-            ColumnType::Short => Ok(FieldValue::Integer(i64::from(
-                reader.read_i16::<LittleEndian>()?,
-            ))),
-            ColumnType::UShort => Ok(FieldValue::UInteger(u64::from(
-                reader.read_u16::<LittleEndian>()?,
-            ))),
-            ColumnType::Int => Ok(FieldValue::Integer(i64::from(
-                reader.read_i32::<LittleEndian>()?,
-            ))),
-            ColumnType::UInt => Ok(FieldValue::UInteger(u64::from(
-                reader.read_u32::<LittleEndian>()?,
-            ))),
-            ColumnType::Long => Ok(FieldValue::Integer(reader.read_i64::<LittleEndian>()?)),
-            ColumnType::ULong => Ok(FieldValue::UInteger(reader.read_u64::<LittleEndian>()?)),
-            ColumnType::Float => Ok(FieldValue::Float(f64::from(
-                reader.read_f32::<LittleEndian>()?,
-            ))),
-            ColumnType::Double => Ok(FieldValue::Float(reader.read_f64::<LittleEndian>()?)),
-            ColumnType::String | ColumnType::Json | ColumnType::DateTime => {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                let s = String::from_utf8(bytes)?;
-                Ok(FieldValue::String(s))
-            }
-            ColumnType::Binary => {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                Ok(FieldValue::String(format!("Binary({len} bytes)")))
-            }
-        }
+        feature_codec::decode_feature(&self.header, &self.geometry_codec, data)
     }
 }
 
@@ -500,5 +352,118 @@ mod tests {
     #[test]
     fn test_magic_bytes() {
         assert_eq!(MAGIC_BYTES.len(), 8);
+    }
+
+    /// End-to-end regression for the packed R-tree spatial query path with a
+    /// realistically-sized dataset (>16 features -> multi-level index). Prior to
+    /// the `search()`/`seek_feature` index-semantics fix, a full-extent
+    /// `features_in_bbox` query on such a file returned zero (or wrong)
+    /// features because the tree traversal dropped every non-first-chunk child.
+    #[test]
+    fn test_features_in_bbox_multilevel_returns_all() {
+        use crate::header::{GeometryType, Header};
+        use crate::writer::FlatGeobufWriter;
+        use oxigdal_core::vector::{Feature, Geometry, Point};
+        use std::io::Cursor;
+
+        let header = Header::new(GeometryType::Point).with_index(true);
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = FlatGeobufWriter::new(cursor, header).expect("create writer");
+
+        let n = 40u32;
+        for i in 0..n {
+            let cx = f64::from(i) * 4.0 - 78.0;
+            let cy = f64::from(i) * 2.0 - 39.0;
+            writer
+                .add_feature(&Feature::new(Geometry::Point(Point::new(cx, cy))))
+                .expect("add feature");
+        }
+
+        let cursor = writer.finish().expect("finish writer");
+        let cursor = Cursor::new(cursor.into_inner());
+        let mut reader = FlatGeobufReader::new(cursor).expect("open reader");
+        assert!(reader.index().is_some(), "spatial index must be present");
+
+        let bbox = BoundingBox::new(-180.0, -90.0, 180.0, 90.0);
+        let mut xs: Vec<f64> = Vec::new();
+        {
+            let iter = reader.features_in_bbox(bbox).expect("bbox iterator");
+            for feat in iter {
+                let feat = feat.expect("feature read");
+                if let Some(Geometry::Point(p)) = feat.geometry {
+                    xs.push(p.coord.x);
+                }
+            }
+        }
+
+        assert_eq!(
+            xs.len(),
+            n as usize,
+            "full-extent bbox query must return all {n} features"
+        );
+
+        // Every original x-coordinate must be present exactly once.
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for i in 0..n {
+            let expected = f64::from(i) * 4.0 - 78.0;
+            assert!(
+                xs.iter().any(|&x| (x - expected).abs() < 1e-9),
+                "feature x={expected} missing from bbox results"
+            );
+        }
+    }
+
+    /// A partial-extent query must return exactly the intersecting subset.
+    #[test]
+    fn test_features_in_bbox_partial_extent_subset() {
+        use crate::header::{GeometryType, Header};
+        use crate::writer::FlatGeobufWriter;
+        use oxigdal_core::vector::{Feature, Geometry, Point};
+        use std::io::Cursor;
+
+        let header = Header::new(GeometryType::Point).with_index(true);
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = FlatGeobufWriter::new(cursor, header).expect("create writer");
+
+        let n = 40u32;
+        let mut expected_hits = 0usize;
+        let query = BoundingBox::new(30.0, 15.0, 200.0, 100.0);
+        for i in 0..n {
+            let cx = f64::from(i) * 4.0 - 78.0;
+            let cy = f64::from(i) * 2.0 - 39.0;
+            let pt_box = BoundingBox::new(cx, cy, cx, cy);
+            if pt_box.intersects(&query) {
+                expected_hits += 1;
+            }
+            writer
+                .add_feature(&Feature::new(Geometry::Point(Point::new(cx, cy))))
+                .expect("add feature");
+        }
+
+        let cursor = writer.finish().expect("finish writer");
+        let cursor = Cursor::new(cursor.into_inner());
+        let mut reader = FlatGeobufReader::new(cursor).expect("open reader");
+
+        let mut count = 0usize;
+        {
+            let iter = reader.features_in_bbox(query).expect("bbox iterator");
+            for feat in iter {
+                let feat = feat.expect("feature read");
+                if let Some(Geometry::Point(p)) = feat.geometry {
+                    assert!(
+                        p.coord.x >= 30.0 && p.coord.x <= 200.0,
+                        "returned feature x={} outside query window",
+                        p.coord.x
+                    );
+                }
+                count += 1;
+            }
+        }
+
+        assert!(expected_hits > 0, "test window should hit some features");
+        assert_eq!(
+            count, expected_hits,
+            "partial query must return exactly the intersecting features"
+        );
     }
 }

@@ -17,6 +17,8 @@ pub mod rasterize;
 pub mod reproject;
 pub mod sieve;
 pub mod stats;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod tileindex;
 pub mod translate;
 pub mod validate;

@@ -2,7 +2,7 @@
 
 > **Purpose:** Command-line interface for OxiGDAL geospatial operations
 > **Status (2026-05-16):** 13,397 Rust LoC · 258 tests · 3 real-code stubs (inspect/profile subcommands bail unconditionally; FlatGeobuf vector conversion unimplemented)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
 - [x] Implement actual raster I/O in `translate` command (currently stub)

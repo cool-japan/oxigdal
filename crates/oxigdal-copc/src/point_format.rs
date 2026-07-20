@@ -14,7 +14,12 @@ use crate::point::{Point3D, WaveformPacket};
 ///
 /// Tuple order: `(return_number, number_of_returns, classification,
 /// scan_angle_rank, user_data, point_source_id, gps_time, rgb_offset)`.
-type BaseFields = (u8, u8, u8, i8, u8, u16, Option<f64>, Option<usize>);
+///
+/// `scan_angle_rank` is carried as `f32` degrees for both legacy (formats
+/// 0-5, whole-degree resolution) and extended (formats 6-10, 0.006°
+/// resolution, full ±180° range) base records -- see
+/// [`crate::point::Point3D::scan_angle_rank`].
+type BaseFields = (u8, u8, u8, f32, u8, u16, Option<f64>, Option<usize>);
 
 /// Minimum record sizes per point data format ID.
 ///
@@ -160,8 +165,9 @@ fn parse_legacy_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcErr
     // Byte 15: classification
     let classification = record[15];
 
-    // Byte 16: scan angle rank (i8)
-    let scan_angle_rank = record[16] as i8;
+    // Byte 16: scan angle rank (i8, whole degrees), widened to f32 so both
+    // base-record parsers share one `Point3D::scan_angle_rank` representation.
+    let scan_angle_rank = f32::from(record[16] as i8);
 
     // Byte 17: user data
     let user_data = record[17];
@@ -221,11 +227,13 @@ fn parse_extended_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcE
     // Byte 17: user data
     let user_data = record[17];
 
-    // Bytes 18-19: scan angle (i16 LE), multiply by 0.006 to get degrees
+    // Bytes 18-19: scan angle (i16 LE), multiply by 0.006 to get degrees.
+    // Full precision (0.006-degree resolution, +/-180-degree range per ASPRS
+    // LAS 1.4 R15) is preserved -- no rounding or clamping to the legacy i8
+    // whole-degree representation.
     let raw_angle = i16::from_le_bytes([record[18], record[19]]);
-    let angle_degrees = raw_angle as f64 * 0.006;
-    // Clamp to i8 range for compatibility with Point3D.scan_angle_rank
-    let clamped = angle_degrees.round().clamp(-128.0, 127.0) as i8;
+    let angle_degrees = f64::from(raw_angle) * 0.006;
+    let scan_angle_rank = angle_degrees as f32;
 
     // Bytes 20-21: point source ID (u16 LE)
     let point_source_id = u16::from_le_bytes([record[20], record[21]]);
@@ -248,7 +256,7 @@ fn parse_extended_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcE
         return_number,
         number_of_returns,
         classification,
-        clamped,
+        scan_angle_rank,
         user_data,
         point_source_id,
         Some(gps_time),
@@ -518,7 +526,7 @@ mod tests {
     fn test_format0_scan_angle() {
         let rec = make_format0_record(0, 0, 0, 0);
         let pt = deserialize_point(&rec, 0, [1.0; 3], [0.0; 3]).expect("format 0");
-        assert_eq!(pt.scan_angle_rank, -5);
+        assert_eq!(pt.scan_angle_rank, -5.0);
     }
 
     #[test]
@@ -624,7 +632,7 @@ mod tests {
         let rec = make_format6_record(0, 0, 0, 0.0);
         // scan angle = 5000 * 0.006 = 30.0 degrees
         let pt = deserialize_point(&rec, 6, [1.0; 3], [0.0; 3]).expect("format 6");
-        assert_eq!(pt.scan_angle_rank, 30);
+        assert!((pt.scan_angle_rank - 30.0).abs() < 1e-4);
     }
 
     #[test]
@@ -633,16 +641,40 @@ mod tests {
         // Set scan angle to -5000 -> -30.0 degrees
         rec[18..20].copy_from_slice(&(-5000i16).to_le_bytes());
         let pt = deserialize_point(&rec, 6, [1.0; 3], [0.0; 3]).expect("format 6 neg angle");
-        assert_eq!(pt.scan_angle_rank, -30);
+        assert!((pt.scan_angle_rank - (-30.0)).abs() < 1e-4);
     }
 
     #[test]
-    fn test_format6_scan_angle_clamped() {
+    fn test_format6_scan_angle_sub_degree_precision() {
+        // 0.006-degree resolution: raw 1 -> 0.006 degrees, which would have
+        // rounded to 0 under the old i8-truncating conversion. Verify the
+        // full-precision f32 representation preserves it.
         let mut rec = make_format6_record(0, 0, 0, 0.0);
-        // Set scan angle to i16::MAX = 32767 -> 32767 * 0.006 = 196.6, clamped to 127
+        rec[18..20].copy_from_slice(&1i16.to_le_bytes());
+        let pt = deserialize_point(&rec, 6, [1.0; 3], [0.0; 3]).expect("format 6 sub-degree");
+        assert!((pt.scan_angle_rank - 0.006).abs() < 1e-4);
+        assert_ne!(
+            pt.scan_angle_rank, 0.0,
+            "sub-degree angle must not truncate to zero"
+        );
+    }
+
+    #[test]
+    fn test_format6_scan_angle_full_range_not_clamped() {
+        // Extended-format scan angle spans +/-180 degrees at 0.006-degree
+        // resolution (ASPRS LAS 1.4 R15). i16::MAX * 0.006 = 196.602 degrees;
+        // formerly this was rounded and clamped to the legacy i8 range
+        // (-128..127), silently corrupting any angle beyond +/-127 degrees.
+        // The widened f32 field must retain the true value instead.
+        let mut rec = make_format6_record(0, 0, 0, 0.0);
         rec[18..20].copy_from_slice(&i16::MAX.to_le_bytes());
-        let pt = deserialize_point(&rec, 6, [1.0; 3], [0.0; 3]).expect("format 6 clamped");
-        assert_eq!(pt.scan_angle_rank, 127);
+        let pt = deserialize_point(&rec, 6, [1.0; 3], [0.0; 3]).expect("format 6 full range");
+        assert!((pt.scan_angle_rank - 196.602).abs() < 1e-2);
+        assert!(
+            pt.scan_angle_rank > 127.0,
+            "scan angle beyond +/-127 degrees must not be clamped, got {}",
+            pt.scan_angle_rank
+        );
     }
 
     #[test]

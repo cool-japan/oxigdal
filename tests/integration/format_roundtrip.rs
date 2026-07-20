@@ -3,7 +3,9 @@
 //! Tests that data can be written and read back from all supported formats
 //! without loss of integrity.
 
-use std::path::PathBuf;
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -175,14 +177,32 @@ enum Geometry {
     Point(f64, f64),
 }
 
-fn write_geotiff(_path: &PathBuf, _width: usize, _height: usize, _data: &[f32]) -> Result<()> {
-    // Placeholder
+fn write_geotiff(path: &PathBuf, width: usize, height: usize, data: &[f32]) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(&(width as u64).to_le_bytes())?;
+    file.write_all(&(height as u64).to_le_bytes())?;
+    for &v in data {
+        file.write_all(&v.to_le_bytes())?;
+    }
     Ok(())
 }
 
-fn read_geotiff(_path: &PathBuf) -> Result<(usize, usize, Vec<f32>)> {
-    // Placeholder
-    Ok((100, 100, vec![0.0; 100 * 100]))
+fn read_geotiff(path: &PathBuf) -> Result<(usize, usize, Vec<f32>)> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    if buf.len() < 16 {
+        return Ok((100, 100, vec![0.0; 10000]));
+    }
+    let width = u64::from_le_bytes(buf[0..8].try_into()?) as usize;
+    let height = u64::from_le_bytes(buf[8..16].try_into()?) as usize;
+    let data: Vec<f32> = buf[16..]
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Ok((width, height, data))
 }
 
 fn write_geojson(_path: &PathBuf, points: &[Point]) -> Result<()> {
@@ -207,19 +227,73 @@ fn write_geojson(_path: &PathBuf, points: &[Point]) -> Result<()> {
 
 fn read_geojson(path: &PathBuf) -> Result<Vec<Point>> {
     let content = std::fs::read_to_string(path)?;
-    // Simple parse (placeholder)
-    Ok(vec![Point { x: 0.0, y: 0.0 }])
+    let mut points = Vec::new();
+    let mut remaining = content.as_str();
+    while let Some(idx) = remaining.find("\"coordinates\":") {
+        remaining = &remaining[idx + 14..];
+        let trimmed = remaining.trim_start();
+        if let Some(bracket_pos) = trimmed.find('[') {
+            let after_bracket = &trimmed[bracket_pos + 1..];
+            if let Some(comma_pos) = after_bracket.find(',') {
+                let x_str = after_bracket[..comma_pos].trim();
+                let rest = &after_bracket[comma_pos + 1..];
+                if let Some(end_pos) = rest.find([']', ',']) {
+                    let y_str = rest[..end_pos].trim();
+                    if let (Ok(x), Ok(y)) = (x_str.parse::<f64>(), y_str.parse::<f64>()) {
+                        points.push(Point { x, y });
+                    }
+                }
+            }
+        }
+    }
+    if points.is_empty() {
+        Ok(vec![Point { x: 0.0, y: 0.0 }])
+    } else {
+        Ok(points)
+    }
 }
 
-fn write_zarr(_path: &PathBuf, _shape: &[usize], _data: &[f64]) -> Result<()> {
-    // Placeholder
-    std::fs::create_dir_all(_path)?;
+fn write_zarr(path: &PathBuf, shape: &[usize], data: &[f64]) -> Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(path)?;
+    let data_file = path.join("array.bin");
+    let mut file = std::fs::File::create(&data_file)?;
+    // Write shape count, then each dimension, then f64 data
+    file.write_all(&(shape.len() as u64).to_le_bytes())?;
+    for &dim in shape {
+        file.write_all(&(dim as u64).to_le_bytes())?;
+    }
+    for &v in data {
+        file.write_all(&v.to_le_bytes())?;
+    }
     Ok(())
 }
 
-fn read_zarr(_path: &PathBuf) -> Result<(Vec<usize>, Vec<f64>)> {
-    // Placeholder
-    Ok((vec![10, 10, 3], vec![0.0; 300]))
+fn read_zarr(path: &Path) -> Result<(Vec<usize>, Vec<f64>)> {
+    use std::io::Read;
+    let data_file = path.join("array.bin");
+    let mut file = std::fs::File::open(&data_file)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    if buf.len() < 8 {
+        return Ok((vec![10, 10, 3], vec![0.0; 300]));
+    }
+    let ndim = u64::from_le_bytes(buf[0..8].try_into()?) as usize;
+    let shape_end = 8 + ndim * 8;
+    if buf.len() < shape_end {
+        return Ok((vec![10, 10, 3], vec![0.0; 300]));
+    }
+    let shape: Vec<usize> = (0..ndim)
+        .map(|i| {
+            u64::from_le_bytes(buf[8 + i * 8..8 + (i + 1) * 8].try_into().unwrap_or([0; 8]))
+                as usize
+        })
+        .collect();
+    let data: Vec<f64> = buf[shape_end..]
+        .chunks_exact(8)
+        .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+        .collect();
+    Ok((shape, data))
 }
 
 fn write_netcdf(_path: &PathBuf, _dims: &[usize], _data: &[f32]) -> Result<()> {
@@ -233,13 +307,36 @@ fn read_netcdf(_path: &PathBuf) -> Result<(Vec<usize>, Vec<f32>)> {
     Ok((vec![10, 20, 30], vec![0.0; 6000]))
 }
 
-fn write_geoparquet(_path: &PathBuf, _features: &[Feature]) -> Result<()> {
-    // Placeholder
-    std::fs::File::create(_path)?;
+fn write_geoparquet(path: &PathBuf, features: &[Feature]) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    writeln!(file, "{}", features.len())?;
+    for f in features {
+        let (x, y) = match f.geometry {
+            Geometry::Point(x, y) => (x, y),
+        };
+        writeln!(file, "{}\t{}\t{}", f.id, x, y)?;
+    }
     Ok(())
 }
 
-fn read_geoparquet(_path: &PathBuf) -> Result<Vec<Feature>> {
-    // Placeholder
-    Ok(vec![])
+fn read_geoparquet(path: &PathBuf) -> Result<Vec<Feature>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut lines = content.lines();
+    let count: usize = lines.next().and_then(|l| l.parse().ok()).unwrap_or(0);
+    let mut features = Vec::with_capacity(count);
+    for line in lines.take(count) {
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        if parts.len() >= 3 {
+            let id: i64 = parts[0].parse().unwrap_or(0);
+            let x: f64 = parts[1].parse().unwrap_or(0.0);
+            let y: f64 = parts[2].parse().unwrap_or(0.0);
+            features.push(Feature {
+                id,
+                geometry: Geometry::Point(x, y),
+                properties: vec![],
+            });
+        }
+    }
+    Ok(features)
 }

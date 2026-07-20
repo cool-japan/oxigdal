@@ -343,16 +343,52 @@ fn apply_stage_inverse(stage: PipelineStage, data: &[u8]) -> Result<Vec<u8>, Com
         PipelineStage::Shuffle { typesize } => Ok(byte_unshuffle(data, typesize as usize)),
         PipelineStage::Delta => DeltaCodec::default().decompress(data),
         PipelineStage::Rle => RleCodec::default().decompress(data),
-        // Lz4/Zstd `decompress` take a size hint; the pipeline does not record
-        // intermediate sizes, so `None` is passed (each codec falls back to a
-        // self-describing or generous-bound decode).
-        PipelineStage::Lz4 => Lz4Codec::default().decompress(data, None),
+        // Zstd frames embed their own content size, so `None` is a genuine
+        // self-describing decode. Lz4 raw blocks carry no such field — see
+        // `decompress_lz4_stage` for how that case is handled.
+        PipelineStage::Lz4 => decompress_lz4_stage(data),
         PipelineStage::Zstd => ZstdCodec::default().decompress(data, None),
         PipelineStage::Snappy => SnappyCodec::default().decompress(data),
         PipelineStage::Brotli => BrotliCodec::default().decompress(data),
         PipelineStage::Deflate => DeflateCodec::default().decompress(data),
         PipelineStage::Dictionary => DictionaryCodec::default().decompress(data),
     }
+}
+
+/// Output-size multipliers tried in order when decompressing a
+/// [`PipelineStage::Lz4`] payload with no known target size.
+///
+/// Raw LZ4 blocks (unlike Zstd frames) carry no embedded decompressed-length
+/// field, and the pipeline's frame header does not record per-stage
+/// intermediate sizes. `Lz4Codec::decompress`'s own `None`-hint fallback
+/// guesses `input.len() * 4`, which undershoots whenever a block compresses
+/// better than 4:1 — exactly the common case for a `Shuffle`-then-`Lz4`
+/// pipeline over smooth numeric data (e.g. a near-linear-ramp `f32` array).
+/// `oxiarc_lz4::decompress_block`'s `max_output` is a safe upper bound, not a
+/// required exact size, so retrying with a growing bound converges on the
+/// true size without any wire-format change.
+const LZ4_SIZE_GUESS_MULTIPLIERS: &[usize] = &[4, 16, 64, 256, 1024, 4096, 16384];
+
+/// Decompress a [`PipelineStage::Lz4`] payload, growing the output-size bound
+/// on each retry until decoding succeeds. See [`LZ4_SIZE_GUESS_MULTIPLIERS`].
+fn decompress_lz4_stage(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+    let codec = Lz4Codec::default();
+    let mut last_err = None;
+    for &multiplier in LZ4_SIZE_GUESS_MULTIPLIERS {
+        let guess = data.len().saturating_mul(multiplier);
+        match codec.decompress(data, Some(guess)) {
+            Ok(output) => return Ok(output),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        CompressionError::InvalidMetadata(
+            "lz4 pipeline stage decompression failed for an empty guess schedule".to_string(),
+        )
+    }))
 }
 
 #[cfg(test)]

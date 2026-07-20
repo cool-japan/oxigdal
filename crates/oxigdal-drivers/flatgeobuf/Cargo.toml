@@ -43,3 +43,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
+
+# NOTE: `http` pulls reqwest -> rustls -> aws-lc-sys (C/asm). `std`/`async`
+# stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["std", "async"]
+rustdoc-args = ["--cfg", "docsrs"]

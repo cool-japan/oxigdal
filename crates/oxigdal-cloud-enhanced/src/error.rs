@@ -89,6 +89,12 @@ pub enum CloudEnhancedError {
     /// Generic error
     #[error("{0}")]
     Generic(String),
+
+    /// Operation not implemented by this client (distinct from a fabricated
+    /// success/empty result -- callers can match on this to detect a
+    /// deliberately unimplemented API surface).
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 impl CloudEnhancedError {
@@ -190,6 +196,11 @@ impl CloudEnhancedError {
     /// Creates a new generic error.
     pub fn generic(msg: impl Into<String>) -> Self {
         Self::Generic(msg.into())
+    }
+
+    /// Creates a new "not implemented" error.
+    pub fn not_implemented(msg: impl Into<String>) -> Self {
+        Self::NotImplemented(msg.into())
     }
 }
 

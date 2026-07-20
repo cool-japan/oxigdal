@@ -210,7 +210,7 @@ impl PooledBuffer {
 
     /// Get typed slice
     pub fn as_typed_slice<T: bytemuck::Pod>(&self) -> Result<&[T]> {
-        if self.size % std::mem::size_of::<T>() != 0 {
+        if !self.size.is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Buffer size not aligned to type".to_string(),
@@ -224,7 +224,7 @@ impl PooledBuffer {
 
     /// Get typed mutable slice
     pub fn as_typed_mut_slice<T: bytemuck::Pod>(&mut self) -> Result<&mut [T]> {
-        if self.size % std::mem::size_of::<T>() != 0 {
+        if !self.size.is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Buffer size not aligned to type".to_string(),
@@ -300,11 +300,11 @@ impl PoolInner {
         // Try to get from pool
         {
             let mut free_buffers = self.free_buffers.write();
-            if let Some(buffers) = free_buffers.get_mut(&size_class) {
-                if let Some(ptr) = buffers.pop() {
-                    self.stats.record_allocation(true);
-                    return Ok(ptr);
-                }
+            if let Some(buffers) = free_buffers.get_mut(&size_class)
+                && let Some(ptr) = buffers.pop()
+            {
+                self.stats.record_allocation(true);
+                return Ok(ptr);
             }
         }
 

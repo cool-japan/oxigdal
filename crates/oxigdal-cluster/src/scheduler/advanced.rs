@@ -737,15 +737,15 @@ impl MultiQueueScheduler {
             QueueLevel::Low,
             QueueLevel::Background,
         ] {
-            if let Some(queue) = queues.get_mut(level) {
-                if !queue.is_empty() {
-                    let weight = weights.get(level).copied().unwrap_or(0.5);
-                    // Weighted random selection (simplified)
-                    if weight > 0.5 || queue.len() > 10 {
-                        if let Some(task_id) = queue.pop_front() {
-                            return Some((task_id, *level));
-                        }
-                    }
+            if let Some(queue) = queues.get_mut(level)
+                && !queue.is_empty()
+            {
+                let weight = weights.get(level).copied().unwrap_or(0.5);
+                // Weighted random selection (simplified)
+                if (weight > 0.5 || queue.len() > 10)
+                    && let Some(task_id) = queue.pop_front()
+                {
+                    return Some((task_id, *level));
                 }
             }
         }

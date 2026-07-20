@@ -6,7 +6,7 @@
 //! that the whole suite still passes in environments without a GPU.
 
 // Allow unwrap in tests and relax doc requirements.
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{
     GpuContext,

@@ -1,6 +1,6 @@
 {
   "name": "@cooljapan/oxigdal-node",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "Node.js bindings for OxiGDAL - Pure Rust geospatial data abstraction library",
   "main": "index.js",
   "types": "index.d.ts",

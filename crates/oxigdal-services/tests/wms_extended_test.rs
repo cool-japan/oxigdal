@@ -39,7 +39,7 @@ fn test_wcs_add_multiple_coverages() {
             band_count: 1,
             band_names: vec!["Band1".to_string()],
             data_type: "Float32".to_string(),
-            source: CoverageSource::Memory,
+            source: CoverageSource::Memory(std::sync::Arc::new(Vec::new())),
             formats: vec!["image/tiff".to_string()],
         };
         assert!(state.add_coverage(coverage).is_ok());
@@ -86,7 +86,7 @@ fn test_wcs_coverage_info_fields() {
         band_count: 1,
         band_names: vec!["Elevation".to_string()],
         data_type: "Int16".to_string(),
-        source: CoverageSource::Memory,
+        source: CoverageSource::Memory(std::sync::Arc::new(Vec::new())),
         formats: vec!["image/tiff".to_string(), "image/png".to_string()],
     };
 

@@ -10,6 +10,7 @@
 pub mod active_active;
 pub mod lag_monitor;
 pub mod protocol;
+pub mod transport;
 
 use crate::error::{HaError, HaResult};
 use async_trait::async_trait;

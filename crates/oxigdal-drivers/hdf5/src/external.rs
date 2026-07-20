@@ -87,7 +87,7 @@ impl ExternalFile {
         // Check file size if not unlimited
         if !self.is_unlimited() {
             let metadata = std::fs::metadata(&full_path).map_err(|e| {
-                Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!(
+                Hdf5Error::Io(std::io::Error::other(format!(
                     "Failed to read metadata for {}: {}",
                     full_path.display(),
                     e
@@ -103,7 +103,7 @@ impl ExternalFile {
                     full_path.display(),
                     file_size,
                     required_size
-                ));
+                )));
             }
         }
 
@@ -134,7 +134,7 @@ impl ExternalStorage {
         if !file.is_unlimited() {
             self.total_size += file.size;
         }
-        self.files.push(file));
+        self.files.push(file);
     }
 
     /// Get all external files
@@ -154,7 +154,7 @@ impl ExternalStorage {
 
     /// Check if storage has any unlimited files
     pub fn has_unlimited(&self) -> bool {
-        self.files.iter().any(|f| f.is_unlimited()))
+        self.files.iter().any(|f| f.is_unlimited())
     }
 
     /// Validate all external files
@@ -166,7 +166,7 @@ impl ExternalStorage {
         }
 
         // Check for multiple unlimited files
-        let unlimited_count = self.files.iter().filter(|f| f.is_unlimited())).count();
+        let unlimited_count = self.files.iter().filter(|f| f.is_unlimited()).count();
         if unlimited_count > 1 {
             return Err(Hdf5Error::InvalidOperation(
                 "External storage can have at most one unlimited file".to_string(),
@@ -174,7 +174,7 @@ impl ExternalStorage {
         }
 
         // Unlimited file must be the last one
-        if unlimited_count == 1 && !self.files.last().map(|f| f.is_unlimited())).unwrap_or(false) {
+        if unlimited_count == 1 && !self.files.last().map(|f| f.is_unlimited()).unwrap_or(false) {
             return Err(Hdf5Error::InvalidOperation(
                 "Unlimited external file must be the last in the list".to_string(),
             ));
@@ -226,9 +226,7 @@ impl ExternalStorage {
             let available_in_file = if file.is_unlimited() {
                 remaining_size
             } else {
-                let file_end_offset = current_offset
-                    - (file_offset - file.offset)
-                    + file.size;
+                let file_end_offset = current_offset - (file_offset - file.offset) + file.size;
                 file_end_offset - current_offset
             };
 
@@ -364,14 +362,34 @@ pub struct ExternalFileManager {
 }
 
 /// External file handle metadata
+///
+/// Cached metadata about an opened external file, returned by
+/// [`ExternalFileManager::get_file`].
 #[derive(Debug)]
-struct ExternalFileHandle {
+pub struct ExternalFileHandle {
     /// Full path
     path: PathBuf,
     /// File size
     size: u64,
     /// Last access time
     last_access: std::time::SystemTime,
+}
+
+impl ExternalFileHandle {
+    /// Get the full resolved path of the external file
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Get the size of the external file in bytes
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Get the last time this handle was accessed
+    pub fn last_access(&self) -> std::time::SystemTime {
+        self.last_access
+    }
 }
 
 impl ExternalFileManager {
@@ -395,7 +413,7 @@ impl ExternalFileManager {
         if !self.files.contains_key(&full_path) {
             // Validate and cache file metadata
             let metadata = std::fs::metadata(&full_path).map_err(|e| {
-                Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!(
+                Hdf5Error::Io(std::io::Error::other(format!(
                     "Failed to open external file {}: {}",
                     full_path.display(),
                     e
@@ -416,10 +434,9 @@ impl ExternalFileManager {
             handle.last_access = std::time::SystemTime::now();
         }
 
-        Ok(self
-            .files
+        self.files
             .get(&full_path)
-            .expect("File should be in cache")))
+            .ok_or_else(|| Hdf5Error::internal("External file missing from cache after insertion"))
     }
 
     /// Read data from external file
@@ -429,7 +446,7 @@ impl ExternalFileManager {
 
         let full_path = file.resolve_path(&self.base_dir);
         let mut f = File::open(&full_path).map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!(
+            Hdf5Error::Io(std::io::Error::other(format!(
                 "Failed to open external file {}: {}",
                 full_path.display(),
                 e
@@ -437,25 +454,26 @@ impl ExternalFileManager {
         })?;
 
         let actual_offset = file.offset + offset;
-        f.seek(SeekFrom::Start(actual_offset))).map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to seek to offset {}: {}", actual_offset, e)))
+        f.seek(SeekFrom::Start(actual_offset)).map_err(|e| {
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to seek to offset {}: {}",
+                actual_offset, e
+            )))
         })?;
 
         let mut buffer = vec![0u8; size];
         f.read_exact(&mut buffer).map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to read {} bytes: {}", size, e)))
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to read {} bytes: {}",
+                size, e
+            )))
         })?;
 
         Ok(buffer)
     }
 
     /// Write data to external file
-    pub fn write_data(
-        &mut self,
-        file: &ExternalFile,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<()> {
+    pub fn write_data(&mut self, file: &ExternalFile, offset: u64, data: &[u8]) -> Result<()> {
         use std::fs::OpenOptions;
         use std::io::{Seek, SeekFrom, Write};
 
@@ -466,7 +484,7 @@ impl ExternalFileManager {
             .truncate(false)
             .open(&full_path)
             .map_err(|e| {
-                Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!(
+                Hdf5Error::Io(std::io::Error::other(format!(
                     "Failed to open external file for writing {}: {}",
                     full_path.display(),
                     e
@@ -474,16 +492,26 @@ impl ExternalFileManager {
             })?;
 
         let actual_offset = file.offset + offset;
-        f.seek(SeekFrom::Start(actual_offset))).map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to seek to offset {}: {}", actual_offset, e)))
+        f.seek(SeekFrom::Start(actual_offset)).map_err(|e| {
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to seek to offset {}: {}",
+                actual_offset, e
+            )))
         })?;
 
         f.write_all(data).map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to write {} bytes: {}", data.len(), e)))
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to write {} bytes: {}",
+                data.len(),
+                e
+            )))
         })?;
 
         f.flush().map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to flush external file: {}", e)))
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to flush external file: {}",
+                e
+            )))
         })?;
 
         Ok(())
@@ -557,8 +585,8 @@ mod tests {
 
         let regions = storage.split_region(500, 1500).expect("Failed to split");
         assert_eq!(regions.len(), 2);
-        assert_eq!(regions[0], (0, 500, 500))); // 500 bytes from first file
-        assert_eq!(regions[1], (1, 0, 1000))); // 1000 bytes from second file
+        assert_eq!(regions[0], (0, 500, 500)); // 500 bytes from first file
+        assert_eq!(regions[1], (1, 0, 1000)); // 1000 bytes from second file
     }
 
     #[test]
@@ -589,14 +617,10 @@ mod tests {
         let ext_file = ExternalFile::simple(test_file_path.clone(), 13);
 
         // Test reading
-        let data = manager
-            .read_data(&ext_file, 0, 5)
-            .expect("Failed to read");
+        let data = manager.read_data(&ext_file, 0, 5).expect("Failed to read");
         assert_eq!(&data, b"Hello");
 
-        let data = manager
-            .read_data(&ext_file, 7, 6)
-            .expect("Failed to read");
+        let data = manager.read_data(&ext_file, 7, 6).expect("Failed to read");
         assert_eq!(&data, b"World!");
 
         // Clean up

@@ -278,7 +278,7 @@ fn render_tile(
 
             let checker_x = (x / checker_size) % 2;
             let checker_y = (y / checker_size) % 2;
-            let is_dark = (checker_x + checker_y) % 2 == 0;
+            let is_dark = (checker_x + checker_y).is_multiple_of(2);
 
             let base_color: u8 = if is_dark { 100 } else { 200 };
 

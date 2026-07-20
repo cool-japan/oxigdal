@@ -28,7 +28,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-vrt = "0.1.0"
+oxigdal-vrt = "0.1.7"
 ```
 
 ### Feature Flags
@@ -40,7 +40,7 @@ Example with async support:
 
 ```toml
 [dependencies]
-oxigdal-vrt = { version = "0.1.0", features = ["async"] }
+oxigdal-vrt = { version = "0.1.7", features = ["async"] }
 ```
 
 ## Quick Start

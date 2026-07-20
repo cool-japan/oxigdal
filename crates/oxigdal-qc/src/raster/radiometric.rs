@@ -294,7 +294,7 @@ fn sample_band<S: oxigdal_core::io::DataSource>(
                         break;
                     }
                     let global_pixel = img_y * img_w + img_x;
-                    if global_pixel % stride != 0 {
+                    if !global_pixel.is_multiple_of(stride) {
                         continue;
                     }
                     let pixel_offset = (row * tile_w + col) * bytes_per_pixel;
@@ -469,33 +469,33 @@ fn emit_issues(
     }
 
     // Mean drift check (only when both expected_mean and expected_std are set).
-    if let (Some(exp_mean), Some(exp_std)) = (range.expected_mean, range.expected_std) {
-        if exp_std > 0.0 {
-            let drift = (result.mean_sampled - exp_mean).abs();
-            if drift > mean_drift_sigma * exp_std {
-                issues.push(
-                    QcIssue::new(
-                        Severity::Warning,
-                        "radiometric",
-                        "Mean value drift detected",
-                        format!(
-                            "Band {}: sampled mean {:.1} deviates from expected mean {:.1} \
+    if let (Some(exp_mean), Some(exp_std)) = (range.expected_mean, range.expected_std)
+        && exp_std > 0.0
+    {
+        let drift = (result.mean_sampled - exp_mean).abs();
+        if drift > mean_drift_sigma * exp_std {
+            issues.push(
+                QcIssue::new(
+                    Severity::Warning,
+                    "radiometric",
+                    "Mean value drift detected",
+                    format!(
+                        "Band {}: sampled mean {:.1} deviates from expected mean {:.1} \
                              by {:.1} (threshold {:.1}× std = {:.1})",
-                            band_label,
-                            result.mean_sampled,
-                            exp_mean,
-                            drift,
-                            mean_drift_sigma,
-                            mean_drift_sigma * exp_std,
-                        ),
-                    )
-                    .with_rule_id("RADIO-MEAN-DRIFT")
-                    .with_suggestion(
-                        "Consider re-running atmospheric correction or verifying \
-                         the radiometric calibration of the sensor.",
+                        band_label,
+                        result.mean_sampled,
+                        exp_mean,
+                        drift,
+                        mean_drift_sigma,
+                        mean_drift_sigma * exp_std,
                     ),
-                );
-            }
+                )
+                .with_rule_id("RADIO-MEAN-DRIFT")
+                .with_suggestion(
+                    "Consider re-running atmospheric correction or verifying \
+                         the radiometric calibration of the sensor.",
+                ),
+            );
         }
     }
 }

@@ -17,7 +17,16 @@ pub enum CompressionType {
     Brotli,
     /// LZ4 compression
     Lz4,
-    /// Zstd compression
+    /// Zstd compression.
+    ///
+    /// This variant exists so that the compression codec of an existing file
+    /// can be *identified* from its Parquet metadata. Actual Zstd page
+    /// (de)compression is **not** available in the pure-Rust build: the upstream
+    /// `parquet` codec is backed by the C `libzstd` FFI (`zstd-sys`), which the
+    /// COOLJAPAN Pure-Rust policy forbids, so the `parquet/zstd` feature is not
+    /// exposed by this crate. Reading or writing Zstd-compressed pages therefore
+    /// surfaces a typed `parquet` error rather than linking C code. See the
+    /// `[features]` note in `Cargo.toml`.
     Zstd,
 }
 

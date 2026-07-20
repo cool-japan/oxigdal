@@ -141,15 +141,15 @@ impl MultiLevelCache {
         }
 
         // Try L2 (disk) if available
-        if let Some(ref disk) = self.disk {
-            if let Ok(data) = disk.get(key).await {
-                tracing::trace!("Cache hit (disk): {}", key);
+        if let Some(ref disk) = self.disk
+            && let Ok(data) = disk.get(key).await
+        {
+            tracing::trace!("Cache hit (disk): {}", key);
 
-                // Promote to memory cache
-                self.memory.put(key.clone(), data.clone(), None).await.ok();
+            // Promote to memory cache
+            self.memory.put(key.clone(), data.clone(), None).await.ok();
 
-                return Ok(data);
-            }
+            return Ok(data);
         }
 
         tracing::trace!("Cache miss: {}", key);

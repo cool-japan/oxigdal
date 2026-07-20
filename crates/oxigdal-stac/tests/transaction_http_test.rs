@@ -6,7 +6,7 @@
 #![allow(clippy::panic)]
 #![allow(clippy::expect_used)]
 
-#[cfg(all(feature = "reqwest", feature = "async"))]
+#[cfg(feature = "async")]
 mod http_transaction_tests {
     use oxigdal_stac::{StacClient, StacError};
     use serde_json::json;

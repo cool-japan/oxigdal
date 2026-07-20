@@ -361,11 +361,11 @@ impl BackpressureManager {
             self.pause_channel(channel_id).await?;
             return Ok(true);
         }
-        if let Some(channel_buffer) = self.channel_buffers.get(&channel_id) {
-            if channel_buffer.load(Ordering::SeqCst) > self.config.channel_limit as u64 {
-                self.pause_channel(channel_id).await?;
-                return Ok(true);
-            }
+        if let Some(channel_buffer) = self.channel_buffers.get(&channel_id)
+            && channel_buffer.load(Ordering::SeqCst) > self.config.channel_limit as u64
+        {
+            self.pause_channel(channel_id).await?;
+            return Ok(true);
         }
         Ok(false)
     }
@@ -1180,11 +1180,11 @@ impl ChannelMultiplexer {
     }
     /// Handles a channel open acknowledgment.
     async fn handle_channel_open_ack(&self, frame: Frame) -> Result<()> {
-        if let Some((_, tx)) = self.pending_opens.remove(&frame.channel_id) {
-            if let Some(channel) = self.channels.get(&frame.channel_id) {
-                channel.set_state(ChannelState::Open);
-                let _ = tx.send(Ok(channel.clone()));
-            }
+        if let Some((_, tx)) = self.pending_opens.remove(&frame.channel_id)
+            && let Some(channel) = self.channels.get(&frame.channel_id)
+        {
+            channel.set_state(ChannelState::Open);
+            let _ = tx.send(Ok(channel.clone()));
         }
         Ok(())
     }
@@ -1413,11 +1413,11 @@ impl ReconnectionHandler {
     /// Calculates the next delay for reconnection attempt.
     pub fn next_delay(&self) -> Option<Duration> {
         let attempt = self.attempt.fetch_add(1, Ordering::SeqCst);
-        if let Some(max) = self.config.max_attempts {
-            if attempt >= max {
-                *self.state.write() = ReconnectionState::Failed;
-                return None;
-            }
+        if let Some(max) = self.config.max_attempts
+            && attempt >= max
+        {
+            *self.state.write() = ReconnectionState::Failed;
+            return None;
         }
         let mut delay = *self.current_delay.read();
         if self.config.jitter > 0.0 {

@@ -141,6 +141,7 @@
 pub mod coordinator;
 pub mod error;
 pub mod flight;
+pub mod operations;
 pub mod partition;
 pub mod shuffle;
 pub mod task;

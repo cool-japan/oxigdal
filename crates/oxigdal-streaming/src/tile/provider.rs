@@ -82,11 +82,11 @@ impl StandardTileProvider {
 impl TileProvider for StandardTileProvider {
     async fn get_tile(&self, request: &TileRequest) -> Result<TileResponse> {
         // Check cache first
-        if let Some(cache) = &self.cache {
-            if let Some(response) = cache.get(&request.coord).await {
-                debug!("Cache hit for tile {}", request.coord);
-                return Ok(response);
-            }
+        if let Some(cache) = &self.cache
+            && let Some(response) = cache.get(&request.coord).await
+        {
+            debug!("Cache hit for tile {}", request.coord);
+            return Ok(response);
         }
 
         // Fetch from source
@@ -168,6 +168,7 @@ impl TileProvider for MultiSourceTileProvider {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

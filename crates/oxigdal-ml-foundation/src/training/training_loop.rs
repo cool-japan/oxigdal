@@ -267,29 +267,28 @@ impl Trainer {
             );
 
             // Checkpointing
-            if let Some(ref mut checkpoint_mgr) = self.checkpoint_mgr {
-                if checkpoint_mgr.should_save(val_loss) {
-                    let checkpoint_path = checkpoint_mgr
-                        .checkpoint_dir
-                        .join(format!("epoch_{:04}.ckpt", epoch));
-                    backend.save_weights(&checkpoint_path)?;
-                    tracing::info!("Saved checkpoint to {:?}", checkpoint_path);
-                }
+            if let Some(ref mut checkpoint_mgr) = self.checkpoint_mgr
+                && checkpoint_mgr.should_save(val_loss)
+            {
+                let checkpoint_path = checkpoint_mgr
+                    .checkpoint_dir
+                    .join(format!("epoch_{:04}.ckpt", epoch));
+                backend.save_weights(&checkpoint_path)?;
+                tracing::info!("Saved checkpoint to {:?}", checkpoint_path);
             }
 
             // Early stopping check
-            if let Some(ref mut early_stop) = self.early_stopping {
-                if let Some(v_loss) = val_loss {
-                    if !early_stop.update(v_loss) {
-                        let best = early_stop.best_value().unwrap_or(v_loss);
-                        tracing::info!(
-                            "Early stopping triggered at epoch {} (best: {:.4})",
-                            epoch + 1,
-                            best
-                        );
-                        break;
-                    }
-                }
+            if let Some(ref mut early_stop) = self.early_stopping
+                && let Some(v_loss) = val_loss
+                && !early_stop.update(v_loss)
+            {
+                let best = early_stop.best_value().unwrap_or(v_loss);
+                tracing::info!(
+                    "Early stopping triggered at epoch {} (best: {:.4})",
+                    epoch + 1,
+                    best
+                );
+                break;
             }
         }
 

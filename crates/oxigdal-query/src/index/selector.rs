@@ -46,25 +46,25 @@ impl<'a> IndexSelector<'a> {
         match predicate {
             Expr::BinaryOp { left, op, right } => {
                 // Check for column = value or column < value etc.
-                if let Expr::Column { name, .. } = &**left {
-                    if index.columns.contains(name) {
-                        let index_usage = match op {
-                            BinaryOperator::Eq => IndexUsage::Equality,
-                            BinaryOperator::Lt
-                            | BinaryOperator::LtEq
-                            | BinaryOperator::Gt
-                            | BinaryOperator::GtEq => IndexUsage::Range,
-                            _ => return None,
-                        };
+                if let Expr::Column { name, .. } = &**left
+                    && index.columns.contains(name)
+                {
+                    let index_usage = match op {
+                        BinaryOperator::Eq => IndexUsage::Equality,
+                        BinaryOperator::Lt
+                        | BinaryOperator::LtEq
+                        | BinaryOperator::Gt
+                        | BinaryOperator::GtEq => IndexUsage::Range,
+                        _ => return None,
+                    };
 
-                        return Some(IndexSelection {
-                            index: index.clone(),
-                            usage: index_usage,
-                            selectivity: self
-                                .cost_model
-                                .estimate_selectivity(&index.table, predicate),
-                        });
-                    }
+                    return Some(IndexSelection {
+                        index: index.clone(),
+                        usage: index_usage,
+                        selectivity: self
+                            .cost_model
+                            .estimate_selectivity(&index.table, predicate),
+                    });
                 }
 
                 // Check AND predicates
@@ -89,19 +89,18 @@ impl<'a> IndexSelector<'a> {
                     "ST_INTERSECTS" | "ST_CONTAINS" | "ST_WITHIN"
                 ) {
                     // Check if first argument is a column that has an R-tree index
-                    if let Some(Expr::Column { name, .. }) = args.first() {
-                        if index.columns.contains(name)
-                            && matches!(
-                                index.index_type,
-                                crate::optimizer::cost_model::IndexType::RTree
-                            )
-                        {
-                            return Some(IndexSelection {
-                                index: index.clone(),
-                                usage: IndexUsage::Spatial,
-                                selectivity: 0.01, // Spatial predicates are highly selective
-                            });
-                        }
+                    if let Some(Expr::Column { name, .. }) = args.first()
+                        && index.columns.contains(name)
+                        && matches!(
+                            index.index_type,
+                            crate::optimizer::cost_model::IndexType::RTree
+                        )
+                    {
+                        return Some(IndexSelection {
+                            index: index.clone(),
+                            usage: IndexUsage::Spatial,
+                            selectivity: 0.01, // Spatial predicates are highly selective
+                        });
                     }
                 }
                 None

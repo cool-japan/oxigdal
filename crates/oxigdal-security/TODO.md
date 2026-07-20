@@ -2,7 +2,7 @@
 
 > **Purpose:** Enterprise security features — encryption, access control, audit, compliance, multi-tenancy.
 > **Status (2026-05-16):** 7,538 LoC · 99 tests · 2 narrative stubs in `scanning/`
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Implement JWT (HS256/RS256/ES256) token validation for API authentication

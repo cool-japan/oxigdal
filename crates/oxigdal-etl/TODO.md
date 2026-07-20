@@ -2,7 +2,7 @@
 
 > **Purpose:** Streaming ETL framework for continuous geospatial data processing (source → transform → sink).
 > **Status (2026-05-16):** 6,675 LoC · 70 tests · 3 real-code stubs (Kafka source, CRS-transform map, NDVI map)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wire Kafka source to a real consumer with proper Arc-lifecycle

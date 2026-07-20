@@ -228,25 +228,20 @@ mod property_tests {
         }
         #[test]
         fn property_huffman_roundtrip() {
-            // Note: Huffman decompression is not yet implemented
-            // Testing compression only for now
             let test_cases = vec![
-                vec![1; 100],
-                vec![1, 2, 1, 2, 1, 2],
-                (0..=255).cycle().take(1000).collect::<Vec<u8>>(),
+                vec![1u8; 100],
+                vec![1u8, 2, 1, 2, 1, 2],
+                (0..=255u8).cycle().take(1000).collect::<Vec<u8>>(),
             ];
             for original in test_cases {
                 if original.is_empty() {
                     continue;
                 }
                 let compressed = HuffmanCompressor::compress(&original);
-                // Verify compression produces output
-                assert!(
-                    !compressed.is_empty(),
-                    "Compression should produce output for {:?}",
-                    original
-                );
-                // TODO: Test roundtrip when decompression is implemented
+                assert!(!compressed.is_empty(), "Compression should produce output");
+                let decompressed =
+                    HuffmanCompressor::decompress(&compressed).expect("decompress failed");
+                assert_eq!(decompressed, original);
             }
         }
     }

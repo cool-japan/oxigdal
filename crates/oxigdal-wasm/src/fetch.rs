@@ -281,7 +281,28 @@ impl FetchBackend {
             })?;
 
         let uint8_array = js_sys::Uint8Array::new(&array_buffer);
-        Ok(uint8_array.to_vec())
+        let bytes = uint8_array.to_vec();
+
+        // Defense in depth: a non-empty range that comes back with an empty
+        // body (a CORS-opaque response, or a server that answered `ok`/`206`
+        // with no content) is never usable — surface a typed error instead of
+        // handing callers a buffer that is silently shorter than requested.
+        // We do not require an *exact* length match here: servers may
+        // legitimately truncate a range near end-of-file (e.g. a fixed-size
+        // metadata read past a small file's end), and callers that read
+        // structured data (e.g. TIFF/IFD parsing) already validate the
+        // returned length against what they need before indexing it.
+        if range.end > range.start && bytes.is_empty() {
+            return Err(OxiGdalError::Io(IoError::Read {
+                message: format!(
+                    "short read: requested {} bytes at offset {}, got an empty body",
+                    range.end - range.start,
+                    range.start
+                ),
+            }));
+        }
+
+        Ok(bytes)
     }
 }
 

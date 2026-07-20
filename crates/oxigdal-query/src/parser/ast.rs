@@ -219,10 +219,14 @@ pub enum BinaryOperator {
     Or,
     /// String concatenation (||).
     Concat,
-    /// LIKE pattern matching.
+    /// LIKE pattern matching (case-sensitive).
     Like,
-    /// NOT LIKE pattern matching.
+    /// NOT LIKE pattern matching (case-sensitive).
     NotLike,
+    /// ILIKE pattern matching (case-insensitive).
+    ILike,
+    /// NOT ILIKE pattern matching (case-insensitive).
+    NotILike,
 }
 
 /// Unary operator.
@@ -507,6 +511,8 @@ impl fmt::Display for BinaryOperator {
             BinaryOperator::Concat => write!(f, "||"),
             BinaryOperator::Like => write!(f, "LIKE"),
             BinaryOperator::NotLike => write!(f, "NOT LIKE"),
+            BinaryOperator::ILike => write!(f, "ILIKE"),
+            BinaryOperator::NotILike => write!(f, "NOT ILIKE"),
         }
     }
 }

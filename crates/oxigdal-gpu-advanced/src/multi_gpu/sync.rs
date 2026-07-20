@@ -119,7 +119,9 @@ impl SyncManager {
             .map_err(|e| GpuAdvancedError::SyncError(format!("Map async failed: {:?}", e)))?;
 
         // Read from staging
-        let data = slice.get_mapped_range();
+        let data = slice
+            .get_mapped_range()
+            .map_err(|e| GpuAdvancedError::SyncError(format!("get_mapped_range failed: {e}")))?;
         let vec_data: Vec<u8> = data.to_vec();
         drop(data);
         staging_buffer.unmap();
@@ -134,7 +136,9 @@ impl SyncManager {
 
         // Write to destination staging
         {
-            let mut mapped = dst_staging.slice(..).get_mapped_range_mut();
+            let mut mapped = dst_staging.slice(..).get_mapped_range_mut().map_err(|e| {
+                GpuAdvancedError::SyncError(format!("get_mapped_range_mut failed: {e}"))
+            })?;
             mapped.copy_from_slice(&vec_data);
         }
         dst_staging.unmap();

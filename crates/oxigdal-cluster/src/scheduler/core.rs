@@ -327,11 +327,10 @@ impl Scheduler {
                         error!("Scheduling error: {}", e);
                     }
 
-                    if self.inner.config.enable_work_stealing {
-                        if let Err(e) = self.perform_work_stealing().await {
+                    if self.inner.config.enable_work_stealing
+                        && let Err(e) = self.perform_work_stealing().await {
                             error!("Work stealing error: {}", e);
                         }
-                    }
                 }
                 _ = self.inner.schedule_notify.notified() => {
                     if let Err(e) = self.schedule_ready_tasks().await {

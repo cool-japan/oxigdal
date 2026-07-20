@@ -9,11 +9,16 @@
 //!
 //! # Features
 //!
-//! - `producer` - Enable producer functionality (default)
-//! - `consumer` - Enable consumer functionality (default)
+//! - `producer` - Enable producer functionality (default; pulls in `backend-rdkafka`)
+//! - `consumer` - Enable consumer functionality (default; pulls in `backend-rdkafka`)
 //! - `schema-registry` - Enable Avro schema registry support
-//! - `transactions` - Enable transactional support
+//! - `transactions` - Enable transactional support (pulls in `backend-rdkafka`)
 //! - `compression-*` - Enable various compression algorithms
+//! - `backend-rdkafka` - Enable the C `librdkafka` FFI backend. Building
+//!   with `--no-default-features` (or otherwise without `producer`,
+//!   `consumer`, or `transactions`) yields a Pure Rust build exposing only
+//!   the message/schema/config data types, with no rdkafka symbol in the
+//!   dependency graph.
 //!
 //! # Example
 //!

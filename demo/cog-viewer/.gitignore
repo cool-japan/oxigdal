@@ -40,3 +40,7 @@ Thumbs.db
 *.parquet
 *.fgb
 *.zarr/
+# iron-belt.zarr is checked in: required by oxigdal-cli's
+# test_read_zarr_info_demo_fixture test, must exist without regeneration.
+!iron-belt.zarr/
+!iron-belt.zarr/**

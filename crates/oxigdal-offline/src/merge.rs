@@ -14,7 +14,16 @@ pub enum MergeStrategy {
     /// Take the version with the latest timestamp
     #[default]
     LastWriteWins,
-    /// Three-way merge using common ancestor
+    /// Three-way merge using a common ancestor for `UpdateUpdate` conflicts.
+    ///
+    /// `InsertInsert`, `DeleteDelete`, `DeleteUpdate`, and `UpdateDelete` conflicts have no
+    /// meaningful common ancestor by construction and are always resolved automatically.
+    /// `UpdateUpdate` conflicts, however, need a real common ancestor (see
+    /// [`crate::conflict::ConflictDetector::with_ancestor_store`]) to perform an honest
+    /// three-way merge. If none is available, [`MergeEngine::resolve`] returns a
+    /// [`crate::error::Error::Merge`] error rather than silently degrading to
+    /// `LastWriteWins` — unless an explicit fallback strategy was configured via
+    /// [`MergeEngine::with_ancestor_fallback`].
     ThreeWayMerge,
     /// Take the larger version (by size)
     LargerWins,
@@ -24,10 +33,38 @@ pub enum MergeStrategy {
     Custom,
 }
 
+/// Outcome of resolving a conflict, including whether an explicit fallback strategy was
+/// used in place of the configured one.
+#[derive(Debug, Clone)]
+pub struct MergeOutcome {
+    /// The resolved record.
+    pub record: Record,
+    /// `true` if resolution fell back to a different strategy than the one configured on
+    /// the [`MergeEngine`] — currently only possible for `ThreeWayMerge` on `UpdateUpdate`
+    /// conflicts with no common ancestor, via [`MergeEngine::with_ancestor_fallback`].
+    pub used_fallback: bool,
+    /// The strategy actually applied to produce `record`.
+    pub applied_strategy: MergeStrategy,
+}
+
+impl MergeOutcome {
+    fn direct(record: Record, strategy: MergeStrategy) -> Self {
+        Self {
+            record,
+            used_fallback: false,
+            applied_strategy: strategy,
+        }
+    }
+}
+
 /// Merge engine for resolving conflicts
 pub struct MergeEngine {
     strategy: MergeStrategy,
     custom_merger: Option<Box<dyn CustomMerger>>,
+    /// Explicit strategy to fall back to when `ThreeWayMerge` hits an `UpdateUpdate`
+    /// conflict with no common ancestor. `None` (the default) means: no ancestor means an
+    /// explicit error, never a silent fallback.
+    ancestor_fallback: Option<MergeStrategy>,
 }
 
 impl MergeEngine {
@@ -36,6 +73,7 @@ impl MergeEngine {
         Self {
             strategy,
             custom_merger: None,
+            ancestor_fallback: None,
         }
     }
 
@@ -45,16 +83,53 @@ impl MergeEngine {
         self
     }
 
+    /// Opt into an explicit fallback strategy for `ThreeWayMerge` `UpdateUpdate` conflicts
+    /// that have no common ancestor available. Without this, [`Self::resolve`] returns an
+    /// error for that case instead of silently guessing.
+    ///
+    /// `fallback` must not itself be [`MergeStrategy::ThreeWayMerge`]; passing it will cause
+    /// [`Self::resolve`] to return an error at resolution time rather than panicking here.
+    pub fn with_ancestor_fallback(mut self, fallback: MergeStrategy) -> Self {
+        self.ancestor_fallback = Some(fallback);
+        self
+    }
+
     /// Resolve a conflict using the configured strategy
     pub fn resolve(&self, conflict: &Conflict) -> Result<Record> {
+        self.resolve_detailed(conflict)
+            .map(|outcome| outcome.record)
+    }
+
+    /// Resolve a conflict using the configured strategy, returning the full
+    /// [`MergeOutcome`] (including whether a fallback strategy was used).
+    pub fn resolve_detailed(&self, conflict: &Conflict) -> Result<MergeOutcome> {
         match self.strategy {
+            MergeStrategy::ThreeWayMerge => self.three_way_merge(conflict),
+            other => {
+                let record = self.apply_simple_strategy(other, conflict)?;
+                Ok(MergeOutcome::direct(record, other))
+            }
+        }
+    }
+
+    /// Apply a non-recursive strategy (i.e. anything except `ThreeWayMerge`). Used both by
+    /// `resolve_detailed` for the top-level strategy and by `three_way_merge` when applying
+    /// an explicit ancestor fallback.
+    fn apply_simple_strategy(
+        &self,
+        strategy: MergeStrategy,
+        conflict: &Conflict,
+    ) -> Result<Record> {
+        match strategy {
             MergeStrategy::LocalWins => self.local_wins(conflict),
             MergeStrategy::RemoteWins => self.remote_wins(conflict),
             MergeStrategy::LastWriteWins => self.last_write_wins(conflict),
-            MergeStrategy::ThreeWayMerge => self.three_way_merge(conflict),
             MergeStrategy::LargerWins => self.larger_wins(conflict),
             MergeStrategy::Manual => Err(Error::merge("Manual resolution required")),
             MergeStrategy::Custom => self.custom_merge(conflict),
+            MergeStrategy::ThreeWayMerge => Err(Error::merge(
+                "ThreeWayMerge cannot be used as its own ancestor-fallback strategy",
+            )),
         }
     }
 
@@ -77,44 +152,73 @@ impl MergeEngine {
         }
     }
 
-    /// Three-way merge strategy
-    fn three_way_merge(&self, conflict: &Conflict) -> Result<Record> {
-        // If no common ancestor, fall back to last-write-wins
-        let base = match &conflict.base {
-            Some(b) => b,
-            None => return self.last_write_wins(conflict),
-        };
-
-        // Perform three-way merge
+    /// Three-way merge strategy.
+    ///
+    /// Only `UpdateUpdate` conflicts actually require a common ancestor (that's the classic
+    /// three-way / diff3 case: both sides changed the same base, so we need the base to tell
+    /// what each side actually changed). The other conflict types are resolved without one:
+    /// `DeleteDelete`/`DeleteUpdate`/`UpdateDelete` just need to know which side deleted, and
+    /// `InsertInsert` never has a common ancestor by construction (two independent inserts of
+    /// the same key), so falling back to last-write-wins there is the intended behavior, not
+    /// a degraded one.
+    fn three_way_merge(&self, conflict: &Conflict) -> Result<MergeOutcome> {
         match conflict.conflict_type {
-            ConflictType::UpdateUpdate => {
-                // Try to merge data
-                let merged_data =
-                    self.merge_data(&base.data, &conflict.local.data, &conflict.remote.data)?;
-
-                let mut result = conflict.local.clone();
-                result.data = merged_data;
-                result.version = conflict.local.version.next();
-                result.updated_at = chrono::Utc::now();
-
-                Ok(result)
-            }
             ConflictType::DeleteDelete => {
                 // Both deleted - take local
-                Ok(conflict.local.clone())
+                Ok(MergeOutcome::direct(
+                    conflict.local.clone(),
+                    MergeStrategy::ThreeWayMerge,
+                ))
             }
             ConflictType::DeleteUpdate => {
                 // Local deleted, remote updated - keep deletion
-                Ok(conflict.local.clone())
+                Ok(MergeOutcome::direct(
+                    conflict.local.clone(),
+                    MergeStrategy::ThreeWayMerge,
+                ))
             }
             ConflictType::UpdateDelete => {
                 // Local updated, remote deleted - keep deletion
-                Ok(conflict.remote.clone())
+                Ok(MergeOutcome::direct(
+                    conflict.remote.clone(),
+                    MergeStrategy::ThreeWayMerge,
+                ))
             }
             ConflictType::InsertInsert => {
-                // Both inserted - use last write wins
-                self.last_write_wins(conflict)
+                // Both inserted with no shared ancestor possible - use last write wins.
+                let record = self.last_write_wins(conflict)?;
+                Ok(MergeOutcome::direct(record, MergeStrategy::ThreeWayMerge))
             }
+            ConflictType::UpdateUpdate => match &conflict.base {
+                Some(base) => {
+                    let merged_data =
+                        self.merge_data(&base.data, &conflict.local.data, &conflict.remote.data)?;
+
+                    let mut result = conflict.local.clone();
+                    result.data = merged_data;
+                    result.version = conflict.local.version.next();
+                    result.updated_at = chrono::Utc::now();
+
+                    Ok(MergeOutcome::direct(result, MergeStrategy::ThreeWayMerge))
+                }
+                None => match self.ancestor_fallback {
+                    Some(fallback) => {
+                        let record = self.apply_simple_strategy(fallback, conflict)?;
+                        Ok(MergeOutcome {
+                            record,
+                            used_fallback: true,
+                            applied_strategy: fallback,
+                        })
+                    }
+                    None => Err(Error::merge(
+                        "ThreeWayMerge requires a common ancestor for UpdateUpdate conflicts, \
+                         but none is available. Attach a real AncestorStore via \
+                         ConflictDetector::with_ancestor_store so a base record can be found, \
+                         or opt into an explicit fallback via \
+                         MergeEngine::with_ancestor_fallback(strategy)",
+                    )),
+                },
+            },
         }
     }
 
@@ -212,11 +316,17 @@ impl MergeEngine {
                 .as_ref()
                 .map(|m| m.can_resolve(conflict))
                 .unwrap_or(false),
-            MergeStrategy::ThreeWayMerge => {
-                // Can auto-resolve if we have a base or if it's a simple conflict
-                conflict.base.is_some()
-                    || matches!(conflict.conflict_type, ConflictType::DeleteDelete)
-            }
+            MergeStrategy::ThreeWayMerge => match conflict.conflict_type {
+                // Only UpdateUpdate genuinely needs a base (or a configured fallback);
+                // every other conflict type is resolved without one.
+                ConflictType::UpdateUpdate => {
+                    conflict.base.is_some() || self.ancestor_fallback.is_some()
+                }
+                ConflictType::DeleteDelete
+                | ConflictType::DeleteUpdate
+                | ConflictType::UpdateDelete
+                | ConflictType::InsertInsert => true,
+            },
             _ => true, // Other strategies always auto-resolve
         }
     }
@@ -356,6 +466,126 @@ mod tests {
 
         let conflict = Conflict::new(local, remote, None);
         let engine = MergeEngine::new(MergeStrategy::Manual);
+
+        let result = engine.resolve(&conflict);
+        assert!(result.is_err());
+    }
+
+    /// UpdateUpdate + ThreeWayMerge with NO common ancestor and no configured fallback
+    /// must return an explicit error, never silently degrade to LastWriteWins.
+    #[test]
+    fn test_three_way_merge_update_update_without_base_errors_by_default() {
+        let mut local = create_record("test", "local data", 2);
+        let mut remote = create_record("test", "remote data", 2);
+        let id = local.id;
+        remote.id = id;
+        local.updated_at = chrono::Utc::now();
+        remote.updated_at = chrono::Utc::now();
+
+        // Force an UpdateUpdate conflict type with no base.
+        let conflict = Conflict::new(local, remote, None);
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge);
+        let result = engine.resolve(&conflict);
+
+        let err = result.expect_err("must error, not silently fall back to LastWriteWins");
+        let message = err.to_string();
+        assert!(
+            message.contains("common ancestor"),
+            "error should explain the missing-ancestor condition: {message}"
+        );
+    }
+
+    /// Once an explicit fallback is configured via `with_ancestor_fallback`, an UpdateUpdate
+    /// conflict without a base resolves using that strategy, and the outcome reports that a
+    /// fallback was used.
+    #[test]
+    fn test_three_way_merge_explicit_ancestor_fallback() {
+        let mut local = create_record("test", "local data", 1);
+        let mut remote = create_record("test", "remote data", 2);
+        remote.id = local.id;
+
+        // remote is strictly newer, so LastWriteWins-as-fallback should pick remote.
+        remote.updated_at = chrono::Utc::now();
+        local.updated_at = chrono::Utc::now() - chrono::Duration::minutes(5);
+
+        let conflict = Conflict::new(local, remote.clone(), None);
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge)
+            .with_ancestor_fallback(MergeStrategy::LastWriteWins);
+
+        let outcome = engine
+            .resolve_detailed(&conflict)
+            .expect("fallback should resolve the conflict");
+
+        assert!(outcome.used_fallback);
+        assert_eq!(outcome.applied_strategy, MergeStrategy::LastWriteWins);
+        assert_eq!(outcome.record.data, Bytes::from("remote data"));
+    }
+
+    /// With a real common ancestor supplied, ThreeWayMerge performs an actual merge instead
+    /// of using any fallback.
+    #[test]
+    fn test_three_way_merge_with_real_ancestor_merges() {
+        let base = create_record("test", "line1\nline2", 1);
+        let id = base.id;
+
+        let mut local = base.clone();
+        local.id = id;
+        local.version = Version::from_u64(2);
+        // Local unchanged from base.
+
+        let mut remote = base.clone();
+        remote.id = id;
+        remote.version = Version::from_u64(2);
+        remote.data = Bytes::from("line1\nline2\nline3");
+
+        let conflict = Conflict::new(local, remote, Some(base));
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge);
+        let outcome = engine
+            .resolve_detailed(&conflict)
+            .expect("three-way merge with a real base should succeed");
+
+        assert!(!outcome.used_fallback);
+        assert_eq!(outcome.applied_strategy, MergeStrategy::ThreeWayMerge);
+        // Local unchanged from base -> remote's changes win.
+        assert_eq!(outcome.record.data, Bytes::from("line1\nline2\nline3"));
+    }
+
+    /// Conflict types that never need a base (DeleteDelete, DeleteUpdate, UpdateDelete,
+    /// InsertInsert) must resolve automatically under ThreeWayMerge even with no ancestor
+    /// store and no configured fallback.
+    #[test]
+    fn test_three_way_merge_delete_conflicts_need_no_ancestor() {
+        let mut local = create_record("test", "local", 1);
+        let mut remote = create_record("test", "remote", 1);
+        remote.id = local.id;
+        local.deleted = true;
+
+        let conflict = Conflict::new(local, remote, None);
+        assert_eq!(conflict.conflict_type, ConflictType::DeleteUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge);
+        let result = engine.resolve(&conflict);
+        assert!(result.is_ok());
+        assert!(engine.can_auto_resolve(&conflict));
+    }
+
+    #[test]
+    fn test_invalid_ancestor_fallback_of_three_way_merge_itself_errors() {
+        let mut local = create_record("test", "local data", 2);
+        let mut remote = create_record("test", "remote data", 2);
+        remote.id = local.id;
+        local.updated_at = chrono::Utc::now();
+        remote.updated_at = chrono::Utc::now();
+
+        let conflict = Conflict::new(local, remote, None);
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge)
+            .with_ancestor_fallback(MergeStrategy::ThreeWayMerge);
 
         let result = engine.resolve(&conflict);
         assert!(result.is_err());

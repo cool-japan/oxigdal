@@ -103,10 +103,10 @@ impl ChunkedReader {
             let descriptor = self.buffer.descriptor_for_index(index, self.total_size);
 
             // Skip if already in buffer
-            if let Some(peek_desc) = self.buffer.peek().await? {
-                if peek_desc.index == descriptor.index {
-                    continue;
-                }
+            if let Some(peek_desc) = self.buffer.peek().await?
+                && peek_desc.index == descriptor.index
+            {
+                continue;
             }
 
             // Prefetch this chunk

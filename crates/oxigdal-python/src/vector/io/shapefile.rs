@@ -47,12 +47,12 @@ pub fn read_shapefile<'py>(
     where_clause: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
     // Validate bbox
-    if let Some(ref b) = bbox {
-        if b.len() != 4 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Bounding box must have 4 elements [minx, miny, maxx, maxy]",
-            ));
-        }
+    if let Some(ref b) = bbox
+        && b.len() != 4
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Bounding box must have 4 elements [minx, miny, maxx, maxy]",
+        ));
     }
 
     #[cfg(not(feature = "shapefile"))]
@@ -81,11 +81,11 @@ pub fn read_shapefile<'py>(
         // Apply bbox filter if provided
         if let Some(b) = bbox {
             features.retain(|feature| {
-                if let Some(ref geom) = feature.geometry {
-                    if let Some((x_min, y_min, x_max, y_max)) = geom.bounds() {
-                        // Check if geometry bounds intersect with filter bbox
-                        return !(x_max < b[0] || x_min > b[2] || y_max < b[1] || y_min > b[3]);
-                    }
+                if let Some(ref geom) = feature.geometry
+                    && let Some((x_min, y_min, x_max, y_max)) = geom.bounds()
+                {
+                    // Check if geometry bounds intersect with filter bbox
+                    return !(x_max < b[0] || x_min > b[2] || y_max < b[1] || y_min > b[3]);
                 }
                 false
             });
@@ -193,10 +193,10 @@ pub fn write_shapefile(
             let shapefile_feature = geojson_to_shapefile_feature(feature_dict, idx as i32 + 1)?;
 
             // Infer shape type from first geometry
-            if shape_type.is_none() {
-                if let Some(ref geom) = shapefile_feature.geometry {
-                    shape_type = Some(geometry_to_shape_type(geom)?);
-                }
+            if shape_type.is_none()
+                && let Some(ref geom) = shapefile_feature.geometry
+            {
+                shape_type = Some(geometry_to_shape_type(geom)?);
             }
 
             shapefile_features.push(shapefile_feature);
@@ -420,17 +420,17 @@ fn geojson_to_shapefile_feature(
 
     // Extract properties
     let mut attributes = HashMap::new();
-    if let Some(props_obj) = feature_dict.get_item("properties").ok().flatten() {
-        if !props_obj.is_none() {
-            let props_dict = props_obj.cast::<PyDict>().map_err(|_| {
-                pyo3::exceptions::PyValueError::new_err("Properties must be a dict")
-            })?;
+    if let Some(props_obj) = feature_dict.get_item("properties").ok().flatten()
+        && !props_obj.is_none()
+    {
+        let props_dict = props_obj
+            .cast::<PyDict>()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("Properties must be a dict"))?;
 
-            for (key, value) in props_dict {
-                let key_str: String = key.extract()?;
-                let prop_value = python_to_property_value(&value)?;
-                attributes.insert(key_str, prop_value);
-            }
+        for (key, value) in props_dict {
+            let key_str: String = key.extract()?;
+            let prop_value = python_to_property_value(&value)?;
+            attributes.insert(key_str, prop_value);
         }
     }
 

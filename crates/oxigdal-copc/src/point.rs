@@ -48,8 +48,15 @@ pub struct Point3D {
     pub number_of_returns: u8,
     /// ASPRS classification code (see [`Point3D::classification_name`]).
     pub classification: u8,
-    /// Scan angle rank in degrees (−90 to +90, rounded to integer for formats 0-5).
-    pub scan_angle_rank: i8,
+    /// Scan angle in degrees.
+    ///
+    /// For legacy point data record formats 0-5, this is the on-wire scan
+    /// angle rank: a whole-degree integer in the range −90 to +90, stored
+    /// widened to `f32`. For extended formats 6-10 (used by essentially all
+    /// COPC/LAS 1.4 data), this is the full-precision scan angle: a signed
+    /// value with 0.006° resolution across the full ±180° range, per ASPRS
+    /// LAS 1.4 R15 §Point Data Record Format 6, Table 8.
+    pub scan_angle_rank: f32,
     /// User-defined data byte.
     pub user_data: u8,
     /// Point source ID (flight line ID for airborne surveys).
@@ -78,7 +85,7 @@ impl Point3D {
             return_number: 1,
             number_of_returns: 1,
             classification: 0,
-            scan_angle_rank: 0,
+            scan_angle_rank: 0.0,
             user_data: 0,
             point_source_id: 0,
             gps_time: None,

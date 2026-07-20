@@ -650,7 +650,7 @@ pub fn wgs84_haversine_m(lat1_deg: f64, lon1_deg: f64, lat2_deg: f64, lon2_deg: 
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

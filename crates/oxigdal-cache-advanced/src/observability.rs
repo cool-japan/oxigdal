@@ -123,11 +123,11 @@ impl ThroughputTracker {
         }
 
         // Update or create current window
-        if let Some((ts, count)) = self.windows.back_mut() {
-            if now.duration_since(*ts) < self.window_duration {
-                *count += 1;
-                return;
-            }
+        if let Some((ts, count)) = self.windows.back_mut()
+            && now.duration_since(*ts) < self.window_duration
+        {
+            *count += 1;
+            return;
         }
 
         if self.windows.len() >= self.max_windows {

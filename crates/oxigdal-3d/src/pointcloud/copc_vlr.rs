@@ -183,7 +183,7 @@ pub fn parse_copc_info(payload: &[u8]) -> Result<CopcInfoVlrPayload, Error> {
 ///
 /// Returns [`Error::Copc`] if `bytes.len()` is not a multiple of 32.
 pub fn parse_hierarchy_page(bytes: &[u8]) -> Result<Vec<HierarchyEntry>, Error> {
-    if bytes.len() % COPC_HIERARCHY_ENTRY_LEN != 0 {
+    if !bytes.len().is_multiple_of(COPC_HIERARCHY_ENTRY_LEN) {
         return Err(Error::malformed_copc_info(format!(
             "hierarchy page bytes {} not a multiple of {}",
             bytes.len(),

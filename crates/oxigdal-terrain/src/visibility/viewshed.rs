@@ -45,10 +45,10 @@ where
             }
 
             let target_val = dem[[y, x]];
-            if let Some(nd) = nodata {
-                if (target_val - nd).abs() < T::epsilon() {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (target_val - nd).abs() < T::epsilon()
+            {
+                continue;
             }
 
             // Check distance
@@ -57,10 +57,10 @@ where
             let distance =
                 (dy * dy * cell_size * cell_size + dx * dx * cell_size * cell_size).sqrt();
 
-            if let Some(max_dist) = max_distance {
-                if distance > max_dist {
-                    continue;
-                }
+            if let Some(max_dist) = max_distance
+                && distance > max_dist
+            {
+                continue;
             }
 
             // Line of sight check

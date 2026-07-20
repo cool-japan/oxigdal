@@ -115,10 +115,10 @@ impl Authenticator for ApiKeyAuthenticator {
         }
 
         // Check expiration
-        if let Some(expires_at) = info.expires_at {
-            if chrono::Utc::now() > expires_at {
-                return Err(GatewayError::TokenExpired);
-            }
+        if let Some(expires_at) = info.expires_at
+            && chrono::Utc::now() > expires_at
+        {
+            return Err(GatewayError::TokenExpired);
         }
 
         let mut identity = Identity::new(info.user_id.clone());
@@ -154,10 +154,10 @@ impl Authenticator for ApiKeyAuthenticator {
         }
 
         // Check expiration
-        if let Some(expires_at) = info.expires_at {
-            if chrono::Utc::now() > expires_at {
-                return Ok(false);
-            }
+        if let Some(expires_at) = info.expires_at
+            && chrono::Utc::now() > expires_at
+        {
+            return Ok(false);
         }
 
         Ok(true)

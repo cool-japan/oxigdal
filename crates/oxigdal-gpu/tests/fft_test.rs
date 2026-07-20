@@ -5,7 +5,7 @@
 //! skip when no wgpu backend is compiled in or no adapter is available,
 //! following the `try_gpu_context` pattern used elsewhere in this test suite.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{
     GpuContext,

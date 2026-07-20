@@ -215,6 +215,32 @@ pub unsafe extern "C" fn oxigdal_dataset_get_metadata(
     OxiGdalErrorCode::Success
 }
 
+/// Computes `x_size * y_size * channels` (the number of samples the caller's
+/// buffer must be able to hold) using checked, widened arithmetic.
+///
+/// Returns `None` if the product does not fit in a `usize`, instead of
+/// silently wrapping (release builds, `overflow-checks = false`) or
+/// panicking/aborting across the FFI boundary (debug builds, where the
+/// default `overflow-checks = true` applies to the raw `i32` multiplication).
+fn checked_expected_buffer_size(x_size: i32, y_size: i32, channels: i32) -> Option<usize> {
+    let product = i64::from(x_size)
+        .checked_mul(i64::from(y_size))?
+        .checked_mul(i64::from(channels))?;
+    usize::try_from(product).ok()
+}
+
+/// Computes the destination row stride (`x_size * bytes_per_pixel * channels`)
+/// using checked arithmetic, for the same overflow reasons as
+/// [`checked_expected_buffer_size`].
+fn checked_dst_row_stride(x_size: i32, bytes_per_pixel: usize, channels: i32) -> Option<usize> {
+    if x_size < 0 || channels < 0 {
+        return None;
+    }
+    (x_size as usize)
+        .checked_mul(bytes_per_pixel)?
+        .checked_mul(channels as usize)
+}
+
 /// Reads a rectangular region from a dataset into a buffer.
 ///
 /// # Parameters
@@ -257,6 +283,11 @@ pub unsafe extern "C" fn oxigdal_dataset_read_region(
     if buf.data.is_null() {
         crate::ffi::error::set_last_error("Buffer data is null".to_string());
         return OxiGdalErrorCode::NullPointer;
+    }
+
+    if buf.channels <= 0 {
+        crate::ffi::error::set_last_error("Buffer channels must be >= 1".to_string());
+        return OxiGdalErrorCode::InvalidArgument;
     }
 
     let handle = deref_ptr!(dataset, DatasetHandle, "dataset");
@@ -318,7 +349,22 @@ pub unsafe extern "C" fn oxigdal_dataset_read_region(
     let samples_per_pixel = handle.metadata.band_count as usize;
     let row_stride = handle.metadata.width as usize * bytes_per_pixel * samples_per_pixel;
 
-    let expected_size = (x_size * y_size * buf.channels) as usize;
+    // Widen to i64 and use checked arithmetic so a large-but-plausible region
+    // request (e.g. x_size/y_size in the tens of thousands, or a caller
+    // supplying an implausible `channels` count) cannot overflow the i32
+    // multiplication: in debug builds that would panic/abort across the FFI
+    // boundary, and in release builds it would silently wrap and bypass this
+    // buffer-size validation.
+    let expected_size = match checked_expected_buffer_size(x_size, y_size, buf.channels) {
+        Some(v) => v,
+        None => {
+            crate::ffi::error::set_last_error(
+                "Requested region size overflows (x_size * y_size * channels)".to_string(),
+            );
+            return OxiGdalErrorCode::InvalidArgument;
+        }
+    };
+
     if buf.length < expected_size {
         crate::ffi::error::set_last_error(format!(
             "Buffer too small: {} < {}",
@@ -327,8 +373,15 @@ pub unsafe extern "C" fn oxigdal_dataset_read_region(
         return OxiGdalErrorCode::InvalidArgument;
     }
 
-    // Copy the region data to the output buffer
-    let dst_row_stride = x_size as usize * bytes_per_pixel * buf.channels as usize;
+    // Copy the region data to the output buffer. Computed with checked
+    // arithmetic for the same overflow reasons as `expected_size` above.
+    let dst_row_stride = match checked_dst_row_stride(x_size, bytes_per_pixel, buf.channels) {
+        Some(v) => v,
+        None => {
+            crate::ffi::error::set_last_error("Destination row stride overflows".to_string());
+            return OxiGdalErrorCode::InvalidArgument;
+        }
+    };
 
     for row in 0..y_size as usize {
         let src_row = y_off as usize + row;
@@ -913,10 +966,10 @@ pub unsafe extern "C" fn oxigdal_dataset_set_geotransform(
         std::ptr::copy_nonoverlapping(geotransform, handle.metadata.geotransform.as_mut_ptr(), 6);
 
         // Also update write buffer if present
-        if let Some(wb_mutex) = &handle.write_buffer {
-            if let Ok(mut wb) = wb_mutex.lock() {
-                std::ptr::copy_nonoverlapping(geotransform, wb.geotransform.as_mut_ptr(), 6);
-            }
+        if let Some(wb_mutex) = &handle.write_buffer
+            && let Ok(mut wb) = wb_mutex.lock()
+        {
+            std::ptr::copy_nonoverlapping(geotransform, wb.geotransform.as_mut_ptr(), 6);
         }
     }
 
@@ -944,10 +997,10 @@ pub unsafe extern "C" fn oxigdal_dataset_set_projection_epsg(
         handle.metadata.epsg_code = epsg_code;
 
         // Also update write buffer if present
-        if let Some(wb_mutex) = &handle.write_buffer {
-            if let Ok(mut wb) = wb_mutex.lock() {
-                wb.epsg_code = epsg_code;
-            }
+        if let Some(wb_mutex) = &handle.write_buffer
+            && let Ok(mut wb) = wb_mutex.lock()
+        {
+            wb.epsg_code = epsg_code;
         }
     }
 
@@ -1374,6 +1427,141 @@ mod tests {
 
             // Test invalid band
             let result = oxigdal_dataset_read_region(dataset_ptr, 0, 0, 10, 10, 0, &mut buffer);
+            assert_eq!(result, OxiGdalErrorCode::InvalidArgument);
+
+            let result = oxigdal_dataset_close(dataset_ptr);
+            assert_eq!(result, OxiGdalErrorCode::Success);
+        }
+    }
+
+    #[test]
+    fn test_checked_expected_buffer_size_normal() {
+        // 10 x 10 x 4 channels fits comfortably.
+        assert_eq!(checked_expected_buffer_size(10, 10, 4), Some(400));
+    }
+
+    #[test]
+    fn test_checked_expected_buffer_size_widened_beyond_i32() {
+        // A plausible-looking large region request (e.g. a ~50000x50000 px
+        // read with 4 channels): 50_000 * 50_000 * 4 = 10_000_000_000
+        // overflows a raw `i32` multiplication (the original bug), but the
+        // widened i64 arithmetic computes it correctly instead of wrapping
+        // or panicking.
+        assert_eq!(
+            checked_expected_buffer_size(50_000, 50_000, 4),
+            Some(10_000_000_000)
+        );
+    }
+
+    #[test]
+    fn test_checked_expected_buffer_size_overflow_does_not_panic() {
+        // Values large enough to overflow even the widened i64 arithmetic
+        // must be rejected cleanly via `None`, not panic or wrap.
+        assert_eq!(
+            checked_expected_buffer_size(i32::MAX, i32::MAX, i32::MAX),
+            None
+        );
+    }
+
+    #[test]
+    fn test_checked_expected_buffer_size_negative_rejected() {
+        assert_eq!(checked_expected_buffer_size(-1, 10, 4), None);
+        assert_eq!(checked_expected_buffer_size(10, 10, -4), None);
+    }
+
+    #[test]
+    fn test_checked_dst_row_stride_normal() {
+        assert_eq!(checked_dst_row_stride(10, 4, 3), Some(120));
+    }
+
+    #[test]
+    fn test_checked_dst_row_stride_overflow_does_not_panic() {
+        assert_eq!(checked_dst_row_stride(i32::MAX, 8, i32::MAX), None);
+    }
+
+    #[test]
+    fn test_read_region_rejects_implausible_channels_without_panicking() {
+        use std::ffi::CString;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("test_read_region_overflow_channels.tif");
+        let path_cstring =
+            CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
+
+        let mut dataset_ptr: *mut OxiGdalDataset = ptr::null_mut();
+
+        unsafe {
+            let result = oxigdal_dataset_create(
+                path_cstring.as_ptr(),
+                10,
+                10,
+                1,
+                OxiGdalDataType::Byte,
+                &mut dataset_ptr,
+            );
+            assert_eq!(result, OxiGdalErrorCode::Success);
+
+            let mut buffer_data = vec![0u8; 100];
+            // A caller-supplied `channels` count this large (with the old
+            // raw i32 multiplication) could push `x_size * y_size * channels`
+            // through undefined wraparound territory. The widened/checked
+            // arithmetic must instead compute the true (huge) expected size
+            // and reject the call cleanly because the buffer is far too
+            // small -- never panicking and never wrapping to a falsely-small
+            // value that would let an undersized buffer pass validation.
+            // themselves stay within the (small, valid) dataset bounds.
+            let mut buffer = OxiGdalBuffer {
+                data: buffer_data.as_mut_ptr(),
+                length: 100,
+                width: 10,
+                height: 10,
+                channels: i32::MAX,
+            };
+
+            // Must return a clean InvalidArgument error, not panic/abort.
+            let result = oxigdal_dataset_read_region(dataset_ptr, 0, 0, 10, 10, 1, &mut buffer);
+            assert_eq!(result, OxiGdalErrorCode::InvalidArgument);
+
+            let result = oxigdal_dataset_read_region(dataset_ptr, 0, 0, 10, 10, 1, ptr::null_mut());
+            assert_eq!(result, OxiGdalErrorCode::NullPointer);
+
+            let result = oxigdal_dataset_close(dataset_ptr);
+            assert_eq!(result, OxiGdalErrorCode::Success);
+        }
+    }
+
+    #[test]
+    fn test_read_region_rejects_zero_channels() {
+        use std::ffi::CString;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("test_read_region_zero_channels.tif");
+        let path_cstring =
+            CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
+
+        let mut dataset_ptr: *mut OxiGdalDataset = ptr::null_mut();
+
+        unsafe {
+            let result = oxigdal_dataset_create(
+                path_cstring.as_ptr(),
+                10,
+                10,
+                1,
+                OxiGdalDataType::Byte,
+                &mut dataset_ptr,
+            );
+            assert_eq!(result, OxiGdalErrorCode::Success);
+
+            let mut buffer_data = vec![0u8; 100];
+            let mut buffer = OxiGdalBuffer {
+                data: buffer_data.as_mut_ptr(),
+                length: 100,
+                width: 10,
+                height: 10,
+                channels: 0,
+            };
+
+            let result = oxigdal_dataset_read_region(dataset_ptr, 0, 0, 10, 10, 1, &mut buffer);
             assert_eq!(result, OxiGdalErrorCode::InvalidArgument);
 
             let result = oxigdal_dataset_close(dataset_ptr);

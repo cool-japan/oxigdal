@@ -5,6 +5,8 @@
 use crate::error::Result;
 use byteorder::{BigEndian, ReadBytesExt};
 use chrono::{NaiveDate, NaiveDateTime};
+#[cfg(test)]
+use std::io::Cursor;
 use std::io::Read;
 
 /// GRIB1 Product Definition Section
@@ -117,8 +119,17 @@ impl ProductDefinitionSection {
         // Sub-center
         let subcenter_id = reader.read_u8()?;
 
-        // Decimal scale factor (signed)
-        let decimal_scale = reader.read_i16::<BigEndian>()?;
+        // Decimal scale factor. WMO GRIB1 defines this as `signed[2]`
+        // (confirmed against eccodes' definitions/grib1/section.1.def),
+        // i.e. sign-and-magnitude: the MSB is a sign flag and the low 15
+        // bits are the magnitude. This is NOT two's complement, so it must
+        // not be read with `read_i16`.
+        let raw_scale = reader.read_u16::<BigEndian>()?;
+        let decimal_scale = if raw_scale & 0x8000 != 0 {
+            -((raw_scale & 0x7FFF) as i16)
+        } else {
+            raw_scale as i16
+        };
 
         Ok(Self {
             table_version,
@@ -241,5 +252,77 @@ mod tests {
         assert_eq!(ref_time.month(), 1);
         assert_eq!(ref_time.day(), 15);
         assert_eq!(ref_time.hour(), 12);
+    }
+
+    /// Regression test driving a negative decimal scale factor through
+    /// `from_reader` (not the struct-literal shortcut), confirming the
+    /// sign-and-magnitude decode is applied during actual parsing.
+    #[test]
+    fn test_from_reader_negative_decimal_scale() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x1C]); // section length (unused downstream)
+        data.push(3); // table_version
+        data.push(7); // center_id
+        data.push(0); // process_id
+        data.push(255); // grid_id
+        data.push(0b1000_0000); // gds_bms_flag: has_gds, no bms
+        data.push(11); // parameter_number
+        data.push(100); // level_type: isobaric
+        data.push(0x01); // level1
+        data.push(0xF4); // level2 (500 hPa)
+        data.push(24); // year
+        data.push(1); // month
+        data.push(15); // day
+        data.push(12); // hour
+        data.push(0); // minute
+        data.push(0); // time_range_indicator
+        data.push(6); // time_range_p1
+        data.push(0); // time_range_p2
+        data.extend_from_slice(&0u16.to_be_bytes()); // time_range_n
+        data.push(0); // time_range_nmissing
+        data.push(21); // century
+        data.push(0); // subcenter_id
+        data.extend_from_slice(&[0x80, 0x03]); // decimal scale = sign-magnitude -3
+
+        let mut cursor = Cursor::new(data);
+        let pds = ProductDefinitionSection::from_reader(&mut cursor)
+            .expect("failed to parse PDS from_reader");
+
+        assert_eq!(pds.decimal_scale, -3);
+        assert!((10.0f32.powi(pds.decimal_scale as i32) - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_from_reader_positive_decimal_scale() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x1C]);
+        data.push(3);
+        data.push(7);
+        data.push(0);
+        data.push(255);
+        data.push(0b1000_0000);
+        data.push(11);
+        data.push(100);
+        data.push(0x01);
+        data.push(0xF4);
+        data.push(24);
+        data.push(1);
+        data.push(15);
+        data.push(12);
+        data.push(0);
+        data.push(0);
+        data.push(6);
+        data.push(0);
+        data.extend_from_slice(&0u16.to_be_bytes());
+        data.push(0);
+        data.push(21);
+        data.push(0);
+        data.extend_from_slice(&[0x00, 0x03]); // decimal scale = +3 (sign bit clear)
+
+        let mut cursor = Cursor::new(data);
+        let pds = ProductDefinitionSection::from_reader(&mut cursor)
+            .expect("failed to parse PDS from_reader");
+
+        assert_eq!(pds.decimal_scale, 3);
     }
 }

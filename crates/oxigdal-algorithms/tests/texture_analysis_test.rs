@@ -209,7 +209,6 @@ fn test_glcm_make_symmetric() {
 // ============================================================================
 
 #[test]
-#[ignore = "TODO: GLCM computation needs investigation - uniform raster produces empty matrix"]
 fn test_compute_glcm_uniform() {
     let src = create_uniform_raster(10, 10, 128.0);
     let params = GlcmParams {
@@ -221,20 +220,29 @@ fn test_compute_glcm_uniform() {
 
     let glcm = compute_glcm(&src, Direction::Horizontal, 1, &params).expect("Should compute GLCM");
 
+    // A uniform raster has range == 0, so quantize_image maps every pixel to gray level 0.
+    // All co-occurrences are (0, 0), so after normalization the entire mass is in bin (0,0).
     assert!(glcm.is_normalized());
-    // For uniform image, there should be only one non-zero entry in the GLCM
-    // Find the non-zero entry (quantization may map 128.0 to a nearby gray level)
-    let mut found_non_zero = false;
-    for i in 125..=130 {
-        if glcm.get(i, i) > 0.0 {
-            found_non_zero = true;
-            break;
+    assert!(
+        (glcm.get(0, 0) - 1.0).abs() < 1e-10,
+        "Normalized GLCM of uniform raster must have all mass at (0,0), got {}",
+        glcm.get(0, 0)
+    );
+
+    // Every other entry must be zero.
+    let n = glcm.gray_levels();
+    for i in 0..n {
+        for j in 0..n {
+            if i == 0 && j == 0 {
+                continue;
+            }
+            assert!(
+                glcm.get(i, j).abs() < 1e-10,
+                "Expected 0.0 at ({i},{j}) but got {}",
+                glcm.get(i, j)
+            );
         }
     }
-    assert!(
-        found_non_zero,
-        "Should have co-occurrence for uniform value around gray level 128"
-    );
 }
 
 #[test]

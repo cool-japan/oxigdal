@@ -2,6 +2,7 @@
 
 use crate::error::{Error, Result};
 use byteorder::{BigEndian, ReadBytesExt};
+use oxigdal_jpeg2000::Jpeg2000Reader;
 use std::io::{Cursor, Read};
 
 /// Codestream marker codes.
@@ -269,35 +270,98 @@ impl CodestreamDecoder {
         })
     }
 
-    /// Decode to raw image data (simplified).
-    /// This is a placeholder for a full JPEG2000 decoder.
-    /// In production, you would use a complete wavelet decoder here.
+    /// Decode the codestream into interleaved sample data.
+    ///
+    /// Delegates the actual wavelet/EBCOT/tier-2 decoding to
+    /// [`oxigdal_jpeg2000::Jpeg2000Reader`], which implements the full
+    /// pure-Rust JPEG2000 decode chain (tier-1 EBCOT, inverse 5/3 DWT,
+    /// reversible color transform, level-shift). The result is interleaved
+    /// with `num_components` channels per pixel, matching [`CodestreamHeader::num_components`].
+    ///
+    /// For 3-component (or MCT-enabled) images the reader's native RGB path
+    /// is used directly. For every other component count the reader's
+    /// region-decode path is used over the full image extent and the
+    /// resulting RGB triplets are remapped onto the declared channel layout
+    /// (see `remap_rgb_to_components`).
     pub fn decode(&mut self) -> Result<Vec<u8>> {
         let header = self.parse_header()?;
 
-        let width = header.width as usize;
-        let height = header.height as usize;
+        let width = header.width;
+        let height = header.height;
         let num_components = header.num_components as usize;
 
-        // Placeholder: Create empty image
-        // In a real implementation, this would decode the wavelet transform,
-        // dequantize, and reconstruct the image.
-        let size = width * height * num_components;
-        let data = vec![128u8; size]; // Gray image as placeholder
+        if width == 0 || height == 0 || num_components == 0 {
+            return Err(Error::jpeg2000(format!(
+                "Invalid codestream dimensions: {}x{}, {} components",
+                width, height, num_components
+            )));
+        }
 
-        tracing::warn!(
-            "JPEG2000 decoding is simplified - returning placeholder data ({}x{}, {} components)",
-            width,
-            height,
-            num_components
-        );
+        let mut jp2000_reader = Jpeg2000Reader::new(Cursor::new(self.data.clone()))
+            .map_err(|e| Error::jpeg2000(format!("Failed to open JPEG2000 codestream: {e}")))?;
+        jp2000_reader
+            .parse_headers()
+            .map_err(|e| Error::jpeg2000(format!("Failed to parse JPEG2000 headers: {e}")))?;
 
-        Ok(data)
+        let use_mct = jp2000_reader.uses_mct();
+        let rgb = if num_components == 3 || use_mct {
+            jp2000_reader
+                .decode_rgb()
+                .map_err(|e| Error::jpeg2000(format!("JPEG2000 RGB decode failed: {e}")))?
+        } else {
+            jp2000_reader
+                .decode_region(0, 0, width, height)
+                .map_err(|e| Error::jpeg2000(format!("JPEG2000 region decode failed: {e}")))?
+        };
+
+        let pixel_count = width as usize * height as usize;
+        if rgb.len() < pixel_count * 3 {
+            return Err(Error::jpeg2000(format!(
+                "Decoded JPEG2000 buffer too small: got {} bytes, expected at least {}",
+                rgb.len(),
+                pixel_count * 3
+            )));
+        }
+
+        Ok(remap_rgb_to_components(&rgb, pixel_count, num_components))
     }
 
     /// Get parsed header.
     pub fn header(&self) -> Option<&CodestreamHeader> {
         self.header.as_ref()
+    }
+}
+
+/// Remap interleaved RGB triplets (as produced by
+/// [`oxigdal_jpeg2000::Jpeg2000Reader::decode_rgb`] /
+/// [`oxigdal_jpeg2000::Jpeg2000Reader::decode_region`]) onto a buffer with
+/// `num_components` channels per pixel.
+///
+/// - `3` components: the RGB data is used verbatim.
+/// - `1` component: only the red channel is kept (the reader replicates a
+///   single source component across R/G/B for grayscale images, so R alone
+///   carries the original sample).
+/// - any other count: the first `min(num_components, 3)` channels are taken
+///   from RGB and any remaining channels (e.g. a 4th alpha channel) are
+///   filled with the fully-opaque value `0xFF`, since the underlying reader
+///   does not currently expose true per-component decode for non-RGB
+///   component counts.
+fn remap_rgb_to_components(rgb: &[u8], pixel_count: usize, num_components: usize) -> Vec<u8> {
+    match num_components {
+        3 => rgb[..pixel_count * 3].to_vec(),
+        1 => rgb
+            .chunks_exact(3)
+            .take(pixel_count)
+            .map(|px| px[0])
+            .collect(),
+        n => {
+            let mut out = Vec::with_capacity(pixel_count * n);
+            for px in rgb.chunks_exact(3).take(pixel_count) {
+                out.extend_from_slice(&px[..n.min(3)]);
+                out.extend(std::iter::repeat_n(0xFFu8, n.saturating_sub(3)));
+            }
+            out
+        }
     }
 }
 
@@ -359,5 +423,128 @@ mod tests {
             assert_eq!(b.width, 512);
             assert_eq!(b.height, 512);
         }
+    }
+
+    /// Build a minimal, structurally valid raw J2K codestream (SOC, SIZ, COD,
+    /// QCD, SOT, SOD, EOC) for a single-tile image with the given component
+    /// count. Decomposition levels are set to 0 and the code-block covers the
+    /// whole tile so that the tier-1/wavelet chain in `oxigdal-jpeg2000` is
+    /// exercised end-to-end without requiring a hand-crafted MQ-coded
+    /// bitstream: an empty code-block payload is a legitimate (if trivial)
+    /// EBCOT input that decodes to all-zero coefficients through the real
+    /// decode path, as opposed to the removed `vec![128u8; ...]` placeholder.
+    fn build_minimal_j2k(width: u32, height: u32, num_components: u16) -> Vec<u8> {
+        let mut data = Vec::new();
+
+        // SOC
+        data.extend_from_slice(&[0xFF, 0x4F]);
+
+        // SIZ. Lsiz (on-the-wire, includes its own 2-byte length field) =
+        // 2 (length field) + 2 (capability) + 32 (8 x 4-byte size fields)
+        // + 2 (num components) + 3 bytes per component.
+        let siz_length = 2u16 + 2 + 32 + 2 + num_components * 3;
+        data.extend_from_slice(&[0xFF, 0x51]);
+        data.extend_from_slice(&siz_length.to_be_bytes());
+        data.extend_from_slice(&0u16.to_be_bytes()); // capability
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes()); // x offset
+        data.extend_from_slice(&0u32.to_be_bytes()); // y offset
+        data.extend_from_slice(&width.to_be_bytes()); // single tile == image extent
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes()); // tile x offset
+        data.extend_from_slice(&0u32.to_be_bytes()); // tile y offset
+        data.extend_from_slice(&num_components.to_be_bytes());
+        for _ in 0..num_components {
+            data.push(0x07); // Ssiz: 8-bit unsigned
+            data.push(1); // XRsiz
+            data.push(1); // YRsiz
+        }
+
+        // COD
+        data.extend_from_slice(&[0xFF, 0x52]);
+        data.extend_from_slice(&12u16.to_be_bytes()); // Lcod
+        data.push(0x00); // Scod: no custom precincts
+        data.push(0x00); // progression order: LRCP
+        data.extend_from_slice(&1u16.to_be_bytes()); // quality layers
+        data.push(0x00); // multi-component transform: off
+        data.push(0x00); // decomposition levels: 0 (skip wavelet)
+        data.push(0x00); // code-block width exponent -> cb_w = 4
+        data.push(0x00); // code-block height exponent -> cb_h = 4
+        data.push(0x00); // code-block style
+        data.push(0x01); // wavelet: 5/3 reversible
+
+        // QCD
+        data.extend_from_slice(&[0xFF, 0x5C]);
+        data.extend_from_slice(&4u16.to_be_bytes()); // Lqcd
+        data.push(0x00); // Sqcd: no quantization
+        data.push(0x00); // single step-size byte
+
+        // SOT
+        data.extend_from_slice(&[0xFF, 0x90]);
+        data.extend_from_slice(&10u16.to_be_bytes()); // Lsot (fixed)
+        data.extend_from_slice(&0u16.to_be_bytes()); // Isot: tile 0
+        data.extend_from_slice(&0u32.to_be_bytes()); // Psot: rest of codestream
+        data.push(0x00); // TPsot
+        data.push(0x01); // TNsot
+
+        // SOD — start of tile bitstream data. No code-block payload bytes
+        // follow, so every code-block decodes to all-zero coefficients.
+        data.extend_from_slice(&[0xFF, 0x93]);
+
+        // EOC
+        data.extend_from_slice(&[0xFF, 0xD9]);
+
+        data
+    }
+
+    #[test]
+    fn test_decode_grayscale_uses_real_decode_path() {
+        let codestream = build_minimal_j2k(4, 4, 1);
+        let mut decoder = CodestreamDecoder::new(codestream);
+
+        let data = decoder
+            .decode()
+            .expect("decode should succeed via the real JPEG2000 decode chain");
+
+        let header = decoder.header().expect("header must be parsed");
+        assert_eq!(header.width, 4);
+        assert_eq!(header.height, 4);
+        assert_eq!(header.num_components, 1);
+
+        assert_eq!(data.len(), 4 * 4 * header.num_components as usize);
+        assert!(
+            !data.iter().all(|&b| b == 128),
+            "decoded data must not be the removed uniform gray placeholder"
+        );
+    }
+
+    #[test]
+    fn test_decode_rgb_uses_real_decode_path() {
+        let codestream = build_minimal_j2k(4, 4, 3);
+        let mut decoder = CodestreamDecoder::new(codestream);
+
+        let data = decoder
+            .decode()
+            .expect("decode should succeed via the real JPEG2000 decode chain");
+
+        let header = decoder.header().expect("header must be parsed");
+        assert_eq!(header.num_components, 3);
+
+        assert_eq!(data.len(), 4 * 4 * 3);
+        assert!(
+            !data.iter().all(|&b| b == 128),
+            "decoded data must not be the removed uniform gray placeholder"
+        );
+    }
+
+    #[test]
+    fn test_decode_truncated_codestream_errors_instead_of_faking_data() {
+        // A codestream truncated inside the SIZ segment must fail decoding
+        // rather than silently falling back to placeholder pixel data.
+        let mut data = build_minimal_j2k(4, 4, 1);
+        data.truncate(4); // SOC + partial SIZ marker only
+        let mut decoder = CodestreamDecoder::new(data);
+        assert!(decoder.decode().is_err());
     }
 }

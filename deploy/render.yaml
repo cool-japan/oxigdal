@@ -65,7 +65,15 @@ services:
       mountPath: /data
       sizeGB: 10
 
-  # PostgreSQL Database
+  # Redis Cache
+  - type: redis
+    name: oxigdal-redis
+    plan: standard
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+# PostgreSQL Database
 databases:
   - name: oxigdal-postgres
     databaseName: oxigdal
@@ -73,11 +81,3 @@ databases:
     plan: standard
     region: oregon
     postgresMajorVersion: 16
-
-# Redis Cache
-- type: redis
-  name: oxigdal-redis
-  plan: standard
-  region: oregon
-  maxmemoryPolicy: allkeys-lru
-  ipAllowList: []

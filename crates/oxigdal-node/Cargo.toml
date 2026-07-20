@@ -20,7 +20,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # OxiGDAL ecosystem
 oxigdal-core.workspace = true
-oxigdal-algorithms.workspace = true
+oxigdal-algorithms = { workspace = true, default-features = true }
 oxigdal-geotiff.workspace = true
 oxigdal-geojson.workspace = true
 oxigdal-proj.workspace = true
@@ -56,3 +56,7 @@ geojson = []
 proj = []
 algorithms = []
 async-io = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

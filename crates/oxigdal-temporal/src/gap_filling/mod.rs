@@ -5,7 +5,8 @@
 
 use crate::error::{Result, TemporalError};
 use crate::timeseries::TimeSeriesRaster;
-use scirs2_core::ndarray::Array3;
+use scirs2_core::linalg::solve_ndarray;
+use scirs2_core::ndarray::{Array1, Array2, Array3};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use tracing::info;
@@ -13,6 +14,7 @@ use tracing::info;
 pub mod harmonic;
 pub mod interpolation;
 pub mod savgol;
+pub mod spline;
 pub mod whittaker;
 
 /// Gap filling method
@@ -20,7 +22,10 @@ pub mod whittaker;
 pub enum GapFillMethod {
     /// Linear interpolation
     LinearInterpolation,
-    /// Spline interpolation
+    /// Natural cubic spline interpolation (see [`gap_filling::spline`](crate::gap_filling::spline)).
+    /// Fits a `C²`-continuous piecewise cubic through all valid anchor points
+    /// per pixel timeseries, producing curvature rather than the straight
+    /// line segments of [`GapFillMethod::LinearInterpolation`].
     SplineInterpolation,
     /// Nearest neighbor
     NearestNeighbor,
@@ -176,11 +181,42 @@ impl GapFiller {
         result
     }
 
-    /// Spline interpolation gap filling
+    /// Natural cubic spline interpolation gap filling.
+    ///
+    /// Fits a natural cubic spline (see [`spline::fill_natural_cubic_spline`])
+    /// through the valid observations of each pixel timeseries, producing a
+    /// smoothly-curved fill rather than the piecewise-linear segments used by
+    /// [`Self::linear_interpolation`].
     fn spline_interpolation(ts: &TimeSeriesRaster) -> Result<TimeSeriesRaster> {
-        // Use linear interpolation as approximation
-        info!("Using linear interpolation approximation for spline");
-        Self::linear_interpolation(ts)
+        if ts.len() < 2 {
+            return Err(TemporalError::insufficient_data(
+                "Need at least 2 observations",
+            ));
+        }
+
+        let (height, width, n_bands) = ts
+            .expected_shape()
+            .ok_or_else(|| TemporalError::insufficient_data("No shape information"))?;
+
+        let mut filled_ts = ts.clone();
+
+        for i in 0..height {
+            for j in 0..width {
+                for k in 0..n_bands {
+                    let values = ts.extract_pixel_timeseries(i, j, k)?;
+                    let filled = spline::fill_natural_cubic_spline(&values);
+
+                    for (t, entry) in filled_ts.entries_mut().values_mut().enumerate() {
+                        if let Some(data) = &mut entry.data {
+                            data[[i, j, k]] = filled[t];
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Completed natural cubic spline gap filling");
+        Ok(filled_ts)
     }
 
     /// Nearest neighbor gap filling
@@ -269,11 +305,19 @@ impl GapFiller {
         Ok(filled_ts)
     }
 
-    /// Fit harmonic function to data
+    /// Fit harmonic function to data.
+    ///
+    /// Model: `y = a + b*sin(2*pi*t/P) + c*cos(2*pi*t/P)`, fitted by ordinary
+    /// least squares over the valid (non-NaN) samples via the proper 3x3
+    /// normal-equation system `(AᵀA)·β = Aᵀy` (design matrix columns
+    /// `[1, sin(phase), cos(phase)]`), solved with
+    /// [`scirs2_core::linalg::solve_ndarray`] — the same approach used by
+    /// [`savgol::smooth_savgol`] and [`whittaker::smooth_whittaker`] in this
+    /// module. Unlike independent marginal regressions of `y` on `sin` and
+    /// `y` on `cos` separately, this accounts for the sin/cos cross-term and
+    /// is exact even when the valid samples are not orthogonal over a full
+    /// period (e.g. gappy or irregularly-sampled series).
     fn fit_harmonic(values: &[f64], period: usize) -> Vec<f64> {
-        let n = values.len();
-
-        // Simple harmonic model: y = a + b*sin(2*pi*t/P) + c*cos(2*pi*t/P)
         let valid_data: Vec<(usize, f64)> = values
             .iter()
             .enumerate()
@@ -285,42 +329,45 @@ impl GapFiller {
             return values.to_vec();
         }
 
-        // Least squares fit
-        let mut sum_y = 0.0;
-        let mut sum_sin = 0.0;
-        let mut sum_cos = 0.0;
-        let mut sum_sin2 = 0.0;
-        let mut sum_cos2 = 0.0;
-        let mut sum_y_sin = 0.0;
-        let mut sum_y_cos = 0.0;
+        let n_valid = valid_data.len();
+        let mean = || valid_data.iter().map(|&(_, y)| y).sum::<f64>() / n_valid as f64;
 
-        for &(t, y) in &valid_data {
-            let phase = 2.0 * PI * (t as f64) / (period as f64);
-            let sin_val = phase.sin();
-            let cos_val = phase.cos();
+        // Fewer than 3 valid samples cannot uniquely determine 3 unknowns
+        // (a, b, c); fall back to the sample mean (b = c = 0).
+        let (a_coef, b, c) = if n_valid < 3 {
+            (mean(), 0.0, 0.0)
+        } else {
+            let mut design = Array2::<f64>::zeros((n_valid, 3));
+            let mut target = Array1::<f64>::zeros(n_valid);
+            for (row, &(t, y)) in valid_data.iter().enumerate() {
+                let phase = 2.0 * PI * (t as f64) / (period as f64);
+                design[[row, 0]] = 1.0;
+                design[[row, 1]] = phase.sin();
+                design[[row, 2]] = phase.cos();
+                target[row] = y;
+            }
 
-            sum_y += y;
-            sum_sin += sin_val;
-            sum_cos += cos_val;
-            sum_sin2 += sin_val * sin_val;
-            sum_cos2 += cos_val * cos_val;
-            sum_y_sin += y * sin_val;
-            sum_y_cos += y * cos_val;
-        }
+            let design_t = design.t().to_owned();
+            let ata = design_t.dot(&design);
+            let aty = design_t.dot(&target);
 
-        let n_valid = valid_data.len() as f64;
-        let a = sum_y / n_valid;
-        let b = (sum_y_sin - sum_sin * sum_y / n_valid) / (sum_sin2 - sum_sin * sum_sin / n_valid);
-        let c = (sum_y_cos - sum_cos * sum_y / n_valid) / (sum_cos2 - sum_cos * sum_cos / n_valid);
+            match solve_ndarray(&ata, &aty) {
+                Ok(beta) => (beta[0], beta[1], beta[2]),
+                Err(_) => {
+                    // Degenerate/singular normal-equation matrix (e.g. all
+                    // valid samples land on the same phase); fall back to
+                    // the sample mean rather than a biased estimate.
+                    (mean(), 0.0, 0.0)
+                }
+            }
+        };
 
-        // Generate fitted values
         values
             .iter()
             .enumerate()
-            .take(n)
             .map(|(t, val)| {
                 let phase = 2.0 * PI * (t as f64) / (period as f64);
-                let fitted = a + b * phase.sin() + c * phase.cos();
+                let fitted = a_coef + b * phase.sin() + c * phase.cos();
                 if val.is_nan() { fitted } else { *val }
             })
             .collect()

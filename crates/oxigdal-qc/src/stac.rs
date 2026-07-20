@@ -200,25 +200,24 @@ impl StacValidator {
         // ── 3c. datetime in properties ────────────────────────────────────────
         if let Some(props) = root.get("properties") {
             // A string `datetime` field must be valid RFC-3339.
-            if let Some(dt_val) = props.get("datetime") {
-                if let Some(dt_str) = dt_val.as_str() {
-                    if dt_str != "null" && dt_str.parse::<chrono::DateTime<chrono::Utc>>().is_err()
-                    {
-                        issues.push(
-                            QcIssue::new(
-                                Severity::Major,
-                                "STAC",
-                                "Invalid datetime value",
-                                format!(
-                                    "properties.datetime '{}' is not a valid RFC-3339 timestamp",
-                                    dt_str
-                                ),
-                            )
-                            .with_location(loc.to_owned())
-                            .with_rule_id("STAC-020"),
-                        );
-                    }
-                }
+            if let Some(dt_val) = props.get("datetime")
+                && let Some(dt_str) = dt_val.as_str()
+                && dt_str != "null"
+                && dt_str.parse::<chrono::DateTime<chrono::Utc>>().is_err()
+            {
+                issues.push(
+                    QcIssue::new(
+                        Severity::Major,
+                        "STAC",
+                        "Invalid datetime value",
+                        format!(
+                            "properties.datetime '{}' is not a valid RFC-3339 timestamp",
+                            dt_str
+                        ),
+                    )
+                    .with_location(loc.to_owned())
+                    .with_rule_id("STAC-020"),
+                );
             }
 
             // ── 3d. EO extension: eo:cloud_cover ∈ [0, 100] ──────────────────
@@ -313,21 +312,20 @@ fn check_bbox(bbox: &serde_json::Value, loc: &str, issues: &mut Vec<QcIssue>) {
 
 /// Validate `eo:cloud_cover` in Item properties.
 fn check_eo_cloud_cover(props: &serde_json::Value, loc: &str, issues: &mut Vec<QcIssue>) {
-    if let Some(cc_val) = props.get("eo:cloud_cover") {
-        if let Some(cc) = cc_val.as_f64() {
-            if !(0.0..=100.0).contains(&cc) {
-                issues.push(
-                    QcIssue::new(
-                        Severity::Warning,
-                        "STAC",
-                        "eo:cloud_cover out of range",
-                        format!("eo:cloud_cover {} is outside the valid range [0, 100]", cc),
-                    )
-                    .with_location(loc.to_owned())
-                    .with_rule_id("STAC-040"),
-                );
-            }
-        }
+    if let Some(cc_val) = props.get("eo:cloud_cover")
+        && let Some(cc) = cc_val.as_f64()
+        && !(0.0..=100.0).contains(&cc)
+    {
+        issues.push(
+            QcIssue::new(
+                Severity::Warning,
+                "STAC",
+                "eo:cloud_cover out of range",
+                format!("eo:cloud_cover {} is outside the valid range [0, 100]", cc),
+            )
+            .with_location(loc.to_owned())
+            .with_rule_id("STAC-040"),
+        );
     }
 }
 

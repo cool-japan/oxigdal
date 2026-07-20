@@ -1,19 +1,22 @@
-//! Geometry encoding and decoding for `FlatGeobuf` format
+//! Geometry encoding and decoding for the `FlatGeobuf` format
 //!
-//! Geometries in `FlatGeobuf` are stored as sequences of coordinates with
-//! a type indicator. This module handles conversion between `OxiGDAL` geometry
-//! types and `FlatGeobuf` binary encoding.
+//! Geometries are stored as `FlatBuffers` `Geometry` tables holding a flat
+//! coordinate array (`xy`, optionally `z`/`m`), part end indices (`ends`) for
+//! multi-ring / multi-part geometries, and nested `parts` tables for
+//! `MultiPolygon` and `GeometryCollection`. This module converts between the
+//! `OxiGDAL` geometry model and that on-disk representation, following the
+//! official `FlatGeobuf` schema (`feature.fbs`).
 
 use crate::error::{FlatGeobufError, Result};
+use crate::fbs::{self, FbTable, Offset};
 use crate::header::GeometryType;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use flatbuffers::FlatBufferBuilder;
 use oxigdal_core::vector::{
     Coordinate, Geometry, GeometryCollection, LineString, MultiLineString, MultiPoint,
     MultiPolygon, Point, Polygon,
 };
-use std::io::{Read, Write};
 
-/// Geometry encoder/decoder
+/// Geometry encoder/decoder bound to a coordinate dimensionality.
 pub struct GeometryCodec {
     has_z: bool,
     has_m: bool,
@@ -26,392 +29,461 @@ impl GeometryCodec {
         Self { has_z, has_m }
     }
 
-    /// Encodes a geometry to bytes
-    pub fn encode<W: Write>(&self, writer: &mut W, geometry: &Geometry) -> Result<()> {
-        match geometry {
-            Geometry::Point(p) => self.encode_point(writer, p),
-            Geometry::LineString(ls) => self.encode_linestring(writer, ls),
-            Geometry::Polygon(p) => self.encode_polygon(writer, p),
-            Geometry::MultiPoint(mp) => self.encode_multipoint(writer, mp),
-            Geometry::MultiLineString(mls) => self.encode_multilinestring(writer, mls),
-            Geometry::MultiPolygon(mp) => self.encode_multipolygon(writer, mp),
-            Geometry::GeometryCollection(gc) => self.encode_geometry_collection(writer, gc),
-        }
+    /// Builds a top-level `Geometry` table for `geometry` into `fbb`.
+    ///
+    /// The `type` field is left at its default (`Unknown`) because the concrete
+    /// type is carried by the enclosing header; elements of a
+    /// `GeometryCollection` instead carry their own type.
+    pub fn build(&self, fbb: &mut FlatBufferBuilder<'_>, geometry: &Geometry) -> Result<Offset> {
+        self.build_geom(fbb, geometry, false)
     }
 
-    /// Decodes a geometry from bytes
-    pub fn decode<R: Read>(&self, reader: &mut R, geom_type: GeometryType) -> Result<Geometry> {
-        match geom_type {
-            GeometryType::Point => Ok(Geometry::Point(self.decode_point(reader)?)),
-            GeometryType::LineString => Ok(Geometry::LineString(self.decode_linestring(reader)?)),
-            GeometryType::Polygon => Ok(Geometry::Polygon(self.decode_polygon(reader)?)),
-            GeometryType::MultiPoint => Ok(Geometry::MultiPoint(self.decode_multipoint(reader)?)),
-            GeometryType::MultiLineString => Ok(Geometry::MultiLineString(
-                self.decode_multilinestring(reader)?,
-            )),
-            GeometryType::MultiPolygon => {
-                Ok(Geometry::MultiPolygon(self.decode_multipolygon(reader)?))
+    /// Reads a `Geometry` table into an `OxiGDAL` [`Geometry`] using `geom_type`
+    /// (typically the header geometry type). When `geom_type` is
+    /// [`GeometryType::Unknown`] the table's own `type` field is consulted.
+    pub fn read(&self, t: &FbTable<'_>, geom_type: GeometryType) -> Result<Geometry> {
+        let gt = if geom_type == GeometryType::Unknown {
+            GeometryType::from_u8(t.get_u8(fbs::GEOM_VT_TYPE, 0)?)?
+        } else {
+            geom_type
+        };
+
+        match gt {
+            GeometryType::Point => {
+                let coords = self.read_coords(t)?;
+                let coord = coords
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| FlatGeobufError::InvalidGeometry("empty Point".to_string()))?;
+                Ok(Geometry::Point(Point::from_coord(coord)))
             }
-            GeometryType::GeometryCollection => Ok(Geometry::GeometryCollection(
-                self.decode_geometry_collection(reader)?,
-            )),
-            _ => Err(FlatGeobufError::UnsupportedGeometryType(geom_type as u8)),
+            GeometryType::MultiPoint => {
+                let coords = self.read_coords(t)?;
+                let points = coords.into_iter().map(Point::from_coord).collect();
+                Ok(Geometry::MultiPoint(MultiPoint::new(points)))
+            }
+            GeometryType::LineString => {
+                let coords = self.read_coords(t)?;
+                Ok(Geometry::LineString(
+                    LineString::new(coords).map_err(FlatGeobufError::OxiGdal)?,
+                ))
+            }
+            GeometryType::MultiLineString => {
+                let coords = self.read_coords(t)?;
+                let ends = t.get_u32_vector(fbs::GEOM_VT_ENDS)?;
+                let parts = split_by_ends(&coords, ends.as_deref())?;
+                let mut line_strings = Vec::with_capacity(parts.len());
+                for part in parts {
+                    line_strings.push(LineString::new(part).map_err(FlatGeobufError::OxiGdal)?);
+                }
+                Ok(Geometry::MultiLineString(MultiLineString::new(
+                    line_strings,
+                )))
+            }
+            GeometryType::Polygon => Ok(Geometry::Polygon(self.read_polygon(t)?)),
+            GeometryType::MultiPolygon => {
+                let parts = t.get_table_vector(fbs::GEOM_VT_PARTS)?;
+                let mut polygons = Vec::new();
+                if parts.is_empty() {
+                    // A single-polygon MultiPolygon may be stored flat.
+                    polygons.push(self.read_polygon(t)?);
+                } else {
+                    for part in &parts {
+                        polygons.push(self.read_polygon(part)?);
+                    }
+                }
+                Ok(Geometry::MultiPolygon(MultiPolygon::new(polygons)))
+            }
+            GeometryType::GeometryCollection => {
+                let parts = t.get_table_vector(fbs::GEOM_VT_PARTS)?;
+                let mut geometries = Vec::with_capacity(parts.len());
+                for part in &parts {
+                    // Each part declares its own type.
+                    geometries.push(self.read(part, GeometryType::Unknown)?);
+                }
+                Ok(Geometry::GeometryCollection(GeometryCollection::new(
+                    geometries,
+                )))
+            }
+            other => Err(FlatGeobufError::UnsupportedGeometryType(other as u8)),
         }
     }
 
-    /// Encodes a coordinate
-    fn encode_coordinate<W: Write>(&self, writer: &mut W, coord: &Coordinate) -> Result<()> {
-        writer.write_f64::<LittleEndian>(coord.x)?;
-        writer.write_f64::<LittleEndian>(coord.y)?;
-
-        if self.has_z {
-            writer.write_f64::<LittleEndian>(coord.z.unwrap_or(0.0))?;
+    /// Reads a `Polygon` from a `Geometry` table (exterior + optional holes).
+    fn read_polygon(&self, t: &FbTable<'_>) -> Result<Polygon> {
+        let coords = self.read_coords(t)?;
+        let ends = t.get_u32_vector(fbs::GEOM_VT_ENDS)?;
+        let rings = split_by_ends(&coords, ends.as_deref())?;
+        let mut iter = rings.into_iter();
+        let exterior = iter
+            .next()
+            .ok_or_else(|| FlatGeobufError::InvalidGeometry("Polygon has no rings".to_string()))?;
+        let exterior = LineString::new(exterior).map_err(FlatGeobufError::OxiGdal)?;
+        let mut interiors = Vec::new();
+        for ring in iter {
+            interiors.push(LineString::new(ring).map_err(FlatGeobufError::OxiGdal)?);
         }
-
-        if self.has_m {
-            writer.write_f64::<LittleEndian>(coord.m.unwrap_or(0.0))?;
-        }
-
-        Ok(())
-    }
-
-    /// Decodes a coordinate
-    fn decode_coordinate<R: Read>(&self, reader: &mut R) -> Result<Coordinate> {
-        let x = reader.read_f64::<LittleEndian>()?;
-        let y = reader.read_f64::<LittleEndian>()?;
-
-        let z = if self.has_z {
-            Some(reader.read_f64::<LittleEndian>()?)
-        } else {
-            None
-        };
-
-        let m = if self.has_m {
-            Some(reader.read_f64::<LittleEndian>()?)
-        } else {
-            None
-        };
-
-        Ok(Coordinate { x, y, z, m })
-    }
-
-    /// Encodes a point
-    fn encode_point<W: Write>(&self, writer: &mut W, point: &Point) -> Result<()> {
-        self.encode_coordinate(writer, &point.coord)
-    }
-
-    /// Decodes a point
-    fn decode_point<R: Read>(&self, reader: &mut R) -> Result<Point> {
-        let coord = self.decode_coordinate(reader)?;
-        Ok(Point::from_coord(coord))
-    }
-
-    /// Encodes a linestring
-    fn encode_linestring<W: Write>(&self, writer: &mut W, linestring: &LineString) -> Result<()> {
-        writer.write_u32::<LittleEndian>(linestring.coords.len() as u32)?;
-        for coord in &linestring.coords {
-            self.encode_coordinate(writer, coord)?;
-        }
-        Ok(())
-    }
-
-    /// Decodes a linestring
-    fn decode_linestring<R: Read>(&self, reader: &mut R) -> Result<LineString> {
-        let count = reader.read_u32::<LittleEndian>()?;
-        let mut coords = Vec::with_capacity(count as usize);
-
-        for _ in 0..count {
-            coords.push(self.decode_coordinate(reader)?);
-        }
-
-        if coords.len() < 2 {
-            return Err(FlatGeobufError::InvalidGeometry(
-                "LineString must have at least 2 coordinates".to_string(),
-            ));
-        }
-
-        LineString::new(coords).map_err(FlatGeobufError::OxiGdal)
-    }
-
-    /// Encodes a polygon
-    fn encode_polygon<W: Write>(&self, writer: &mut W, polygon: &Polygon) -> Result<()> {
-        // Number of rings
-        writer.write_u32::<LittleEndian>((1 + polygon.interiors.len()) as u32)?;
-
-        // Exterior ring
-        self.encode_linestring(writer, &polygon.exterior)?;
-
-        // Interior rings
-        for interior in &polygon.interiors {
-            self.encode_linestring(writer, interior)?;
-        }
-
-        Ok(())
-    }
-
-    /// Decodes a polygon
-    fn decode_polygon<R: Read>(&self, reader: &mut R) -> Result<Polygon> {
-        let ring_count = reader.read_u32::<LittleEndian>()?;
-
-        if ring_count == 0 {
-            return Err(FlatGeobufError::InvalidGeometry(
-                "Polygon must have at least 1 ring".to_string(),
-            ));
-        }
-
-        let exterior = self.decode_linestring(reader)?;
-
-        let mut interiors = Vec::with_capacity(ring_count.saturating_sub(1) as usize);
-        for _ in 1..ring_count {
-            interiors.push(self.decode_linestring(reader)?);
-        }
-
         Polygon::new(exterior, interiors).map_err(FlatGeobufError::OxiGdal)
     }
 
-    /// Encodes a multipoint
-    fn encode_multipoint<W: Write>(&self, writer: &mut W, multipoint: &MultiPoint) -> Result<()> {
-        writer.write_u32::<LittleEndian>(multipoint.points.len() as u32)?;
-        for point in &multipoint.points {
-            self.encode_coordinate(writer, &point.coord)?;
+    /// Reconstructs coordinates from the `xy` (and optional `z`/`m`) arrays.
+    fn read_coords(&self, t: &FbTable<'_>) -> Result<Vec<Coordinate>> {
+        let xy = t.get_f64_vector(fbs::GEOM_VT_XY)?.unwrap_or_default();
+        if xy.len() % 2 != 0 {
+            return Err(FlatGeobufError::InvalidGeometry(
+                "xy array has an odd number of values".to_string(),
+            ));
         }
-        Ok(())
-    }
+        let n = xy.len() / 2;
+        let z = if self.has_z {
+            t.get_f64_vector(fbs::GEOM_VT_Z)?
+        } else {
+            None
+        };
+        let m = if self.has_m {
+            t.get_f64_vector(fbs::GEOM_VT_M)?
+        } else {
+            None
+        };
 
-    /// Decodes a multipoint
-    fn decode_multipoint<R: Read>(&self, reader: &mut R) -> Result<MultiPoint> {
-        let count = reader.read_u32::<LittleEndian>()?;
-        let mut points = Vec::with_capacity(count as usize);
-
-        for _ in 0..count {
-            let coord = self.decode_coordinate(reader)?;
-            points.push(Point::from_coord(coord));
-        }
-
-        Ok(MultiPoint::new(points))
-    }
-
-    /// Encodes a multilinestring
-    fn encode_multilinestring<W: Write>(
-        &self,
-        writer: &mut W,
-        multilinestring: &MultiLineString,
-    ) -> Result<()> {
-        writer.write_u32::<LittleEndian>(multilinestring.line_strings.len() as u32)?;
-        for linestring in &multilinestring.line_strings {
-            self.encode_linestring(writer, linestring)?;
-        }
-        Ok(())
-    }
-
-    /// Decodes a multilinestring
-    fn decode_multilinestring<R: Read>(&self, reader: &mut R) -> Result<MultiLineString> {
-        let count = reader.read_u32::<LittleEndian>()?;
-        let mut line_strings = Vec::with_capacity(count as usize);
-
-        for _ in 0..count {
-            line_strings.push(self.decode_linestring(reader)?);
-        }
-
-        Ok(MultiLineString::new(line_strings))
-    }
-
-    /// Encodes a multipolygon
-    fn encode_multipolygon<W: Write>(
-        &self,
-        writer: &mut W,
-        multipolygon: &MultiPolygon,
-    ) -> Result<()> {
-        writer.write_u32::<LittleEndian>(multipolygon.polygons.len() as u32)?;
-        for polygon in &multipolygon.polygons {
-            self.encode_polygon(writer, polygon)?;
-        }
-        Ok(())
-    }
-
-    /// Decodes a multipolygon
-    fn decode_multipolygon<R: Read>(&self, reader: &mut R) -> Result<MultiPolygon> {
-        let count = reader.read_u32::<LittleEndian>()?;
-        let mut polygons = Vec::with_capacity(count as usize);
-
-        for _ in 0..count {
-            polygons.push(self.decode_polygon(reader)?);
-        }
-
-        Ok(MultiPolygon::new(polygons))
-    }
-
-    /// Encodes a geometry collection
-    fn encode_geometry_collection<W: Write>(
-        &self,
-        writer: &mut W,
-        collection: &GeometryCollection,
-    ) -> Result<()> {
-        writer.write_u32::<LittleEndian>(collection.geometries.len() as u32)?;
-        for geometry in &collection.geometries {
-            // Write geometry type
-            let geom_type = match geometry {
-                Geometry::Point(_) => GeometryType::Point,
-                Geometry::LineString(_) => GeometryType::LineString,
-                Geometry::Polygon(_) => GeometryType::Polygon,
-                Geometry::MultiPoint(_) => GeometryType::MultiPoint,
-                Geometry::MultiLineString(_) => GeometryType::MultiLineString,
-                Geometry::MultiPolygon(_) => GeometryType::MultiPolygon,
-                Geometry::GeometryCollection(_) => GeometryType::GeometryCollection,
+        let mut coords = Vec::with_capacity(n);
+        for i in 0..n {
+            let cz = if self.has_z {
+                z.as_ref().and_then(|v| v.get(i).copied())
+            } else {
+                None
             };
-            writer.write_u8(geom_type as u8)?;
-
-            // Write geometry
-            self.encode(writer, geometry)?;
+            let cm = if self.has_m {
+                m.as_ref().and_then(|v| v.get(i).copied())
+            } else {
+                None
+            };
+            coords.push(Coordinate {
+                x: xy[2 * i],
+                y: xy[2 * i + 1],
+                z: cz,
+                m: cm,
+            });
         }
-        Ok(())
+        Ok(coords)
     }
 
-    /// Decodes a geometry collection
-    fn decode_geometry_collection<R: Read>(&self, reader: &mut R) -> Result<GeometryCollection> {
-        let count = reader.read_u32::<LittleEndian>()?;
-        let mut geometries = Vec::with_capacity(count as usize);
-
-        for _ in 0..count {
-            let geom_type = GeometryType::from_u8(reader.read_u8()?)?;
-            geometries.push(self.decode(reader, geom_type)?);
-        }
-
-        Ok(GeometryCollection::new(geometries))
-    }
-
-    /// Calculates the byte size needed to encode a geometry
-    #[must_use]
-    pub fn encoded_size(&self, geometry: &Geometry) -> usize {
+    /// Builds a `Geometry` table, optionally setting the `type` field
+    /// (`set_type` is `true` for elements of a `GeometryCollection`).
+    fn build_geom(
+        &self,
+        fbb: &mut FlatBufferBuilder<'_>,
+        geometry: &Geometry,
+        set_type: bool,
+    ) -> Result<Offset> {
+        let type_opt = set_type.then_some(geometry_type_of(geometry));
         match geometry {
-            Geometry::Point(_) => self.coord_size(),
-            Geometry::LineString(ls) => 4 + ls.coords.len() * self.coord_size(),
-            Geometry::Polygon(p) => {
-                let mut size = 4; // ring count
-                size += 4 + p.exterior.coords.len() * self.coord_size();
-                for interior in &p.interiors {
-                    size += 4 + interior.coords.len() * self.coord_size();
-                }
-                size
+            Geometry::Point(p) => self.build_simple(fbb, &[p.coord], &[], type_opt),
+            Geometry::LineString(ls) => self.build_simple(fbb, &ls.coords, &[], type_opt),
+            Geometry::MultiPoint(mp) => {
+                let coords: Vec<Coordinate> = mp.points.iter().map(|p| p.coord).collect();
+                self.build_simple(fbb, &coords, &[], type_opt)
             }
-            Geometry::MultiPoint(mp) => 4 + mp.points.len() * self.coord_size(),
+            Geometry::Polygon(poly) => self.build_polygon_geom(fbb, poly, type_opt),
             Geometry::MultiLineString(mls) => {
-                let mut size = 4; // linestring count
-                for ls in &mls.line_strings {
-                    size += 4 + ls.coords.len() * self.coord_size();
+                let mut coords = Vec::new();
+                let mut ends = Vec::new();
+                if mls.line_strings.len() > 1 {
+                    let mut acc = 0usize;
+                    for ls in &mls.line_strings {
+                        coords.extend_from_slice(&ls.coords);
+                        acc += ls.coords.len();
+                        ends.push(acc as u32);
+                    }
+                } else if let Some(ls) = mls.line_strings.first() {
+                    coords.extend_from_slice(&ls.coords);
                 }
-                size
+                self.build_simple(fbb, &coords, &ends, type_opt)
             }
             Geometry::MultiPolygon(mp) => {
-                let mut size = 4; // polygon count
-                for p in &mp.polygons {
-                    size += 4; // ring count
-                    size += 4 + p.exterior.coords.len() * self.coord_size();
-                    for interior in &p.interiors {
-                        size += 4 + interior.coords.len() * self.coord_size();
-                    }
+                let mut part_offs = Vec::with_capacity(mp.polygons.len());
+                for poly in &mp.polygons {
+                    part_offs.push(self.build_polygon_geom(fbb, poly, None)?);
                 }
-                size
+                Ok(self.build_parts(fbb, &part_offs, type_opt))
             }
             Geometry::GeometryCollection(gc) => {
-                let mut size = 4; // geometry count
-                for geom in &gc.geometries {
-                    size += 1; // geometry type
-                    size += self.encoded_size(geom);
+                let mut part_offs = Vec::with_capacity(gc.geometries.len());
+                for g in &gc.geometries {
+                    part_offs.push(self.build_geom(fbb, g, true)?);
                 }
-                size
+                Ok(self.build_parts(fbb, &part_offs, type_opt))
             }
         }
     }
 
-    /// Returns the size of a single coordinate in bytes
-    #[must_use]
-    const fn coord_size(&self) -> usize {
-        let mut size = 16; // x, y (2 * 8 bytes)
-        if self.has_z {
-            size += 8;
+    /// Builds a `Geometry` table that only carries a `parts` vector (used for
+    /// `MultiPolygon` and `GeometryCollection`).
+    fn build_parts(
+        &self,
+        fbb: &mut FlatBufferBuilder<'_>,
+        part_offs: &[Offset],
+        type_opt: Option<GeometryType>,
+    ) -> Offset {
+        let parts_vec = if part_offs.is_empty() {
+            None
+        } else {
+            Some(fbb.create_vector(part_offs))
+        };
+        let wip = fbb.start_table();
+        if let Some(v) = parts_vec {
+            fbb.push_slot_always(fbs::GEOM_VT_PARTS, v);
         }
-        if self.has_m {
-            size += 8;
+        if let Some(gt) = type_opt {
+            fbb.push_slot::<u8>(fbs::GEOM_VT_TYPE, gt as u8, 0);
         }
-        size
+        fbb.end_table(wip)
+    }
+
+    /// Builds a `Geometry` table for a polygon (exterior ring plus holes),
+    /// emitting cumulative `ends` when there is more than one ring.
+    fn build_polygon_geom(
+        &self,
+        fbb: &mut FlatBufferBuilder<'_>,
+        poly: &Polygon,
+        type_opt: Option<GeometryType>,
+    ) -> Result<Offset> {
+        let mut coords = Vec::new();
+        let mut ends = Vec::new();
+        coords.extend_from_slice(&poly.exterior.coords);
+        if !poly.interiors.is_empty() {
+            let mut acc = poly.exterior.coords.len();
+            ends.push(acc as u32);
+            for ring in &poly.interiors {
+                coords.extend_from_slice(&ring.coords);
+                acc += ring.coords.len();
+                ends.push(acc as u32);
+            }
+        }
+        self.build_simple(fbb, &coords, &ends, type_opt)
+    }
+
+    /// Builds a `Geometry` table from a flat coordinate list plus `ends`.
+    fn build_simple(
+        &self,
+        fbb: &mut FlatBufferBuilder<'_>,
+        coords: &[Coordinate],
+        ends: &[u32],
+        type_opt: Option<GeometryType>,
+    ) -> Result<Offset> {
+        let mut xy = Vec::with_capacity(coords.len() * 2);
+        for c in coords {
+            xy.push(c.x);
+            xy.push(c.y);
+        }
+        let xy_off = fbb.create_vector::<f64>(&xy);
+
+        let z_off = if self.has_z {
+            let z: Vec<f64> = coords.iter().map(|c| c.z.unwrap_or(0.0)).collect();
+            Some(fbb.create_vector::<f64>(&z))
+        } else {
+            None
+        };
+        let m_off = if self.has_m {
+            let m: Vec<f64> = coords.iter().map(|c| c.m.unwrap_or(0.0)).collect();
+            Some(fbb.create_vector::<f64>(&m))
+        } else {
+            None
+        };
+        let ends_off = if ends.is_empty() {
+            None
+        } else {
+            Some(fbb.create_vector::<u32>(ends))
+        };
+
+        let wip = fbb.start_table();
+        if let Some(o) = ends_off {
+            fbb.push_slot_always(fbs::GEOM_VT_ENDS, o);
+        }
+        fbb.push_slot_always(fbs::GEOM_VT_XY, xy_off);
+        if let Some(o) = z_off {
+            fbb.push_slot_always(fbs::GEOM_VT_Z, o);
+        }
+        if let Some(o) = m_off {
+            fbb.push_slot_always(fbs::GEOM_VT_M, o);
+        }
+        if let Some(gt) = type_opt {
+            fbb.push_slot::<u8>(fbs::GEOM_VT_TYPE, gt as u8, 0);
+        }
+        Ok(fbb.end_table(wip))
+    }
+}
+
+/// Returns the `FlatGeobuf` geometry type of an `OxiGDAL` geometry.
+const fn geometry_type_of(geometry: &Geometry) -> GeometryType {
+    match geometry {
+        Geometry::Point(_) => GeometryType::Point,
+        Geometry::LineString(_) => GeometryType::LineString,
+        Geometry::Polygon(_) => GeometryType::Polygon,
+        Geometry::MultiPoint(_) => GeometryType::MultiPoint,
+        Geometry::MultiLineString(_) => GeometryType::MultiLineString,
+        Geometry::MultiPolygon(_) => GeometryType::MultiPolygon,
+        Geometry::GeometryCollection(_) => GeometryType::GeometryCollection,
+    }
+}
+
+/// Splits a flat coordinate list into parts using cumulative `ends` indices.
+///
+/// `ends` values are counts of coordinate pairs (not doubles). When `ends` is
+/// absent or empty the whole coordinate list is returned as a single part.
+fn split_by_ends(coords: &[Coordinate], ends: Option<&[u32]>) -> Result<Vec<Vec<Coordinate>>> {
+    match ends {
+        Some(ends) if !ends.is_empty() => {
+            let mut parts = Vec::with_capacity(ends.len());
+            let mut start = 0usize;
+            for &e in ends {
+                let end = e as usize;
+                if end < start || end > coords.len() {
+                    return Err(FlatGeobufError::InvalidGeometry(
+                        "geometry ends index out of range".to_string(),
+                    ));
+                }
+                parts.push(coords[start..end].to_vec());
+                start = end;
+            }
+            Ok(parts)
+        }
+        _ => Ok(vec![coords.to_vec()]),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
-    #[test]
-    fn test_encode_decode_point() {
-        let codec = GeometryCodec::new(false, false);
-        let point = Point::new(10.0, 20.0);
-
-        let mut buffer = Vec::new();
-        codec.encode_point(&mut buffer, &point).ok();
-
-        let mut cursor = std::io::Cursor::new(buffer);
-        let decoded = codec.decode_point(&mut cursor).ok();
-
-        assert!(decoded.is_some());
-        let decoded = decoded.expect("decode failed");
-        assert_eq!(decoded.coord.x, 10.0);
-        assert_eq!(decoded.coord.y, 20.0);
+    /// Encodes a geometry into a standalone `Geometry` `FlatBuffers` message and
+    /// reads it back through the codec.
+    fn roundtrip(codec: &GeometryCodec, geometry: &Geometry, gt: GeometryType) -> Geometry {
+        let mut fbb = FlatBufferBuilder::new();
+        let off = codec.build(&mut fbb, geometry).expect("build geometry");
+        fbb.finish(off, None);
+        let data = fbb.finished_data().to_vec();
+        let table = FbTable::root(&data).expect("root table");
+        codec.read(&table, gt).expect("read geometry")
     }
 
     #[test]
-    fn test_encode_decode_point_3d() {
+    fn test_point_roundtrip() {
+        let codec = GeometryCodec::new(false, false);
+        let g = Geometry::Point(Point::new(10.0, 20.0));
+        if let Geometry::Point(p) = roundtrip(&codec, &g, GeometryType::Point) {
+            assert_eq!(p.coord.x, 10.0);
+            assert_eq!(p.coord.y, 20.0);
+        } else {
+            panic!("expected point");
+        }
+    }
+
+    #[test]
+    fn test_point_3d_roundtrip() {
         let codec = GeometryCodec::new(true, false);
-        let point = Point::new_3d(10.0, 20.0, 30.0);
-
-        let mut buffer = Vec::new();
-        codec.encode_point(&mut buffer, &point).ok();
-
-        let mut cursor = std::io::Cursor::new(buffer);
-        let decoded = codec.decode_point(&mut cursor).ok();
-
-        assert!(decoded.is_some());
-        let decoded = decoded.expect("decode failed");
-        assert_eq!(decoded.coord.x, 10.0);
-        assert_eq!(decoded.coord.y, 20.0);
-        assert_eq!(decoded.coord.z, Some(30.0));
+        let g = Geometry::Point(Point::new_3d(1.0, 2.0, 3.0));
+        if let Geometry::Point(p) = roundtrip(&codec, &g, GeometryType::Point) {
+            assert_eq!(p.coord.z, Some(3.0));
+        } else {
+            panic!("expected point");
+        }
     }
 
     #[test]
-    fn test_encode_decode_linestring() {
+    fn test_linestring_roundtrip() {
         let codec = GeometryCodec::new(false, false);
-        let coords = vec![
+        let ls = LineString::new(vec![
             Coordinate::new_2d(0.0, 0.0),
             Coordinate::new_2d(1.0, 1.0),
             Coordinate::new_2d(2.0, 0.0),
-        ];
-        let linestring = LineString::new(coords).ok();
-        assert!(linestring.is_some());
-        let linestring = linestring.expect("linestring creation failed");
-
-        let mut buffer = Vec::new();
-        codec.encode_linestring(&mut buffer, &linestring).ok();
-
-        let mut cursor = std::io::Cursor::new(buffer);
-        let decoded = codec.decode_linestring(&mut cursor).ok();
-
-        assert!(decoded.is_some());
-        let decoded = decoded.expect("decode failed");
-        assert_eq!(decoded.len(), 3);
+        ])
+        .unwrap();
+        let g = Geometry::LineString(ls);
+        if let Geometry::LineString(l) = roundtrip(&codec, &g, GeometryType::LineString) {
+            assert_eq!(l.coords.len(), 3);
+            assert_eq!(l.coords[2].x, 2.0);
+        } else {
+            panic!("expected linestring");
+        }
     }
 
     #[test]
-    fn test_coord_size() {
-        let codec_2d = GeometryCodec::new(false, false);
-        assert_eq!(codec_2d.coord_size(), 16);
+    fn test_polygon_with_hole_roundtrip() {
+        let codec = GeometryCodec::new(false, false);
+        let exterior = LineString::new(vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(10.0, 0.0),
+            Coordinate::new_2d(10.0, 10.0),
+            Coordinate::new_2d(0.0, 10.0),
+            Coordinate::new_2d(0.0, 0.0),
+        ])
+        .unwrap();
+        let hole = LineString::new(vec![
+            Coordinate::new_2d(2.0, 2.0),
+            Coordinate::new_2d(8.0, 2.0),
+            Coordinate::new_2d(8.0, 8.0),
+            Coordinate::new_2d(2.0, 8.0),
+            Coordinate::new_2d(2.0, 2.0),
+        ])
+        .unwrap();
+        let g = Geometry::Polygon(Polygon::new(exterior, vec![hole]).unwrap());
+        if let Geometry::Polygon(p) = roundtrip(&codec, &g, GeometryType::Polygon) {
+            assert_eq!(p.exterior.coords.len(), 5);
+            assert_eq!(p.interiors.len(), 1);
+            assert_eq!(p.interiors[0].coords.len(), 5);
+        } else {
+            panic!("expected polygon");
+        }
+    }
 
-        let codec_3d = GeometryCodec::new(true, false);
-        assert_eq!(codec_3d.coord_size(), 24);
+    #[test]
+    fn test_multipolygon_roundtrip() {
+        let codec = GeometryCodec::new(false, false);
+        let mk = |x: f64| {
+            Polygon::new(
+                LineString::new(vec![
+                    Coordinate::new_2d(x, 0.0),
+                    Coordinate::new_2d(x + 1.0, 0.0),
+                    Coordinate::new_2d(x + 1.0, 1.0),
+                    Coordinate::new_2d(x, 1.0),
+                    Coordinate::new_2d(x, 0.0),
+                ])
+                .unwrap(),
+                vec![],
+            )
+            .unwrap()
+        };
+        let g = Geometry::MultiPolygon(MultiPolygon::new(vec![mk(0.0), mk(5.0)]));
+        if let Geometry::MultiPolygon(mp) = roundtrip(&codec, &g, GeometryType::MultiPolygon) {
+            assert_eq!(mp.polygons.len(), 2);
+            assert_eq!(mp.polygons[1].exterior.coords[0].x, 5.0);
+        } else {
+            panic!("expected multipolygon");
+        }
+    }
 
-        let codec_2dm = GeometryCodec::new(false, true);
-        assert_eq!(codec_2dm.coord_size(), 24);
-
-        let codec_4d = GeometryCodec::new(true, true);
-        assert_eq!(codec_4d.coord_size(), 32);
+    #[test]
+    fn test_geometry_collection_roundtrip() {
+        let codec = GeometryCodec::new(false, false);
+        let point = Geometry::Point(Point::new(0.0, 0.0));
+        let ls = Geometry::LineString(
+            LineString::new(vec![
+                Coordinate::new_2d(0.0, 0.0),
+                Coordinate::new_2d(1.0, 1.0),
+            ])
+            .unwrap(),
+        );
+        let g = Geometry::GeometryCollection(GeometryCollection::new(vec![point, ls]));
+        if let Geometry::GeometryCollection(gc) =
+            roundtrip(&codec, &g, GeometryType::GeometryCollection)
+        {
+            assert_eq!(gc.geometries.len(), 2);
+            assert!(matches!(gc.geometries[0], Geometry::Point(_)));
+            assert!(matches!(gc.geometries[1], Geometry::LineString(_)));
+        } else {
+            panic!("expected geometry collection");
+        }
     }
 }

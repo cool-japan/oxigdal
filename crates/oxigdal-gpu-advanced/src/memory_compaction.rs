@@ -161,10 +161,10 @@ impl MemoryCompactor {
 
         // Check minimum interval
         let stats = self.stats.read();
-        if let Some(last) = stats.last_compaction {
-            if last.elapsed() < self.config.min_compact_interval {
-                return false;
-            }
+        if let Some(last) = stats.last_compaction
+            && last.elapsed() < self.config.min_compact_interval
+        {
+            return false;
         }
 
         true

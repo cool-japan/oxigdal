@@ -34,11 +34,11 @@ impl OptimizationRule for CommonSubexpressionElimination {
         let mut proj_registry: HashMap<String, (usize, Option<String>)> = HashMap::new();
 
         for (idx, item) in stmt.projection.iter().enumerate() {
-            if let SelectItem::Expr { expr, alias } = item {
-                if is_cse_candidate(expr) {
-                    let key = format!("{}", expr);
-                    proj_registry.insert(key, (idx, alias.clone()));
-                }
+            if let SelectItem::Expr { expr, alias } = item
+                && is_cse_candidate(expr)
+            {
+                let key = format!("{}", expr);
+                proj_registry.insert(key, (idx, alias.clone()));
             }
         }
 
@@ -109,10 +109,10 @@ impl OptimizationRule for CommonSubexpressionElimination {
 
         // Phase 3: Assign aliases to projection items that need them
         for (idx, alias_name) in &proj_alias_assignments {
-            if let Some(SelectItem::Expr { alias, .. }) = stmt.projection.get_mut(*idx) {
-                if alias.is_none() {
-                    *alias = Some(alias_name.clone());
-                }
+            if let Some(SelectItem::Expr { alias, .. }) = stmt.projection.get_mut(*idx)
+                && alias.is_none()
+            {
+                *alias = Some(alias_name.clone());
             }
         }
 
@@ -408,7 +408,7 @@ fn replace_cse(expr: Expr, replacements: &HashMap<String, String>) -> Expr {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
@@ -627,16 +627,14 @@ mod tests {
         if let Some(Expr::BinaryOp {
             left: outer_left, ..
         }) = &result.selection
-        {
-            if let Expr::BinaryOp {
+            && let Expr::BinaryOp {
                 left: inner_left, ..
             } = outer_left.as_ref()
-            {
-                assert!(
-                    matches!(inner_left.as_ref(), Expr::Column { .. }),
-                    "a+b should be replaced with column ref inside larger expression"
-                );
-            }
+        {
+            assert!(
+                matches!(inner_left.as_ref(), Expr::Column { .. }),
+                "a+b should be replaced with column ref inside larger expression"
+            );
         }
     }
 

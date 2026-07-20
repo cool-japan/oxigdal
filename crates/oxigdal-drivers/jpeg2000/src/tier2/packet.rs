@@ -124,21 +124,26 @@ impl<'a> BitReader<'a> {
 // Tag tree
 // ---------------------------------------------------------------------------
 
-/// JPEG2000 tag-tree node used for efficient entropy coding of the inclusion
-/// and zero bit-plane count information.
+/// JPEG2000 tag-tree used for efficient entropy coding of the inclusion and
+/// zero-bit-plane-count information.
 ///
-/// The tag tree is a quadtree where each leaf corresponds to one code block.
-/// The value at each node is the minimum of its children's values.
-/// Encoding transmits only the *delta* needed to reach each threshold.
+/// The tag tree is a quadtree where each leaf corresponds to one code block and
+/// every internal node holds the minimum of its children's values.  Only the
+/// *delta* needed to reach a queried threshold is transmitted, so partial
+/// state must persist between successive queries within one precinct.
 ///
-/// Reference: ISO 15444-1:2019 §B.10.2
+/// This implementation stores, per node, a running lower bound (`low`) and the
+/// resolved value (`value`, `u32::MAX` while still unknown), and refines them
+/// top-down (root → leaf) exactly like the reference decoder (ISO 15444-1
+/// §B.10.2, cf. `opj_tgt_decode`).
 #[derive(Debug, Clone)]
 pub struct TagTree {
-    width: u32,
-    height: u32,
-    /// Decoded minimum values at each level.  Indexed by node position within
-    /// a level; levels are stored bottom-to-top (level 0 = leaf level).
-    levels: Vec<Vec<Option<u32>>>,
+    /// Dimensions per level (`level 0` = leaves, last = 1×1 root).
+    level_dims: Vec<(u32, u32)>,
+    /// Running lower bound per node, per level.
+    low: Vec<Vec<u32>>,
+    /// Resolved value per node (`u32::MAX` while unresolved), per level.
+    value: Vec<Vec<u32>>,
     /// Number of tree levels.
     num_levels: usize,
 }
@@ -146,31 +151,71 @@ pub struct TagTree {
 impl TagTree {
     /// Construct a new tag tree for `width × height` code blocks.
     pub fn new(width: u32, height: u32) -> Self {
-        let mut levels = Vec::new();
-        let mut w = width;
-        let mut h = height;
+        let mut level_dims = Vec::new();
+        let mut low = Vec::new();
+        let mut value = Vec::new();
+        let mut w = width.max(1);
+        let mut h = height.max(1);
         loop {
             let count = (w as usize) * (h as usize);
-            levels.push(vec![None; count]);
+            level_dims.push((w, h));
+            low.push(vec![0u32; count]);
+            value.push(vec![u32::MAX; count]);
             if w == 1 && h == 1 {
                 break;
             }
             w = w.div_ceil(2);
             h = h.div_ceil(2);
         }
-        let num_levels = levels.len();
+        let num_levels = level_dims.len();
         Self {
-            width,
-            height,
-            levels,
+            level_dims,
+            low,
+            value,
             num_levels,
         }
+    }
+
+    /// Decode whether the value at leaf `(cx, cy)` is strictly `< threshold`,
+    /// consuming bits and refining node state as needed.
+    fn decode_lt(
+        &mut self,
+        cx: u32,
+        cy: u32,
+        threshold: u32,
+        bits: &mut BitReader<'_>,
+    ) -> Result<bool> {
+        let mut low = 0u32;
+        // Root (level num_levels-1) down to leaf (level 0).
+        for k in (0..self.num_levels).rev() {
+            let (wk, _hk) = self.level_dims[k];
+            let nx = cx >> k;
+            let ny = cy >> k;
+            let idx = (ny as usize) * (wk as usize) + (nx as usize);
+
+            // Inherit the parent's lower bound / publish ours.
+            if low > self.low[k][idx] {
+                self.low[k][idx] = low;
+            } else {
+                low = self.low[k][idx];
+            }
+
+            while low < threshold && low < self.value[k][idx] {
+                if bits.read_bit()? == 1 {
+                    self.value[k][idx] = low; // value resolved exactly at `low`
+                } else {
+                    low += 1;
+                }
+            }
+            self.low[k][idx] = low;
+        }
+        Ok(low < threshold)
     }
 
     /// Decode whether the value at leaf `(cx, cy)` is `<= threshold`.
     ///
     /// Reads bits from `bits` as needed.  Returns `true` if the leaf value
-    /// is `<= threshold`, `false` otherwise (meaning more passes are needed).
+    /// is `<= threshold`, `false` otherwise.
     pub fn decode_value(
         &mut self,
         cx: u32,
@@ -178,58 +223,24 @@ impl TagTree {
         threshold: u32,
         bits: &mut BitReader<'_>,
     ) -> Result<bool> {
-        // Walk from root to leaf, refining the lower-bound at each level.
-        // We need the ancestry path: build it top-down.
-        let mut path: Vec<(usize, usize)> = Vec::with_capacity(self.num_levels);
-        let mut lx = cx;
-        let mut ly = cy;
-        for lvl in 0..self.num_levels {
-            let level_idx = self.num_levels - 1 - lvl; // 0 = leaf level
-            let w = self.level_width(level_idx);
-            let idx = (ly as usize) * w + (lx as usize);
-            path.push((level_idx, idx));
-            lx /= 2;
-            ly /= 2;
-        }
-        // Process from root (last in path) down to leaf (first in path)
-        let mut parent_lower = 0u32;
-        for &(level_idx, node_idx) in path.iter().rev() {
-            let current = self.levels[level_idx][node_idx].unwrap_or(parent_lower);
-            // Bring current up to parent's lower bound
-            let mut lower = current.max(parent_lower);
-            // Decode bits until lower > threshold or we confirm <= threshold
-            loop {
-                if lower > threshold {
-                    // Value is definitely > threshold
-                    self.levels[level_idx][node_idx] = Some(lower);
-                    return Ok(false);
-                }
-                // Read one bit: 0 = not reached threshold yet, 1 = reached
-                let bit = bits.read_bit()?;
-                if bit == 1 {
-                    // lower == value exactly at this level
-                    self.levels[level_idx][node_idx] = Some(lower);
-                    break; // value is <= threshold — continue toward leaf
-                }
-                lower += 1;
-            }
-            parent_lower = lower;
-        }
-        Ok(true)
+        self.decode_lt(cx, cy, threshold.saturating_add(1), bits)
     }
 
-    fn level_width(&self, level_idx: usize) -> usize {
-        // Level 0 = leaf level (full width), level num_levels-1 = root (1x1).
-        // Traverse from root down to the requested level.
-        let mut lw = self.width as usize;
-        let mut lh = self.height as usize;
-        let target = self.num_levels - 1 - level_idx; // steps from leaf to this level
-        for _ in 0..target {
-            lw = lw.div_ceil(2);
-            lh = lh.div_ceil(2);
+    /// Fully decode the value at leaf `(cx, cy)` (used for zero-bit-plane
+    /// counts) by sweeping the threshold until the value is pinned down.
+    pub fn decode_full(&mut self, cx: u32, cy: u32, bits: &mut BitReader<'_>) -> Result<u32> {
+        let mut t = 0u32;
+        loop {
+            if self.decode_lt(cx, cy, t + 1, bits)? {
+                return Ok(t);
+            }
+            t += 1;
+            if t > (1 << 20) {
+                return Err(Jpeg2000Error::Tier2Error(
+                    "tag-tree value did not converge".to_string(),
+                ));
+            }
         }
-        let _ = lh;
-        lw
     }
 
     /// Return the number of tag tree levels.
@@ -443,9 +454,399 @@ impl PacketDecoder {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Standard multi-subband precinct packet parser
+// ---------------------------------------------------------------------------
+
+/// One code block's contribution to a single packet, as recovered from a
+/// packet header, together with the byte range of its compressed data inside
+/// the packet buffer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CblkContribution {
+    /// Whether this code block contributes to (is included in) this packet.
+    pub included: bool,
+    /// Number of new coding passes contributed.
+    pub num_passes: u32,
+    /// Zero-bit-plane count decoded at first inclusion.
+    pub zbp: u32,
+    /// Byte offset of the compressed data within the packet buffer.
+    pub data_offset: usize,
+    /// Byte length of the compressed data.
+    pub data_len: usize,
+}
+
+/// `floor(log2(x))` for `x >= 1`; returns 0 for `x == 0`.
+#[inline]
+pub fn floor_log2(x: u32) -> u32 {
+    if x == 0 { 0 } else { 31 - x.leading_zeros() }
+}
+
+/// Decode the number of new coding passes (ISO 15444-1 Table B.4).
+pub fn read_num_coding_passes(bits: &mut BitReader<'_>) -> Result<u32> {
+    if bits.read_bit()? == 0 {
+        return Ok(1);
+    }
+    if bits.read_bit()? == 0 {
+        return Ok(2);
+    }
+    let n = bits.read_bits(2)?;
+    if n != 3 {
+        return Ok(3 + n);
+    }
+    let n = bits.read_bits(5)?;
+    if n != 31 {
+        return Ok(6 + n);
+    }
+    let n = bits.read_bits(7)?;
+    Ok(37 + n)
+}
+
+/// Decode the `Lblock` length-indicator increment (a comma code: a run of `1`
+/// bits terminated by a `0`).
+pub fn read_length_increment(bits: &mut BitReader<'_>) -> Result<u32> {
+    let mut increment = 0u32;
+    while bits.read_bit()? == 1 {
+        increment += 1;
+        if increment > 32 {
+            return Err(Jpeg2000Error::Tier2Error(
+                "Lblock length increment out of range".to_string(),
+            ));
+        }
+    }
+    Ok(increment)
+}
+
+/// Skip a trailing EPH (end-of-packet-header, `0xFF92`) marker if `has_eph`
+/// is set and one is present at `pos`.
+fn maybe_skip_eph(data: &[u8], pos: usize, has_eph: bool) -> usize {
+    if has_eph && pos + 2 <= data.len() && data[pos] == 0xFF && data[pos + 1] == 0x92 {
+        pos + 2
+    } else {
+        pos
+    }
+}
+
+/// Parse one precinct packet spanning the given subbands.
+///
+/// This is the real Tier-2 demultiplexer: it reads the zero-length packet bit,
+/// then — for each subband, in packet scan order — an inclusion tag tree and a
+/// zero-bit-plane tag tree, the number of coding passes, and the `Lblock`
+/// length signalling, so the compressed byte range of every included code block
+/// can be sliced precisely (ISO 15444-1 §B.10).
+///
+/// # Parameters
+/// - `data`: bytes starting at the first byte of this packet's header.
+/// - `subband_grids`: `(cblk_nx, cblk_ny)` code-block grid for each subband
+///   present in the packet (`[LL]` at resolution 0, `[HL, LH, HH]` otherwise).
+/// - `layer`: quality layer index (inclusion threshold).
+/// - `has_eph`: whether an EPH marker terminates the packet header.
+///
+/// # Returns
+/// `(bytes_consumed, contributions_per_subband)`, where each inner vector is in
+/// raster (`by * nx + bx`) order and included entries carry the byte range of
+/// their compressed data inside `data`.
+pub fn parse_precinct_packet(
+    data: &[u8],
+    subband_grids: &[(u32, u32)],
+    layer: u16,
+    has_eph: bool,
+) -> Result<(usize, Vec<Vec<CblkContribution>>)> {
+    let mut bits = BitReader::new(data);
+
+    // Zero-length packet bit.
+    let present = bits.read_bit()? == 1;
+    if !present {
+        let consumed = maybe_skip_eph(data, bits.bytes_consumed(), has_eph);
+        let empty = subband_grids
+            .iter()
+            .map(|&(nx, ny)| vec![CblkContribution::default(); (nx * ny) as usize])
+            .collect();
+        return Ok((consumed, empty));
+    }
+
+    let layer_threshold = u32::from(layer);
+    let mut per_subband: Vec<Vec<CblkContribution>> = Vec::with_capacity(subband_grids.len());
+
+    for &(nx, ny) in subband_grids {
+        let count = (nx * ny) as usize;
+        let mut inclusion_tree = TagTree::new(nx, ny);
+        let mut zbp_tree = TagTree::new(nx, ny);
+        let mut contributions = Vec::with_capacity(count);
+
+        for by in 0..ny {
+            for bx in 0..nx {
+                let included = inclusion_tree.decode_value(bx, by, layer_threshold, &mut bits)?;
+                if !included {
+                    contributions.push(CblkContribution::default());
+                    continue;
+                }
+
+                // First inclusion (single-layer): read the zero-bit-plane count.
+                let zbp = zbp_tree.decode_full(bx, by, &mut bits)?;
+                let num_passes = read_num_coding_passes(&mut bits)?;
+
+                let lblock = 3 + read_length_increment(&mut bits)?;
+                let nbits = lblock + floor_log2(num_passes);
+                if nbits > 31 {
+                    return Err(Jpeg2000Error::Tier2Error(
+                        "code-block length field exceeds 31 bits".to_string(),
+                    ));
+                }
+                let length = bits.read_bits(nbits as u8)?;
+
+                contributions.push(CblkContribution {
+                    included: true,
+                    num_passes,
+                    zbp,
+                    data_offset: 0,
+                    data_len: length as usize,
+                });
+            }
+        }
+        per_subband.push(contributions);
+    }
+
+    // The packet body begins at the next byte boundary (optionally past EPH).
+    let mut pos = maybe_skip_eph(data, bits.bytes_consumed(), has_eph);
+
+    for subband in &mut per_subband {
+        for contribution in subband.iter_mut() {
+            if !contribution.included {
+                continue;
+            }
+            let end = pos.checked_add(contribution.data_len).ok_or_else(|| {
+                Jpeg2000Error::Tier2Error("code-block length overflow".to_string())
+            })?;
+            if end > data.len() {
+                return Err(Jpeg2000Error::InsufficientData {
+                    expected: end,
+                    actual: data.len(),
+                });
+            }
+            contribution.data_offset = pos;
+            pos = end;
+        }
+    }
+
+    Ok((pos, per_subband))
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    // --- Tag-tree encoder mirroring the standard decoder, for tests only. ---
+
+    /// Minimal MSB-first bit writer for building synthetic packet headers.
+    #[derive(Default)]
+    struct BitWriter {
+        bytes: Vec<u8>,
+        cur: u8,
+        nbits: u8,
+    }
+
+    impl BitWriter {
+        fn write_bit(&mut self, bit: u8) {
+            self.cur = (self.cur << 1) | (bit & 1);
+            self.nbits += 1;
+            if self.nbits == 8 {
+                self.bytes.push(self.cur);
+                self.cur = 0;
+                self.nbits = 0;
+            }
+        }
+        fn write_bits(&mut self, value: u32, n: u8) {
+            for i in (0..n).rev() {
+                self.write_bit(((value >> i) & 1) as u8);
+            }
+        }
+        /// Pad with zero bits to the next byte boundary.
+        fn align(&mut self) {
+            while self.nbits != 0 {
+                self.write_bit(0);
+            }
+        }
+        fn into_bytes(mut self) -> Vec<u8> {
+            self.align();
+            self.bytes
+        }
+    }
+
+    /// Encode the number of coding passes as the inverse of
+    /// [`read_num_coding_passes`] for the common small values.
+    fn write_num_passes(w: &mut BitWriter, passes: u32) {
+        match passes {
+            1 => w.write_bit(0),
+            2 => {
+                w.write_bit(1);
+                w.write_bit(0);
+            }
+            3..=5 => {
+                w.write_bit(1);
+                w.write_bit(1);
+                w.write_bits(passes - 3, 2);
+            }
+            6..=36 => {
+                w.write_bit(1);
+                w.write_bit(1);
+                w.write_bits(3, 2);
+                w.write_bits(passes - 6, 5);
+            }
+            _ => panic!("test helper only supports <=36 passes"),
+        }
+    }
+
+    /// Encode a single-code-block (1×1 tag-tree) inclusion + length contribution.
+    fn write_single_cblk(w: &mut BitWriter, zbp: u32, passes: u32, length: u32) {
+        // 1x1 inclusion tag tree, threshold 0 => a single `1` bit = included.
+        w.write_bit(1);
+        // 1x1 zero-bit-plane tag tree => `zbp` zeros then a `1`.
+        for _ in 0..zbp {
+            w.write_bit(0);
+        }
+        w.write_bit(1);
+        write_num_passes(w, passes);
+        // Lblock increment so that (3 + inc) + floor_log2(passes) covers length.
+        let need = if length == 0 {
+            1
+        } else {
+            32 - length.leading_zeros()
+        };
+        let base = 3 + floor_log2(passes);
+        let inc = need.saturating_sub(base);
+        for _ in 0..inc {
+            w.write_bit(1);
+        }
+        w.write_bit(0); // comma terminator
+        let nbits = (base + inc) as u8;
+        w.write_bits(length, nbits);
+    }
+
+    #[test]
+    fn test_floor_log2() {
+        assert_eq!(floor_log2(0), 0);
+        assert_eq!(floor_log2(1), 0);
+        assert_eq!(floor_log2(2), 1);
+        assert_eq!(floor_log2(3), 1);
+        assert_eq!(floor_log2(4), 2);
+        assert_eq!(floor_log2(255), 7);
+    }
+
+    #[test]
+    fn test_num_passes_round_trip() {
+        for passes in [1u32, 2, 3, 4, 5, 6, 10, 20, 36] {
+            let mut w = BitWriter::default();
+            write_num_passes(&mut w, passes);
+            let bytes = w.into_bytes();
+            let mut br = BitReader::new(&bytes);
+            assert_eq!(
+                read_num_coding_passes(&mut br).expect("decode passes"),
+                passes
+            );
+        }
+    }
+
+    #[test]
+    fn test_tag_tree_full_value_1x1() {
+        // Encode zbp = 3 as "0 0 0 1".
+        let data = [0b0001_0000u8];
+        let mut br = BitReader::new(&data);
+        let mut tt = TagTree::new(1, 1);
+        assert_eq!(tt.decode_full(0, 0, &mut br).expect("full"), 3);
+    }
+
+    #[test]
+    fn test_tag_tree_multi_leaf_inclusion() {
+        // 2x1 tag tree, both leaves value 0 (included at layer 0).
+        // Encode with a matching encoder and check both decode as included.
+        let mut w = BitWriter::default();
+        // decode order: leaf(0,0) walks root then leaf; leaf(1,0) reuses root.
+        // Root value 0: emit `1` (resolved at low 0) at root, `1` at leaf0.
+        // Then leaf1: root already resolved -> emit `1` at leaf1.
+        w.write_bit(1); // root -> value 0
+        w.write_bit(1); // leaf0 -> value 0
+        w.write_bit(1); // leaf1 -> value 0
+        let bytes = w.into_bytes();
+        let mut br = BitReader::new(&bytes);
+        let mut tt = TagTree::new(2, 1);
+        assert!(tt.decode_value(0, 0, 0, &mut br).expect("leaf0"));
+        assert!(tt.decode_value(1, 0, 0, &mut br).expect("leaf1"));
+    }
+
+    #[test]
+    fn test_parse_empty_packet() {
+        let data = [0x00u8, 0xAA];
+        let (consumed, subs) =
+            parse_precinct_packet(&data, &[(1, 1)], 0, false).expect("empty packet");
+        assert_eq!(consumed, 1);
+        assert_eq!(subs.len(), 1);
+        assert!(!subs[0][0].included);
+    }
+
+    #[test]
+    fn test_parse_single_block_packet() {
+        // Build header for one included code block, zbp=2, 1 pass, length=5.
+        let mut w = BitWriter::default();
+        w.write_bit(1); // packet present
+        write_single_cblk(&mut w, 2, 1, 5);
+        let mut bytes = w.into_bytes();
+        let header_len = bytes.len();
+        let body = [0x11u8, 0x22, 0x33, 0x44, 0x55];
+        bytes.extend_from_slice(&body);
+
+        let (consumed, subs) =
+            parse_precinct_packet(&bytes, &[(1, 1)], 0, false).expect("single block");
+        assert_eq!(subs.len(), 1);
+        let c = &subs[0][0];
+        assert!(c.included);
+        assert_eq!(c.zbp, 2);
+        assert_eq!(c.num_passes, 1);
+        assert_eq!(c.data_len, 5);
+        assert_eq!(c.data_offset, header_len);
+        assert_eq!(&bytes[c.data_offset..c.data_offset + c.data_len], &body);
+        assert_eq!(consumed, header_len + 5);
+    }
+
+    #[test]
+    fn test_parse_multi_subband_packet() {
+        // Resolution >0 packet: three subbands (HL, LH, HH), each 1x1, all
+        // included with distinct lengths.  Verify byte ranges are contiguous
+        // and routed to the right subband.
+        let mut w = BitWriter::default();
+        w.write_bit(1); // present
+        write_single_cblk(&mut w, 0, 1, 2); // HL
+        write_single_cblk(&mut w, 1, 1, 3); // LH
+        write_single_cblk(&mut w, 0, 2, 4); // HH
+        let mut bytes = w.into_bytes();
+        let header_len = bytes.len();
+        let body: Vec<u8> = (0..(2 + 3 + 4)).map(|i| i as u8 + 1).collect();
+        bytes.extend_from_slice(&body);
+
+        let grids = [(1u32, 1u32), (1, 1), (1, 1)];
+        let (consumed, subs) =
+            parse_precinct_packet(&bytes, &grids, 0, false).expect("multi subband");
+        assert_eq!(subs.len(), 3);
+        assert_eq!(subs[0][0].data_len, 2);
+        assert_eq!(subs[1][0].data_len, 3);
+        assert_eq!(subs[2][0].data_len, 4);
+        // Contiguous, in HL, LH, HH order.
+        assert_eq!(subs[0][0].data_offset, header_len);
+        assert_eq!(subs[1][0].data_offset, header_len + 2);
+        assert_eq!(subs[2][0].data_offset, header_len + 5);
+        assert_eq!(consumed, header_len + 9);
+    }
+
+    #[test]
+    fn test_parse_length_overrun_errors() {
+        // Header claims a 200-byte code block but no body follows.
+        let mut w = BitWriter::default();
+        w.write_bit(1);
+        write_single_cblk(&mut w, 0, 1, 200);
+        let bytes = w.into_bytes();
+        let err = parse_precinct_packet(&bytes, &[(1, 1)], 0, false);
+        assert!(matches!(err, Err(Jpeg2000Error::InsufficientData { .. })));
+    }
 
     #[test]
     fn test_bit_reader_basic() {

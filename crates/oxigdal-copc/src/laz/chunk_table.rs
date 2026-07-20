@@ -82,7 +82,16 @@ pub fn parse_chunk_table(
             "Chunk table offset {chunk_table_offset} does not fit in usize"
         ))
     })?;
-    if off + 8 > total_size {
+    // `off` comes straight from an attacker-controlled u64 header field, so it
+    // may sit right at (or beyond) `usize::MAX - 8`; a plain `off + 8` would
+    // wrap around in release builds and spuriously pass the bounds check,
+    // leading to an out-of-bounds panic on the `data[off]` reads below.
+    let header_end = off.checked_add(8).ok_or_else(|| {
+        CopcError::InvalidFormat(format!(
+            "Chunk table header offset {off} + 8 overflows usize"
+        ))
+    })?;
+    if header_end > total_size {
         return Err(CopcError::InvalidFormat(format!(
             "Chunk table header truncated: offset {off} + 8 > total {total_size}"
         )));
@@ -98,11 +107,16 @@ pub fn parse_chunk_table(
         u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
 
     // Each chunk entry is `byte_count: u32` + `point_count: u32` = 8 bytes.
-    let entries_start = off + 8;
+    let entries_start = header_end;
     let entries_len = (number_of_chunks as usize).checked_mul(8).ok_or_else(|| {
         CopcError::InvalidFormat(format!("Chunk count {number_of_chunks} overflows"))
     })?;
-    if entries_start + entries_len > total_size {
+    let entries_end = entries_start.checked_add(entries_len).ok_or_else(|| {
+        CopcError::InvalidFormat(format!(
+            "Chunk table entries offset {entries_start} + {entries_len} overflows usize"
+        ))
+    })?;
+    if entries_end > total_size {
         return Err(CopcError::InvalidFormat(format!(
             "Chunk table entries truncated: need {} bytes from offset {entries_start}, have {}",
             entries_len,
@@ -230,6 +244,32 @@ mod tests {
         data2.extend_from_slice(&100u32.to_le_bytes());
         data2.extend_from_slice(&20u32.to_le_bytes());
         let res = parse_chunk_table(&data2, 0, data2.len(), 50_000);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_chunk_table_rejects_offset_near_usize_max_without_wrapping() {
+        // Regression test: an attacker-controlled `chunk_table_offset` sitting
+        // right below `usize::MAX` used to make `off + 8` wrap around to a
+        // small value in release builds, spuriously passing the bounds check
+        // and then panicking on the out-of-bounds `data[off]` reads. The fix
+        // uses `checked_add` so this must now be rejected cleanly instead.
+        let data = vec![0u8; 16];
+        // `u64::MAX - 3` fits in `usize` on any 64-bit target (this crate's
+        // supported platforms) and sits 3 bytes below the wrap point for the
+        // `off + 8` computation this test guards against.
+        let evil_offset = u64::MAX - 3;
+        let res = parse_chunk_table(&data, evil_offset, data.len(), 50_000);
+        assert!(
+            res.is_err(),
+            "offset near usize::MAX must be rejected, not wrap and panic"
+        );
+    }
+
+    #[test]
+    fn test_chunk_table_rejects_offset_exactly_at_usize_max() {
+        let data = vec![0u8; 16];
+        let res = parse_chunk_table(&data, u64::MAX, data.len(), 50_000);
         assert!(res.is_err());
     }
 }

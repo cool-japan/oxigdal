@@ -20,4 +20,4 @@ pub use caching::{CogAccessPattern, CogCacheConfig};
 pub use dedup::{ZarrDedupConfig, ZarrDedupPresets};
 
 #[cfg(feature = "encryption")]
-pub use encryption::{EncryptionConfig, generate_key};
+pub use encryption::{EncryptionAlgorithm, EncryptionConfig, EncryptionError, generate_key};

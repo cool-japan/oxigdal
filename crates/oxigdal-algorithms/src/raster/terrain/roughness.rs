@@ -52,7 +52,7 @@ fn compute_tpi_rectangular(
     neighborhood_size: usize,
     cell_size: f64,
 ) -> Result<RasterBuffer> {
-    if neighborhood_size % 2 == 0 {
+    if neighborhood_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "neighborhood_size",
             message: "Neighborhood size must be odd".to_string(),
@@ -429,7 +429,7 @@ pub fn compute_roughness_advanced(
     neighborhood_size: usize,
     method: RoughnessMethod,
 ) -> Result<RasterBuffer> {
-    if neighborhood_size % 2 == 0 {
+    if neighborhood_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "neighborhood_size",
             message: "Neighborhood size must be odd".to_string(),
@@ -669,7 +669,7 @@ pub fn compute_vrm(
     neighborhood_size: usize,
     cell_size: f64,
 ) -> Result<RasterBuffer> {
-    if neighborhood_size % 2 == 0 {
+    if neighborhood_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "neighborhood_size",
             message: "Neighborhood size must be odd".to_string(),

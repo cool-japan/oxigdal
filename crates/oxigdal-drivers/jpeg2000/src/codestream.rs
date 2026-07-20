@@ -210,6 +210,13 @@ pub struct CodingStyle {
     pub code_block_style: u8,
     /// Wavelet transformation
     pub wavelet: WaveletTransform,
+    /// Whether SOP (start-of-packet, 0xFF91) markers precede each packet.
+    ///
+    /// Signalled by bit 1 of the COD `Scod` byte (ISO 15444-1 Table A.13).
+    pub has_sop: bool,
+    /// Whether EPH (end-of-packet-header, 0xFF92) markers terminate each
+    /// packet header.  Signalled by bit 2 of the COD `Scod` byte.
+    pub has_eph: bool,
 }
 
 /// Progression order types
@@ -290,6 +297,10 @@ impl CodingStyle {
             ));
         }
 
+        // Scod bit 1 = SOP markers used, bit 2 = EPH markers used.
+        let has_sop = (scod & 0x02) != 0;
+        let has_eph = (scod & 0x04) != 0;
+
         Ok(Self {
             progression_order,
             num_layers,
@@ -299,7 +310,19 @@ impl CodingStyle {
             code_block_height,
             code_block_style,
             wavelet,
+            has_sop,
+            has_eph,
         })
+    }
+
+    /// Nominal code-block width in samples (`2^(xcb+2)`).
+    pub fn code_block_width_px(&self) -> usize {
+        1usize << (usize::from(self.code_block_width) + 2)
+    }
+
+    /// Nominal code-block height in samples (`2^(ycb+2)`).
+    pub fn code_block_height_px(&self) -> usize {
+        1usize << (usize::from(self.code_block_height) + 2)
     }
 }
 
@@ -308,8 +331,36 @@ impl CodingStyle {
 pub struct Quantization {
     /// Quantization style
     pub style: QuantizationStyle,
-    /// Step sizes
+    /// Step sizes (raw `SPqcd` values: 1 byte for reversible, 2 bytes for
+    /// expounded quantization).  Subband order is `LL_N, (HL,LH,HH)_N, …`.
     pub step_sizes: Vec<u16>,
+    /// Number of guard bits (`Sqcd` bits 5-7, ISO 15444-1 Table A.28).
+    pub guard_bits: u8,
+}
+
+impl Quantization {
+    /// Return the exponent `εb` for subband `index` (0 = coarsest LL, then
+    /// `HL, LH, HH` per resolution).  For reversible (no-quantization) coding
+    /// the raw `SPqcd` byte stores the exponent in its top 5 bits (`>> 3`);
+    /// for expounded quantization the 16-bit value stores it in `>> 11`.
+    /// Missing entries fall back to the last available exponent (derived
+    /// quantization) or `0`.
+    pub fn subband_exponent(&self, index: usize) -> u8 {
+        let raw = match self.step_sizes.get(index) {
+            Some(&v) => v,
+            None => match self.style {
+                // Derived quantization signals a single LL step size; the rest
+                // are implied.  Reuse the first available entry.
+                QuantizationStyle::ScalarDerived => self.step_sizes.first().copied().unwrap_or(0),
+                _ => *self.step_sizes.last().unwrap_or(&0),
+            },
+        };
+        let exponent = match self.style {
+            QuantizationStyle::ScalarExpounded => (raw >> 11) & 0x1F,
+            _ => (raw >> 3) & 0x1F,
+        };
+        exponent as u8
+    }
 }
 
 /// Quantization style types
@@ -343,6 +394,7 @@ impl Quantization {
     pub fn parse<R: Read>(reader: &mut R, length: u16) -> Result<Self> {
         let sqcd = reader.read_u8()?;
         let style = QuantizationStyle::from_u8(sqcd)?;
+        let guard_bits = sqcd >> 5;
 
         let mut step_sizes = Vec::new();
         let remaining = (length - 1) as usize;
@@ -362,7 +414,11 @@ impl Quantization {
             }
         }
 
-        Ok(Self { style, step_sizes })
+        Ok(Self {
+            style,
+            step_sizes,
+            guard_bits,
+        })
     }
 }
 

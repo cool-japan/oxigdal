@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use google_cloud_pubsub::client::Subscriber as GcpSubscriber;
 use google_cloud_pubsub::client::SubscriptionAdmin;
+use google_cloud_pubsub::subscriber::handler::Handler as GcpAckHandler;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -288,6 +289,14 @@ pub struct Subscriber {
     fq_subscription: String,
     stats: Arc<RwLock<SubscriberStats>>,
     outstanding_messages: Arc<DashMap<String, ReceivedMessage>>,
+    /// Real GCP streaming-pull ack handlers for messages returned by
+    /// `pull()`/`pull_one()`, keyed by `message_id`. The handler is only
+    /// consumed (and the real ack/nack sent to the server) once the caller
+    /// calls `acknowledge()` or `nack()` -- this is what makes at-least-once
+    /// delivery semantics actually work for the pull-based API, mirroring
+    /// the callback-based `start()` API which already defers ack/nack until
+    /// the handler result is known.
+    pending_acks: Arc<DashMap<String, GcpAckHandler>>,
     running: Arc<AtomicBool>,
     message_count: Arc<AtomicU64>,
     byte_count: Arc<AtomicU64>,
@@ -339,6 +348,7 @@ impl Subscriber {
             fq_subscription,
             stats: Arc::new(RwLock::new(SubscriberStats::default())),
             outstanding_messages: Arc::new(DashMap::new()),
+            pending_acks: Arc::new(DashMap::new()),
             running: Arc::new(AtomicBool::new(false)),
             message_count: Arc::new(AtomicU64::new(0)),
             byte_count: Arc::new(AtomicU64::new(0)),
@@ -347,8 +357,14 @@ impl Subscriber {
 
     /// Pulls a single message from the subscription.
     ///
-    /// Uses the streaming pull API internally. Messages are received through
-    /// the stream and acknowledged/nacked via the handler mechanism.
+    /// Uses the streaming pull API internally. The real GCP ack handler for
+    /// the returned message is retained internally (keyed by `message_id`)
+    /// until the caller explicitly calls [`Subscriber::acknowledge`] or
+    /// [`Subscriber::nack`] -- the message is *not* acknowledged to the
+    /// server just because it was pulled, so at-least-once delivery
+    /// semantics are preserved: if the caller never acks/nacks (e.g. the
+    /// process crashes mid-processing), the message is redelivered once its
+    /// ack deadline expires.
     pub async fn pull_one(&self) -> Result<Option<ReceivedMessage>> {
         self.check_flow_control(1, 0)?;
 
@@ -379,9 +395,11 @@ impl Subscriber {
                     ack_id: msg.message_id.clone(),
                 };
 
-                // Auto-ack through the handler since we return the message
-                // to the caller who will call acknowledge/nack separately
-                handler.ack();
+                // Retain the real GCP ack handler; it is only consumed (and
+                // the real ack/nack sent to the server) when the caller
+                // later calls acknowledge()/nack() on the returned message.
+                self.pending_acks
+                    .insert(received.message_id.clone(), handler);
                 self.track_message(&received);
                 Ok(Some(received))
             }
@@ -395,7 +413,10 @@ impl Subscriber {
 
     /// Pulls multiple messages from the subscription.
     ///
-    /// Uses the streaming pull API internally.
+    /// Uses the streaming pull API internally. As with [`Subscriber::pull_one`],
+    /// each returned message's real ack handler is retained internally until
+    /// the caller explicitly calls [`Subscriber::acknowledge`] or
+    /// [`Subscriber::nack`].
     pub async fn pull(&self, max_messages: i32) -> Result<Vec<ReceivedMessage>> {
         self.check_flow_control(max_messages as usize, 0)?;
 
@@ -426,11 +447,17 @@ impl Subscriber {
                         delivery_attempt: 0,
                         ack_id: msg.message_id.clone(),
                     };
-                    handler.ack();
+                    self.pending_acks
+                        .insert(message.message_id.clone(), handler);
                     self.track_message(&message);
                     received.push(message);
                 }
                 Ok(Some(Err(e))) => {
+                    // Do not orphan the messages already pulled in this batch: their
+                    // retained ack handlers must be released (nacked) rather than
+                    // silently discarded, or the server would keep extending their
+                    // lease forever waiting for an ack/nack that will never come.
+                    self.release_unreturned(&received);
                     return Err(PubSubError::subscription_with_source(
                         "Failed to pull messages",
                         Box::new(e),
@@ -443,30 +470,71 @@ impl Subscriber {
         Ok(received)
     }
 
-    /// Acknowledges a message.
+    /// Acknowledges a message received via [`Subscriber::pull`] or
+    /// [`Subscriber::pull_one`].
     ///
-    /// In the new google-cloud-pubsub 0.33 API, acknowledgment is handled
-    /// via the streaming pull handler. This method updates internal tracking.
+    /// This sends the real acknowledgment to the Pub/Sub server via the
+    /// streaming-pull ack handler that was retained when the message was
+    /// pulled. Only after this call returns successfully is the server told
+    /// the message is done; if it is never called (e.g. the process crashes)
+    /// the message is redelivered once its lease expires, preserving
+    /// at-least-once delivery semantics.
+    ///
+    /// Returns [`PubSubError::AcknowledgmentError`] if the message was not
+    /// pulled via this subscriber, or has already been acknowledged/nacked.
     pub async fn acknowledge(&self, message: &ReceivedMessage) -> Result<()> {
         debug!("Acknowledging message: {}", message.message_id);
 
-        // With the new streaming API, ack is handled by the stream handler.
-        // This method updates the internal tracking state.
+        let (_, handler) = self
+            .pending_acks
+            .remove(&message.message_id)
+            .ok_or_else(|| {
+                self.stats.write().ack_errors += 1;
+                PubSubError::acknowledgment(format!(
+                    "No pending ack handler for message '{}' -- it may have already been \
+                     acknowledged/nacked, or was not received via pull()/pull_one()",
+                    message.message_id
+                ))
+            })?;
+
+        // Send the real ack to the server via the retained streaming-pull handler.
+        handler.ack();
+
         self.untrack_message(message);
         self.stats.write().messages_acknowledged += 1;
 
         Ok(())
     }
 
-    /// Not acknowledges a message (will be redelivered).
+    /// Not acknowledges (nacks) a message received via [`Subscriber::pull`]
+    /// or [`Subscriber::pull_one`]; it will be redelivered.
     ///
-    /// In the new google-cloud-pubsub 0.33 API, nack is handled
-    /// via the streaming pull handler.
+    /// This sends the real nack to the Pub/Sub server via the streaming-pull
+    /// ack handler that was retained when the message was pulled, causing
+    /// immediate redelivery (rather than waiting for lease expiry).
+    ///
+    /// Returns [`PubSubError::AcknowledgmentError`] if the message was not
+    /// pulled via this subscriber, or has already been acknowledged/nacked.
     pub async fn nack(&self, message: &ReceivedMessage) -> Result<()> {
         debug!("Not acknowledging message: {}", message.message_id);
 
-        // With the new streaming API, nack is handled by the stream handler.
-        // This method updates the internal tracking state.
+        let (_, handler) = self
+            .pending_acks
+            .remove(&message.message_id)
+            .ok_or_else(|| {
+                self.stats.write().ack_errors += 1;
+                PubSubError::acknowledgment(format!(
+                    "No pending ack handler for message '{}' -- it may have already been \
+                     acknowledged/nacked, or was not received via pull()/pull_one()",
+                    message.message_id
+                ))
+            })?;
+
+        // Send the real nack to the server via the retained streaming-pull handler.
+        // (Dropping the handler would have the same effect, but calling nack()
+        // explicitly documents the intent and triggers immediate redelivery.)
+        handler.nack();
+
         self.untrack_message(message);
         self.stats.write().messages_nacked += 1;
 
@@ -677,6 +745,22 @@ impl Subscriber {
         stats.last_receive = Some(Utc::now());
     }
 
+    /// Releases messages that were pulled (and whose ack handlers were
+    /// retained) but will never be returned to the caller, e.g. because a
+    /// later message in the same batch failed to pull.
+    ///
+    /// Nacks each retained handler so the server schedules immediate
+    /// redelivery instead of holding the lease open indefinitely waiting for
+    /// an acknowledgment that will never arrive.
+    fn release_unreturned(&self, messages: &[ReceivedMessage]) {
+        for message in messages {
+            if let Some((_, handler)) = self.pending_acks.remove(&message.message_id) {
+                handler.nack();
+            }
+            self.untrack_message(message);
+        }
+    }
+
     /// Untracks a received message.
     fn untrack_message(&self, message: &ReceivedMessage) {
         self.outstanding_messages.remove(&message.message_id);
@@ -701,6 +785,7 @@ impl Subscriber {
             fq_subscription: self.fq_subscription.clone(),
             stats: Arc::clone(&self.stats),
             outstanding_messages: Arc::clone(&self.outstanding_messages),
+            pending_acks: Arc::clone(&self.pending_acks),
             running: Arc::clone(&self.running),
             message_count: Arc::clone(&self.message_count),
             byte_count: Arc::clone(&self.byte_count),
@@ -809,5 +894,152 @@ mod tests {
         assert_eq!(stats.messages_acknowledged, 0);
         assert_eq!(stats.messages_nacked, 0);
         assert_eq!(stats.messages_to_dlq, 0);
+    }
+
+    /// Builds a `Subscriber` pointed at an unreachable local endpoint.
+    ///
+    /// Constructing a `Subscriber` does not itself require network access
+    /// (the underlying gRPC channel connects lazily on first use), so this
+    /// is safe and fast to use from unit tests that only need to exercise
+    /// the local ack/nack bookkeeping paths.
+    async fn test_subscriber() -> Subscriber {
+        let config = SubscriberConfig::new("test-project", "test-subscription")
+            .with_endpoint("http://127.0.0.1:1");
+        match Subscriber::new(config).await {
+            Ok(subscriber) => subscriber,
+            Err(e) => panic!("failed to construct test subscriber: {e:?}"),
+        }
+    }
+
+    /// Builds a `ReceivedMessage` that was never actually pulled from a
+    /// subscription (i.e. has no retained ack handler).
+    fn fabricated_message(message_id: &str) -> ReceivedMessage {
+        ReceivedMessage {
+            message_id: message_id.to_string(),
+            data: Bytes::from(b"payload".to_vec()),
+            attributes: HashMap::new(),
+            publish_time: Utc::now(),
+            ordering_key: None,
+            delivery_attempt: 0,
+            ack_id: message_id.to_string(),
+        }
+    }
+
+    // Regression tests for the pull()/pull_one() eager-ack bug: previously
+    // `handler.ack()` (the real GCP acknowledgment) was sent to the server
+    // the moment a message was pulled, and `acknowledge()`/`nack()` were
+    // pure local bookkeeping that unconditionally returned `Ok(())` no
+    // matter what `ReceivedMessage` was passed in -- including one that was
+    // never pulled through this subscriber at all. That made it impossible
+    // for `nack()` to actually prevent redelivery, silently breaking
+    // at-least-once delivery. The fix retains the real ack handler in
+    // `pending_acks` until the caller explicitly acks/nacks, and rejects
+    // unknown/already-consumed message IDs with a typed error instead of
+    // reporting silent success.
+
+    #[tokio::test]
+    async fn acknowledge_unknown_message_returns_error_not_silent_success() {
+        let subscriber = test_subscriber().await;
+        let message = fabricated_message("never-pulled");
+
+        let result = subscriber.acknowledge(&message).await;
+
+        match result {
+            Err(PubSubError::AcknowledgmentError { .. }) => {}
+            other => panic!(
+                "acknowledge() of a message with no retained ack handler must fail with \
+                 AcknowledgmentError, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn nack_unknown_message_returns_error_not_silent_success() {
+        let subscriber = test_subscriber().await;
+        let message = fabricated_message("never-pulled");
+
+        let result = subscriber.nack(&message).await;
+
+        match result {
+            Err(PubSubError::AcknowledgmentError { .. }) => {}
+            other => panic!(
+                "nack() of a message with no retained ack handler must fail with \
+                 AcknowledgmentError, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn acknowledge_error_increments_ack_errors_stat() {
+        let subscriber = test_subscriber().await;
+        let message = fabricated_message("never-pulled");
+
+        assert_eq!(subscriber.stats().ack_errors, 0);
+        let _ = subscriber.acknowledge(&message).await;
+        assert_eq!(subscriber.stats().ack_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn nack_error_increments_ack_errors_stat() {
+        let subscriber = test_subscriber().await;
+        let message = fabricated_message("never-pulled");
+
+        assert_eq!(subscriber.stats().ack_errors, 0);
+        let _ = subscriber.nack(&message).await;
+        assert_eq!(subscriber.stats().ack_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn pull_one_with_no_messages_available_returns_none_without_leaking() {
+        let subscriber = test_subscriber().await;
+
+        let result = subscriber.pull_one().await;
+
+        match result {
+            Ok(None) => {}
+            other => panic!(
+                "pull_one() against an unreachable endpoint should time out to Ok(None), \
+                 got {other:?}"
+            ),
+        }
+        assert_eq!(subscriber.stats().outstanding_messages, 0);
+    }
+
+    #[tokio::test]
+    async fn pull_with_no_messages_available_returns_empty_without_leaking() {
+        let subscriber = test_subscriber().await;
+
+        let result = subscriber.pull(5).await;
+
+        match result {
+            Ok(messages) => assert!(
+                messages.is_empty(),
+                "expected no messages from an unreachable endpoint, got {messages:?}"
+            ),
+            Err(e) => panic!("pull() should not error out on timeout, got {e:?}"),
+        }
+        assert_eq!(subscriber.stats().outstanding_messages, 0);
+    }
+
+    #[tokio::test]
+    async fn release_unreturned_nacks_and_untracks_orphaned_messages() {
+        // Directly exercises the cleanup helper used when pull() discards a
+        // partially-collected batch after a mid-stream error: previously
+        // tracked messages must be fully untracked so they are not leaked.
+        let subscriber = test_subscriber().await;
+        let message = fabricated_message("orphaned");
+        subscriber.track_message(&message);
+        assert_eq!(subscriber.stats().outstanding_messages, 1);
+
+        subscriber.release_unreturned(std::slice::from_ref(&message));
+
+        assert_eq!(subscriber.stats().outstanding_messages, 0);
+        // No handler was registered for this fabricated message, so acking
+        // it now must still fail -- release_unreturned() must not have left
+        // behind a phantom "successfully acked" state.
+        match subscriber.acknowledge(&message).await {
+            Err(PubSubError::AcknowledgmentError { .. }) => {}
+            other => panic!("expected AcknowledgmentError after release, got {other:?}"),
+        }
     }
 }

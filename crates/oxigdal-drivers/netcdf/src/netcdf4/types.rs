@@ -591,7 +591,14 @@ pub struct Nc4Reader {
     variable_info: HashMap<String, Nc4VariableInfo>,
 }
 impl Nc4Reader {
-    /// Open a NetCDF-4 file for reading
+    /// Open a NetCDF-4 file for reading.
+    ///
+    /// The HDF5 superblock is parsed (so [`Nc4Reader::is_netcdf4`] and
+    /// superblock inspection work), but full object-header parsing of the root
+    /// group is not yet implemented. Rather than returning a reader that
+    /// silently exposes empty dimensions/variables/attributes, `open` returns
+    /// [`NetCdfError::NetCdf4NotAvailable`] once the superblock has been
+    /// validated. See `Nc4Reader::parse_root_group` for the remaining work.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path.as_ref()).map_err(|_| NetCdfError::FileNotFound {
             path: path.as_ref().to_string_lossy().to_string(),
@@ -607,13 +614,26 @@ impl Nc4Reader {
         nc4_reader.parse_root_group()?;
         Ok(nc4_reader)
     }
-    /// Parse the root group structure
+    /// Parse the root group structure.
+    ///
+    /// # Not yet implemented
+    ///
+    /// A full implementation must walk the HDF5 root-group object header
+    /// (v1 object header, or the v2 `OHDR` block) to read its messages
+    /// (symbol table / link, dataspace, datatype, data layout, attribute),
+    /// traverse the group's v1 B-tree + local heap (or v2 fractal heap) to
+    /// enumerate child links, and resolve the NetCDF-4 dimension-scale
+    /// convention (`CLASS`/`NAME`/`DIMENSION_LIST` attributes) into
+    /// [`Dimension`]s and [`Variable`]s. Until that exists, this returns an
+    /// explicit [`NetCdfError::NetCdf4NotAvailable`] instead of leaving the
+    /// root group empty, which would masquerade as a valid-but-empty dataset.
     fn parse_root_group(&mut self) -> Result<()> {
+        // Position at the root-group object header so the seek offset is
+        // validated even though message parsing is not yet implemented.
         self.reader
             .seek(SeekFrom::Start(self.superblock.root_group_address))
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
-        self.root_group = Nc4Group::root();
-        Ok(())
+        Err(NetCdfError::NetCdf4NotAvailable)
     }
     /// Get the root group
     #[must_use]
@@ -1208,5 +1228,63 @@ impl CompressionFilter {
             Self::Lzf => 32000,
             Self::Blosc => 32001,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal but structurally valid HDF5 version-0 superblock so that
+    /// [`Hdf5Superblock::parse`] succeeds. Offsets/lengths are 8 bytes.
+    fn minimal_hdf5_superblock() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&HDF5_SIGNATURE); // 8-byte signature
+        b.push(0); // superblock version 0
+        b.push(0); // free-space storage version
+        b.push(0); // root-group symbol table version
+        b.push(0); // reserved
+        b.push(0); // shared-header-message format version
+        b.push(8); // size of offsets
+        b.push(8); // size of lengths
+        b.push(0); // reserved
+        b.extend_from_slice(&4u16.to_le_bytes()); // group leaf node K
+        b.extend_from_slice(&16u16.to_le_bytes()); // group internal node K
+        b.extend_from_slice(&0u32.to_le_bytes()); // file consistency flags
+        // base, free-space, eof, driver-info, link-name, root-group addresses
+        for _ in 0..6 {
+            b.extend_from_slice(&0u64.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn test_nc4_reader_detects_but_refuses_hdf5() {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("oxigdal_nc4_detect_{}.h5", std::process::id()));
+        std::fs::write(&temp_file, minimal_hdf5_superblock())
+            .expect("Failed to write temp HDF5 file");
+
+        // Detection must succeed for a valid HDF5 superblock.
+        assert!(Nc4Reader::is_netcdf4(&temp_file));
+
+        // Opening must NOT silently return an empty dataset; it must surface an
+        // explicit "not yet implemented" error.
+        let result = Nc4Reader::open(&temp_file);
+        assert!(matches!(result, Err(NetCdfError::NetCdf4NotAvailable)));
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_nc4_reader_rejects_non_hdf5() {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("oxigdal_nc4_nonhdf5_{}.bin", std::process::id()));
+        std::fs::write(&temp_file, b"not an hdf5 file at all").expect("Failed to write temp file");
+
+        assert!(!Nc4Reader::is_netcdf4(&temp_file));
+        assert!(Nc4Reader::open(&temp_file).is_err());
+
+        let _ = std::fs::remove_file(&temp_file);
     }
 }

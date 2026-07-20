@@ -81,3 +81,10 @@ harness = false
 
 [lints]
 workspace = true
+
+# NOTE: `http-client` (reqwest -> aws-lc-sys) and `kafka` (rdkafka-sys, C
+# librdkafka) are not Pure Rust. `server` (axum/tower) stays on a pure-Rust
+# dependency closure.
+[package.metadata.docs.rs]
+features = ["server"]
+rustdoc-args = ["--cfg", "docsrs"]

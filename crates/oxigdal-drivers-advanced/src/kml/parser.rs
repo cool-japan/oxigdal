@@ -1,11 +1,13 @@
 //! KML XML parser.
 
 use super::features::{Coordinates, Geometry as KmlGeometry};
+use super::styles::{IconStyle, LabelStyle, LineStyle, PolyStyle};
 use super::{KmlDocument, NetworkLink, Placemark, RefreshMode, Style};
 use crate::error::{Error, Result};
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
+use std::str::FromStr;
 
 /// KML parser.
 pub struct KmlParser<R> {
@@ -40,7 +42,8 @@ impl<R: BufRead> KmlParser<R> {
                             }
                         }
                         b"Style" if in_document => {
-                            if let Ok(style) = self.parse_style() {
+                            let id = extract_attr(&e, b"id");
+                            if let Ok(style) = self.parse_style(id) {
                                 doc.add_style(style);
                             }
                         }
@@ -174,15 +177,27 @@ impl<R: BufRead> KmlParser<R> {
         parse_coordinate_string(&text)
     }
 
-    /// Parse Style element.
-    fn parse_style(&mut self) -> Result<Style> {
-        let style = Style::default();
-        // Simplified style parsing
+    /// Parse Style element, including its `IconStyle`/`LineStyle`/`PolyStyle`/
+    /// `LabelStyle` children. `id` is the `id` attribute captured off the
+    /// `<Style>` start tag by the caller.
+    fn parse_style(&mut self, id: Option<String>) -> Result<Style> {
+        let mut style = Style {
+            id,
+            ..Style::default()
+        };
         let mut buf = Vec::new();
         loop {
             match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"IconStyle" => style.icon_style = Some(self.parse_icon_style()?),
+                    b"LineStyle" => style.line_style = Some(self.parse_line_style()?),
+                    b"PolyStyle" => style.poly_style = Some(self.parse_poly_style()?),
+                    b"LabelStyle" => style.label_style = Some(self.parse_label_style()?),
+                    _ => {}
+                },
                 Ok(Event::End(e)) if e.name().as_ref() == b"Style" => break,
                 Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in Style")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
                 _ => {}
             }
             buf.clear();
@@ -190,21 +205,178 @@ impl<R: BufRead> KmlParser<R> {
         Ok(style)
     }
 
-    /// Parse NetworkLink element.
+    /// Parse `<IconStyle>` (color, scale, and `Icon/href`).
+    fn parse_icon_style(&mut self) -> Result<IconStyle> {
+        let mut icon = IconStyle::new();
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"color" => {
+                        icon.color = self.read_text().ok();
+                    }
+                    b"scale" => {
+                        let text = self.read_text()?;
+                        icon.scale = text
+                            .trim()
+                            .parse::<f64>()
+                            .map_err(|_| Error::kml("Invalid IconStyle scale"))?;
+                    }
+                    b"Icon" => {
+                        icon.href = self.parse_icon_href()?;
+                    }
+                    _ => {}
+                },
+                Ok(Event::End(e)) if e.name().as_ref() == b"IconStyle" => break,
+                Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in IconStyle")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok(icon)
+    }
+
+    /// Parse `<Icon><href>...</href></Icon>` nested inside `IconStyle`.
+    fn parse_icon_href(&mut self) -> Result<Option<String>> {
+        let mut href = None;
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.name().as_ref() == b"href" => {
+                    href = self.read_text().ok();
+                }
+                Ok(Event::End(e)) if e.name().as_ref() == b"Icon" => break,
+                Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in Icon")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok(href)
+    }
+
+    /// Parse `<LineStyle>` (color, width).
+    fn parse_line_style(&mut self) -> Result<LineStyle> {
+        let mut line = LineStyle::new();
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"color" => {
+                        line.color = self.read_text().ok();
+                    }
+                    b"width" => {
+                        let text = self.read_text()?;
+                        line.width = text
+                            .trim()
+                            .parse::<f64>()
+                            .map_err(|_| Error::kml("Invalid LineStyle width"))?;
+                    }
+                    _ => {}
+                },
+                Ok(Event::End(e)) if e.name().as_ref() == b"LineStyle" => break,
+                Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in LineStyle")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok(line)
+    }
+
+    /// Parse `<PolyStyle>` (color, fill, outline).
+    fn parse_poly_style(&mut self) -> Result<PolyStyle> {
+        let mut poly = PolyStyle::new();
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"color" => {
+                        poly.color = self.read_text().ok();
+                    }
+                    b"fill" => {
+                        let text = self.read_text()?;
+                        poly.fill = parse_kml_bool(&text);
+                    }
+                    b"outline" => {
+                        let text = self.read_text()?;
+                        poly.outline = parse_kml_bool(&text);
+                    }
+                    _ => {}
+                },
+                Ok(Event::End(e)) if e.name().as_ref() == b"PolyStyle" => break,
+                Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in PolyStyle")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok(poly)
+    }
+
+    /// Parse `<LabelStyle>` (color, scale).
+    fn parse_label_style(&mut self) -> Result<LabelStyle> {
+        let mut label = LabelStyle::default();
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"color" => {
+                        label.color = self.read_text().ok();
+                    }
+                    b"scale" => {
+                        let text = self.read_text()?;
+                        label.scale = text
+                            .trim()
+                            .parse::<f64>()
+                            .map_err(|_| Error::kml("Invalid LabelStyle scale"))?;
+                    }
+                    _ => {}
+                },
+                Ok(Event::End(e)) if e.name().as_ref() == b"LabelStyle" => break,
+                Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in LabelStyle")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok(label)
+    }
+
+    /// Parse NetworkLink element, including `<visibility>` and the
+    /// `<Link>`/`<Url>` child's `refreshMode`/`href`.
     fn parse_network_link(&mut self) -> Result<NetworkLink> {
         let mut name = None;
         let mut href = String::new();
+        let mut visibility = None;
+        let mut refresh_mode = None;
         let mut buf = Vec::new();
 
         loop {
             match self.reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => match e.name().as_ref() {
                     b"name" => name = self.read_text().ok(),
+                    b"visibility" => {
+                        if let Ok(text) = self.read_text() {
+                            visibility = Some(parse_kml_bool(&text));
+                        }
+                    }
                     b"href" => href = self.read_text()?,
+                    b"Link" | b"Url" => {
+                        let (link_href, link_refresh) = self.parse_link_element()?;
+                        if let Some(h) = link_href {
+                            href = h;
+                        }
+                        if let Some(r) = link_refresh {
+                            refresh_mode = Some(r);
+                        }
+                    }
                     _ => {}
                 },
                 Ok(Event::End(e)) if e.name().as_ref() == b"NetworkLink" => break,
                 Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in NetworkLink")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
                 _ => {}
             }
             buf.clear();
@@ -212,10 +384,43 @@ impl<R: BufRead> KmlParser<R> {
 
         Ok(NetworkLink {
             name,
-            visibility: true,
-            refresh_mode: RefreshMode::OnChange,
+            visibility: visibility.unwrap_or(true),
+            refresh_mode: refresh_mode.unwrap_or(RefreshMode::OnChange),
             href,
         })
+    }
+
+    /// Parse a `<Link>` (or legacy `<Url>`) element's `href` and `refreshMode`.
+    fn parse_link_element(&mut self) -> Result<(Option<String>, Option<RefreshMode>)> {
+        let mut href = None;
+        let mut refresh_mode = None;
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"href" => href = self.read_text().ok(),
+                    b"refreshMode" => {
+                        if let Ok(text) = self.read_text() {
+                            // An unrecognized refresh mode falls back to the
+                            // caller's default rather than failing the whole
+                            // NetworkLink parse.
+                            refresh_mode = RefreshMode::from_str(text.trim()).ok();
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::End(e))
+                    if e.name().as_ref() == b"Link" || e.name().as_ref() == b"Url" =>
+                {
+                    break;
+                }
+                Ok(Event::Eof) => return Err(Error::kml("Unexpected EOF in Link")),
+                Err(e) => return Err(Error::kml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok((href, refresh_mode))
     }
 
     /// Read text content.
@@ -238,6 +443,22 @@ impl<R: BufRead> KmlParser<R> {
 
         Ok(text)
     }
+}
+
+/// Extract a named attribute's value from a start-tag event, if present.
+fn extract_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
+    e.attributes().flatten().find_map(|attr| {
+        if attr.key.as_ref() == name {
+            Some(String::from_utf8_lossy(&attr.value).into_owned())
+        } else {
+            None
+        }
+    })
+}
+
+/// Parse a KML boolean text value (`0`/`1`/`true`/`false`, case-insensitive).
+fn parse_kml_bool(text: &str) -> bool {
+    matches!(text.trim().to_ascii_lowercase().as_str(), "1" | "true")
 }
 
 /// Parse coordinate string into Coordinates.
@@ -292,5 +513,143 @@ mod tests {
         if let Some(c) = coords {
             assert_eq!(c.len(), 2);
         }
+    }
+
+    #[test]
+    fn test_parse_kml_bool() {
+        assert!(parse_kml_bool("1"));
+        assert!(parse_kml_bool("true"));
+        assert!(parse_kml_bool("True"));
+        assert!(!parse_kml_bool("0"));
+        assert!(!parse_kml_bool("false"));
+        assert!(!parse_kml_bool(""));
+    }
+
+    /// Regression test: parsing a `<Style>` must populate id and every
+    /// sub-style, not just return `Style::default()`.
+    #[test]
+    fn test_parse_style_full() -> Result<()> {
+        let xml = r#"<?xml version="1.0"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Style id="myStyle">
+      <IconStyle>
+        <color>ff0000ff</color>
+        <scale>1.5</scale>
+        <Icon>
+          <href>http://example.com/icon.png</href>
+        </Icon>
+      </IconStyle>
+      <LineStyle>
+        <color>ff00ff00</color>
+        <width>3.0</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>7fff0000</color>
+        <fill>0</fill>
+        <outline>1</outline>
+      </PolyStyle>
+      <LabelStyle>
+        <color>ffffffff</color>
+        <scale>0.8</scale>
+      </LabelStyle>
+    </Style>
+  </Document>
+</kml>"#;
+
+        let mut parser = KmlParser::new(std::io::Cursor::new(xml.as_bytes().to_vec()))?;
+        let doc = parser.parse()?;
+
+        assert_eq!(doc.styles.len(), 1);
+        let style = &doc.styles[0];
+        assert_eq!(style.id, Some("myStyle".to_string()));
+
+        let icon = style
+            .icon_style
+            .as_ref()
+            .ok_or_else(|| Error::kml("missing icon_style"))?;
+        assert_eq!(icon.color, Some("ff0000ff".to_string()));
+        assert_eq!(icon.scale, 1.5);
+        assert_eq!(icon.href, Some("http://example.com/icon.png".to_string()));
+
+        let line = style
+            .line_style
+            .as_ref()
+            .ok_or_else(|| Error::kml("missing line_style"))?;
+        assert_eq!(line.color, Some("ff00ff00".to_string()));
+        assert_eq!(line.width, 3.0);
+
+        let poly = style
+            .poly_style
+            .as_ref()
+            .ok_or_else(|| Error::kml("missing poly_style"))?;
+        assert_eq!(poly.color, Some("7fff0000".to_string()));
+        assert!(!poly.fill);
+        assert!(poly.outline);
+
+        let label = style
+            .label_style
+            .as_ref()
+            .ok_or_else(|| Error::kml("missing label_style"))?;
+        assert_eq!(label.color, Some("ffffffff".to_string()));
+        assert_eq!(label.scale, 0.8);
+
+        Ok(())
+    }
+
+    /// Regression test: `NetworkLink` visibility and refreshMode must come
+    /// from the actual XML, not hardcoded defaults.
+    #[test]
+    fn test_parse_network_link_visibility_and_refresh_mode() -> Result<()> {
+        let xml = r#"<?xml version="1.0"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <NetworkLink>
+      <name>External Data</name>
+      <visibility>0</visibility>
+      <Link>
+        <href>http://example.com/data.kml</href>
+        <refreshMode>onInterval</refreshMode>
+      </Link>
+    </NetworkLink>
+  </Document>
+</kml>"#;
+
+        let mut parser = KmlParser::new(std::io::Cursor::new(xml.as_bytes().to_vec()))?;
+        let doc = parser.parse()?;
+
+        assert_eq!(doc.network_links.len(), 1);
+        let link = &doc.network_links[0];
+        assert_eq!(link.name, Some("External Data".to_string()));
+        assert!(!link.visibility);
+        assert_eq!(link.refresh_mode, RefreshMode::OnInterval);
+        assert_eq!(link.href, "http://example.com/data.kml");
+
+        Ok(())
+    }
+
+    /// A NetworkLink without explicit visibility/refreshMode elements must
+    /// fall back to the KML spec defaults (visible, onChange).
+    #[test]
+    fn test_parse_network_link_defaults_when_absent() -> Result<()> {
+        let xml = r#"<?xml version="1.0"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <NetworkLink>
+      <name>Defaults</name>
+      <href>http://example.com/defaults.kml</href>
+    </NetworkLink>
+  </Document>
+</kml>"#;
+
+        let mut parser = KmlParser::new(std::io::Cursor::new(xml.as_bytes().to_vec()))?;
+        let doc = parser.parse()?;
+
+        let link = &doc.network_links[0];
+        assert!(link.visibility);
+        assert_eq!(link.refresh_mode, RefreshMode::OnChange);
+        assert_eq!(link.href, "http://example.com/defaults.kml");
+
+        Ok(())
     }
 }

@@ -116,28 +116,28 @@ impl Transformer for JsonTransformer {
             })?;
 
         // Add timestamp if enabled
-        if self.add_timestamp {
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert(
-                    "_timestamp".to_string(),
-                    serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
-                );
-            }
+        if self.add_timestamp
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "_timestamp".to_string(),
+                serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+            );
         }
 
         // Add sequence if enabled
-        if self.add_sequence {
-            if let Some(obj) = value.as_object_mut() {
-                let seq = {
-                    let mut counter = self.sequence_counter.lock();
-                    *counter += 1;
-                    *counter
-                };
-                obj.insert(
-                    "_sequence".to_string(),
-                    serde_json::Value::Number(seq.into()),
-                );
-            }
+        if self.add_sequence
+            && let Some(obj) = value.as_object_mut()
+        {
+            let seq = {
+                let mut counter = self.sequence_counter.lock();
+                *counter += 1;
+                *counter
+            };
+            obj.insert(
+                "_sequence".to_string(),
+                serde_json::Value::Number(seq.into()),
+            );
         }
 
         // Serialize back to JSON

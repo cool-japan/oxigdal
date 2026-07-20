@@ -2,14 +2,17 @@
 
 use crate::error::{PwaError, Result};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{Event, ServiceWorkerRegistration};
 
 /// PWA installation state.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InstallState {
     /// PWA is not installed
+    #[default]
     NotInstalled,
 
     /// PWA install prompt is available
@@ -95,18 +98,37 @@ impl DisplayModeDetection {
     }
 }
 
-/// Install prompt handler for beforeinstallprompt event.
-pub struct InstallPrompt {
+/// Interior mutable state shared between [`InstallPrompt`] and its
+/// `beforeinstallprompt` window listener closure.
+///
+/// The listener is registered for the lifetime of the page (via
+/// `Closure::forget`), so it cannot hold a raw pointer or borrow back into
+/// an `InstallPrompt` that the caller is free to move (e.g. into a `Box`, a
+/// struct field, or out of a constructor by value). Sharing an `Rc<RefCell<..>>`
+/// instead means the closure keeps its own strong reference to the state and
+/// stays valid no matter where the owning `InstallPrompt` gets relocated to.
+#[derive(Debug, Default)]
+struct InstallPromptInner {
     prompt_event: Option<JsValue>,
     state: InstallState,
+}
+
+/// Install prompt handler for beforeinstallprompt event.
+///
+/// `InstallPrompt` is safe to move (into a `Box`, a struct field, a `Vec`, or
+/// out of a constructor by value) at any point, including after [`InstallPrompt::setup`]
+/// has registered its window event listener: the listener shares state via an
+/// `Rc<RefCell<InstallPromptInner>>` rather than capturing `InstallPrompt`'s address.
+#[derive(Clone)]
+pub struct InstallPrompt {
+    inner: Rc<RefCell<InstallPromptInner>>,
 }
 
 impl InstallPrompt {
     /// Create a new install prompt handler.
     pub fn new() -> Self {
         Self {
-            prompt_event: None,
-            state: InstallState::NotInstalled,
+            inner: Rc::new(RefCell::new(InstallPromptInner::default())),
         }
     }
 
@@ -115,20 +137,16 @@ impl InstallPrompt {
         let window = web_sys::window()
             .ok_or_else(|| PwaError::InvalidState("No window available".to_string()))?;
 
-        let self_ptr = self as *mut InstallPrompt;
+        let inner = self.inner.clone();
 
         let closure = Closure::wrap(Box::new(move |event: Event| {
             // Prevent default to keep the prompt
             event.prevent_default();
 
             // Store the event
-            #[allow(unsafe_code)]
-            unsafe {
-                if let Some(prompt_handler) = self_ptr.as_mut() {
-                    prompt_handler.prompt_event = Some(event.into());
-                    prompt_handler.state = InstallState::PromptAvailable;
-                }
-            }
+            let mut guard = inner.borrow_mut();
+            guard.prompt_event = Some(event.into());
+            guard.state = InstallState::PromptAvailable;
         }) as Box<dyn FnMut(Event)>);
 
         window
@@ -147,43 +165,43 @@ impl InstallPrompt {
 
     /// Show the install prompt.
     pub async fn show_prompt(&mut self) -> Result<bool> {
-        let event = self
-            .prompt_event
-            .as_ref()
-            .ok_or_else(|| PwaError::InstallPromptError("No prompt event available".to_string()))?;
+        let event = {
+            let guard = self.inner.borrow();
+            guard.prompt_event.clone().ok_or_else(|| {
+                PwaError::InstallPromptError("No prompt event available".to_string())
+            })?
+        };
+        let event = &event;
 
         // Call prompt() method on the event
-        if let Ok(prompt_fn) = js_sys::Reflect::get(event, &JsValue::from_str("prompt")) {
-            if let Ok(function) = prompt_fn.dyn_into::<js_sys::Function>() {
-                function
-                    .call0(event)
-                    .map_err(|e| PwaError::InstallPromptError(format!("Prompt failed: {:?}", e)))?;
+        if let Ok(prompt_fn) = js_sys::Reflect::get(event, &JsValue::from_str("prompt"))
+            && let Ok(function) = prompt_fn.dyn_into::<js_sys::Function>()
+        {
+            function
+                .call0(event)
+                .map_err(|e| PwaError::InstallPromptError(format!("Prompt failed: {:?}", e)))?;
 
-                // Wait for user choice
-                if let Ok(user_choice_promise) =
-                    js_sys::Reflect::get(event, &JsValue::from_str("userChoice"))
+            // Wait for user choice
+            if let Ok(user_choice_promise) =
+                js_sys::Reflect::get(event, &JsValue::from_str("userChoice"))
+                && let Ok(promise) = user_choice_promise.dyn_into::<js_sys::Promise>()
+            {
+                let result = wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map_err(|e| {
+                        PwaError::InstallPromptError(format!("User choice failed: {:?}", e))
+                    })?;
+
+                // Check the outcome
+                if let Ok(outcome) = js_sys::Reflect::get(&result, &JsValue::from_str("outcome"))
+                    && let Some(outcome_str) = outcome.as_string()
                 {
-                    if let Ok(promise) = user_choice_promise.dyn_into::<js_sys::Promise>() {
-                        let result = wasm_bindgen_futures::JsFuture::from(promise)
-                            .await
-                            .map_err(|e| {
-                                PwaError::InstallPromptError(format!("User choice failed: {:?}", e))
-                            })?;
-
-                        // Check the outcome
-                        if let Ok(outcome) =
-                            js_sys::Reflect::get(&result, &JsValue::from_str("outcome"))
-                        {
-                            if let Some(outcome_str) = outcome.as_string() {
-                                if outcome_str == "accepted" {
-                                    self.state = InstallState::Installing;
-                                    return Ok(true);
-                                } else {
-                                    self.state = InstallState::Dismissed;
-                                    return Ok(false);
-                                }
-                            }
-                        }
+                    if outcome_str == "accepted" {
+                        self.inner.borrow_mut().state = InstallState::Installing;
+                        return Ok(true);
+                    } else {
+                        self.inner.borrow_mut().state = InstallState::Dismissed;
+                        return Ok(false);
                     }
                 }
             }
@@ -196,18 +214,19 @@ impl InstallPrompt {
 
     /// Check if prompt is available.
     pub fn is_available(&self) -> bool {
-        self.prompt_event.is_some()
+        self.inner.borrow().prompt_event.is_some()
     }
 
     /// Get the current state.
     pub fn state(&self) -> InstallState {
-        self.state
+        self.inner.borrow().state
     }
 
     /// Clear the stored prompt event.
     pub fn clear(&mut self) {
-        self.prompt_event = None;
-        self.state = InstallState::NotInstalled;
+        let mut guard = self.inner.borrow_mut();
+        guard.prompt_event = None;
+        guard.state = InstallState::NotInstalled;
     }
 }
 
@@ -439,5 +458,60 @@ mod tests {
     fn test_lifecycle_creation() {
         let lifecycle = PwaLifecycle::new();
         assert!(!lifecycle.can_install());
+    }
+
+    /// Regression test for the raw-pointer UB bug: `InstallPrompt` must stay
+    /// correct even after its owning `InstallPrompt` value is relocated in
+    /// memory (moved into a `Box`, returned by value, etc.) after a listener
+    /// closure has captured a shared handle to its state. This exercises the
+    /// exact sharing mechanism `setup()` uses (`Rc<RefCell<InstallPromptInner>>`)
+    /// without needing a browser `window` object.
+    #[test]
+    fn test_install_prompt_survives_move_after_listener_clone() {
+        let prompt = InstallPrompt::new();
+
+        // Simulate what `setup()` does: clone the Rc into a "closure" that
+        // outlives and is independent of `prompt`'s own storage location.
+        let listener_inner = prompt.inner.clone();
+
+        // Move `prompt` around, just like ordinary safe-Rust usage would
+        // (boxing it, storing it in another struct, returning it by value).
+        let boxed_prompt = Box::new(prompt);
+        let mut relocated_prompt = *boxed_prompt;
+
+        // The event fires: the "closure" writes through its cloned Rc.
+        // `JsValue::NULL` is used as a lightweight sentinel here (rather than
+        // `JsValue::from_str`) since it is a plain associated constant and,
+        // unlike most `JsValue` construction, does not require an actual JS
+        // engine, so this test can run on native (non-wasm32) targets.
+        listener_inner.borrow_mut().prompt_event = Some(JsValue::NULL);
+        listener_inner.borrow_mut().state = InstallState::PromptAvailable;
+
+        // The relocated `InstallPrompt` must observe the update because it
+        // shares the same `Rc<RefCell<..>>` allocation, not a stale address.
+        assert!(relocated_prompt.is_available());
+        assert_eq!(relocated_prompt.state(), InstallState::PromptAvailable);
+
+        relocated_prompt.clear();
+        assert!(!relocated_prompt.is_available());
+        // The listener's view is shared, so clearing through one handle is
+        // visible through the other too.
+        assert!(listener_inner.borrow().prompt_event.is_none());
+    }
+
+    #[test]
+    fn test_install_prompt_clone_shares_state() {
+        let prompt = InstallPrompt::new();
+        let prompt_clone = prompt.clone();
+
+        prompt
+            .inner
+            .borrow_mut()
+            .prompt_event
+            .replace(JsValue::NULL);
+        prompt.inner.borrow_mut().state = InstallState::PromptAvailable;
+
+        assert!(prompt_clone.is_available());
+        assert_eq!(prompt_clone.state(), InstallState::PromptAvailable);
     }
 }

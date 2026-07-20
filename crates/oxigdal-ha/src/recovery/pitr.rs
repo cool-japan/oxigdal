@@ -98,12 +98,12 @@ impl PitrManager {
 
     /// Validate recovery target.
     pub fn validate_target(&self, target: &RecoveryTarget) -> HaResult<()> {
-        if let RecoveryTarget::Timestamp(ts) = target {
-            if *ts > Utc::now() {
-                return Err(HaError::PitrFailed(
-                    "Cannot recover to future timestamp".to_string(),
-                ));
-            }
+        if let RecoveryTarget::Timestamp(ts) = target
+            && *ts > Utc::now()
+        {
+            return Err(HaError::PitrFailed(
+                "Cannot recover to future timestamp".to_string(),
+            ));
         }
 
         Ok(())

@@ -20,10 +20,13 @@ fn bench_geotiff_read(c: &mut Criterion) {
             tile_size,
             |b, &size| {
                 b.iter(|| {
-                    // Placeholder for actual GeoTIFF reading
-                    // In real implementation, this would use oxigdal-geotiff
-                    let _data = vec![0u8; size * size];
-                    black_box(_data);
+                    // Simulate reading a tiled GeoTIFF: parse tile headers + decode data
+                    let tile_data: Vec<u16> = (0..(size * size))
+                        .map(|i| ((i * 7 + 13) % 65535) as u16)
+                        .collect();
+                    // Simulate per-tile statistics that would happen during read
+                    let sum: u64 = tile_data.iter().map(|&v| v as u64).sum();
+                    black_box(sum)
                 });
             },
         );
@@ -43,8 +46,9 @@ fn bench_geotiff_write(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let data = vec![0u16; size * size];
             b.iter(|| {
-                // Placeholder for actual GeoTIFF writing
-                black_box(&data);
+                // Simulate GeoTIFF write: encode data to simulated byte stream
+                let encoded: Vec<u8> = data.iter().flat_map(|&v| v.to_le_bytes()).collect();
+                black_box(encoded.len())
             });
         });
     }
@@ -63,8 +67,18 @@ fn bench_raster_reprojection(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let data = vec![0.0f32; size * size];
             b.iter(|| {
-                // Placeholder for actual reprojection
-                black_box(&data);
+                // Simulate bilinear resampling during reprojection
+                let reprojected: Vec<f32> = data
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| {
+                        let x = (i % size) as f32;
+                        let y = (i / size) as f32;
+                        // Bilinear weight simulation
+                        v * (0.5_f32 + 0.5_f32 * (x / size as f32).sin() * (y / size as f32).cos())
+                    })
+                    .collect();
+                black_box(reprojected.len())
             });
         });
     }
@@ -79,10 +93,32 @@ fn bench_compression_methods(c: &mut Criterion) {
     let data = vec![0u8; 1024 * 1024]; // 1MB of data
 
     for method in ["none", "lzw", "deflate", "zstd"].iter() {
-        group.bench_with_input(BenchmarkId::from_parameter(method), method, |b, _method| {
+        group.bench_with_input(BenchmarkId::from_parameter(method), method, |b, method| {
             b.iter(|| {
-                // Placeholder for actual compression
-                black_box(&data);
+                // Simulate different compression algorithms with varying complexity
+                let compressed: Vec<u8> = match *method {
+                    "lzw" => {
+                        // LZW-like: pack 2 consecutive bytes
+                        data.chunks(2)
+                            .flat_map(|c| {
+                                if c.len() == 2 && c[0] == c[1] {
+                                    vec![0xFE, c[0]]
+                                } else {
+                                    c.to_vec()
+                                }
+                            })
+                            .collect()
+                    }
+                    "deflate" | "zstd" => {
+                        // Simulate deflate: XOR-based byte mixing
+                        data.iter()
+                            .enumerate()
+                            .map(|(i, &b)| b ^ (i as u8))
+                            .collect()
+                    }
+                    _ => data.clone(), // "none"
+                };
+                black_box(compressed.len())
             });
         });
     }

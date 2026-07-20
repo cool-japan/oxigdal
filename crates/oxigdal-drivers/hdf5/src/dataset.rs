@@ -6,6 +6,7 @@
 use crate::attribute::Attributes;
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
+use crate::filters::FilterPipeline;
 use serde::{Deserialize, Serialize};
 
 /// Dataset layout type
@@ -46,6 +47,13 @@ pub struct DatasetProperties {
     compression: CompressionFilter,
     /// Fill value
     fill_value: Option<Vec<u8>>,
+    /// Parsed Object Header filter pipeline (message type `0x000B`), when present.
+    ///
+    /// This carries each filter's client data (`cd_values`) and drives
+    /// [`FilterPipeline::apply_reverse`] when decoding raw chunk bytes, making the
+    /// ScaleOffset / N-Bit / SZIP codecs reachable for real files.
+    #[serde(default)]
+    filter_pipeline: Option<FilterPipeline>,
 }
 
 impl DatasetProperties {
@@ -56,6 +64,7 @@ impl DatasetProperties {
             chunk_dims: None,
             compression: CompressionFilter::None,
             fill_value: None,
+            filter_pipeline: None,
         }
     }
 
@@ -91,6 +100,16 @@ impl DatasetProperties {
         self
     }
 
+    /// Attach a parsed Object Header filter pipeline (message type `0x000B`).
+    ///
+    /// The pipeline carries each filter's client data (`cd_values`) and is applied
+    /// in reverse when decoding raw chunk bytes (see
+    /// [`crate::reader::Hdf5Reader::decode_chunk`]).
+    pub fn with_filter_pipeline(mut self, pipeline: FilterPipeline) -> Self {
+        self.filter_pipeline = Some(pipeline);
+        self
+    }
+
     /// Get layout type
     pub fn layout(&self) -> LayoutType {
         self.layout
@@ -109,6 +128,11 @@ impl DatasetProperties {
     /// Get fill value
     pub fn fill_value(&self) -> Option<&[u8]> {
         self.fill_value.as_deref()
+    }
+
+    /// Get the parsed filter pipeline, if the dataset carries one.
+    pub fn filter_pipeline(&self) -> Option<&FilterPipeline> {
+        self.filter_pipeline.as_ref()
     }
 
     /// Validate chunk dimensions against dataset dimensions
@@ -176,13 +200,10 @@ impl Dataset {
         dims: Vec<usize>,
         properties: DatasetProperties,
     ) -> Result<Self> {
-        // Validate dimensions
-        if dims.is_empty() {
-            return Err(Hdf5Error::invalid_dimensions(
-                "Dataset must have at least one dimension",
-            ));
-        }
-
+        // Validate dimensions. An empty `dims` denotes a scalar dataset
+        // (HDF5 scalar dataspace, one element) and is allowed — real HDF5 files
+        // routinely carry scalar datasets, and `len()`/`size_in_bytes()` already
+        // treat the empty-product as a single element.
         for (i, &dim) in dims.iter().enumerate() {
             if dim == 0 {
                 return Err(Hdf5Error::invalid_dimensions(format!(

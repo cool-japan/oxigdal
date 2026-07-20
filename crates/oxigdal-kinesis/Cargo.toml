@@ -14,12 +14,12 @@ keywords = ["kinesis", "streaming", "aws", "real-time", "analytics"]
 categories = ["science", "network-programming", "asynchronous", "database"]
 
 [features]
-default = ["std", "streams", "firehose", "analytics", "monitoring"]
+default = ["std"]
 std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
 alloc = []
 
 # Kinesis components
-streams = ["async", "dep:aws-sdk-kinesis"]
+streams = ["async", "dep:aws-sdk-kinesis", "dep:aws-config"]
 firehose = ["async", "dep:aws-sdk-firehose"]
 analytics = ["async", "dep:aws-sdk-kinesisanalyticsv2"]
 monitoring = ["async", "dep:aws-sdk-cloudwatch"]
@@ -50,7 +50,7 @@ aws-sdk-firehose = { workspace = true, optional = true }
 aws-sdk-kinesisanalyticsv2 = { workspace = true, optional = true }
 aws-sdk-cloudwatch = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
-aws-config = { workspace = true }
+aws-config = { workspace = true, optional = true }
 aws-smithy-types = { workspace = true }
 
 # Compression
@@ -70,3 +70,11 @@ proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+# NOTE: `streams`/`firehose`/`analytics`/`monitoring` (and the checkpointing/
+# enhanced-fanout features that depend on them) all pull AWS SDK crates whose
+# rustls default crypto provider drags in aws-lc-sys (C/asm). `async` and
+# `compression` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["std", "alloc", "async", "compression"]
+rustdoc-args = ["--cfg", "docsrs"]

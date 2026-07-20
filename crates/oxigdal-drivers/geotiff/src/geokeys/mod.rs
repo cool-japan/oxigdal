@@ -351,12 +351,15 @@ impl GeoKeyDirectory {
                 && entry.tiff_tag_location == TiffTag::GeoAsciiParams as u16
             {
                 let start = entry.value_offset as usize;
-                let end = start + entry.count as usize;
-                if end <= self.ascii_params.len() {
-                    let s = &self.ascii_params[start..end];
-                    // Remove trailing pipe character (GeoTIFF string terminator)
-                    return Some(s.trim_end_matches('|'));
-                }
+                let end = start.checked_add(entry.count as usize)?;
+                // `value_offset`/`count` are attacker-controlled and may straddle
+                // a multi-byte UTF-8 boundary in `ascii_params`. Indexing a
+                // `String` on a non-char boundary panics, so slice the raw bytes
+                // and re-validate as UTF-8 instead, returning `None` on any
+                // out-of-range or invalid-boundary access.
+                let s = std::str::from_utf8(self.ascii_params.as_bytes().get(start..end)?).ok()?;
+                // Remove trailing pipe character (GeoTIFF string terminator)
+                return Some(s.trim_end_matches('|'));
             }
         }
         None
@@ -430,28 +433,29 @@ pub fn extract_geo_transform<S: DataSource>(
         .map(|e| e.get_f64_vec(source, byte_order, variant))
         .transpose()?;
 
-    if let (Some(scale), Some(tie)) = (pixel_scale, tiepoint) {
-        if scale.len() >= 2 && tie.len() >= 6 {
-            // Scale: [ScaleX, ScaleY, ScaleZ]
-            // Tiepoint: [I, J, K, X, Y, Z] (pixel I,J,K maps to geo X,Y,Z)
-            let pixel_x = tie[0];
-            let pixel_y = tie[1];
-            let geo_x = tie[3];
-            let geo_y = tie[4];
+    if let (Some(scale), Some(tie)) = (pixel_scale, tiepoint)
+        && scale.len() >= 2
+        && tie.len() >= 6
+    {
+        // Scale: [ScaleX, ScaleY, ScaleZ]
+        // Tiepoint: [I, J, K, X, Y, Z] (pixel I,J,K maps to geo X,Y,Z)
+        let pixel_x = tie[0];
+        let pixel_y = tie[1];
+        let geo_x = tie[3];
+        let geo_y = tie[4];
 
-            let pixel_width = scale[0];
-            let pixel_height = -scale[1]; // Negative for north-up
+        let pixel_width = scale[0];
+        let pixel_height = -scale[1]; // Negative for north-up
 
-            let origin_x = geo_x - pixel_x * pixel_width;
-            let origin_y = geo_y - pixel_y * pixel_height;
+        let origin_x = geo_x - pixel_x * pixel_width;
+        let origin_y = geo_y - pixel_y * pixel_height;
 
-            return Ok(Some(GeoTransform::north_up(
-                origin_x,
-                origin_y,
-                pixel_width,
-                pixel_height,
-            )));
-        }
+        return Ok(Some(GeoTransform::north_up(
+            origin_x,
+            origin_y,
+            pixel_width,
+            pixel_height,
+        )));
     }
 
     Ok(None)
@@ -500,5 +504,71 @@ mod tests {
 
         assert_eq!(dir.model_type(), Some(ModelType::Projected));
         assert_eq!(dir.epsg_code(), Some(32632));
+    }
+
+    /// A valid ASCII citation is returned with its trailing `|` terminator
+    /// stripped.
+    #[test]
+    fn test_get_ascii_valid() {
+        let dir = GeoKeyDirectory {
+            version: 1,
+            key_revision_major: 1,
+            key_revision_minor: 0,
+            entries: vec![GeoKeyEntry {
+                key_id: GeoKey::GtCitation as u16,
+                tiff_tag_location: TiffTag::GeoAsciiParams as u16,
+                count: 6,
+                value_offset: 0,
+            }],
+            double_params: Vec::new(),
+            ascii_params: "WGS84|".to_string(),
+        };
+        assert_eq!(dir.get_ascii(GeoKey::GtCitation), Some("WGS84"));
+    }
+
+    /// Regression: `value_offset`/`count` are attacker-controlled. A slice that
+    /// straddles a multi-byte UTF-8 character (here the 2-byte `é`) must return
+    /// `None` rather than panicking with "byte index N is not a char boundary".
+    #[test]
+    fn test_get_ascii_non_char_boundary_does_not_panic() {
+        // Bytes: 'A'(0) 'B'(1) 'é'(2..4, 0xC3 0xA9) 'C'(4) 'D'(5) '|'(6) => len 7.
+        let ascii_params = "ABéCD|".to_string();
+        assert_eq!(ascii_params.len(), 7);
+
+        let dir = GeoKeyDirectory {
+            version: 1,
+            key_revision_major: 1,
+            key_revision_minor: 0,
+            entries: vec![GeoKeyEntry {
+                key_id: GeoKey::GtCitation as u16,
+                tiff_tag_location: TiffTag::GeoAsciiParams as u16,
+                // start=3 lands in the middle of 'é'; a direct String index panics.
+                count: 2,
+                value_offset: 3,
+            }],
+            double_params: Vec::new(),
+            ascii_params,
+        };
+
+        assert_eq!(dir.get_ascii(GeoKey::GtCitation), None);
+    }
+
+    /// An out-of-range or overflowing offset/count must also return `None`.
+    #[test]
+    fn test_get_ascii_out_of_range() {
+        let dir = GeoKeyDirectory {
+            version: 1,
+            key_revision_major: 1,
+            key_revision_minor: 0,
+            entries: vec![GeoKeyEntry {
+                key_id: GeoKey::GtCitation as u16,
+                tiff_tag_location: TiffTag::GeoAsciiParams as u16,
+                count: 10,
+                value_offset: u16::MAX,
+            }],
+            double_params: Vec::new(),
+            ascii_params: "short|".to_string(),
+        };
+        assert_eq!(dir.get_ascii(GeoKey::GtCitation), None);
     }
 }

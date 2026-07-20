@@ -2,6 +2,8 @@
 
 use crate::error::{Result, StreamingError};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -12,6 +14,39 @@ pub trait OperatorState: Send + Sync {
 
     /// Restore from a snapshot.
     fn restore(&self, snapshot: &[u8]) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+/// Object-safe (`dyn`-compatible) adapter over [`OperatorState`].
+///
+/// [`OperatorState`] uses return-position `impl Future` (RPITIT), which is not
+/// `dyn`-safe, so it cannot be stored behind `Arc<dyn OperatorState>`. This
+/// adapter boxes the returned futures so heterogeneous operator states can be
+/// registered with the [`CheckpointCoordinator`](crate::state::CheckpointCoordinator)
+/// for real state capture and recovery. A blanket implementation is provided
+/// for every `T: OperatorState`, so any concrete operator state works
+/// automatically via `Arc::new(state) as Arc<dyn DynOperatorState>`.
+pub trait DynOperatorState: Send + Sync {
+    /// Snapshot the state, returning a boxed future.
+    fn snapshot_boxed(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>>;
+
+    /// Restore from a snapshot, returning a boxed future.
+    fn restore_boxed<'a>(
+        &'a self,
+        snapshot: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+}
+
+impl<T: OperatorState> DynOperatorState for T {
+    fn snapshot_boxed(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+        Box::pin(self.snapshot())
+    }
+
+    fn restore_boxed<'a>(
+        &'a self,
+        snapshot: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.restore(snapshot))
+    }
 }
 
 /// Broadcast state (shared across all parallel instances).

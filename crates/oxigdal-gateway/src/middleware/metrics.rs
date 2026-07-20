@@ -84,7 +84,7 @@ impl Middleware for MetricsMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, _request: &Request, response: &mut Response) -> Result<()> {
         self.collector
             .response_count
             .fetch_add(1, Ordering::Relaxed);

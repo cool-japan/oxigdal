@@ -876,8 +876,22 @@ impl ImageProcessor {
         height: u32,
         kernel: &[f32; 9],
     ) -> WasmResult<Vec<u8>> {
+        if width == 0 || height == 0 {
+            return Err(WasmError::Canvas(CanvasError::InvalidParameter(
+                "Width and height must be non-zero".to_string(),
+            )));
+        }
+
         let w = width as usize;
         let h = height as usize;
+        let expected_len = w * h * 4;
+        if data.len() != expected_len {
+            return Err(WasmError::Canvas(CanvasError::BufferSizeMismatch {
+                expected: expected_len,
+                actual: data.len(),
+            }));
+        }
+
         let mut output = vec![0u8; w * h * 4];
 
         for y in 1..h - 1 {

@@ -44,12 +44,12 @@ pub fn read_geojson<'py>(
     where_clause: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
     // Validate bbox
-    if let Some(ref b) = bbox {
-        if b.len() != 4 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Bounding box must have 4 elements [minx, miny, maxx, maxy]",
-            ));
-        }
+    if let Some(ref b) = bbox
+        && b.len() != 4
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Bounding box must have 4 elements [minx, miny, maxx, maxy]",
+        ));
     }
 
     // Read file
@@ -118,12 +118,12 @@ pub fn write_geojson(
     driver: Option<&str>,
 ) -> PyResult<()> {
     // Validate precision
-    if let Some(p) = precision {
-        if !(0..=15).contains(&p) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Precision must be between 0 and 15",
-            ));
-        }
+    if let Some(p) = precision
+        && !(0..=15).contains(&p)
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Precision must be between 0 and 15",
+        ));
     }
 
     // Validate driver
@@ -260,31 +260,30 @@ fn apply_rfc7946_compliance(json: &JsonValue) -> PyResult<JsonValue> {
 /// Serializes GeoJSON as GeoJSON Text Sequences (RFC 8142)
 fn serialize_geojson_seq(json: &JsonValue, pretty: bool) -> PyResult<String> {
     // GeoJSON Text Sequences: newline-delimited features with RS (0x1E) separator
-    if let JsonValue::Object(map) = json {
-        if map.get("type").and_then(|v| v.as_str()) == Some("FeatureCollection") {
-            if let Some(JsonValue::Array(features)) = map.get("features") {
-                let mut output = String::new();
-                for feature in features {
-                    // Add Record Separator (RS)
-                    output.push('\x1E');
-                    // Serialize feature
-                    let feature_json = if pretty {
-                        serde_json::to_string_pretty(feature)
-                    } else {
-                        serde_json::to_string(feature)
-                    }
-                    .map_err(|e| {
-                        pyo3::exceptions::PyValueError::new_err(format!(
-                            "Failed to serialize feature: {}",
-                            e
-                        ))
-                    })?;
-                    output.push_str(&feature_json);
-                    output.push('\n');
-                }
-                return Ok(output);
+    if let JsonValue::Object(map) = json
+        && map.get("type").and_then(|v| v.as_str()) == Some("FeatureCollection")
+        && let Some(JsonValue::Array(features)) = map.get("features")
+    {
+        let mut output = String::new();
+        for feature in features {
+            // Add Record Separator (RS)
+            output.push('\x1E');
+            // Serialize feature
+            let feature_json = if pretty {
+                serde_json::to_string_pretty(feature)
+            } else {
+                serde_json::to_string(feature)
             }
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Failed to serialize feature: {}",
+                    e
+                ))
+            })?;
+            output.push_str(&feature_json);
+            output.push('\n');
         }
+        return Ok(output);
     }
 
     // If not a FeatureCollection, serialize normally

@@ -160,6 +160,12 @@ impl S3Backend {
     }
 
     /// Enables transfer acceleration
+    ///
+    /// Note: real S3 transfer acceleration requires the virtual-hosted
+    /// `*.s3-accelerate.amazonaws.com` endpoint and is mutually exclusive
+    /// with a custom [`with_endpoint`](Self::with_endpoint) / path-style
+    /// addressing setup (e.g. MinIO or other S3-compatible services).
+    /// Combining the two has no meaningful effect on non-AWS endpoints.
     #[must_use]
     pub fn with_transfer_acceleration(mut self, enabled: bool) -> Self {
         self.transfer_acceleration = enabled;
@@ -195,6 +201,13 @@ impl S3Backend {
     }
 
     /// Sets credentials
+    ///
+    /// Only [`Credentials::AccessKey`] (AWS access key/secret key, with an
+    /// optional session token) and [`Credentials::None`] (fall back to the
+    /// ambient default credential chain) are meaningful for AWS SigV4
+    /// authentication. Any other variant causes client construction to
+    /// return an error rather than silently falling back to the ambient
+    /// chain.
     #[must_use]
     pub fn with_credentials(mut self, credentials: Credentials) -> Self {
         self.credentials = Some(credentials);
@@ -206,6 +219,50 @@ impl S3Backend {
             key.to_string()
         } else {
             format!("{}/{}", self.prefix, key)
+        }
+    }
+
+    /// Resolves an explicit credentials override from `self.credentials`,
+    /// if one was configured via [`with_credentials`](Self::with_credentials).
+    ///
+    /// Returns `Ok(None)` when no explicit override applies (either no
+    /// credentials were configured, or [`Credentials::None`] was set
+    /// explicitly to request the ambient default credential chain), and
+    /// `Err` when an unsupported `Credentials` variant was configured, so
+    /// callers never silently fall back to the ambient chain when the user
+    /// asked for something we cannot honor.
+    ///
+    /// This is deliberately synchronous and does no I/O, so it can be
+    /// exercised directly by unit tests without touching the network or
+    /// depending on ambient AWS configuration.
+    #[cfg(feature = "s3")]
+    fn credentials_override(
+        &self,
+    ) -> Result<Option<aws_credential_types::provider::SharedCredentialsProvider>> {
+        match &self.credentials {
+            None | Some(Credentials::None) => Ok(None),
+            Some(Credentials::AccessKey {
+                access_key,
+                secret_key,
+                session_token,
+            }) => {
+                let aws_credentials = aws_credential_types::Credentials::new(
+                    access_key.clone(),
+                    secret_key.clone(),
+                    session_token.clone(),
+                    None,
+                    "oxigdal-cloud",
+                );
+                Ok(Some(
+                    aws_credential_types::provider::SharedCredentialsProvider::new(aws_credentials),
+                ))
+            }
+            Some(other) => Err(CloudError::S3(S3Error::Sdk {
+                message: format!(
+                    "Unsupported credentials variant '{}' for S3 (expected AccessKey or None)",
+                    other.variant_name()
+                ),
+            })),
         }
     }
 
@@ -223,10 +280,23 @@ impl S3Backend {
             .behavior_version(BehaviorVersion::latest())
             .region(sdk_config.region().cloned());
 
+        // Apply explicitly configured credentials, if any. Falls back to the
+        // ambient default credential chain (env/instance-profile/etc.) only
+        // when no explicit credentials were supplied via `with_credentials`.
+        if let Some(provider) = self.credentials_override()? {
+            s3_config_builder = s3_config_builder.credentials_provider(provider);
+        } else if let Some(provider) = sdk_config.credentials_provider() {
+            s3_config_builder = s3_config_builder.credentials_provider(provider);
+        }
+
         if let Some(ref endpoint) = self.endpoint {
             s3_config_builder = s3_config_builder
                 .endpoint_url(endpoint)
                 .force_path_style(true);
+        }
+
+        if self.transfer_acceleration {
+            s3_config_builder = s3_config_builder.accelerate(true);
         }
 
         let s3_config = s3_config_builder.build();
@@ -544,5 +614,89 @@ mod tests {
 
         let backend_no_prefix = S3Backend::new("bucket", "");
         assert_eq!(backend_no_prefix.full_key("file.txt"), "file.txt");
+    }
+
+    #[cfg(feature = "s3")]
+    #[tokio::test]
+    async fn test_with_credentials_access_key_flows_into_provider() {
+        use aws_credential_types::provider::ProvideCredentials as _;
+
+        let backend = S3Backend::new("bucket", "prefix").with_credentials(
+            Credentials::access_key_with_session("AKIA_TEST", "secret_test", "session_test"),
+        );
+
+        let provider = backend
+            .credentials_override()
+            .expect("credentials_override should succeed for AccessKey")
+            .expect("AccessKey credentials must produce an override provider");
+
+        let resolved = provider
+            .provide_credentials()
+            .await
+            .expect("provide_credentials should resolve the hardcoded access key");
+
+        assert_eq!(resolved.access_key_id(), "AKIA_TEST");
+        assert_eq!(resolved.secret_access_key(), "secret_test");
+        assert_eq!(resolved.session_token(), Some("session_test"));
+    }
+
+    #[cfg(feature = "s3")]
+    #[test]
+    fn test_with_credentials_none_falls_back_to_ambient_chain() {
+        // No credentials configured at all.
+        let backend = S3Backend::new("bucket", "prefix");
+        assert!(
+            backend
+                .credentials_override()
+                .expect("should not error")
+                .is_none()
+        );
+
+        // Explicit `Credentials::None` also defers to the ambient chain.
+        let backend_explicit_none =
+            S3Backend::new("bucket", "prefix").with_credentials(Credentials::None);
+        assert!(
+            backend_explicit_none
+                .credentials_override()
+                .expect("should not error")
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "s3")]
+    #[test]
+    fn test_with_credentials_unsupported_variant_errors() {
+        let backend = S3Backend::new("bucket", "prefix")
+            .with_credentials(Credentials::iam_role("arn:aws:iam::123:role/x", "session"));
+
+        let err = backend
+            .credentials_override()
+            .expect_err("IamRole is not a supported S3 credentials variant");
+        let message = err.to_string();
+        assert!(
+            message.contains("IamRole"),
+            "error should name the unsupported variant, got: {message}"
+        );
+    }
+
+    #[cfg(feature = "s3")]
+    #[tokio::test]
+    async fn test_create_client_applies_transfer_acceleration_and_endpoint() {
+        // Exercises the full `create_client` path (not just the credentials
+        // helper) to confirm transfer_acceleration/endpoint/credentials are
+        // all wired without requiring real network access -- `create_client`
+        // only loads local config, it never dials the network.
+        let backend = S3Backend::new("bucket", "prefix")
+            .with_transfer_acceleration(true)
+            .with_credentials(Credentials::access_key("AKIA_TEST", "secret_test"));
+
+        let client = backend
+            .create_client()
+            .await
+            .expect("create_client should succeed with local-only config resolution");
+        // A successfully constructed client with no panics/errors is the
+        // observable contract here; deeper SDK internals (e.g. the
+        // accelerate flag) are not publicly introspectable post-build.
+        let _ = client;
     }
 }

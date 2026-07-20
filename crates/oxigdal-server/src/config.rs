@@ -12,6 +12,8 @@
 //! host = "0.0.0.0"
 //! port = 8080
 //! workers = 4
+//! metrics_enabled = true
+//! metrics_port = 8081
 //!
 //! [cache]
 //! memory_size_mb = 256
@@ -24,6 +26,10 @@
 //! formats = ["png", "jpeg", "webp"]
 //! tile_size = 256
 //! ```
+//!
+//! Unrecognized keys/tables (typos, stale field names) are rejected with a `TomlParse` error
+//! rather than silently ignored - every struct in this module derives
+//! `#[serde(deny_unknown_fields)]`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -61,6 +67,7 @@ pub type ConfigResult<T> = Result<T, ConfigError>;
 
 /// Server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Host address to bind to
     #[serde(default = "default_host")]
@@ -89,10 +96,21 @@ pub struct ServerConfig {
     /// Allowed CORS origins (empty = all)
     #[serde(default)]
     pub cors_origins: Vec<String>,
+
+    /// Enable the Prometheus `/metrics` endpoint on its own listener
+    #[serde(default = "default_metrics_enabled")]
+    pub metrics_enabled: bool,
+
+    /// Port the Prometheus `/metrics` endpoint listens on (separate from `port`), matching
+    /// the `metrics` container/service port declared in `k8s/deployment.yaml` and the scrape
+    /// target in `monitoring/prometheus.yml`
+    #[serde(default = "default_metrics_port")]
+    pub metrics_port: u16,
 }
 
 /// Cache configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheConfig {
     /// In-memory cache size in megabytes
     #[serde(default = "default_memory_cache_mb")]
@@ -117,6 +135,7 @@ pub struct CacheConfig {
 
 /// Layer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayerConfig {
     /// Layer name (used in URLs)
     pub name: String,
@@ -167,6 +186,7 @@ pub struct LayerConfig {
 
 /// Style configuration for rendering
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StyleConfig {
     /// Style name
     pub name: String,
@@ -260,6 +280,7 @@ impl FromStr for ImageFormat {
 
 /// Complete server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Server settings
     #[serde(default)]
@@ -280,6 +301,7 @@ pub struct Config {
 
 /// Service metadata configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetadataConfig {
     /// Service title
     #[serde(default = "default_service_title")]
@@ -304,6 +326,7 @@ pub struct MetadataConfig {
 
 /// Contact information
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContactInfo {
     /// Organization name
     pub organization: String,
@@ -347,6 +370,14 @@ fn default_timeout() -> u64 {
 
 fn default_cors() -> bool {
     true
+}
+
+fn default_metrics_enabled() -> bool {
+    true
+}
+
+fn default_metrics_port() -> u16 {
+    8081
 }
 
 fn default_memory_cache_mb() -> usize {
@@ -415,6 +446,8 @@ impl Default for ServerConfig {
             timeout_seconds: default_timeout(),
             enable_cors: default_cors(),
             cors_origins: Vec::new(),
+            metrics_enabled: default_metrics_enabled(),
+            metrics_port: default_metrics_port(),
         }
     }
 }
@@ -511,6 +544,15 @@ impl Config {
             ));
         }
 
+        // The metrics endpoint binds its own listener on the same host; it must not collide
+        // with the main application port.
+        if self.server.metrics_enabled && self.server.metrics_port == self.server.port {
+            return Err(ConfigError::Invalid(format!(
+                "server.metrics_port ({}) must differ from server.port when metrics_enabled is true",
+                self.server.metrics_port
+            )));
+        }
+
         Ok(())
     }
 
@@ -543,6 +585,79 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.cache.memory_size_mb, 256);
         assert!(config.layers.is_empty());
+        assert!(config.server.metrics_enabled);
+        assert_eq!(config.server.metrics_port, 8081);
+    }
+
+    #[test]
+    fn test_unknown_server_field_is_rejected() {
+        // Regression test: `Config` derives `deny_unknown_fields` everywhere so a mistyped or
+        // stale field name in a shipped TOML (e.g. `k8s/configmap.yaml`) fails loudly instead
+        // of being silently dropped.
+        let toml = r#"
+            [server]
+            host = "0.0.0.0"
+            port = 8080
+            size_mb = 1024
+        "#;
+
+        let err = Config::from_toml(toml).expect_err("unknown field must be rejected");
+        assert!(matches!(err, ConfigError::TomlParse(_)));
+    }
+
+    #[test]
+    fn test_unknown_top_level_table_is_rejected() {
+        let toml = r#"
+            [server]
+            host = "0.0.0.0"
+
+            [tile]
+            max_age = 3600
+        "#;
+
+        let err = Config::from_toml(toml).expect_err("unknown top-level table must be rejected");
+        assert!(matches!(err, ConfigError::TomlParse(_)));
+    }
+
+    #[test]
+    fn test_metrics_port_must_differ_from_server_port() {
+        let mut config = Config::default_config();
+        config.server.metrics_port = config.server.port;
+        assert!(config.validate().is_err());
+
+        config.server.metrics_enabled = false;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_configmap_server_toml_matches_real_schema() {
+        // Regression test for the k8s/configmap.yaml drift bug: the exact server.toml body
+        // shipped in that ConfigMap must parse cleanly against the real `Config` schema.
+        let toml = r#"
+            [server]
+            host = "0.0.0.0"
+            port = 8080
+            workers = 4
+            enable_cors = true
+            cors_origins = ["*"]
+            metrics_enabled = true
+            metrics_port = 8081
+
+            [cache]
+            memory_size_mb = 1024
+            ttl_seconds = 3600
+            enable_stats = true
+            compression = false
+
+            [metadata]
+            title = "OxiGDAL Tile Server"
+        "#;
+
+        let config = Config::from_toml(toml).expect("shipped ConfigMap TOML must be valid");
+        assert_eq!(config.cache.memory_size_mb, 1024);
+        assert_eq!(config.server.metrics_port, 8081);
+        assert!(config.server.enable_cors);
+        assert_eq!(config.server.cors_origins, vec!["*".to_string()]);
     }
 
     #[test]

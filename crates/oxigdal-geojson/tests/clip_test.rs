@@ -1,7 +1,7 @@
 //! Tests for bbox clipping (Cohen-Sutherland + Sutherland-Hodgman) in
 //! `oxigdal-geojson-stream`.
 
-#![allow(clippy::unwrap_used, missing_docs, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs, clippy::panic)]
 
 use oxigdal_geojson_stream::{
     ClipBox, GeoJsonGeometry, clip_geometry, clip_linestring, clip_polygon,

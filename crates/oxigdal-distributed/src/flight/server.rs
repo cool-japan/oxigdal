@@ -101,6 +101,48 @@ impl FlightServer {
     pub fn into_service(self) -> FlightServiceServer<Self> {
         FlightServiceServer::new(self)
     }
+
+    /// Enforce bearer-token authentication for an incoming request.
+    ///
+    /// When authentication is disabled this is a no-op. Otherwise the request must
+    /// carry an `authorization: Bearer <token>` metadata header whose token is a
+    /// registered key in [`Self::add_auth_token`]. Any missing, malformed, or unknown
+    /// token is rejected with [`tonic::Status::unauthenticated`]; a poisoned token
+    /// lock is reported as [`tonic::Status::internal`].
+    fn check_auth<T>(&self, request: &Request<T>) -> std::result::Result<(), tonic::Status> {
+        if !self.enable_auth {
+            return Ok(());
+        }
+
+        let header = request
+            .metadata()
+            .get("authorization")
+            .ok_or_else(|| tonic::Status::unauthenticated("Missing authorization header"))?;
+
+        let value = header
+            .to_str()
+            .map_err(|_| tonic::Status::unauthenticated("Invalid authorization header encoding"))?;
+
+        let token = value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| {
+                tonic::Status::unauthenticated("Authorization header must be a Bearer token")
+            })?;
+
+        let tokens = self
+            .auth_tokens
+            .read()
+            .map_err(|_| tonic::Status::internal("Failed to acquire auth tokens lock"))?;
+
+        if tokens.contains_key(token) {
+            Ok(())
+        } else {
+            Err(tonic::Status::unauthenticated("Invalid or unknown token"))
+        }
+    }
 }
 
 impl Default for FlightServer {
@@ -131,6 +173,9 @@ impl FlightService for FlightServer {
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
     ) -> std::result::Result<Response<Self::HandshakeStream>, tonic::Status> {
+        // Handshake is deliberately left un-gated: it is the credential-exchange entry
+        // point of the Flight protocol and returns no data-store contents. Every other
+        // RPC method enforces `check_auth` before touching the data store.
         debug!("Handshake request received");
 
         // Simple handshake - just acknowledge
@@ -145,8 +190,9 @@ impl FlightService for FlightServer {
 
     async fn list_flights(
         &self,
-        _request: Request<Criteria>,
+        request: Request<Criteria>,
     ) -> std::result::Result<Response<Self::ListFlightsStream>, tonic::Status> {
+        self.check_auth(&request)?;
         debug!("List flights request received");
 
         // Return empty stream - we don't support flight listing yet
@@ -158,6 +204,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, tonic::Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         debug!("Get flight info request: {:?}", descriptor);
 
@@ -212,6 +259,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<SchemaResult>, tonic::Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         debug!("Get schema request received");
 
@@ -246,6 +294,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<Ticket>,
     ) -> std::result::Result<Response<Self::DoGetStream>, tonic::Status> {
+        self.check_auth(&request)?;
         let ticket = request.into_inner();
         let ticket_str = String::from_utf8(ticket.ticket.to_vec())
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid ticket: {}", e)))?;
@@ -276,6 +325,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<Streaming<FlightData>>,
     ) -> std::result::Result<Response<Self::DoPutStream>, tonic::Status> {
+        self.check_auth(&request)?;
         debug!("DoPut request received");
 
         let mut stream = request.into_inner();
@@ -312,6 +362,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<Action>,
     ) -> std::result::Result<Response<Self::DoActionStream>, tonic::Status> {
+        self.check_auth(&request)?;
         let action = request.into_inner();
         info!("DoAction request: {}", action.r#type);
 
@@ -383,8 +434,9 @@ impl FlightService for FlightServer {
 
     async fn list_actions(
         &self,
-        _request: Request<Empty>,
+        request: Request<Empty>,
     ) -> std::result::Result<Response<Self::ListActionsStream>, tonic::Status> {
+        self.check_auth(&request)?;
         debug!("List actions request received");
 
         let actions = vec![
@@ -406,6 +458,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<Streaming<FlightData>>,
     ) -> std::result::Result<Response<Self::DoExchangeStream>, tonic::Status> {
+        self.check_auth(&request)?;
         debug!("DoExchange request received — echo/passthrough mode");
 
         let mut incoming = request.into_inner();
@@ -433,6 +486,7 @@ impl FlightService for FlightServer {
         &self,
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<arrow_flight::PollInfo>, tonic::Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         debug!("Poll flight info request received");
 
@@ -598,6 +652,103 @@ mod tests {
                 .map_err(|e| Box::<dyn std::error::Error>::from(format!("lock poisoned: {}", e)))?
                 .contains_key("invalid")
         );
+        Ok(())
+    }
+
+    fn bearer_request<T>(inner: T, token: &str) -> Request<T> {
+        let mut request = Request::new(inner);
+        let value = format!("Bearer {}", token);
+        if let Ok(meta_value) = value.parse::<tonic::metadata::MetadataValue<_>>() {
+            request.metadata_mut().insert("authorization", meta_value);
+        }
+        request
+    }
+
+    #[tokio::test]
+    async fn test_do_get_rejects_unauthenticated()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = FlightServer::new().with_auth();
+        server.add_auth_token("token123".to_string(), "user1".to_string())?;
+        server.store_data("t1".to_string(), create_test_batch()?)?;
+
+        // No authorization header -> unauthenticated.
+        let req = Request::new(Ticket {
+            ticket: Bytes::from("t1"),
+        });
+        let result = FlightService::do_get(&server, req).await;
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().map(|s| s.code()),
+            Some(tonic::Code::Unauthenticated)
+        );
+
+        // Wrong token -> unauthenticated.
+        let bad = bearer_request(
+            Ticket {
+                ticket: Bytes::from("t1"),
+            },
+            "wrong",
+        );
+        let result = FlightService::do_get(&server, bad).await;
+        assert_eq!(
+            result.err().map(|s| s.code()),
+            Some(tonic::Code::Unauthenticated)
+        );
+
+        // Valid token -> succeeds.
+        let good = bearer_request(
+            Ticket {
+                ticket: Bytes::from("t1"),
+            },
+            "token123",
+        );
+        let result = FlightService::do_get(&server, good).await;
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_do_action_remove_requires_auth()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = FlightServer::new().with_auth();
+        server.add_auth_token("token123".to_string(), "user1".to_string())?;
+        server.store_data("t1".to_string(), create_test_batch()?)?;
+
+        // Unauthenticated remove_ticket must be rejected and must NOT delete data.
+        let action = Action {
+            r#type: "remove_ticket".to_string(),
+            body: Bytes::from("t1"),
+        };
+        let result = FlightService::do_action(&server, Request::new(action)).await;
+        assert_eq!(
+            result.err().map(|s| s.code()),
+            Some(tonic::Code::Unauthenticated)
+        );
+        assert!(server.get_data("t1")?.is_some(), "data must not be removed");
+
+        // Authenticated remove succeeds.
+        let action = Action {
+            r#type: "remove_ticket".to_string(),
+            body: Bytes::from("t1"),
+        };
+        let result = FlightService::do_action(&server, bearer_request(action, "token123")).await;
+        assert!(result.is_ok());
+        assert!(server.get_data("t1")?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_auth_disabled_allows_access()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Without with_auth(), requests without any token must still succeed.
+        let server = FlightServer::new();
+        server.store_data("t1".to_string(), create_test_batch()?)?;
+
+        let req = Request::new(Ticket {
+            ticket: Bytes::from("t1"),
+        });
+        let result = FlightService::do_get(&server, req).await;
+        assert!(result.is_ok());
         Ok(())
     }
 }

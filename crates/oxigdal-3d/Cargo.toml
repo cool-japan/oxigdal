@@ -32,6 +32,9 @@ tracing.workspace = true
 # Internal dependencies
 oxigdal-core.workspace = true
 
+# Pure-Rust COPC LAZ chunk decoder (feature-gated behind `copc`).
+oxigdal-copc = { workspace = true, optional = true }
+
 # Point cloud dependencies
 las.workspace = true
 laz = { workspace = true, default-features = false }
@@ -63,6 +66,13 @@ tempfile.workspace = true
 approx.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
+# `laz-encoder` exposes the LAZ chunk encoder used to build synthetic COPC
+# fixtures for the round-trip decode tests.
+# Path-only (no version): dev-dependencies are stripped from the published
+# manifest, so a workspace-inherited version requirement here would force
+# cargo to resolve `oxigdal-copc = "^0.1.7"` against crates.io during
+# `cargo publish`, which fails before that version exists.
+oxigdal-copc = { path = "../oxigdal-copc", features = ["laz-encoder"] }
 
 [features]
 default = ["las-laz", "mesh", "terrain", "tiles3d"]
@@ -71,7 +81,7 @@ mesh = []
 terrain = []
 tiles3d = []
 async = ["tokio", "futures", "async-trait", "reqwest"]
-copc = ["async"]
+copc = ["async", "dep:oxigdal-copc"]
 ept = ["async"]
 
 # C/Fortran dependencies feature-gated (Pure Rust Policy)
@@ -80,3 +90,10 @@ ept = ["async"]
 
 [lints]
 workspace = true
+
+# NOTE: `async`/`copc`/`ept` pull in reqwest -> rustls -> aws-lc-sys (C/asm, not
+# Pure Rust). Curated feature list mirrors `default` to keep the docs.rs build
+# on a pure-Rust dependency closure; async-gated APIs are cfg'd out of the docs.
+[package.metadata.docs.rs]
+features = ["las-laz", "mesh", "terrain", "tiles3d"]
+rustdoc-args = ["--cfg", "docsrs"]

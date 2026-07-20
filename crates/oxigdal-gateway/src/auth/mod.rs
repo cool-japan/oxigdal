@@ -7,6 +7,7 @@ pub mod api_key;
 pub mod jwt;
 pub mod mfa;
 pub mod oauth2;
+pub mod rbac;
 pub mod session;
 
 use crate::error::{GatewayError, Result};
@@ -40,6 +41,11 @@ pub struct AuthConfig {
     pub oauth2_auth_url: Option<String>,
     /// OAuth2 token endpoint
     pub oauth2_token_url: Option<String>,
+    /// OAuth2/OIDC userinfo endpoint, used to derive a verified identity after token
+    /// exchange. Required for `enable_oauth2` deployments to authenticate anyone -- without
+    /// it, `OAuth2Authenticator::exchange_code` obtains a token from the provider but
+    /// refuses to fabricate an identity.
+    pub oauth2_userinfo_url: Option<String>,
 }
 
 impl Default for AuthConfig {
@@ -57,6 +63,7 @@ impl Default for AuthConfig {
             oauth2_client_secret: None,
             oauth2_auth_url: None,
             oauth2_token_url: None,
+            oauth2_userinfo_url: None,
         }
     }
 }
@@ -216,12 +223,13 @@ impl MultiAuthenticator {
                 GatewayError::ConfigError("OAuth2 token URL not configured".to_string())
             })?;
 
-            Some(Arc::new(oauth2::OAuth2Authenticator::new(
-                client_id,
-                client_secret,
-                auth_url,
-                token_url,
-            )?))
+            let mut authenticator =
+                oauth2::OAuth2Authenticator::new(client_id, client_secret, auth_url, token_url)?;
+            if let Some(userinfo_url) = config.oauth2_userinfo_url.as_ref() {
+                authenticator = authenticator.with_userinfo_url(userinfo_url.clone());
+            }
+
+            Some(Arc::new(authenticator))
         } else {
             None
         };
@@ -247,31 +255,31 @@ impl MultiAuthenticator {
         // Try different authentication methods based on the header format
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
             // Try JWT first
-            if let Some(jwt) = &self.jwt {
-                if let Ok(context) = jwt.authenticate(token).await {
-                    return Ok(context);
-                }
+            if let Some(jwt) = &self.jwt
+                && let Ok(context) = jwt.authenticate(token).await
+            {
+                return Ok(context);
             }
 
             // Try OAuth2
-            if let Some(oauth2) = &self.oauth2 {
-                if let Ok(context) = oauth2.authenticate(token).await {
-                    return Ok(context);
-                }
+            if let Some(oauth2) = &self.oauth2
+                && let Ok(context) = oauth2.authenticate(token).await
+            {
+                return Ok(context);
             }
         } else if let Some(key) = auth_header.strip_prefix("ApiKey ") {
             // Try API key
-            if let Some(api_key) = &self.api_key {
-                if let Ok(context) = api_key.authenticate(key).await {
-                    return Ok(context);
-                }
+            if let Some(api_key) = &self.api_key
+                && let Ok(context) = api_key.authenticate(key).await
+            {
+                return Ok(context);
             }
         } else if let Some(session_id) = auth_header.strip_prefix("Session ") {
             // Try session
-            if let Some(session) = &self.session {
-                if let Ok(context) = session.authenticate(session_id).await {
-                    return Ok(context);
-                }
+            if let Some(session) = &self.session
+                && let Ok(context) = session.authenticate(session_id).await
+            {
+                return Ok(context);
             }
         }
 

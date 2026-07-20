@@ -41,14 +41,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-streaming = "0.1.5"
+oxigdal-streaming = "0.1.7"
 ```
 
 For the persistent LSM key-value state backend (Pure-Rust, via OxiStore/fjall):
 
 ```toml
 [dependencies]
-oxigdal-streaming = { version = "0.1.5", features = ["kv-store"] }
+oxigdal-streaming = { version = "0.1.7", features = ["kv-store"] }
 ```
 
 ## Usage
@@ -137,15 +137,34 @@ let value = state.get().await?;
 ### Checkpointing
 
 ```rust
-use oxigdal_streaming::state::checkpoint::{CheckpointCoordinator, CheckpointConfig};
+use std::sync::Arc;
+use oxigdal_streaming::state::{
+    BroadcastState, CheckpointConfig, CheckpointCoordinator, DynOperatorState,
+    FileCheckpointStorage,
+};
 
-let config = CheckpointConfig::default();
-let coordinator = CheckpointCoordinator::new(config);
+// Durable, file-backed checkpoint storage (Pure Rust).
+let storage = Arc::new(FileCheckpointStorage::new("/var/lib/app/checkpoints")?);
+let coordinator = CheckpointCoordinator::with_storage(CheckpointConfig::default(), storage);
 
-let checkpoint_id = coordinator.trigger_checkpoint().await?;
-// Process...
-coordinator.complete_checkpoint(checkpoint_id, true).await?;
+// Register operator state to be captured on every checkpoint.
+let operator_state = Arc::new(BroadcastState::new());
+operator_state.put(vec![1], vec![42]).await;
+coordinator
+    .register_operator("operator-1", operator_state.clone() as Arc<dyn DynOperatorState>)
+    .await;
+
+// Capture + persist + complete in one durable step. Only reported as
+// successful once the state has actually been written to storage.
+let checkpoint_id = coordinator.checkpoint().await?;
+
+// Later, recover state from a persisted checkpoint.
+coordinator.restore_checkpoint(checkpoint_id).await?;
 ```
+
+The lower-level `trigger_checkpoint()` / `complete_checkpoint(id, success)` pair
+is still available for manual coordination; `checkpoint()` combines them with the
+persistence step.
 
 ## Architecture
 

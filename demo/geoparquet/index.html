@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OxiGDAL GeoParquet Live — query 5.9 GB in your browser</title>
+    <meta name="description"
+          content="Query a 5.9 GB remote GeoParquet with predicate pushdown over HTTP range requests — Pure Rust compiled to WebAssembly, no database, no server.">
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗾</text></svg>">
+</head>
+<body>
+<div class="app-container">
+
+    <!-- ── Header ─────────────────────────────────────────────────────── -->
+    <header class="app-header">
+        <div class="header-content">
+            <div class="header-left">
+                <h1 class="app-title">GeoParquet Live</h1>
+                <p class="app-subtitle">Query a dataset bigger than your laptop, over the network, with no database</p>
+            </div>
+            <div class="header-right">
+                <span class="version-badge">OxiGDAL 0.1.7</span>
+                <div class="status-indicator">
+                    <span class="status-dot status-idle" id="status-dot"></span>
+                    <span id="status-text">loading WASM…</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ── Honesty badges ─────────────────────────────────────────────── -->
+    <div class="badge-bar" id="badge-bar">
+        <span class="badge" id="badge-dataset">dataset: —</span>
+        <span class="badge" id="badge-fetched">fetched: 0 B</span>
+        <span class="badge" id="badge-uploaded">uploaded: 0</span>
+        <span class="badge" id="badge-server">server: none</span>
+        <span class="badge badge-muted" id="badge-cache">footer cache: —</span>
+    </div>
+
+    <div class="app-body">
+
+        <!-- ── Sidebar ────────────────────────────────────────────────── -->
+        <aside class="sidebar">
+
+            <section class="panel">
+                <h2 class="panel-title">1 · Dataset</h2>
+                <label class="field-label" for="url-input">GeoParquet URL</label>
+                <input type="text" id="url-input" class="text-input" spellcheck="false"
+                       placeholder="https://…/JPN.parquet">
+                <button id="open-btn" class="btn btn-primary" disabled>Open dataset</button>
+                <div class="progress-wrap hidden" id="open-progress">
+                    <div class="progress-track"><div class="progress-fill" id="open-progress-fill"></div></div>
+                    <div class="progress-label" id="open-progress-label">…</div>
+                </div>
+                <dl class="facts hidden" id="dataset-facts">
+                    <div><dt>size</dt><dd id="fact-size">—</dd></div>
+                    <div><dt>rows</dt><dd id="fact-rows">—</dd></div>
+                    <div><dt>row groups</dt><dd id="fact-rowgroups">—</dd></div>
+                    <div><dt>footer</dt><dd id="fact-footer">—</dd></div>
+                    <div><dt>columns</dt><dd id="fact-columns">—</dd></div>
+                </dl>
+            </section>
+
+            <section class="panel">
+                <h2 class="panel-title">2 · Query</h2>
+                <button id="draw-btn" class="btn" disabled>▭ Draw query box</button>
+                <div class="bbox-readout" id="bbox-readout">no box drawn — click “Draw query box”, then drag on the map</div>
+
+                <label class="field-label" for="filter-input">Attribute filter <span class="hint">(SQL WHERE fragment, optional)</span></label>
+                <input type="text" id="filter-input" class="text-input mono" spellcheck="false"
+                       placeholder="area_in_meters &gt; 200 AND confidence &gt;= 0.8">
+                <div class="field-error hidden" id="filter-error"></div>
+
+                <div class="field-row">
+                    <div>
+                        <label class="field-label" for="limit-input">row limit</label>
+                        <input type="number" id="limit-input" class="text-input" value="60000" min="1" step="1000">
+                    </div>
+                    <div>
+                        <label class="field-label" for="maxrg-input">max row groups</label>
+                        <input type="number" id="maxrg-input" class="text-input" value="64" min="1" step="1">
+                    </div>
+                </div>
+
+                <div class="plan-preview" id="plan-preview">plan: draw a box to preview the download cost</div>
+                <button id="query-btn" class="btn btn-primary" disabled>Query</button>
+            </section>
+
+            <section class="panel">
+                <h2 class="panel-title">Examples</h2>
+                <div class="example-list" id="example-list"><span class="hint">loading…</span></div>
+            </section>
+
+            <section class="panel hidden" id="result-panel">
+                <h2 class="panel-title">Last query</h2>
+                <dl class="facts">
+                    <div><dt>matched</dt><dd id="res-matched">—</dd></div>
+                    <div><dt>Σ area</dt><dd id="res-area">—</dd></div>
+                    <div><dt>row groups</dt><dd id="res-rowgroups">—</dd></div>
+                    <div><dt>HTTP requests</dt><dd id="res-requests">—</dd></div>
+                    <div><dt>downloaded</dt><dd id="res-bytes">—</dd></div>
+                    <div><dt>time</dt><dd id="res-elapsed">—</dd></div>
+                </dl>
+            </section>
+
+            <section class="panel panel-note">
+                <p>Everything runs in <strong>your browser</strong>: the Parquet footer is fetched once,
+                   row groups are pruned against the query box and filter, and only the surviving
+                   column chunks are downloaded via HTTP range requests. Pure Rust → WebAssembly.</p>
+                <p class="hint">Offline sample: <a href="?src=./sample/jpn-sample.parquet">?src=./sample/jpn-sample.parquet</a></p>
+            </section>
+        </aside>
+
+        <!-- ── Main: banner, map, row-group strip ─────────────────────── -->
+        <main class="main-area">
+            <div class="banner hidden" id="banner">
+                <span id="banner-text"></span>
+                <button class="banner-close" id="banner-close" title="dismiss">×</button>
+            </div>
+
+            <div id="map"></div>
+
+            <div class="strip-wrap">
+                <div class="strip-header">
+                    <span class="strip-title">Row groups <span id="strip-counts">—</span></span>
+                    <span class="strip-legend">
+                        <span class="legend-item"><span class="legend-swatch swatch-pruned"></span>pruned</span>
+                        <span class="legend-item"><span class="legend-swatch swatch-survivor"></span>survivor</span>
+                        <span class="legend-item"><span class="legend-swatch swatch-fetched"></span>fetched</span>
+                    </span>
+                </div>
+                <canvas id="rg-strip" class="rg-strip" height="26"></canvas>
+                <div class="strip-caption" id="strip-caption">
+                    Each cell is one Parquet row group. Grey groups are pruned from metadata alone —
+                    their bytes are never downloaded.
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- ── Footer ─────────────────────────────────────────────────────── -->
+    <footer class="app-footer">
+        <span>OxiGDAL · Pure-Rust GeoParquet pushdown compiled to WebAssembly (SNAPPY via pure-Rust <code>snap</code>)</span>
+        <a href="https://github.com/cool-japan/oxigdal" target="_blank" rel="noopener">github.com/cool-japan/oxigdal</a>
+    </footer>
+</div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

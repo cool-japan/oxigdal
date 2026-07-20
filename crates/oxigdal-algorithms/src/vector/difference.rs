@@ -129,6 +129,11 @@ fn point_in_ring(point: &Coordinate, ring: &[Coordinate]) -> bool {
 }
 
 /// Computes the centroid of a ring.
+///
+/// Retained as a thin re-export for local tests and potential future helpers;
+/// `is_ring_inside_ring` no longer relies on a centroid test (it uses a robust
+/// crossing + vertex-containment check that handles concave rings).
+#[allow(dead_code)]
 fn compute_ring_centroid(coords: &[Coordinate]) -> Coordinate {
     crate::vector::clipping::compute_ring_centroid(coords)
 }
@@ -449,10 +454,16 @@ fn clip_ring_to_box(
     Ok(clipped)
 }
 
-/// Checks if a ring is completely inside another ring
+/// Checks if a ring is completely inside another ring.
 ///
-/// Uses the centroid of the inner ring to check containment.
-/// This is a simplified check that works for convex cases.
+/// Robust for concave rings: a single-point (centroid) test is unreliable
+/// because a concave ring's centroid can fall outside the ring itself, or in a
+/// notch of a concave `outer`, misclassifying containment. Instead this checks
+/// that (1) no edge of `inner` *properly* crosses an edge of `outer`, and
+/// (2) at least one vertex of `inner` lies strictly inside `outer`. Together
+/// these imply every vertex of `inner` is inside-or-on `outer`, so `inner` is
+/// contained. Shared/touching boundary segments (common after clipping to a
+/// box) are not proper crossings, so boundary-touching holes are preserved.
 ///
 /// # Arguments
 ///
@@ -463,15 +474,25 @@ fn clip_ring_to_box(
 ///
 /// true if inner is inside outer
 fn is_ring_inside_ring(inner: &[Coordinate], outer: &[Coordinate]) -> bool {
-    if inner.is_empty() || outer.is_empty() {
+    if inner.len() < 3 || outer.len() < 3 {
         return false;
     }
 
-    // Use the centroid of the inner ring
-    let centroid = compute_ring_centroid(inner);
+    // (1) Reject any proper interior crossing between the two boundaries.
+    // `segments_intersect` excludes shared endpoints and collinear overlaps, so
+    // rings that merely touch along a shared edge are not rejected here.
+    for i in 0..(inner.len() - 1) {
+        for j in 0..(outer.len() - 1) {
+            if segments_intersect(&inner[i], &inner[i + 1], &outer[j], &outer[j + 1]) {
+                return false;
+            }
+        }
+    }
 
-    // Check if centroid is inside the outer ring
-    point_in_ring(&centroid, outer)
+    // (2) Require at least one vertex of `inner` strictly inside `outer`.
+    // With no proper crossings, this rules out the "disjoint" and "outer inside
+    // inner" cases (whose inner vertices are all outside `outer`).
+    inner.iter().any(|v| point_in_ring(v, outer))
 }
 
 /// Validates polygon topology after clipping operations
@@ -1564,6 +1585,69 @@ mod tests {
 
         assert!(is_ring_inside_ring(&inner, &outer));
         assert!(!is_ring_inside_ring(&outside, &outer));
+    }
+
+    #[test]
+    fn test_is_ring_inside_ring_concave() {
+        // A concave "C"-shaped outer ring opening to the right. Its notch
+        // (x in [3,10], y in [3,7]) is OUTSIDE the ring material.
+        let outer = vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(10.0, 0.0),
+            Coordinate::new_2d(10.0, 3.0),
+            Coordinate::new_2d(3.0, 3.0),
+            Coordinate::new_2d(3.0, 7.0),
+            Coordinate::new_2d(10.0, 7.0),
+            Coordinate::new_2d(10.0, 10.0),
+            Coordinate::new_2d(0.0, 10.0),
+            Coordinate::new_2d(0.0, 0.0),
+        ];
+
+        // A smaller concave "C" that lies entirely within the outer material,
+        // but whose CENTROID (5.25, 5.0) falls inside the outer's notch — i.e.
+        // OUTSIDE the outer ring. The old centroid-only check returned `false`
+        // here (dropping a genuinely-contained hole); the robust check returns
+        // `true`.
+        let inner = vec![
+            Coordinate::new_2d(1.0, 1.0),
+            Coordinate::new_2d(9.0, 1.0),
+            Coordinate::new_2d(9.0, 2.0),
+            Coordinate::new_2d(2.0, 2.0),
+            Coordinate::new_2d(2.0, 8.0),
+            Coordinate::new_2d(9.0, 8.0),
+            Coordinate::new_2d(9.0, 9.0),
+            Coordinate::new_2d(1.0, 9.0),
+            Coordinate::new_2d(1.0, 1.0),
+        ];
+
+        // Confirm the premise: the inner centroid is outside the outer ring, so
+        // a centroid-only test would give the wrong answer.
+        let centroid = compute_ring_centroid(&inner);
+        assert!(
+            !point_in_ring(&centroid, &outer),
+            "test premise: inner centroid must fall in the outer's notch"
+        );
+
+        // Robust check correctly reports containment.
+        assert!(
+            is_ring_inside_ring(&inner, &outer),
+            "concave inner ring is genuinely inside the concave outer ring"
+        );
+
+        // A ring straddling the outer's inner spine (x=3): part sits in the
+        // material (x<3), part in the notch (x>3), so its edges properly cross
+        // the outer boundary and it must NOT be reported inside.
+        let straddling = vec![
+            Coordinate::new_2d(1.0, 4.0),
+            Coordinate::new_2d(6.0, 4.0), // crosses the spine at x=3
+            Coordinate::new_2d(6.0, 6.0),
+            Coordinate::new_2d(1.0, 6.0), // crosses the spine at x=3
+            Coordinate::new_2d(1.0, 4.0),
+        ];
+        assert!(
+            !is_ring_inside_ring(&straddling, &outer),
+            "a ring crossing the outer boundary is not contained"
+        );
     }
 
     #[test]

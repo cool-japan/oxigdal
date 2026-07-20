@@ -206,6 +206,7 @@
 #![allow(clippy::assigning_clones)]
 
 pub mod error;
+pub mod expr_depth;
 pub mod raster;
 pub mod resampling;
 pub mod vector;
@@ -224,6 +225,7 @@ pub mod tutorials;
 
 // Re-export commonly used items
 pub use error::{AlgorithmError, Result};
+pub use expr_depth::MAX_EXPRESSION_DEPTH;
 pub use resampling::{Resampler, ResamplingMethod};
 
 // Re-export bytecode compiler + VM for band-math expressions

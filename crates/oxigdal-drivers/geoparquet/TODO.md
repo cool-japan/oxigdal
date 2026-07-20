@@ -2,7 +2,7 @@
 
 > **Purpose:** GeoParquet driver for OxiGDAL - Pure Rust GDAL reimplementation
 > **Status (2026-05-16):** 11,925 Rust LoC (incl. tests) - 181 tests - 0 source-code stubs (mature crate; 0.1.5 already shipped covering bbox + native encodings + statistics)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

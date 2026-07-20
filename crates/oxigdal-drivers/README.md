@@ -2,7 +2,7 @@
 
 This directory is the workspace home for the core geospatial format drivers that make up the OxiGDAL I/O layer. Each driver lives in its own sub-crate so you can pull in only what your project needs.
 
-**Version**: 0.1.5 — Last updated: 2026-05-22
+**Version**: 0.1.7 — Last updated: 2026-07-20
 
 ---
 
@@ -26,9 +26,9 @@ There is no single `oxigdal-drivers` meta-crate to depend on. Add only the drive
 
 ```toml
 [dependencies]
-oxigdal-geotiff   = "0.1.5"
-oxigdal-geojson   = "0.1.5"
-oxigdal-shapefile = "0.1.5"
+oxigdal-geotiff   = "0.1.7"
+oxigdal-geojson   = "0.1.7"
+oxigdal-shapefile = "0.1.7"
 ```
 
 ---
@@ -151,7 +151,7 @@ Note: The `hdf5_sys` feature (C bindings to libhdf5) is intentionally absent fro
 
 ### `oxigdal-jpeg2000`
 
-`std` and `async` only — no additional flags in 0.1.5.
+`std` and `async` only — no additional flags in 0.1.7.
 
 ### `oxigdal-netcdf`
 

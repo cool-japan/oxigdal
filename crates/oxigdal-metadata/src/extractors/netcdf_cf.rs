@@ -252,20 +252,20 @@ pub fn parse_cf_time_units(units: &str) -> Option<(i64, chrono::NaiveDateTime)> 
 /// metadata is preserved.
 pub fn extract_grid_mapping_crs<D: HasVariables + ?Sized>(ds: &D) -> Option<String> {
     for name in ds.variable_names() {
-        if let Some(gm) = ds.variable_attribute_string(&name, "grid_mapping") {
-            if let Some(gmn) = ds.variable_attribute_string(&gm, "grid_mapping_name") {
-                return Some(match gmn.as_str() {
-                    "latitude_longitude" => "EPSG:4326".to_string(),
-                    "transverse_mercator" => TRANSVERSE_MERCATOR_WKT.to_string(),
-                    "mercator" => "EPSG:3395".to_string(),
-                    "polar_stereographic" => "EPSG:3413".to_string(),
-                    "lambert_conformal_conic" => "EPSG:9802".to_string(),
-                    "albers_conical_equal_area" => "EPSG:9822".to_string(),
-                    "rotated_latitude_longitude" => "EPSG:4326".to_string(),
-                    "stereographic" => "EPSG:3995".to_string(),
-                    other => format!("GRID_MAPPING:{}", other),
-                });
-            }
+        if let Some(gm) = ds.variable_attribute_string(&name, "grid_mapping")
+            && let Some(gmn) = ds.variable_attribute_string(&gm, "grid_mapping_name")
+        {
+            return Some(match gmn.as_str() {
+                "latitude_longitude" => "EPSG:4326".to_string(),
+                "transverse_mercator" => TRANSVERSE_MERCATOR_WKT.to_string(),
+                "mercator" => "EPSG:3395".to_string(),
+                "polar_stereographic" => "EPSG:3413".to_string(),
+                "lambert_conformal_conic" => "EPSG:9802".to_string(),
+                "albers_conical_equal_area" => "EPSG:9822".to_string(),
+                "rotated_latitude_longitude" => "EPSG:4326".to_string(),
+                "stereographic" => "EPSG:3995".to_string(),
+                other => format!("GRID_MAPPING:{}", other),
+            });
         }
     }
     None

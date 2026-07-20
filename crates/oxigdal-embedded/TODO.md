@@ -2,7 +2,7 @@
 
 > **Purpose:** `no_std`-compatible geospatial primitives for ARM Cortex-M, RISC-V, ESP32 — static memory pools, embedded-hal abstractions, fixed-point math, low-power & realtime helpers.
 > **Status (2026-05-17):** 5,214 LoC · 68 #[test] attributes · 2 real-code soft stubs.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real power-mode transition policy (replace "Allow any transition for now")

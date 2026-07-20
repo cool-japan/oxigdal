@@ -1,662 +1,619 @@
-//! HDF5 N-Bit filter implementation.
+//! HDF5 N-Bit filter (`H5Z_NBIT`, filter id 5) — true on-disk codec.
 //!
-//! The N-Bit filter provides lossless compression by packing data using only
-//! the significant bits needed to represent the actual value range. This is
-//! particularly effective when:
+//! This module implements the **real** libhdf5 `H5Znbit.c` on-disk layout, so
+//! chunks produced by h5py / netcdf-c decode correctly, and chunks produced here
+//! are byte-compatible with libhdf5.
 //!
-//! - Integer data uses only a fraction of its storage type's range
-//!   (e.g., 12-bit sensor data stored in 16-bit integers)
-//! - Floating-point data has limited actual precision
-//! - Data has been quantized to a known range
+//! ## Parameter contract (`cd_values`)
 //!
-//! ## Algorithm
+//! The filter is driven by the dataset filter-pipeline `cd_values` array, which
+//! libhdf5 fills in at write time (`H5Z_set_local_nbit`). It begins with a small
+//! header followed by a recursive datatype descriptor:
 //!
-//! ### Forward (Packing)
-//! 1. Analyze all values to determine the actual range
-//! 2. For signed types, zigzag-encode to unsigned domain
-//! 3. Determine the minimum number of bits to represent `max_value`
-//! 4. Pack each value using only those significant bits
+//! | Index | Field   | Meaning                                                 |
+//! |-------|---------|---------------------------------------------------------|
+//! | 0     | nparms  | total number of `cd_values` entries                     |
+//! | 1     | flags   | top-level bookkeeping flag (0 integer / 1 float)        |
+//! | 2     | nelmts  | number of elements in the chunk                         |
+//! | 3..   | descr   | recursive datatype descriptor (see below)               |
 //!
-//! ### Reverse (Unpacking)
-//! 1. Read the header to get original element size, significant bits, and signedness
-//! 2. Unpack each value from the significant bits
-//! 3. For signed types, zigzag-decode back to signed domain
-//! 4. Write full-width values to the output buffer
+//! An **atomic** descriptor (class marker `1`) is five entries:
+//! `[1(atomic), size, order, precision, offset]`, where `order` is 0 (LE) / 1
+//! (BE), `precision` is the number of significant bits, and `offset` is the bit
+//! offset of those significant bits within the element.
 //!
-//! ## Header Format
+//! Other class markers are `2` (array), `3` (compound) and `4` (no-op — the type
+//! is passed through uncompressed). This crate decodes atomic integer and float
+//! members; array and compound member recursion is reported as a typed
+//! [`Hdf5Error::UnsupportedDatatype`] rather than producing garbage.
 //!
-//! | Offset | Size | Field            | Description                          |
-//! |--------|------|------------------|--------------------------------------|
-//! | 0      | 1    | version          | Header version (currently 1)         |
-//! | 1      | 1    | orig_elem_size   | Original element size in bytes       |
-//! | 2      | 1    | significant_bits | Number of significant bits per value |
-//! | 3      | 1    | is_signed        | 0 = unsigned, 1 = signed (zigzag)    |
-//! | 4      | 4    | num_elements     | Number of elements as u32 (LE)       |
-//! | 8      | var  | packed_data      | Bit-packed values                    |
+//! When `cd_values` is a short crate-internal form (`[]`, `[precision]` or
+//! `[precision, offset]`) the datatype size is taken from the `datatype`
+//! argument, the byte order defaults to little-endian, the offset defaults to 0,
+//! and the number of elements is supplied out-of-band (from the chunk
+//! dimensions).
+//!
+//! ## Per-chunk on-disk layout
+//!
+//! There is **no per-chunk header**. Each element contributes its `precision`
+//! significant bits, packed MSB-first with no padding between elements; the final
+//! byte is zero-padded. When the type is already full precision at offset 0 the
+//! filter is a no-op and the chunk holds the raw element bytes.
 
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
-use byteorder::{ByteOrder, LittleEndian};
 
-use super::bitpack::{BitReader, BitWriter, min_bits_for_value, zigzag_decode, zigzag_encode};
+use super::bitpack::{BitReader, BitWriter};
 
-/// N-Bit header size in bytes
-const HEADER_SIZE: usize = 8;
+/// Datatype class marker: atomic (integer / floating-point).
+const NBIT_ATOMIC: u32 = 1;
+/// Datatype class marker: array.
+const NBIT_ARRAY: u32 = 2;
+/// Datatype class marker: compound.
+const NBIT_COMPOUND: u32 = 3;
+/// Datatype class marker: no-op (type stored uncompressed).
+const NBIT_NOOPTYPE: u32 = 4;
 
-/// Current header version
-const HEADER_VERSION: u8 = 1;
+/// Byte order marker: big-endian.
+const ORDER_BE: u32 = 1;
 
-/// Apply N-Bit filter in the forward (packing) direction.
-///
-/// Analyzes the data to determine the minimum number of significant bits
-/// needed and packs each element using only those bits.
-///
-/// # Arguments
-/// * `data` - Raw byte data
-/// * `datatype` - The HDF5 datatype of the elements
-pub fn apply_nbit_forward(data: &[u8], datatype: &Datatype) -> Result<Vec<u8>> {
-    let elem_size = datatype.size();
-    if data.is_empty() || data.len() % elem_size != 0 {
-        return Err(Hdf5Error::Compression(format!(
-            "N-Bit: data length {} not divisible by element size {}",
-            data.len(),
-            elem_size
-        )));
+// Fixed `cd_values` indices (real filter-pipeline form).
+const PARM_NELMTS: usize = 2;
+const PARM_DESCR: usize = 3;
+
+/// Resolved parameters for a single atomic N-Bit chunk.
+struct AtomicParams {
+    marker: u32,
+    size: usize,
+    order_be: bool,
+    precision: u32,
+    offset: u32,
+    d_nelmts: usize,
+}
+
+impl AtomicParams {
+    /// Resolve N-Bit parameters from `cd_values`, the datatype and an element
+    /// count hint (from the chunk dimensions).
+    fn resolve(cd_values: &[u32], datatype: &Datatype, d_nelmts_hint: usize) -> Result<Self> {
+        let dt_size = datatype.size();
+
+        // Detect the real filter-pipeline form: a full header plus a valid class
+        // marker at the descriptor position.
+        let is_real = cd_values.len() > PARM_DESCR
+            && matches!(
+                cd_values[PARM_DESCR],
+                NBIT_ATOMIC | NBIT_ARRAY | NBIT_COMPOUND | NBIT_NOOPTYPE
+            );
+
+        if is_real {
+            let marker = cd_values[PARM_DESCR];
+            if marker != NBIT_ATOMIC {
+                // Array / compound / no-op: only the marker is meaningful here.
+                let d_nelmts = cd_values
+                    .get(PARM_NELMTS)
+                    .copied()
+                    .filter(|&n| n > 0)
+                    .map(|n| n as usize)
+                    .unwrap_or(d_nelmts_hint);
+                return Ok(Self {
+                    marker,
+                    size: dt_size,
+                    order_be: false,
+                    precision: 0,
+                    offset: 0,
+                    d_nelmts,
+                });
+            }
+            let size = *cd_values.get(PARM_DESCR + 1).ok_or_else(|| {
+                Hdf5Error::Decompression("N-Bit: truncated atomic descriptor (size)".to_string())
+            })? as usize;
+            let order = *cd_values.get(PARM_DESCR + 2).ok_or_else(|| {
+                Hdf5Error::Decompression("N-Bit: truncated atomic descriptor (order)".to_string())
+            })?;
+            let precision = *cd_values.get(PARM_DESCR + 3).ok_or_else(|| {
+                Hdf5Error::Decompression(
+                    "N-Bit: truncated atomic descriptor (precision)".to_string(),
+                )
+            })?;
+            let offset = *cd_values.get(PARM_DESCR + 4).ok_or_else(|| {
+                Hdf5Error::Decompression("N-Bit: truncated atomic descriptor (offset)".to_string())
+            })?;
+            let d_nelmts = cd_values
+                .get(PARM_NELMTS)
+                .copied()
+                .filter(|&n| n > 0)
+                .map(|n| n as usize)
+                .unwrap_or(d_nelmts_hint);
+            Ok(Self {
+                marker: NBIT_ATOMIC,
+                size,
+                order_be: order == ORDER_BE,
+                precision,
+                offset,
+                d_nelmts,
+            })
+        } else {
+            // Crate-internal short form: [] | [precision] | [precision, offset].
+            let precision = cd_values.first().copied().unwrap_or((dt_size * 8) as u32);
+            let offset = cd_values.get(1).copied().unwrap_or(0);
+            Ok(Self {
+                marker: NBIT_ATOMIC,
+                size: dt_size,
+                order_be: false,
+                precision,
+                offset,
+                d_nelmts: d_nelmts_hint,
+            })
+        }
     }
 
-    if !datatype.is_integer() {
-        return Err(Hdf5Error::Compression(format!(
-            "N-Bit: unsupported datatype {:?} (only integer types supported)",
-            datatype
-        )));
+    /// Validate the precision / offset against the element size.
+    fn validate(&self) -> Result<()> {
+        let full = (self.size as u32) * 8;
+        if self.size == 0 || self.size > 8 {
+            return Err(Hdf5Error::UnsupportedDatatype(format!(
+                "N-Bit: unsupported element size {}",
+                self.size
+            )));
+        }
+        if self.precision == 0 || self.precision > full || self.offset + self.precision > full {
+            return Err(Hdf5Error::Decompression(format!(
+                "N-Bit: invalid precision {}/offset {} for {}-byte element",
+                self.precision, self.offset, self.size
+            )));
+        }
+        Ok(())
     }
 
-    let num_elements = data.len() / elem_size;
-    let is_signed = matches!(
+    /// True when the type is full precision at offset 0 (filter is a no-op).
+    fn is_full_precision(&self) -> bool {
+        self.offset == 0 && self.precision == (self.size as u32) * 8
+    }
+}
+
+/// Decode an N-Bit chunk (reverse / decompression direction).
+///
+/// * `data` — the packed chunk (no per-chunk header).
+/// * `cd_values` — filter parameters (see the module documentation).
+/// * `datatype` — element datatype (supplies signedness and, for the short form,
+///   the element size).
+/// * `d_nelmts` — number of elements (from the chunk dimensions); used when
+///   `cd_values` does not carry the count.
+pub fn apply_nbit_reverse(
+    data: &[u8],
+    cd_values: &[u32],
+    datatype: &Datatype,
+    d_nelmts: usize,
+) -> Result<Vec<u8>> {
+    let params = AtomicParams::resolve(cd_values, datatype, d_nelmts)?;
+
+    // No-op datatype: the chunk is stored uncompressed.
+    if params.marker == NBIT_NOOPTYPE {
+        return Ok(data.to_vec());
+    }
+    if params.marker != NBIT_ATOMIC {
+        return Err(Hdf5Error::UnsupportedDatatype(format!(
+            "N-Bit: {} member layout is not supported (atomic integer/float only)",
+            match params.marker {
+                NBIT_ARRAY => "array",
+                NBIT_COMPOUND => "compound",
+                _ => "unknown",
+            }
+        )));
+    }
+    params.validate()?;
+
+    let size = params.size;
+    let n = params.d_nelmts;
+    let is_float = datatype.is_float();
+    let signed = matches!(
         datatype,
         Datatype::Int8 | Datatype::Int16 | Datatype::Int32 | Datatype::Int64
     );
 
-    if is_signed {
-        pack_signed(data, datatype, num_elements, elem_size)
-    } else {
-        pack_unsigned(data, datatype, num_elements, elem_size)
+    let mut output = vec![0u8; n * size];
+
+    // Full precision at offset 0: the filter did nothing, the chunk is raw data.
+    if params.is_full_precision() {
+        if data.len() < n * size {
+            return Err(Hdf5Error::Decompression(format!(
+                "N-Bit: passthrough chunk {} bytes, need {}",
+                data.len(),
+                n * size
+            )));
+        }
+        for i in 0..n {
+            let src = &data[i * size..(i + 1) * size];
+            let dst = &mut output[i * size..(i + 1) * size];
+            if params.order_be {
+                for (k, b) in src.iter().rev().enumerate() {
+                    dst[k] = *b;
+                }
+            } else {
+                dst.copy_from_slice(src);
+            }
+        }
+        return Ok(output);
     }
+
+    // Reduced-precision floats are not representable as standard IEEE values.
+    if is_float {
+        return Err(Hdf5Error::UnsupportedDatatype(format!(
+            "N-Bit: reduced-precision/offset float (precision {}, offset {}) is not supported",
+            params.precision, params.offset
+        )));
+    }
+
+    // Integer: unpack `precision` significant bits per element (MSB-first) and
+    // reconstruct the full-width little-endian value. The offset only affects the
+    // in-file bit position; the logical value is offset-independent, so we place
+    // the (sign-extended) code at offset 0.
+    let precision = u8::try_from(params.precision).map_err(|_| {
+        Hdf5Error::Decompression(format!("N-Bit: precision {} exceeds 255", params.precision))
+    })?;
+    let sign_bit = params.precision - 1;
+    let sign_mask = !0u64 << params.precision;
+
+    let mut reader = BitReader::new(data);
+    for i in 0..n {
+        let code = reader.read_bits(precision)?;
+        let value = if signed && (code >> sign_bit) & 1 == 1 {
+            code | sign_mask
+        } else {
+            code
+        };
+        write_le(&mut output[i * size..(i + 1) * size], value, size);
+    }
+
+    Ok(output)
 }
 
-/// Apply N-Bit filter in the reverse (unpacking) direction.
+/// Encode raw element bytes with the N-Bit filter (forward / compression).
 ///
-/// Reads the header to determine packing parameters, then unpacks
-/// each element to its full-width representation.
-///
-/// # Arguments
-/// * `data` - Packed byte data (header + bit-packed values)
-/// * `datatype` - The HDF5 datatype of the elements
-pub fn apply_nbit_reverse(data: &[u8], datatype: &Datatype) -> Result<Vec<u8>> {
-    if data.len() < HEADER_SIZE {
-        return Err(Hdf5Error::Decompression(
-            "N-Bit: data too short for header".to_string(),
+/// Produces the exact libhdf5 on-disk layout so the result round-trips through
+/// [`apply_nbit_reverse`]. The input is little-endian full-width element bytes;
+/// only offset 0 is supported for encoding.
+pub fn apply_nbit_forward(data: &[u8], cd_values: &[u32], datatype: &Datatype) -> Result<Vec<u8>> {
+    let size = datatype.size();
+    if size == 0 || size > 8 {
+        return Err(Hdf5Error::Compression(format!(
+            "N-Bit: unsupported element size {size}"
+        )));
+    }
+    if data.is_empty() || !data.len().is_multiple_of(size) {
+        return Err(Hdf5Error::Compression(format!(
+            "N-Bit: data length {} is not a positive multiple of element size {}",
+            data.len(),
+            size
+        )));
+    }
+    let n = data.len() / size;
+    let params = AtomicParams::resolve(cd_values, datatype, n)?;
+    params.validate()?;
+
+    if params.marker != NBIT_ATOMIC {
+        return Err(Hdf5Error::Compression(
+            "N-Bit: only atomic types can be encoded".to_string(),
+        ));
+    }
+    if params.offset != 0 {
+        return Err(Hdf5Error::Compression(
+            "N-Bit: encoding with a non-zero bit offset is not supported".to_string(),
         ));
     }
 
-    let version = data[0];
-    if version != HEADER_VERSION {
-        return Err(Hdf5Error::Decompression(format!(
-            "N-Bit: unsupported header version {}",
-            version
+    // Full precision: the filter is a no-op, the chunk is the raw bytes.
+    if params.is_full_precision() {
+        return Ok(data.to_vec());
+    }
+    if datatype.is_float() {
+        return Err(Hdf5Error::Compression(format!(
+            "N-Bit: reduced-precision float (precision {}) is not supported",
+            params.precision
         )));
     }
 
-    let orig_elem_size = data[1] as usize;
-    let significant_bits = data[2];
-    let is_signed = data[3] != 0;
-    let num_elements = LittleEndian::read_u32(&data[4..8]) as usize;
-    let packed_data = &data[HEADER_SIZE..];
-
-    if significant_bits == 0 || significant_bits > 64 {
-        return Err(Hdf5Error::Decompression(format!(
-            "N-Bit: invalid significant_bits {}",
-            significant_bits
-        )));
-    }
-
-    if is_signed {
-        unpack_signed(
-            packed_data,
-            num_elements,
-            significant_bits,
-            orig_elem_size,
-            datatype,
-        )
+    let precision = u8::try_from(params.precision).map_err(|_| {
+        Hdf5Error::Compression(format!("N-Bit: precision {} exceeds 255", params.precision))
+    })?;
+    let mask = if params.precision >= 64 {
+        u64::MAX
     } else {
-        unpack_unsigned(
-            packed_data,
-            num_elements,
-            significant_bits,
-            orig_elem_size,
-            datatype,
-        )
+        (1u64 << params.precision) - 1
+    };
+
+    let total_bits = (n as u64) * (params.precision as u64);
+    let mut writer = BitWriter::with_capacity((total_bits / 8) as usize + 1);
+    for i in 0..n {
+        let value = read_le(&data[i * size..(i + 1) * size], size);
+        writer.write_bits(value & mask, precision);
     }
+    let mut payload = writer.finish();
+    // libhdf5 always reserves a trailing partial byte; append one when the packed
+    // bits fill whole bytes exactly so the layout matches byte-for-byte.
+    if total_bits.is_multiple_of(8) {
+        payload.push(0);
+    }
+    Ok(payload)
 }
 
-// =============================================================================
-// Signed integer packing
-// =============================================================================
-
-/// Pack signed integer data using zigzag encoding and minimum bits.
-fn pack_signed(
-    data: &[u8],
+/// Build a real-form N-Bit `cd_values` atomic descriptor for `datatype`.
+///
+/// Useful for constructing the parameter array a filter-pipeline message parser
+/// would supply, and for tests. `precision`/`offset` are in bits.
+pub fn build_atomic_cd_values(
     datatype: &Datatype,
-    num_elements: usize,
-    elem_size: usize,
-) -> Result<Vec<u8>> {
-    // Read all values as i64, then zigzag-encode to u64
-    let mut encoded_values = Vec::with_capacity(num_elements);
-    let mut max_encoded: u64 = 0;
-
-    for i in 0..num_elements {
-        let offset = i * elem_size;
-        let chunk = &data[offset..offset + elem_size];
-        let signed_val = read_signed(chunk, datatype)?;
-        let encoded = zigzag_encode(signed_val);
-        max_encoded = max_encoded.max(encoded);
-        encoded_values.push(encoded);
-    }
-
-    let significant_bits = min_bits_for_value(max_encoded);
-
-    // Build output
-    build_packed_output(
-        &encoded_values,
-        significant_bits,
-        elem_size as u8,
-        true,
-        num_elements,
-    )
+    precision: u32,
+    offset: u32,
+    d_nelmts: u32,
+) -> Vec<u32> {
+    let size = datatype.size() as u32;
+    let flags = if datatype.is_float() { 1 } else { 0 };
+    vec![
+        8, // nparms
+        flags,
+        d_nelmts,
+        NBIT_ATOMIC,
+        size,
+        0, // order LE
+        precision,
+        offset,
+    ]
 }
 
-/// Unpack signed integer data.
-fn unpack_signed(
-    packed_data: &[u8],
-    num_elements: usize,
-    significant_bits: u8,
-    orig_elem_size: usize,
-    datatype: &Datatype,
-) -> Result<Vec<u8>> {
-    let mut reader = BitReader::new(packed_data);
-    let mut output = vec![0u8; num_elements * orig_elem_size];
-
-    for i in 0..num_elements {
-        let encoded = reader.read_bits(significant_bits)?;
-        let signed_val = zigzag_decode(encoded);
-        let offset = i * orig_elem_size;
-        write_signed(
-            &mut output[offset..offset + orig_elem_size],
-            signed_val,
-            datatype,
-        )?;
-    }
-
-    Ok(output)
+/// Write the low `size` bytes of `value` in little-endian order.
+fn write_le(dst: &mut [u8], value: u64, size: usize) {
+    let bytes = value.to_le_bytes();
+    let n = size.min(bytes.len()).min(dst.len());
+    dst[..n].copy_from_slice(&bytes[..n]);
 }
 
-// =============================================================================
-// Unsigned integer packing
-// =============================================================================
-
-/// Pack unsigned integer data using minimum bits.
-fn pack_unsigned(
-    data: &[u8],
-    datatype: &Datatype,
-    num_elements: usize,
-    elem_size: usize,
-) -> Result<Vec<u8>> {
-    let mut values = Vec::with_capacity(num_elements);
-    let mut max_val: u64 = 0;
-
-    for i in 0..num_elements {
-        let offset = i * elem_size;
-        let chunk = &data[offset..offset + elem_size];
-        let val = read_unsigned(chunk, datatype)?;
-        max_val = max_val.max(val);
-        values.push(val);
-    }
-
-    let significant_bits = min_bits_for_value(max_val);
-
-    build_packed_output(
-        &values,
-        significant_bits,
-        elem_size as u8,
-        false,
-        num_elements,
-    )
-}
-
-/// Unpack unsigned integer data.
-fn unpack_unsigned(
-    packed_data: &[u8],
-    num_elements: usize,
-    significant_bits: u8,
-    orig_elem_size: usize,
-    datatype: &Datatype,
-) -> Result<Vec<u8>> {
-    let mut reader = BitReader::new(packed_data);
-    let mut output = vec![0u8; num_elements * orig_elem_size];
-
-    for i in 0..num_elements {
-        let val = reader.read_bits(significant_bits)?;
-        let offset = i * orig_elem_size;
-        write_unsigned(&mut output[offset..offset + orig_elem_size], val, datatype)?;
-    }
-
-    Ok(output)
-}
-
-// =============================================================================
-// Helper functions
-// =============================================================================
-
-/// Build the packed output with header.
-fn build_packed_output(
-    values: &[u64],
-    significant_bits: u8,
-    orig_elem_size: u8,
-    is_signed: bool,
-    num_elements: usize,
-) -> Result<Vec<u8>> {
-    let packed_bits = (num_elements as u64) * (significant_bits as u64);
-    let packed_bytes = packed_bits.div_ceil(8) as usize;
-    let total_size = HEADER_SIZE + packed_bytes;
-
-    let mut output = Vec::with_capacity(total_size);
-
-    // Write header
-    output.push(HEADER_VERSION);
-    output.push(orig_elem_size);
-    output.push(significant_bits);
-    output.push(if is_signed { 1 } else { 0 });
-
-    let ne_u32 = u32::try_from(num_elements)
-        .map_err(|_| Hdf5Error::Compression("N-Bit: num_elements exceeds u32 range".to_string()))?;
-    let mut ne_bytes = [0u8; 4];
-    LittleEndian::write_u32(&mut ne_bytes, ne_u32);
-    output.extend_from_slice(&ne_bytes);
-
-    // Pack values
-    let mut writer = BitWriter::with_capacity(packed_bytes);
-    for &val in values {
-        writer.write_bits(val, significant_bits);
-    }
-    output.extend_from_slice(&writer.finish());
-
-    Ok(output)
-}
-
-/// Read a signed integer from bytes based on datatype.
-fn read_signed(chunk: &[u8], datatype: &Datatype) -> Result<i64> {
-    match datatype {
-        Datatype::Int8 => {
-            if chunk.is_empty() {
-                return Err(Hdf5Error::Decompression("Empty data for Int8".to_string()));
-            }
-            Ok(chunk[0] as i8 as i64)
-        }
-        Datatype::Int16 => {
-            if chunk.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for Int16".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_i16(chunk) as i64)
-        }
-        Datatype::Int32 => {
-            if chunk.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for Int32".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_i32(chunk) as i64)
-        }
-        Datatype::Int64 => {
-            if chunk.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for Int64".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_i64(chunk))
-        }
-        _ => Err(Hdf5Error::Compression(format!(
-            "N-Bit: expected signed integer, got {:?}",
-            datatype
-        ))),
-    }
-}
-
-/// Read an unsigned integer from bytes based on datatype.
-fn read_unsigned(chunk: &[u8], datatype: &Datatype) -> Result<u64> {
-    match datatype {
-        Datatype::UInt8 => {
-            if chunk.is_empty() {
-                return Err(Hdf5Error::Decompression("Empty data for UInt8".to_string()));
-            }
-            Ok(chunk[0] as u64)
-        }
-        Datatype::UInt16 => {
-            if chunk.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for UInt16".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_u16(chunk) as u64)
-        }
-        Datatype::UInt32 => {
-            if chunk.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for UInt32".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_u32(chunk) as u64)
-        }
-        Datatype::UInt64 => {
-            if chunk.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient data for UInt64".to_string(),
-                ));
-            }
-            Ok(LittleEndian::read_u64(chunk))
-        }
-        _ => Err(Hdf5Error::Compression(format!(
-            "N-Bit: expected unsigned integer, got {:?}",
-            datatype
-        ))),
-    }
-}
-
-/// Write a signed integer to bytes based on datatype.
-fn write_signed(buf: &mut [u8], value: i64, datatype: &Datatype) -> Result<()> {
-    match datatype {
-        Datatype::Int8 => {
-            if buf.is_empty() {
-                return Err(Hdf5Error::Decompression(
-                    "Empty buffer for Int8".to_string(),
-                ));
-            }
-            buf[0] = value as i8 as u8;
-            Ok(())
-        }
-        Datatype::Int16 => {
-            if buf.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for Int16".to_string(),
-                ));
-            }
-            LittleEndian::write_i16(buf, value as i16);
-            Ok(())
-        }
-        Datatype::Int32 => {
-            if buf.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for Int32".to_string(),
-                ));
-            }
-            LittleEndian::write_i32(buf, value as i32);
-            Ok(())
-        }
-        Datatype::Int64 => {
-            if buf.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for Int64".to_string(),
-                ));
-            }
-            LittleEndian::write_i64(buf, value);
-            Ok(())
-        }
-        _ => Err(Hdf5Error::Decompression(format!(
-            "N-Bit: cannot write signed to {:?}",
-            datatype
-        ))),
-    }
-}
-
-/// Write an unsigned integer to bytes based on datatype.
-fn write_unsigned(buf: &mut [u8], value: u64, datatype: &Datatype) -> Result<()> {
-    match datatype {
-        Datatype::UInt8 => {
-            if buf.is_empty() {
-                return Err(Hdf5Error::Decompression(
-                    "Empty buffer for UInt8".to_string(),
-                ));
-            }
-            buf[0] = value as u8;
-            Ok(())
-        }
-        Datatype::UInt16 => {
-            if buf.len() < 2 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for UInt16".to_string(),
-                ));
-            }
-            LittleEndian::write_u16(buf, value as u16);
-            Ok(())
-        }
-        Datatype::UInt32 => {
-            if buf.len() < 4 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for UInt32".to_string(),
-                ));
-            }
-            LittleEndian::write_u32(buf, value as u32);
-            Ok(())
-        }
-        Datatype::UInt64 => {
-            if buf.len() < 8 {
-                return Err(Hdf5Error::Decompression(
-                    "Insufficient buffer for UInt64".to_string(),
-                ));
-            }
-            LittleEndian::write_u64(buf, value);
-            Ok(())
-        }
-        _ => Err(Hdf5Error::Decompression(format!(
-            "N-Bit: cannot write unsigned to {:?}",
-            datatype
-        ))),
-    }
+/// Read a little-endian unsigned integer of `size` bytes (1..=8).
+fn read_le(chunk: &[u8], size: usize) -> u64 {
+    let mut buf = [0u8; 8];
+    let n = size.min(chunk.len()).min(8);
+    buf[..n].copy_from_slice(&chunk[..n]);
+    u64::from_le_bytes(buf)
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use byteorder::{ByteOrder, LittleEndian};
 
-    fn make_u16_data(values: &[u16]) -> Vec<u8> {
-        let mut data = vec![0u8; values.len() * 2];
+    fn make_u16(values: &[u16]) -> Vec<u8> {
+        let mut d = vec![0u8; values.len() * 2];
         for (i, &v) in values.iter().enumerate() {
-            LittleEndian::write_u16(&mut data[i * 2..(i + 1) * 2], v);
+            LittleEndian::write_u16(&mut d[i * 2..(i + 1) * 2], v);
         }
-        data
+        d
+    }
+    fn read_u16(d: &[u8]) -> Vec<u16> {
+        d.chunks_exact(2).map(LittleEndian::read_u16).collect()
+    }
+    fn make_i16(values: &[i16]) -> Vec<u8> {
+        let mut d = vec![0u8; values.len() * 2];
+        for (i, &v) in values.iter().enumerate() {
+            LittleEndian::write_i16(&mut d[i * 2..(i + 1) * 2], v);
+        }
+        d
+    }
+    fn read_i16(d: &[u8]) -> Vec<i16> {
+        d.chunks_exact(2).map(LittleEndian::read_i16).collect()
+    }
+    fn read_u32(d: &[u8]) -> Vec<u32> {
+        d.chunks_exact(4).map(LittleEndian::read_u32).collect()
+    }
+    fn read_f32(d: &[u8]) -> Vec<f32> {
+        d.chunks_exact(4).map(LittleEndian::read_f32).collect()
+    }
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+            .collect()
     }
 
-    fn read_u16_data(data: &[u8]) -> Vec<u16> {
-        let mut values = Vec::new();
-        for chunk in data.chunks(2) {
-            if chunk.len() == 2 {
-                values.push(LittleEndian::read_u16(chunk));
-            }
-        }
-        values
+    // ------------------------------------------------------------------
+    // Interop: decode real libhdf5 (h5py 3.16.0 / hdf5 2.0.0) chunk bytes.
+    //
+    // The hex byte strings and cd_values below were captured directly from
+    // libhdf5-written datasets (read_direct_chunk + get_filter), validating
+    // the true on-disk N-Bit layout against a real HDF5 producer.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn interop_hdf5_u16_precision12() {
+        let raw = hex("00003f07e0bd0fc13b17a1b900");
+        let cd = vec![8, 0, 8, 1, 2, 0, 12, 0];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::UInt16, 8).unwrap();
+        assert_eq!(read_u16(&out), vec![0, 63, 126, 189, 252, 315, 378, 441]);
     }
 
-    fn make_i32_data(values: &[i32]) -> Vec<u8> {
+    #[test]
+    fn interop_hdf5_u16_precision12_offset4() {
+        // Offset 4: identical packed bytes, logical values unchanged.
+        let raw = hex("00003f07e0bd0fc13b17a1b900");
+        let cd = vec![8, 0, 8, 1, 2, 0, 12, 4];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::UInt16, 8).unwrap();
+        assert_eq!(read_u16(&out), vec![0, 63, 126, 189, 252, 315, 378, 441]);
+    }
+
+    #[test]
+    fn interop_hdf5_u16_precision8() {
+        let raw = hex("0a141e28323c465000");
+        let cd = vec![8, 0, 8, 1, 2, 0, 8, 0];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::UInt16, 8).unwrap();
+        assert_eq!(read_u16(&out), vec![10, 20, 30, 40, 50, 60, 70, 80]);
+    }
+
+    #[test]
+    fn interop_hdf5_i16_precision10_sign_extend() {
+        let raw = hex("feffd0000201ff8013ff00");
+        let cd = vec![8, 0, 8, 1, 2, 0, 10, 0];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::Int16, 8).unwrap();
+        assert_eq!(read_i16(&out), vec![-5, -3, 0, 2, 7, -8, 4, -1]);
+    }
+
+    #[test]
+    fn interop_hdf5_u32_precision20() {
+        let raw = hex("00000003e8007d07a120fffff000070002af423f00");
+        let cd = vec![8, 0, 8, 1, 4, 0, 20, 0];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::UInt32, 8).unwrap();
+        assert_eq!(
+            read_u32(&out),
+            vec![0, 1000, 2000, 500000, 1048575, 7, 42, 999999]
+        );
+    }
+
+    #[test]
+    fn interop_hdf5_f32_full_precision_passthrough() {
+        let raw = hex("0000c03f000010c00000404000000000");
+        let cd = vec![8, 1, 4, 1, 4, 0, 32, 0];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::Float32, 4).unwrap();
+        assert_eq!(read_f32(&out), vec![1.5, -2.25, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn interop_hdf5_nelmts_from_cd_values() {
+        // 2x3 chunk -> 6 elements, count taken from cd_values (hint = 0).
+        let mut w = BitWriter::new();
+        for v in [0u64, 63, 126, 189, 252, 315] {
+            w.write_bits(v, 12);
+        }
+        let raw = w.finish();
+        let cd = vec![8, 0, 6, 1, 2, 0, 12, 0];
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::UInt16, 0).unwrap();
+        assert_eq!(read_u16(&out), vec![0, 63, 126, 189, 252, 315]);
+    }
+
+    // ------------------------------------------------------------------
+    // Hand-built spec-layout bytes (exact assertions).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn handbuilt_packing_exact() {
+        // precision 4, values 0..8 packed MSB-first -> 0x01 0x23 0x45 0x67 pad.
+        let mut w = BitWriter::new();
+        for v in 0u64..8 {
+            w.write_bits(v, 4);
+        }
+        let raw = w.finish();
+        assert_eq!(raw, hex("01234567"));
+        let cd = build_atomic_cd_values(&Datatype::UInt16, 4, 0, 8);
+        let out = apply_nbit_reverse(&raw, &cd, &Datatype::UInt16, 8).unwrap();
+        assert_eq!(read_u16(&out), vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    // ------------------------------------------------------------------
+    // Errors: never fabricate output for unsupported member layouts.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn reverse_compound_member_is_typed_error() {
+        let cd = vec![10, 0, 4, NBIT_COMPOUND, 8, 0, 0, 0, 0, 0];
+        let res = apply_nbit_reverse(&[0u8; 8], &cd, &Datatype::UInt16, 4);
+        assert!(matches!(res, Err(Hdf5Error::UnsupportedDatatype(_))));
+    }
+
+    #[test]
+    fn reverse_array_member_is_typed_error() {
+        let cd = vec![10, 0, 4, NBIT_ARRAY, 8, 0, 0, 0, 0, 0];
+        let res = apply_nbit_reverse(&[0u8; 8], &cd, &Datatype::UInt16, 4);
+        assert!(matches!(res, Err(Hdf5Error::UnsupportedDatatype(_))));
+    }
+
+    #[test]
+    fn reverse_reduced_float_is_typed_error() {
+        // precision 20 < 32 for f32 -> not a standard IEEE value.
+        let cd = vec![8, 1, 4, 1, 4, 0, 20, 0];
+        let res = apply_nbit_reverse(&[0u8; 16], &cd, &Datatype::Float32, 4);
+        assert!(matches!(res, Err(Hdf5Error::UnsupportedDatatype(_))));
+    }
+
+    #[test]
+    fn reverse_nooptype_passes_through() {
+        let cd = vec![8, 0, 4, NBIT_NOOPTYPE, 2, 0, 0, 0];
+        let data = make_u16(&[1, 2, 3, 4]);
+        let out = apply_nbit_reverse(&data, &cd, &Datatype::UInt16, 4).unwrap();
+        assert_eq!(out, data);
+    }
+
+    // ------------------------------------------------------------------
+    // Self round-trip (encode -> decode) — output is byte-compatible with
+    // libhdf5, verified against captured chunks where applicable.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_u16_precision12_matches_hdf5() {
+        let values = vec![0u16, 63, 126, 189, 252, 315, 378, 441];
+        let data = make_u16(&values);
+        let cd = build_atomic_cd_values(&Datatype::UInt16, 12, 0, values.len() as u32);
+        let packed = apply_nbit_forward(&data, &cd, &Datatype::UInt16).unwrap();
+        // Byte-exact against libhdf5 (96 packed bits + one reserved trailing byte).
+        assert_eq!(packed, hex("00003f07e0bd0fc13b17a1b900"));
+        let out = apply_nbit_reverse(&packed, &cd, &Datatype::UInt16, values.len()).unwrap();
+        assert_eq!(read_u16(&out), values);
+    }
+
+    #[test]
+    fn roundtrip_i16_precision10() {
+        let values = vec![-5i16, -3, 0, 2, 7, -8, 4, -1];
+        let data = make_i16(&values);
+        let cd = build_atomic_cd_values(&Datatype::Int16, 10, 0, values.len() as u32);
+        let packed = apply_nbit_forward(&data, &cd, &Datatype::Int16).unwrap();
+        assert!(packed.len() < data.len());
+        let out = apply_nbit_reverse(&packed, &cd, &Datatype::Int16, values.len()).unwrap();
+        assert_eq!(read_i16(&out), values);
+    }
+
+    #[test]
+    fn roundtrip_u8_precision4() {
+        let values: Vec<u8> = vec![0, 1, 2, 3, 15, 7, 8, 9];
+        let cd = build_atomic_cd_values(&Datatype::UInt8, 4, 0, values.len() as u32);
+        let packed = apply_nbit_forward(&values, &cd, &Datatype::UInt8).unwrap();
+        let out = apply_nbit_reverse(&packed, &cd, &Datatype::UInt8, values.len()).unwrap();
+        assert_eq!(out, values);
+    }
+
+    #[test]
+    fn roundtrip_f32_full_precision_identity() {
+        let values = vec![1.5f32, -2.25, 3.0, 0.0];
         let mut data = vec![0u8; values.len() * 4];
         for (i, &v) in values.iter().enumerate() {
-            LittleEndian::write_i32(&mut data[i * 4..(i + 1) * 4], v);
+            LittleEndian::write_f32(&mut data[i * 4..(i + 1) * 4], v);
         }
-        data
-    }
-
-    fn read_i32_data(data: &[u8]) -> Vec<i32> {
-        let mut values = Vec::new();
-        for chunk in data.chunks(4) {
-            if chunk.len() == 4 {
-                values.push(LittleEndian::read_i32(chunk));
-            }
-        }
-        values
+        let cd = build_atomic_cd_values(&Datatype::Float32, 32, 0, values.len() as u32);
+        let packed = apply_nbit_forward(&data, &cd, &Datatype::Float32).unwrap();
+        assert_eq!(packed, data); // identity passthrough
+        let out = apply_nbit_reverse(&packed, &cd, &Datatype::Float32, values.len()).unwrap();
+        assert_eq!(read_f32(&out), values);
     }
 
     #[test]
-    fn test_nbit_u16_roundtrip() {
-        // 12-bit sensor data stored in u16 (values 0..4095)
-        let values: Vec<u16> = (0..64).map(|i| (i * 63) as u16).collect();
-        let data = make_u16_data(&values);
+    fn roundtrip_short_form_default_full_precision() {
+        // Empty cd_values -> full precision -> identity round-trip.
+        let values = vec![10u16, 20, 30, 40];
+        let data = make_u16(&values);
+        let packed = apply_nbit_forward(&data, &[], &Datatype::UInt16).unwrap();
+        assert_eq!(packed, data);
+        let out = apply_nbit_reverse(&packed, &[], &Datatype::UInt16, values.len()).unwrap();
+        assert_eq!(read_u16(&out), values);
+    }
 
-        let packed = apply_nbit_forward(&data, &Datatype::UInt16).expect("pack failed");
-
-        // Should be smaller: 64 values * 12 bits = 768 bits = 96 bytes + 8 header = 104
-        // vs original 64 * 2 = 128 bytes
+    #[test]
+    fn roundtrip_short_form_precision_hint() {
+        let values = vec![0u16, 63, 126, 189, 252, 315, 378, 441];
+        let data = make_u16(&values);
+        let packed = apply_nbit_forward(&data, &[12], &Datatype::UInt16).unwrap();
         assert!(packed.len() < data.len());
-
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::UInt16).expect("unpack failed");
-        let result = read_u16_data(&unpacked);
-        assert_eq!(result, values);
+        let out = apply_nbit_reverse(&packed, &[12], &Datatype::UInt16, values.len()).unwrap();
+        assert_eq!(read_u16(&out), values);
     }
 
     #[test]
-    fn test_nbit_u8_roundtrip() {
-        let values: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7];
-        let data = values.clone();
-
-        let packed = apply_nbit_forward(&data, &Datatype::UInt8).expect("pack failed");
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::UInt8).expect("unpack failed");
-        assert_eq!(unpacked, values);
-    }
-
-    #[test]
-    fn test_nbit_i32_signed_roundtrip() {
-        let values = vec![-10i32, -5, 0, 5, 10, -3, 7, -1, 0, 3];
-        let data = make_i32_data(&values);
-
-        let packed = apply_nbit_forward(&data, &Datatype::Int32).expect("pack failed");
-
-        // Values range from -10 to 10; zigzag: max = zigzag(10)=20, needs 5 bits
-        // 10 values * 5 bits = 50 bits = 7 bytes + 8 header = 15 bytes
-        // vs original 10 * 4 = 40 bytes
-        assert!(packed.len() < data.len());
-
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::Int32).expect("unpack failed");
-        let result = read_i32_data(&unpacked);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_nbit_all_zeros() {
-        let values = vec![0u16; 100];
-        let data = make_u16_data(&values);
-
-        let packed = apply_nbit_forward(&data, &Datatype::UInt16).expect("pack failed");
-
-        // All zeros: max=0, bits=1, so 100 bits = 13 bytes + 8 header = 21
-        // vs original 100 * 2 = 200 bytes
-        assert!(packed.len() < 30);
-
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::UInt16).expect("unpack failed");
-        let result = read_u16_data(&unpacked);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_nbit_single_value() {
-        let values = vec![12345u16];
-        let data = make_u16_data(&values);
-
-        let packed = apply_nbit_forward(&data, &Datatype::UInt16).expect("pack failed");
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::UInt16).expect("unpack failed");
-        let result = read_u16_data(&unpacked);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_nbit_max_range_u16() {
-        // Full 16-bit range - should not compress (or minimal overhead)
-        let values: Vec<u16> = vec![0, 65535, 32768, 1, 65534];
-        let data = make_u16_data(&values);
-
-        let packed = apply_nbit_forward(&data, &Datatype::UInt16).expect("pack failed");
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::UInt16).expect("unpack failed");
-        let result = read_u16_data(&unpacked);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_nbit_i32_large_negative() {
-        let values = vec![-100000i32, -50000, 0, 50000, 100000];
-        let data = make_i32_data(&values);
-
-        let packed = apply_nbit_forward(&data, &Datatype::Int32).expect("pack failed");
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::Int32).expect("unpack failed");
-        let result = read_i32_data(&unpacked);
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_nbit_empty_data_error() {
-        let data: Vec<u8> = vec![];
-        let result = apply_nbit_forward(&data, &Datatype::UInt16);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_nbit_float_error() {
-        let data = vec![0u8; 16];
-        let result = apply_nbit_forward(&data, &Datatype::Float32);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_nbit_header_too_short() {
-        let data = vec![0u8; 4]; // Less than HEADER_SIZE
-        let result = apply_nbit_reverse(&data, &Datatype::UInt16);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_nbit_u32_roundtrip() {
-        let values: Vec<u32> = vec![100, 200, 300, 150, 250, 350, 175, 225];
-        let mut data = vec![0u8; values.len() * 4];
-        for (i, &v) in values.iter().enumerate() {
-            LittleEndian::write_u32(&mut data[i * 4..(i + 1) * 4], v);
-        }
-
-        let packed = apply_nbit_forward(&data, &Datatype::UInt32).expect("pack failed");
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::UInt32).expect("unpack failed");
-
-        let mut result = Vec::new();
-        for chunk in unpacked.chunks(4) {
-            if chunk.len() == 4 {
-                result.push(LittleEndian::read_u32(chunk));
-            }
-        }
-        assert_eq!(result, values);
-    }
-
-    #[test]
-    fn test_nbit_i64_roundtrip() {
-        let values: Vec<i64> = vec![-1000, -500, 0, 500, 1000, -250, 750];
-        let mut data = vec![0u8; values.len() * 8];
-        for (i, &v) in values.iter().enumerate() {
-            LittleEndian::write_i64(&mut data[i * 8..(i + 1) * 8], v);
-        }
-
-        let packed = apply_nbit_forward(&data, &Datatype::Int64).expect("pack failed");
-        let unpacked = apply_nbit_reverse(&packed, &Datatype::Int64).expect("unpack failed");
-
-        let mut result = Vec::new();
-        for chunk in unpacked.chunks(8) {
-            if chunk.len() == 8 {
-                result.push(LittleEndian::read_i64(chunk));
-            }
-        }
-        assert_eq!(result, values);
+    fn forward_rejects_empty() {
+        assert!(apply_nbit_forward(&[], &[12], &Datatype::UInt16).is_err());
     }
 }

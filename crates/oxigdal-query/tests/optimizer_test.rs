@@ -44,11 +44,11 @@ fn test_selectivity_estimation() {
     let sql = "SELECT * FROM users WHERE age > 18";
     let stmt = parse_sql(sql).ok();
 
-    if let Some(oxigdal_query::Statement::Select(select)) = stmt {
-        if let Some(predicate) = select.selection {
-            let selectivity = cost_model.estimate_selectivity("users", &predicate);
-            assert!((0.0..=1.0).contains(&selectivity));
-        }
+    if let Some(oxigdal_query::Statement::Select(select)) = stmt
+        && let Some(predicate) = select.selection
+    {
+        let selectivity = cost_model.estimate_selectivity("users", &predicate);
+        assert!((0.0..=1.0).contains(&selectivity));
     }
 }
 

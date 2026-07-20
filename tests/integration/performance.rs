@@ -2,6 +2,10 @@
 //!
 //! Tests to ensure performance doesn't regress across releases.
 
+#![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::let_unit_value)]
+
 use std::time::Instant;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -103,11 +107,7 @@ fn test_vectorization_performance() -> Result<()> {
     let duration = start.elapsed();
 
     // Should complete in under 5 seconds
-    assert!(
-        duration.as_secs() < 5,
-        "Vectorization took {:?}",
-        duration
-    );
+    assert!(duration.as_secs() < 5, "Vectorization took {:?}", duration);
 
     Ok(())
 }

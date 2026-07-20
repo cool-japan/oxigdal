@@ -53,7 +53,11 @@ pub(crate) fn read_envelope_from_blob(blob: &[u8]) -> Result<Bbox2d> {
 
     // blob[2] = version (we accept any version)
     let flags = blob[3];
-    let _le_header = (flags & FLAG_BYTE_ORDER) != 0; // byte-order for srs_id field
+    // Per GeoPackage spec §2.1.3, flags bit 0 governs the byte order of BOTH
+    // the srs_id field AND the envelope float64 block in this binary header.
+    // It is independent of the WKB geometry body's own self-describing
+    // byte-order marker (handled per-value in WkbScanner::read_f64/read_u32).
+    let le_header = (flags & FLAG_BYTE_ORDER) != 0;
     let env_flag = envelope_flag(flags);
     let is_empty = (flags & FLAG_IS_EMPTY) != 0;
 
@@ -64,7 +68,6 @@ pub(crate) fn read_envelope_from_blob(blob: &[u8]) -> Result<Bbox2d> {
     // Skip: magic(2) + version(1) + flags(1) + srs_id(4) = 8 bytes
     let after_header: usize = 8;
 
-    // Envelope float64 values are *always* little-endian per GeoPackage spec §2.1.3.
     match env_flag {
         0 => {
             // No envelope — scan WKB body directly
@@ -73,16 +76,16 @@ pub(crate) fn read_envelope_from_blob(blob: &[u8]) -> Result<Bbox2d> {
         }
         1 => {
             // [minx, maxx, miny, maxy] — 32 bytes
-            read_xy_envelope_le(blob, after_header, 4)
+            read_xy_envelope(blob, after_header, 4, le_header)
         }
         2 | 3 => {
             // [minx, maxx, miny, maxy, minz, maxz] or [minx, maxx, miny, maxy, minm, maxm]
             // — 48 bytes; we only need the first four f64 values
-            read_xy_envelope_le(blob, after_header, 6)
+            read_xy_envelope(blob, after_header, 6, le_header)
         }
         4 => {
             // [minx, maxx, miny, maxy, minz, maxz, minm, maxm] — 64 bytes
-            read_xy_envelope_le(blob, after_header, 8)
+            read_xy_envelope(blob, after_header, 8, le_header)
         }
         _ => Err(Error::geometry(format!(
             "Unknown GeoPackage envelope flag: {}",
@@ -91,10 +94,16 @@ pub(crate) fn read_envelope_from_blob(blob: &[u8]) -> Result<Bbox2d> {
     }
 }
 
-/// Read `[minx, maxx, miny, maxy, ...]` from a little-endian blob starting at
-/// `offset`.  `n_f64` is the total number of f64 values in the envelope block
-/// (we only consume the first four).
-fn read_xy_envelope_le(blob: &[u8], offset: usize, n_f64: usize) -> Result<Bbox2d> {
+/// Read `[minx, maxx, miny, maxy, ...]` from the blob starting at `offset`,
+/// honoring the header byte-order flag (`little_endian`). `n_f64` is the
+/// total number of f64 values in the envelope block (we only consume the
+/// first four).
+fn read_xy_envelope(
+    blob: &[u8],
+    offset: usize,
+    n_f64: usize,
+    little_endian: bool,
+) -> Result<Bbox2d> {
     let required = offset + n_f64 * 8;
     if blob.len() < required {
         return Err(Error::geometry(format!(
@@ -106,10 +115,21 @@ fn read_xy_envelope_le(blob: &[u8], offset: usize, n_f64: usize) -> Result<Bbox2
 
     let mut cur = Cursor::new(&blob[offset..]);
 
-    let min_x = cur.read_f64::<LittleEndian>()?;
-    let max_x = cur.read_f64::<LittleEndian>()?;
-    let min_y = cur.read_f64::<LittleEndian>()?;
-    let max_y = cur.read_f64::<LittleEndian>()?;
+    let (min_x, max_x, min_y, max_y) = if little_endian {
+        (
+            cur.read_f64::<LittleEndian>()?,
+            cur.read_f64::<LittleEndian>()?,
+            cur.read_f64::<LittleEndian>()?,
+            cur.read_f64::<LittleEndian>()?,
+        )
+    } else {
+        (
+            cur.read_f64::<BigEndian>()?,
+            cur.read_f64::<BigEndian>()?,
+            cur.read_f64::<BigEndian>()?,
+            cur.read_f64::<BigEndian>()?,
+        )
+    };
 
     Ok((min_x, min_y, max_x, max_y))
 }
@@ -340,6 +360,25 @@ mod tests {
         blob
     }
 
+    /// Build a minimal GPKG blob with XY envelope (flag=1) encoded
+    /// big-endian (header byte-order flag bit 0 cleared).
+    fn make_gpkg_blob_with_envelope_be(x: f64, y: f64) -> Vec<u8> {
+        // flags: bit0=0 (BE header), bits1-3=001 (envelope flag=1) → 0x02
+        let mut blob = vec![b'G', b'P', 0x00u8, 0x02u8];
+        blob.extend_from_slice(&4326u32.to_be_bytes()); // srs_id BE
+        // envelope: minx, maxx, miny, maxy (f64 BE) — for a point min==max
+        blob.extend_from_slice(&x.to_be_bytes());
+        blob.extend_from_slice(&x.to_be_bytes());
+        blob.extend_from_slice(&y.to_be_bytes());
+        blob.extend_from_slice(&y.to_be_bytes());
+        // WKB Point body: BE byte-order + type 1 (Point) + x + y
+        blob.extend_from_slice(&[0u8]);
+        blob.extend_from_slice(&1u32.to_be_bytes());
+        blob.extend_from_slice(&x.to_be_bytes());
+        blob.extend_from_slice(&y.to_be_bytes());
+        blob
+    }
+
     /// Build a GPKG blob with no envelope (flag=0), WKB body only.
     fn make_gpkg_blob_no_envelope(x: f64, y: f64) -> Vec<u8> {
         // flags: bit0=1 (LE), bits1-3=000 (no envelope) → 0x01
@@ -358,6 +397,20 @@ mod tests {
     #[test]
     fn test_envelope_flag_1_xy() -> crate::error::Result<()> {
         let blob = make_gpkg_blob_with_envelope(10.0, 20.0);
+        let (min_x, min_y, max_x, max_y) = read_envelope_from_blob(&blob)?;
+        assert_eq!(min_x, 10.0);
+        assert_eq!(min_y, 20.0);
+        assert_eq!(max_x, 10.0);
+        assert_eq!(max_y, 20.0);
+        Ok(())
+    }
+
+    /// Regression test: a GeoPackage binary header with the byte-order flag
+    /// cleared (big-endian) must not have its envelope floats silently
+    /// byte-swapped by a hardcoded little-endian read.
+    #[test]
+    fn test_envelope_flag_1_xy_big_endian_header() -> crate::error::Result<()> {
+        let blob = make_gpkg_blob_with_envelope_be(10.0, 20.0);
         let (min_x, min_y, max_x, max_y) = read_envelope_from_blob(&blob)?;
         assert_eq!(min_x, 10.0);
         assert_eq!(min_y, 20.0);

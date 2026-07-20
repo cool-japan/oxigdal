@@ -14,14 +14,14 @@ keywords = ["network-programming", "storage", "s3", "azure", "gcs"]
 categories = ["science", "network-programming", "asynchronous", "caching"]
 
 [features]
-default = ["std", "s3", "http", "retry", "cache"]
+default = ["std", "retry", "cache"]
 std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
 alloc = []
 
 # Cloud providers
 s3 = ["async", "dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types"]
 azure-blob = ["async", "dep:azure_storage", "dep:azure_storage_blobs", "dep:azure_core", "dep:azure_identity"]
-gcs = ["async", "dep:google-cloud-storage", "dep:google-cloud-auth"]
+gcs = ["async", "dep:google-cloud-storage", "dep:google-cloud-auth", "dep:google-cloud-gax"]
 
 # Storage backends
 http = ["async", "dep:reqwest"]
@@ -63,6 +63,7 @@ azure_identity = { workspace = true, optional = true }
 # Google Cloud Storage - Pure Rust SDK
 google-cloud-storage = { workspace = true, optional = true }
 google-cloud-auth = { workspace = true, optional = true }
+google-cloud-gax = { workspace = true, optional = true }
 
 # HTTP
 reqwest = { workspace = true, optional = true, features = ["stream", "json"] }
@@ -91,3 +92,10 @@ proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+# NOTE: `s3`/`azure-blob`/`gcs`/`http` all transitively pull aws-lc-sys (C/asm)
+# via rustls's default crypto provider (reqwest/aws-config/azure_core/google-cloud-*).
+# Curated feature list keeps the docs.rs build on a pure-Rust closure.
+[package.metadata.docs.rs]
+features = ["std", "alloc", "async", "retry", "cache", "prefetch", "oauth2"]
+rustdoc-args = ["--cfg", "docsrs"]

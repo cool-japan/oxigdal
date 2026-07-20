@@ -3,12 +3,13 @@
 //! This module provides a comprehensive writer for Zarr v3 arrays,
 //! including codec pipeline support, sharding, and storage transformers.
 
-use crate::codecs::{Codec, CodecChain};
+use crate::codecs::CodecChain;
+use crate::codecs::dispatch::build_codec_from_metadata;
 use crate::error::{Result, ZarrError};
 use crate::metadata::v3::{ArrayMetadataV3, CodecMetadata};
 use crate::sharding::{IndexLocation, ShardWriter};
 use crate::storage::{Store, StoreKey};
-use crate::transformers::{Transformer, TransformerChain};
+use crate::transformers::{TransformerChain, build_transformer_from_metadata};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -412,53 +413,6 @@ impl<S: Store> ZarrV3Writer<S> {
     }
 }
 
-/// Builds a codec from metadata
-fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<dyn Codec>> {
-    use crate::codecs::NullCodec;
-
-    // This is a simplified implementation
-    match metadata {
-        CodecMetadata::Gzip { .. } => {
-            #[cfg(feature = "gzip")]
-            {
-                use crate::codecs::gzip::GzipCodec;
-                Ok(Box::new(GzipCodec::new(6)?))
-            }
-            #[cfg(not(feature = "gzip"))]
-            {
-                Err(ZarrError::NotSupported {
-                    operation: "gzip codec".to_string(),
-                })
-            }
-        }
-        CodecMetadata::Zstd { .. } => {
-            #[cfg(feature = "zstd")]
-            {
-                use crate::codecs::zstd_codec::ZstdCodec;
-                Ok(Box::new(ZstdCodec::new(3)?))
-            }
-            #[cfg(not(feature = "zstd"))]
-            {
-                Err(ZarrError::NotSupported {
-                    operation: "zstd codec".to_string(),
-                })
-            }
-        }
-        CodecMetadata::Bytes { .. } => Ok(Box::new(NullCodec)),
-        _ => Ok(Box::new(NullCodec)),
-    }
-}
-
-/// Builds a transformer from metadata
-fn build_transformer_from_metadata(
-    _metadata: &crate::metadata::v3::StorageTransformer,
-) -> Result<Box<dyn Transformer>> {
-    use crate::transformers::NoOpTransformer;
-
-    // This is a simplified implementation
-    Ok(Box::new(NoOpTransformer))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +457,99 @@ mod tests {
 
         // Invalid: out of bounds
         assert!(writer.validate_coords(&[100, 0]).is_err());
+    }
+
+    #[test]
+    fn test_zarr_v3_writer_blosc_codec_never_silently_no_ops() {
+        use crate::metadata::v3::BloscConfig;
+
+        // Deterministic across the `blosc` feature flag: an invalid `cname`
+        // fails `BloscCodec::new` when the feature is on, and the
+        // dispatcher's `CodecNotAvailable` fires when it is off. A writer
+        // must never claim `blosc` compression in `zarr.json` while
+        // actually writing uncompressed bytes to storage.
+        let store = MemoryStore::new();
+        let metadata = ArrayMetadataV3::new(vec![10], vec![10], "uint8").with_codecs(vec![
+            CodecMetadata::Blosc {
+                configuration: BloscConfig {
+                    cname: "not-a-real-blosc-compressor".to_string(),
+                    clevel: 5,
+                    shuffle: 0,
+                    typesize: None,
+                    blocksize: None,
+                },
+            },
+        ]);
+
+        let result = ZarrV3Writer::new(store, "test", metadata);
+        assert!(
+            result.is_err(),
+            "writer construction over a blosc-declared array must error, not silently \
+             build an identity codec"
+        );
+    }
+
+    #[test]
+    fn test_zarr_v3_writer_encryption_transformer_never_silently_no_ops() {
+        use crate::metadata::v3::{EncryptionConfig, StorageTransformer};
+
+        let store = MemoryStore::new();
+        let metadata =
+            ArrayMetadataV3::new(vec![10], vec![10], "uint8").with_storage_transformers(vec![
+                StorageTransformer::Encryption {
+                    configuration: EncryptionConfig {
+                        algorithm: "AES-256-GCM".to_string(),
+                        key_id: "test-key".to_string(),
+                        params: HashMap::new(),
+                    },
+                },
+            ]);
+
+        let result = ZarrV3Writer::new(store, "test", metadata);
+        assert!(
+            result.is_err(),
+            "writer construction over an encrypted array with no key material must error, \
+             not silently build a NoOpTransformer and write plaintext"
+        );
+    }
+
+    #[test]
+    fn test_zarr_v3_writer_encryption_transformer_writes_ciphertext() {
+        use crate::metadata::v3::{EncryptionConfig, StorageTransformer};
+
+        let store = MemoryStore::new();
+        let mut params = HashMap::new();
+        params.insert(
+            "key".to_string(),
+            serde_json::Value::String("cd".repeat(32)),
+        );
+        let metadata =
+            ArrayMetadataV3::new(vec![2], vec![2], "float32").with_storage_transformers(vec![
+                StorageTransformer::Encryption {
+                    configuration: EncryptionConfig {
+                        algorithm: "AES-256-GCM".to_string(),
+                        key_id: "test-key".to_string(),
+                        params,
+                    },
+                },
+            ]);
+
+        let mut writer = ZarrV3Writer::new(store.clone(), "test", metadata).expect("create writer");
+
+        let plaintext_chunk: Vec<u8> = [5.0f32, 6.0f32]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        writer
+            .write_chunk(vec![0], plaintext_chunk.clone())
+            .expect("write chunk");
+
+        let stored = store
+            .get(&StoreKey::new("test/c/0".to_string()))
+            .expect("read raw stored bytes");
+        assert_ne!(
+            stored, plaintext_chunk,
+            "encrypted storage transformer must not write plaintext bytes to the store"
+        );
     }
 }

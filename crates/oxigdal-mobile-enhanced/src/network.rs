@@ -185,6 +185,13 @@ impl CompressionMethod {
 pub struct NetworkOptimizer {
     quality: Arc<RwLock<Option<NetworkQuality>>>,
     data_usage: Arc<RwLock<DataUsageTracker>>,
+    /// Network type reported by the host platform, if any.
+    ///
+    /// A pure-Rust crate cannot observe the active connection type on its own;
+    /// the host app must push it from `NWPathMonitor` (iOS) /
+    /// `ConnectivityManager` (Android). Until it does, detection reports
+    /// [`NetworkType::Unknown`] rather than falsely assuming unmetered WiFi.
+    reported_type: Arc<RwLock<Option<NetworkType>>>,
 }
 
 impl NetworkOptimizer {
@@ -193,27 +200,60 @@ impl NetworkOptimizer {
         Self {
             quality: Arc::new(RwLock::new(None)),
             data_usage: Arc::new(RwLock::new(DataUsageTracker::new())),
+            reported_type: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Detect current network type
-    pub fn detect_network_type(&self) -> Result<NetworkType> {
-        // In a real implementation, this would use platform-specific APIs
-        // For now, return a mock value
-        Ok(NetworkType::WiFi)
+    /// Report the active network type observed by the host platform.
+    ///
+    /// Host apps should call this from their connectivity callbacks
+    /// (`NWPathMonitor.pathUpdateHandler` on iOS,
+    /// `ConnectivityManager.NetworkCallback` on Android) so that
+    /// cellular-vs-WiFi-aware optimizations engage on real conditions.
+    pub fn set_network_type(&self, network_type: NetworkType) {
+        *self.reported_type.write() = Some(network_type);
     }
 
-    /// Measure network quality
-    pub fn measure_quality(&self) -> Result<NetworkQuality> {
-        let network_type = self.detect_network_type()?;
+    /// Report a measured network-quality sample observed by the host platform.
+    ///
+    /// This lets a host app inject real bandwidth/latency/packet-loss figures
+    /// (e.g. from active probes) that [`Self::current_quality`] and
+    /// [`Self::measure_quality`] will then surface.
+    pub fn set_network_quality(&self, quality: NetworkQuality) {
+        *self.reported_type.write() = Some(quality.network_type);
+        *self.quality.write() = Some(quality);
+    }
 
-        // Mock quality metrics
+    /// Detect current network type.
+    ///
+    /// Returns the type reported by the host via [`Self::set_network_type`].
+    /// Because a pure-Rust library cannot observe the active connection on its
+    /// own, it returns [`NetworkType::Unknown`] (handled conservatively as a
+    /// metered link) when the host has not reported one — it never silently
+    /// assumes an unmetered WiFi connection.
+    pub fn detect_network_type(&self) -> Result<NetworkType> {
+        let reported = *self.reported_type.read();
+        Ok(reported.unwrap_or(NetworkType::Unknown))
+    }
+
+    /// Measure network quality.
+    ///
+    /// If the host has injected a sample via [`Self::set_network_quality`], that
+    /// real measurement is returned. Otherwise a quality record for the detected
+    /// network type is returned with the metrics it cannot actually measure left
+    /// as `None`, rather than fabricated bandwidth/latency figures.
+    pub fn measure_quality(&self) -> Result<NetworkQuality> {
+        if let Some(existing) = self.quality.read().clone() {
+            return Ok(existing);
+        }
+
+        let network_type = self.detect_network_type()?;
         let quality = NetworkQuality {
             network_type,
-            download_speed: Some(10_000_000), // 10 MB/s
-            upload_speed: Some(5_000_000),    // 5 MB/s
-            latency: Some(Duration::from_millis(20)),
-            packet_loss: Some(0.5),
+            download_speed: None,
+            upload_speed: None,
+            latency: None,
+            packet_loss: None,
             timestamp: Instant::now(),
         };
 
@@ -461,5 +501,73 @@ mod tests {
         assert!(quality.is_suitable_for_large_downloads());
         assert!(quality.is_stable());
         assert_eq!(quality.recommended_chunk_size(), 1024 * 1024);
+    }
+
+    #[test]
+    fn test_detect_defaults_to_unknown_not_wifi() {
+        // Regression guard: without a host-reported type, detection must NOT
+        // silently claim an unmetered WiFi connection.
+        let optimizer = NetworkOptimizer::new();
+        assert_eq!(
+            optimizer.detect_network_type().expect("detect"),
+            NetworkType::Unknown
+        );
+        // Unknown is treated conservatively as metered / no-prefetch.
+        assert!(!optimizer.should_prefetch());
+    }
+
+    #[test]
+    fn test_set_network_type_reported() {
+        let optimizer = NetworkOptimizer::new();
+
+        optimizer.set_network_type(NetworkType::Cellular);
+        assert_eq!(
+            optimizer.detect_network_type().expect("detect"),
+            NetworkType::Cellular
+        );
+        assert!(!optimizer.should_prefetch()); // cellular is metered
+
+        optimizer.set_network_type(NetworkType::WiFi);
+        assert_eq!(
+            optimizer.detect_network_type().expect("detect"),
+            NetworkType::WiFi
+        );
+        assert!(optimizer.should_prefetch());
+    }
+
+    #[test]
+    fn test_measure_quality_is_honest_without_host_sample() {
+        let optimizer = NetworkOptimizer::new();
+        let quality = optimizer.measure_quality().expect("measure");
+
+        // Unmeasured metrics must be None, not fabricated constants.
+        assert_eq!(quality.network_type, NetworkType::Unknown);
+        assert!(quality.download_speed.is_none());
+        assert!(quality.upload_speed.is_none());
+        assert!(quality.latency.is_none());
+    }
+
+    #[test]
+    fn test_measure_quality_returns_injected_sample() {
+        let optimizer = NetworkOptimizer::new();
+        let sample = NetworkQuality {
+            network_type: NetworkType::Cellular,
+            download_speed: Some(3_000_000),
+            upload_speed: Some(1_000_000),
+            latency: Some(Duration::from_millis(45)),
+            packet_loss: Some(2.0),
+            timestamp: Instant::now(),
+        };
+        optimizer.set_network_quality(sample);
+
+        let measured = optimizer.measure_quality().expect("measure");
+        assert_eq!(measured.network_type, NetworkType::Cellular);
+        assert_eq!(measured.download_speed, Some(3_000_000));
+
+        // Reported type is also updated for compression decisions.
+        assert_eq!(
+            optimizer.detect_network_type().expect("detect"),
+            NetworkType::Cellular
+        );
     }
 }

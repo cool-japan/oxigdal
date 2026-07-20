@@ -9,6 +9,7 @@ use crate::handlers::{
     TileState, WmsState, WmtsState, get_feature_info, get_map, get_tile, get_tile_kvp,
     get_tile_rest, get_tilejson, wms_get_capabilities, wmts_get_capabilities,
 };
+use crate::metrics::{AppMetrics, metrics_handler, track_http_metrics};
 use axum::{
     Router,
     extract::{DefaultBodyLimit, Request},
@@ -60,6 +61,9 @@ pub struct TileServer {
 
     /// Tile cache
     cache: TileCache,
+
+    /// Prometheus metrics registry
+    metrics: AppMetrics,
 }
 
 impl TileServer {
@@ -90,6 +94,7 @@ impl TileServer {
             config,
             registry,
             cache,
+            metrics: AppMetrics::new(),
         })
     }
 
@@ -181,25 +186,50 @@ impl TileServer {
                 get(wmts_get_capabilities).with_state(wmts_state.clone()),
             )
             .route(
-                "/wmts/1.0.0/:layer/:tile_matrix_set/:tile_matrix/:tile_row/:tile_col.png",
+                // The file extension (e.g. `.png`) is part of the `{tile_col}` capture, not
+                // a literal route suffix - matchit (axum's router) allows only one dynamic
+                // parameter per path segment. See `handlers::wmts::parse_tile_col_and_format`.
+                "/wmts/1.0.0/{layer}/{tile_matrix_set}/{tile_matrix}/{tile_row}/{tile_col}",
                 get(get_tile_rest).with_state(wmts_state),
             )
             // XYZ tile endpoints
             .route(
-                "/tiles/:layer/:z/:x/:y",
+                "/tiles/{layer}/{z}/{x}/{y}",
                 get(get_tile).with_state(tile_state.clone()),
             )
             .route(
-                "/tiles/:layer/tilejson",
+                "/tiles/{layer}/tilejson",
                 get(get_tilejson).with_state(tile_state),
             )
+            // Recorded after routing so `MatchedPath` (route template, not raw path with
+            // high-cardinality tile coordinates) is available for metric labels.
+            .route_layer(middleware::from_fn_with_state(
+                self.metrics.clone(),
+                track_http_metrics,
+            ))
             .layer(middleware)
             .layer(middleware::from_fn(move |req, next| {
                 timeout_middleware(req, next, timeout_duration)
             }))
     }
 
+    /// Build the dedicated metrics router, served on its own port (see
+    /// `ServerConfig::metrics_port`) so it can be scraped independently of the public
+    /// WMS/WMTS/tile surface, matching the `metrics` container/service port that
+    /// `k8s/deployment.yaml` and `monitoring/prometheus.yml` already assume.
+    fn build_metrics_router(&self) -> Router {
+        Router::new()
+            .route("/metrics", get(metrics_handler))
+            .with_state((self.metrics.clone(), self.cache.clone()))
+    }
+
     /// Start the server
+    ///
+    /// Binds the public WMS/WMTS/tile router and, when
+    /// `ServerConfig::metrics_enabled` is set, a second listener carrying only
+    /// `GET /metrics` on `ServerConfig::metrics_port`. Both listeners are served
+    /// concurrently; if either one fails to bind or serve, `serve()` returns the first
+    /// error observed and the other listener is dropped.
     pub async fn serve(self) -> ServerResult<()> {
         let bind_addr = self.config.bind_address();
         info!("Starting OxiGDAL tile server on {}", bind_addr);
@@ -230,10 +260,43 @@ impl TileServer {
         info!("  - Health: http://{}/health", bind_addr);
         info!("  - Stats: http://{}/stats", bind_addr);
 
-        // Serve with Axum
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| ServerError::Http(e.to_string()))?;
+        let app_future = async {
+            axum::serve(listener, app)
+                .await
+                .map_err(|e| ServerError::Http(e.to_string()))
+        };
+
+        if self.config.server.metrics_enabled {
+            let metrics_bind_addr = format!(
+                "{}:{}",
+                self.config.server.host, self.config.server.metrics_port
+            );
+            let metrics_app = self.build_metrics_router();
+
+            let metrics_listener = tokio::net::TcpListener::bind(&metrics_bind_addr)
+                .await
+                .map_err(|e| {
+                    ServerError::Http(format!(
+                        "Failed to bind metrics listener to {}: {}",
+                        metrics_bind_addr, e
+                    ))
+                })?;
+
+            info!("Metrics listening on http://{}/metrics", metrics_bind_addr);
+
+            let metrics_future = async {
+                axum::serve(metrics_listener, metrics_app)
+                    .await
+                    .map_err(|e| ServerError::Http(e.to_string()))
+            };
+
+            let (app_result, metrics_result) = tokio::join!(app_future, metrics_future);
+            app_result?;
+            metrics_result?;
+        } else {
+            info!("Metrics endpoint disabled (server.metrics_enabled = false)");
+            app_future.await?;
+        }
 
         Ok(())
     }

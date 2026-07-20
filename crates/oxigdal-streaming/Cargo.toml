@@ -121,3 +121,12 @@ doctest = false
 [[bench]]
 name = "streaming_bench"
 harness = false
+
+[lints]
+workspace = true
+
+# NOTE: `tile-http` and `cloud-http` both pull reqwest -> rustls -> aws-lc-sys
+# (C/asm). `raster-streaming` and `kv-store` (OxiStore/fjall) stay Pure Rust.
+[package.metadata.docs.rs]
+features = ["std", "raster-streaming", "kv-store"]
+rustdoc-args = ["--cfg", "docsrs"]

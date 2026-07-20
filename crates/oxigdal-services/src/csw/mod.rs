@@ -95,13 +95,13 @@ pub async fn handle_csw_request(
     State(state): State<CswState>,
     Query(params): Query<CswRequest>,
 ) -> Result<Response, ServiceError> {
-    if let Some(ref service) = params.service {
-        if service.to_uppercase() != "CSW" {
-            return Err(ServiceError::InvalidParameter(
-                "SERVICE".to_string(),
-                format!("Expected 'CSW', got '{}'", service),
-            ));
-        }
+    if let Some(ref service) = params.service
+        && service.to_uppercase() != "CSW"
+    {
+        return Err(ServiceError::InvalidParameter(
+            "SERVICE".to_string(),
+            format!("Expected 'CSW', got '{}'", service),
+        ));
     }
 
     match params.request.to_uppercase().as_str() {

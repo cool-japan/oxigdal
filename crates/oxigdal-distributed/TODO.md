@@ -2,7 +2,7 @@
 
 > **Purpose:** Distributed processing capabilities for OxiGDAL using Apache Arrow Flight (coordinator/worker/Flight RPC; spatial/hash/range partitioning; shuffle).
 > **Status (2026-05-16):** 3,933 Rust LoC · 38 tests · 0 literal-stub markers — gaps are feature-completeness items advertised in `lib.rs //!` doc that have no wired path.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 - [ ] Wire `Coordinator` task scheduling to **real** Flight clients on workers (cross-process tasks)

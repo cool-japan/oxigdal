@@ -10,7 +10,7 @@
 //! 7. T-junction — horizontal line split at stem endpoint
 //! 8. Multiple crossing lines — iteration terminates
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_algorithms::vector::{Coordinate, snap_coordinate, snap_linestring};
 use oxigdal_algorithms::{SnapRoundingOptions, SnappedSegment, snap_round};

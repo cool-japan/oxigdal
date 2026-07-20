@@ -74,12 +74,12 @@ impl SpatialCache {
             for cy in min_cell.1..=max_cell.1 {
                 if let Some(keys) = self.spatial_index.get(&(cx, cy)) {
                     for key in keys.iter() {
-                        if let Some(entry) = self.storage.get(key) {
-                            if let Some(ref spatial) = entry.spatial_info {
-                                if spatial.intersects(&query_bounds) && !entry.is_expired() {
-                                    results.push((key.clone(), entry.data.clone()));
-                                }
-                            }
+                        if let Some(entry) = self.storage.get(key)
+                            && let Some(ref spatial) = entry.spatial_info
+                            && spatial.intersects(&query_bounds)
+                            && !entry.is_expired()
+                        {
+                            results.push((key.clone(), entry.data.clone()));
                         }
                     }
                 }
@@ -152,11 +152,11 @@ impl SpatialCache {
             }
         }
 
-        if let Some(key) = oldest_key {
-            if let Some((_, entry)) = self.storage.remove(&key) {
-                self.current_size.fetch_sub(entry.size, Ordering::SeqCst);
-                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
-            }
+        if let Some(key) = oldest_key
+            && let Some((_, entry)) = self.storage.remove(&key)
+        {
+            self.current_size.fetch_sub(entry.size, Ordering::SeqCst);
+            self.stats.evictions.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -276,19 +276,19 @@ impl TileCache {
             }
         }
 
-        if let Some(coord) = key_to_remove {
-            if let Some((_, entry)) = self.storage.remove(&coord) {
-                self.current_size.fetch_sub(entry.size, Ordering::SeqCst);
+        if let Some(coord) = key_to_remove
+            && let Some((_, entry)) = self.storage.remove(&coord)
+        {
+            self.current_size.fetch_sub(entry.size, Ordering::SeqCst);
 
-                if let Some(level_stat) = self.level_stats.get(&coord.z) {
-                    level_stat.tile_count.fetch_sub(1, Ordering::SeqCst);
-                    level_stat
-                        .total_size
-                        .fetch_sub(entry.size, Ordering::SeqCst);
-                }
-
-                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
+            if let Some(level_stat) = self.level_stats.get(&coord.z) {
+                level_stat.tile_count.fetch_sub(1, Ordering::SeqCst);
+                level_stat
+                    .total_size
+                    .fetch_sub(entry.size, Ordering::SeqCst);
             }
+
+            self.stats.evictions.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -549,7 +549,7 @@ impl PersistentDiskCache {
         self.stats.writes.fetch_add(1, Ordering::Relaxed);
 
         // Save metadata periodically
-        if self.stats.writes.load(Ordering::Relaxed) % 10 == 0 {
+        if self.stats.writes.load(Ordering::Relaxed).is_multiple_of(10) {
             self.save_metadata().await?;
         }
 

@@ -648,13 +648,13 @@ impl LasWriter {
 
         // Set version
         let version_parts: Vec<&str> = header.version.split('.').collect();
-        if version_parts.len() == 2 {
-            if let (Ok(major), Ok(minor)) = (
+        if version_parts.len() == 2
+            && let (Ok(major), Ok(minor)) = (
                 version_parts[0].parse::<u8>(),
                 version_parts[1].parse::<u8>(),
-            ) {
-                builder.version = las::Version::new(major, minor);
-            }
+            )
+        {
+            builder.version = las::Version::new(major, minor);
         }
 
         // Set point format

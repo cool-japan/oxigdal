@@ -1,6 +1,6 @@
 //! Text operations for operational transformation
 
-use crate::ot::Transform;
+use crate::ot::{Priority, Transform};
 use crate::{SyncError, SyncResult};
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,18 @@ pub struct TextOperation {
     base_length: usize,
     /// The target length (length after applying operation)
     target_length: usize,
+    /// The base length asserted at construction time via [`Self::with_base_length`].
+    ///
+    /// This is *not* pre-added to `base_length`/`target_length` -- those two
+    /// fields always start at zero and are accumulated normally by
+    /// [`Self::retain`], [`Self::insert`] and [`Self::delete`], exactly as they
+    /// are for [`Self::new`]. Instead this field records the length the caller
+    /// expects `base_length` to reach once the operation is fully built, and is
+    /// validated (in [`Self::apply`] and [`Transform::compose`]) against the
+    /// actual accumulated `base_length`. It is a validation-only annotation and
+    /// is not part of the operation's wire format.
+    #[serde(skip)]
+    expected_base_length: Option<usize>,
 }
 
 impl TextOperation {
@@ -33,20 +45,49 @@ impl TextOperation {
             ops: Vec::new(),
             base_length: 0,
             target_length: 0,
+            expected_base_length: None,
         }
     }
 
-    /// Creates a text operation from a base length
+    /// Creates a text operation that will be checked against a base length.
+    ///
+    /// `base_length`/`target_length` both start at **zero**, just like
+    /// [`Self::new`] -- they are accumulated by the subsequent
+    /// `retain`/`insert`/`delete` calls, not pre-seeded with `base_length`.
+    /// The `base_length` argument is instead recorded as an expectation: once
+    /// the operation is used (via [`Self::apply`] or [`Transform::compose`]),
+    /// it is validated against the `base_length` actually accumulated by the
+    /// operations added so far, and a [`SyncError::InvalidOperation`] is
+    /// returned if they disagree.
     ///
     /// # Arguments
     ///
-    /// * `base_length` - The length of the document before this operation
+    /// * `base_length` - The expected length of the document before this
+    ///   operation, checked once the operation's retain/delete calls have
+    ///   been added.
     pub fn with_base_length(base_length: usize) -> Self {
         Self {
             ops: Vec::new(),
-            base_length,
-            target_length: base_length,
+            base_length: 0,
+            target_length: 0,
+            expected_base_length: Some(base_length),
         }
+    }
+
+    /// Validates that any base length asserted via [`Self::with_base_length`]
+    /// matches the base length actually accumulated by this operation's
+    /// retain/delete calls.
+    fn check_expected_base_length(&self) -> SyncResult<()> {
+        if let Some(expected) = self.expected_base_length
+            && expected != self.base_length
+        {
+            return Err(SyncError::InvalidOperation(format!(
+                "Base length mismatch: with_base_length({expected}) was declared but \
+                 retain/delete calls accumulated a base length of {actual}",
+                actual = self.base_length
+            )));
+        }
+        Ok(())
     }
 
     /// Adds a retain operation
@@ -126,6 +167,8 @@ impl TextOperation {
     ///
     /// The resulting text after applying the operation
     pub fn apply(&self, text: &str) -> SyncResult<String> {
+        self.check_expected_base_length()?;
+
         if text.len() != self.base_length {
             return Err(SyncError::InvalidOperation(format!(
                 "Base length mismatch: expected {}, got {}",
@@ -203,7 +246,10 @@ impl Default for TextOperation {
 }
 
 impl Transform for TextOperation {
-    fn transform(&self, other: &Self) -> SyncResult<Self> {
+    fn transform(&self, other: &Self, priority: Priority) -> SyncResult<Self> {
+        self.check_expected_base_length()?;
+        other.check_expected_base_length()?;
+
         if self.base_length != other.base_length {
             return Err(SyncError::InvalidOperation(
                 "Base length mismatch in transform".to_string(),
@@ -217,7 +263,20 @@ impl Transform for TextOperation {
         let mut ops2 = other.ops.clone();
 
         while i1 < ops1.len() || i2 < ops2.len() {
-            if i1 < ops1.len() && matches!(ops1[i1], Operation::Insert(_)) {
+            let self_has_insert = i1 < ops1.len() && matches!(ops1[i1], Operation::Insert(_));
+            let other_has_insert = i2 < ops2.len() && matches!(ops2[i2], Operation::Insert(_));
+
+            // When both sides have a simultaneous insert, `priority` decides
+            // which one is ordered first in the result. `transform_pair`
+            // gives opposite priorities to the two operands of a pair so
+            // that both calls agree on the same insertion order -- required
+            // for the standard OT convergence property (TP1).
+            let self_goes_first = match priority {
+                Priority::Left => self_has_insert,
+                Priority::Right => self_has_insert && !other_has_insert,
+            };
+
+            if self_goes_first {
                 if let Operation::Insert(s) = &ops1[i1] {
                     result.insert(s.clone());
                 }
@@ -225,7 +284,7 @@ impl Transform for TextOperation {
                 continue;
             }
 
-            if i2 < ops2.len() && matches!(ops2[i2], Operation::Insert(_)) {
+            if other_has_insert {
                 if let Operation::Insert(s) = &ops2[i2] {
                     result.retain(s.len());
                 }
@@ -307,6 +366,9 @@ impl Transform for TextOperation {
     }
 
     fn compose(&self, other: &Self) -> SyncResult<Self> {
+        self.check_expected_base_length()?;
+        other.check_expected_base_length()?;
+
         if self.target_length != other.base_length {
             return Err(SyncError::InvalidOperation(
                 "Target/base length mismatch in compose".to_string(),
@@ -416,6 +478,8 @@ impl Transform for TextOperation {
     }
 
     fn invert(&self) -> SyncResult<Self> {
+        self.check_expected_base_length()?;
+
         let mut result = TextOperation::new();
         result.base_length = self.target_length;
         result.target_length = self.base_length;
@@ -501,7 +565,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "OT compose algorithm needs review - length tracking issue"]
     fn test_text_operation_compose() -> SyncResult<()> {
         let mut op1 = TextOperation::new();
         op1.insert("hello".to_string());
@@ -513,6 +576,111 @@ mod tests {
         let composed = op1.compose(&op2)?;
         let result = composed.apply("")?;
         assert_eq!(result, "hello world");
+        Ok(())
+    }
+
+    /// Regression test for the `with_base_length` + `retain`/`delete`
+    /// double-counting bug: `with_base_length(n)` must NOT pre-seed
+    /// `base_length`/`target_length` with `n` -- those fields must start at
+    /// zero and be accumulated normally by `retain`/`delete`, exactly as they
+    /// are for `TextOperation::new()`. Before the fix,
+    /// `with_base_length(5).retain(5)` produced `base_length == 10`.
+    #[test]
+    fn test_with_base_length_does_not_double_count() {
+        let mut op = TextOperation::with_base_length(5);
+        op.retain(5);
+        assert_eq!(
+            op.base_length(),
+            5,
+            "with_base_length(5) followed by retain(5) must accumulate to 5, not 10"
+        );
+        assert_eq!(op.target_length(), 5);
+    }
+
+    /// `with_base_length` records an *expectation* that is validated lazily:
+    /// if the retain/delete calls added afterward don't actually sum to the
+    /// declared base length, `apply()` must report a precise error instead of
+    /// silently operating on the wrong length.
+    #[test]
+    fn test_with_base_length_mismatch_is_rejected_by_apply() {
+        let mut op = TextOperation::with_base_length(5);
+        op.retain(3); // only accumulates 3, but 5 was declared
+
+        let err = op.apply("abc").expect_err(
+            "declared base length of 5 must be validated against actual base length of 3",
+        );
+        assert!(matches!(err, SyncError::InvalidOperation(_)));
+    }
+
+    /// `with_base_length` records an *expectation* that is validated lazily:
+    /// `compose()` must also reject a mismatched declaration rather than
+    /// composing against the wrong length.
+    #[test]
+    fn test_with_base_length_mismatch_is_rejected_by_compose() {
+        let mut op1 = TextOperation::new();
+        op1.insert("hi".to_string());
+
+        let mut op2 = TextOperation::with_base_length(5);
+        op2.retain(2); // declared 5, only accumulated 2
+
+        let err = op1.compose(&op2).expect_err(
+            "declared base length of 5 must be validated against actual base length of 2",
+        );
+        assert!(matches!(err, SyncError::InvalidOperation(_)));
+    }
+
+    /// Reproduces the exact scenario from the work-order evidence:
+    /// `TextOperation::with_base_length(5); op.retain(5);` used to yield
+    /// `base_length == 10`, which made `compose()`'s
+    /// `self.target_length != other.base_length` guard reject a legitimately
+    /// composable pair of operations.
+    #[test]
+    fn test_with_base_length_then_retain_composes_correctly() -> SyncResult<()> {
+        let mut op1 = TextOperation::new();
+        op1.insert("hello".to_string());
+        assert_eq!(op1.target_length(), 5);
+
+        let mut op2 = TextOperation::with_base_length(5);
+        op2.retain(5);
+        assert_eq!(
+            op2.base_length(),
+            5,
+            "retain(5) after with_base_length(5) must not double-count"
+        );
+
+        // Previously this failed with "Target/base length mismatch in compose"
+        // because op2.base_length() was 10 instead of 5.
+        let composed = op1.compose(&op2)?;
+        assert_eq!(composed.apply("")?, "hello");
+        Ok(())
+    }
+
+    /// Regression test for the OT convergence property (TP1) that
+    /// `transform_pair` relies on: `Priority::Left`/`Priority::Right` must
+    /// break ties consistently so that `apply(b', apply(a, s))` and
+    /// `apply(a', apply(b, s))` agree, even when both operations retain
+    /// content before inserting at the same conceptual position.
+    #[test]
+    fn test_transform_with_priority_converges_on_concurrent_inserts_after_retain() -> SyncResult<()>
+    {
+        use crate::ot::composer::transform_pair;
+
+        // Both users start from "hi" and insert at the end concurrently.
+        let mut a = TextOperation::new();
+        a.retain(2);
+        a.insert("A".to_string());
+
+        let mut b = TextOperation::new();
+        b.retain(2);
+        b.insert("B".to_string());
+
+        let (a_prime, b_prime) = transform_pair(&a, &b)?;
+
+        let result1 = b_prime.apply(&a.apply("hi")?)?;
+        let result2 = a_prime.apply(&b.apply("hi")?)?;
+
+        assert_eq!(result1, result2);
+        assert_eq!(result1, "hiAB");
         Ok(())
     }
 }

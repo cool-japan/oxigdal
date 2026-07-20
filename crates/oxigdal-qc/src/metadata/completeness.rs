@@ -381,25 +381,24 @@ impl MetadataChecker {
                 }
 
                 // Check controlled vocabulary if applicable
-                if self.config.check_vocabularies {
-                    if let Some(ref valid_values) = field_def.valid_values {
-                        if !valid_values.contains(value) {
-                            vocabulary_violations.push(VocabularyViolation {
-                                field_name: field_def.name.clone(),
-                                value: value.clone(),
-                                vocabulary: field_def
-                                    .vocabulary
-                                    .clone()
-                                    .unwrap_or_else(|| "Unknown".to_string()),
-                                valid_values: if valid_values.len() <= 10 {
-                                    Some(valid_values.iter().cloned().collect())
-                                } else {
-                                    None
-                                },
-                                severity: Severity::Minor,
-                            });
-                        }
-                    }
+                if self.config.check_vocabularies
+                    && let Some(ref valid_values) = field_def.valid_values
+                    && !valid_values.contains(value)
+                {
+                    vocabulary_violations.push(VocabularyViolation {
+                        field_name: field_def.name.clone(),
+                        value: value.clone(),
+                        vocabulary: field_def
+                            .vocabulary
+                            .clone()
+                            .unwrap_or_else(|| "Unknown".to_string()),
+                        valid_values: if valid_values.len() <= 10 {
+                            Some(valid_values.iter().cloned().collect())
+                        } else {
+                            None
+                        },
+                        severity: Severity::Minor,
+                    });
                 }
             } else {
                 // Field is missing
@@ -498,21 +497,21 @@ impl MetadataChecker {
             None
         };
 
-        if let Some(ref citation) = citation_completeness {
-            if citation.completeness_score < 60.0 {
-                issues.push(
-                    QcIssue::new(
-                        Severity::Warning,
-                        "metadata",
-                        "Incomplete citation information",
-                        format!(
-                            "Citation completeness ({:.1}%) is low",
-                            citation.completeness_score
-                        ),
-                    )
-                    .with_suggestion("Add citation fields: title, authors, date, identifier"),
-                );
-            }
+        if let Some(ref citation) = citation_completeness
+            && citation.completeness_score < 60.0
+        {
+            issues.push(
+                QcIssue::new(
+                    Severity::Warning,
+                    "metadata",
+                    "Incomplete citation information",
+                    format!(
+                        "Citation completeness ({:.1}%) is low",
+                        citation.completeness_score
+                    ),
+                )
+                .with_suggestion("Add citation fields: title, authors, date, identifier"),
+            );
         }
 
         Ok(MetadataResult {

@@ -222,20 +222,20 @@ fn record_u32(rec: &[u8; 16], endian: Endian) -> u32 {
     }
 }
 
-/// Read the 4-byte float value from record bytes 8–11.
-#[inline]
-fn record_f32(rec: &[u8; 16], endian: Endian) -> f32 {
-    let b = &rec[8..12];
-    match endian {
-        Endian::Little => LittleEndian::read_f32(b),
-        Endian::Big => BigEndian::read_f32(b),
-    }
-}
-
-/// Read the 4-byte float value from record bytes 8–11 as f64.
+/// Read the 8-byte real8 double value from record bytes 8–15.
+///
+/// Per NTv2/NRCan Guidance Note 7-2 §4.4.4, the "real8" header fields
+/// (MAJOR_F, MINOR_F, MAJOR_T, MINOR_T, S_LAT, N_LAT, E_LON, W_LON,
+/// LAT_INC, LON_INC) occupy the *entire* 8-byte value field of the
+/// record — unlike the 4-byte int/float fields (e.g. NUM_OREC,
+/// GS_COUNT) which use only bytes 8-11 with bytes 12-15 reserved.
 #[inline]
 fn record_f64(rec: &[u8; 16], endian: Endian) -> f64 {
-    f64::from(record_f32(rec, endian))
+    let b = &rec[8..16];
+    match endian {
+        Endian::Little => LittleEndian::read_f64(b),
+        Endian::Big => BigEndian::read_f64(b),
+    }
 }
 
 /// Read the 8-byte string value from record bytes 8–15 (used for string records
@@ -337,7 +337,7 @@ fn parse_overview_header(cursor: &mut Cursor<&[u8]>, endian: Endian) -> Result<N
                 system_t = record_str8(&rec);
             }
             "MAJOR_F" => {
-                // Stored as f64 in two words or as f32; typically stored as f32
+                // real8: full 8-byte IEEE double occupying bytes 8-15.
                 major_f = record_f64(&rec, endian);
             }
             "MINOR_F" => {
@@ -803,6 +803,17 @@ mod tests {
                 }
             };
         }
+        // real8 header fields occupy the full 8-byte value slot (bytes 8-15),
+        // unlike the 4-byte int/float fields which use bytes 8-11 + 4 pad bytes.
+        macro_rules! write_f64 {
+            ($v:expr) => {
+                if little_endian {
+                    buf.write_f64::<LittleEndian>($v).expect("write_f64 LE");
+                } else {
+                    buf.write_f64::<BigEndian>($v).expect("write_f64 BE");
+                }
+            };
+        }
 
         /// Write an 8-byte padded ASCII key into `buf`.
         fn push_key(buf: &mut Vec<u8>, key: &str) {
@@ -865,37 +876,33 @@ mod tests {
 
         // Record 7: MAJOR_F = Clarke 1866 a (6378206.4 m)
         push_key(&mut buf, "MAJOR_F");
-        write_f32!(6_378_206.4_f32);
-        push_pad4(&mut buf);
+        write_f64!(6_378_206.4_f64);
 
         // Record 8: MINOR_F = Clarke 1866 b (6356583.8 m)
         push_key(&mut buf, "MINOR_F");
-        write_f32!(6_356_583.8_f32);
-        push_pad4(&mut buf);
+        write_f64!(6_356_583.8_f64);
 
         // Record 9: MAJOR_T = GRS80 a (6378137.0 m)
         push_key(&mut buf, "MAJOR_T");
-        write_f32!(6_378_137.0_f32);
-        push_pad4(&mut buf);
+        write_f64!(6_378_137.0_f64);
 
         // Record 10: MINOR_T = GRS80 b (6356752.31414 m)
         push_key(&mut buf, "MINOR_T");
-        write_f32!(6_356_752.3_f32);
-        push_pad4(&mut buf);
+        write_f64!(6_356_752.314_14_f64);
 
         // ── Sub-grid header (11 × 16-byte SREC records) ─────────────────────
 
         // S_LAT = 216000" = 60° × 3600
-        let s_lat = 216_000.0_f32;
+        let s_lat = 216_000.0_f64;
         // N_LAT = 216120" = 60°02'
-        let n_lat = 216_120.0_f32;
+        let n_lat = 216_120.0_f64;
         // E_LON = 36000" = 10°
-        let e_lon = 36_000.0_f32;
+        let e_lon = 36_000.0_f64;
         // W_LON = 36120" = 10°02'
-        let w_lon = 36_120.0_f32;
+        let w_lon = 36_120.0_f64;
         // LAT_INC = LON_INC = 60"
-        let lat_inc = 60.0_f32;
-        let lon_inc = 60.0_f32;
+        let lat_inc = 60.0_f64;
+        let lon_inc = 60.0_f64;
         // GS_COUNT = 3×3 = 9
         let gs_count = 9u32;
 
@@ -917,33 +924,27 @@ mod tests {
 
         // SREC 4: S_LAT
         push_key(&mut buf, "S_LAT");
-        write_f32!(s_lat);
-        push_pad4(&mut buf);
+        write_f64!(s_lat);
 
         // SREC 5: N_LAT
         push_key(&mut buf, "N_LAT");
-        write_f32!(n_lat);
-        push_pad4(&mut buf);
+        write_f64!(n_lat);
 
         // SREC 6: E_LON
         push_key(&mut buf, "E_LON");
-        write_f32!(e_lon);
-        push_pad4(&mut buf);
+        write_f64!(e_lon);
 
         // SREC 7: W_LON
         push_key(&mut buf, "W_LON");
-        write_f32!(w_lon);
-        push_pad4(&mut buf);
+        write_f64!(w_lon);
 
         // SREC 8: LAT_INC
         push_key(&mut buf, "LAT_INC");
-        write_f32!(lat_inc);
-        push_pad4(&mut buf);
+        write_f64!(lat_inc);
 
         // SREC 9: LON_INC
         push_key(&mut buf, "LON_INC");
-        write_f32!(lon_inc);
-        push_pad4(&mut buf);
+        write_f64!(lon_inc);
 
         // SREC 10: GS_COUNT
         push_key(&mut buf, "GS_COUNT");
@@ -1000,6 +1001,8 @@ mod tests {
             ("VERSION", b"NTv2.0  "),
             ("SYSTEM_F", b"NAD27   "),
             ("SYSTEM_T", b"NAD83   "),
+            // real8 zero (8 zero bytes) is bit-identical to f64 0.0, so these
+            // placeholder ellipsoid fields need no change for the real8 fix.
             ("MAJOR_F", &[0u8; 8]),
             ("MINOR_F", &[0u8; 8]),
             ("MAJOR_T", &[0u8; 8]),
@@ -1022,30 +1025,24 @@ mod tests {
             buf.extend_from_slice(b"20240101");
             push_key(buf, "UPDATED");
             buf.extend_from_slice(b"20240101");
-            // S_LAT
+            // S_LAT (real8: full 8-byte value slot, no separate pad)
             push_key(buf, "S_LAT");
-            buf.write_f32::<LittleEndian>(216_000.0).expect("f32");
-            push_pad4(buf);
+            buf.write_f64::<LittleEndian>(216_000.0).expect("f64");
             // N_LAT
             push_key(buf, "N_LAT");
-            buf.write_f32::<LittleEndian>(216_120.0).expect("f32");
-            push_pad4(buf);
+            buf.write_f64::<LittleEndian>(216_120.0).expect("f64");
             // E_LON
             push_key(buf, "E_LON");
-            buf.write_f32::<LittleEndian>(36_000.0).expect("f32");
-            push_pad4(buf);
+            buf.write_f64::<LittleEndian>(36_000.0).expect("f64");
             // W_LON
             push_key(buf, "W_LON");
-            buf.write_f32::<LittleEndian>(36_120.0).expect("f32");
-            push_pad4(buf);
+            buf.write_f64::<LittleEndian>(36_120.0).expect("f64");
             // LAT_INC
             push_key(buf, "LAT_INC");
-            buf.write_f32::<LittleEndian>(60.0).expect("f32");
-            push_pad4(buf);
+            buf.write_f64::<LittleEndian>(60.0).expect("f64");
             // LON_INC
             push_key(buf, "LON_INC");
-            buf.write_f32::<LittleEndian>(60.0).expect("f32");
-            push_pad4(buf);
+            buf.write_f64::<LittleEndian>(60.0).expect("f64");
             // GS_COUNT
             push_key(buf, "GS_COUNT");
             buf.write_u32::<LittleEndian>(9).expect("u32");
@@ -1297,6 +1294,81 @@ mod tests {
         assert!(
             (lon_out - expected_lon).abs() < 1e-4,
             "top-right lon: {lon_out} vs {expected_lon}"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Regression: record_f64 must read the full 8-byte real8 value field,
+    // not a 4-byte float truncated to bytes 8-11.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_record_f64_reads_full_8_byte_real8_le() {
+        // Byte-for-byte real8 record per NRCan Guidance Note 7-2 §4.4.4:
+        // [key:8][real8 double:8]. Use a value whose f32-vs-f64 encodings
+        // differ measurably so a truncated 4-byte read would fail the
+        // exact-match assertion below.
+        let value = 6_378_137.0_f64; // GRS80 semi-major axis (exact in f64)
+        let mut rec = [0u8; 16];
+        rec[0..8].copy_from_slice(b"MAJOR_T ");
+        LittleEndian::write_f64(&mut rec[8..16], value);
+
+        let got = record_f64(&rec, Endian::Little);
+        assert_eq!(got, value, "record_f64 must recover the exact real8 double");
+    }
+
+    #[test]
+    fn test_record_f64_reads_full_8_byte_real8_be() {
+        let value = 6_356_752.314_140_356_f64; // GRS80 semi-minor axis
+        let mut rec = [0u8; 16];
+        rec[0..8].copy_from_slice(b"MINOR_T ");
+        BigEndian::write_f64(&mut rec[8..16], value);
+
+        let got = record_f64(&rec, Endian::Big);
+        assert_eq!(got, value, "record_f64 must recover the exact real8 double");
+    }
+
+    #[test]
+    fn test_record_f64_distinguishes_from_truncated_f32_read() {
+        // A value that round-trips losslessly through f64 but loses
+        // precision through f32 — proves the reader is not silently
+        // discarding bytes 12-15.
+        let value = 216_030.123_456_789_f64;
+        let mut rec = [0u8; 16];
+        rec[0..8].copy_from_slice(b"S_LAT   ");
+        LittleEndian::write_f64(&mut rec[8..16], value);
+
+        let got = record_f64(&rec, Endian::Little);
+        assert_eq!(got, value);
+        // Sanity: the buggy (f32-truncating) implementation would have
+        // produced a different value here because f32 cannot represent
+        // this many significant digits.
+        assert_ne!(got, f64::from(value as f32));
+    }
+
+    #[test]
+    fn test_ntv2_overview_header_ellipsoid_values_exact() {
+        // Confirms the overview header parser recovers the exact real8
+        // ellipsoid axis values written by build_synthetic_gsb, not values
+        // corrupted by a 4-byte-float truncation.
+        let data = build_synthetic_gsb(true);
+        let grid = NtV2Grid::from_bytes(&data).expect("parse");
+        let hdr = &grid.overview;
+
+        assert!(
+            (hdr.major_f - 6_378_206.4).abs() < 1e-6,
+            "major_f={} expected 6378206.4",
+            hdr.major_f
+        );
+        assert!(
+            (hdr.minor_f - 6_356_583.8).abs() < 1e-6,
+            "minor_f={} expected 6356583.8",
+            hdr.minor_f
+        );
+        assert!(
+            (hdr.major_t - 6_378_137.0).abs() < 1e-6,
+            "major_t={} expected 6378137.0",
+            hdr.major_t
         );
     }
 }

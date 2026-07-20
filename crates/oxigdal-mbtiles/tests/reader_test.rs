@@ -7,11 +7,11 @@
 //! Test fixtures are created using the same OxiSQL engine as the reader itself
 //! (no C FFI in this test file).
 //!
-//! `unwrap_used` and `panic` are allowed here because this is a tests file —
-//! a panic IS the intended outcome of a failed assertion.
+//! `unwrap_used`, `expect_used` and `panic` are allowed here because this is
+//! a tests file — a panic IS the intended outcome of a failed assertion.
 
 #![cfg(feature = "sqlite")]
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};

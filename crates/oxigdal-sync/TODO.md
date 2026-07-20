@@ -2,7 +2,7 @@
 
 > **Purpose:** Multi-device synchronization with CRDTs, vector clocks, and operational transformation for OxiGDAL (LWW-Register, G-Counter, PN-Counter, OR-Set; vector clocks; Merkle trees; OT for text).
 > **Status (2026-05-16):** 4,435 Rust LoC · 101 tests · 0 literal-stub markers — gaps are unimplemented features advertised in `lib.rs //!` doc that have no module today.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 - [ ] Add network transport layer (sync protocol does not move bytes today)

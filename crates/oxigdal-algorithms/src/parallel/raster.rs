@@ -452,7 +452,7 @@ pub fn parallel_windowed_operation<F>(
 where
     F: Fn(&[f64]) -> f64 + Sync + Send,
 {
-    if window_size % 2 == 0 {
+    if window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd".to_string(),

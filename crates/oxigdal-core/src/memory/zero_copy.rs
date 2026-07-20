@@ -300,7 +300,7 @@ impl SharedBuffer {
 
     /// Get a typed slice view
     pub fn as_typed_slice<T: bytemuck::Pod>(&self) -> Result<&[T]> {
-        if self.len % std::mem::size_of::<T>() != 0 {
+        if !self.len.is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Buffer size not aligned to type size".to_string(),
@@ -323,7 +323,7 @@ impl SharedBuffer {
             }
         }
 
-        if self.len % std::mem::size_of::<T>() != 0 {
+        if !self.len.is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Buffer size not aligned to type size".to_string(),
@@ -421,7 +421,7 @@ impl<T: bytemuck::Pod> ZeroCopyBuffer<T> {
 
     /// Create from existing buffer
     pub fn from_buffer(buffer: SharedBuffer) -> Result<Self> {
-        if buffer.len() % std::mem::size_of::<T>() != 0 {
+        if !buffer.len().is_multiple_of(std::mem::size_of::<T>()) {
             return Err(OxiGdalError::invalid_parameter(
                 "parameter",
                 "Buffer size not aligned to type size".to_string(),

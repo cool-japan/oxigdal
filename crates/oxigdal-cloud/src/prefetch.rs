@@ -549,16 +549,16 @@ impl PatternAnalyzer {
 
         let mut sequential_count = 0;
         for window in recent.windows(2) {
-            if let (Some(&a), Some(&b)) = (window.first(), window.get(1)) {
-                if let (Some(na), Some(nb)) = (
+            if let (Some(&a), Some(&b)) = (window.first(), window.get(1))
+                && let (Some(na), Some(nb)) = (
                     extract_trailing_number(&a.key),
                     extract_trailing_number(&b.key),
-                ) {
-                    // recent is reversed, so for forward pattern: na - 1 == nb
-                    // (e.g., file_3 -> file_2 -> file_1 is forward in original order)
-                    if na == nb + 1 {
-                        sequential_count += 1;
-                    }
+                )
+            {
+                // recent is reversed, so for forward pattern: na - 1 == nb
+                // (e.g., file_3 -> file_2 -> file_1 is forward in original order)
+                if na == nb + 1 {
+                    sequential_count += 1;
                 }
             }
         }
@@ -575,16 +575,16 @@ impl PatternAnalyzer {
 
         let mut backward_count = 0;
         for window in recent.windows(2) {
-            if let (Some(&a), Some(&b)) = (window.first(), window.get(1)) {
-                if let (Some(na), Some(nb)) = (
+            if let (Some(&a), Some(&b)) = (window.first(), window.get(1))
+                && let (Some(na), Some(nb)) = (
                     extract_trailing_number(&a.key),
                     extract_trailing_number(&b.key),
-                ) {
-                    // recent is reversed, so for backward pattern: na + 1 == nb
-                    // (e.g., file_3 -> file_4 -> file_5 is backward in original order)
-                    if nb == na + 1 {
-                        backward_count += 1;
-                    }
+                )
+            {
+                // recent is reversed, so for backward pattern: na + 1 == nb
+                // (e.g., file_3 -> file_4 -> file_5 is backward in original order)
+                if nb == na + 1 {
+                    backward_count += 1;
                 }
             }
         }

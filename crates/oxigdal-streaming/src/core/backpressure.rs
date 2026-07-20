@@ -149,9 +149,17 @@ impl BackpressureManager {
                 BackpressureStrategy::Block => {
                     return Ok(false);
                 }
-                BackpressureStrategy::DropOldest | BackpressureStrategy::DropNewest => {
+                BackpressureStrategy::DropOldest => {
+                    // Evict an oldest buffered element elsewhere and admit the
+                    // newly-arrived one: the caller is told to accept it.
                     self.elements_dropped.fetch_add(1, Ordering::Relaxed);
                     return Ok(true);
+                }
+                BackpressureStrategy::DropNewest => {
+                    // Discard the just-arrived (newest) element: the caller is
+                    // told to reject it rather than admit it.
+                    self.elements_dropped.fetch_add(1, Ordering::Relaxed);
+                    return Ok(false);
                 }
                 BackpressureStrategy::Fail => {
                     return Err(StreamingError::BufferFull);
@@ -316,6 +324,66 @@ mod tests {
         }
 
         assert!(manager.should_apply_backpressure().await);
+    }
+
+    #[tokio::test]
+    async fn test_drop_oldest_admits_new_element() {
+        let config = BackpressureConfig {
+            strategy: BackpressureStrategy::DropOldest,
+            ..Default::default()
+        };
+        let manager = BackpressureManager::new(config, 2);
+
+        // Fill to capacity.
+        for _ in 0..2 {
+            assert!(
+                manager
+                    .handle_element_arrival()
+                    .await
+                    .expect("arrival should succeed"),
+            );
+        }
+
+        // At capacity, DropOldest signals: admit the new element.
+        let admitted = manager
+            .handle_element_arrival()
+            .await
+            .expect("arrival should succeed");
+        assert!(admitted, "DropOldest must admit the incoming element");
+        assert_eq!(manager.metrics().await.dropped_elements, 0); // metrics not yet sampled
+        // The internal drop counter must have advanced.
+        let dropped = manager.elements_dropped.load(Ordering::Relaxed);
+        assert_eq!(dropped, 1);
+    }
+
+    #[tokio::test]
+    async fn test_drop_newest_rejects_new_element() {
+        let config = BackpressureConfig {
+            strategy: BackpressureStrategy::DropNewest,
+            ..Default::default()
+        };
+        let manager = BackpressureManager::new(config, 2);
+
+        // Fill to capacity.
+        for _ in 0..2 {
+            assert!(
+                manager
+                    .handle_element_arrival()
+                    .await
+                    .expect("arrival should succeed"),
+            );
+        }
+
+        // At capacity, DropNewest signals: reject the incoming element.
+        let admitted = manager
+            .handle_element_arrival()
+            .await
+            .expect("arrival should succeed");
+        assert!(!admitted, "DropNewest must reject the incoming element");
+        let dropped = manager.elements_dropped.load(Ordering::Relaxed);
+        assert_eq!(dropped, 1);
+        // Buffer size must not have grown past capacity.
+        assert_eq!(manager.size(), 2);
     }
 
     #[tokio::test]

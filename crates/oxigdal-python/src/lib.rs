@@ -82,8 +82,10 @@ use crate::vector::{read_shapefile, write_shapefile};
 ///     >>> print(ds.width, ds.height)
 #[pyfunction]
 #[pyo3(signature = (path, mode="r"))]
-fn open(path: &str, mode: &str) -> PyResult<Dataset> {
-    Dataset::open(path, mode)
+fn open(py: Python<'_>, path: &str, mode: &str) -> PyResult<Dataset> {
+    // Opening for read eagerly loads and parses file metadata, which is
+    // blocking disk I/O; release the GIL while it runs.
+    py.detach(|| Dataset::open(path, mode))
 }
 
 /// Returns the version of OxiGDAL.
@@ -93,7 +95,7 @@ fn open(path: &str, mode: &str) -> PyResult<Dataset> {
 ///
 /// Example:
 ///     >>> oxigdal.version()
-///     '0.1.6'
+///     '0.1.7'
 #[pyfunction]
 fn version() -> &'static str {
     oxigdal_core::VERSION

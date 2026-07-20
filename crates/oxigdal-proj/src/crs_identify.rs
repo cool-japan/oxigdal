@@ -161,20 +161,20 @@ fn walk_wkt_node(
     match node_type_upper.as_str() {
         "DATUM" | "GEODETICDATUM" => {
             // The datum name is the `value` field (first quoted string inside the brackets)
-            if let Some(name) = &node.value {
-                if datum.is_none() {
-                    *datum = Some(normalise_datum(name));
-                }
+            if let Some(name) = &node.value
+                && datum.is_none()
+            {
+                *datum = Some(normalise_datum(name));
             }
         }
 
         "PROJECTION" => {
             // WKT1: PROJECTION["Transverse_Mercator"]
             // WKT2: PROJECTION["Transverse Mercator", ...]
-            if let Some(name) = &node.value {
-                if projection.is_none() {
-                    *projection = Some(normalise_proj_name(name));
-                }
+            if let Some(name) = &node.value
+                && projection.is_none()
+            {
+                *projection = Some(normalise_proj_name(name));
             }
         }
 
@@ -188,10 +188,10 @@ fn walk_wkt_node(
                 // The numeric argument is stored as a child-less parameter
                 // with a synthesised key like "param_N".
                 for (k, v) in &node.parameters {
-                    if k.starts_with("param_") {
-                        if let Ok(f) = v.parse::<f64>() {
-                            params.entry(key.clone()).or_insert(f);
-                        }
+                    if k.starts_with("param_")
+                        && let Ok(f) = v.parse::<f64>()
+                    {
+                        params.entry(key.clone()).or_insert(f);
                     }
                 }
             }

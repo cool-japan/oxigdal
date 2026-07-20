@@ -3,12 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OxiGDAL Advanced COG Viewer - WebAssembly Demo</title>
+    <title>OxiGDAL GeoLab — Pure-Rust geospatial WebAssembly lab</title>
 
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-          crossorigin=""/>
+    <!-- Leaflet CSS (vendored, zero-CDN) -->
+    <link rel="stylesheet" href="./vendor/leaflet/leaflet.css"/>
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="style.css">
@@ -19,8 +17,8 @@
         <header class="app-header">
             <div class="header-content">
                 <div class="header-left">
-                    <h1 class="app-title">OxiGDAL COG Viewer</h1>
-                    <p class="app-subtitle">Advanced Cloud Optimized GeoTIFF viewer powered by WebAssembly</p>
+                    <h1 class="app-title">OxiGDAL GeoLab</h1>
+                    <p class="app-subtitle">Pure-Rust geospatial WebAssembly lab — COG, terrain &amp; vectors, 100% client-side</p>
                 </div>
                 <div class="header-right">
                     <div id="version-badge" class="version-badge">Loading...</div>
@@ -50,6 +48,18 @@
                             Load
                         </button>
                     </div>
+
+                    <div id="drop-zone" class="drop-zone">
+                        <div class="drop-zone-icon">🗂️</div>
+                        <p class="drop-zone-text">Drag &amp; drop a GeoTIFF</p>
+                        <p class="drop-zone-or">or</p>
+                        <label for="file-input" class="btn btn-secondary drop-zone-btn">
+                            <span class="btn-icon">📁</span>
+                            Choose file…
+                        </label>
+                        <input type="file" id="file-input" class="file-input-hidden" accept=".tif,.tiff">
+                        <p class="drop-zone-note">Local files are decoded in-browser and never uploaded.</p>
+                    </div>
                 </div>
 
                 <div class="sidebar-section">
@@ -64,11 +74,11 @@
                         </button>
 
                         <button class="example-card" data-url="395.tif"
-                                data-name="Multi-Tile Test (San Francisco)"
-                                data-description="2x2 tiled GeoTIFF">
-                            <div class="card-icon">🔲</div>
-                            <div class="card-title">Multi-Tile (SF)</div>
-                            <div class="card-description">512x512 px (2x2 tiles)</div>
+                                data-name="San Francisco DEM (395.tif)"
+                                data-description="Single-band i16 elevation model — try Terrain Analysis">
+                            <div class="card-icon">⛰️</div>
+                            <div class="card-title">San Francisco DEM</div>
+                            <div class="card-description">512×512 i16 elevation (EPSG:3857)</div>
                         </button>
 
                         <button class="example-card" data-url="golden-triangle-test.tif"
@@ -87,6 +97,52 @@
                             <div class="card-description">512x512 px (EPSG:4326)</div>
                         </button>
                     </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Terrain Analysis</h3>
+                    <p class="section-hint">Runs on a single-band elevation raster (DEM). Load the San Francisco DEM above, then pick a product.</p>
+                    <div class="terrain-buttons">
+                        <button id="terrain-hillshade" class="btn btn-secondary terrain-btn">Hillshade</button>
+                        <button id="terrain-multidir" class="btn btn-secondary terrain-btn">Multidirectional</button>
+                        <button id="terrain-slope" class="btn btn-secondary terrain-btn">Slope</button>
+                        <button id="terrain-colorrelief" class="btn btn-secondary terrain-btn">Color relief</button>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="terrain-azimuth">
+                            Azimuth <span id="terrain-azimuth-value" class="slider-value">315°</span>
+                        </label>
+                        <input type="range" id="terrain-azimuth" class="slider" min="0" max="360" value="315">
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="terrain-altitude">
+                            Altitude <span id="terrain-altitude-value" class="slider-value">45°</span>
+                        </label>
+                        <input type="range" id="terrain-altitude" class="slider" min="0" max="90" value="45">
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="terrain-zfactor">
+                            Z-factor <span id="terrain-zfactor-value" class="slider-value">1.3</span>
+                        </label>
+                        <input type="range" id="terrain-zfactor" class="slider" min="0.5" max="5" step="0.1" value="1.3">
+                    </div>
+
+                    <div class="control-group">
+                        <label class="control-label" for="terrain-palette">Color-relief Palette</label>
+                        <select id="terrain-palette" class="select-field">
+                            <option value="viridis">Viridis</option>
+                            <option value="terrain">Terrain</option>
+                            <option value="plasma">Plasma</option>
+                        </select>
+                    </div>
+
+                    <button id="terrain-clear" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">↩️</span>
+                        Clear Terrain (show raster)
+                    </button>
                 </div>
 
                 <div class="sidebar-section">
@@ -324,9 +380,11 @@
                         </p>
                         <div class="about-features">
                             <div class="feature-badge">✓ Pure Rust</div>
-                            <div class="feature-badge">✓ Zero Dependencies</div>
+                            <div class="feature-badge">✓ Zero CDN (vendored)</div>
                             <div class="feature-badge">✓ HTTP Range Requests</div>
                             <div class="feature-badge">✓ Tile Caching</div>
+                            <div class="feature-badge feature-badge-metric" id="upload-badge">⬆ 0 bytes uploaded</div>
+                            <div class="feature-badge feature-badge-metric" id="fetch-badge">⬇ 0.0 KB fetched</div>
                         </div>
                         <a href="https://github.com/cool-japan/oxigdal" target="_blank" class="btn btn-link btn-full">
                             View on GitHub
@@ -347,14 +405,12 @@
         </footer>
     </div>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-            crossorigin=""></script>
+    <!-- Leaflet JS (vendored, zero-CDN) -->
+    <script src="./vendor/leaflet/leaflet.js"></script>
 
-    <!-- Optional: FlatGeobuf and Shapefile support -->
-    <script src="https://unpkg.com/flatgeobuf@4.4.0/dist/flatgeobuf-geojson.min.js"></script>
-    <script src="https://unpkg.com/shapefile@0.6.6/dist/shapefile.min.js"></script>
+    <!-- FlatGeobuf and Shapefile support (vendored, zero-CDN) -->
+    <script src="./vendor/flatgeobuf/flatgeobuf-geojson.min.js"></script>
+    <script src="./vendor/shapefile/shapefile.min.js"></script>
 
     <!-- Application JS -->
     <script type="module" src="main.js"></script>

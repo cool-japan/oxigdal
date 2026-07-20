@@ -6,7 +6,7 @@
 //! available.
 
 // Allow unwrap in tests and relax doc requirements.
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{
     GpuContext,
@@ -258,7 +258,7 @@ fn test_dispatch_cooperative_gemm_round_trip_4x4_identity() {
             n: n as u32,
             k: n as u32,
         };
-        dispatch_cooperative_gemm(&ctx, &pipeline, &buf_a, &buf_b, &buf_c, dim)
+        dispatch_cooperative_gemm(&ctx, &pipeline, &config, &buf_a, &buf_b, &buf_c, dim)
             .expect("dispatch_cooperative_gemm must not return Err");
 
         // Copy results to a mappable buffer and wait.
@@ -288,7 +288,9 @@ fn test_dispatch_cooperative_gemm_round_trip_4x4_identity() {
         assert!(map_result.is_ok(), "map_async timed out");
         assert!(map_result.unwrap().is_ok(), "map_async returned an error");
 
-        let view = slice.get_mapped_range();
+        let view = slice
+            .get_mapped_range()
+            .expect("get_mapped_range should succeed after successful map_async");
         let result_data: Vec<f32> = bytemuck::cast_slice(&view).to_vec();
         drop(view);
         buf_readback.unmap();
@@ -369,7 +371,7 @@ fn test_dispatch_cooperative_gemm_zero_matrix_yields_zero() {
             n: n as u32,
             k: n as u32,
         };
-        dispatch_cooperative_gemm(&ctx, &pipeline, &buf_a, &buf_b, &buf_c, dim)
+        dispatch_cooperative_gemm(&ctx, &pipeline, &config, &buf_a, &buf_b, &buf_c, dim)
             .expect("dispatch_cooperative_gemm must not return Err");
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -398,7 +400,9 @@ fn test_dispatch_cooperative_gemm_zero_matrix_yields_zero() {
             "zero-matrix map_async returned an error"
         );
 
-        let view = slice.get_mapped_range();
+        let view = slice
+            .get_mapped_range()
+            .expect("get_mapped_range should succeed after successful map_async");
         let result_data: Vec<f32> = bytemuck::cast_slice(&view).to_vec();
         drop(view);
         buf_readback.unmap();
@@ -408,6 +412,134 @@ fn test_dispatch_cooperative_gemm_zero_matrix_yields_zero() {
                 v.abs() < 1e-6,
                 "zero_matrix × any_matrix must be all zeros; C[{idx}] = {v}"
             );
+        }
+    }));
+    let _ = result;
+}
+
+/// Regression test for the dispatch/tile-size coupling bug: a pipeline built
+/// with a non-default (8×8×8) tile and a matrix larger than one tile must be
+/// fully computed. With the old hardcoded `TILE = 16` the dispatch launched
+/// only `ceil(16/16) = 1` workgroup per axis, covering just the top-left 8×8
+/// block and leaving the rest of C at zero.
+#[test]
+fn test_dispatch_cooperative_gemm_non_default_tile_covers_full_matrix() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = match try_gpu_context() {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Non-default tile: 8×8×8 with a matching 8×8 workgroup.
+        let config = CoopMatrixGemmConfig {
+            dim: CoopMatrixDim { m: 8, n: 8, k: 8 },
+            workgroup_size: (8, 8, 1),
+            ..CoopMatrixGemmConfig::default()
+        };
+        let pipeline = match build_cooperative_matrix_gemm_pipeline(&ctx, &config) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("Skipping non-default-tile test — pipeline unavailable: {e}");
+                return;
+            }
+        };
+
+        // Logical matrix 16×16 — larger than one 8×8 tile in both axes.
+        let n: usize = 16;
+
+        // A = identity, B = arbitrary; identity × B == B, so every element of
+        // C must equal the corresponding element of B — including the lower and
+        // right blocks that a single-tile dispatch would never touch.
+        let mut identity = vec![0.0_f32; n * n];
+        for i in 0..n {
+            identity[i * n + i] = 1.0;
+        }
+        let b_data: Vec<f32> = (0..(n * n)).map(|i| (i as f32) + 1.0).collect();
+
+        let device = ctx.device();
+        let queue = ctx.queue();
+        let buf_size = (n * n * std::mem::size_of::<f32>()) as u64;
+
+        let buf_a = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nd_a"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buf_b = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nd_b"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buf_c = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nd_c"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nd_readback"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        queue.write_buffer(&buf_a, 0, bytemuck::cast_slice(&identity));
+        queue.write_buffer(&buf_b, 0, bytemuck::cast_slice(&b_data));
+
+        let dim = CoopMatrixDim {
+            m: n as u32,
+            n: n as u32,
+            k: n as u32,
+        };
+        dispatch_cooperative_gemm(&ctx, &pipeline, &config, &buf_a, &buf_b, &buf_c, dim)
+            .expect("dispatch_cooperative_gemm must not return Err");
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nd_readback_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&buf_c, 0, &buf_readback, 0, buf_size);
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buf_readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).expect("channel send failed");
+        });
+        while let Ok(poll) = device.poll(wgpu::PollType::Poll) {
+            if matches!(poll, wgpu::PollStatus::QueueEmpty) {
+                break;
+            }
+            if rx.try_recv().is_ok() {
+                break;
+            }
+        }
+        let map_result = rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert!(map_result.is_ok(), "non-default-tile map_async timed out");
+        assert!(
+            map_result.unwrap().is_ok(),
+            "non-default-tile map_async returned an error"
+        );
+
+        let view = slice
+            .get_mapped_range()
+            .expect("get_mapped_range should succeed after successful map_async");
+        let result_data: Vec<f32> = bytemuck::cast_slice(&view).to_vec();
+        drop(view);
+        buf_readback.unmap();
+
+        // identity × B == B for every element, across all four 8×8 quadrants.
+        for row in 0..n {
+            for col in 0..n {
+                let expected = b_data[row * n + col];
+                let got = result_data[row * n + col];
+                assert!(
+                    (got - expected).abs() < 1e-3,
+                    "C[{row},{col}] = {got}, expected {expected} (identity×B); \
+                     a mis-dispatched tile leaves this element at 0"
+                );
+            }
         }
     }));
     let _ = result;

@@ -117,7 +117,7 @@ impl ProgressTracker {
     /// Increments the progress counter
     pub fn increment(&self) {
         let current = self.processed.fetch_add(1, Ordering::Relaxed) + 1;
-        if current % 10 == 0 || current == self.total {
+        if current.is_multiple_of(10) || current == self.total {
             let percent = (current * 100) / self.total;
             tracing::debug!(
                 "Processing tiles: {}/{} ({}%)",

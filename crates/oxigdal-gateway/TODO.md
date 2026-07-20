@@ -2,7 +2,7 @@
 
 > **Purpose:** Enterprise API gateway — rate-limiting, JWT/OAuth2 auth, GraphQL, WebSocket multiplexing, load balancing — for OxiGDAL services.
 > **Status (2026-05-16):** 17,917 LoC (src) · 245 tests (225 inline + 20 in tests/) · 2 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Implement the actual HTTP request pipeline in `handle_connection` (currently no-op).

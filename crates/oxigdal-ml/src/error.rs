@@ -133,6 +133,22 @@ pub enum InferenceError {
         actual: String,
     },
 
+    /// Band (channel) count mismatch between the input buffer and the model.
+    ///
+    /// A [`RasterBuffer`](oxigdal_core::buffer::RasterBuffer) is single-band, so
+    /// a single buffer can only ever supply one channel. This error is raised
+    /// when a model declares more (or fewer) input channels than the supplied
+    /// buffer provides, instead of silently building a wrong-shaped tensor.
+    #[error(
+        "Band count mismatch: model expects {expected} channel(s) but the input buffer supplies {actual}"
+    )]
+    InvalidBandCount {
+        /// Channel count the model expects
+        expected: usize,
+        /// Channel count the buffer supplies
+        actual: usize,
+    },
+
     /// Batch size mismatch
     #[error("Batch size mismatch: expected {expected}, got {actual}")]
     BatchSizeMismatch {

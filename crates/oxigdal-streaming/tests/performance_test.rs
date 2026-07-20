@@ -1,6 +1,8 @@
 //! Integration tests for performance-oriented streaming modules:
 //! `io_coalescing`, `mmap`, and `arrow_ipc`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::io::Write;
 
 use oxigdal_streaming::arrow_ipc::{

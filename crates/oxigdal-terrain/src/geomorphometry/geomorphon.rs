@@ -240,10 +240,10 @@ where
             let elev_center: T = dem[[r, c]];
 
             // nodata check
-            if let Some(nd) = nodata {
-                if (elev_center - nd).abs() < T::epsilon() {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (elev_center - nd).abs() < T::epsilon()
+            {
+                continue;
             }
 
             let elev_f64: f64 = elev_center.into();

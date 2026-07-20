@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure Rust GeoPackage (GPKG) reader for OxiGDAL — SQLite format parser without C dependencies.
 > **Status (2026-05-16):** ~3,992 Rust LoC · 156 tests · 0 in-source `TODO:` markers (gaps are missing modules in the public API).
-> **Roadmap:** v0.1.5 (current slice) → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 (current slice) → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

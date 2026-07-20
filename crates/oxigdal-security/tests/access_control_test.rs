@@ -1,4 +1,5 @@
 //! Integration tests for access control.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::access_control::{
     AccessContext, AccessControlEvaluator, AccessDecision, AccessRequest, Action, Resource,
@@ -29,8 +30,18 @@ fn test_rbac_access_control() {
         .assign_role("user-123", "viewer")
         .expect("Failed to assign role");
 
-    assert!(engine.has_permission("user-123", Action::Read, ResourceType::Dataset));
-    assert!(!engine.has_permission("user-123", Action::Write, ResourceType::Dataset));
+    assert!(engine.has_permission(
+        "user-123",
+        Action::Read,
+        ResourceType::Dataset,
+        "dataset-456"
+    ));
+    assert!(!engine.has_permission(
+        "user-123",
+        Action::Write,
+        ResourceType::Dataset,
+        "dataset-456"
+    ));
 }
 
 #[test]

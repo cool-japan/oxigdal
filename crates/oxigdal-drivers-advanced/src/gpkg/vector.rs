@@ -5,6 +5,10 @@ use crate::error::{Error, Result};
 use oxisql_core::ToSqlValue;
 use std::str::FromStr;
 
+/// Raw `(min_x, min_y, max_x, max_y)` row from `gpkg_contents`, each column
+/// nullable independently at the SQL level.
+type ExtentRow = Option<(Option<f64>, Option<f64>, Option<f64>, Option<f64>)>;
+
 /// Geometry type enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryType {
@@ -219,24 +223,23 @@ impl FeatureTable {
             "SELECT min_x, min_y, max_x, max_y FROM gpkg_contents WHERE table_name = $1",
             &[&tname as &dyn ToSqlValue],
         )?;
-        let result: Option<(Option<f64>, Option<f64>, Option<f64>, Option<f64>)> =
-            if let Some(row) = rows.into_iter().next() {
-                let min_x: Option<f64> = row
-                    .try_get_by_index(0)
-                    .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
-                let min_y: Option<f64> = row
-                    .try_get_by_index(1)
-                    .map_err(|e| Error::geopackage(format!("column 1: {e}")))?;
-                let max_x: Option<f64> = row
-                    .try_get_by_index(2)
-                    .map_err(|e| Error::geopackage(format!("column 2: {e}")))?;
-                let max_y: Option<f64> = row
-                    .try_get_by_index(3)
-                    .map_err(|e| Error::geopackage(format!("column 3: {e}")))?;
-                Some((min_x, min_y, max_x, max_y))
-            } else {
-                None
-            };
+        let result: ExtentRow = if let Some(row) = rows.into_iter().next() {
+            let min_x: Option<f64> = row
+                .try_get_by_index(0)
+                .map_err(|e| Error::geopackage(format!("column 0: {e}")))?;
+            let min_y: Option<f64> = row
+                .try_get_by_index(1)
+                .map_err(|e| Error::geopackage(format!("column 1: {e}")))?;
+            let max_x: Option<f64> = row
+                .try_get_by_index(2)
+                .map_err(|e| Error::geopackage(format!("column 2: {e}")))?;
+            let max_y: Option<f64> = row
+                .try_get_by_index(3)
+                .map_err(|e| Error::geopackage(format!("column 3: {e}")))?;
+            Some((min_x, min_y, max_x, max_y))
+        } else {
+            None
+        };
 
         match result {
             Some((Some(min_x), Some(min_y), Some(max_x), Some(max_y))) => {

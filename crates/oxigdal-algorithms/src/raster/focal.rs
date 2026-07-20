@@ -91,9 +91,17 @@ impl WindowShape {
             .build()
             .into());
         }
-        if width % 2 == 0 || height % 2 == 0 {
-            let suggested_width = if width % 2 == 0 { width + 1 } else { width };
-            let suggested_height = if height % 2 == 0 { height + 1 } else { height };
+        if width.is_multiple_of(2) || height.is_multiple_of(2) {
+            let suggested_width = if width.is_multiple_of(2) {
+                width + 1
+            } else {
+                width
+            };
+            let suggested_height = if height.is_multiple_of(2) {
+                height + 1
+            } else {
+                height
+            };
             return Err(OxiGdalError::invalid_parameter_builder(
                 "window_size",
                 format!("window dimensions must be odd, got {}x{}", width, height),
@@ -176,9 +184,17 @@ impl WindowShape {
             .build()
             .into());
         }
-        if width % 2 == 0 || height % 2 == 0 {
-            let suggested_width = if width % 2 == 0 { width + 1 } else { width };
-            let suggested_height = if height % 2 == 0 { height + 1 } else { height };
+        if width.is_multiple_of(2) || height.is_multiple_of(2) {
+            let suggested_width = if width.is_multiple_of(2) {
+                width + 1
+            } else {
+                width
+            };
+            let suggested_height = if height.is_multiple_of(2) {
+                height + 1
+            } else {
+                height
+            };
             return Err(OxiGdalError::invalid_parameter_builder(
                 "window_size",
                 format!("window dimensions must be odd, got {}x{}", width, height),
@@ -713,7 +729,7 @@ pub fn focal_mean_separable(
     width: usize,
     height: usize,
 ) -> Result<RasterBuffer> {
-    if width % 2 == 0 || height % 2 == 0 {
+    if width.is_multiple_of(2) || height.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window dimensions must be odd".to_string(),

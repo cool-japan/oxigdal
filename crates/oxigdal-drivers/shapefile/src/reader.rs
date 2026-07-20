@@ -136,10 +136,10 @@ impl ShapefileReader {
         let mut dbf_reader = DbfReader::new(dbf_reader)?;
         let header_code_page = dbf_reader.header().code_page;
         // Discover and attach the sibling memo file (`.dbt` / `.DBT`) if present.
-        if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
-            if let Ok(memo) = MemoFile::open(&memo_path) {
-                dbf_reader.set_memo_file(memo);
-            }
+        if let Some(memo_path) = Self::discover_memo_path(&dbf_path)
+            && let Ok(memo) = MemoFile::open(&memo_path)
+        {
+            dbf_reader.set_memo_file(memo);
         }
         let field_descriptors = dbf_reader.field_descriptors().to_vec();
 
@@ -304,10 +304,10 @@ impl ShapefileReader {
         let dbf_reader = BufReader::new(dbf_file);
         let mut dbf_reader = DbfReader::new(dbf_reader)?;
         // Re-attach the sibling memo file so streamed records dereference memos.
-        if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
-            if let Ok(memo) = MemoFile::open(&memo_path) {
-                dbf_reader.set_memo_file(memo);
-            }
+        if let Some(memo_path) = Self::discover_memo_path(&dbf_path)
+            && let Ok(memo) = MemoFile::open(&memo_path)
+        {
+            dbf_reader.set_memo_file(memo);
         }
         dbf_reader.set_encoding(self.resolved_encoding);
 
@@ -371,10 +371,10 @@ impl ShapefileReader {
         let dbf_reader = BufReader::new(dbf_file);
         let mut dbf_reader = DbfReader::new(dbf_reader)?;
         // Re-attach the sibling memo file so batch-read records dereference memos.
-        if let Some(memo_path) = Self::discover_memo_path(&dbf_path) {
-            if let Ok(memo) = MemoFile::open(&memo_path) {
-                dbf_reader.set_memo_file(memo);
-            }
+        if let Some(memo_path) = Self::discover_memo_path(&dbf_path)
+            && let Ok(memo) = MemoFile::open(&memo_path)
+        {
+            dbf_reader.set_memo_file(memo);
         }
         dbf_reader.set_encoding(self.resolved_encoding);
 
@@ -466,10 +466,10 @@ impl ShapefileReader {
                             .map(|p| Coordinate::new_2d(p.x, p.y))
                             .collect();
 
-                        if coords.len() >= 2 {
-                            if let Ok(linestring) = CoreLineString::new(coords) {
-                                linestrings.push(linestring);
-                            }
+                        if coords.len() >= 2
+                            && let Ok(linestring) = CoreLineString::new(coords)
+                        {
+                            linestrings.push(linestring);
                         }
                     }
 
@@ -524,10 +524,10 @@ impl ShapefileReader {
                         .map(|p| Coordinate::new_2d(p.x, p.y))
                         .collect();
 
-                    if interior_coords.len() >= 4 {
-                        if let Ok(interior) = CoreLineString::new(interior_coords) {
-                            interiors.push(interior);
-                        }
+                    if interior_coords.len() >= 4
+                        && let Ok(interior) = CoreLineString::new(interior_coords)
+                    {
+                        interiors.push(interior);
                     }
                 }
 
@@ -644,10 +644,10 @@ impl ShapefileReader {
                     .enumerate()
                     .map(|(j, p)| make_coord(start + j, p))
                     .collect();
-                if coords.len() >= 2 {
-                    if let Ok(ls) = CoreLineString::new(coords) {
-                        linestrings.push(ls);
-                    }
+                if coords.len() >= 2
+                    && let Ok(ls) = CoreLineString::new(coords)
+                {
+                    linestrings.push(ls);
                 }
             }
             if linestrings.is_empty() {
@@ -712,10 +712,10 @@ impl ShapefileReader {
                 .enumerate()
                 .map(|(j, p)| make_coord(start + j, p))
                 .collect();
-            if coords.len() >= 4 {
-                if let Ok(ring) = CoreLineString::new(coords) {
-                    interiors.push(ring);
-                }
+            if coords.len() >= 4
+                && let Ok(ring) = CoreLineString::new(coords)
+            {
+                interiors.push(ring);
             }
         }
         let polygon = CorePolygon::new(exterior, interiors)
@@ -790,10 +790,10 @@ impl ShapefileReader {
                     .enumerate()
                     .map(|(j, p)| make_coord(start + j, p))
                     .collect();
-                if coords.len() >= 2 {
-                    if let Ok(ls) = CoreLineString::new(coords) {
-                        linestrings.push(ls);
-                    }
+                if coords.len() >= 2
+                    && let Ok(ls) = CoreLineString::new(coords)
+                {
+                    linestrings.push(ls);
                 }
             }
             if linestrings.is_empty() {
@@ -852,10 +852,10 @@ impl ShapefileReader {
                 .enumerate()
                 .map(|(j, p)| make_coord(start + j, p))
                 .collect();
-            if coords.len() >= 4 {
-                if let Ok(ring) = CoreLineString::new(coords) {
-                    interiors.push(ring);
-                }
+            if coords.len() >= 4
+                && let Ok(ring) = CoreLineString::new(coords)
+            {
+                interiors.push(ring);
             }
         }
         let polygon = CorePolygon::new(exterior, interiors)

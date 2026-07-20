@@ -150,6 +150,12 @@ impl RealtimeScheduler {
 }
 
 /// Periodic task specification
+///
+/// A task may carry a `run` function pointer that is invoked by
+/// [`RateMonotonicScheduler::schedule`] when the task becomes ready. Tasks
+/// created without a runner (via [`PeriodicTask::new`]) only advance their
+/// period bookkeeping when scheduled; use [`PeriodicTask::with_runner`] or
+/// [`RateMonotonicScheduler::schedule_with`] to run real work.
 #[derive(Debug, Clone)]
 pub struct PeriodicTask {
     /// Period in microseconds
@@ -160,17 +166,55 @@ pub struct PeriodicTask {
     pub priority: Priority,
     /// Last execution time (None if never executed)
     last_exec_us: Option<u64>,
+    /// Optional work executed when the task is ready.
+    ///
+    /// A plain `fn()` pointer keeps `PeriodicTask` usable in `no_std` targets
+    /// without an allocator. Stateful tasks should use
+    /// [`RateMonotonicScheduler::schedule_with`] instead.
+    run: Option<fn()>,
 }
 
 impl PeriodicTask {
-    /// Create a new periodic task
+    /// Create a new periodic task without an attached runner
+    ///
+    /// When scheduled, such a task only advances its period bookkeeping and
+    /// records a zero-duration execution. Attach work with
+    /// [`PeriodicTask::with_runner`] or drive execution through
+    /// [`RateMonotonicScheduler::schedule_with`].
     pub const fn new(period_us: u64, budget_us: u64, priority: Priority) -> Self {
         Self {
             period_us,
             budget_us,
             priority,
             last_exec_us: None,
+            run: None,
         }
+    }
+
+    /// Create a new periodic task with an attached runner function
+    ///
+    /// The `run` function is executed by [`RateMonotonicScheduler::schedule`]
+    /// each time the task becomes ready, and its wall-clock duration is
+    /// recorded in the task statistics (including deadline-miss detection
+    /// against `budget_us`).
+    pub const fn with_runner(
+        period_us: u64,
+        budget_us: u64,
+        priority: Priority,
+        run: fn(),
+    ) -> Self {
+        Self {
+            period_us,
+            budget_us,
+            priority,
+            last_exec_us: None,
+            run: Some(run),
+        }
+    }
+
+    /// Get the attached runner, if any
+    pub fn runner(&self) -> Option<fn()> {
+        self.run
     }
 
     /// Check if task is ready to execute
@@ -320,26 +364,70 @@ impl<const MAX_TASKS: usize> RateMonotonicScheduler<MAX_TASKS> {
     }
 
     /// Schedule and execute ready tasks
+    ///
+    /// For each ready task the attached runner (see
+    /// [`PeriodicTask::with_runner`]) is invoked and its wall-clock duration is
+    /// measured against the task budget. Tasks without a runner advance their
+    /// period bookkeeping and record a zero-duration execution. Returns the
+    /// number of tasks that became ready this tick.
     pub fn schedule(&mut self) -> Result<usize> {
         let current_us = self.scheduler.elapsed_us();
         let mut executed: usize = 0;
 
-        for (i, task) in self.tasks.iter_mut().enumerate() {
-            if task.is_ready(current_us) {
-                let start_us = self.scheduler.elapsed_us();
-
-                // Task would be executed here
-                // For now, just mark as executed
-
-                let end_us = self.scheduler.elapsed_us();
-                let exec_us = end_us.saturating_sub(start_us);
-
-                let missed = exec_us > task.budget_us;
-                self.stats[i].record_execution(exec_us, missed);
-
-                task.mark_executed(current_us);
-                executed = executed.saturating_add(1);
+        for i in 0..self.tasks.len() {
+            if !self.tasks[i].is_ready(current_us) {
+                continue;
             }
+
+            let start_us = self.scheduler.elapsed_us();
+            if let Some(run) = self.tasks[i].run {
+                // Actually execute the task body.
+                run();
+            }
+            let end_us = self.scheduler.elapsed_us();
+            let exec_us = end_us.saturating_sub(start_us);
+
+            let missed = exec_us > self.tasks[i].budget_us;
+            self.stats[i].record_execution(exec_us, missed);
+
+            self.tasks[i].mark_executed(current_us);
+            executed = executed.saturating_add(1);
+        }
+
+        Ok(executed)
+    }
+
+    /// Schedule ready tasks, executing arbitrary (possibly stateful) work
+    ///
+    /// For each ready task the `dispatch` closure is invoked with the task's
+    /// index; its wall-clock duration is measured against the task budget and
+    /// recorded in the task statistics. This is the preferred entry point for
+    /// tasks that need to capture state, since [`PeriodicTask`] can only store a
+    /// bare `fn()` runner.
+    ///
+    /// Returns the number of tasks that became ready this tick.
+    pub fn schedule_with<F>(&mut self, mut dispatch: F) -> Result<usize>
+    where
+        F: FnMut(usize),
+    {
+        let current_us = self.scheduler.elapsed_us();
+        let mut executed: usize = 0;
+
+        for i in 0..self.tasks.len() {
+            if !self.tasks[i].is_ready(current_us) {
+                continue;
+            }
+
+            let start_us = self.scheduler.elapsed_us();
+            dispatch(i);
+            let end_us = self.scheduler.elapsed_us();
+            let exec_us = end_us.saturating_sub(start_us);
+
+            let missed = exec_us > self.tasks[i].budget_us;
+            self.stats[i].record_execution(exec_us, missed);
+
+            self.tasks[i].mark_executed(current_us);
+            executed = executed.saturating_add(1);
         }
 
         Ok(executed)
@@ -431,6 +519,52 @@ mod tests {
         assert_eq!(stats.max_exec_us, 200);
         assert_eq!(stats.avg_exec_us(), 150);
         assert_eq!(stats.deadline_misses, 1);
+    }
+
+    #[test]
+    fn test_schedule_runs_attached_runner() {
+        use core::sync::atomic::AtomicUsize;
+
+        static RUN_COUNT: AtomicUsize = AtomicUsize::new(0);
+        fn body() {
+            RUN_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let mut scheduler = RateMonotonicScheduler::<4>::new(1);
+        scheduler.init();
+        scheduler
+            .add_task(PeriodicTask::with_runner(1000, 100, Priority::Normal, body))
+            .expect("add_task failed");
+
+        let executed = scheduler.schedule().expect("schedule failed");
+        assert_eq!(executed, 1, "ready task should be scheduled");
+        assert_eq!(
+            RUN_COUNT.load(Ordering::Relaxed),
+            1,
+            "attached runner must actually execute"
+        );
+
+        let stats = scheduler.get_stats(0).expect("stats should exist");
+        assert_eq!(stats.executions, 1);
+    }
+
+    #[test]
+    fn test_schedule_with_closure_executes() {
+        let mut scheduler = RateMonotonicScheduler::<4>::new(1);
+        scheduler.init();
+        scheduler
+            .add_task(PeriodicTask::new(1000, 100, Priority::Normal))
+            .expect("add_task failed");
+
+        let mut counter = 0usize;
+        let executed = scheduler
+            .schedule_with(|_idx| {
+                counter += 1;
+            })
+            .expect("schedule_with failed");
+
+        assert_eq!(executed, 1);
+        assert_eq!(counter, 1, "dispatch closure must run for the ready task");
     }
 
     #[test]

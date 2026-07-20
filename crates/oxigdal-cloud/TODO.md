@@ -2,7 +2,7 @@
 
 > **Purpose:** Advanced cloud storage backends for OxiGDAL - Pure Rust cloud integration (S3/Azure Blob/GCS/HTTP, retry, multi-level cache, prefetch).
 > **Status (2026-05-16):** 9,110 Rust LoC · 84 tests · 7 real-stub sites (Azure 5, GCS 1, multicloud 1)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 - [ ] Wire `AzureBlobBackend::get/put/delete/exists/list` to `azure_storage_blobs` SDK (replace 5 placeholders)

@@ -99,13 +99,12 @@ impl OptimizationRule for PredicatePushdown {
             }
 
             // Check if predicate can be pushed to a single table
-            if predicate_tables.len() == 1 {
-                if let Some(table_name) = predicate_tables.iter().next() {
-                    if table_aliases.contains(table_name) {
-                        pushed_predicates.push(predicate);
-                        continue;
-                    }
-                }
+            if predicate_tables.len() == 1
+                && let Some(table_name) = predicate_tables.iter().next()
+                && table_aliases.contains(table_name)
+            {
+                pushed_predicates.push(predicate);
+                continue;
             }
             remaining_predicates.push(predicate);
         }
@@ -493,10 +492,10 @@ fn fold_expr(expr: Expr) -> Expr {
             let right = fold_expr(*right);
 
             // Try to fold if both are literals
-            if let (Expr::Literal(l), Expr::Literal(r)) = (&left, &right) {
-                if let Some(result) = try_fold_binary(l, op, r) {
-                    return Expr::Literal(result);
-                }
+            if let (Expr::Literal(l), Expr::Literal(r)) = (&left, &right)
+                && let Some(result) = try_fold_binary(l, op, r)
+            {
+                return Expr::Literal(result);
             }
 
             Expr::BinaryOp {
@@ -507,10 +506,10 @@ fn fold_expr(expr: Expr) -> Expr {
         }
         Expr::UnaryOp { op, expr } => {
             let expr = fold_expr(*expr);
-            if let Expr::Literal(lit) = &expr {
-                if let Some(result) = try_fold_unary(op, lit) {
-                    return Expr::Literal(result);
-                }
+            if let Expr::Literal(lit) = &expr
+                && let Some(result) = try_fold_unary(op, lit)
+            {
+                return Expr::Literal(result);
             }
             Expr::UnaryOp {
                 op,

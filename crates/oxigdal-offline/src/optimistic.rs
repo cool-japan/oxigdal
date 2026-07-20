@@ -53,18 +53,18 @@ impl OptimisticTracker {
 
     /// Confirm an optimistic update
     pub fn confirm(&self, record_id: &RecordId, operation_id: &OperationId) -> Result<()> {
-        if let Some(mut update) = self.pending.get_mut(record_id) {
-            if update.operation_id == *operation_id {
-                update.confirmed = true;
+        if let Some(mut update) = self.pending.get_mut(record_id)
+            && update.operation_id == *operation_id
+        {
+            update.confirmed = true;
 
-                tracing::debug!(
-                    record_id = %record_id,
-                    operation_id = %operation_id,
-                    "Confirmed optimistic update"
-                );
+            tracing::debug!(
+                record_id = %record_id,
+                operation_id = %operation_id,
+                "Confirmed optimistic update"
+            );
 
-                return Ok(());
-            }
+            return Ok(());
         }
 
         Err(Error::not_found(format!(

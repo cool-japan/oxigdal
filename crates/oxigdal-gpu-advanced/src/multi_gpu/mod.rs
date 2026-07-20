@@ -223,6 +223,7 @@ impl MultiGpuManager {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     force_fallback_adapter: false,
                     compatible_surface: None,
+                    apply_limit_buckets: false,
                 })
                 .await
             {
@@ -305,18 +306,17 @@ impl MultiGpuManager {
             .devices
             .iter()
             .filter(|device| {
-                if let Some(min_mem) = min_memory {
-                    if let Some(mem_size) = device.info.memory_size {
-                        if mem_size < min_mem {
-                            return false;
-                        }
-                    }
+                if let Some(min_mem) = min_memory
+                    && let Some(mem_size) = device.info.memory_size
+                    && mem_size < min_mem
+                {
+                    return false;
                 }
 
-                if let Some(pref_type) = preferred_type {
-                    if device.info.device_type != pref_type {
-                        return false;
-                    }
+                if let Some(pref_type) = preferred_type
+                    && device.info.device_type != pref_type
+                {
+                    return false;
                 }
 
                 device.is_available()

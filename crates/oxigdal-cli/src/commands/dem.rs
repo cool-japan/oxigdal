@@ -225,6 +225,19 @@ pub fn execute(args: DemArgs, format: OutputFormat) -> Result<()> {
     }
 }
 
+/// Returns the DEM's real ground pixel size (absolute value of the
+/// geotransform's pixel width) for use in terrain-derivative gradient
+/// calculations. Falls back to `1.0` when no geotransform is available
+/// (e.g. a DEM without georeferencing).
+fn dem_pixel_size(raster_info: &raster::RasterInfo) -> f64 {
+    raster_info
+        .geo_transform
+        .as_ref()
+        .map(|gt| gt.pixel_width.abs())
+        .filter(|pw| *pw > 0.0)
+        .unwrap_or(1.0)
+}
+
 fn execute_hillshade(args: HillshadeArgs, format: OutputFormat) -> Result<()> {
     let start = std::time::Instant::now();
 
@@ -265,12 +278,14 @@ fn execute_hillshade(args: HillshadeArgs, format: OutputFormat) -> Result<()> {
         "Calculating hillshade"
     });
 
+    let pixel_size = dem_pixel_size(&raster_info);
+
     let hillshade_band = if args.combined {
         // Use combined/multidirectional hillshade with GDAL-style weights
         let combined_params = CombinedHillshadeParams::gdal_multidirectional()
             .with_altitude(args.altitude)
             .with_z_factor(args.z_factor)
-            .with_pixel_size(1.0)
+            .with_pixel_size(pixel_size)
             .with_scale(args.scale);
 
         combined_hillshade(&dem_data, combined_params)
@@ -282,7 +297,7 @@ fn execute_hillshade(args: HillshadeArgs, format: OutputFormat) -> Result<()> {
             azimuth: args.azimuth,
             altitude: args.altitude,
             z_factor: args.z_factor,
-            pixel_size: 1.0,
+            pixel_size,
             scale: args.scale,
         };
         hillshade(&dem_data, params).context("Failed to calculate hillshade")?
@@ -339,8 +354,11 @@ fn execute_slope(args: SlopeArgs, format: OutputFormat) -> Result<()> {
 
     // Calculate slope
     let pb = progress::create_spinner("Calculating slope");
-    // slope(dem, pixel_size, z_factor) — z_factor=1.0, scale applies as pixel_size
-    let slope_band = slope(&dem_data, args.scale, 1.0).context("Failed to calculate slope")?;
+    // slope(dem, pixel_size, z_factor) — pixel_size is the DEM's real ground
+    // resolution; --scale (GDAL -s convention: ratio of vertical to
+    // horizontal units) is applied as a multiplier on top of it.
+    let pixel_size = dem_pixel_size(&raster_info) * args.scale;
+    let slope_band = slope(&dem_data, pixel_size, 1.0).context("Failed to calculate slope")?;
 
     // Convert to percent if requested (slope is returned in degrees, convert per-pixel)
     let slope_band = if matches!(args.slope_format, SlopeFormat::Percent) {
@@ -415,21 +433,25 @@ fn execute_aspect(args: AspectArgs, format: OutputFormat) -> Result<()> {
             .context("Failed to read DEM data")?;
     pb.finish_and_clear();
 
-    // Calculate aspect — aspect(dem, pixel_size, z_factor)
+    // Calculate aspect — aspect(dem, pixel_size, z_factor). Aspect is derived
+    // from atan2(dy, dx) so it is invariant to the pixel_size magnitude for
+    // square pixels, but pass the real value for consistency with slope/hillshade.
     let pb = progress::create_spinner("Calculating aspect");
-    let mut aspect_band = aspect(&dem_data, 1.0, 1.0).context("Failed to calculate aspect")?;
+    let pixel_size = dem_pixel_size(&raster_info);
+    let mut aspect_band =
+        aspect(&dem_data, pixel_size, 1.0).context("Failed to calculate aspect")?;
 
     // Optionally map flat areas (-9999) to 0
     if args.zero_for_flat {
         let flat_sentinel = -9999.0_f64;
         for y in 0..aspect_band.height() {
             for x in 0..aspect_band.width() {
-                if let Ok(v) = aspect_band.get_pixel(x, y) {
-                    if (v - flat_sentinel).abs() < 1.0 {
-                        aspect_band
-                            .set_pixel(x, y, 0.0)
-                            .context("Failed to set pixel")?;
-                    }
+                if let Ok(v) = aspect_band.get_pixel(x, y)
+                    && (v - flat_sentinel).abs() < 1.0
+                {
+                    aspect_band
+                        .set_pixel(x, y, 0.0)
+                        .context("Failed to set pixel")?;
                 }
             }
         }

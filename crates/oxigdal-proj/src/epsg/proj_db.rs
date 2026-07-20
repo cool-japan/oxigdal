@@ -384,9 +384,8 @@ fn build_proj_string(kind: &str) -> String {
         "+proj=tmerc +datum=WGS84 +units=m +no_defs".to_owned()
     } else if kind_lower.contains("vertical") {
         "+proj=longlat +datum=WGS84 +vunits=m +no_defs".to_owned()
-    } else if kind_lower.contains("compound") {
-        "+proj=longlat +datum=WGS84 +no_defs".to_owned()
     } else {
+        // compound, unknown, or any other type
         "+proj=longlat +datum=WGS84 +no_defs".to_owned()
     }
 }

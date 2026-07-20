@@ -646,6 +646,10 @@ pub struct MultiCloudManager {
     round_robin_counter: AtomicUsize,
     /// Health check interval
     health_check_interval: Duration,
+    /// Lazily-built, provider-id-keyed cache of concrete storage backends, so
+    /// each provider's SDK client is constructed at most once.
+    #[cfg(all(feature = "async", feature = "cache"))]
+    backend_cache: dashmap::DashMap<String, Arc<dyn CloudStorageBackend>>,
 }
 
 impl MultiCloudManager {
@@ -911,17 +915,155 @@ impl MultiCloudManager {
         }
     }
 
+    /// Constructs a concrete storage backend for `p`.
+    ///
+    /// Each provider arm is gated by the Cargo feature that pulls in the
+    /// corresponding backend implementation; if that feature is disabled the
+    /// provider is reported as unsupported rather than failing to compile.
     #[cfg(feature = "async")]
-    async fn get_from_provider(
+    fn build_backend(&self, p: &CloudProviderConfig) -> Result<Box<dyn CloudStorageBackend>> {
+        match p.provider {
+            CloudProvider::AwsS3 => {
+                #[cfg(feature = "s3")]
+                {
+                    use crate::backends::S3Backend;
+
+                    let mut backend =
+                        S3Backend::new(p.bucket.clone(), p.prefix.clone()).with_timeout(p.timeout);
+                    if let Some(region) = &p.region {
+                        backend = backend.with_region(region.aws_code());
+                    }
+                    if let Some(endpoint) = &p.endpoint {
+                        backend = backend.with_endpoint(endpoint.clone());
+                    }
+                    Ok(Box::new(backend))
+                }
+                #[cfg(not(feature = "s3"))]
+                {
+                    Err(CloudError::NotSupported {
+                        operation: format!(
+                            "AWS S3 backend for provider '{}': enable the 's3' feature",
+                            p.id()
+                        ),
+                    })
+                }
+            }
+            CloudProvider::Gcs => {
+                #[cfg(feature = "gcs")]
+                {
+                    use crate::backends::GcsBackend;
+
+                    let mut backend = GcsBackend::new(p.bucket.clone())
+                        .with_prefix(p.prefix.clone())
+                        .with_timeout(p.timeout);
+                    if let Some(project_id) = p.options.get("project_id") {
+                        backend = backend.with_project_id(project_id.clone());
+                    }
+                    Ok(Box::new(backend))
+                }
+                #[cfg(not(feature = "gcs"))]
+                {
+                    Err(CloudError::NotSupported {
+                        operation: format!(
+                            "GCS backend for provider '{}': enable the 'gcs' feature",
+                            p.id()
+                        ),
+                    })
+                }
+            }
+            CloudProvider::AzureBlob => {
+                #[cfg(feature = "azure-blob")]
+                {
+                    use crate::backends::AzureBlobBackend;
+
+                    let account_name = p.options.get("account_name").ok_or_else(|| {
+                        CloudError::InvalidConfiguration {
+                            message: format!(
+                                "Azure provider '{}' is missing the required 'account_name' option",
+                                p.id()
+                            ),
+                        }
+                    })?;
+
+                    let mut backend = AzureBlobBackend::new(account_name.clone(), p.bucket.clone())
+                        .with_prefix(p.prefix.clone())
+                        .with_timeout(p.timeout);
+                    if let Some(account_key) = p.options.get("account_key") {
+                        backend = backend.with_account_key(account_key.clone());
+                    }
+                    if let Some(sas_token) = p.options.get("sas_token") {
+                        backend = backend.with_sas_token(sas_token.clone());
+                    }
+                    Ok(Box::new(backend))
+                }
+                #[cfg(not(feature = "azure-blob"))]
+                {
+                    Err(CloudError::NotSupported {
+                        operation: format!(
+                            "Azure Blob backend for provider '{}': enable the 'azure-blob' feature",
+                            p.id()
+                        ),
+                    })
+                }
+            }
+            CloudProvider::Http => {
+                #[cfg(feature = "http")]
+                {
+                    use crate::backends::HttpBackend;
+
+                    let backend = HttpBackend::new(p.bucket.clone()).with_timeout(p.timeout);
+                    Ok(Box::new(backend))
+                }
+                #[cfg(not(feature = "http"))]
+                {
+                    Err(CloudError::NotSupported {
+                        operation: format!(
+                            "HTTP backend for provider '{}': enable the 'http' feature",
+                            p.id()
+                        ),
+                    })
+                }
+            }
+            CloudProvider::Custom => Err(CloudError::NotSupported {
+                operation: format!(
+                    "Custom provider '{}' has no built-in backend implementation",
+                    p.id()
+                ),
+            }),
+        }
+    }
+
+    /// Resolves the concrete backend for `provider`, reusing a previously
+    /// built instance from the backend cache when available.
+    #[cfg(all(feature = "async", feature = "cache"))]
+    fn resolve_backend(
         &self,
-        _provider: &CloudProviderConfig,
-        _key: &str,
-    ) -> Result<Bytes> {
-        // This would create the actual backend and call get
-        // For now, return a placeholder implementation
-        Err(CloudError::NotSupported {
-            operation: "Backend creation not implemented in this context".to_string(),
-        })
+        provider: &CloudProviderConfig,
+    ) -> Result<Arc<dyn CloudStorageBackend>> {
+        let id = provider.id();
+        if let Some(existing) = self.backend_cache.get(&id) {
+            return Ok(Arc::clone(existing.value()));
+        }
+
+        let backend: Arc<dyn CloudStorageBackend> = Arc::from(self.build_backend(provider)?);
+        self.backend_cache.insert(id, Arc::clone(&backend));
+        Ok(backend)
+    }
+
+    /// Resolves the concrete backend for `provider`. Without the `cache`
+    /// feature a fresh backend is built on every call.
+    #[cfg(all(feature = "async", not(feature = "cache")))]
+    fn resolve_backend(
+        &self,
+        provider: &CloudProviderConfig,
+    ) -> Result<Arc<dyn CloudStorageBackend>> {
+        Ok(Arc::from(self.build_backend(provider)?))
+    }
+
+    #[cfg(feature = "async")]
+    async fn get_from_provider(&self, provider: &CloudProviderConfig, key: &str) -> Result<Bytes> {
+        let backend = self.resolve_backend(provider)?;
+        backend.get(key).await
     }
 
     #[cfg(feature = "async")]
@@ -1011,13 +1153,12 @@ impl MultiCloudManager {
     #[cfg(feature = "async")]
     async fn put_to_provider(
         &self,
-        _provider: &CloudProviderConfig,
-        _key: &str,
-        _data: &[u8],
+        provider: &CloudProviderConfig,
+        key: &str,
+        data: &[u8],
     ) -> Result<()> {
-        Err(CloudError::NotSupported {
-            operation: "Backend creation not implemented in this context".to_string(),
-        })
+        let backend = self.resolve_backend(provider)?;
+        backend.put(key, data).await
     }
 
     #[cfg(feature = "async")]
@@ -1110,14 +1251,9 @@ impl MultiCloudManager {
     }
 
     #[cfg(feature = "async")]
-    async fn exists_in_provider(
-        &self,
-        _provider: &CloudProviderConfig,
-        _key: &str,
-    ) -> Result<bool> {
-        Err(CloudError::NotSupported {
-            operation: "Backend creation not implemented in this context".to_string(),
-        })
+    async fn exists_in_provider(&self, provider: &CloudProviderConfig, key: &str) -> Result<bool> {
+        let backend = self.resolve_backend(provider)?;
+        backend.exists(key).await
     }
 
     /// Deletes an object from all providers
@@ -1155,14 +1291,9 @@ impl MultiCloudManager {
     }
 
     #[cfg(feature = "async")]
-    async fn delete_from_provider(
-        &self,
-        _provider: &CloudProviderConfig,
-        _key: &str,
-    ) -> Result<()> {
-        Err(CloudError::NotSupported {
-            operation: "Backend creation not implemented in this context".to_string(),
-        })
+    async fn delete_from_provider(&self, provider: &CloudProviderConfig, key: &str) -> Result<()> {
+        let backend = self.resolve_backend(provider)?;
+        backend.delete(key).await
     }
 
     /// Estimates the cost of transferring data
@@ -1313,6 +1444,8 @@ impl MultiCloudManagerBuilder {
             stats,
             round_robin_counter: AtomicUsize::new(0),
             health_check_interval: self.health_check_interval,
+            #[cfg(all(feature = "async", feature = "cache"))]
+            backend_cache: dashmap::DashMap::new(),
         })
     }
 }
@@ -1655,5 +1788,100 @@ mod tests {
         assert!(provider.is_ok());
         let provider = provider.expect("Provider should be selected");
         assert_eq!(provider.provider, CloudProvider::AwsS3);
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn test_build_backend_custom_provider_not_supported() {
+        let manager = MultiCloudManager::builder()
+            .add_provider(CloudProviderConfig::http("http://example.com"))
+            .build()
+            .expect("Manager should be built");
+
+        let mut custom = CloudProviderConfig::http("http://example.com");
+        custom.provider = CloudProvider::Custom;
+
+        let result = manager.build_backend(&custom);
+        assert!(result.is_err());
+    }
+
+    #[cfg(all(feature = "async", feature = "azure-blob"))]
+    #[test]
+    fn test_build_backend_azure_requires_account_name() {
+        let manager = MultiCloudManager::builder()
+            .add_provider(CloudProviderConfig::azure("container"))
+            .build()
+            .expect("Manager should be built");
+
+        let config = CloudProviderConfig::azure("container");
+        let result = manager.build_backend(&config);
+        assert!(matches!(
+            result,
+            Err(CloudError::InvalidConfiguration { .. })
+        ));
+
+        let config_with_account = config.with_option("account_name", "myaccount");
+        let result = manager.build_backend(&config_with_account);
+        assert!(result.is_ok());
+    }
+
+    #[cfg(all(feature = "async", feature = "http"))]
+    #[test]
+    fn test_build_backend_http() {
+        let manager = MultiCloudManager::builder()
+            .add_provider(CloudProviderConfig::http("http://example.com"))
+            .build()
+            .expect("Manager should be built");
+
+        let config = CloudProviderConfig::http("http://example.com");
+        let result = manager.build_backend(&config);
+        assert!(result.is_ok());
+    }
+
+    #[cfg(all(feature = "async", feature = "s3"))]
+    #[test]
+    fn test_build_backend_s3_applies_region_and_endpoint() {
+        let manager = MultiCloudManager::builder()
+            .add_provider(CloudProviderConfig::s3("bucket"))
+            .build()
+            .expect("Manager should be built");
+
+        let config = CloudProviderConfig::s3("bucket")
+            .with_region(CloudRegion::UsWest2)
+            .with_endpoint("https://custom.example.com");
+        let result = manager.build_backend(&config);
+        assert!(result.is_ok());
+    }
+
+    #[cfg(all(feature = "async", feature = "gcs"))]
+    #[test]
+    fn test_build_backend_gcs() {
+        let manager = MultiCloudManager::builder()
+            .add_provider(CloudProviderConfig::gcs("bucket"))
+            .build()
+            .expect("Manager should be built");
+
+        let config = CloudProviderConfig::gcs("bucket").with_option("project_id", "my-project");
+        let result = manager.build_backend(&config);
+        assert!(result.is_ok());
+    }
+
+    #[cfg(all(feature = "async", feature = "http", feature = "cache"))]
+    #[test]
+    fn test_resolve_backend_caches_instance() {
+        let manager = MultiCloudManager::builder()
+            .add_provider(CloudProviderConfig::http("http://example.com"))
+            .build()
+            .expect("Manager should be built");
+
+        let config = CloudProviderConfig::http("http://example.com");
+        let first = manager
+            .resolve_backend(&config)
+            .expect("first resolve should succeed");
+        let second = manager
+            .resolve_backend(&config)
+            .expect("second resolve should succeed");
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }

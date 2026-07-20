@@ -133,7 +133,7 @@ impl TransformerConfig {
             ));
         }
 
-        if self.hidden_dim % self.num_heads != 0 {
+        if !self.hidden_dim.is_multiple_of(self.num_heads) {
             return Err(Error::invalid_parameter(
                 "hidden_dim",
                 format!("{} (num_heads={})", self.hidden_dim, self.num_heads),
@@ -411,7 +411,7 @@ struct MultiHeadAttention {
 impl MultiHeadAttention {
     /// Creates a new multi-head attention layer.
     fn new(hidden_dim: usize, num_heads: usize, dropout: f32) -> Result<Self> {
-        if hidden_dim % num_heads != 0 {
+        if !hidden_dim.is_multiple_of(num_heads) {
             return Err(Error::invalid_parameter(
                 "hidden_dim",
                 hidden_dim,

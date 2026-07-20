@@ -13,13 +13,29 @@ description = "OGC Web Services (WFS, WCS, WPS, CSW) for OxiGDAL"
 keywords = ["gis", "science", "ogc", "wfs", "wcs"]
 categories = ["web-programming::http-server", "science"]
 
+[features]
+# Pure-Rust default: no network client, no database driver in the closure.
+default = []
+# Enable real PostGIS-backed WFS transactions, feature retrieval and counting.
+postgis = ["dep:oxigdal-postgis", "dep:tokio-postgres", "dep:deadpool-postgres"]
+# Enable fetching WCS coverages from remote HTTP(S) URLs.
+remote = ["dep:reqwest"]
+
 [dependencies]
 # Internal dependencies
 oxigdal-core.workspace = true
-oxigdal-algorithms.workspace = true
+oxigdal-algorithms = { workspace = true, default-features = true }
 oxigdal-proj.workspace = true
 oxigdal-geotiff.workspace = true
 oxigdal-geojson.workspace = true
+
+# Optional database backend (PostGIS) — enabled via the `postgis` feature
+oxigdal-postgis = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true, features = ["with-serde_json-1"] }
+deadpool-postgres = { workspace = true, optional = true }
+
+# Optional HTTP client for remote WCS coverages — enabled via the `remote` feature
+reqwest = { workspace = true, optional = true }
 
 # Web framework
 axum.workspace = true
@@ -65,6 +81,9 @@ uuid.workspace = true
 lru.workspace = true
 dashmap.workspace = true
 
+# Image encoding (WCS GetCoverage PNG/JPEG output) — pure-Rust codecs only
+image.workspace = true
+
 # Compression
 oxiarc-archive = { workspace = true }
 
@@ -72,7 +91,6 @@ oxiarc-archive = { workspace = true }
 # Testing
 tempfile.workspace = true
 proptest.workspace = true
-reqwest = { workspace = true, features = ["json"] }
 
 [lints]
 workspace = true

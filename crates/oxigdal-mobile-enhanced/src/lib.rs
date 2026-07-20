@@ -107,6 +107,10 @@ pub mod android;
 /// Common error types for mobile-enhanced operations
 pub mod error;
 
+/// Shared real-OS introspection helpers (compiled only for platform modules).
+#[cfg(any(feature = "ios", feature = "android"))]
+pub(crate) mod sys_probe;
+
 // Re-export commonly used types
 pub use error::{MobileError, Result};
 

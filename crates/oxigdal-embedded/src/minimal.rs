@@ -319,10 +319,11 @@ impl<const MAX_POINTS: usize> MinimalFeature<MAX_POINTS> {
         }
 
         // Close polygon
-        if self.feature_type == FeatureType::Polygon && self.points.len() > 2 {
-            if let (Some(first), Some(last)) = (self.points.first(), self.points.last()) {
-                total += last.distance_to(first);
-            }
+        if self.feature_type == FeatureType::Polygon
+            && self.points.len() > 2
+            && let (Some(first), Some(last)) = (self.points.first(), self.points.last())
+        {
+            total += last.distance_to(first);
         }
 
         total

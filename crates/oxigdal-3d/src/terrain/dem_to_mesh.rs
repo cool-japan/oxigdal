@@ -56,10 +56,10 @@ impl Dem {
         let elev = self.elevations[idx];
 
         // Check for no-data
-        if let Some(nodata) = self.nodata {
-            if (elev - nodata).abs() < 1e-6 {
-                return None;
-            }
+        if let Some(nodata) = self.nodata
+            && (elev - nodata).abs() < 1e-6
+        {
+            return None;
         }
 
         Some(elev)

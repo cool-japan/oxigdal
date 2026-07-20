@@ -11,31 +11,35 @@ metadata:
     app.kubernetes.io/name: oxigdal
     app.kubernetes.io/component: config
 data:
-  # Server configuration
+  # Server configuration.
+  #
+  # Field/table names here MUST match `crates/oxigdal-server::config::Config` exactly - every
+  # struct in that module derives `#[serde(deny_unknown_fields)]`, so a stale or mistyped key
+  # makes the server refuse to start (loudly) rather than silently ignoring it. There is no
+  # top-level [tile], [cors], or [logging] table: tile settings live per-layer under
+  # [[layers]], CORS lives under [server], and log verbosity is controlled by the RUST_LOG
+  # env var below (see crates/oxigdal-server/src/main.rs), not a config file field.
   server.toml: |
     [server]
     host = "0.0.0.0"
     port = 8080
     workers = 4
+    enable_cors = true
+    cors_origins = ["*"]
+    # Prometheus /metrics endpoint - scraped via the `metrics` container/service port and the
+    # prometheus.io/* annotations on this Deployment (see k8s/deployment.yaml).
+    metrics_enabled = true
+    metrics_port = 8081
 
     [cache]
-    enabled = true
-    size_mb = 1024
+    memory_size_mb = 1024
     ttl_seconds = 3600
+    enable_stats = true
+    compression = false
 
-    [tile]
-    max_age = 3600
-    formats = ["png", "jpeg", "webp"]
-    default_format = "png"
-
-    [cors]
-    enabled = true
-    allowed_origins = ["*"]
-    allowed_methods = ["GET", "HEAD", "OPTIONS"]
-
-    [logging]
-    level = "info"
-    format = "json"
+    [metadata]
+    title = "OxiGDAL Tile Server"
+    abstract_ = "WMS/WMTS tile server powered by OxiGDAL"
 
   # Environment configuration
   RUST_LOG: "info"

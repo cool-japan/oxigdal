@@ -15,44 +15,50 @@
 //! # Example: Publishing Messages
 //!
 //! ```no_run
+//! # #[cfg(feature = "publisher")]
+//! # mod example {
 //! use oxigdal_pubsub::{Publisher, PublisherConfig, Message};
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let config = PublisherConfig::new("my-project", "my-topic")
-//!     .with_batching(true)
-//!     .with_batch_size(100);
+//! async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//!     let config = PublisherConfig::new("my-project", "my-topic")
+//!         .with_batching(true)
+//!         .with_batch_size(100);
 //!
-//! let publisher = Publisher::new(config).await?;
+//!     let publisher = Publisher::new(config).await?;
 //!
-//! let message = Message::new(b"Hello, Pub/Sub!".to_vec())
-//!     .with_attribute("source", "oxigdal")
-//!     .with_ordering_key("order-1");
+//!     let message = Message::new(b"Hello, Pub/Sub!".to_vec())
+//!         .with_attribute("source", "oxigdal")
+//!         .with_ordering_key("order-1");
 //!
-//! let message_id = publisher.publish(message).await?;
-//! println!("Published message: {}", message_id);
-//! # Ok(())
+//!     let message_id = publisher.publish(message).await?;
+//!     println!("Published message: {}", message_id);
+//!     Ok(())
+//! }
 //! # }
 //! ```
 //!
 //! # Example: Subscribing to Messages
 //!
 //! ```no_run
+//! # #[cfg(feature = "subscriber")]
+//! # mod example {
 //! use oxigdal_pubsub::{Subscriber, SubscriberConfig, HandlerResult};
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let config = SubscriberConfig::new("my-project", "my-subscription")
-//!     .with_ack_deadline(30);
+//! async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//!     let config = SubscriberConfig::new("my-project", "my-subscription")
+//!         .with_ack_deadline(30);
 //!
-//! let subscriber = Subscriber::new(config).await?;
+//!     let subscriber = Subscriber::new(config).await?;
 //!
-//! let handle = subscriber.start(|message| {
-//!     println!("Received: {:?}", message.data);
-//!     HandlerResult::Ack
-//! }).await?;
+//!     let _handle = subscriber.start(|message| {
+//!         println!("Received: {:?}", message.data);
+//!         HandlerResult::Ack
+//!     }).await?;
 //!
-//! // Wait for shutdown signal...
-//! subscriber.stop();
-//! # Ok(())
+//!     // Wait for shutdown signal...
+//!     subscriber.stop();
+//!     Ok(())
+//! }
 //! # }
 //! ```
 //!
@@ -110,8 +116,10 @@ pub mod schema;
 #[cfg(feature = "monitoring")]
 pub mod monitoring;
 
+#[cfg(feature = "pubsub-client")]
 pub mod topic;
 
+#[cfg(feature = "pubsub-client")]
 pub mod subscription;
 
 // Re-exports for convenience
@@ -145,11 +153,13 @@ pub use monitoring::{
     OperationTimer, PublisherMetrics, SubscriberMetrics,
 };
 
+#[cfg(feature = "pubsub-client")]
 pub use topic::{TopicBuilder, TopicConfig, TopicManager, TopicMetadata, TopicStats};
 
-#[cfg(feature = "schema")]
+#[cfg(all(feature = "pubsub-client", feature = "schema"))]
 pub use topic::SchemaSettings;
 
+#[cfg(feature = "pubsub-client")]
 pub use subscription::{
     DeadLetterPolicy, ExpirationPolicy, RetryPolicy, SubscriptionBuilder, SubscriptionCreateConfig,
     SubscriptionManager, SubscriptionMetadata, SubscriptionStats,

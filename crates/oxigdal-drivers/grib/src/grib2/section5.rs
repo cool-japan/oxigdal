@@ -49,8 +49,8 @@ impl DataRepresentationSection {
                 // common header is laid out identically; the actual JPEG2000
                 // payload decode remains out of scope).
                 let reference_value = cursor.read_f32::<BigEndian>()?;
-                let binary_scale_factor = cursor.read_i16::<BigEndian>()?;
-                let decimal_scale_factor = cursor.read_i16::<BigEndian>()?;
+                let binary_scale_factor = read_i16_sign_magnitude(&mut cursor)?;
+                let decimal_scale_factor = read_i16_sign_magnitude(&mut cursor)?;
                 let bits_per_value = cursor.read_u8()?;
 
                 Ok(Self {
@@ -105,10 +105,11 @@ impl DataRepresentationSection {
     fn parse_complex_packing(cursor: &mut Cursor<&[u8]>) -> Result<ComplexPackingParams> {
         // Octets 12-15: reference value R (IEEE-754 f32).
         let reference_value = cursor.read_f32::<BigEndian>()?;
-        // Octets 16-17: binary scale factor E.
-        let binary_scale_factor = cursor.read_i16::<BigEndian>()?;
-        // Octets 18-19: decimal scale factor D.
-        let decimal_scale_factor = cursor.read_i16::<BigEndian>()?;
+        // Octets 16-17: binary scale factor E (sign-and-magnitude, per WMO
+        // Regulation 92.1.5 -- see `read_i16_sign_magnitude`).
+        let binary_scale_factor = read_i16_sign_magnitude(cursor)?;
+        // Octets 18-19: decimal scale factor D (sign-and-magnitude).
+        let decimal_scale_factor = read_i16_sign_magnitude(cursor)?;
         // Octet 20: number of bits for each group reference value.
         let bits_per_value = cursor.read_u8()?;
         // Octet 21: type of original field values (0 = float, 1 = int).
@@ -190,5 +191,123 @@ impl DataRepresentationSection {
     /// Calculates the decimal divisor (10^D).
     pub fn decimal_divisor(&self) -> f32 {
         10.0f32.powi(self.decimal_scale_factor as i32)
+    }
+}
+
+/// Reads a big-endian 16-bit WMO sign-and-magnitude integer: the most
+/// significant bit is a sign flag, and the remaining 15 bits hold the
+/// magnitude. This is the encoding used by GRIB2 `signed[2]` fields --
+/// binary/decimal scale factor E/D in Data Representation Templates 5.0,
+/// 5.2 and 5.3 (confirmed against eccodes'
+/// definitions/grib2/templates/template.5.packing.def) -- per WMO Manual on
+/// Codes Regulation 92.1.5. This mirrors `BitReader::read_sign_magnitude`
+/// in `grib2::decoder`, which implements the same convention at the bit
+/// level for DRT 5.3 spatial-differencing descriptors.
+fn read_i16_sign_magnitude(cursor: &mut Cursor<&[u8]>) -> Result<i16> {
+    let raw = cursor.read_u16::<BigEndian>()?;
+    let magnitude = (raw & 0x7FFF) as i16;
+    Ok(if raw & 0x8000 != 0 {
+        -magnitude
+    } else {
+        magnitude
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a minimal DRT 5.0 (simple packing) section buffer.
+    fn simple_packing_bytes(binary_scale_raw: u16, decimal_scale_raw: u16) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&100u32.to_be_bytes()); // num_data_points
+        data.extend_from_slice(&0u16.to_be_bytes()); // template 5.0
+        data.extend_from_slice(&0.0f32.to_be_bytes()); // reference value
+        data.extend_from_slice(&binary_scale_raw.to_be_bytes());
+        data.extend_from_slice(&decimal_scale_raw.to_be_bytes());
+        data.push(12); // bits per value
+        data
+    }
+
+    #[test]
+    fn test_simple_packing_negative_scale_factors() {
+        // E = -3 (0x8003), D = -2 (0x8002).
+        let data = simple_packing_bytes(0x8003, 0x8002);
+        let drs = DataRepresentationSection::from_bytes(&data)
+            .expect("failed to parse DRT 5.0 with negative scale factors");
+
+        assert_eq!(drs.binary_scale_factor, -3);
+        assert_eq!(drs.decimal_scale_factor, -2);
+        assert!((drs.scale_multiplier() - 0.125).abs() < 1e-6);
+        assert!((drs.decimal_divisor() - 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_simple_packing_positive_scale_factors() {
+        let data = simple_packing_bytes(0x0003, 0x0002);
+        let drs = DataRepresentationSection::from_bytes(&data)
+            .expect("failed to parse DRT 5.0 with positive scale factors");
+
+        assert_eq!(drs.binary_scale_factor, 3);
+        assert_eq!(drs.decimal_scale_factor, 2);
+        assert!((drs.scale_multiplier() - 8.0).abs() < 1e-6);
+        assert!((drs.decimal_divisor() - 100.0).abs() < 1e-6);
+    }
+
+    /// Builds a minimal DRT 5.2 (complex packing) section buffer.
+    fn complex_packing_bytes(binary_scale_raw: u16, decimal_scale_raw: u16) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&100u32.to_be_bytes()); // num_data_points
+        data.extend_from_slice(&2u16.to_be_bytes()); // template 5.2
+        data.extend_from_slice(&0.0f32.to_be_bytes()); // reference value
+        data.extend_from_slice(&binary_scale_raw.to_be_bytes());
+        data.extend_from_slice(&decimal_scale_raw.to_be_bytes());
+        data.push(12); // bits per value
+        data.push(0); // type of original values
+        data.push(1); // group splitting method
+        data.push(0); // missing value management
+        data.extend_from_slice(&0u32.to_be_bytes()); // primary missing substitute
+        data.extend_from_slice(&0u32.to_be_bytes()); // secondary missing substitute
+        data.extend_from_slice(&1u32.to_be_bytes()); // num groups
+        data.push(0); // group widths reference
+        data.push(4); // group widths bits
+        data.extend_from_slice(&0u32.to_be_bytes()); // group lengths reference
+        data.push(1); // group length increment
+        data.extend_from_slice(&100u32.to_be_bytes()); // group last length
+        data.push(4); // group lengths bits
+        data
+    }
+
+    #[test]
+    fn test_complex_packing_negative_scale_factors() {
+        let data = complex_packing_bytes(0x8003, 0x8002);
+        let drs = DataRepresentationSection::from_bytes(&data)
+            .expect("failed to parse DRT 5.2 with negative scale factors");
+
+        assert_eq!(drs.binary_scale_factor, -3);
+        assert_eq!(drs.decimal_scale_factor, -2);
+        let complex = drs
+            .complex_packing
+            .as_ref()
+            .expect("complex packing params missing");
+        assert_eq!(complex.binary_scale_factor, -3);
+        assert_eq!(complex.decimal_scale_factor, -2);
+    }
+
+    #[test]
+    fn test_read_i16_sign_magnitude() {
+        let data = 0x8003u16.to_be_bytes();
+        let mut cursor = Cursor::new(&data[..]);
+        assert_eq!(
+            read_i16_sign_magnitude(&mut cursor).expect("read failed"),
+            -3
+        );
+
+        let data = 0x0003u16.to_be_bytes();
+        let mut cursor = Cursor::new(&data[..]);
+        assert_eq!(
+            read_i16_sign_magnitude(&mut cursor).expect("read failed"),
+            3
+        );
     }
 }

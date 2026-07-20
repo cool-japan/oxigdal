@@ -145,19 +145,17 @@ impl ScenarioRunner {
         let error_message = execute_result.err().map(|e| e.to_string());
 
         // Validate
-        if success {
-            if let Err(e) = scenario.validate() {
-                return ScenarioResult {
-                    name,
-                    setup_duration,
-                    execution_duration,
-                    teardown_duration: Duration::ZERO,
-                    total_duration: setup_duration + execution_duration,
-                    success: false,
-                    error_message: Some(format!("Validation failed: {e}")),
-                    metrics,
-                };
-            }
+        if success && let Err(e) = scenario.validate() {
+            return ScenarioResult {
+                name,
+                setup_duration,
+                execution_duration,
+                teardown_duration: Duration::ZERO,
+                total_duration: setup_duration + execution_duration,
+                success: false,
+                error_message: Some(format!("Validation failed: {e}")),
+                metrics,
+            };
         }
 
         // Teardown

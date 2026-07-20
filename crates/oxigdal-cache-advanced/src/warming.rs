@@ -109,10 +109,10 @@ impl WarmingStrategy for RandomWarming {
         }
 
         for i in 0..batch_size {
-            if let Some(&idx) = indices.get(i) {
-                if let Some(key) = self.keys.get(idx) {
-                    batch.push(key.clone());
-                }
+            if let Some(&idx) = indices.get(i)
+                && let Some(key) = self.keys.get(idx)
+            {
+                batch.push(key.clone());
             }
         }
 

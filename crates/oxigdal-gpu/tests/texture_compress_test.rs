@@ -6,7 +6,7 @@
 //! available, matching the pattern used in `fft_test.rs` and
 //! `texture_resample_test.rs`.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::{
     TextureCompressor, TextureFormat, compress_bc1_block_cpu, compress_bc4_block_cpu,

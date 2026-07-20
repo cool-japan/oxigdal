@@ -626,7 +626,7 @@ pub fn add_gaussian_noise(input: &RasterBuffer, std_dev: f32) -> Result<RasterBu
 pub fn gaussian_blur(input: &RasterBuffer, kernel_size: usize) -> Result<RasterBuffer> {
     debug!("Applying Gaussian blur with kernel size {}", kernel_size);
 
-    if kernel_size % 2 == 0 {
+    if kernel_size.is_multiple_of(2) {
         return Err(PreprocessingError::AugmentationFailed {
             reason: "Kernel size must be odd".to_string(),
         }

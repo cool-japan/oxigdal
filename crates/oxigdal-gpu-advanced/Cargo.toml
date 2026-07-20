@@ -28,6 +28,8 @@ all-native-backends = ["vulkan", "metal", "dx12"]
 shader-optimization = []
 memory-defrag = []
 ml-inference = []
+# Optional C allocator (libmimalloc-sys is a C library; off by default)
+alloc-mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 # Workspace dependencies
@@ -60,8 +62,8 @@ crossbeam-utils.workspace = true
 # Math
 glam = { workspace = true }
 
-# Memory tracking
-mimalloc = { workspace = true, default-features = false }
+# Memory tracking (optional — libmimalloc-sys is C FFI; enable with feature "alloc-mimalloc")
+mimalloc = { workspace = true, default-features = false, optional = true }
 
 # Hash and crypto for shader caching
 blake3.workspace = true
@@ -91,3 +93,13 @@ harness = false
 
 [lints]
 workspace = true
+
+# NOTE: docs.rs has no GPU hardware/drivers, so we build with the pure
+# wgpu/WGSL backend surface only. `alloc-mimalloc` is excluded because it
+# pulls libmimalloc-sys, a bundled C allocator (not Pure Rust).
+[package.metadata.docs.rs]
+features = [
+    "auto-backend", "vulkan", "metal", "dx12", "webgpu",
+    "all-native-backends", "shader-optimization", "memory-defrag", "ml-inference",
+]
+rustdoc-args = ["--cfg", "docsrs"]

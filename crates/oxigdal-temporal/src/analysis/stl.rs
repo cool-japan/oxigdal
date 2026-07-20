@@ -69,7 +69,7 @@ impl StlOptions {
     /// Override the cycle-subseries smoother width.
     #[must_use]
     pub fn with_n_seasonal(mut self, n_seasonal: usize) -> Self {
-        self.n_seasonal = if n_seasonal % 2 == 0 {
+        self.n_seasonal = if n_seasonal.is_multiple_of(2) {
             n_seasonal + 1
         } else {
             n_seasonal.max(3)
@@ -81,7 +81,7 @@ impl StlOptions {
     /// Override the trend smoother width.
     #[must_use]
     pub fn with_n_trend(mut self, n_trend: usize) -> Self {
-        self.n_trend = if n_trend % 2 == 0 {
+        self.n_trend = if n_trend.is_multiple_of(2) {
             n_trend + 1
         } else {
             n_trend.max(3)
@@ -92,7 +92,7 @@ impl StlOptions {
     /// Override the low-pass smoother width.
     #[must_use]
     pub fn with_n_lowpass(mut self, n_lowpass: usize) -> Self {
-        self.n_lowpass = if n_lowpass % 2 == 0 {
+        self.n_lowpass = if n_lowpass.is_multiple_of(2) {
             n_lowpass + 1
         } else {
             n_lowpass.max(3)
@@ -157,7 +157,7 @@ pub fn default_n_trend(period: usize, n_seasonal: usize) -> usize {
 #[must_use]
 pub fn next_odd(x: f64) -> usize {
     let n = x.ceil().max(1.0) as usize;
-    if n % 2 == 0 { n + 1 } else { n.max(1) }
+    if n.is_multiple_of(2) { n + 1 } else { n.max(1) }
 }
 
 /// Run STL on a 1D series.

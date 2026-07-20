@@ -160,10 +160,10 @@ impl CheckpointManager {
             .map_err(|e| Error::Checkpoint(format!("Failed to write checkpoint file: {}", e)))?;
 
         // Clean up old checkpoints if max_to_keep is set
-        if !self.save_best_only {
-            if let Some(max_to_keep) = self.max_to_keep {
-                self.cleanup_old_checkpoints(max_to_keep)?;
-            }
+        if !self.save_best_only
+            && let Some(max_to_keep) = self.max_to_keep
+        {
+            self.cleanup_old_checkpoints(max_to_keep)?;
         }
 
         Ok(filename)

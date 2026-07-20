@@ -96,3 +96,13 @@ required-features = ["geospatial"]
 
 [lints]
 workspace = true
+
+# NOTE: `tls` (rumqttc/use-rustls) pulls both ring and aws-lc-sys (C/asm) via
+# rustls's crypto providers. All other features stay Pure Rust.
+[package.metadata.docs.rs]
+features = [
+    "std", "mqtt3", "mqtt5", "all_protocols",
+    "qos0", "qos1", "qos2", "all_qos",
+    "persistence", "websocket", "compression", "geospatial",
+]
+rustdoc-args = ["--cfg", "docsrs"]

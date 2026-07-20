@@ -2,7 +2,7 @@
 
 > **Purpose:** AWS Kinesis Data Streams + Firehose + Analytics + CloudWatch integration for OxiGDAL.
 > **Status (2026-05-16):** 6,856 LoC · 168 tests · 2 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wire `KinesisClient::with_streams` to a real `aws-sdk-kinesis::Client` instead of returning `None`

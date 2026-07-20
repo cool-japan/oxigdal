@@ -185,15 +185,14 @@ impl ReservationManager {
         let mut peak_disk = 0;
 
         for reservation_id in overlapping {
-            if let Some(reservation) = self.reservations.get(&reservation_id) {
-                if reservation.status == ReservationStatus::Active
-                    || reservation.status == ReservationStatus::InUse
-                {
-                    peak_cpu += reservation.resources.cpu_cores;
-                    peak_memory += reservation.resources.memory_bytes;
-                    peak_gpu += if reservation.resources.gpu { 1 } else { 0 };
-                    peak_disk += reservation.resources.storage_bytes;
-                }
+            if let Some(reservation) = self.reservations.get(&reservation_id)
+                && (reservation.status == ReservationStatus::Active
+                    || reservation.status == ReservationStatus::InUse)
+            {
+                peak_cpu += reservation.resources.cpu_cores;
+                peak_memory += reservation.resources.memory_bytes;
+                peak_gpu += if reservation.resources.gpu { 1 } else { 0 };
+                peak_disk += reservation.resources.storage_bytes;
             }
         }
 

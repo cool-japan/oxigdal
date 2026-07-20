@@ -393,9 +393,13 @@ fn test_stream_geoparquet_handles_missing_file() {
 
     // An OpenedDataset::GeoParquet pointing at a nonexistent file should
     // return an error (not a panic) from features().
+    let nonexistent_path = std::env::temp_dir()
+        .join("oxigdal_nonexistent_test_ZZZZ.parquet")
+        .to_string_lossy()
+        .to_string();
     let info = DatasetInfo {
         format: DatasetFormat::GeoParquet,
-        path: Some("/tmp/oxigdal_nonexistent_test_ZZZZ.parquet".to_string()),
+        path: Some(nonexistent_path),
         width: None,
         height: None,
         band_count: 0,
@@ -566,6 +570,74 @@ fn test_stream_stac_single_feature() {
     let _ = std::fs::remove_file(&path);
 }
 
+// ─── GeoJSON streaming error handling ─────────────────────────────────────────
+
+/// A valid FeatureCollection streams all its features.
+#[cfg(feature = "geojson")]
+#[test]
+fn test_stream_geojson_feature_collection() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("stream_geojson_fc.geojson");
+    let content = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{"n":"a"}},
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[3.0,4.0]},"properties":{"n":"b"}}
+    ]}"#;
+    std::fs::write(&path, content).expect("write geojson");
+
+    let ds = open(&path).expect("open geojson");
+    let count = ds.features().expect("features()").count();
+    assert_eq!(count, 2, "FeatureCollection should stream 2 features");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A single Feature (not a FeatureCollection) yields an empty stream — the
+/// documented fallback — rather than an error.
+#[cfg(feature = "geojson")]
+#[test]
+fn test_stream_geojson_single_feature_is_empty() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("stream_geojson_single.geojson");
+    let content =
+        r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}}"#;
+    std::fs::write(&path, content).expect("write geojson");
+
+    let ds = open(&path).expect("open geojson");
+    let result = ds.features();
+    assert!(
+        result.is_ok(),
+        "single Feature should not error, got is_err={}",
+        result.is_err()
+    );
+    assert_eq!(
+        result.expect("stream").count(),
+        0,
+        "single Feature yields empty stream"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Truncated / corrupt GeoJSON surfaces as an error instead of a silent empty
+/// stream. Regression for the blanket `Err(_) => Ok(empty)` swallow that made a
+/// corrupted source indistinguishable from a genuinely empty dataset.
+#[cfg(feature = "geojson")]
+#[test]
+fn test_stream_geojson_corrupt_errors() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("stream_geojson_corrupt.geojson");
+    // Truncated mid-object — not valid JSON.
+    let content =
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Poi"#;
+    std::fs::write(&path, content).expect("write geojson");
+
+    let ds = open(&path).expect("open geojson");
+    let result = ds.features();
+    assert!(
+        result.is_err(),
+        "corrupt GeoJSON should return Err, got Ok(empty)"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 // ─── Unknown dispatch + exhaustive tests ─────────────────────────────────────
 
 /// Opening a file whose format could not be detected should return an empty
@@ -577,9 +649,13 @@ fn test_stream_unknown_returns_empty() {
     use oxigdal::open::OpenedDataset;
     use oxigdal::streaming::StreamingExt;
 
+    let bad_format_path = std::env::temp_dir()
+        .join("oxigdal_bad_format_ZZZZ.xyz")
+        .to_string_lossy()
+        .to_string();
     let info = DatasetInfo {
         format: DatasetFormat::Unknown,
-        path: Some("/tmp/oxigdal_bad_format_ZZZZ.xyz".to_string()),
+        path: Some(bad_format_path),
         width: None,
         height: None,
         band_count: 0,

@@ -2,7 +2,7 @@
 
 > **Purpose:** `no_std`, `no_alloc` fixed-size geometry primitives for OxiGDAL — for embedded, RISC-V, and Redox OS environments.
 > **Status (2026-05-16):** 2,310 Rust LoC · 136 tests · 0 real stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

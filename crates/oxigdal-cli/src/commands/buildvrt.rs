@@ -115,7 +115,26 @@ fn relative_path(base_dir: &Path, target: &Path) -> String {
 }
 
 /// Build the VRT XML for a given set of rasters sharing the same mosaic extent.
-fn build_vrt_xml(inputs: &[PathBuf], vrt_out: &Path) -> Result<(String, u64, u64)> {
+///
+/// `target_resolution`, when `Some`, overrides the mosaic's pixel size
+/// (square pixels) instead of defaulting to the first input's native
+/// resolution; each source's `DstRect` is scaled accordingly so GDAL
+/// resamples (nearest, by default) from native resolution into the
+/// requested output grid.
+fn build_vrt_xml(
+    inputs: &[PathBuf],
+    vrt_out: &Path,
+    target_resolution: Option<f64>,
+) -> Result<(String, u64, u64)> {
+    if let Some(res) = target_resolution
+        && !(res.is_finite() && res > 0.0)
+    {
+        anyhow::bail!(
+            "--resolution must be a positive finite number (got {})",
+            res
+        );
+    }
+
     // Read metadata for every input.
     let infos: Vec<raster::RasterInfo> = inputs
         .iter()
@@ -202,9 +221,17 @@ fn build_vrt_xml(inputs: &[PathBuf], vrt_out: &Path) -> Result<(String, u64, u64
         union_max_y = union_max_y.max(top.max(bottom));
     }
 
-    // Mosaic dimensions in pixels (using the first input's pixel size).
-    let pw = ref_pw.abs();
-    let ph = ref_ph.abs();
+    // Mosaic pixel size: either the caller-requested --resolution, or (by
+    // default) the first input's native pixel size.
+    let (pw, ph) = match target_resolution {
+        Some(res) => (res, res),
+        None => (ref_pw.abs(), ref_ph.abs()),
+    };
+    // Signed pixel width/height (matching the first input's axis
+    // orientation) for the emitted GeoTransform and destination offsets.
+    let signed_pw = if ref_pw >= 0.0 { pw } else { -pw };
+    let signed_ph = if ref_ph >= 0.0 { ph } else { -ph };
+
     let mosaic_width = ((union_max_x - union_min_x) / pw).round() as u64;
     let mosaic_height = ((union_max_y - union_min_y) / ph).round() as u64;
 
@@ -238,7 +265,7 @@ fn build_vrt_xml(inputs: &[PathBuf], vrt_out: &Path) -> Result<(String, u64, u64
     writeln!(
         xml,
         "  <GeoTransform>{:.15}, {:.15}, 0, {:.15}, 0, {:.15}</GeoTransform>",
-        vrt_origin_x, ref_pw, vrt_origin_y, ref_ph,
+        vrt_origin_x, signed_pw, vrt_origin_y, signed_ph,
     )
     .map_err(|e| anyhow::anyhow!("fmt error: {e}"))?;
 
@@ -266,10 +293,21 @@ fn build_vrt_xml(inputs: &[PathBuf], vrt_out: &Path) -> Result<(String, u64, u64
             let src_top = gt.origin_y;
 
             // Pixel offset in the destination (VRT) coordinate space.
-            let dst_x_off = ((src_left - vrt_origin_x) / ref_pw).round() as i64;
+            let dst_x_off = ((src_left - vrt_origin_x) / signed_pw).round() as i64;
             // vrt_origin_y is the north edge; src_top is also north edge (for north-up images).
             // Positive pixel offset goes downward.
             let dst_y_off = ((vrt_origin_y - src_top) / ph).round() as i64;
+
+            // Destination size in target-resolution pixels. When the target
+            // resolution differs from this source's native resolution, GDAL
+            // resamples (nearest, by default) SrcRect (native pixels) into
+            // DstRect (target pixels).
+            let dst_x_size = ((info.width as f64 * gt.pixel_width.abs()) / pw)
+                .round()
+                .max(1.0) as u64;
+            let dst_y_size = ((info.height as f64 * gt.pixel_height.abs()) / ph)
+                .round()
+                .max(1.0) as u64;
 
             let rel = relative_path(vrt_dir, input_path);
 
@@ -297,7 +335,7 @@ fn build_vrt_xml(inputs: &[PathBuf], vrt_out: &Path) -> Result<(String, u64, u64
             writeln!(
                 xml,
                 r#"      <DstRect xOff="{}" yOff="{}" xSize="{}" ySize="{}"/>"#,
-                dst_x_off, dst_y_off, info.width, info.height
+                dst_x_off, dst_y_off, dst_x_size, dst_y_size
             )
             .map_err(|e| anyhow::anyhow!("fmt: {e}"))?;
             writeln!(xml, "    </SimpleSource>").map_err(|e| anyhow::anyhow!("fmt: {e}"))?;
@@ -343,7 +381,8 @@ pub fn execute(args: BuildVrtArgs, format: OutputFormat) -> Result<()> {
         }
     }
 
-    let (xml, mosaic_width, mosaic_height) = build_vrt_xml(&args.inputs, &args.output)?;
+    let (xml, mosaic_width, mosaic_height) =
+        build_vrt_xml(&args.inputs, &args.output, args.resolution)?;
 
     // Write the VRT file.
     std::fs::write(&args.output, &xml)
@@ -439,7 +478,7 @@ mod tests {
         write_test_tiff(&tile1, 0.0, 8.0, 1.0, 8, 8)?;
         write_test_tiff(&tile2, 8.0, 8.0, 1.0, 8, 8)?;
 
-        let (xml, w, h) = build_vrt_xml(&[tile1, tile2], &vrt_out)?;
+        let (xml, w, h) = build_vrt_xml(&[tile1, tile2], &vrt_out, None)?;
 
         assert!(xml.contains("<VRTDataset"), "missing VRTDataset element");
         assert!(
@@ -467,11 +506,73 @@ mod tests {
 
         write_test_tiff(&tile, 10.0, 20.0, 0.5, 4, 4)?;
 
-        let (xml, w, h) = build_vrt_xml(&[tile], &vrt_out)?;
+        let (xml, w, h) = build_vrt_xml(&[tile], &vrt_out, None)?;
 
         assert_eq!(w, 4);
         assert_eq!(h, 4);
         assert!(xml.contains(r#"relativeToVRT="1""#));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn test_buildvrt_xml_with_resolution() -> Result<()> {
+        let tmp = env::temp_dir().join(format!("oxigdal_vrt_res_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp)?;
+
+        let tile1 = tmp.join("tile1.tif");
+        let tile2 = tmp.join("tile2.tif");
+        let vrt_out = tmp.join("mosaic.vrt");
+
+        // Two 8x8 tiles at native 1.0 resolution, side by side (16x8 total).
+        write_test_tiff(&tile1, 0.0, 8.0, 1.0, 8, 8)?;
+        write_test_tiff(&tile2, 8.0, 8.0, 1.0, 8, 8)?;
+
+        // Native resolution: mosaic should be 16x8.
+        let (native_xml, native_w, native_h) =
+            build_vrt_xml(&[tile1.clone(), tile2.clone()], &vrt_out, None)?;
+        assert_eq!(native_w, 16);
+        assert_eq!(native_h, 8);
+        assert!(native_xml.contains(r#"xSize="8" ySize="8""#));
+
+        // Half resolution (2.0 pixel size): mosaic should shrink to 8x4, and
+        // each source's DstRect should be scaled down accordingly.
+        let (coarse_xml, coarse_w, coarse_h) =
+            build_vrt_xml(&[tile1.clone(), tile2.clone()], &vrt_out, Some(2.0))?;
+        assert_eq!(
+            coarse_w, 8,
+            "requested resolution should halve mosaic width"
+        );
+        assert_eq!(
+            coarse_h, 4,
+            "requested resolution should halve mosaic height"
+        );
+        assert!(
+            coarse_xml.contains("2.000000000000000"),
+            "GeoTransform should reflect the requested pixel size"
+        );
+        assert!(
+            coarse_xml.contains(r#"xSize="4" ySize="4""#),
+            "DstRect should be scaled down to the requested resolution"
+        );
+
+        // Double resolution (0.5 pixel size): mosaic should grow to 32x16.
+        let (fine_xml, fine_w, fine_h) = build_vrt_xml(&[tile1, tile2], &vrt_out, Some(0.5))?;
+        assert_eq!(
+            fine_w, 32,
+            "requested resolution should double mosaic width"
+        );
+        assert_eq!(
+            fine_h, 16,
+            "requested resolution should double mosaic height"
+        );
+        assert!(fine_xml.contains(r#"xSize="16" ySize="16""#));
+
+        // Invalid resolution must be rejected, not silently ignored.
+        let err = build_vrt_xml(&[tmp.join("tile1.tif")], &vrt_out, Some(-1.0))
+            .expect_err("negative resolution must be rejected");
+        assert!(err.to_string().contains("--resolution"));
 
         let _ = std::fs::remove_dir_all(&tmp);
         Ok(())

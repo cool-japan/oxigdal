@@ -159,10 +159,10 @@ impl Drop for WorkQueue {
         drop(self.work_sender.take());
 
         // Wait for worker thread to finish
-        if let Some(handle_arc) = self.worker_handle.take() {
-            if let Some(handle) = handle_arc.lock().take() {
-                let _ = handle.join();
-            }
+        if let Some(handle_arc) = self.worker_handle.take()
+            && let Some(handle) = handle_arc.lock().take()
+        {
+            let _ = handle.join();
         }
     }
 }

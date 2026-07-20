@@ -322,6 +322,7 @@ pub fn smallest_enclosing_circle_from_bboxes(bboxes: &[Bbox2D]) -> BoundingCircl
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

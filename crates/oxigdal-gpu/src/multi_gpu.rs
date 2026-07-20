@@ -358,6 +358,7 @@ impl MultiGpuManager {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     force_fallback_adapter: false,
                     compatible_surface: None,
+                    apply_limit_buckets: false,
                 })
                 .await
             {
@@ -644,7 +645,13 @@ impl InterGpuTransfer {
                 .map_err(|_| GpuError::buffer_mapping("gather: oneshot channel closed"))?
                 .map_err(|e| GpuError::buffer_mapping(format!("gather: map_async failed: {e}")))?;
 
-            let raw_data: Vec<u8> = staging.slice(..).get_mapped_range().to_vec();
+            let raw_data: Vec<u8> = staging
+                .slice(..)
+                .get_mapped_range()
+                .map_err(|e| {
+                    GpuError::buffer_mapping(format!("gather: get_mapped_range failed: {e}"))
+                })?
+                .to_vec();
             staging.unmap();
 
             debug!(
@@ -777,6 +784,12 @@ impl WorkDistributor {
 
     fn round_robin<T>(&self, items: Vec<T>) -> Vec<(usize, Vec<T>)> {
         let num_devices = self.manager.num_devices();
+        // With zero devices `idx % num_devices` would divide by zero. There is
+        // nowhere to dispatch work, so return an empty distribution instead of
+        // panicking.
+        if num_devices == 0 {
+            return Vec::new();
+        }
         let mut device_items: Vec<Vec<T>> = (0..num_devices).map(|_| Vec::new()).collect();
 
         for (idx, item) in items.into_iter().enumerate() {
@@ -793,6 +806,11 @@ impl WorkDistributor {
     fn load_balanced<T>(&self, items: Vec<T>) -> Vec<(usize, Vec<T>)> {
         let stats = self.manager.load_stats();
         let num_devices = self.manager.num_devices();
+        // No devices means no weights and no `device_items[0]` to index into;
+        // return an empty distribution rather than panicking on OOB access.
+        if num_devices == 0 {
+            return Vec::new();
+        }
         let items_len = items.len();
 
         // Calculate weights based on inverse of current load
@@ -888,6 +906,29 @@ mod tests {
 
         let group = manager.get_affinity_group(0);
         assert_eq!(group, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_work_distributor_zero_devices_no_panic() {
+        // A manager with zero devices must not panic in any distribution
+        // strategy: round_robin would divide by zero and load_balanced would
+        // index an empty vec. All strategies must yield an empty distribution.
+        let manager = Arc::new(MultiGpuManager::new_empty_for_testing());
+        assert_eq!(manager.num_devices(), 0);
+
+        for strategy in [
+            DistributionStrategy::RoundRobin,
+            DistributionStrategy::LoadBalanced,
+            DistributionStrategy::DataLocal,
+        ] {
+            let distributor = WorkDistributor::new(Arc::clone(&manager), strategy);
+            let work: Vec<u32> = (0..10).collect();
+            let distribution = distributor.distribute_work(work);
+            assert!(
+                distribution.is_empty(),
+                "strategy {strategy:?} must return an empty distribution with zero devices"
+            );
+        }
     }
 
     #[test]

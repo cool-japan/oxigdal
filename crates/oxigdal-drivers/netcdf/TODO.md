@@ -2,7 +2,7 @@
 
 > **Purpose:** NetCDF driver for OxiGDAL - Pure Rust NetCDF-3 with optional NetCDF-4 support
 > **Status (2026-05-16):** 11,897 Rust LoC (incl. tests) - 249 tests - 2 NetCDF-4 placeholder gaps (NC3 is wired)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

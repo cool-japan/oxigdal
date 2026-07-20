@@ -139,10 +139,9 @@ fn gpkg_geometry_column_name(gpkg: &oxigdal_gpkg::GeoPackage, table_name: &str) 
         use oxigdal_gpkg::CellValue;
         if let (Some(CellValue::Text(tbl)), Some(CellValue::Text(col))) =
             (values.first(), values.get(1))
+            && tbl.eq_ignore_ascii_case(table_name)
         {
-            if tbl.eq_ignore_ascii_case(table_name) {
-                return Some(col.clone());
-            }
+            return Some(col.clone());
         }
     }
     None
@@ -167,10 +166,10 @@ fn column_names_from_master(gpkg: &oxigdal_gpkg::GeoPackage, table_name: &str) -
                 return names;
             }
             // Couldn't parse; fall back to a scan to count columns.
-            if let Ok(Some(rows)) = gpkg.scan_table_by_name(table_name) {
-                if let Some((_rid, cols)) = rows.first() {
-                    return fallback(cols.len());
-                }
+            if let Ok(Some(rows)) = gpkg.scan_table_by_name(table_name)
+                && let Some((_rid, cols)) = rows.first()
+            {
+                return fallback(cols.len());
             }
             break;
         }

@@ -93,7 +93,6 @@ fn test_flow_accumulation() {
 }
 #[cfg(feature = "hydrology")]
 #[test]
-#[ignore]
 fn test_sink_fill() {
     let mut dem = Array2::from_elem((5, 5), 100.0_f64);
     dem[[2, 2]] = 50.0;

@@ -62,8 +62,13 @@ impl GpkgConnection {
         // Set journal mode to WAL (best-effort; Limbo defaults to WAL internally)
         let _ = conn.execute_batch("PRAGMA journal_mode = WAL;");
 
-        // Set application ID for GeoPackage
-        conn.execute_batch("PRAGMA application_id = 0x47503130;")?;
+        // Set the GeoPackage application ID ('GPKG') and user_version
+        // (MMMmmmPP, i.e. 10300 = 1.3.0) per OGC GeoPackage spec §1.1.1.1.1
+        // Requirement 2, so that `GpkgDatabase::version()` can later read
+        // this same on-disk marker back via `PRAGMA application_id`/
+        // `PRAGMA user_version` instead of guessing.
+        conn.execute_batch("PRAGMA application_id = 0x47504B47;")?;
+        conn.execute_batch("PRAGMA user_version = 10300;")?;
 
         Ok(Self {
             conn,
@@ -106,6 +111,18 @@ impl GpkgConnection {
                     .map_err(|e| Error::geopackage(format!("column 0: {e}")))
             })
             .collect()
+    }
+
+    /// Query a single integer scalar, e.g. a `PRAGMA` value such as
+    /// `PRAGMA application_id;` or `PRAGMA user_version;`.
+    pub fn query_scalar_i64(&self, sql: &str) -> Result<i64> {
+        let rows = self.conn.query(sql, &[])?;
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::geopackage(format!("{sql}: no row returned")))?;
+        row.try_get_by_index(0)
+            .map_err(|e| Error::geopackage(format!("column 0: {e}")))
     }
 
     /// Check if table exists.
@@ -226,6 +243,20 @@ mod tests {
         let temp_file = NamedTempFile::new().map_err(Error::from)?;
         let conn = GpkgConnection::create(temp_file.path())?;
         assert!(!conn.table_exists("nonexistent")?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_sets_gpkg_application_id_and_user_version() -> Result<()> {
+        let temp_file = NamedTempFile::new().map_err(Error::from)?;
+        let conn = GpkgConnection::create(temp_file.path())?;
+
+        let application_id = conn.query_scalar_i64("PRAGMA application_id;")?;
+        assert_eq!(application_id, 0x4750_4B47); // 'GPKG'
+
+        let user_version = conn.query_scalar_i64("PRAGMA user_version;")?;
+        assert_eq!(user_version, 10300); // 1.3.0
+
         Ok(())
     }
 }

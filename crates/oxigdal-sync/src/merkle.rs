@@ -328,7 +328,7 @@ impl MerkleTree {
 
         // Proof is collected top-down, but we need to verify bottom-up
         for sibling_hash in proof.iter().rev() {
-            if current_index % 2 == 0 {
+            if current_index.is_multiple_of(2) {
                 // We're on the left
                 current_hash = Self::combine_hashes(&current_hash, sibling_hash);
             } else {

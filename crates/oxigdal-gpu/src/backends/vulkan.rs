@@ -92,10 +92,31 @@ impl VulkanFeatureDetector {
         &self.features
     }
 
-    fn detect_features(_context: &GpuContext) -> VulkanFeatures {
-        // In a real implementation, this would query Vulkan features
-        // For now, return conservative defaults
-        VulkanFeatures::default()
+    fn detect_features(context: &GpuContext) -> VulkanFeatures {
+        // Query the *actual* device feature set rather than assuming a
+        // conservative default.  `wgpu::Features::SUBGROUP` is the portable
+        // signal that the driver exposes subgroup arithmetic / ballot / shuffle
+        // intrinsics in compute shaders; when it is absent we fall back to the
+        // workgroup-shared-memory emulation emitted by [`SubgroupOptimizer`].
+        let device_features = context.device().features();
+        let subgroup = device_features.contains(wgpu::Features::SUBGROUP);
+
+        // The adapter reports the min/max hardware subgroup (wave) width.  We
+        // use the max as the representative size for the generated
+        // `SUBGROUP_SIZE` constant (32 on most desktop and Apple GPUs); guard
+        // against a bogus zero.
+        let adapter_info = context.adapter_info();
+        let subgroup_size = adapter_info.subgroup_max_size.max(1);
+
+        VulkanFeatures {
+            subgroup_size,
+            subgroup_arithmetic: subgroup,
+            subgroup_ballot: subgroup,
+            subgroup_shuffle: subgroup,
+            timeline_semaphores: true,
+            max_push_constants_size: 128,
+            async_compute: true,
+        }
     }
 }
 
@@ -112,96 +133,244 @@ impl SubgroupOptimizer {
     }
 
     /// Optimize shader code with subgroup operations.
+    ///
+    /// Appends a set of `subgroup_*` WGSL helper functions to `shader_code`.
+    /// The concrete implementation depends on the detected features:
+    ///
+    /// * When `VulkanFeatures::subgroup_arithmetic` (respectively
+    ///   `VulkanFeatures::subgroup_ballot`) is `true` — i.e. the device was
+    ///   created with `wgpu::Features::SUBGROUP` — the helpers wrap the
+    ///   **native** WGSL subgroup built-ins (`subgroupAdd`, `subgroupShuffle`,
+    ///   `subgroupBallot`, …).  These reduce/scan across the hardware
+    ///   *subgroup* (wave) and are the fast path.
+    /// * Otherwise the helpers fall back to a **workgroup-shared-memory
+    ///   emulation** built on `workgroupBarrier()`.  The emulation reduces
+    ///   across the whole *workgroup* (not a subgroup) and is correct for a 1-D
+    ///   workgroup of up to [`Self::EMU_MAX`] invocations.
+    ///
+    /// Every generated helper takes `(…, lid: u32, n: u32)` where `lid` is the
+    /// caller's `local_invocation_index` and `n` is the number of active
+    /// invocations in the workgroup.  The native helpers ignore `lid`/`n`; the
+    /// emulated helpers use them to index the shared scratch buffers.  This
+    /// uniform signature lets shader authors switch paths without editing call
+    /// sites.
     pub fn optimize_shader(&self, shader_code: &str) -> String {
         if !self.config.enable_subgroup_ops {
             return shader_code.to_string();
         }
 
-        let mut optimized = shader_code.to_string();
+        let mut prologue = String::new();
 
-        // Add subgroup size constant
-        if !optimized.contains("SUBGROUP_SIZE") {
-            let subgroup_decl = format!(
-                "\nconst SUBGROUP_SIZE: u32 = {}u;\n",
+        // Add subgroup size constant.
+        if !shader_code.contains("SUBGROUP_SIZE") {
+            prologue.push_str(&format!(
+                "const SUBGROUP_SIZE: u32 = {}u;\n",
                 self.features.subgroup_size
-            );
-            optimized.insert_str(0, &subgroup_decl);
+            ));
         }
 
-        // Add subgroup helper functions if arithmetic is supported
-        if self.features.subgroup_arithmetic {
-            optimized.push_str(Self::subgroup_arithmetic_helpers());
+        // If either helper family will use the emulation path, declare the
+        // shared scratch buffers exactly once at module scope.
+        let needs_emulation = !self.features.subgroup_arithmetic || !self.features.subgroup_ballot;
+        if needs_emulation {
+            prologue.push_str(Self::emulation_scratch_decl());
         }
 
-        // Add ballot helpers if supported
-        if self.features.subgroup_ballot {
-            optimized.push_str(Self::subgroup_ballot_helpers());
-        }
+        let mut helpers = String::new();
+        helpers.push_str(&Self::subgroup_arithmetic_helpers(
+            self.features.subgroup_arithmetic,
+        ));
+        helpers.push_str(&Self::subgroup_ballot_helpers(
+            self.features.subgroup_ballot,
+        ));
 
-        optimized
+        // Emit the module-scope prologue and helper definitions *before* the
+        // user shader so every `subgroup_*` call is preceded by its definition.
+        format!("{prologue}{helpers}\n{shader_code}")
     }
 
-    fn subgroup_arithmetic_helpers() -> &'static str {
+    /// Upper bound on the workgroup size supported by the emulated helpers.
+    ///
+    /// The emulation scratch buffers are sized to this many `f32`/`u32`
+    /// elements; the `n` argument passed to each helper must not exceed it.
+    pub const EMU_MAX: u32 = 256;
+
+    /// Module-scope declarations backing the emulated subgroup helpers.
+    fn emulation_scratch_decl() -> &'static str {
         r#"
-// Subgroup arithmetic operations (Vulkan-style)
-// Note: WGSL doesn't directly expose subgroup ops yet,
-// these are placeholders for future support
-
-fn subgroup_add(value: f32) -> f32 {
-    // Placeholder for subgroupAdd
-    return value;
-}
-
-fn subgroup_mul(value: f32) -> f32 {
-    // Placeholder for subgroupMul
-    return value;
-}
-
-fn subgroup_min(value: f32) -> f32 {
-    // Placeholder for subgroupMin
-    return value;
-}
-
-fn subgroup_max(value: f32) -> f32 {
-    // Placeholder for subgroupMax
-    return value;
-}
-
-fn subgroup_inclusive_add(value: f32) -> f32 {
-    // Placeholder for subgroupInclusiveAdd
-    return value;
-}
-
-fn subgroup_exclusive_add(value: f32) -> f32 {
-    // Placeholder for subgroupExclusiveAdd
-    return value;
-}
+// Workgroup-shared scratch backing the emulated subgroup helpers.
+const SUBGROUP_EMU_MAX: u32 = 256u;
+var<workgroup> sg_emu_scratch: array<f32, SUBGROUP_EMU_MAX>;
+var<workgroup> sg_emu_flags: array<u32, SUBGROUP_EMU_MAX>;
 "#
     }
 
-    fn subgroup_ballot_helpers() -> &'static str {
-        r#"
-// Subgroup ballot operations
-fn subgroup_all(predicate: bool) -> bool {
-    // Placeholder for subgroupAll
-    return predicate;
+    /// Emit the six subgroup arithmetic helpers.
+    ///
+    /// `native == true` maps each helper onto the corresponding WGSL subgroup
+    /// built-in.  `native == false` emits a `workgroupBarrier()`-synchronised
+    /// tree reduction / prefix scan across the workgroup with identical
+    /// semantics *within a workgroup*.
+    fn subgroup_arithmetic_helpers(native: bool) -> String {
+        if native {
+            r#"
+// Native subgroup arithmetic (device created with Features::SUBGROUP).
+// Reductions/scans run across the hardware subgroup; `lid`/`n` are unused.
+fn subgroup_add(value: f32, lid: u32, n: u32) -> f32 { return subgroupAdd(value); }
+fn subgroup_mul(value: f32, lid: u32, n: u32) -> f32 { return subgroupMul(value); }
+fn subgroup_min(value: f32, lid: u32, n: u32) -> f32 { return subgroupMin(value); }
+fn subgroup_max(value: f32, lid: u32, n: u32) -> f32 { return subgroupMax(value); }
+fn subgroup_inclusive_add(value: f32, lid: u32, n: u32) -> f32 { return subgroupInclusiveAdd(value); }
+fn subgroup_exclusive_add(value: f32, lid: u32, n: u32) -> f32 { return subgroupExclusiveAdd(value); }
+"#
+            .to_string()
+        } else {
+            r#"
+// Emulated subgroup arithmetic — workgroup-wide reduction/scan via shared
+// memory + workgroupBarrier().  Semantics match the native builtins but over
+// the whole 1-D workgroup (n active invocations, n <= SUBGROUP_EMU_MAX).
+fn subgroup_add(value: f32, lid: u32, n: u32) -> f32 {
+    sg_emu_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            sg_emu_scratch[idx] = sg_emu_scratch[idx] + sg_emu_scratch[idx + stride];
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = sg_emu_scratch[0];
+    workgroupBarrier();
+    return result;
 }
-
-fn subgroup_any(predicate: bool) -> bool {
-    // Placeholder for subgroupAny
-    return predicate;
+fn subgroup_mul(value: f32, lid: u32, n: u32) -> f32 {
+    sg_emu_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            sg_emu_scratch[idx] = sg_emu_scratch[idx] * sg_emu_scratch[idx + stride];
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = sg_emu_scratch[0];
+    workgroupBarrier();
+    return result;
 }
-
-fn subgroup_ballot(predicate: bool) -> u32 {
-    // Placeholder for subgroupBallot
-    return select(0u, 1u, predicate);
+fn subgroup_min(value: f32, lid: u32, n: u32) -> f32 {
+    sg_emu_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            sg_emu_scratch[idx] = min(sg_emu_scratch[idx], sg_emu_scratch[idx + stride]);
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = sg_emu_scratch[0];
+    workgroupBarrier();
+    return result;
 }
-
-fn subgroup_inverse_ballot(value: u32) -> bool {
-    // Placeholder for subgroupInverseBallot
-    return value != 0u;
+fn subgroup_max(value: f32, lid: u32, n: u32) -> f32 {
+    sg_emu_scratch[lid] = value;
+    workgroupBarrier();
+    var stride = 1u;
+    loop {
+        if (stride >= n) { break; }
+        let idx = lid * stride * 2u;
+        if (idx + stride < n) {
+            sg_emu_scratch[idx] = max(sg_emu_scratch[idx], sg_emu_scratch[idx + stride]);
+        }
+        stride = stride * 2u;
+        workgroupBarrier();
+    }
+    let result = sg_emu_scratch[0];
+    workgroupBarrier();
+    return result;
+}
+fn subgroup_inclusive_add(value: f32, lid: u32, n: u32) -> f32 {
+    sg_emu_scratch[lid] = value;
+    workgroupBarrier();
+    var acc = 0.0;
+    for (var i = 0u; i <= lid; i = i + 1u) {
+        acc = acc + sg_emu_scratch[i];
+    }
+    workgroupBarrier();
+    return acc;
+}
+fn subgroup_exclusive_add(value: f32, lid: u32, n: u32) -> f32 {
+    sg_emu_scratch[lid] = value;
+    workgroupBarrier();
+    var acc = 0.0;
+    for (var i = 0u; i < lid; i = i + 1u) {
+        acc = acc + sg_emu_scratch[i];
+    }
+    workgroupBarrier();
+    return acc;
 }
 "#
+            .to_string()
+        }
+    }
+
+    /// Emit the subgroup ballot / vote helpers.
+    ///
+    /// `subgroup_ballot` returns the **number of invocations** whose predicate
+    /// is `true` (a popcount of the ballot), which is well-defined and has the
+    /// same `u32` type on both paths — a raw per-lane bit-mask is only
+    /// meaningful within a single hardware subgroup and is therefore not
+    /// exposed by the emulation.
+    fn subgroup_ballot_helpers(native: bool) -> String {
+        if native {
+            r#"
+// Native subgroup ballot / vote (device created with Features::SUBGROUP).
+fn subgroup_all(predicate: bool, lid: u32, n: u32) -> bool { return subgroupAll(predicate); }
+fn subgroup_any(predicate: bool, lid: u32, n: u32) -> bool { return subgroupAny(predicate); }
+fn subgroup_ballot(predicate: bool, lid: u32, n: u32) -> u32 {
+    let b = subgroupBallot(predicate);
+    return countOneBits(b.x) + countOneBits(b.y) + countOneBits(b.z) + countOneBits(b.w);
+}
+"#
+            .to_string()
+        } else {
+            r#"
+// Emulated subgroup ballot / vote — workgroup-wide via shared flags buffer.
+fn subgroup_all(predicate: bool, lid: u32, n: u32) -> bool {
+    sg_emu_flags[lid] = select(0u, 1u, predicate);
+    workgroupBarrier();
+    var acc = 1u;
+    for (var i = 0u; i < n; i = i + 1u) { acc = acc & sg_emu_flags[i]; }
+    workgroupBarrier();
+    return acc != 0u;
+}
+fn subgroup_any(predicate: bool, lid: u32, n: u32) -> bool {
+    sg_emu_flags[lid] = select(0u, 1u, predicate);
+    workgroupBarrier();
+    var acc = 0u;
+    for (var i = 0u; i < n; i = i + 1u) { acc = acc | sg_emu_flags[i]; }
+    workgroupBarrier();
+    return acc != 0u;
+}
+fn subgroup_ballot(predicate: bool, lid: u32, n: u32) -> u32 {
+    sg_emu_flags[lid] = select(0u, 1u, predicate);
+    workgroupBarrier();
+    var acc = 0u;
+    for (var i = 0u; i < n; i = i + 1u) { acc = acc + sg_emu_flags[i]; }
+    workgroupBarrier();
+    return acc;
+}
+"#
+            .to_string()
+        }
     }
 }
 
@@ -492,7 +661,25 @@ impl AsyncComputeQueue {
         self.compute_queue.is_some()
     }
 
-    /// Submit work to compute queue.
+    /// Submit a recorded command payload to the async compute queue.
+    ///
+    /// # Note
+    ///
+    /// This crate executes all GPU work through `wgpu`, which exposes a
+    /// **single unified queue** and does not surface the separate
+    /// async-compute / graphics / transfer queue families that raw Vulkan
+    /// does. The `&[u8]` command payload accepted here also has no
+    /// representation in `wgpu`'s command-buffer model, so genuine
+    /// asynchronous multi-queue submission cannot be performed on this
+    /// backend. Rather than silently return `Ok(())` and let callers believe
+    /// GPU work was dispatched, this reports an explicit error. Use
+    /// [`crate::GpuContext`] / [`crate::ComputePipeline`] for real execution.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`GpuError::unsupported_operation`]: either no compute
+    /// queue family was detected, or async multi-queue submission is not
+    /// implemented on the `wgpu` backend.
     pub fn submit_compute(&self, _commands: &[u8]) -> GpuResult<()> {
         if self.compute_queue.is_none() {
             return Err(GpuError::unsupported_operation(
@@ -500,11 +687,23 @@ impl AsyncComputeQueue {
             ));
         }
 
-        // Placeholder for actual submission
-        Ok(())
+        Err(GpuError::unsupported_operation(
+            "async Vulkan compute-queue submission is not implemented on the wgpu backend; \
+             use GpuContext/ComputePipeline for real GPU execution"
+                .to_string(),
+        ))
     }
 
-    /// Submit work to graphics queue.
+    /// Submit a recorded command payload to the async graphics queue.
+    ///
+    /// # Note
+    ///
+    /// See [`AsyncComputeQueue::submit_compute`] — the same `wgpu`
+    /// single-queue limitation applies; this never silently succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`GpuError::unsupported_operation`].
     pub fn submit_graphics(&self, _commands: &[u8]) -> GpuResult<()> {
         if self.graphics_queue.is_none() {
             return Err(GpuError::unsupported_operation(
@@ -512,17 +711,36 @@ impl AsyncComputeQueue {
             ));
         }
 
-        Ok(())
+        Err(GpuError::unsupported_operation(
+            "async Vulkan graphics-queue submission is not implemented on the wgpu backend; \
+             use GpuContext/ComputePipeline for real GPU execution"
+                .to_string(),
+        ))
     }
 
-    /// Submit work to transfer queue.
+    /// Submit a recorded command payload to the async transfer queue.
+    ///
+    /// # Note
+    ///
+    /// See [`AsyncComputeQueue::submit_compute`] — the same `wgpu`
+    /// single-queue limitation applies; this never silently succeeds. When no
+    /// dedicated transfer queue is present it defers to the graphics queue,
+    /// which also reports the unsupported-operation error.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`GpuError::unsupported_operation`].
     pub fn submit_transfer(&self, _commands: &[u8]) -> GpuResult<()> {
         if self.transfer_queue.is_none() {
-            // Fall back to graphics queue
+            // Fall back to graphics queue (which also reports the honest error).
             return self.submit_graphics(_commands);
         }
 
-        Ok(())
+        Err(GpuError::unsupported_operation(
+            "async Vulkan transfer-queue submission is not implemented on the wgpu backend; \
+             use GpuContext/ComputePipeline for real GPU execution"
+                .to_string(),
+        ))
     }
 }
 
@@ -597,9 +815,30 @@ mod tests {
     #[test]
     fn test_async_compute_queue() {
         let queue = AsyncComputeQueue::new();
+        // A compute queue family is detected...
         assert!(queue.is_available());
 
+        // ...but async multi-queue submission is not implemented on the wgpu
+        // backend, so submission must report an explicit error rather than
+        // silently pretend the GPU work executed.
         let commands = vec![0u8; 64];
-        queue.submit_compute(&commands).expect("Failed to submit");
+        let compute_err = queue.submit_compute(&commands);
+        assert!(
+            matches!(compute_err, Err(GpuError::UnsupportedOperation { .. })),
+            "submit_compute must return an explicit unsupported-operation error, got {compute_err:?}"
+        );
+
+        let graphics_err = queue.submit_graphics(&commands);
+        assert!(
+            matches!(graphics_err, Err(GpuError::UnsupportedOperation { .. })),
+            "submit_graphics must return an explicit unsupported-operation error, got {graphics_err:?}"
+        );
+
+        // No dedicated transfer queue -> falls back to graphics, still an error.
+        let transfer_err = queue.submit_transfer(&commands);
+        assert!(
+            matches!(transfer_err, Err(GpuError::UnsupportedOperation { .. })),
+            "submit_transfer must return an explicit unsupported-operation error, got {transfer_err:?}"
+        );
     }
 }

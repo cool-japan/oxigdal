@@ -62,7 +62,7 @@ impl Middleware for CompressionMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, _request: &Request, response: &mut Response) -> Result<()> {
         if response.body.len() < self.config.min_size {
             return Ok(());
         }

@@ -72,7 +72,12 @@ services:
     ports:
       - "8888:8888"
     volumes:
-      - ../examples/notebooks:/notebooks:cached
+      # crates/oxigdal-jupyter/examples/notebooks holds Rust (evcxr) example snippets, not
+      # Python .ipynb notebooks for this Python/oxigdal-python image, but it is real,
+      # committed content (there is no root-level examples/notebooks/ directory) so operators
+      # get something useful to browse rather than a silently-empty mount. Bind-mount your
+      # own .ipynb notebooks over this path for real work.
+      - ../crates/oxigdal-jupyter/examples/notebooks:/notebooks:cached
       - data-dev:/data
     environment:
       - RUST_LOG=debug
@@ -88,7 +93,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres-dev-data:/var/lib/postgresql/data
-      - ../examples/data/sql:/docker-entrypoint-initdb.d:ro
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
     environment:
       - POSTGRES_DB=oxigdal_dev
       - POSTGRES_USER=dev

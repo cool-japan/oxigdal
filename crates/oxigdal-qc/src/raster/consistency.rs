@@ -733,7 +733,7 @@ mod tests {
         let result = checker.check_buffer(&buffer);
 
         assert!(result.is_ok());
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let result = result.expect("consistency check should succeed for range validation test");
         assert!(!result.range_check.in_range);
         assert_eq!(result.range_check.out_of_range_count, 1);

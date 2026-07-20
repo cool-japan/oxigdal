@@ -103,8 +103,8 @@ pub enum CoverageSource {
     File(std::path::PathBuf),
     /// Remote URL
     Url(String),
-    /// In-memory coverage
-    Memory,
+    /// In-memory coverage holding the encoded raster bytes (e.g. a GeoTIFF).
+    Memory(Arc<Vec<u8>>),
 }
 
 /// WCS request parameters
@@ -151,13 +151,13 @@ pub async fn handle_wcs_request(
     Query(params): Query<WcsRequest>,
 ) -> Result<Response, ServiceError> {
     // Validate service parameter
-    if let Some(ref service) = params.service {
-        if service.to_uppercase() != "WCS" {
-            return Err(ServiceError::InvalidParameter(
-                "SERVICE".to_string(),
-                format!("Expected 'WCS', got '{}'", service),
-            ));
-        }
+    if let Some(ref service) = params.service
+        && service.to_uppercase() != "WCS"
+    {
+        return Err(ServiceError::InvalidParameter(
+            "SERVICE".to_string(),
+            format!("Expected 'WCS', got '{}'", service),
+        ));
     }
 
     // Route to appropriate handler based on request type
@@ -220,7 +220,7 @@ mod tests {
             band_count: 3,
             band_names: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
             data_type: "Byte".to_string(),
-            source: CoverageSource::Memory,
+            source: CoverageSource::Memory(Arc::new(Vec::new())),
             formats: vec!["image/tiff".to_string(), "image/png".to_string()],
         };
 

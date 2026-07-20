@@ -12,7 +12,7 @@ use web_sys::{ServiceWorkerContainer, ServiceWorkerRegistration};
 
 pub use events::ServiceWorkerEvents;
 pub use messaging::ServiceWorkerMessaging;
-pub use registration::ServiceWorkerRegistry;
+pub use registration::{RegistrationConfig, ServiceWorkerRegistry, UpdateViaCache, WorkerType};
 pub use scope::ServiceWorkerScope;
 
 /// Get the service worker container from the window.
@@ -38,9 +38,18 @@ pub fn is_service_worker_supported() -> bool {
 }
 
 /// Register a service worker at the given URL.
+///
+/// `worker_type` and `update_via_cache` are always forwarded to the browser's
+/// `ServiceWorkerContainer.register()` call via `RegistrationOptions`, so a
+/// caller requesting [`WorkerType::Module`] (needed for ES-module service
+/// worker scripts) or a non-default [`UpdateViaCache`] mode actually gets
+/// that behavior instead of silently falling back to a classic worker with
+/// the browser's default caching mode.
 pub async fn register_service_worker(
     url: &str,
     scope: Option<&str>,
+    worker_type: WorkerType,
+    update_via_cache: UpdateViaCache,
 ) -> Result<ServiceWorkerRegistration> {
     if !is_service_worker_supported() {
         return Err(PwaError::ServiceWorkerNotSupported);
@@ -48,44 +57,35 @@ pub async fn register_service_worker(
 
     let container = get_service_worker_container()?;
 
-    let promise = if let Some(scope_path) = scope {
-        // Try to use options if available
-        let options = web_sys::RegistrationOptions::new();
+    // Always build RegistrationOptions so worker_type and update_via_cache
+    // reach the browser, regardless of whether an explicit scope was given.
+    let options = web_sys::RegistrationOptions::new();
+    if let Some(scope_path) = scope {
         options.set_scope(scope_path);
+    }
+    options.set_type(worker_type.as_str());
+    options.set_update_via_cache(update_via_cache.as_web_sys());
 
-        // Call register with URL and options
-        match js_sys::Reflect::get(&container, &JsValue::from_str("register")) {
-            Ok(register_fn) => {
-                let register_fn = register_fn.dyn_into::<js_sys::Function>().map_err(|_| {
-                    PwaError::ServiceWorkerRegistration("register is not a function".to_string())
-                })?;
+    let register_fn = js_sys::Reflect::get(&container, &JsValue::from_str("register"))
+        .map_err(|e| {
+            PwaError::ServiceWorkerRegistration(format!("Failed to get register method: {:?}", e))
+        })?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| {
+            PwaError::ServiceWorkerRegistration("register is not a function".to_string())
+        })?;
 
-                let args = js_sys::Array::new();
-                args.push(&JsValue::from_str(url));
-                args.push(&options);
+    let args = js_sys::Array::new();
+    args.push(&JsValue::from_str(url));
+    args.push(&options);
 
-                register_fn
-                    .apply(&container, &args)
-                    .map_err(|e| {
-                        PwaError::ServiceWorkerRegistration(format!("Register failed: {:?}", e))
-                    })?
-                    .dyn_into::<js_sys::Promise>()
-                    .map_err(|_| {
-                        PwaError::ServiceWorkerRegistration(
-                            "Register did not return a Promise".to_string(),
-                        )
-                    })?
-            }
-            Err(e) => {
-                return Err(PwaError::ServiceWorkerRegistration(format!(
-                    "Failed to get register method: {:?}",
-                    e
-                )));
-            }
-        }
-    } else {
-        container.register(url)
-    };
+    let promise = register_fn
+        .apply(&container, &args)
+        .map_err(|e| PwaError::ServiceWorkerRegistration(format!("Register failed: {:?}", e)))?
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| {
+            PwaError::ServiceWorkerRegistration("Register did not return a Promise".to_string())
+        })?;
 
     let registration = JsFuture::from(promise).await.map_err(|e| {
         PwaError::ServiceWorkerRegistration(format!("Registration promise failed: {:?}", e))

@@ -256,15 +256,14 @@ impl WalManager {
             .map_err(|e| HaError::Wal(format!("Failed to read directory entry: {}", e)))?
         {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("wal") {
-                if let Ok(metadata) = tokio::fs::metadata(&path).await {
-                    if let Ok(modified) = metadata.modified() {
-                        let modified_time: DateTime<Utc> = modified.into();
-                        if modified_time < cutoff {
-                            tokio::fs::remove_file(&path).await.ok();
-                            deleted_count += 1;
-                        }
-                    }
+            if path.extension().and_then(|s| s.to_str()) == Some("wal")
+                && let Ok(metadata) = tokio::fs::metadata(&path).await
+                && let Ok(modified) = metadata.modified()
+            {
+                let modified_time: DateTime<Utc> = modified.into();
+                if modified_time < cutoff {
+                    tokio::fs::remove_file(&path).await.ok();
+                    deleted_count += 1;
                 }
             }
         }

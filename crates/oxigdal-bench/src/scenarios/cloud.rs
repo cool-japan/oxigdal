@@ -7,6 +7,20 @@
 //! - Caching strategies
 //! - Prefetching performance
 //! - Range request optimization
+//!
+//! # Scope: no real network I/O
+//!
+//! Every scenario in this module is **deterministic and offline**: it synthesizes
+//! in-memory byte buffers and performs local serialization/checksum work that is
+//! representative of the CPU-side cost pattern of the named cloud operation
+//! (chunking, checksumming, LRU bookkeeping, etc.). None of them construct an
+//! `oxigdal-cloud` client or perform any network call, so the measured durations
+//! reflect only local allocation/iteration/hashing cost, not real S3/GCS/Azure
+//! network latency, TLS handshake overhead, or server-side throttling. This is
+//! intentional: a benchmark suite that depends on live credentials or network
+//! reachability would be flaky and unusable in CI. If real network-backed
+//! measurements are needed, add them as a separate opt-in scenario/feature backed
+//! by a local mock S3-compatible endpoint rather than changing these scenarios.
 
 use crate::error::{BenchError, Result};
 use crate::scenarios::BenchmarkScenario;
@@ -64,7 +78,8 @@ impl BenchmarkScenario for S3ReadScenario {
     }
 
     fn description(&self) -> &str {
-        "Benchmark S3 object read performance"
+        "Benchmark local synthetic-data deserialization/buffering overhead representative \
+         of S3 object read patterns (no real network I/O)"
     }
 
     fn setup(&mut self) -> Result<()> {
@@ -87,26 +102,28 @@ impl BenchmarkScenario for S3ReadScenario {
     fn execute(&mut self) -> Result<()> {
         #[cfg(feature = "cloud")]
         {
-            // Placeholder for actual S3 implementation
-            // use oxigdal_cloud::s3::S3Client;
-
-            // let client = S3Client::new(&self.region)?;
-
-            // if self.range_requests {
-            //     let chunk_size = self.chunk_size.unwrap_or(8 * 1024 * 1024);
-            //     // Read in chunks using range requests
-            //     // let metadata = client.head_object(&self.bucket, &self.key)?;
-            //     // let size = metadata.content_length;
-            //     // let mut offset = 0;
-            //     // while offset < size {
-            //     //     let end = (offset + chunk_size as u64).min(size);
-            //     //     let data = client.get_object_range(&self.bucket, &self.key, offset, end)?;
-            //     //     offset = end;
-            //     // }
-            // } else {
-            //     // Read entire object
-            //     // let data = client.get_object(&self.bucket, &self.key)?;
-            // }
+            // Simulate S3 read: fetch data from in-memory buffer (no real network)
+            // This represents the deserialization + buffering work done after receiving bytes
+            let total_size = 4 * 1024 * 1024usize; // 4MB object
+            if self.range_requests {
+                let chunk_size = self.chunk_size.unwrap_or(8 * 1024 * 1024);
+                let mut offset = 0usize;
+                let mut chunks_read = 0usize;
+                while offset < total_size {
+                    let end = (offset + chunk_size).min(total_size);
+                    let chunk_len = end - offset;
+                    // Simulate range-request deserialization work
+                    let _chunk: Vec<u8> =
+                        (0..chunk_len).map(|i| ((offset + i) % 256) as u8).collect();
+                    offset = end;
+                    chunks_read += 1;
+                }
+                // prevent optimization
+                let _ = chunks_read;
+            } else {
+                // Simulate full object read
+                let _data: Vec<u8> = (0..total_size).map(|i| (i % 256) as u8).collect();
+            }
         }
 
         #[cfg(not(feature = "cloud"))]
@@ -174,7 +191,8 @@ impl BenchmarkScenario for S3WriteScenario {
     }
 
     fn description(&self) -> &str {
-        "Benchmark S3 object write performance"
+        "Benchmark local synthetic-data serialization/checksum overhead representative \
+         of S3 object write patterns (no real network I/O)"
     }
 
     fn setup(&mut self) -> Result<()> {
@@ -196,35 +214,32 @@ impl BenchmarkScenario for S3WriteScenario {
     fn execute(&mut self) -> Result<()> {
         #[cfg(feature = "cloud")]
         {
-            // Placeholder for actual S3 implementation
-            // let client = S3Client::new(&self.region)?;
-            // let data = vec![0u8; self.data_size];
-
-            // if self.multipart {
-            //     let part_size = self.part_size.unwrap_or(5 * 1024 * 1024);
-            //     // Multipart upload
-            //     // let upload_id = client.create_multipart_upload(&self.bucket, &self.key)?;
-            //     // let mut parts = Vec::new();
-            //     // let mut offset = 0;
-            //     // let mut part_number = 1;
-            //     // while offset < data.len() {
-            //     //     let end = (offset + part_size).min(data.len());
-            //     //     let part = client.upload_part(
-            //     //         &self.bucket,
-            //     //         &self.key,
-            //     //         &upload_id,
-            //     //         part_number,
-            //     //         &data[offset..end],
-            //     //     )?;
-            //     //     parts.push(part);
-            //     //     offset = end;
-            //     //     part_number += 1;
-            //     // }
-            //     // client.complete_multipart_upload(&self.bucket, &self.key, &upload_id, parts)?;
-            // } else {
-            //     // Single PUT
-            //     // client.put_object(&self.bucket, &self.key, &data)?;
-            // }
+            // Simulate S3 write: serialize + chunk data (no real network)
+            let data: Vec<u8> = (0..self.data_size).map(|i| (i % 256) as u8).collect();
+            if self.multipart {
+                let part_size = self.part_size.unwrap_or(5 * 1024 * 1024);
+                let mut offset = 0usize;
+                let mut part_number = 1u32;
+                while offset < data.len() {
+                    let end = (offset + part_size).min(data.len());
+                    // Simulate part checksum computation (MD5-like CRC)
+                    let checksum: u32 = data[offset..end]
+                        .iter()
+                        .enumerate()
+                        .fold(0u32, |acc, (i, &b)| {
+                            acc.wrapping_add((b as u32).wrapping_mul(i as u32 + 1))
+                        });
+                    let _ = (part_number, checksum);
+                    offset = end;
+                    part_number += 1;
+                }
+            } else {
+                // Simulate single PUT: compute content hash
+                let checksum: u32 = data.iter().enumerate().fold(0u32, |acc, (i, &b)| {
+                    acc.wrapping_add((b as u32).wrapping_mul(i as u32 + 1))
+                });
+                let _ = checksum;
+            }
         }
 
         #[cfg(not(feature = "cloud"))]
@@ -239,9 +254,9 @@ impl BenchmarkScenario for S3WriteScenario {
         #[cfg(feature = "cloud")]
         {
             if self.cleanup {
-                // Delete the uploaded object
-                // let client = S3Client::new(&self.region)?;
-                // client.delete_object(&self.bucket, &self.key)?;
+                // Object cleanup would happen here with a live client
+                let _ = &self.key;
+                let _ = &self.bucket;
             }
         }
 
@@ -310,7 +325,8 @@ impl BenchmarkScenario for CachingScenario {
     }
 
     fn description(&self) -> &str {
-        "Benchmark cloud storage caching performance"
+        "Benchmark local in-memory LRU cache hit/miss overhead representative of cloud \
+         storage caching patterns (no real network I/O)"
     }
 
     fn setup(&mut self) -> Result<()> {
@@ -321,23 +337,36 @@ impl BenchmarkScenario for CachingScenario {
     fn execute(&mut self) -> Result<()> {
         #[cfg(feature = "cloud")]
         {
-            // Placeholder for caching benchmark
-            // let cache = CloudCache::new(&self.cache_dir, self.cache_size_mb * 1024 * 1024)?;
-
-            // Perform multiple accesses based on pattern
-            // match self.access_pattern {
-            //     CacheAccessPattern::Sequential => {
-            //         for _ in 0..10 {
-            //             let data = cache.get_or_fetch(&self.bucket, &self.key)?;
-            //         }
-            //     }
-            //     CacheAccessPattern::Random => {
-            //         // Access different byte ranges
-            //     }
-            //     CacheAccessPattern::Repeated => {
-            //         // Access same ranges repeatedly
-            //     }
-            // }
+            // Simulate cloud caching: first access is a "miss" (compute), repeated are "hits" (clone)
+            let object_size = 1024 * 1024usize; // 1MB
+            let source_data: Vec<u8> = (0..object_size).map(|i| (i % 256) as u8).collect();
+            let access_count = match self.access_pattern {
+                CacheAccessPattern::Sequential => 5usize,
+                CacheAccessPattern::Random => 3,
+                CacheAccessPattern::Repeated => 10,
+            };
+            // Simulate a simple in-memory LRU cache with capacity capped by cache_size_mb
+            let max_entries = (self.cache_size_mb * 1024 * 1024) / object_size.max(1);
+            let max_entries = max_entries.max(1);
+            let mut cache: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+            for i in 0..access_count {
+                let cache_key_matches = match self.access_pattern {
+                    CacheAccessPattern::Repeated => true,
+                    CacheAccessPattern::Sequential => i == 0, // only first access is a miss
+                    CacheAccessPattern::Random => i % 3 == 0,
+                };
+                if !cache_key_matches || cache.is_empty() {
+                    // Cache miss: fetch + insert
+                    let data = source_data.clone();
+                    if cache.len() >= max_entries {
+                        cache.pop_front();
+                    }
+                    cache.push_back(data);
+                } else {
+                    // Cache hit: just access
+                    let _hit = cache.back();
+                }
+            }
         }
 
         #[cfg(not(feature = "cloud"))]
@@ -402,7 +431,8 @@ impl BenchmarkScenario for PrefetchScenario {
     }
 
     fn description(&self) -> &str {
-        "Benchmark cloud storage prefetch performance"
+        "Benchmark local synthetic chunked-fetch/hash overhead representative of \
+         parallel cloud storage prefetch patterns (no real network I/O)"
     }
 
     fn setup(&mut self) -> Result<()> {
@@ -418,15 +448,33 @@ impl BenchmarkScenario for PrefetchScenario {
     fn execute(&mut self) -> Result<()> {
         #[cfg(feature = "cloud")]
         {
-            // Placeholder for prefetch benchmark
-            // let prefetcher = CloudPrefetcher::new(self.parallel_requests);
-
-            // for key in &self.keys {
-            //     prefetcher.prefetch(&self.bucket, key)?;
-            // }
-
-            // Wait for prefetch to complete
-            // prefetcher.wait()?;
+            // Simulate parallel prefetching: distribute keys across workers
+            use std::sync::{Arc, Mutex};
+            let results: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+            let keys_to_prefetch: Vec<String> = self
+                .keys
+                .iter()
+                .take(self.prefetch_count)
+                .cloned()
+                .collect();
+            // Simulate parallel fetch with rayon-like chunked processing
+            let chunk_size = (keys_to_prefetch.len() / self.parallel_requests.max(1)).max(1);
+            for chunk in keys_to_prefetch.chunks(chunk_size) {
+                for key in chunk {
+                    // Simulate per-key fetch work: compute hash of key + read 64KB
+                    let hash: u64 = key.bytes().enumerate().fold(0u64, |acc, (i, b)| {
+                        acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 31))
+                    });
+                    let data_size = (hash % (64 * 1024)) as usize + 1024;
+                    let _data: Vec<u8> = (0..data_size).map(|i| (i % 256) as u8).collect();
+                    results
+                        .lock()
+                        .map_err(|e| {
+                            BenchError::scenario_failed(self.name(), format!("Lock poisoned: {e}"))
+                        })?
+                        .push(data_size);
+                }
+            }
         }
 
         #[cfg(not(feature = "cloud"))]
@@ -486,7 +534,8 @@ impl BenchmarkScenario for RangeRequestScenario {
     }
 
     fn description(&self) -> &str {
-        "Benchmark different range request sizes"
+        "Benchmark local synthetic-data decode/checksum overhead across different range \
+         sizes, representative of range-request patterns (no real network I/O)"
     }
 
     fn setup(&mut self) -> Result<()> {
@@ -496,17 +545,25 @@ impl BenchmarkScenario for RangeRequestScenario {
     fn execute(&mut self) -> Result<()> {
         #[cfg(feature = "cloud")]
         {
-            // Placeholder for range request benchmark
-            // let client = create_client(self.provider, &self.region)?;
-
-            // for &range_size in &self.range_sizes {
-            //     let mut offset = 0u64;
-            //     for _ in 0..10 {
-            //         let end = offset + range_size as u64;
-            //         let data = client.get_object_range(&self.bucket, &self.key, offset, end)?;
-            //         offset = end;
-            //     }
-            // }
+            // Simulate range requests of varying sizes
+            for &range_size in &self.range_sizes {
+                // Simulate 10 sequential range requests of this size
+                for request_idx in 0..10usize {
+                    let offset = request_idx * range_size;
+                    // Simulate decoding the received bytes at this range
+                    let data: Vec<u8> = (0..range_size)
+                        .map(|i| {
+                            (((offset + i)
+                                .wrapping_mul(6364136223846793005)
+                                .wrapping_add(1442695040888963407))
+                                % 256) as u8
+                        })
+                        .collect();
+                    // Simulate checksum verification
+                    let _checksum: u32 =
+                        data.iter().fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+                }
+            }
         }
 
         #[cfg(not(feature = "cloud"))]
@@ -550,10 +607,14 @@ mod tests {
 
     #[test]
     fn test_caching_scenario_creation() {
-        let scenario =
-            CachingScenario::new(CloudProvider::S3, "my-bucket", "test.tif", "/tmp/cache")
-                .with_cache_size(200)
-                .with_access_pattern(CacheAccessPattern::Random);
+        let scenario = CachingScenario::new(
+            CloudProvider::S3,
+            "my-bucket",
+            "test.tif",
+            std::env::temp_dir().join("cache"),
+        )
+        .with_cache_size(200)
+        .with_access_pattern(CacheAccessPattern::Random);
 
         assert_eq!(scenario.name(), "cloud_caching");
         assert_eq!(scenario.cache_size_mb, 200);
@@ -578,5 +639,38 @@ mod tests {
 
         assert_eq!(scenario.name(), "range_requests");
         assert_eq!(scenario.range_sizes.len(), 2);
+    }
+
+    /// Regression test for the truth-in-labeling gap: every cloud scenario's
+    /// public `description()` must disclose that it measures local synthetic
+    /// serialization/checksum overhead, not real network I/O, so a report
+    /// reader cannot mistake these numbers for real S3/GCS/Azure latency.
+    #[test]
+    fn test_cloud_scenario_descriptions_disclose_no_network_io() {
+        let s3_read = S3ReadScenario::new("bucket", "key", "us-east-1");
+        let s3_write = S3WriteScenario::new("bucket", "key", "us-east-1", 1024);
+        let caching = CachingScenario::new(
+            CloudProvider::S3,
+            "bucket",
+            "key",
+            std::env::temp_dir().join("cloud_desc_test_cache"),
+        );
+        let prefetch = PrefetchScenario::new(CloudProvider::S3, "bucket", vec!["key".to_string()]);
+        let range_request = RangeRequestScenario::new(CloudProvider::S3, "bucket", "key");
+
+        let descriptions: [(&str, &str); 5] = [
+            ("s3_read", s3_read.description()),
+            ("s3_write", s3_write.description()),
+            ("cloud_caching", caching.description()),
+            ("cloud_prefetch", prefetch.description()),
+            ("range_requests", range_request.description()),
+        ];
+
+        for (name, description) in descriptions {
+            assert!(
+                description.contains("no real network I/O"),
+                "{name} description does not disclose local-only scope: {description:?}"
+            );
+        }
     }
 }

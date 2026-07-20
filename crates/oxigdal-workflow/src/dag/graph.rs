@@ -244,12 +244,11 @@ impl WorkflowDag {
         let mut rec_stack = HashSet::new();
 
         for node_idx in self.graph.node_indices() {
-            if !visited.contains(&node_idx) {
-                if let Some(cycle_path) =
+            if !visited.contains(&node_idx)
+                && let Some(cycle_path) =
                     self.dfs_cycle_check(node_idx, &mut visited, &mut rec_stack)
-                {
-                    return Err(DagError::cycle(cycle_path).into());
-                }
+            {
+                return Err(DagError::cycle(cycle_path).into());
             }
         }
 
@@ -313,10 +312,10 @@ impl WorkflowDag {
 
         // Check if all nodes are reachable
         for node_idx in self.graph.node_indices() {
-            if !reachable.contains(&node_idx) {
-                if let Some(task) = self.graph.node_weight(node_idx) {
-                    return Err(DagError::UnreachableNode(task.id.clone()).into());
-                }
+            if !reachable.contains(&node_idx)
+                && let Some(task) = self.graph.node_weight(node_idx)
+            {
+                return Err(DagError::UnreachableNode(task.id.clone()).into());
             }
         }
 
@@ -494,9 +493,30 @@ impl WorkflowDag {
     /// Remove a task from the DAG along with all its edges.
     ///
     /// Returns the removed task, or `None` if the task did not exist.
+    ///
+    /// `petgraph::graph::DiGraph::remove_node` swap-removes: the node currently
+    /// at the last index is moved into the freed slot and re-indexed. We must
+    /// repoint `task_map` for that swapped node, otherwise later lookups for it
+    /// would resolve to a stale/out-of-bounds `NodeIndex`.
     pub fn remove_task(&mut self, task_id: &str) -> Option<TaskNode> {
         let node_idx = self.task_map.remove(task_id)?;
-        self.graph.remove_node(node_idx)
+
+        // Index of the node that will be swapped into `node_idx` (if any). This
+        // must be read *before* the removal, while the count still includes the
+        // node being removed.
+        let last_idx = NodeIndex::new(self.graph.node_count() - 1);
+
+        let removed = self.graph.remove_node(node_idx)?;
+
+        // If the removed node was not itself the last node, the previously-last
+        // node now lives at `node_idx`; update its task_map entry to match.
+        if last_idx != node_idx
+            && let Some(moved_task) = self.graph.node_weight(node_idx)
+        {
+            self.task_map.insert(moved_task.id.clone(), node_idx);
+        }
+
+        Some(removed)
     }
 
     /// Get edges filtered by edge type.
@@ -970,6 +990,46 @@ mod tests {
 
         // Removing non-existent should return None
         assert!(dag.remove_task("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_remove_task_keeps_task_map_consistent_after_swap() {
+        // Regression: petgraph swap-removes, moving the last-inserted node into
+        // the freed slot. task_map must be repointed for that swapped node.
+        let mut dag = WorkflowDag::new();
+        dag.add_task(create_test_task("t1", "Task 1")).ok();
+        dag.add_task(create_test_task("t2", "Task 2")).ok();
+        dag.add_task(create_test_task("t3", "Task 3")).ok();
+
+        // Edges touching the task that will be swapped (t3, the last node).
+        dag.add_dependency("t2", "t3", TaskEdge::default()).ok();
+        dag.add_dependency("t1", "t3", TaskEdge::default()).ok();
+
+        // Remove a NON-last task; petgraph moves t3 into t1's old slot.
+        let removed = dag.remove_task("t1");
+        assert_eq!(removed.as_ref().map(|t| t.id.as_str()), Some("t1"));
+        assert!(!dag.contains_task("t1"));
+
+        // t3 (the swapped node) must still resolve to the correct TaskNode and
+        // report accurate degree/dependency information.
+        let t3 = dag.get_task("t3").expect("t3 must still be reachable");
+        assert_eq!(t3.id, "t3");
+        assert_eq!(t3.name, "Task 3");
+        assert_eq!(dag.in_degree("t3"), 1); // only the t2 -> t3 edge remains
+        assert!(dag.has_dependency("t2", "t3"));
+        assert_eq!(dag.get_dependencies("t3"), vec!["t2".to_string()]);
+
+        // t2 must also remain correct.
+        let t2 = dag.get_task("t2").expect("t2 must still be reachable");
+        assert_eq!(t2.name, "Task 2");
+
+        // A follow-up removal must keep indices consistent as well.
+        let removed_t2 = dag.remove_task("t2");
+        assert_eq!(removed_t2.as_ref().map(|t| t.id.as_str()), Some("t2"));
+        let t3_again = dag.get_task("t3").expect("t3 must survive second removal");
+        assert_eq!(t3_again.id, "t3");
+        assert_eq!(dag.in_degree("t3"), 0);
+        assert_eq!(dag.task_count(), 1);
     }
 
     #[test]

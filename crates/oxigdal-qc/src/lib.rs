@@ -79,7 +79,7 @@ pub mod prelude {
     };
     pub use crate::report::{QualityAssessment, QualityReport, ReportSection};
     pub use crate::rules::{
-        ComparisonOperator, QualityRule, RuleBuilder, RuleCategory, RuleSet, RulesEngine,
+        ComparisonOperator, QcValue, QualityRule, RuleBuilder, RuleCategory, RuleSet, RulesEngine,
     };
     pub use crate::vector::{
         AttributionChecker, AttributionConfig, AttributionResult, TopologyChecker, TopologyConfig,

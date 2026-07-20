@@ -171,26 +171,26 @@ impl TemplateValidator {
     /// Validate string constraints.
     fn validate_string_constraints(&self, param: &Parameter, value: &str) -> Result<()> {
         if let Some(constraints) = &param.constraints {
-            if let Some(min_len) = constraints.min_length {
-                if value.len() < min_len {
-                    return Err(WorkflowError::validation(format!(
-                        "Parameter '{}' length {} is less than minimum {}",
-                        param.name,
-                        value.len(),
-                        min_len
-                    )));
-                }
+            if let Some(min_len) = constraints.min_length
+                && value.len() < min_len
+            {
+                return Err(WorkflowError::validation(format!(
+                    "Parameter '{}' length {} is less than minimum {}",
+                    param.name,
+                    value.len(),
+                    min_len
+                )));
             }
 
-            if let Some(max_len) = constraints.max_length {
-                if value.len() > max_len {
-                    return Err(WorkflowError::validation(format!(
-                        "Parameter '{}' length {} exceeds maximum {}",
-                        param.name,
-                        value.len(),
-                        max_len
-                    )));
-                }
+            if let Some(max_len) = constraints.max_length
+                && value.len() > max_len
+            {
+                return Err(WorkflowError::validation(format!(
+                    "Parameter '{}' length {} exceeds maximum {}",
+                    param.name,
+                    value.len(),
+                    max_len
+                )));
             }
 
             if let Some(pattern) = &constraints.pattern {
@@ -213,22 +213,22 @@ impl TemplateValidator {
     /// Validate numeric constraints.
     fn validate_numeric_constraints(&self, param: &Parameter, value: f64) -> Result<()> {
         if let Some(constraints) = &param.constraints {
-            if let Some(min) = constraints.min {
-                if value < min {
-                    return Err(WorkflowError::validation(format!(
-                        "Parameter '{}' value {} is less than minimum {}",
-                        param.name, value, min
-                    )));
-                }
+            if let Some(min) = constraints.min
+                && value < min
+            {
+                return Err(WorkflowError::validation(format!(
+                    "Parameter '{}' value {} is less than minimum {}",
+                    param.name, value, min
+                )));
             }
 
-            if let Some(max) = constraints.max {
-                if value > max {
-                    return Err(WorkflowError::validation(format!(
-                        "Parameter '{}' value {} exceeds maximum {}",
-                        param.name, value, max
-                    )));
-                }
+            if let Some(max) = constraints.max
+                && value > max
+            {
+                return Err(WorkflowError::validation(format!(
+                    "Parameter '{}' value {} exceeds maximum {}",
+                    param.name, value, max
+                )));
             }
         }
 
@@ -242,26 +242,26 @@ impl TemplateValidator {
         value: &[ParameterValue],
     ) -> Result<()> {
         if let Some(constraints) = &param.constraints {
-            if let Some(min_len) = constraints.min_length {
-                if value.len() < min_len {
-                    return Err(WorkflowError::validation(format!(
-                        "Parameter '{}' array length {} is less than minimum {}",
-                        param.name,
-                        value.len(),
-                        min_len
-                    )));
-                }
+            if let Some(min_len) = constraints.min_length
+                && value.len() < min_len
+            {
+                return Err(WorkflowError::validation(format!(
+                    "Parameter '{}' array length {} is less than minimum {}",
+                    param.name,
+                    value.len(),
+                    min_len
+                )));
             }
 
-            if let Some(max_len) = constraints.max_length {
-                if value.len() > max_len {
-                    return Err(WorkflowError::validation(format!(
-                        "Parameter '{}' array length {} exceeds maximum {}",
-                        param.name,
-                        value.len(),
-                        max_len
-                    )));
-                }
+            if let Some(max_len) = constraints.max_length
+                && value.len() > max_len
+            {
+                return Err(WorkflowError::validation(format!(
+                    "Parameter '{}' array length {} exceeds maximum {}",
+                    param.name,
+                    value.len(),
+                    max_len
+                )));
             }
         }
 

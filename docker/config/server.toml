@@ -1,0 +1,45 @@
+# OxiGDAL Tile Server - default Docker configuration
+#
+# Loaded via `--config /config/server.toml` / the OXIGDAL_CONFIG env var (see
+# docker/Dockerfile.server and docker-compose.yml). Field/table names must match
+# `crates/oxigdal-server::config::Config` exactly - every struct in that module derives
+# `#[serde(deny_unknown_fields)]`, so a stale or mistyped key makes the server refuse to
+# start rather than silently ignoring it.
+#
+# Values mirror the OXIGDAL_CACHE_SIZE / OXIGDAL_MAX_TILE_AGE defaults set in
+# docker/docker-compose.yml; those two env vars are informational only today (the server does
+# not currently read them - see the note in docker-compose.yml), so this file is the actual
+# source of truth for cache sizing when running via Docker.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+workers = 0 # 0 = number of CPUs
+max_request_size = 10485760 # 10 MB
+timeout_seconds = 30
+enable_cors = true
+cors_origins = []
+
+# Prometheus /metrics endpoint, scraped by the `prometheus` service in docker-compose.yml.
+metrics_enabled = true
+metrics_port = 8081
+
+[cache]
+memory_size_mb = 1024
+ttl_seconds = 3600
+enable_stats = true
+compression = false
+
+[metadata]
+title = "OxiGDAL Tile Server"
+abstract_ = "WMS/WMTS tile server powered by OxiGDAL"
+keywords = ["tiles", "wms", "wmts", "geospatial"]
+
+# No [[layers]] are defined by default; mount your rasters under /data (see the `data` volume
+# in docker-compose.yml) and add layer entries here, e.g.:
+#
+# [[layers]]
+# name = "landsat"
+# path = "/data/landsat.tif"
+# formats = ["png", "jpeg", "webp"]
+# tile_size = 256

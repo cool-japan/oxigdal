@@ -390,92 +390,196 @@ pub struct AccessPattern {
 }
 
 /// Warp-level primitive operations.
+///
+/// NVIDIA warp intrinsics (`__shfl_sync`, `__ballot_sync`, …) have no *literal*
+/// equivalent in WGSL — they compile to PTX and are gated on real CUDA
+/// hardware.  The WGSL these methods emit maps each intrinsic onto the closest
+/// portable construct:
+///
+/// * When the device exposes `wgpu::Features::SUBGROUP` (`native == true`)
+///   the helpers wrap the WGSL subgroup built-ins (`subgroupShuffle`,
+///   `subgroupShuffleDown`, `subgroupBallot`, …), which are the direct
+///   cross-vendor analogue of the CUDA warp intrinsics and run within a
+///   hardware subgroup (wave).
+/// * Otherwise the helpers fall back to a `workgroupBarrier()`-synchronised
+///   workgroup-shared-memory emulation.  Out-of-range shuffles return the
+///   caller's own value, matching the CUDA `__shfl_*_sync` convention.
+///
+/// Every helper takes `(…, lid: u32, n: u32)` where `lid` is the invocation's
+/// `local_invocation_index` and `n` is the number of active invocations.  The
+/// native helpers ignore `lid`/`n`.
 pub struct WarpPrimitives;
 
 impl WarpPrimitives {
     /// Generate shader code for warp shuffle.
-    pub fn warp_shuffle_shader() -> &'static str {
-        r#"
-// Warp shuffle operation (emulated in WGSL)
-fn warp_shuffle(value: f32, src_lane: u32) -> f32 {
-    // In actual CUDA, this would use __shfl_sync
-    // In WGSL, this is a placeholder that needs workgroup memory
-    return value;
+    ///
+    /// See [`WarpPrimitives`] for the meaning of `native`.  In the emulation
+    /// path this also declares the module-scope `warp_shfl_scratch` workgroup
+    /// buffer used by [`Self::warp_reduce_shader`]; concatenate the reduce
+    /// snippet *after* this one.
+    pub fn warp_shuffle_shader(native: bool) -> String {
+        if native {
+            r#"
+// Native warp shuffle == WGSL subgroup shuffle (Features::SUBGROUP).
+// Direct analogue of CUDA __shfl_sync / __shfl_down_sync / __shfl_up_sync /
+// __shfl_xor_sync; `lid`/`n` are unused on this path.
+fn warp_shuffle(value: f32, src_lane: u32, lid: u32, n: u32) -> f32 { return subgroupShuffle(value, src_lane); }
+fn warp_shuffle_down(value: f32, delta: u32, lid: u32, n: u32) -> f32 { return subgroupShuffleDown(value, delta); }
+fn warp_shuffle_up(value: f32, delta: u32, lid: u32, n: u32) -> f32 { return subgroupShuffleUp(value, delta); }
+fn warp_shuffle_xor(value: f32, mask: u32, lid: u32, n: u32) -> f32 { return subgroupShuffleXor(value, mask); }
+"#
+            .to_string()
+        } else {
+            r#"
+// Emulated warp shuffle — workgroup-shared memory + workgroupBarrier().
+// Semantics follow CUDA: an out-of-range source lane returns the caller's
+// own value.  Valid for a 1-D workgroup of n <= 256 invocations.
+var<workgroup> warp_shfl_scratch: array<f32, 256>;
+fn warp_shuffle(value: f32, src_lane: u32, lid: u32, n: u32) -> f32 {
+    warp_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = src_lane;
+    if (idx >= n) { idx = lid; }
+    let result = warp_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
-
-fn warp_shuffle_down(value: f32, delta: u32) -> f32 {
-    // Placeholder for __shfl_down_sync
-    return value;
+fn warp_shuffle_down(value: f32, delta: u32, lid: u32, n: u32) -> f32 {
+    warp_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lid + delta;
+    if (idx >= n) { idx = lid; }
+    let result = warp_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
-
-fn warp_shuffle_up(value: f32, delta: u32) -> f32 {
-    // Placeholder for __shfl_up_sync
-    return value;
+fn warp_shuffle_up(value: f32, delta: u32, lid: u32, n: u32) -> f32 {
+    warp_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lid;
+    if (lid >= delta) { idx = lid - delta; }
+    let result = warp_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
-
-fn warp_shuffle_xor(value: f32, mask: u32) -> f32 {
-    // Placeholder for __shfl_xor_sync
-    return value;
+fn warp_shuffle_xor(value: f32, mask: u32, lid: u32, n: u32) -> f32 {
+    warp_shfl_scratch[lid] = value;
+    workgroupBarrier();
+    var idx = lid ^ mask;
+    if (idx >= n) { idx = lid; }
+    let result = warp_shfl_scratch[idx];
+    workgroupBarrier();
+    return result;
 }
 "#
+            .to_string()
+        }
     }
 
     /// Generate shader code for warp reduce.
+    ///
+    /// Emits butterfly reductions built on `warp_shuffle_down`, so the output
+    /// of [`Self::warp_shuffle_shader`] (matching `native`) must precede it.
+    /// The reduced value is valid on lane 0 (invocation `local_invocation_index
+    /// == 0` of the subgroup / workgroup), following the CUDA convention.  The
+    /// 5-step butterfly assumes a 32-lane group (a hardware warp / typical
+    /// subgroup width); for the emulation path pass a 32-invocation workgroup.
     pub fn warp_reduce_shader() -> &'static str {
         r#"
-// Warp-level reduction
-fn warp_reduce_sum(value: f32) -> f32 {
+// Warp-level reduction (result valid on lane 0). Butterfly over a 32-lane warp.
+fn warp_reduce_sum(value: f32, lid: u32, n: u32) -> f32 {
     var result = value;
-    // Unrolled butterfly reduction
-    result += warp_shuffle_down(result, 16u);
-    result += warp_shuffle_down(result, 8u);
-    result += warp_shuffle_down(result, 4u);
-    result += warp_shuffle_down(result, 2u);
-    result += warp_shuffle_down(result, 1u);
+    result += warp_shuffle_down(result, 16u, lid, n);
+    result += warp_shuffle_down(result, 8u, lid, n);
+    result += warp_shuffle_down(result, 4u, lid, n);
+    result += warp_shuffle_down(result, 2u, lid, n);
+    result += warp_shuffle_down(result, 1u, lid, n);
     return result;
 }
 
-fn warp_reduce_max(value: f32) -> f32 {
+fn warp_reduce_max(value: f32, lid: u32, n: u32) -> f32 {
     var result = value;
-    result = max(result, warp_shuffle_down(result, 16u));
-    result = max(result, warp_shuffle_down(result, 8u));
-    result = max(result, warp_shuffle_down(result, 4u));
-    result = max(result, warp_shuffle_down(result, 2u));
-    result = max(result, warp_shuffle_down(result, 1u));
+    result = max(result, warp_shuffle_down(result, 16u, lid, n));
+    result = max(result, warp_shuffle_down(result, 8u, lid, n));
+    result = max(result, warp_shuffle_down(result, 4u, lid, n));
+    result = max(result, warp_shuffle_down(result, 2u, lid, n));
+    result = max(result, warp_shuffle_down(result, 1u, lid, n));
     return result;
 }
 
-fn warp_reduce_min(value: f32) -> f32 {
+fn warp_reduce_min(value: f32, lid: u32, n: u32) -> f32 {
     var result = value;
-    result = min(result, warp_shuffle_down(result, 16u));
-    result = min(result, warp_shuffle_down(result, 8u));
-    result = min(result, warp_shuffle_down(result, 4u));
-    result = min(result, warp_shuffle_down(result, 2u));
-    result = min(result, warp_shuffle_down(result, 1u));
+    result = min(result, warp_shuffle_down(result, 16u, lid, n));
+    result = min(result, warp_shuffle_down(result, 8u, lid, n));
+    result = min(result, warp_shuffle_down(result, 4u, lid, n));
+    result = min(result, warp_shuffle_down(result, 2u, lid, n));
+    result = min(result, warp_shuffle_down(result, 1u, lid, n));
     return result;
 }
 "#
     }
 
     /// Generate shader code for warp vote.
-    pub fn warp_vote_shader() -> &'static str {
-        r#"
-// Warp vote operations
-fn warp_all(predicate: bool) -> bool {
-    // Placeholder for __all_sync
-    return predicate;
-}
-
-fn warp_any(predicate: bool) -> bool {
-    // Placeholder for __any_sync
-    return predicate;
-}
-
-fn warp_ballot(predicate: bool) -> u32 {
-    // Placeholder for __ballot_sync
-    return select(0u, 1u, predicate);
+    ///
+    /// See [`WarpPrimitives`] for `native`.  `warp_ballot` returns the number
+    /// of invocations whose predicate is `true` (a popcount of the ballot);
+    /// a raw per-lane bit-mask is only meaningful inside a single hardware
+    /// subgroup and is not exposed by the emulation.
+    pub fn warp_vote_shader(native: bool) -> String {
+        if native {
+            r#"
+// Native warp vote == WGSL subgroup vote (Features::SUBGROUP).
+fn warp_all(predicate: bool, lid: u32, n: u32) -> bool { return subgroupAll(predicate); }
+fn warp_any(predicate: bool, lid: u32, n: u32) -> bool { return subgroupAny(predicate); }
+fn warp_ballot(predicate: bool, lid: u32, n: u32) -> u32 {
+    let b = subgroupBallot(predicate);
+    return countOneBits(b.x) + countOneBits(b.y) + countOneBits(b.z) + countOneBits(b.w);
 }
 "#
+            .to_string()
+        } else {
+            r#"
+// Emulated warp vote — workgroup-shared flags + workgroupBarrier().
+var<workgroup> warp_vote_flags: array<u32, 256>;
+fn warp_all(predicate: bool, lid: u32, n: u32) -> bool {
+    warp_vote_flags[lid] = select(0u, 1u, predicate);
+    workgroupBarrier();
+    var acc = 1u;
+    for (var i = 0u; i < n; i = i + 1u) { acc = acc & warp_vote_flags[i]; }
+    workgroupBarrier();
+    return acc != 0u;
+}
+fn warp_any(predicate: bool, lid: u32, n: u32) -> bool {
+    warp_vote_flags[lid] = select(0u, 1u, predicate);
+    workgroupBarrier();
+    var acc = 0u;
+    for (var i = 0u; i < n; i = i + 1u) { acc = acc | warp_vote_flags[i]; }
+    workgroupBarrier();
+    return acc != 0u;
+}
+fn warp_ballot(predicate: bool, lid: u32, n: u32) -> u32 {
+    warp_vote_flags[lid] = select(0u, 1u, predicate);
+    workgroupBarrier();
+    var acc = 0u;
+    for (var i = 0u; i < n; i = i + 1u) { acc = acc + warp_vote_flags[i]; }
+    workgroupBarrier();
+    return acc;
+}
+"#
+            .to_string()
+        }
+    }
+
+    /// Return `true` when the device exposes native subgroup intrinsics.
+    ///
+    /// Convenience wrapper the caller can use to pick the `native` argument for
+    /// [`Self::warp_shuffle_shader`] / [`Self::warp_vote_shader`] from a live
+    /// [`GpuContext`].
+    pub fn native_subgroups(context: &GpuContext) -> bool {
+        context
+            .device()
+            .features()
+            .contains(wgpu::Features::SUBGROUP)
     }
 }
 

@@ -20,7 +20,6 @@ WORKDIR /build
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY benchmarks ./benchmarks
 
 # Install maturin for building Python wheels
 RUN pip3 install --no-cache-dir maturin
@@ -69,8 +68,12 @@ RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 RUN mkdir -p /notebooks /data && \
     chown -R jupyter:jupyter /notebooks /data
 
-# Copy example notebooks if they exist
-COPY --chown=jupyter:jupyter examples/notebooks/* /notebooks/ 2>/dev/null || true
+# `docker COPY` is not shell-interpreted, so it cannot express a "copy if exists" fallback;
+# there is no committed examples/notebooks/ directory of Python-compatible notebooks to copy
+# unconditionally (crates/oxigdal-jupyter/examples/notebooks/ holds Rust evcxr snippets, not
+# .ipynb notebooks for this Python/oxigdal-python image). /notebooks is left empty for
+# operators to bind-mount their own notebooks over, e.g.
+# `-v ./my-notebooks:/notebooks`.
 
 # Switch to non-root user
 USER jupyter
@@ -96,9 +99,12 @@ CMD ["jupyter", "lab", \
      "--allow-root", \
      "--NotebookApp.token=oxigdal"]
 
+# Build-time version, defaulting to the last released version; see docker/build.sh.
+ARG OXIGDAL_VERSION=0.1.7
+
 LABEL org.opencontainers.image.title="OxiGDAL Jupyter" \
       org.opencontainers.image.description="Jupyter notebook environment with OxiGDAL Python bindings" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
       org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="0.1.0"
+      org.opencontainers.image.version="${OXIGDAL_VERSION}"

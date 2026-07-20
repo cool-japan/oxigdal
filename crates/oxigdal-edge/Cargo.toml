@@ -46,6 +46,9 @@ parking_lot = { workspace = true }
 blake3 = { workspace = true }
 lru = { workspace = true }
 
+# Host CPU sampling for resource-based admission control
+sysinfo = { workspace = true }
+
 # Arrow ecosystem (minimal features)
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

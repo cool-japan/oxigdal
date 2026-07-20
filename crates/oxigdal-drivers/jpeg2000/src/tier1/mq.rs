@@ -407,8 +407,11 @@ impl MqDecoder {
             0xFF
         };
 
-        // BYTEIN to fill the C register
-        self.c_register = (u32::from(self.t_bar) ^ 0xFF) << 16;
+        // INITDEC (ISO/IEC 15444-1 Annex C.2.1): C = B << 16, with NO complement.
+        // The rest of the decoder (byte_in, decode, renorm_d) uses the standard,
+        // non-inverted convention, so complementing the first byte here would
+        // desynchronize the decoder from the first symbol of every code-block.
+        self.c_register = u32::from(self.t_bar) << 16;
 
         self.byte_in();
 
@@ -739,6 +742,48 @@ mod tests {
                 entry.next_lps
             );
         }
+    }
+
+    #[test]
+    fn test_initdec_c_register_matches_spec_no_complement() {
+        // ISO/IEC 15444-1 Annex C.2.1 INITDEC:
+        //   B     = BPST (first byte)
+        //   C     = B << 16          (NO complement)
+        //   BYTEIN                    (adds next byte; here 0x00 -> unchanged)
+        //   C     = C << 7
+        //   CT    = CT - 7
+        //   A     = 0x8000
+        //
+        // For first byte 0xB5, second byte 0x00:
+        //   C = 0xB5 << 16 = 0x00B5_0000
+        //   BYTEIN: B != 0xFF -> C += 0x00 << 8  (unchanged), CT = 8
+        //   C <<= 7 -> 0x5A80_0000
+        //   CT = 8 - 7 = 1
+        //
+        // The historical `^ 0xFF` bug would instead load (0xB5 ^ 0xFF) = 0x4A,
+        // giving C = 0x25_00_0000 after the shift, which this test rejects.
+        let decoder = MqDecoder::new(vec![0xB5, 0x00, 0x00, 0x00]);
+        assert_eq!(
+            decoder.c_register, 0x5A80_0000,
+            "INITDEC must load C = B << 16 with no complement"
+        );
+        assert_eq!(decoder.a_register, 0x8000);
+        assert_eq!(decoder.ct, 1);
+    }
+
+    #[test]
+    fn test_initdec_c_register_with_nonzero_second_byte() {
+        // First byte 0x12, second byte 0x34:
+        //   C = 0x12 << 16 = 0x0012_0000
+        //   BYTEIN: C += 0x34 << 8 = 0x3400 -> 0x0012_3400, CT = 8
+        //   C <<= 7 -> 0x0012_3400 * 128 = 0x091A_0000
+        //   CT = 1
+        let decoder = MqDecoder::new(vec![0x12, 0x34, 0x00, 0x00]);
+        assert_eq!(
+            decoder.c_register, 0x091A_0000,
+            "INITDEC register load must match the spec (C = B<<16, then BYTEIN, then <<7)"
+        );
+        assert_eq!(decoder.ct, 1);
     }
 
     #[test]

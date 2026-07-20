@@ -2,7 +2,7 @@
 
 > **Purpose:** Advanced terrain analysis and DEM processing for OxiGDAL — derivatives, hydrology, viewshed, geomorphometry
 > **Status (2026-05-16):** 4,847 Rust LoC · 103 unit tests (+ workspace integration) · 0 real-code stubs (clean tree after v0.1.5 hydrology/morphometry slice)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
 - [x] D-infinity (Tarboton 1997) flow direction/accumulation + Wang & Liu (2006) priority-flood sink fill (completed 2026-05-07)

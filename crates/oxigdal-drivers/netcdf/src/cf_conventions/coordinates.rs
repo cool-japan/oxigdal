@@ -151,44 +151,43 @@ impl CoordinateDetector {
     #[must_use]
     pub fn detect_axis(&self, var: &Variable) -> Option<AxisType> {
         // Check explicit axis attribute
-        if let Some(attr) = var.attributes().get("axis") {
-            if let Ok(axis_val) = attr.value().as_text() {
-                if let Some(axis) = AxisType::from_cf_value(axis_val) {
-                    return Some(axis);
-                }
-            }
+        if let Some(attr) = var.attributes().get("axis")
+            && let Ok(axis_val) = attr.value().as_text()
+            && let Some(axis) = AxisType::from_cf_value(axis_val)
+        {
+            return Some(axis);
         }
 
         // Check standard_name
-        if let Some(attr) = var.attributes().get("standard_name") {
-            if let Ok(name) = attr.value().as_text() {
-                match name {
-                    "latitude" => return Some(AxisType::Y),
-                    "longitude" => return Some(AxisType::X),
-                    "time" => return Some(AxisType::T),
-                    "depth" | "height" | "altitude" | "air_pressure" => return Some(AxisType::Z),
-                    _ => {}
-                }
+        if let Some(attr) = var.attributes().get("standard_name")
+            && let Ok(name) = attr.value().as_text()
+        {
+            match name {
+                "latitude" => return Some(AxisType::Y),
+                "longitude" => return Some(AxisType::X),
+                "time" => return Some(AxisType::T),
+                "depth" | "height" | "altitude" | "air_pressure" => return Some(AxisType::Z),
+                _ => {}
             }
         }
 
         // Check units
-        if let Some(attr) = var.attributes().get("units") {
-            if let Ok(units) = attr.value().as_text() {
-                if self.latitude_units.contains(units) {
-                    return Some(AxisType::Y);
+        if let Some(attr) = var.attributes().get("units")
+            && let Ok(units) = attr.value().as_text()
+        {
+            if self.latitude_units.contains(units) {
+                return Some(AxisType::Y);
+            }
+            if self.longitude_units.contains(units) {
+                return Some(AxisType::X);
+            }
+            for prefix in &self.time_units_prefixes {
+                if units.starts_with(prefix) {
+                    return Some(AxisType::T);
                 }
-                if self.longitude_units.contains(units) {
-                    return Some(AxisType::X);
-                }
-                for prefix in &self.time_units_prefixes {
-                    if units.starts_with(prefix) {
-                        return Some(AxisType::T);
-                    }
-                }
-                if self.vertical_units.contains(units) {
-                    return Some(AxisType::Z);
-                }
+            }
+            if self.vertical_units.contains(units) {
+                return Some(AxisType::Z);
             }
         }
 
@@ -204,21 +203,20 @@ impl CoordinateDetector {
     #[must_use]
     pub fn is_coordinate_variable(&self, var: &Variable, dimensions: &Dimensions) -> bool {
         // Classic definition: 1D variable with same name as its dimension
-        if var.dimension_names().len() == 1 {
-            if let Some(dim_name) = var.dimension_names().first() {
-                if dim_name == var.name() && dimensions.contains(dim_name) {
-                    return true;
-                }
-            }
+        if var.dimension_names().len() == 1
+            && let Some(dim_name) = var.dimension_names().first()
+            && dim_name == var.name()
+            && dimensions.contains(dim_name)
+        {
+            return true;
         }
 
         // Also check for coordinate standard names
-        if let Some(attr) = var.attributes().get("standard_name") {
-            if let Ok(name) = attr.value().as_text() {
-                if self.coordinate_names.contains(name) {
-                    return true;
-                }
-            }
+        if let Some(attr) = var.attributes().get("standard_name")
+            && let Ok(name) = attr.value().as_text()
+            && self.coordinate_names.contains(name)
+        {
+            return true;
         }
 
         false

@@ -26,9 +26,11 @@ impl Middleware for LoggingMiddleware {
         Ok(())
     }
 
-    async fn after_response(&self, response: &mut Response) -> Result<()> {
+    async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()> {
         tracing::info!(
-            "Response: {} - {} bytes",
+            "Response: {} {} -> {} - {} bytes",
+            request.method,
+            request.path,
             response.status,
             response.body.len()
         );

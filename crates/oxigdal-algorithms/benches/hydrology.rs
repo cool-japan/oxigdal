@@ -275,14 +275,14 @@ fn bench_delineate_watersheds(c: &mut Criterion) {
         let mut point_count = 0;
         for y in 0..size {
             for x in 0..size {
-                if let Ok(acc) = flow_acc.get_pixel(x as u64, y as u64) {
-                    if acc > (size * size / 100) as f64 {
-                        // Top 1% accumulation
-                        let _ = pour_points.set_pixel(x as u64, y as u64, 1.0);
-                        point_count += 1;
-                        if point_count >= 5 {
-                            break;
-                        }
+                if let Ok(acc) = flow_acc.get_pixel(x as u64, y as u64)
+                    && acc > (size * size / 100) as f64
+                {
+                    // Top 1% accumulation
+                    let _ = pour_points.set_pixel(x as u64, y as u64, 1.0);
+                    point_count += 1;
+                    if point_count >= 5 {
+                        break;
                     }
                 }
             }

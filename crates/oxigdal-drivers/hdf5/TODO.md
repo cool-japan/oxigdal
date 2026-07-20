@@ -2,7 +2,7 @@
 
 > **Purpose:** HDF5 driver for OxiGDAL - Pure Rust minimal HDF5 with optional full C-binding support
 > **Status (2026-05-16):** 11,850 Rust LoC (incl. tests) - 160 tests - 1 verified behavior gap (Superblock V2/V3 rejected)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

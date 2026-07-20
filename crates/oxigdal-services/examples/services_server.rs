@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         band_count: 3,
         band_names: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
         data_type: "Byte".to_string(),
-        source: wcs::CoverageSource::Memory,
+        source: wcs::CoverageSource::Memory(std::sync::Arc::new(Vec::new())),
         formats: vec!["image/tiff".to_string(), "image/png".to_string()],
     };
     wcs_state.add_coverage(coverage)?;

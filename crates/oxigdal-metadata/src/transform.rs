@@ -32,6 +32,18 @@ fn extract_doi(ids: &[String]) -> Option<String> {
     None
 }
 
+/// Parse an FGDC CSDGM date string (format `YYYYMMDD`, per the FGDC Content
+/// Standard for Digital Geospatial Metadata) into a UTC `DateTime`.
+///
+/// Returns `None` (rather than erroring) when the string does not match the
+/// expected format, so a single malformed date does not abort an entire
+/// metadata transform; the field is simply left unset.
+fn parse_fgdc_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let date = chrono::NaiveDate::parse_from_str(s.trim(), "%Y%m%d").ok()?;
+    let datetime = date.and_hms_opt(0, 0, 0)?;
+    Some(datetime.and_utc())
+}
+
 /// Map an ISO 19115 `OnlineFunction` variant to an INSPIRE `ResourceLocatorFunction`.
 fn map_online_function(f: &OnlineFunction) -> ResourceLocatorFunction {
     match f {
@@ -76,13 +88,13 @@ pub fn iso19115_to_fgdc(iso: &Iso19115Metadata) -> Result<FgdcMetadata> {
         }
 
         // Transform temporal extent
-        if let Some(ref temporal) = ident.extent.temporal_extent {
-            if let (Some(start), Some(end)) = (temporal.start, temporal.end) {
-                fgdc.idinfo.timeperd.timeinfo = TimeInfo::Range {
-                    begdate: start.format("%Y%m%d").to_string(),
-                    enddate: end.format("%Y%m%d").to_string(),
-                };
-            }
+        if let Some(ref temporal) = ident.extent.temporal_extent
+            && let (Some(start), Some(end)) = (temporal.start, temporal.end)
+        {
+            fgdc.idinfo.timeperd.timeinfo = TimeInfo::Range {
+                begdate: start.format("%Y%m%d").to_string(),
+                enddate: end.format("%Y%m%d").to_string(),
+            };
         }
     }
 
@@ -123,17 +135,17 @@ pub fn fgdc_to_iso19115(fgdc: &FgdcMetadata) -> Result<Iso19115Metadata> {
     // Transform bounding box
     ident.extent.geographic_extent = Some(fgdc.idinfo.spdom.bounding);
 
-    // Transform temporal extent
-    if let TimeInfo::Range {
-        begdate: _,
-        enddate: _,
-    } = &fgdc.idinfo.timeperd.timeinfo
-    {
-        // Parse dates - simplified, would need proper parsing
-        ident.extent.temporal_extent = Some(TemporalExtent {
-            start: None, // Would parse begdate
-            end: None,   // Would parse enddate
-        });
+    // Transform temporal extent. FGDC CSDGM dates are formatted YYYYMMDD (the
+    // exact inverse of the "%Y%m%d" formatting used in `iso19115_to_fgdc`
+    // above). A date string that fails to parse is treated as absent rather
+    // than aborting the whole transform, since a single malformed date
+    // shouldn't discard the rest of the metadata.
+    if let TimeInfo::Range { begdate, enddate } = &fgdc.idinfo.timeperd.timeinfo {
+        let start = parse_fgdc_date(begdate);
+        let end = parse_fgdc_date(enddate);
+        if start.is_some() || end.is_some() {
+            ident.extent.temporal_extent = Some(TemporalExtent { start, end });
+        }
     }
 
     iso.identification_info.push(ident);
@@ -279,15 +291,15 @@ pub fn datacite_to_iso19115(datacite: &DataCiteMetadata) -> Result<Iso19115Metad
     }
 
     // Transform geo locations to bounding box
-    if let Some(geo_loc) = datacite.geo_locations.first() {
-        if let Some(bbox_dc) = &geo_loc.geo_location_box {
-            ident.extent.geographic_extent = Some(BoundingBox {
-                west: bbox_dc.west_bound_longitude,
-                east: bbox_dc.east_bound_longitude,
-                south: bbox_dc.south_bound_latitude,
-                north: bbox_dc.north_bound_latitude,
-            });
-        }
+    if let Some(geo_loc) = datacite.geo_locations.first()
+        && let Some(bbox_dc) = &geo_loc.geo_location_box
+    {
+        ident.extent.geographic_extent = Some(BoundingBox {
+            west: bbox_dc.west_bound_longitude,
+            east: bbox_dc.east_bound_longitude,
+            south: bbox_dc.south_bound_latitude,
+            north: bbox_dc.north_bound_latitude,
+        });
     }
 
     iso.identification_info.push(ident);
@@ -348,15 +360,15 @@ pub fn dcat_to_iso19115(dcat: &DcatDataset) -> Result<Iso19115Metadata> {
     }
 
     // Transform spatial coverage
-    if let Some(spatial) = dcat.spatial.first() {
-        if let Some(bbox_dcat) = &spatial.bbox {
-            ident.extent.geographic_extent = Some(BoundingBox {
-                west: bbox_dcat.west,
-                east: bbox_dcat.east,
-                south: bbox_dcat.south,
-                north: bbox_dcat.north,
-            });
-        }
+    if let Some(spatial) = dcat.spatial.first()
+        && let Some(bbox_dcat) = &spatial.bbox
+    {
+        ident.extent.geographic_extent = Some(BoundingBox {
+            west: bbox_dcat.west,
+            east: bbox_dcat.east,
+            south: bbox_dcat.south,
+            north: bbox_dcat.north,
+        });
     }
 
     // Transform temporal coverage

@@ -2,7 +2,7 @@
 
 > **Purpose:** Multi-GPU orchestration, memory pooling/compaction, shader optimizer + cache, ML/terrain GPU kernels, work-stealing queue, profiler — built on top of `oxigdal-gpu` (wgpu 29).
 > **Status (2026-05-16):** 11,662 LoC · 67 tests · 2 real stubs in WGSL FFT kernel (`kernels/advanced/fft.wgsl:188, :207`).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real 2-D FFT in `fft.wgsl`

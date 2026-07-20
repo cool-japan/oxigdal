@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 use crate::proj_string::ProjString;
-use crate::transform::Coordinate;
+use crate::transform::{Coordinate, Coordinate3D};
 
 /// Type alias for a single parsed pipeline step: `(params map, per-step-inverse flag)`.
 pub type ParsedStep = (HashMap<String, Option<String>>, bool);
@@ -248,7 +248,7 @@ pub enum StepKind {
         to: Unit,
     },
 
-    /// Apply a projection using a PROJ string (delegates to proj4rs).
+    /// Apply a projection using a PROJ string (delegates to OxiProj).
     Project {
         /// PROJ string for the projection step (e.g. `"+proj=merc +R=6378137"`).
         proj_string: String,
@@ -259,9 +259,12 @@ pub enum StepKind {
 
     /// 7-parameter Helmert similarity transform (Bursa-Wolf or Coordinate Frame convention).
     ///
-    /// Operates on geocentric (X, Y, Z) Cartesian coordinates.  For a 2-D pipeline the
-    /// step treats the coordinate as (X, Y) with Z = 0; this is sufficient for testing
-    /// the linearised rotation/translation arithmetic.
+    /// Operates on geocentric (X, Y, Z) Cartesian coordinates. Via
+    /// [`Pipeline::transform`] (2-D) the coordinate is treated as (X, Y) with
+    /// Z = 0, which makes the `rx`/`ry` rotation terms vanish (they only act
+    /// on non-zero Z). Use [`Pipeline::transform_3d`] to carry a real height
+    /// through this step and get the full 3×3 rotation/scale/translation,
+    /// including `rx`/`ry`.
     Helmert {
         /// Helmert transform parameters.
         params: HelmertParams,
@@ -269,9 +272,14 @@ pub enum StepKind {
 
     /// Geographic ↔ geocentric (ECEF) conversion using a specified ellipsoid.
     ///
-    /// Forward: geographic (lon°, lat°) → ECEF (X, Y).
-    ///   Z is implicit (height = 0); the pipeline Coordinate carries (X_ecef, Y_ecef).
-    /// Inverse: ECEF (X, Y) → geographic (lon°, lat°) via Bowring 1985 iteration.
+    /// Via [`Pipeline::transform`] (2-D):
+    ///   Forward: geographic (lon°, lat°) → ECEF (X, Y). Height is assumed 0
+    ///   and Z is discarded.
+    ///   Inverse: ECEF (X, Y) → geographic (lon°, lat°) via Bowring 1985
+    ///   iteration, with Z assumed 0.
+    ///
+    /// Use [`Pipeline::transform_3d`] for a fully height-aware conversion
+    /// that threads the real height/Z through in both directions.
     Cart {
         /// Ellipsoid parameters for the conversion.
         ellipsoid: EllipsoidParams,
@@ -363,6 +371,23 @@ impl PipelineStep {
     /// Apply this step to a coordinate with an additional inversion on top of `self.inverse`.
     pub fn apply_flipped(&self, coord: &Coordinate) -> Result<Coordinate> {
         apply_step_kind(&self.kind, coord, !self.inverse)
+    }
+
+    /// Apply this step to a 3-D coordinate, respecting the `inverse` flag.
+    ///
+    /// [`StepKind::Cart`] and [`StepKind::Helmert`]/[`StepKind::HelmertTemporal`]
+    /// carry height/Z fully through the computation (including the `rx`/`ry`
+    /// rotation terms). Every other step kind currently operates on the
+    /// `(X, Y)` plane only and passes `Z` through unchanged — see
+    /// `apply_step_kind_3d` for the exact scope.
+    pub fn apply_3d(&self, coord: &Coordinate3D) -> Result<Coordinate3D> {
+        apply_step_kind_3d(&self.kind, coord, self.inverse)
+    }
+
+    /// Apply this step to a 3-D coordinate with an additional inversion on
+    /// top of `self.inverse`.
+    pub fn apply_flipped_3d(&self, coord: &Coordinate3D) -> Result<Coordinate3D> {
+        apply_step_kind_3d(&self.kind, coord, !self.inverse)
     }
 }
 
@@ -499,6 +524,66 @@ impl Pipeline {
         coords.iter().map(|c| self.transform(c)).collect()
     }
 
+    /// Transforms a single 3-D coordinate through the pipeline, threading
+    /// height/Z through every step.
+    ///
+    /// Unlike [`Pipeline::transform`] (which always treats geocentric Z as 0
+    /// for [`StepKind::Cart`]/[`StepKind::Helmert`] steps and drops the `rx`
+    /// and `ry` rotation terms as a result), this method carries the real Z
+    /// value through the whole pipeline:
+    ///
+    /// - [`StepKind::Cart`] performs a full geographic ↔ geocentric (ECEF)
+    ///   conversion using the input height, and returns the true ECEF Z (or,
+    ///   on the inverse leg, the true ellipsoidal height) via Bowring's
+    ///   iterative method.
+    /// - [`StepKind::Helmert`] / [`StepKind::HelmertTemporal`] apply the full
+    ///   3×3 similarity transform, including the `rx`/`ry` rotation terms
+    ///   that only manifest when Z ≠ 0.
+    /// - All other step kinds ([`StepKind::AxisSwap`], [`StepKind::UnitConvert`],
+    ///   [`StepKind::Project`], [`StepKind::Vgridshift`], [`StepKind::Hgridshift`],
+    ///   [`StepKind::Passthrough`]) currently operate on `(X, Y)` only and pass
+    ///   `Z` through unchanged; they are not (yet) height-aware.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PipelineStepError`] if any step fails, wrapping the
+    /// step index and inner error message.
+    pub fn transform_3d(&self, coord: &Coordinate3D) -> Result<Coordinate3D> {
+        let mut current = *coord;
+
+        if self.inverse {
+            for (idx, step) in self.steps.iter().enumerate().rev() {
+                current =
+                    step.apply_flipped_3d(&current)
+                        .map_err(|e| Error::PipelineStepError {
+                            step: idx,
+                            inner: format!("{}", e),
+                        })?;
+            }
+        } else {
+            for (idx, step) in self.steps.iter().enumerate() {
+                current = step
+                    .apply_3d(&current)
+                    .map_err(|e| Error::PipelineStepError {
+                        step: idx,
+                        inner: format!("{}", e),
+                    })?;
+            }
+        }
+
+        Ok(current)
+    }
+
+    /// Transforms a slice of 3-D coordinates through the pipeline. See
+    /// [`Pipeline::transform_3d`] for the per-step Z-handling semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error encountered, if any.
+    pub fn transform_many_3d(&self, coords: &[Coordinate3D]) -> Result<Vec<Coordinate3D>> {
+        coords.iter().map(|c| self.transform_3d(c)).collect()
+    }
+
     // -----------------------------------------------------------------------
     // Parsing
     // -----------------------------------------------------------------------
@@ -594,6 +679,37 @@ fn apply_step_kind(kind: &StepKind, coord: &Coordinate, inverse: bool) -> Result
     }
 }
 
+/// Apply a `StepKind` to a 3-D coordinate, either forward or inverse.
+///
+/// [`StepKind::Cart`] and [`StepKind::Helmert`]/[`StepKind::HelmertTemporal`]
+/// are dispatched to their genuinely height-aware `_3d` implementations. All
+/// other step kinds are not yet Z-aware: they are applied to the `(X, Y)`
+/// projection of the coordinate via [`apply_step_kind`] and the original `Z`
+/// is carried through unchanged.
+fn apply_step_kind_3d(
+    kind: &StepKind,
+    coord: &Coordinate3D,
+    inverse: bool,
+) -> Result<Coordinate3D> {
+    match kind {
+        StepKind::Cart { ellipsoid } => apply_cart_3d(coord, ellipsoid, inverse),
+
+        StepKind::Helmert { params } => apply_helmert_3d(coord, params, inverse),
+
+        StepKind::HelmertTemporal {
+            params,
+            rates,
+            epoch,
+        } => apply_helmert_temporal_3d(coord, params, rates, *epoch, inverse),
+
+        _ => {
+            let coord_2d = coord.to_2d();
+            let result_2d = apply_step_kind(kind, &coord_2d, inverse)?;
+            Ok(Coordinate3D::new(result_2d.x, result_2d.y, coord.z))
+        }
+    }
+}
+
 /// Apply (or invert) an axis-swap step.
 ///
 /// `order` is 1-indexed: `order[i] = k` means output axis `i+1` = input axis `k`.
@@ -675,46 +791,36 @@ fn apply_unit_convert(
     Ok(Coordinate::new(coord.x * scale, coord.y * scale))
 }
 
-/// Apply (or invert) a projection step using proj4rs.
+/// Apply (or invert) a projection step using OxiProj.
 fn apply_project(coord: &Coordinate, proj_string: &str, inverse: bool) -> Result<Coordinate> {
     // For a Project step we need both a geographic (longlat) CRS and the
     // target projection CRS.  Forward: longlat → projected.
     // Inverse: projected → longlat.
 
-    let geo_proj = proj4rs::Proj::from_proj_string("+proj=longlat +datum=WGS84")
-        .map_err(|e| Error::PipelineParseError(format!("geo proj init failed: {:?}", e)))?;
+    let geo_crs = oxiproj::Crs::from_proj("+proj=longlat +datum=WGS84")
+        .map_err(|e| Error::PipelineParseError(format!("geo CRS init failed: {:?}", e)))?;
 
-    let step_proj = proj4rs::Proj::from_proj_string(proj_string)
-        .map_err(|e| Error::PipelineParseError(format!("step proj init failed: {:?}", e)))?;
+    let step_crs = oxiproj::Crs::from_proj(proj_string)
+        .map_err(|e| Error::PipelineParseError(format!("step CRS init failed: {:?}", e)))?;
 
-    let (src_proj, dst_proj, src_is_geo, dst_is_geo) = if inverse {
+    let transformer = if inverse {
         // projected → geographic
-        (&step_proj, &geo_proj, false, true)
+        oxiproj::Transformer::new(step_crs, geo_crs)
     } else {
         // geographic → projected
-        (&geo_proj, &step_proj, true, false)
-    };
-
-    let mut x = coord.x;
-    let mut y = coord.y;
-
-    if src_is_geo {
-        x = x.to_radians();
-        y = y.to_radians();
+        oxiproj::Transformer::new(geo_crs, step_crs)
     }
+    .map_err(|e| Error::PipelineParseError(format!("transformer init failed: {:?}", e)))?;
 
-    let mut points = [(x, y)];
-    proj4rs::transform::transform(src_proj, dst_proj, &mut points[..])
+    let oxi_coord = oxiproj::Coordinate {
+        x: coord.x,
+        y: coord.y,
+    };
+    let out = transformer
+        .transform(&oxi_coord)
         .map_err(|e| Error::transformation_error(format!("{:?}", e)))?;
 
-    let (mut rx, mut ry) = points[0];
-
-    if dst_is_geo {
-        rx = rx.to_degrees();
-        ry = ry.to_degrees();
-    }
-
-    let result = Coordinate::new(rx, ry);
+    let result = Coordinate::new(out.x, out.y);
     if !result.is_valid() {
         return Err(Error::transformation_error(
             "Project step produced non-finite coordinate",
@@ -865,6 +971,177 @@ fn apply_helmert_temporal(
 }
 
 // ---------------------------------------------------------------------------
+// 3×3 linear algebra helpers (used by the height-aware Helmert transform)
+// ---------------------------------------------------------------------------
+
+/// Determinant of a 3×3 matrix.
+#[inline]
+fn mat3_det(m: &[[f64; 3]; 3]) -> f64 {
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+}
+
+/// Exact inverse of a 3×3 matrix via the adjugate/cofactor method.
+///
+/// Returns `None` if the matrix is singular (determinant magnitude below a
+/// tiny threshold). For the Helmert similarity matrix this only happens for
+/// physically absurd scale/rotation combinations that never occur for real
+/// geodetic datum parameters.
+fn mat3_inverse(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let det = mat3_det(m);
+    if det.abs() < 1e-30 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    Some([
+        [
+            (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det,
+            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det,
+            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det,
+        ],
+        [
+            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det,
+            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det,
+            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv_det,
+        ],
+        [
+            (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv_det,
+            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv_det,
+            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv_det,
+        ],
+    ])
+}
+
+/// Multiply a 3×3 matrix by a 3-vector.
+#[inline]
+fn mat3_vec3_mul(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Helmert 7-parameter similarity transform (height-aware, full 3-D)
+// ---------------------------------------------------------------------------
+
+/// Apply (or invert) a 7-parameter Helmert similarity transform on a full
+/// 3-D `(X, Y, Z)` geocentric coordinate.
+///
+/// Unlike [`apply_helmert`] (which always treats Z as 0 and therefore drops
+/// the `rx`/`ry` rotation terms), this computes the complete linearised
+/// rotation/scale/translation matrix:
+///
+/// # Position Vector convention (Bursa-Wolf)
+///
+/// ```text
+/// X' = tx + (1+ds)·X + dRz·Y − dRy·Z
+/// Y' = ty − dRz·X + (1+ds)·Y + dRx·Z
+/// Z' = tz + dRy·X − dRx·Y + (1+ds)·Z
+/// ```
+///
+/// where dRx/dRy/dRz are in radians and ds = s × 10⁻⁶.
+///
+/// # Coordinate Frame convention
+///
+/// Identical to Position Vector but with the signs of dRx, dRy, dRz negated
+/// before applying (matches [`apply_helmert`]).
+///
+/// # Inverse
+///
+/// Solved as an exact 3×3 linear system via [`mat3_inverse`] rather than the
+/// small-angle approximation `R⁻¹ ≈ Rᵀ` — geodetic rotation parameters are
+/// always tiny (sub-arcsecond to a few arcseconds) so the two agree to many
+/// more significant digits than any real dataset carries, but the exact
+/// solve avoids introducing an approximation error of its own.
+fn apply_helmert_3d(
+    coord: &Coordinate3D,
+    params: &HelmertParams,
+    inverse: bool,
+) -> Result<Coordinate3D> {
+    let arc_sec_to_rad = std::f64::consts::PI / 648_000.0;
+
+    let drx_raw = params.rx * arc_sec_to_rad;
+    let dry_raw = params.ry * arc_sec_to_rad;
+    let drz_raw = params.rz * arc_sec_to_rad;
+
+    let (drx, dry, drz) = if params.convention == HelmertConvention::CoordinateFrame {
+        (-drx_raw, -dry_raw, -drz_raw)
+    } else {
+        (drx_raw, dry_raw, drz_raw)
+    };
+
+    let ds = params.s * 1.0e-6;
+    let scale = 1.0 + ds;
+
+    // Linearised rotation + scale matrix:
+    //   [ scale   drz   -dry ]
+    //   [ -drz   scale   drx ]
+    //   [ dry    -drx   scale]
+    let m = [[scale, drz, -dry], [-drz, scale, drx], [dry, -drx, scale]];
+
+    if !inverse {
+        let v = mat3_vec3_mul(&m, [coord.x, coord.y, coord.z]);
+        let out = Coordinate3D::new(params.tx + v[0], params.ty + v[1], params.tz + v[2]);
+
+        if !out.is_valid() {
+            return Err(Error::transformation_error(
+                "Helmert 3D forward produced non-finite value",
+            ));
+        }
+        Ok(out)
+    } else {
+        let b = [
+            coord.x - params.tx,
+            coord.y - params.ty,
+            coord.z - params.tz,
+        ];
+
+        let inv = mat3_inverse(&m).ok_or_else(|| {
+            Error::transformation_error("Helmert 3D inverse: degenerate scale/rotation matrix")
+        })?;
+        let v = mat3_vec3_mul(&inv, b);
+        let out = Coordinate3D::new(v[0], v[1], v[2]);
+
+        if !out.is_valid() {
+            return Err(Error::transformation_error(
+                "Helmert 3D inverse produced non-finite value",
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// Apply (or invert) a time-dependent 7-parameter Helmert transform on a
+/// full 3-D `(X, Y, Z)` coordinate. See [`apply_helmert_temporal`] for the
+/// rate-extrapolation semantics; this variant forwards to
+/// [`apply_helmert_3d`] instead of the Z=0-only [`apply_helmert`].
+fn apply_helmert_temporal_3d(
+    coord: &Coordinate3D,
+    params: &HelmertParams,
+    rates: &HelmertRateParams,
+    epoch: f64,
+    inverse: bool,
+) -> Result<Coordinate3D> {
+    let dt = epoch - rates.ref_epoch;
+
+    let effective = HelmertParams {
+        tx: params.tx + rates.dtx / 1_000.0 * dt,
+        ty: params.ty + rates.dty / 1_000.0 * dt,
+        tz: params.tz + rates.dtz / 1_000.0 * dt,
+        rx: params.rx + rates.drx / 1_000.0 * dt,
+        ry: params.ry + rates.dry / 1_000.0 * dt,
+        rz: params.rz + rates.drz / 1_000.0 * dt,
+        s: params.s + rates.ds / 1_000.0 * dt,
+        convention: params.convention.clone(),
+    };
+
+    apply_helmert_3d(coord, &effective, inverse)
+}
+
+// ---------------------------------------------------------------------------
 // Cartographic (ECEF) conversion
 // ---------------------------------------------------------------------------
 
@@ -943,6 +1220,111 @@ fn apply_cart(coord: &Coordinate, ell: &EllipsoidParams, inverse: bool) -> Resul
         }
 
         Ok(Coordinate::new(lon_rad.to_degrees(), lat_rad.to_degrees()))
+    }
+}
+
+/// Apply (or invert) a geographic ↔ ECEF conversion on a full 3-D
+/// `(X, Y, Z)` coordinate.
+///
+/// Unlike [`apply_cart`] (which always assumes height/Z = 0), this uses the
+/// true input height on the forward leg and returns the true geocentric Z;
+/// on the inverse leg it consumes the true geocentric Z and additionally
+/// recovers the ellipsoidal height (not just longitude/latitude).
+///
+/// # Forward direction: geographic → ECEF
+///
+/// Input: `(lon_deg, lat_deg, height_m)`.
+/// Output: `(X_ecef, Y_ecef, Z_ecef)`.
+///
+/// # Inverse direction: ECEF → geographic
+///
+/// Input: `(X_ecef, Y_ecef, Z_ecef)`.
+/// Output: `(lon_deg, lat_deg, height_m)`.
+///
+/// Uses Bowring (1985) iterative method — 3 iterations give millimetre
+/// accuracy for both latitude and height, except within a small polar
+/// neighbourhood where the standard `h = p / cos(lat) − N` formula is
+/// numerically ill-conditioned; a polar-safe fallback is used there.
+fn apply_cart_3d(
+    coord: &Coordinate3D,
+    ell: &EllipsoidParams,
+    inverse: bool,
+) -> Result<Coordinate3D> {
+    if !inverse {
+        // Forward: geographic (deg, deg, m) → ECEF (m, m, m).
+        let lon_rad = coord.x.to_radians();
+        let lat_rad = coord.y.to_radians();
+        let h = coord.z;
+
+        let n = ell.prime_vertical_radius(lat_rad);
+        let e2 = ell.e2();
+
+        let cos_lat = lat_rad.cos();
+        let sin_lat = lat_rad.sin();
+
+        let x_ecef = (n + h) * cos_lat * lon_rad.cos();
+        let y_ecef = (n + h) * cos_lat * lon_rad.sin();
+        let z_ecef = (n * (1.0 - e2) + h) * sin_lat;
+
+        let out = Coordinate3D::new(x_ecef, y_ecef, z_ecef);
+        if !out.is_valid() {
+            return Err(Error::transformation_error(
+                "Cart 3D forward produced non-finite value",
+            ));
+        }
+        Ok(out)
+    } else {
+        // Inverse: ECEF (m, m, m) → geographic (deg, deg, m), via Bowring
+        // 1985 iteration plus height recovery.
+        let x_ecef = coord.x;
+        let y_ecef = coord.y;
+        let z_ecef = coord.z;
+
+        let a = ell.a;
+        let b = ell.b();
+        let e2 = ell.e2();
+        let ep2 = (a * a - b * b) / (b * b); // e'² second eccentricity squared
+
+        let p = (x_ecef * x_ecef + y_ecef * y_ecef).sqrt();
+        let lon_rad = y_ecef.atan2(x_ecef);
+
+        // Initial approximation (Bowring 1985).
+        let theta = (z_ecef * a).atan2(p * b);
+        let sin_theta = theta.sin();
+        let cos_theta = theta.cos();
+        let mut lat_rad = (z_ecef + ep2 * b * sin_theta * sin_theta * sin_theta)
+            .atan2(p - e2 * a * cos_theta * cos_theta * cos_theta);
+
+        // Iterate 3 times for millimetre accuracy.
+        let mut n = a;
+        for _ in 0..3 {
+            let sin_lat = lat_rad.sin();
+            n = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
+            lat_rad = (z_ecef + e2 * n * sin_lat).atan2(p);
+        }
+
+        // Height above the ellipsoid. `p / cos(lat)` is ill-conditioned near
+        // the poles (cos(lat) → 0), so fall back to the Z-based formula
+        // there.
+        let cos_lat = lat_rad.cos();
+        let h = if cos_lat.abs() > 1e-10 {
+            p / cos_lat - n
+        } else {
+            let sin_lat = lat_rad.sin();
+            z_ecef / sin_lat - n * (1.0 - e2)
+        };
+
+        if !lon_rad.is_finite() || !lat_rad.is_finite() || !h.is_finite() {
+            return Err(Error::transformation_error(
+                "Cart 3D inverse (Bowring) produced non-finite value",
+            ));
+        }
+
+        Ok(Coordinate3D::new(
+            lon_rad.to_degrees(),
+            lat_rad.to_degrees(),
+            h,
+        ))
     }
 }
 
@@ -1279,7 +1661,7 @@ fn params_to_step_kind(
         "hgridshift" => parse_hgridshift_step(params, step_idx),
 
         _ => {
-            // Reassemble a PROJ string from the params map and delegate to proj4rs.
+            // Reassemble a PROJ string from the params map and delegate to OxiProj.
             let ps = ProjString { params };
             Ok(StepKind::Project {
                 proj_string: ps.to_proj_string(),

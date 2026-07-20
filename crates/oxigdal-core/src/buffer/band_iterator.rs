@@ -24,6 +24,9 @@
 //! }
 //! ```
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use crate::error::{OxiGdalError, Result};
 use crate::types::{ColorInterpretation, NoDataValue, PixelLayout, RasterDataType};
 

@@ -334,30 +334,28 @@ pub fn clip_by_bbox<'py>(
     let max_y = bbox[3];
 
     // Try to interpret as a FeatureCollection dict
-    if let Ok(dict) = geometries.cast::<PyDict>() {
-        if let Ok(Some(features_obj)) = dict.get_item("features") {
-            if let Ok(features_list) = features_obj.cast::<PyList>() {
-                let result = PyList::empty(py);
-                for feature_item in features_list.iter() {
-                    if let Ok(feature_dict) = feature_item.cast::<PyDict>() {
-                        if let Ok(Some(geom_obj)) = feature_dict.get_item("geometry") {
-                            if let Ok(geom_dict) = geom_obj.cast::<PyDict>() {
-                                let geom_bbox = envelope(geom_dict)?;
-                                // Check if geometry bbox intersects with clip bbox
-                                if geom_bbox[2] >= min_x
-                                    && geom_bbox[0] <= max_x
-                                    && geom_bbox[3] >= min_y
-                                    && geom_bbox[1] <= max_y
-                                {
-                                    result.append(feature_item)?;
-                                }
-                            }
-                        }
-                    }
+    if let Ok(dict) = geometries.cast::<PyDict>()
+        && let Ok(Some(features_obj)) = dict.get_item("features")
+        && let Ok(features_list) = features_obj.cast::<PyList>()
+    {
+        let result = PyList::empty(py);
+        for feature_item in features_list.iter() {
+            if let Ok(feature_dict) = feature_item.cast::<PyDict>()
+                && let Ok(Some(geom_obj)) = feature_dict.get_item("geometry")
+                && let Ok(geom_dict) = geom_obj.cast::<PyDict>()
+            {
+                let geom_bbox = envelope(geom_dict)?;
+                // Check if geometry bbox intersects with clip bbox
+                if geom_bbox[2] >= min_x
+                    && geom_bbox[0] <= max_x
+                    && geom_bbox[3] >= min_y
+                    && geom_bbox[1] <= max_y
+                {
+                    result.append(feature_item)?;
                 }
-                return Ok(result);
             }
         }
+        return Ok(result);
     }
 
     // Try as list of geometries
@@ -467,12 +465,11 @@ pub fn dissolve<'py>(
         };
 
         // Parse geometry
-        if let Ok(Some(geom_obj)) = feature_dict.get_item("geometry") {
-            if let Ok(geom_dict) = geom_obj.cast::<PyDict>() {
-                if let Ok(polygon) = parse_geojson_polygon(geom_dict) {
-                    groups.entry(attr_val).or_default().push(polygon);
-                }
-            }
+        if let Ok(Some(geom_obj)) = feature_dict.get_item("geometry")
+            && let Ok(geom_dict) = geom_obj.cast::<PyDict>()
+            && let Ok(polygon) = parse_geojson_polygon(geom_dict)
+        {
+            groups.entry(attr_val).or_default().push(polygon);
         }
     }
 

@@ -61,12 +61,11 @@ impl FeatureHandler {
             let client_id = &subscription.client_id;
 
             // Apply attribute filters if present
-            if let Some(ref filter) = subscription.filter {
-                if let Some(ref attributes) = filter.attributes {
-                    if !self.matches_attribute_filters(&feature, attributes)? {
-                        continue;
-                    }
-                }
+            if let Some(ref filter) = subscription.filter
+                && let Some(ref attributes) = filter.attributes
+                && !self.matches_attribute_filters(&feature, attributes)?
+            {
+                continue;
             }
 
             // Send feature to client
@@ -86,16 +85,16 @@ impl FeatureHandler {
         }
 
         // Update feature cache
-        if let Ok(parsed) = feature.parse_json() {
-            if let Some(id) = parsed.get("id") {
-                let id_str = id.to_string();
-                match change_type {
-                    ChangeType::Deleted => {
-                        self.feature_cache.remove(&id_str);
-                    }
-                    _ => {
-                        self.feature_cache.insert(id_str, feature.geojson.clone());
-                    }
+        if let Ok(parsed) = feature.parse_json()
+            && let Some(id) = parsed.get("id")
+        {
+            let id_str = id.to_string();
+            match change_type {
+                ChangeType::Deleted => {
+                    self.feature_cache.remove(&id_str);
+                }
+                _ => {
+                    self.feature_cache.insert(id_str, feature.geojson.clone());
                 }
             }
         }
@@ -111,17 +110,17 @@ impl FeatureHandler {
         }
 
         // Try to parse feature ID
-        if let Ok(parsed) = feature.parse_json() {
-            if let Some(id) = parsed.get("id") {
-                let id_str = id.to_string();
+        if let Ok(parsed) = feature.parse_json()
+            && let Some(id) = parsed.get("id")
+        {
+            let id_str = id.to_string();
 
-                if let Some(cached) = self.feature_cache.get(&id_str) {
-                    // Feature exists - check if modified
-                    if cached.value() != &feature.geojson {
-                        return ChangeType::Updated;
-                    }
-                    return ChangeType::Added; // No change
+            if let Some(cached) = self.feature_cache.get(&id_str) {
+                // Feature exists - check if modified
+                if cached.value() != &feature.geojson {
+                    return ChangeType::Updated;
                 }
+                return ChangeType::Added; // No change
             }
         }
 

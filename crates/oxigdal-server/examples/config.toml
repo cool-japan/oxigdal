@@ -23,6 +23,13 @@ enable_cors = true
 # Example: cors_origins = ["https://example.com", "https://maps.example.org"]
 cors_origins = []
 
+# Enable the Prometheus /metrics endpoint, served on its own listener (metrics_port) so it
+# can be scraped independently of the public WMS/WMTS/tile surface.
+metrics_enabled = true
+
+# Port the /metrics endpoint listens on (must differ from `port` above)
+metrics_port = 8081
+
 [cache]
 # In-memory cache size in megabytes
 memory_size_mb = 256

@@ -5,6 +5,7 @@
 
 use crate::MAGIC_BYTES;
 use crate::error::{FlatGeobufError, Result};
+use crate::feature_codec;
 use crate::geometry::GeometryCodec;
 use crate::header::Header;
 use crate::index::{BoundingBox, PackedRTree};
@@ -79,11 +80,11 @@ impl HttpReader {
             });
         }
 
-        // Read header size
-        let _header_size = cursor.read_u32::<LittleEndian>()?;
-
-        // Read header
-        self.header = Header::read(&mut cursor)?;
+        // Read the size-prefixed header FlatBuffer.
+        let header_size = cursor.read_u32::<LittleEndian>()? as usize;
+        let mut header_bytes = vec![0u8; header_size];
+        cursor.read_exact(&mut header_bytes)?;
+        self.header = Header::from_bytes(&header_bytes)?;
 
         // Update geometry codec
         self.geometry_codec = GeometryCodec::new(self.header.has_z, self.header.has_m);
@@ -197,86 +198,9 @@ impl HttpReader {
         }
     }
 
-    /// Parses feature from bytes
+    /// Parses a feature from its `FlatBuffers` `Feature` message bytes.
     fn parse_feature(&self, data: &[u8]) -> Result<Feature> {
-        let mut cursor = Cursor::new(data);
-
-        let has_geometry = cursor.read_u8()? != 0;
-        let geometry = if has_geometry {
-            Some(
-                self.geometry_codec
-                    .decode(&mut cursor, self.header.geometry_type)?,
-            )
-        } else {
-            None
-        };
-
-        let mut feature = if let Some(geom) = geometry {
-            Feature::new(geom)
-        } else {
-            Feature::new_attribute_only()
-        };
-
-        // Read properties
-        for column in &self.header.columns {
-            let is_null = cursor.read_u8()? != 0;
-            if is_null {
-                feature.set_property(column.name.clone(), oxigdal_core::vector::FieldValue::Null);
-                continue;
-            }
-
-            let value = self.read_property_value(&mut cursor, column)?;
-            feature.set_property(column.name.clone(), value);
-        }
-
-        Ok(feature)
-    }
-
-    /// Reads a property value
-    fn read_property_value<R: std::io::Read>(
-        &self,
-        reader: &mut R,
-        column: &crate::header::Column,
-    ) -> Result<oxigdal_core::vector::FieldValue> {
-        use crate::header::ColumnType;
-        use oxigdal_core::vector::FieldValue;
-
-        match column.column_type {
-            ColumnType::Byte => Ok(FieldValue::Integer(i64::from(reader.read_i8()?))),
-            ColumnType::UByte => Ok(FieldValue::UInteger(u64::from(reader.read_u8()?))),
-            ColumnType::Bool => Ok(FieldValue::Bool(reader.read_u8()? != 0)),
-            ColumnType::Short => Ok(FieldValue::Integer(i64::from(
-                reader.read_i16::<LittleEndian>()?,
-            ))),
-            ColumnType::UShort => Ok(FieldValue::UInteger(u64::from(
-                reader.read_u16::<LittleEndian>()?,
-            ))),
-            ColumnType::Int => Ok(FieldValue::Integer(i64::from(
-                reader.read_i32::<LittleEndian>()?,
-            ))),
-            ColumnType::UInt => Ok(FieldValue::UInteger(u64::from(
-                reader.read_u32::<LittleEndian>()?,
-            ))),
-            ColumnType::Long => Ok(FieldValue::Integer(reader.read_i64::<LittleEndian>()?)),
-            ColumnType::ULong => Ok(FieldValue::UInteger(reader.read_u64::<LittleEndian>()?)),
-            ColumnType::Float => Ok(FieldValue::Float(f64::from(
-                reader.read_f32::<LittleEndian>()?,
-            ))),
-            ColumnType::Double => Ok(FieldValue::Float(reader.read_f64::<LittleEndian>()?)),
-            ColumnType::String | ColumnType::Json | ColumnType::DateTime => {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                let s = String::from_utf8(bytes)?;
-                Ok(FieldValue::String(s))
-            }
-            ColumnType::Binary => {
-                let len = reader.read_u32::<LittleEndian>()?;
-                let mut bytes = vec![0u8; len as usize];
-                reader.read_exact(&mut bytes)?;
-                Ok(FieldValue::String(format!("Binary({len} bytes)")))
-            }
-        }
+        feature_codec::decode_feature(&self.header, &self.geometry_codec, data)
     }
 }
 
@@ -330,9 +254,11 @@ impl AsyncHttpReader {
             });
         }
 
-        // Read header
-        let _header_size = cursor.read_u32::<LittleEndian>()?;
-        self.header = Header::read(&mut cursor)?;
+        // Read the size-prefixed header FlatBuffer.
+        let header_size = cursor.read_u32::<LittleEndian>()? as usize;
+        let mut header_bytes = vec![0u8; header_size];
+        cursor.read_exact(&mut header_bytes)?;
+        self.header = Header::from_bytes(&header_bytes)?;
         self.geometry_codec = GeometryCodec::new(self.header.has_z, self.header.has_m);
 
         // Read index if present
@@ -428,25 +354,8 @@ impl AsyncHttpReader {
             // Read feature data
             let feature_bytes = self.read_range(offset + 4, u64::from(feature_size)).await?;
 
-            // Parse feature (same as sync version)
-            let mut cursor = Cursor::new(&feature_bytes);
-            let has_geometry = cursor.read_u8()? != 0;
-            let geometry = if has_geometry {
-                Some(
-                    self.geometry_codec
-                        .decode(&mut cursor, self.header.geometry_type)?,
-                )
-            } else {
-                None
-            };
-
-            let feature = if let Some(geom) = geometry {
-                Feature::new(geom)
-            } else {
-                Feature::new_attribute_only()
-            };
-
-            Ok(feature)
+            // Parse the size-prefixed feature FlatBuffer (same as sync version).
+            feature_codec::decode_feature(&self.header, &self.geometry_codec, &feature_bytes)
         } else {
             Err(FlatGeobufError::NotSupported(
                 "Reading by index requires spatial index".to_string(),
@@ -455,11 +364,179 @@ impl AsyncHttpReader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "http"))]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::header::{GeometryType, Header};
+    use crate::writer::FlatGeobufWriter;
+    use oxigdal_core::vector::{Feature, Geometry, Point};
+    use std::io::Write as _;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    /// Builds an in-memory FlatGeobuf file with `n` point features and a
+    /// spatial index. `n > 16` yields a multi-level packed R-tree.
+    fn build_sample_fgb(n: u32, with_index: bool) -> Vec<u8> {
+        let mut header = Header::new(GeometryType::Point);
+        if with_index {
+            header = header.with_index(true);
+        }
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = FlatGeobufWriter::new(cursor, header).expect("create writer");
+        for i in 0..n {
+            let cx = f64::from(i) * 4.0 - 40.0;
+            let cy = f64::from(i) * 2.0 - 20.0;
+            writer
+                .add_feature(&Feature::new(Geometry::Point(Point::new(cx, cy))))
+                .expect("add feature");
+        }
+        writer.finish().expect("finish writer").into_inner()
+    }
+
+    /// Spawns a minimal HTTP/1.1 server that serves `data` with HEAD support and
+    /// single-range GET (`bytes=start-end`) support. Returns the request URL.
+    /// The server thread runs until the process exits.
+    fn serve(data: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local server");
+        let addr = listener.local_addr().expect("local addr");
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = handle_conn(&mut stream, &data);
+            }
+        });
+        format!("http://{addr}/data.fgb")
+    }
+
+    fn parse_range(req: &str) -> Option<(usize, usize)> {
+        for line in req.lines() {
+            let lower = line.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("range:")
+                && let Some(spec) = rest.trim().strip_prefix("bytes=")
+            {
+                let mut it = spec.split('-');
+                let start = it.next()?.trim().parse::<usize>().ok()?;
+                let end = it.next()?.trim().parse::<usize>().ok()?;
+                return Some((start, end));
+            }
+        }
+        None
+    }
+
+    fn handle_conn(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
+        let mut buf = [0u8; 8192];
+        let nread = stream.read(&mut buf)?;
+        let req = String::from_utf8_lossy(&buf[..nread]);
+        let method = req
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().next())
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        let total = data.len();
+
+        if method == "HEAD" {
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(resp.as_bytes())?;
+            return Ok(());
+        }
+
+        if let Some((start, end_incl)) = parse_range(&req) {
+            let start = start.min(total);
+            let end = (end_incl + 1).min(total); // exclusive
+            let slice = &data[start..end];
+            let resp = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                start,
+                end.saturating_sub(1),
+                total,
+                slice.len()
+            );
+            stream.write_all(resp.as_bytes())?;
+            stream.write_all(slice)?;
+        } else {
+            let resp =
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+            stream.write_all(resp.as_bytes())?;
+            stream.write_all(data)?;
+        }
+        Ok(())
+    }
+
     #[test]
-    fn test_http_reader_placeholder() {
-        // HTTP tests require actual server or mocking
-        // Placeholder for future implementation
+    fn test_http_reader_initialize_and_query() {
+        let n = 20u32;
+        let data = build_sample_fgb(n, true);
+        let url = serve(data);
+
+        let reader = HttpReader::new(url).expect("open http reader");
+        assert!(matches!(reader.header().geometry_type, GeometryType::Point));
+        assert!(reader.index().is_some(), "spatial index must be loaded");
+
+        // Direct leaf access by ordinal.
+        let f0 = reader.read_feature_by_index(0).expect("read feature 0");
+        assert!(f0.geometry.is_some());
+
+        // Full-extent spatial query must return every feature.
+        let bbox = BoundingBox::new(-180.0, -90.0, 180.0, 90.0);
+        let feats = reader.query_bbox(&bbox).expect("query bbox");
+        assert_eq!(
+            feats.len(),
+            n as usize,
+            "full-extent query must return all features via the packed R-tree"
+        );
+    }
+
+    #[test]
+    fn test_http_reader_bad_magic() {
+        let data = vec![0u8; 512];
+        let url = serve(data);
+        assert!(matches!(
+            HttpReader::new(url),
+            Err(FlatGeobufError::InvalidMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn test_http_reader_truncated_header() {
+        let mut data = MAGIC_BYTES.to_vec();
+        data.extend_from_slice(&100u32.to_le_bytes()); // header size
+        data.extend_from_slice(&[1u8, 2u8]); // truncated header body
+        let url = serve(data);
+        let res = HttpReader::new(url);
+        assert!(res.is_err(), "truncated header must error gracefully");
+    }
+
+    #[test]
+    fn test_http_reader_head_failure() {
+        // Reserve then release a port so nothing is listening -> refused.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        let url = format!("http://{addr}/data.fgb");
+        assert!(matches!(
+            HttpReader::new(url),
+            Err(FlatGeobufError::Http(_))
+        ));
+    }
+
+    #[test]
+    fn test_http_reader_query_requires_index() {
+        let data = build_sample_fgb(3, false); // no spatial index
+        let url = serve(data);
+        let reader = HttpReader::new(url).expect("open reader");
+        assert!(reader.index().is_none());
+
+        let bbox = BoundingBox::new(-100.0, -100.0, 100.0, 100.0);
+        assert!(matches!(
+            reader.query_bbox(&bbox),
+            Err(FlatGeobufError::NotSupported(_))
+        ));
+        assert!(matches!(
+            reader.read_feature_by_index(0),
+            Err(FlatGeobufError::NotSupported(_))
+        ));
     }
 }

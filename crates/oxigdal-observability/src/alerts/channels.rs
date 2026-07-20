@@ -94,6 +94,7 @@ impl NotificationChannel {
 /// Notification sender for dispatching alerts to channels.
 pub struct NotificationSender {
     channels: Vec<NotificationChannel>,
+    #[cfg(feature = "http-exporter")]
     client: reqwest::Client,
 }
 
@@ -102,6 +103,7 @@ impl NotificationSender {
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
+            #[cfg(feature = "http-exporter")]
             client: reqwest::Client::new(),
         }
     }
@@ -126,6 +128,7 @@ impl NotificationSender {
         channel: &NotificationChannel,
     ) -> Result<()> {
         match channel {
+            #[cfg(feature = "http-exporter")]
             NotificationChannel::Webhook {
                 url,
                 method,
@@ -148,6 +151,7 @@ impl NotificationSender {
                 let payload = self.build_webhook_payload(alert);
                 request.json(&payload).send().await?;
             }
+            #[cfg(feature = "http-exporter")]
             NotificationChannel::Slack {
                 webhook_url,
                 channel,
@@ -156,6 +160,7 @@ impl NotificationSender {
                 let payload = self.build_slack_payload(alert, channel, username.as_deref());
                 self.client.post(webhook_url).json(&payload).send().await?;
             }
+            #[cfg(feature = "http-exporter")]
             NotificationChannel::PagerDuty {
                 routing_key,
                 api_url,
@@ -166,6 +171,7 @@ impl NotificationSender {
                 let payload = self.build_pagerduty_payload(alert, routing_key);
                 self.client.post(&url).json(&payload).send().await?;
             }
+            #[cfg(feature = "http-exporter")]
             NotificationChannel::Teams { webhook_url } => {
                 let payload = self.build_teams_payload(alert);
                 self.client.post(webhook_url).json(&payload).send().await?;
@@ -173,10 +179,38 @@ impl NotificationSender {
             NotificationChannel::Console { log_level } => {
                 self.log_alert(alert, log_level);
             }
-            NotificationChannel::Email { .. } | NotificationChannel::OpsGenie { .. } => {
-                // Email and OpsGenie would require additional dependencies
-                // Placeholder for now
+            NotificationChannel::Email {
+                smtp_host,
+                smtp_port,
+                from,
+                to,
+                ..
+            } => {
+                tracing::warn!(
+                    smtp_host = %smtp_host,
+                    smtp_port = %smtp_port,
+                    from = %from,
+                    to = ?to,
+                    alert_id = %alert.id,
+                    "Email delivery skipped: direct SMTP not supported; use a Webhook destination instead."
+                );
             }
+            #[cfg(feature = "http-exporter")]
+            NotificationChannel::OpsGenie {
+                api_key,
+                team,
+                priority,
+            } => {
+                let payload = self.build_opsgenie_payload(alert, api_key, team.as_deref(), priority.as_deref());
+                self.client
+                    .post("https://api.opsgenie.com/v2/alerts")
+                    .header("Authorization", format!("GenieKey {}", api_key))
+                    .json(&payload)
+                    .send()
+                    .await?;
+            }
+            #[cfg(not(feature = "http-exporter"))]
+            _ => {}
         }
         Ok(())
     }
@@ -319,6 +353,39 @@ impl NotificationSender {
             "trace" => tracing::trace!("{}", message),
             _ => tracing::info!("{}", message),
         }
+    }
+
+    #[cfg(feature = "http-exporter")]
+    fn build_opsgenie_payload(
+        &self,
+        alert: &AlertInstance,
+        api_key: &str,
+        team: Option<&str>,
+        priority: Option<&str>,
+    ) -> serde_json::Value {
+        let _ = api_key; // used in header, not body
+        let opsgenie_priority = priority.unwrap_or_else(|| match alert.level {
+            AlertLevel::Critical | AlertLevel::Page => "P1",
+            AlertLevel::Error => "P2",
+            AlertLevel::Warning => "P3",
+            AlertLevel::Info => "P5",
+        });
+        let mut payload = serde_json::json!({
+            "message": alert.summary,
+            "description": alert.description,
+            "priority": opsgenie_priority,
+            "alias": alert.fingerprint,
+            "details": {
+                "alert_id": alert.id,
+                "rule_id": alert.rule_id,
+                "state": format!("{:?}", alert.state),
+                "level": alert.level.as_str(),
+            }
+        });
+        if let Some(t) = team {
+            payload["teams"] = serde_json::json!([{"name": t}]);
+        }
+        payload
     }
 }
 

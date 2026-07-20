@@ -7,7 +7,89 @@
 use crate::error::{Hdf5Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Build the sidecar path used to publish the current SWMR metadata version.
+///
+/// The version is stored next to the data file (e.g. `data.h5` ->
+/// `data.h5.swmr-version`) so that a single writer can publish a monotonically
+/// increasing version that any number of readers can poll.
+fn version_file_path(base: &Path) -> PathBuf {
+    let mut os = base.as_os_str().to_owned();
+    os.push(".swmr-version");
+    PathBuf::from(os)
+}
+
+/// Temporary path used for atomic (write-then-rename) publication.
+fn version_tmp_path(base: &Path) -> PathBuf {
+    let mut os = base.as_os_str().to_owned();
+    os.push(".swmr-version.tmp");
+    PathBuf::from(os)
+}
+
+/// Seconds since the Unix epoch, saturating to 0 before the epoch.
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Deterministic FNV-1a checksum over a metadata version's identifying fields.
+///
+/// Readers can compare this against a recomputed value to detect a torn or
+/// corrupted version record.
+fn version_checksum(version: u64, timestamp: u64) -> u32 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in version
+        .to_le_bytes()
+        .iter()
+        .chain(timestamp.to_le_bytes().iter())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (hash ^ (hash >> 32)) as u32
+}
+
+/// Atomically publish `version` to the sidecar version file for `base`.
+fn persist_metadata_version(base: &Path, version: &MetadataVersion) -> Result<()> {
+    let json = serde_json::to_vec(version).map_err(|e| {
+        Hdf5Error::internal(format!("Failed to serialize SWMR metadata version: {}", e))
+    })?;
+    let tmp = version_tmp_path(base);
+    let final_path = version_file_path(base);
+    std::fs::write(&tmp, &json)?;
+    std::fs::rename(&tmp, &final_path)?;
+    Ok(())
+}
+
+/// Read the currently published metadata version for `base`.
+///
+/// Returns `MetadataVersion::new(0, 0, ..)` when no version has been published
+/// yet (the sidecar file is absent).
+fn load_metadata_version(base: &Path) -> Result<MetadataVersion> {
+    let path = version_file_path(base);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let version: MetadataVersion = serde_json::from_slice(&bytes).map_err(|e| {
+                Hdf5Error::invalid_format(format!("Failed to parse SWMR version file: {}", e))
+            })?;
+            let expected = version_checksum(version.version(), version.timestamp());
+            if version.checksum() != expected {
+                return Err(Hdf5Error::ChecksumMismatch {
+                    expected,
+                    actual: version.checksum(),
+                });
+            }
+            Ok(version)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(MetadataVersion::new(0, 0, version_checksum(0, 0)))
+        }
+        Err(e) => Err(Hdf5Error::Io(e)),
+    }
+}
 
 /// SWMR access mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +121,7 @@ impl SwmrConfig {
         Self {
             mode: SwmrMode::Writer,
             metadata_cache_size: 32 * 1024 * 1024, // 32 MB
-            page_buffer_size: 4 * 1024 * 1024,      // 4 MB
+            page_buffer_size: 4 * 1024 * 1024,     // 4 MB
             flush_interval: Duration::from_secs(1),
             enable_checksums: true,
         }
@@ -50,7 +132,7 @@ impl SwmrConfig {
         Self {
             mode: SwmrMode::Reader,
             metadata_cache_size: 16 * 1024 * 1024, // 16 MB
-            page_buffer_size: 4 * 1024 * 1024,      // 4 MB
+            page_buffer_size: 4 * 1024 * 1024,     // 4 MB
             flush_interval: Duration::from_secs(1),
             enable_checksums: true,
         }
@@ -178,16 +260,25 @@ impl FileLock {
                         path: self.lock_path.to_string_lossy().to_string(),
                     };
                 }
-                Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to create lock file: {}", e)))
+                Hdf5Error::Io(std::io::Error::other(format!(
+                    "Failed to create lock file: {}",
+                    e
+                )))
             })?;
 
         // Write PID to lock file
         writeln!(file, "{}", self.owner_pid).map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to write to lock file: {}", e)))
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to write to lock file: {}",
+                e
+            )))
         })?;
 
         file.sync_all().map_err(|e| {
-            Hdf5Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to sync lock file: {}", e)))
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to sync lock file: {}",
+                e
+            )))
         })?;
 
         self.acquired_at = SystemTime::now();
@@ -204,45 +295,38 @@ impl FileLock {
         use std::fs::File;
         use std::io::Read;
 
-        let mut file = File::open(&self.lock_path).map_err(|e| {
-            Hdf5Error::Io(e)
-        })?;
+        let mut file = File::open(&self.lock_path)?;
 
         let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| {
-            Hdf5Error::Io(e)
-        })?;
+        file.read_to_string(&mut content)?;
 
-        let lock_pid: u32 = content.trim().parse().map_err(|_| {
-            Hdf5Error::InvalidFormat("Invalid PID in lock file".to_string()))
-        })?;
+        // Parse the recorded PID; a malformed lock file is treated as stale so a
+        // stuck lock can be recovered rather than blocking forever.
+        let _lock_pid: u32 = match content.trim().parse() {
+            Ok(pid) => pid,
+            Err(_) => return Ok(true),
+        };
 
-        // Check if process still exists
-        // This is platform-specific and simplified
-        // Simple implementation: check if file is older than a threshold
-        // In production, this would use platform-specific process checking
-        let metadata = std::fs::metadata(&self.lock_path).map_err(|e| {
-            Hdf5Error::Io(e)
-        })?;
+        // Check if process still exists.
+        // This is platform-specific and simplified: we consider a lock stale if
+        // its file has not been modified within the staleness threshold. In
+        // production, this would use platform-specific process checking.
+        let metadata = std::fs::metadata(&self.lock_path)?;
 
-        let modified = metadata.modified().map_err(|e| {
-            Hdf5Error::Io(e)
-        })?;
+        let modified = metadata.modified()?;
 
         let elapsed = SystemTime::now()
             .duration_since(modified)
             .unwrap_or(Duration::from_secs(0));
 
         // Consider stale if older than 1 hour
-        Ok(elapsed > Duration::from_secs(3600)))
+        Ok(elapsed > Duration::from_secs(3600))
     }
 
     /// Remove lock file
     fn remove_lock(&self) -> Result<()> {
         if self.lock_path.exists() {
-            std::fs::remove_file(&self.lock_path).map_err(|e| {
-                Hdf5Error::Io(e)
-            })?;
+            std::fs::remove_file(&self.lock_path)?;
         }
         Ok(())
     }
@@ -298,7 +382,9 @@ pub struct SwmrWriter {
     file_path: PathBuf,
     /// Configuration
     config: SwmrConfig,
-    /// File lock
+    /// File lock held for the writer's lifetime. Read only through its `Drop`
+    /// impl, which releases the on-disk lock when the writer is dropped.
+    #[allow(dead_code)]
     lock: FileLock,
     /// Current metadata version
     metadata_version: u64,
@@ -316,7 +402,7 @@ impl SwmrWriter {
         }
 
         let mut lock = FileLock::new(&file_path);
-        lock.acquire(Duration::from_secs(10)))?;
+        lock.acquire(Duration::from_secs(10))?;
 
         Ok(Self {
             file_path,
@@ -342,14 +428,23 @@ impl SwmrWriter {
         self.metadata_version
     }
 
-    /// Flush metadata to disk
+    /// Flush metadata to disk.
+    ///
+    /// Increments the in-memory metadata version and atomically publishes it to
+    /// the sidecar version file so that concurrent [`SwmrReader`]s can observe
+    /// the update via [`SwmrReader::refresh`]. Publication uses a
+    /// write-to-temp-then-rename sequence so readers never observe a torn file.
     pub fn flush(&mut self) -> Result<()> {
         // Increment metadata version
         self.metadata_version += 1;
         self.last_flush = SystemTime::now();
 
-        // In a real implementation, this would flush metadata to disk
-        // and update the metadata version in the file
+        // Persist the new version so readers can pick it up. This is the real
+        // SWMR publication step: the version is written durably and atomically.
+        let timestamp = unix_now_secs();
+        let checksum = version_checksum(self.metadata_version, timestamp);
+        let version = MetadataVersion::new(self.metadata_version, timestamp, checksum);
+        persist_metadata_version(&self.file_path, &version)?;
 
         tracing::debug!(
             "Flushed metadata version {} for {:?}",
@@ -429,12 +524,12 @@ impl SwmrReader {
         self.metadata_version
     }
 
-    /// Refresh metadata from disk
+    /// Refresh metadata from disk.
+    ///
+    /// Reads the latest published metadata version from the sidecar version file
+    /// and, if it is newer than the last observed version, advances the reader's
+    /// view. Returns `true` when a newer version was observed.
     pub fn refresh(&mut self) -> Result<bool> {
-        // In a real implementation, this would read the latest metadata
-        // version from disk and update internal caches
-
-        // For now, just simulate version check
         let new_version = self.read_metadata_version()?;
 
         if new_version > self.metadata_version {
@@ -453,11 +548,11 @@ impl SwmrReader {
         }
     }
 
-    /// Read current metadata version from file
+    /// Read current metadata version from the sidecar version file.
+    ///
+    /// Returns `0` when no writer has published a version yet.
     fn read_metadata_version(&self) -> Result<u64> {
-        // In a real implementation, this would read from the file
-        // For now, return a dummy value
-        Ok(0)
+        Ok(load_metadata_version(&self.file_path)?.version())
     }
 
     /// Check if refresh is needed
@@ -530,27 +625,32 @@ impl SwmrStatistics {
         self.lock_acquisitions += 1;
     }
 
-    /// Get statistics
+    /// Get the number of flushes recorded
     pub fn num_flushes(&self) -> u64 {
         self.num_flushes
     }
 
+    /// Get the number of refreshes recorded
     pub fn num_refreshes(&self) -> u64 {
         self.num_refreshes
     }
 
+    /// Get the total number of bytes written
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written
     }
 
+    /// Get the total number of bytes read
     pub fn bytes_read(&self) -> u64 {
         self.bytes_read
     }
 
+    /// Get the number of lock acquisitions recorded
     pub fn lock_acquisitions(&self) -> u64 {
         self.lock_acquisitions
     }
 
+    /// Get the average flush time in microseconds
     pub fn avg_flush_time_us(&self) -> u64 {
         self.avg_flush_time_us
     }
@@ -580,7 +680,7 @@ mod tests {
         let config = SwmrConfig::writer()
             .with_metadata_cache_size(64 * 1024 * 1024)
             .with_page_buffer_size(8 * 1024 * 1024)
-            .with_flush_interval(Duration::from_secs(5)))
+            .with_flush_interval(Duration::from_secs(5))
             .with_checksums(false);
 
         assert_eq!(config.metadata_cache_size(), 64 * 1024 * 1024);
@@ -627,5 +727,69 @@ mod tests {
 
         stats.record_read(512);
         assert_eq!(stats.bytes_read(), 512);
+    }
+
+    #[test]
+    fn test_metadata_version_persistence_roundtrip() {
+        // A writer's flush must durably publish the metadata version, and a
+        // reader's refresh must read it back — this exercises the real SWMR
+        // publication path (not a stub).
+        let dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!(
+            "swmr_roundtrip_{}_{}.h5",
+            std::process::id(),
+            nanos
+        ));
+
+        // Clean any leftovers from a prior run.
+        let _ = std::fs::remove_file(version_file_path(&path));
+
+        let mut writer =
+            SwmrWriter::new(path.clone(), SwmrConfig::writer()).expect("create writer");
+        writer.flush().expect("first flush");
+        writer.flush().expect("second flush");
+        let published = writer.metadata_version();
+        assert_eq!(published, 2);
+
+        let mut reader =
+            SwmrReader::new(path.clone(), SwmrConfig::reader()).expect("create reader");
+        assert_eq!(reader.metadata_version(), 0);
+        let updated = reader.refresh().expect("refresh");
+        assert!(updated, "reader should observe the published version");
+        assert_eq!(reader.metadata_version(), published);
+
+        // A second refresh with no new writes reports no change.
+        let updated_again = reader.refresh().expect("refresh again");
+        assert!(!updated_again);
+
+        // Clean up (writer still holds the lock until dropped).
+        drop(writer);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(version_file_path(&path));
+        let _ = std::fs::remove_file(path.with_extension("lock"));
+    }
+
+    #[test]
+    fn test_reader_without_published_version_reads_zero() {
+        let dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!(
+            "swmr_noversion_{}_{}.h5",
+            std::process::id(),
+            nanos
+        ));
+        let _ = std::fs::remove_file(version_file_path(&path));
+
+        let mut reader = SwmrReader::new(path.clone(), SwmrConfig::reader()).expect("reader");
+        let updated = reader.refresh().expect("refresh");
+        assert!(!updated);
+        assert_eq!(reader.metadata_version(), 0);
     }
 }

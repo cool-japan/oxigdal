@@ -33,3 +33,7 @@ workspace = true
 [[test]]
 name = "laz_test"
 required-features = ["laz-encoder"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

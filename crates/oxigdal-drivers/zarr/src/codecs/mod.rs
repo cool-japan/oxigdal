@@ -8,6 +8,10 @@ pub mod blosc;
 
 pub mod blosc2_codec;
 
+pub mod crc32c;
+
+pub(crate) mod dispatch;
+
 #[cfg(feature = "gzip")]
 pub mod gzip;
 

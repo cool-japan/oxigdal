@@ -2,7 +2,7 @@
 
 > **Purpose:** Offline-first data management with sync queue, conflict resolution, and optimistic updates for OxiGDAL (SQLite native + IndexedDB WASM; merge strategies; retry; optimistic updates).
 > **Status (2026-05-16):** 6,296 Rust LoC · 73 tests · 1 real-stub site (conflict.rs:125 ancestor lookup)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 - [ ] Real three-way merge: implement version-history lookup for `find_common_ancestor`

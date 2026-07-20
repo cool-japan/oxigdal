@@ -628,11 +628,11 @@ impl WorkerPool {
                 timed_out.push(*job_id);
 
                 // Mark worker as idle
-                if let Some(worker_id) = job.worker_id {
-                    if let Some(worker) = self.workers.iter_mut().find(|w| w.id == worker_id) {
-                        worker.current_job = None;
-                        worker.failed_jobs += 1;
-                    }
+                if let Some(worker_id) = job.worker_id
+                    && let Some(worker) = self.workers.iter_mut().find(|w| w.id == worker_id)
+                {
+                    worker.current_job = None;
+                    worker.failed_jobs += 1;
                 }
             }
         }

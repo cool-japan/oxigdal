@@ -4,7 +4,7 @@
 #![allow(clippy::panic)]
 #![allow(clippy::expect_used)]
 
-#[cfg(all(feature = "reqwest", feature = "async"))]
+#[cfg(feature = "async")]
 mod conformance_tests {
     use oxigdal_stac::StacClient;
     use serde_json::json;

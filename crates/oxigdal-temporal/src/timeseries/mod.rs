@@ -395,17 +395,17 @@ impl TimeSeriesRaster {
 
             // Allow 10% tolerance
             let tolerance = (expected_interval as f64 * 0.1) as i64;
-            if actual_interval > expected_interval + tolerance {
-                if let (Some(gap_start), Some(gap_end)) = (
+            if actual_interval > expected_interval + tolerance
+                && let (Some(gap_start), Some(gap_end)) = (
                     DateTime::from_timestamp(current, 0),
                     DateTime::from_timestamp(next, 0),
-                ) {
-                    gaps.push((gap_start, gap_end));
-                    warn!(
-                        "Gap detected between {} and {} ({} seconds)",
-                        gap_start, gap_end, actual_interval
-                    );
-                }
+                )
+            {
+                gaps.push((gap_start, gap_end));
+                warn!(
+                    "Gap detected between {} and {} ({} seconds)",
+                    gap_start, gap_end, actual_interval
+                );
             }
         }
 

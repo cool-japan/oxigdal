@@ -87,10 +87,10 @@ impl LayerHandle {
             self.cursor += 1;
 
             // Check spatial filter if set
-            if let Some(ref filter) = self.spatial_filter {
-                if !feature.intersects_bbox(filter) {
-                    continue;
-                }
+            if let Some(ref filter) = self.spatial_filter
+                && !feature.intersects_bbox(filter)
+            {
+                continue;
             }
 
             return Some(feature);

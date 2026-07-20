@@ -147,7 +147,7 @@ impl HierarchyEntry {
 /// Returns [`CopcError::InvalidFormat`] when the page length is not a multiple
 /// of 32 or an individual entry is malformed.
 pub fn parse_hierarchy_page(data: &[u8]) -> Result<Vec<HierarchyEntry>, CopcError> {
-    if data.len() % ENTRY_SIZE != 0 {
+    if !data.len().is_multiple_of(ENTRY_SIZE) {
         return Err(CopcError::InvalidFormat(format!(
             "Hierarchy page length {} is not a multiple of {ENTRY_SIZE}",
             data.len()

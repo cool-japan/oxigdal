@@ -5,7 +5,7 @@
 use clap::Parser;
 use oxigdal_server::{Config, TileServer};
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// OxiGDAL Tile Server
@@ -13,7 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Configuration file path
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(short, long, value_name = "FILE", env = "OXIGDAL_CONFIG")]
     config: Option<PathBuf>,
 
     /// Host address to bind to
@@ -79,7 +79,10 @@ async fn main() {
             }
         }
     } else {
-        info!("No configuration file specified, using defaults");
+        warn!(
+            "No configuration file specified (pass --config or set OXIGDAL_CONFIG); \
+             using built-in defaults, which ignore any mounted server.toml"
+        );
         Config::default_config()
     };
 
@@ -149,6 +152,12 @@ enable_cors = true
 # Allowed CORS origins (empty = all)
 cors_origins = []
 
+# Enable the Prometheus /metrics endpoint (served on its own port, see metrics_port)
+metrics_enabled = true
+
+# Port the /metrics endpoint listens on
+metrics_port = 8081
+
 [cache]
 # In-memory cache size in megabytes
 memory_size_mb = 256
@@ -203,4 +212,70 @@ keywords = ["tiles", "wms", "wmts", "geospatial"]
 
     std::fs::write(output_path, default_config)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    // Test-only: mutating `OXIGDAL_CONFIG` via `std::env::set_var`/`remove_var` (both `unsafe`
+    // as of Rust 2024) is required to exercise clap's `env` attribute end-to-end. See the
+    // per-test SAFETY comments below.
+    #![allow(unsafe_code)]
+
+    use super::Args;
+    use clap::Parser;
+
+    /// Regression test for the OXIGDAL_CONFIG -> `--config` wiring gap: Dockerfile.server,
+    /// docker-compose.yml and k8s/deployment.yaml all set/mount configuration via the
+    /// `OXIGDAL_CONFIG` environment variable, but never pass `--config` on the CLI, so the
+    /// `config` field must populate itself from that env var (matching the existing
+    /// host/port/workers/log_level fields).
+    #[test]
+    fn test_config_arg_reads_oxigdal_config_env_var() {
+        // SAFETY: this test is the sole owner of the `OXIGDAL_CONFIG` env var name within
+        // this test binary; no other test in this crate reads or writes it.
+        unsafe {
+            std::env::set_var("OXIGDAL_CONFIG", "/config/server.toml");
+        }
+
+        let args = Args::try_parse_from(["oxigdal-server"]).expect("should parse with no flags");
+
+        unsafe {
+            std::env::remove_var("OXIGDAL_CONFIG");
+        }
+
+        assert_eq!(
+            args.config,
+            Some(std::path::PathBuf::from("/config/server.toml"))
+        );
+    }
+
+    #[test]
+    fn test_config_arg_flag_overrides_env_var() {
+        unsafe {
+            std::env::set_var("OXIGDAL_CONFIG", "/config/from-env.toml");
+        }
+
+        let args = Args::try_parse_from(["oxigdal-server", "--config", "/config/from-flag.toml"])
+            .expect("should parse with explicit --config");
+
+        unsafe {
+            std::env::remove_var("OXIGDAL_CONFIG");
+        }
+
+        assert_eq!(
+            args.config,
+            Some(std::path::PathBuf::from("/config/from-flag.toml"))
+        );
+    }
+
+    #[test]
+    fn test_config_arg_defaults_to_none_without_env_or_flag() {
+        unsafe {
+            std::env::remove_var("OXIGDAL_CONFIG");
+        }
+
+        let args = Args::try_parse_from(["oxigdal-server"]).expect("should parse with no flags");
+        assert_eq!(args.config, None);
+    }
 }

@@ -153,7 +153,7 @@ impl<S: Storage, A: Algorithm> RateLimiter for StandardRateLimiter<S, A> {
     async fn record(&self, key: &RateLimitKey) -> Result<()> {
         let storage_key = key.to_key();
         self.algorithm
-            .record(&self.storage, &storage_key, self.window)
+            .record(&self.storage, &storage_key, self.limit, self.window)
             .await
     }
 

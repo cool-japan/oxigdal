@@ -319,10 +319,10 @@ impl Parser {
                 '/' => {
                     // Reject literal divide-by-zero at parse time when the
                     // right-hand side is a single `Constant(0.0)`.
-                    if let BandExpression::Constant(c) = &rhs {
-                        if c.abs() < 1e-20 {
-                            return Err(BandMathError::DivByConstantZero);
-                        }
+                    if let BandExpression::Constant(c) = &rhs
+                        && c.abs() < 1e-20
+                    {
+                        return Err(BandMathError::DivByConstantZero);
                     }
                     BandExpression::Div(Box::new(lhs), Box::new(rhs))
                 }

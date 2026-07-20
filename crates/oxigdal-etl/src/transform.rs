@@ -301,14 +301,14 @@ where
         groups.entry(key.clone()).or_default().push(item);
 
         // If we have too many groups, flush the oldest one
-        if groups.len() > self.max_groups {
-            if let Some((old_key, old_items)) = groups.iter().next() {
-                let old_key = old_key.clone();
-                let old_items = old_items.clone();
-                groups.remove(&old_key);
-                drop(groups);
-                return (self.aggregator)(old_key, old_items).await;
-            }
+        if groups.len() > self.max_groups
+            && let Some((old_key, old_items)) = groups.iter().next()
+        {
+            let old_key = old_key.clone();
+            let old_items = old_items.clone();
+            groups.remove(&old_key);
+            drop(groups);
+            return (self.aggregator)(old_key, old_items).await;
         }
 
         Ok(Vec::new())

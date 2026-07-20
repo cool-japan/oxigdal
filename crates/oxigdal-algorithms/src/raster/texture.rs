@@ -626,7 +626,7 @@ pub fn compute_texture_feature_image(
     window_size: usize,
     params: &GlcmParams,
 ) -> Result<RasterBuffer> {
-    if window_size % 2 == 0 {
+    if window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd".to_string(),

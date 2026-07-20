@@ -6,11 +6,23 @@
 //! - Lifecycle-aware processing
 //! - Background execution limits
 //! - Android-specific performance tuning
+//!
+//! # Platform introspection
+//!
+//! Device queries (`AndroidDevice::current`) and memory sampling
+//! (`memory::AndroidMemoryManager::update_stats`) read **live** state on an
+//! actual Android target: the API level from the `ro.build.version.sdk` system
+//! property, and RAM figures from the OS. Java/ART-heap figures and the exact
+//! `ActivityManager` low-memory threshold require JNI at the host-app call site
+//! and can be injected via
+//! `memory::AndroidMemoryManager::update_stats_with`. On non-Android builds
+//! these fall back to documented conservative defaults, never to silently
+//! fabricated device data.
 
 pub mod memory;
 pub mod performance;
 
-pub use memory::{AndroidMemoryManager, LowMemoryKiller};
+pub use memory::{AndroidMemoryManager, AndroidMemorySample, LowMemoryKiller};
 pub use performance::{AndroidPerformanceOptimizer, RenderScriptLevel};
 
 use crate::error::Result;
@@ -110,15 +122,67 @@ pub struct AndroidDevice {
     performance_tier: PerformanceTier,
 }
 
+/// Derive a [`PerformanceTier`] from total device RAM in bytes.
+///
+/// This mirrors the intent of `ActivityManager.isLowRamDevice()` /
+/// `getMemoryClass()`: less RAM implies a lower tier and more conservative
+/// GPU/cache recommendations.
+// Used by `current()` on Android targets and by unit tests on all targets.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn tier_from_total_ram(total_ram: u64) -> PerformanceTier {
+    const GB: u64 = 1024 * 1024 * 1024;
+    if total_ram < 2 * GB {
+        PerformanceTier::Low
+    } else if total_ram < 4 * GB {
+        PerformanceTier::Medium
+    } else if total_ram < 6 * GB {
+        PerformanceTier::High
+    } else {
+        PerformanceTier::Premium
+    }
+}
+
 impl AndroidDevice {
-    /// Get current Android device information
+    /// Get current Android device information.
+    ///
+    /// On an actual Android target this reads real device state: the API level
+    /// comes from the `ro.build.version.sdk` system property and the
+    /// [`PerformanceTier`] is derived from the device's real total RAM
+    /// (approximating `ActivityManager.isLowRamDevice()`/`getMemoryClass()`), so
+    /// low-end devices are no longer told to enable GPU acceleration or use a
+    /// 128 MB cache.
+    ///
+    /// On non-Android builds (desktop development / CI) it returns a documented,
+    /// conservative fallback (API 24 / [`PerformanceTier::Medium`]); such callers
+    /// should not treat the result as real hardware data.
     pub fn current() -> Result<Self> {
-        // In a real implementation, this would query Android APIs
-        // For now, return mock values
-        Ok(Self {
-            api_level: AndroidApiLevel::TIRAMISU,
-            performance_tier: PerformanceTier::High,
-        })
+        #[cfg(target_os = "android")]
+        {
+            let api_level = system_property("ro.build.version.sdk")
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .map(AndroidApiLevel)
+                .unwrap_or(AndroidApiLevel::NOUGAT);
+
+            let performance_tier = match crate::sys_probe::sample_physical_memory() {
+                Ok(mem) => tier_from_total_ram(mem.total),
+                // Conservative default if RAM cannot be read.
+                Err(_) => PerformanceTier::Medium,
+            };
+
+            return Ok(Self {
+                api_level,
+                performance_tier,
+            });
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            // Conservative, documented fallback for non-Android hosts.
+            Ok(Self {
+                api_level: AndroidApiLevel::NOUGAT,
+                performance_tier: PerformanceTier::Medium,
+            })
+        }
     }
 
     /// Get API level
@@ -190,6 +254,29 @@ impl LifecycleState {
     }
 }
 
+/// Read an Android system property (e.g. `"ro.build.version.sdk"`).
+///
+/// Uses the `__system_property_get(3)` ABI via `libc`. This links no C library;
+/// it is a raw platform-syscall binding consistent with the Pure-Rust policy.
+/// Returns `None` on any failure rather than panicking.
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+fn system_property(name: &str) -> Option<String> {
+    use std::ffi::CString;
+
+    let cname = CString::new(name).ok()?;
+    // Android's PROP_VALUE_MAX is 92 bytes (including the trailing NUL).
+    let mut buf = vec![0u8; 92];
+    let len = unsafe {
+        libc::__system_property_get(cname.as_ptr(), buf.as_mut_ptr().cast::<libc::c_char>())
+    };
+    if len <= 0 {
+        return None;
+    }
+    buf.truncate(len as usize);
+    String::from_utf8(buf).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,13 +310,44 @@ mod tests {
     }
 
     #[test]
+    fn test_tier_from_total_ram() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(
+            tier_from_total_ram(1024 * 1024 * 1024),
+            PerformanceTier::Low
+        ); // 1 GB
+        assert_eq!(tier_from_total_ram(3 * GB), PerformanceTier::Medium);
+        assert_eq!(tier_from_total_ram(5 * GB), PerformanceTier::High);
+        assert_eq!(tier_from_total_ram(8 * GB), PerformanceTier::Premium);
+        // Boundary checks.
+        assert_eq!(tier_from_total_ram(2 * GB), PerformanceTier::Medium);
+        assert_eq!(tier_from_total_ram(6 * GB), PerformanceTier::Premium);
+    }
+
+    #[test]
     fn test_android_device() {
         let device = AndroidDevice::current().expect("Failed to get device");
 
-        assert!(device.is_renderscript_available());
-        assert!(device.has_background_limits());
-        assert!(device.has_scoped_storage());
-        assert!(device.is_job_scheduler_available());
+        // Derived helpers must be consistent with the reported API level rather
+        // than a fabricated high-end constant.
+        assert_eq!(
+            device.has_background_limits(),
+            device.api_level().is_at_least(26)
+        );
+        assert_eq!(
+            device.has_scoped_storage(),
+            device.api_level().is_at_least(29)
+        );
+
+        // On non-Android hosts (CI/dev) current() returns the documented
+        // conservative fallback: API 24 (Nougat) / Medium tier.
+        #[cfg(not(target_os = "android"))]
+        {
+            assert_eq!(device.api_level(), AndroidApiLevel::NOUGAT);
+            assert_eq!(device.performance_tier(), PerformanceTier::Medium);
+            assert!(device.is_renderscript_available());
+            assert!(device.is_job_scheduler_available());
+        }
     }
 
     #[test]

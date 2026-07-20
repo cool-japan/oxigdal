@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure-Rust streaming GeoJSON reader and writer for OxiGDAL (RFC 7946).
 > **Status (2026-05-16):** ~3,803 Rust LoC · 175 tests · 0 in-source `TODO:` markers.
-> **Roadmap:** v0.1.5 (current slice) → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 (current slice) → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

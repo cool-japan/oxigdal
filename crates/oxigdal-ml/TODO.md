@@ -2,7 +2,7 @@
 
 > **Purpose:** Geospatial machine-learning runtime — ONNX inference via Pure-Rust `oxionnx`, segmentation/classification/detection, batch & tile inference, model zoo, monitoring.
 > **Status (2026-05-16):** 19,728 LoC · 359 tests (1 skipped per workspace memory) · 3 real stubs surfaced in src tree (WebGPU sync enumeration, TFLite quantization stamp, temporarily-disabled `coreml`/`tflite`/`temporal` features).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Re-enable `coreml` feature against `objc2` 0.6

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoSentinel — in-browser Sentinel-2 change detection (OxiGDAL)</title>
+    <link rel="icon" href="data:,">
+
+    <!-- Leaflet CSS (vendored, zero-CDN) -->
+    <link rel="stylesheet" href="./vendor/leaflet/leaflet.css"/>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1 class="app-title">GeoSentinel</h1>
+                    <p class="app-subtitle">Watch any place on Earth for change — and tell no one where you're looking</p>
+                </div>
+                <div class="header-right">
+                    <div id="version-badge" class="version-badge">Loading…</div>
+                    <div class="status-indicator">
+                        <div id="status-dot" class="status-dot status-idle"></div>
+                        <span id="status-text" class="status-text">Ready</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Honest-accounting badge strip -->
+        <div class="privacy-strip">
+            <span id="fetch-badge" class="privacy-badge">⬇ 0.0 KB imagery fetched</span>
+            <span class="privacy-dot">·</span>
+            <span id="upload-badge" class="privacy-badge">⬆ 0 bytes uploaded</span>
+            <span class="privacy-dot">·</span>
+            <span class="privacy-badge privacy-badge-location">📍 your location: told to no one</span>
+        </div>
+
+        <div class="app-body">
+            <!-- Left Sidebar - Controls -->
+            <aside class="sidebar sidebar-left">
+                <div class="sidebar-section">
+                    <h3 class="section-title">1 · Place</h3>
+                    <p class="section-hint">Draw a small rectangle (≤ ~20 km) or use the current map view.</p>
+                    <div class="aoi-buttons">
+                        <button id="aoi-draw-btn" class="btn btn-secondary">
+                            <span class="btn-icon">▭</span> Draw area
+                        </button>
+                        <button id="aoi-view-btn" class="btn btn-secondary">
+                            <span class="btn-icon">🗺️</span> Use current view
+                        </button>
+                    </div>
+                    <div id="aoi-label" class="aoi-label">No area selected yet</div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">2 · Dates</h3>
+                    <div class="date-row">
+                        <div class="date-field">
+                            <label class="control-label" for="date-a">Before (A)</label>
+                            <input type="date" id="date-a" class="input-field" value="2023-07-01">
+                        </div>
+                        <div class="date-field">
+                            <label class="control-label" for="date-b">After (B)</label>
+                            <input type="date" id="date-b" class="input-field" value="2023-09-15">
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label" for="window-days">Search window (± days)</label>
+                        <select id="window-days" class="select-field">
+                            <option value="10">± 10 days</option>
+                            <option value="15">± 15 days</option>
+                            <option value="20" selected>± 20 days</option>
+                            <option value="25">± 25 days</option>
+                            <option value="30">± 30 days</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label" for="max-cloud">
+                            Max cloud cover <span id="max-cloud-value" class="slider-value">20%</span>
+                        </label>
+                        <input type="range" id="max-cloud" class="slider" min="0" max="100" step="5" value="20">
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">3 · Detection</h3>
+                    <div class="control-group">
+                        <label class="control-label" for="threshold">
+                            NDVI-drop threshold <span id="threshold-value" class="slider-value">0.15</span>
+                        </label>
+                        <input type="range" id="threshold" class="slider" min="0.05" max="0.5" step="0.01" value="0.15">
+                    </div>
+                    <div class="control-group checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="use-otsu">
+                            Auto threshold (Otsu)
+                        </label>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label" for="min-area">Min polygon area (ha)</label>
+                        <input type="number" id="min-area" class="input-field" min="0" step="0.1" value="0.5">
+                    </div>
+                    <button id="run-btn" class="btn btn-primary btn-full" disabled>
+                        <span class="btn-icon">🛰️</span> Run change detection
+                    </button>
+                    <div id="progress-line" class="progress-line" hidden>
+                        <span class="progress-spinner"></span>
+                        <span id="progress-text"></span>
+                    </div>
+                </div>
+
+                <div class="sidebar-section" id="results-section" hidden>
+                    <h3 class="section-title">Results</h3>
+                    <div class="result-stats">
+                        <div class="result-stat">
+                            <span id="result-ha" class="result-stat-value">–</span>
+                            <span class="result-stat-label">hectares changed</span>
+                        </div>
+                        <div class="result-stat">
+                            <span id="result-count" class="result-stat-value">–</span>
+                            <span class="result-stat-label">polygons</span>
+                        </div>
+                    </div>
+                    <div id="result-meta" class="result-meta"></div>
+                    <div class="scene-chips">
+                        <div id="scene-chip-a" class="scene-chip"></div>
+                        <div id="scene-chip-b" class="scene-chip"></div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label" for="alt-a">Alternate scene A</label>
+                        <select id="alt-a" class="select-field" disabled></select>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label" for="alt-b">Alternate scene B</label>
+                        <select id="alt-b" class="select-field" disabled></select>
+                    </div>
+                    <button id="export-btn" class="btn btn-secondary btn-full">
+                        <span class="btn-icon">💾</span> Export GeoJSON
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Examples</h3>
+                    <div id="example-grid" class="example-grid">
+                        <!-- Cards injected from examples.json -->
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">About</h3>
+                    <div class="about-panel">
+                        <p class="about-text">
+                            GeoSentinel searches the public Earth Search STAC catalog and reads
+                            Sentinel-2 Cloud-Optimized GeoTIFFs directly — NDVI, thresholding,
+                            polygonization and geodesic areas all run in WebAssembly, in this tab.
+                            No server ever learns which place you analyzed.
+                        </p>
+                        <div class="about-features">
+                            <div class="feature-badge">✓ Pure Rust WASM</div>
+                            <div class="feature-badge">✓ Zero backend</div>
+                            <div class="feature-badge">✓ HTTP range reads</div>
+                        </div>
+                        <a href="https://github.com/cool-japan/oxigdal" target="_blank" class="btn btn-link btn-full">
+                            View on GitHub
+                        </a>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content - Map -->
+            <main class="main-content">
+                <div id="map-container" class="map-container">
+                    <div id="loading-overlay" class="loading-overlay">
+                        <div class="spinner"></div>
+                        <div id="loading-message" class="loading-message">Initializing WebAssembly…</div>
+                    </div>
+
+                    <div id="error-overlay" class="error-overlay" style="display: none;">
+                        <div class="error-content">
+                            <div class="error-icon">⚠️</div>
+                            <h3 class="error-title">Something went wrong</h3>
+                            <p id="error-message" class="error-message"></p>
+                            <button id="dismiss-error" class="btn btn-primary">Dismiss</button>
+                        </div>
+                    </div>
+
+                    <!-- Floating layer controls (shown after a run) -->
+                    <div id="layer-bar" class="layer-bar" hidden>
+                        <div class="layer-bar-group layer-bar-crossfade">
+                            <span id="crossfade-label-a" class="layer-bar-label">A</span>
+                            <input type="range" id="crossfade" class="slider layer-bar-slider" min="0" max="100" value="0">
+                            <span id="crossfade-label-b" class="layer-bar-label">B</span>
+                        </div>
+                        <div class="layer-bar-group">
+                            <label class="layer-bar-label" for="change-opacity">Change</label>
+                            <input type="range" id="change-opacity" class="slider layer-bar-slider-sm" min="0" max="100" value="85">
+                        </div>
+                        <div class="layer-bar-group">
+                            <label class="checkbox-label layer-bar-label">
+                                <input type="checkbox" id="diff-toggle">
+                                NDVI heatmap
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div class="footer-content">
+                <p class="footer-text">
+                    Built with <a href="https://github.com/cool-japan/oxigdal" target="_blank">OxiGDAL</a>
+                    | Sentinel-2 imagery © ESA / Copernicus via <a href="https://earth-search.aws.element84.com/v1" target="_blank">Earth Search</a>
+                    | Part of the <a href="https://github.com/cool-japan" target="_blank">COOLJAPAN</a> Pure Rust Ecosystem
+                </p>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Leaflet JS (vendored, zero-CDN) -->
+    <script src="./vendor/leaflet/leaflet.js"></script>
+
+    <!-- Application JS -->
+    <script type="module" src="main.js"></script>
+</body>
+</html>

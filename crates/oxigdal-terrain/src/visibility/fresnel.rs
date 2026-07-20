@@ -89,10 +89,10 @@ where
             return None;
         }
         let v = dem[[r as usize, c as usize]];
-        if let Some(nd) = nodata {
-            if (v - nd).abs() < T::epsilon() {
-                return None;
-            }
+        if let Some(nd) = nodata
+            && (v - nd).abs() < T::epsilon()
+        {
+            return None;
         }
         return Some(v.into());
     }

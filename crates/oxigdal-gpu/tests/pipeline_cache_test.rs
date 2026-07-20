@@ -7,7 +7,7 @@
 //! not) and by observing `cache.len()`.
 
 // Permit the test-internal `unwrap()` idiom and relax doc requirements.
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpu::pipeline_cache::{
     PipelineCache, PipelineCacheKey, fnv1a_64, new_shared_pipeline_cache,

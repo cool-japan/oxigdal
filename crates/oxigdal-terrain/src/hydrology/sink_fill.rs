@@ -166,10 +166,10 @@ where
         for x in 0..width {
             if y == 0 || y == height - 1 || x == 0 || x == width - 1 {
                 let val = dem[[y, x]];
-                if let Some(nd) = nodata {
-                    if (val - nd).abs() < T::epsilon() {
-                        continue;
-                    }
+                if let Some(nd) = nodata
+                    && (val - nd).abs() < T::epsilon()
+                {
+                    continue;
                 }
                 filled[[y, x]] = val.into();
                 open.push(LegacyCell {

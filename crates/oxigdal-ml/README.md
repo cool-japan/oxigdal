@@ -73,11 +73,11 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-ml = "0.1.5"
-oxigdal-ml-foundation = "0.1.5"
+oxigdal-ml = "0.1.7"
+oxigdal-ml-foundation = "0.1.7"
 
 # Optional: Enable specific features
-oxigdal-ml = { version = "0.1.5", features = ["gpu", "cuda", "temporal", "cloud-removal"] }
+oxigdal-ml = { version = "0.1.7", features = ["gpu", "cuda", "temporal", "cloud-removal"] }
 ```
 
 ### System Requirements
@@ -287,11 +287,11 @@ cargo test -- --nocapture --test-threads=1
 - **GPU Acceleration**: 10-100x speedup on supported hardware
 - **Batch Processing**: Auto-tuned for available memory
 
-See the [Optimization Guide](/tmp/oxigdal_ml_optimization_guide.md) for detailed performance tuning.
+See the Optimization Guide for detailed performance tuning.
 
 ## Project Status
 
-- **Version**: 0.1.0
+- **Version**: 0.1.7
 - **Status**: Production Ready
 - **Test Coverage**: 99.68%
 - **Documentation**: Comprehensive (10,000+ lines)

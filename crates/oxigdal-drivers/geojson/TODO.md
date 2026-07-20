@@ -2,7 +2,7 @@
 
 > **Purpose:** GeoJSON (RFC 7946) driver for OxiGDAL - Pure Rust vector data processing with streaming support
 > **Status (2026-05-16):** 8,357 Rust LoC (incl. tests) - 175 tests - 0 source-code stubs (mature crate; gaps are forward-looking features)
-> **Roadmap:** v0.1.5 (current slice) - v0.2.0 - v1.0.0
+> **Roadmap:** v0.1.7 (current slice) - v0.2.0 - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 

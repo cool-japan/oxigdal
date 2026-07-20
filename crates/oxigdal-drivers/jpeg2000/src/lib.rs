@@ -153,8 +153,8 @@
 //!
 //! # TODO
 //!
-//! - Complete tier-1 EBCOT decoder implementation (currently placeholder)
 //! - Add writing/encoding support for JP2/J2K files
+//! - 9/7 irreversible (lossy) wavelet decode path
 //! - SIMD optimization for wavelet transforms
 //! - Parallel tile decoding with multi-threading support
 //! - JPX (JPEG2000 Part 2) extended features
@@ -166,6 +166,7 @@
 //! - ✅ Error resilience modes (None, Basic, Full) with packet-level error handling
 //! - ✅ Progressive decoding with quality layer support
 //! - ✅ ROI decoding support (spatial regions and resolution levels)
+//! - ✅ Real JPEG2000 decode chain: tier-1 EBCOT → inverse 5/3 DWT → RCT → level-shift
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]

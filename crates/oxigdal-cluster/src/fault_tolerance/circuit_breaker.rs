@@ -296,12 +296,12 @@ impl CircuitBreaker {
     fn maybe_transition_state(&self) {
         let state = *self.inner.state.read();
 
-        if state == CircuitState::Open && self.inner.config.auto_reset {
-            if let Some(opened_at) = *self.inner.opened_at.read() {
-                if opened_at.elapsed() >= self.inner.config.open_duration {
-                    self.transition_to_half_open();
-                }
-            }
+        if state == CircuitState::Open
+            && self.inner.config.auto_reset
+            && let Some(opened_at) = *self.inner.opened_at.read()
+            && opened_at.elapsed() >= self.inner.config.open_duration
+        {
+            self.transition_to_half_open();
         }
     }
 

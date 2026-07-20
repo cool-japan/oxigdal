@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self'; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta name="referrer" content="no-referrer">
+    <title>GeoVault — Attestation Verifier</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./geovault.css">
+</head>
+<body class="verify-page">
+    <header class="app-header">
+        <div class="brand">
+            <span class="brand-name"><span class="brand-geo">GEO</span>VAULT</span>
+            <span class="brand-sub">Attestation Verifier</span>
+        </div>
+        <div class="header-right">
+            <span id="version-badge" class="version-badge">wasm: loading…</span>
+            <a href="index.html" class="btn">← Workstation</a>
+        </div>
+    </header>
+
+    <main class="verify-main">
+        <section class="side-section">
+            <h3 class="side-title">Verify an attestation</h3>
+            <p class="side-hint">Independent of the workstation: the checks below are
+                recomputed from the JSON alone by the same Pure-Rust
+                <span class="mono">oxigdal-security</span> code, compiled to WebAssembly.
+                Runs entirely in this browser — nothing is sent anywhere. The
+                <span class="mono">verify_attestation</span> example in
+                <span class="mono">oxigdal-security</span> performs the identical check
+                natively for skeptics.</p>
+        </section>
+
+        <section class="verify-input side-section">
+            <div id="verify-drop" class="drop-zone">
+                <div>Drag &amp; drop an <span class="mono">attestation.json</span>, or
+                    <label for="verify-file">choose a file</label>
+                </div>
+                <input type="file" id="verify-file" class="file-input-hidden"
+                       accept=".json,application/json">
+                <p class="drop-note">…or paste the JSON below.</p>
+            </div>
+            <textarea id="verify-text" spellcheck="false"
+                      placeholder='{"format":"oxigdal-attestation", …}'></textarea>
+            <button id="verify-run" class="btn btn-block" disabled>Verify</button>
+        </section>
+
+        <div id="verify-verdict" class="verify-verdict hidden"></div>
+
+        <div class="check-grid">
+            <div class="check-row" id="check-chain">
+                <div class="check-mark">·</div>
+                <div>
+                    <div class="check-name">Hash chain integrity</div>
+                    <div class="check-explain">Recomputes every blake3 entry hash from the
+                        recorded operations, linked back to the session genesis.
+                        <strong>Proves</strong>: no recorded operation was altered, reordered,
+                        inserted, or removed after the fact.
+                        <strong>Does not prove</strong>: that the application logged everything
+                        it did — only that what was logged is intact.</div>
+                </div>
+            </div>
+            <div class="check-row" id="check-merkle">
+                <div class="check-mark">·</div>
+                <div>
+                    <div class="check-name">Merkle root</div>
+                    <div class="check-explain">Rebuilds the domain-separated Merkle tree over
+                        all entry hashes and compares it to the root bound into the seal.
+                        <strong>Proves</strong>: the signed commitment covers exactly this set
+                        of entries — the log is complete with respect to the seal.
+                        <strong>Does not prove</strong>: anything about events outside the
+                        log.</div>
+                </div>
+            </div>
+            <div class="check-row" id="check-signature">
+                <div class="check-mark">·</div>
+                <div>
+                    <div class="check-name">Ed25519 signature</div>
+                    <div class="check-explain">Verifies the seal signature over the format
+                        version, session id, timestamps, entry count, Merkle root, head hash,
+                        traffic counters, and policy digest.
+                        <strong>Proves</strong>: the holder of the session's private key sealed
+                        exactly this record.
+                        <strong>Does not prove</strong>: who ran the session — the keypair is
+                        generated fresh in the browser and shown in the workstation UI.</div>
+                </div>
+            </div>
+        </div>
+
+        <section class="side-section">
+            <h3 class="side-title">Report</h3>
+            <div class="result-box">
+                <dl class="kv" id="verify-report">
+                    <dt>status</dt><dd>no attestation loaded</dd>
+                </dl>
+            </div>
+        </section>
+
+        <section class="side-section">
+            <h3 class="side-title">Recorded operations</h3>
+            <div class="ops-table-wrap">
+                <table class="ops-table">
+                    <thead>
+                        <tr><th>#</th><th>time (informational)</th><th>operation</th>
+                            <th>params</th><th>entry hash</th></tr>
+                    </thead>
+                    <tbody id="ops-body">
+                        <tr><td colspan="5">—</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="side-hint">Timestamps are informational only; ordering authority is
+                the sequence number plus the hash chain.</p>
+        </section>
+
+        <section class="side-section">
+            <p class="trust-model">This attestation is a tamper-evident record. It
+                cryptographically proves: (1) the operation log is complete and unaltered
+                since sealing, (2) it was sealed by the session key shown. It reports, on
+                the honor of the application code you can inspect: 0 bytes sent to any
+                external origin, under a browser-enforced Content-Security-Policy
+                forbidding external connections. It cannot prove that other software on
+                this machine sent nothing — no browser page can. Integrity of the record:
+                proven. No-egress: enforced and observed, not mathematically proven.</p>
+        </section>
+    </main>
+
+    <script type="module" src="./verify.js"></script>
+</body>
+</html>

@@ -47,30 +47,20 @@ where
 
     let cs_sq = cell_size * cell_size;
 
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
+    for y in 0..height {
+        for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    curvature[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                curvature[[y, x]] = f64::NAN;
+                continue;
             }
 
-            // Get 3x3 neighborhood
-            let z = [
-                [dem[[y - 1, x - 1]], dem[[y - 1, x]], dem[[y - 1, x + 1]]],
-                [dem[[y, x - 1]], dem[[y, x]], dem[[y, x + 1]]],
-                [dem[[y + 1, x - 1]], dem[[y + 1, x]], dem[[y + 1, x + 1]]],
-            ];
-
-            // Convert to f64
-            let z_f64: [[f64; 3]; 3] = [
-                [z[0][0].into(), z[0][1].into(), z[0][2].into()],
-                [z[1][0].into(), z[1][1].into(), z[1][2].into()],
-                [z[2][0].into(), z[2][1].into(), z[2][2].into()],
-            ];
+            // Get 3x3 neighborhood, extending the edge for border pixels
+            // instead of leaving them at the silent Array2::zeros() default.
+            let z_f64 = neighborhood_f64(dem, y, x);
 
             // Calculate derivatives
             let d = ((z_f64[1][2] + z_f64[1][0]) / 2.0 - z_f64[1][1]) / cs_sq;
@@ -110,28 +100,18 @@ where
 
     let cs_sq = cell_size * cell_size;
 
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
+    for y in 0..height {
+        for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    curvature[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                curvature[[y, x]] = f64::NAN;
+                continue;
             }
 
-            let z = [
-                [dem[[y - 1, x - 1]], dem[[y - 1, x]], dem[[y - 1, x + 1]]],
-                [dem[[y, x - 1]], dem[[y, x]], dem[[y, x + 1]]],
-                [dem[[y + 1, x - 1]], dem[[y + 1, x]], dem[[y + 1, x + 1]]],
-            ];
-
-            let z_f64: [[f64; 3]; 3] = [
-                [z[0][0].into(), z[0][1].into(), z[0][2].into()],
-                [z[1][0].into(), z[1][1].into(), z[1][2].into()],
-                [z[2][0].into(), z[2][1].into(), z[2][2].into()],
-            ];
+            let z_f64 = neighborhood_f64(dem, y, x);
 
             let d = ((z_f64[1][2] + z_f64[1][0]) / 2.0 - z_f64[1][1]) / cs_sq;
             let e = ((z_f64[2][1] + z_f64[0][1]) / 2.0 - z_f64[1][1]) / cs_sq;
@@ -165,28 +145,18 @@ where
 
     let cs_sq = cell_size * cell_size;
 
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
+    for y in 0..height {
+        for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    curvature[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                curvature[[y, x]] = f64::NAN;
+                continue;
             }
 
-            let z = [
-                [dem[[y - 1, x - 1]], dem[[y - 1, x]], dem[[y - 1, x + 1]]],
-                [dem[[y, x - 1]], dem[[y, x]], dem[[y, x + 1]]],
-                [dem[[y + 1, x - 1]], dem[[y + 1, x]], dem[[y + 1, x + 1]]],
-            ];
-
-            let z_f64: [[f64; 3]; 3] = [
-                [z[0][0].into(), z[0][1].into(), z[0][2].into()],
-                [z[1][0].into(), z[1][1].into(), z[1][2].into()],
-                [z[2][0].into(), z[2][1].into(), z[2][2].into()],
-            ];
+            let z_f64 = neighborhood_f64(dem, y, x);
 
             let d = ((z_f64[1][2] + z_f64[1][0]) / 2.0 - z_f64[1][1]) / cs_sq;
             let e = ((z_f64[2][1] + z_f64[0][1]) / 2.0 - z_f64[1][1]) / cs_sq;
@@ -214,28 +184,18 @@ where
 
     let cs_sq = cell_size * cell_size;
 
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
+    for y in 0..height {
+        for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    curvature[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                curvature[[y, x]] = f64::NAN;
+                continue;
             }
 
-            let z = [
-                [dem[[y - 1, x - 1]], dem[[y - 1, x]], dem[[y - 1, x + 1]]],
-                [dem[[y, x - 1]], dem[[y, x]], dem[[y, x + 1]]],
-                [dem[[y + 1, x - 1]], dem[[y + 1, x]], dem[[y + 1, x + 1]]],
-            ];
-
-            let z_f64: [[f64; 3]; 3] = [
-                [z[0][0].into(), z[0][1].into(), z[0][2].into()],
-                [z[1][0].into(), z[1][1].into(), z[1][2].into()],
-                [z[2][0].into(), z[2][1].into(), z[2][2].into()],
-            ];
+            let z_f64 = neighborhood_f64(dem, y, x);
 
             let d = ((z_f64[1][2] + z_f64[1][0]) / 2.0 - z_f64[1][1]) / cs_sq;
             let e = ((z_f64[2][1] + z_f64[0][1]) / 2.0 - z_f64[1][1]) / cs_sq;
@@ -297,6 +257,45 @@ fn is_nodata<T: Float>(value: T, nodata: T) -> bool {
     }
 }
 
+/// Fetch a DEM value offset by `(dy, dx)` from `(y, x)`, extending the edge
+/// (clamping to the nearest valid row/column) when the neighbor falls
+/// outside the raster bounds. This mirrors the `EdgeStrategy::Extend`
+/// behavior used by `slope.rs`/`aspect.rs`, so border pixels get a real
+/// extended-edge derivative instead of the silent `Array2::zeros()` default.
+fn extended_value<T: Copy>(dem: &Array2<T>, y: usize, dy: isize, x: usize, dx: isize) -> T {
+    let (height, width) = dem.dim();
+    let max_y = height.saturating_sub(1) as isize;
+    let max_x = width.saturating_sub(1) as isize;
+    let ny = (y as isize + dy).clamp(0, max_y) as usize;
+    let nx = (x as isize + dx).clamp(0, max_x) as usize;
+    dem[[ny, nx]]
+}
+
+/// Build the 3x3 neighborhood around `(y, x)` as `f64`, extending the edge
+/// for pixels that fall outside the raster (border row/column).
+fn neighborhood_f64<T>(dem: &Array2<T>, y: usize, x: usize) -> [[f64; 3]; 3]
+where
+    T: Float + Into<f64> + Copy,
+{
+    [
+        [
+            extended_value(dem, y, -1, x, -1).into(),
+            extended_value(dem, y, -1, x, 0).into(),
+            extended_value(dem, y, -1, x, 1).into(),
+        ],
+        [
+            extended_value(dem, y, 0, x, -1).into(),
+            dem[[y, x]].into(),
+            extended_value(dem, y, 0, x, 1).into(),
+        ],
+        [
+            extended_value(dem, y, 1, x, -1).into(),
+            extended_value(dem, y, 1, x, 0).into(),
+            extended_value(dem, y, 1, x, 1).into(),
+        ],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,9 +306,11 @@ mod tests {
         let dem = Array2::from_elem((5, 5), 100.0_f64);
         let curv = profile_curvature(&dem, 10.0, None).expect("curvature calculation failed");
 
-        // Flat surface should have zero curvature
-        for y in 1..4 {
-            for x in 1..4 {
+        // Flat surface should have zero curvature everywhere, including the
+        // border (now computed via edge-extend rather than left at the
+        // Array2::zeros() default).
+        for y in 0..5 {
+            for x in 0..5 {
                 assert_relative_eq!(curv[[y, x]], 0.0, epsilon = 1e-10);
             }
         }
@@ -320,8 +321,8 @@ mod tests {
         let dem = Array2::from_elem((5, 5), 100.0_f64);
         let curv = plan_curvature(&dem, 10.0, None).expect("curvature calculation failed");
 
-        for y in 1..4 {
-            for x in 1..4 {
+        for y in 0..5 {
+            for x in 0..5 {
                 assert_relative_eq!(curv[[y, x]], 0.0, epsilon = 1e-10);
             }
         }
@@ -332,10 +333,52 @@ mod tests {
         let dem = Array2::from_elem((5, 5), 100.0_f64);
         let curv = total_curvature(&dem, 10.0, None).expect("curvature calculation failed");
 
-        for y in 1..4 {
-            for x in 1..4 {
+        for y in 0..5 {
+            for x in 0..5 {
                 assert_relative_eq!(curv[[y, x]], 0.0, epsilon = 1e-10);
             }
+        }
+    }
+
+    #[test]
+    fn test_tangential_curvature_flat() {
+        let dem = Array2::from_elem((5, 5), 100.0_f64);
+        let curv = tangential_curvature(&dem, 10.0, None).expect("curvature calculation failed");
+
+        for y in 0..5 {
+            for x in 0..5 {
+                assert_relative_eq!(curv[[y, x]], 0.0, epsilon = 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_curvature_border_is_computed_not_defaulted() {
+        // Dome surface: interior curvature is negative (convex). Before the
+        // fix, every border pixel was left at the Array2::zeros() default
+        // of 0.0 regardless of the underlying surface shape. Verify the
+        // border now reflects the real (edge-extended) curvature instead.
+        let mut dem = Array2::zeros((7, 7));
+        for y in 0..7 {
+            for x in 0..7 {
+                let dx = x as f64 - 3.0;
+                let dy = y as f64 - 3.0;
+                let r_sq = dx * dx + dy * dy;
+                dem[[y, x]] = 100.0 - r_sq;
+            }
+        }
+
+        let curv = profile_curvature(&dem, 1.0, None).expect("curvature calculation failed");
+
+        // Top/bottom/left/right border-midpoint pixels on the dome flank
+        // must reflect the real (edge-extended) curvature, not the silent
+        // flat-default 0.0 that the pre-fix code left in place.
+        for &(y, x) in &[(0usize, 3usize), (3, 0), (6, 3), (3, 6)] {
+            assert!(
+                curv[[y, x]].abs() > 1e-6,
+                "border pixel [{y},{x}] should be a computed (non-zero) curvature, got {}",
+                curv[[y, x]]
+            );
         }
     }
 

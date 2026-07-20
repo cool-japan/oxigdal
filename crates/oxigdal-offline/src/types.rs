@@ -354,7 +354,15 @@ impl Conflict {
         }
     }
 
-    /// Detect conflict type
+    /// Detect conflict type.
+    ///
+    /// A common ancestor (`base.is_some()`) is a definitive signal of `UpdateUpdate`, but its
+    /// absence is not proof of the opposite: two records can both be genuine concurrent
+    /// updates (`version > 0` on both sides) even when no ancestor was tracked or supplied.
+    /// Treating "no base" as "must be an insert-insert conflict" would silently misclassify
+    /// real concurrent-update conflicts, which then get resolved as if there were no shared
+    /// history to reason about. So `UpdateUpdate` is also inferred whenever both sides have
+    /// been updated at least once, independent of whether a base record was found.
     fn detect_type(local: &Record, remote: &Record, base: Option<&Record>) -> ConflictType {
         if local.deleted && remote.deleted {
             ConflictType::DeleteDelete
@@ -362,7 +370,7 @@ impl Conflict {
             ConflictType::DeleteUpdate
         } else if remote.deleted {
             ConflictType::UpdateDelete
-        } else if base.is_some() {
+        } else if base.is_some() || (local.version.value() > 0 && remote.version.value() > 0) {
             ConflictType::UpdateUpdate
         } else {
             ConflictType::InsertInsert
@@ -443,6 +451,33 @@ mod tests {
     fn test_conflict_type_detection() {
         let local = Record::new("test".to_string(), Bytes::from("local"));
         let remote = Record::new("test".to_string(), Bytes::from("remote"));
+        let conflict = Conflict::new(local, remote, None);
+        assert_eq!(conflict.conflict_type, ConflictType::InsertInsert);
+    }
+
+    #[test]
+    fn test_concurrent_update_without_base_is_update_update_not_insert_insert() {
+        // Both sides have genuinely been updated (version > 0) even though no common
+        // ancestor was supplied. This must NOT be misclassified as InsertInsert, which
+        // would let it silently skip three-way-merge treatment.
+        let mut local = Record::new("test".to_string(), Bytes::from("local"));
+        local.version = Version::from_u64(1);
+        let mut remote = Record::new("test".to_string(), Bytes::from("remote"));
+        remote.id = local.id;
+        remote.version = Version::from_u64(2);
+
+        let conflict = Conflict::new(local, remote, None);
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+    }
+
+    #[test]
+    fn test_fresh_inserts_with_zero_versions_stay_insert_insert() {
+        // Two brand-new records (version 0 on both sides, no base) are a real
+        // insert-insert conflict, not a concurrent update.
+        let local = Record::new("test".to_string(), Bytes::from("local"));
+        let mut remote = Record::new("test".to_string(), Bytes::from("remote"));
+        remote.id = local.id;
+
         let conflict = Conflict::new(local, remote, None);
         assert_eq!(conflict.conflict_type, ConflictType::InsertInsert);
     }

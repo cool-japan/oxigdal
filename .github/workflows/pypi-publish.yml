@@ -48,9 +48,6 @@ jobs:
           args: --release --out dist --find-interpreter
           manylinux: auto
           working-directory: crates/oxigdal-python
-          # Install OpenSSL for native-tls (manylinux uses yum)
-          before-script-linux: |
-            yum install -y openssl-devel perl-IPC-Cmd || true
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4

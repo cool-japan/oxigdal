@@ -34,11 +34,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    tpi_result[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                tpi_result[[y, x]] = f64::NAN;
+                continue;
             }
 
             let mut sum = 0.0;
@@ -53,10 +53,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         sum += val.into();
@@ -97,10 +97,10 @@ where
             let x = idx % width;
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    return f64::NAN;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                return f64::NAN;
             }
 
             let mut sum = 0.0;
@@ -114,10 +114,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         sum += val.into();
@@ -183,11 +183,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    result[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                result[[y, x]] = f64::NAN;
+                continue;
             }
 
             let mut sum = 0.0_f64;
@@ -210,10 +210,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         sum += val.into();
@@ -256,11 +256,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    result[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                result[[y, x]] = f64::NAN;
+                continue;
             }
 
             // First pass: collect valid neighbourhood values
@@ -276,10 +276,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         let v: f64 = val.into();
@@ -467,10 +467,10 @@ where
             let x = idx % width;
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    return f64::NAN;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                return f64::NAN;
             }
 
             let mut sum = 0.0_f64;
@@ -492,10 +492,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         sum += val.into();
@@ -541,10 +541,10 @@ where
             let x = idx % width;
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    return f64::NAN;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                return f64::NAN;
             }
 
             let mut sum = 0.0_f64;
@@ -559,10 +559,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         let v: f64 = val.into();

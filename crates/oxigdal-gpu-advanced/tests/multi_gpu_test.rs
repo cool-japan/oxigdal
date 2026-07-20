@@ -84,14 +84,14 @@ async fn test_load_balancer_stats() {
 async fn test_work_queue() {
     let result = MultiGpuManager::new(SelectionStrategy::RoundRobin).await;
 
-    if let Ok(manager) = result {
-        if manager.gpu_count() > 0 {
-            let queue = manager.get_work_queue(0);
+    if let Ok(manager) = result
+        && manager.gpu_count() > 0
+    {
+        let queue = manager.get_work_queue(0);
 
-            if let Ok(queue) = queue {
-                assert_eq!(queue.pending_count(), 0);
-                assert!(queue.is_empty());
-            }
+        if let Ok(queue) = queue {
+            assert_eq!(queue.pending_count(), 0);
+            assert!(queue.is_empty());
         }
     }
 }

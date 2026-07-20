@@ -6,6 +6,63 @@
 use crate::error::{QcError, QcIssue, QcResult, Severity};
 use std::collections::HashMap;
 
+/// A typed data value used when executing rules against feature/record data.
+///
+/// `Threshold`/`Range` rules operate on [`QcValue::Number`]; `Enumeration`/
+/// `Pattern` rules operate on [`QcValue::Text`]. A field present with the
+/// "wrong" variant for a given rule type is treated the same as a missing
+/// field (the rule cannot be evaluated, so it is reported as violated).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum QcValue {
+    /// A numeric measurement.
+    Number(f64),
+    /// A text/string value.
+    Text(String),
+}
+
+impl QcValue {
+    /// Returns the numeric value, if this is a [`QcValue::Number`].
+    #[must_use]
+    pub const fn as_number(&self) -> Option<f64> {
+        match self {
+            Self::Number(n) => Some(*n),
+            Self::Text(_) => None,
+        }
+    }
+
+    /// Returns the text value, if this is a [`QcValue::Text`].
+    #[must_use]
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(s) => Some(s.as_str()),
+            Self::Number(_) => None,
+        }
+    }
+}
+
+impl From<f64> for QcValue {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<String> for QcValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<&str> for QcValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
+/// A registered handler for [`RuleType::Custom`] rules.
+///
+/// Returns `true` when the rule is violated for the given data row.
+type CustomRuleFn = Box<dyn Fn(&HashMap<String, QcValue>) -> bool + Send + Sync>;
+
 /// Quality rule definition.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QualityRule {
@@ -213,13 +270,17 @@ impl RuleSet {
 /// Rules engine for executing quality rules.
 pub struct RulesEngine {
     rule_set: RuleSet,
+    custom_fns: HashMap<String, CustomRuleFn>,
 }
 
 impl RulesEngine {
     /// Creates a new rules engine with the given rule set.
     #[must_use]
     pub fn new(rule_set: RuleSet) -> Self {
-        Self { rule_set }
+        Self {
+            rule_set,
+            custom_fns: HashMap::new(),
+        }
     }
 
     /// Creates a rules engine from a TOML file.
@@ -232,15 +293,33 @@ impl RulesEngine {
         Ok(Self::new(rule_set))
     }
 
+    /// Registers a handler for a [`RuleType::Custom`] rule.
+    ///
+    /// `function_name` must match the `function_name` configured on the
+    /// `Custom` rule. The handler receives the row's data and returns `true`
+    /// when the rule is violated. Calling `execute_rule`/`execute_all`/
+    /// `execute_category` on a `Custom` rule whose `function_name` has no
+    /// registered handler returns [`QcError::InvalidConfiguration`] instead
+    /// of silently treating the rule as always-passing.
+    pub fn register_custom_fn<F>(&mut self, function_name: impl Into<String>, handler: F)
+    where
+        F: Fn(&HashMap<String, QcValue>) -> bool + Send + Sync + 'static,
+    {
+        self.custom_fns
+            .insert(function_name.into(), Box::new(handler));
+    }
+
     /// Executes a specific rule.
     ///
     /// # Errors
     ///
-    /// Returns an error if rule execution fails.
+    /// Returns [`QcError::InvalidConfiguration`] if the rule is a `Pattern`
+    /// rule with an invalid regex, or a `Custom` rule whose function name
+    /// has no registered handler.
     pub fn execute_rule(
         &self,
         rule: &QualityRule,
-        data: &HashMap<String, f64>,
+        data: &HashMap<String, QcValue>,
     ) -> QcResult<Option<QcIssue>> {
         if !rule.enabled {
             return Ok(None);
@@ -251,32 +330,46 @@ impl RulesEngine {
                 field,
                 operator,
                 value,
-            } => {
-                if let Some(&field_value) = data.get(field) {
-                    !self.compare_values(field_value, *value, *operator)
-                } else {
-                    true // Field missing
-                }
-            }
+            } => match data.get(field).and_then(QcValue::as_number) {
+                Some(field_value) => !self.compare_values(field_value, *value, *operator),
+                None => true, // Field missing or not numeric
+            },
             RuleType::Range { field, min, max } => {
-                if let Some(&field_value) = data.get(field) {
-                    field_value < *min || field_value > *max
-                } else {
-                    true // Field missing
+                match data.get(field).and_then(QcValue::as_number) {
+                    Some(field_value) => field_value < *min || field_value > *max,
+                    None => true, // Field missing or not numeric
                 }
             }
-            RuleType::Enumeration { .. } => {
-                // Would need string data for enumeration checks
-                false
+            RuleType::Enumeration {
+                field,
+                allowed_values,
+            } => match data.get(field).and_then(QcValue::as_text) {
+                Some(text) => !allowed_values.iter().any(|allowed| allowed == text),
+                None => true, // Field missing or not text
+            },
+            RuleType::Pattern { field, pattern } => {
+                match data.get(field).and_then(QcValue::as_text) {
+                    Some(text) => {
+                        let re = regex::Regex::new(pattern).map_err(|e| {
+                            QcError::InvalidConfiguration(format!(
+                                "Rule '{}': invalid pattern '{}': {e}",
+                                rule.id, pattern
+                            ))
+                        })?;
+                        !re.is_match(text)
+                    }
+                    None => true, // Field missing or not text
+                }
             }
-            RuleType::Pattern { .. } => {
-                // Would need string data for pattern checks
-                false
-            }
-            RuleType::Custom { .. } => {
-                // Custom functions would be registered separately
-                false
-            }
+            RuleType::Custom { function_name } => match self.custom_fns.get(function_name) {
+                Some(handler) => handler(data),
+                None => {
+                    return Err(QcError::InvalidConfiguration(format!(
+                        "Rule '{}': custom function '{}' is not registered",
+                        rule.id, function_name
+                    )));
+                }
+            },
         };
 
         if violated {
@@ -299,7 +392,7 @@ impl RulesEngine {
     /// # Errors
     ///
     /// Returns an error if rule execution fails.
-    pub fn execute_all(&self, data: &HashMap<String, f64>) -> QcResult<Vec<QcIssue>> {
+    pub fn execute_all(&self, data: &HashMap<String, QcValue>) -> QcResult<Vec<QcIssue>> {
         let mut issues = Vec::new();
 
         for rule in self.rule_set.get_enabled_rules() {
@@ -319,7 +412,7 @@ impl RulesEngine {
     pub fn execute_category(
         &self,
         category: RuleCategory,
-        data: &HashMap<String, f64>,
+        data: &HashMap<String, QcValue>,
     ) -> QcResult<Vec<QcIssue>> {
         let mut issues = Vec::new();
 
@@ -431,6 +524,35 @@ impl RuleBuilder {
         self
     }
 
+    /// Sets the rule type to enumeration.
+    #[must_use]
+    pub fn enumeration(mut self, field: impl Into<String>, allowed_values: Vec<String>) -> Self {
+        self.rule.rule_type = RuleType::Enumeration {
+            field: field.into(),
+            allowed_values,
+        };
+        self
+    }
+
+    /// Sets the rule type to pattern (regex).
+    #[must_use]
+    pub fn pattern(mut self, field: impl Into<String>, pattern: impl Into<String>) -> Self {
+        self.rule.rule_type = RuleType::Pattern {
+            field: field.into(),
+            pattern: pattern.into(),
+        };
+        self
+    }
+
+    /// Sets the rule type to a custom, separately registered function.
+    #[must_use]
+    pub fn custom(mut self, function_name: impl Into<String>) -> Self {
+        self.rule.rule_type = RuleType::Custom {
+            function_name: function_name.into(),
+        };
+        self
+    }
+
     /// Builds the rule.
     #[must_use]
     pub fn build(self) -> QualityRule {
@@ -485,13 +607,154 @@ mod tests {
         let engine = RulesEngine::new(ruleset);
 
         let mut data = HashMap::new();
-        data.insert("max_value".to_string(), 150.0);
+        data.insert("max_value".to_string(), QcValue::Number(150.0));
 
         let result = engine.execute_all(&data);
         assert!(result.is_ok());
 
         let issues = result.ok().unwrap_or_default();
         assert_eq!(issues.len(), 1);
+    }
+
+    #[test]
+    fn test_enumeration_rule_pass_and_violate() {
+        let mut ruleset = RuleSet::new("Test", "Test");
+        let rule = RuleBuilder::new("R-ENUM", "Land Cover Enum")
+            .enumeration(
+                "land_cover",
+                vec!["forest".to_string(), "water".to_string()],
+            )
+            .severity(Severity::Minor)
+            .build();
+        ruleset.add_rule(rule);
+        let engine = RulesEngine::new(ruleset);
+
+        let mut passing = HashMap::new();
+        passing.insert(
+            "land_cover".to_string(),
+            QcValue::Text("forest".to_string()),
+        );
+        let issues = engine
+            .execute_all(&passing)
+            .expect("enumeration rule should execute for a valid value");
+        assert!(
+            issues.is_empty(),
+            "an allowed enumeration value must not raise an issue"
+        );
+
+        let mut violating = HashMap::new();
+        violating.insert("land_cover".to_string(), QcValue::Text("urban".to_string()));
+        let issues = engine
+            .execute_all(&violating)
+            .expect("enumeration rule should execute for an invalid value");
+        assert_eq!(
+            issues.len(),
+            1,
+            "a value outside the allowed enumeration must raise an issue"
+        );
+
+        // Missing field is treated the same as a violation.
+        let empty: HashMap<String, QcValue> = HashMap::new();
+        let issues = engine
+            .execute_all(&empty)
+            .expect("enumeration rule should execute when the field is missing");
+        assert_eq!(issues.len(), 1, "a missing field must raise an issue");
+    }
+
+    #[test]
+    fn test_pattern_rule_match_and_violate() {
+        let mut ruleset = RuleSet::new("Test", "Test");
+        let rule = RuleBuilder::new("R-PATTERN", "ID Format")
+            .pattern("station_id", r"^ST-\d{3}$")
+            .severity(Severity::Major)
+            .build();
+        ruleset.add_rule(rule);
+        let engine = RulesEngine::new(ruleset);
+
+        let mut passing = HashMap::new();
+        passing.insert(
+            "station_id".to_string(),
+            QcValue::Text("ST-042".to_string()),
+        );
+        let issues = engine
+            .execute_all(&passing)
+            .expect("pattern rule should execute for a matching value");
+        assert!(
+            issues.is_empty(),
+            "a matching pattern must not raise an issue"
+        );
+
+        let mut violating = HashMap::new();
+        violating.insert(
+            "station_id".to_string(),
+            QcValue::Text("bad-id".to_string()),
+        );
+        let issues = engine
+            .execute_all(&violating)
+            .expect("pattern rule should execute for a non-matching value");
+        assert_eq!(
+            issues.len(),
+            1,
+            "a value not matching the pattern must raise an issue"
+        );
+    }
+
+    #[test]
+    fn test_pattern_rule_invalid_regex_is_error() {
+        let mut ruleset = RuleSet::new("Test", "Test");
+        let rule = RuleBuilder::new("R-BAD-PATTERN", "Broken Pattern")
+            .pattern("field", "(unterminated")
+            .build();
+        ruleset.add_rule(rule);
+        let engine = RulesEngine::new(ruleset);
+
+        let mut data = HashMap::new();
+        data.insert("field".to_string(), QcValue::Text("x".to_string()));
+        let result = engine.execute_all(&data);
+        assert!(
+            result.is_err(),
+            "an invalid regex pattern must surface as an error"
+        );
+    }
+
+    #[test]
+    fn test_custom_rule_registered_and_unregistered() {
+        let mut ruleset = RuleSet::new("Test", "Test");
+        let rule = RuleBuilder::new("R-CUSTOM", "Custom Rule")
+            .custom("always_violate")
+            .build();
+        ruleset.add_rule(rule);
+
+        // Unregistered: must error, never silently pass.
+        let engine = RulesEngine::new(ruleset.clone());
+        let data: HashMap<String, QcValue> = HashMap::new();
+        let result = engine.execute_all(&data);
+        assert!(
+            result.is_err(),
+            "an unregistered custom function must be reported as an error"
+        );
+
+        // Registered: handler is actually invoked.
+        let mut engine = RulesEngine::new(ruleset);
+        engine.register_custom_fn("always_violate", |_data| true);
+        let issues = engine
+            .execute_all(&data)
+            .expect("registered custom function should execute successfully");
+        assert_eq!(
+            issues.len(),
+            1,
+            "the registered custom handler's result must be honored"
+        );
+
+        let mut engine_pass = RulesEngine::new(engine.rule_set().clone());
+        engine_pass.register_custom_fn("always_violate", |_data| false);
+        let issues = engine_pass
+            .execute_all(&data)
+            .expect("registered custom function should execute successfully");
+        assert!(
+            issues.is_empty(),
+            "a custom handler returning false must not raise an issue"
+        );
     }
 
     #[test]

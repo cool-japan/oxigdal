@@ -165,10 +165,10 @@ impl CacheStorageManager {
         for i in 0..array.length() {
             if let Ok(request) = array.get(i).dyn_into::<web_sys::Request>() {
                 // Match the request to get response
-                if let Ok(Some(response)) = Self::match_request_in_cache(&cache, &request).await {
-                    if let Ok(Some(size)) = Self::estimate_response_size(&response).await {
-                        total_size += size;
-                    }
+                if let Ok(Some(response)) = Self::match_request_in_cache(&cache, &request).await
+                    && let Ok(Some(size)) = Self::estimate_response_size(&response).await
+                {
+                    total_size += size;
                 }
             }
         }
@@ -201,10 +201,10 @@ impl CacheStorageManager {
     async fn estimate_response_size(response: &web_sys::Response) -> Result<Option<u64>> {
         // Try to get Content-Length header
         let headers = response.headers();
-        if let Ok(Some(length)) = headers.get("content-length") {
-            if let Ok(size) = length.parse::<u64>() {
-                return Ok(Some(size));
-            }
+        if let Ok(Some(length)) = headers.get("content-length")
+            && let Ok(size) = length.parse::<u64>()
+        {
+            return Ok(Some(size));
         }
 
         // Clone and read body to estimate size

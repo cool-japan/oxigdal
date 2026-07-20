@@ -526,10 +526,10 @@ impl RasterStreaming for RasterStream {
         *pos = (row, col);
 
         // Send prefetch request if enabled
-        if let Some(sender) = &self.prefetch_sender {
-            if sender.try_send((row, col)).is_err() {
-                warn!("Failed to send prefetch request");
-            }
+        if let Some(sender) = &self.prefetch_sender
+            && sender.try_send((row, col)).is_err()
+        {
+            warn!("Failed to send prefetch request");
         }
 
         Ok(())

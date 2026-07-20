@@ -1,0 +1,64 @@
+{
+  "examples": [
+    {
+      "id": "lahaina-wildfire",
+      "name": "Lahaina wildfire (Maui)",
+      "description": "August 2023 wildfire scar — ~880 ha ground truth",
+      "icon": "🔥",
+      "bbox": [-156.70, 20.85, -156.60, 20.93],
+      "dateA": "2023-07-01",
+      "dateB": "2023-09-15",
+      "windowDays": 20,
+      "maxCloud": 20,
+      "threshold": 0.15,
+      "minAreaHa": 0.5,
+      "_verified": "2026-07-13 live Earth Search: grid MGRS-4QGJ (EPSG:32604); A=S2A_4QGJ_20230714_0_L2A (cloud 6.6%), B=S2B_4QGJ_20230907_0_L2A (cloud 6.1%); 2 usable A / 1 usable B scenes"
+    },
+    {
+      "id": "rondonia-deforestation",
+      "name": "Rondônia deforestation (Brazil)",
+      "description": "Amazon clearing, 2021 vs 2024 dry seasons",
+      "icon": "🌳",
+      "bbox": [-63.30, -9.05, -63.10, -8.90],
+      "dateA": "2021-07-15",
+      "dateB": "2024-07-15",
+      "windowDays": 20,
+      "maxCloud": 20,
+      "threshold": 0.20,
+      "minAreaHa": 1.0,
+      "_verified": "2026-07-13 live Earth Search: grid MGRS-20LMQ (EPSG:32720); A=S2B_20LMQ_20210729_1_L2A (cloud 0.0%), B=S2B_20LMQ_20240723_0_L2A (cloud 0.0%); 10 usable A / 7 usable B scenes on winning grid (MGRS-20LMR also common)"
+    },
+    {
+      "id": "noto-earthquake",
+      "name": "Noto Peninsula earthquake (Japan)",
+      "description": "Coastal uplift & landslides, May 2023 vs May 2024",
+      "icon": "🗾",
+      "bbox": [136.75, 37.30, 136.95, 37.42],
+      "dateA": "2023-05-20",
+      "dateB": "2024-05-20",
+      "windowDays": 25,
+      "maxCloud": 30,
+      "threshold": 0.15,
+      "minAreaHa": 0.5,
+      "_verified": "2026-07-13 live Earth Search: grid MGRS-53SPB (EPSG:32653); A=S2B_53SPB_20230604_0_L2A (cloud 11.1%), B=S2A_53SPB_20240504_0_L2A (cloud 0.0%); 2 usable A / 5 usable B scenes"
+    },
+    {
+      "id": "giga-texas",
+      "name": "Giga Texas construction (Austin)",
+      "description": "Factory build-out, June 2020 vs June 2022",
+      "icon": "🏗️",
+      "bbox": [-97.65, 30.20, -97.60, 30.25],
+      "dateA": "2020-06-15",
+      "dateB": "2022-06-15",
+      "windowDays": 20,
+      "maxCloud": 20,
+      "threshold": 0.20,
+      "minAreaHa": 0.5,
+      "_verified": "2026-07-13 live Earth Search: grid MGRS-14RPU (EPSG:32614); A=S2A_14RPU_20200610_1_L2A (cloud 0.5%), B=S2B_14RPU_20220625_0_L2A (cloud 0.0%); 3 usable A / 5 usable B scenes"
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "note": "Sentinel-2 L2A via Earth Search v1 (Element 84). Dates are search centers; the pairer picks the clearest same-grid scenes within ±windowDays. All four presets live-verified by WP A6 (see per-example _verified fields)."
+  }
+}

@@ -136,8 +136,8 @@ pub use notifications::{
 
 pub use service_worker::{
     ServiceWorkerEvents, ServiceWorkerMessaging, ServiceWorkerRegistry, ServiceWorkerScope,
-    get_registration, get_service_worker_container, is_service_worker_supported,
-    register_service_worker,
+    UpdateViaCache, WorkerType, get_registration, get_service_worker_container,
+    is_service_worker_supported, register_service_worker,
 };
 
 pub use sync::{BackgroundSync, QueuedOperation, SyncCoordinator, SyncOptions, SyncQueue};
@@ -167,6 +167,12 @@ pub struct PwaConfig {
 
     /// Enable geospatial cache optimizations
     pub enable_geospatial_cache: bool,
+
+    /// Type of service worker to register (classic or ES module)
+    pub worker_type: WorkerType,
+
+    /// Update-via-cache mode used when registering the service worker
+    pub update_via_cache: UpdateViaCache,
 }
 
 impl Default for PwaConfig {
@@ -178,6 +184,8 @@ impl Default for PwaConfig {
             enable_background_sync: false,
             enable_notifications: false,
             enable_geospatial_cache: true,
+            worker_type: WorkerType::Classic,
+            update_via_cache: UpdateViaCache::Imports,
         }
     }
 }
@@ -223,6 +231,18 @@ impl PwaConfig {
         self.enable_geospatial_cache = enable;
         self
     }
+
+    /// Set the service worker type (classic or ES module).
+    pub fn with_worker_type(mut self, worker_type: WorkerType) -> Self {
+        self.worker_type = worker_type;
+        self
+    }
+
+    /// Set the update-via-cache mode used when registering the service worker.
+    pub fn with_update_via_cache(mut self, mode: UpdateViaCache) -> Self {
+        self.update_via_cache = mode;
+        self
+    }
 }
 
 /// Main PWA application manager.
@@ -265,6 +285,8 @@ impl PwaApp {
         let registration = register_service_worker(
             &self.config.service_worker_url,
             self.config.scope.as_deref(),
+            self.config.worker_type,
+            self.config.update_via_cache,
         )
         .await?;
 

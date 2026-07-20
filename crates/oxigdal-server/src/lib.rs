@@ -76,6 +76,7 @@ pub mod cache;
 pub mod config;
 pub mod dataset_registry;
 pub mod handlers;
+pub mod metrics;
 pub mod server;
 
 // Re-export main types
@@ -85,4 +86,5 @@ pub use config::{
     StyleConfig,
 };
 pub use dataset_registry::{DatasetMetadata, DatasetRegistry, LayerInfo, RegistryError};
+pub use metrics::AppMetrics;
 pub use server::{ServerError, TileServer};

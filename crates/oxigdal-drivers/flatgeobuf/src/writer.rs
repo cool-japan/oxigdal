@@ -7,11 +7,12 @@
 
 use crate::MAGIC_BYTES;
 use crate::error::{FlatGeobufError, Result};
+use crate::feature_codec;
 use crate::geometry::GeometryCodec;
-use crate::header::{Column, ColumnType, Header};
+use crate::header::{Column, Header};
 use crate::index::{BoundingBox, Node, PackedRTree, hilbert_index_for_bbox};
 use byteorder::{LittleEndian, WriteBytesExt};
-use oxigdal_core::vector::{Feature, FieldValue};
+use oxigdal_core::vector::Feature;
 use std::io::{Seek, SeekFrom, Write};
 
 /// `FlatGeobuf` writer
@@ -65,139 +66,10 @@ impl<W: Write + Seek> FlatGeobufWriter<W> {
         Ok(())
     }
 
-    /// Encodes a feature to bytes
+    /// Encodes a feature to its `FlatBuffers` `Feature` message bytes (no size
+    /// prefix); the caller writes the preceding `u32` length.
     fn encode_feature(&self, feature: &Feature) -> Result<Vec<u8>> {
-        let mut buffer = Vec::new();
-
-        // Write geometry presence flag
-        let has_geometry = feature.has_geometry();
-        buffer.write_u8(u8::from(has_geometry))?;
-
-        // Write geometry if present
-        if let Some(ref geometry) = feature.geometry {
-            self.geometry_codec.encode(&mut buffer, geometry)?;
-        }
-
-        // Write properties
-        for column in &self.header.columns {
-            let value = feature.get_property(&column.name);
-
-            if let Some(value) = value {
-                if value.is_null() {
-                    buffer.write_u8(1)?; // null flag
-                } else {
-                    buffer.write_u8(0)?; // not null
-                    self.write_property_value(&mut buffer, value, column)?;
-                }
-            } else {
-                buffer.write_u8(1)?; // null flag
-            }
-        }
-
-        Ok(buffer)
-    }
-
-    /// Writes a property value
-    fn write_property_value(
-        &self,
-        writer: &mut Vec<u8>,
-        value: &FieldValue,
-        column: &Column,
-    ) -> Result<()> {
-        match column.column_type {
-            ColumnType::Byte => {
-                if let Some(i) = value.as_i64() {
-                    writer.write_i8(i as i8)?;
-                } else {
-                    writer.write_i8(0)?;
-                }
-            }
-            ColumnType::UByte => {
-                if let Some(u) = value.as_u64() {
-                    writer.write_u8(u as u8)?;
-                } else {
-                    writer.write_u8(0)?;
-                }
-            }
-            ColumnType::Bool => {
-                if let Some(b) = value.as_bool() {
-                    writer.write_u8(u8::from(b))?;
-                } else {
-                    writer.write_u8(0)?;
-                }
-            }
-            ColumnType::Short => {
-                if let Some(i) = value.as_i64() {
-                    writer.write_i16::<LittleEndian>(i as i16)?;
-                } else {
-                    writer.write_i16::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::UShort => {
-                if let Some(u) = value.as_u64() {
-                    writer.write_u16::<LittleEndian>(u as u16)?;
-                } else {
-                    writer.write_u16::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::Int => {
-                if let Some(i) = value.as_i64() {
-                    writer.write_i32::<LittleEndian>(i as i32)?;
-                } else {
-                    writer.write_i32::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::UInt => {
-                if let Some(u) = value.as_u64() {
-                    writer.write_u32::<LittleEndian>(u as u32)?;
-                } else {
-                    writer.write_u32::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::Long => {
-                if let Some(i) = value.as_i64() {
-                    writer.write_i64::<LittleEndian>(i)?;
-                } else {
-                    writer.write_i64::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::ULong => {
-                if let Some(u) = value.as_u64() {
-                    writer.write_u64::<LittleEndian>(u)?;
-                } else {
-                    writer.write_u64::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::Float => {
-                if let Some(f) = value.as_f64() {
-                    writer.write_f32::<LittleEndian>(f as f32)?;
-                } else {
-                    writer.write_f32::<LittleEndian>(0.0)?;
-                }
-            }
-            ColumnType::Double => {
-                if let Some(f) = value.as_f64() {
-                    writer.write_f64::<LittleEndian>(f)?;
-                } else {
-                    writer.write_f64::<LittleEndian>(0.0)?;
-                }
-            }
-            ColumnType::String | ColumnType::Json | ColumnType::DateTime => {
-                if let Some(s) = value.as_string() {
-                    let bytes = s.as_bytes();
-                    writer.write_u32::<LittleEndian>(bytes.len() as u32)?;
-                    writer.write_all(bytes)?;
-                } else {
-                    writer.write_u32::<LittleEndian>(0)?;
-                }
-            }
-            ColumnType::Binary => {
-                // For now, binary is stored as string representation
-                writer.write_u32::<LittleEndian>(0)?;
-            }
-        }
-
-        Ok(())
+        feature_codec::encode_feature(&self.header, &self.geometry_codec, feature)
     }
 
     /// Writes all accumulated features to the output.
@@ -454,9 +326,10 @@ impl FlatGeobufWriterBuilder {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
-    use crate::header::GeometryType;
-    use oxigdal_core::vector::{Geometry, Point};
+    use crate::header::{ColumnType, GeometryType};
+    use oxigdal_core::vector::{FieldValue, Geometry, Point};
     use std::io::Cursor;
 
     #[test]

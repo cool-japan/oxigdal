@@ -2,7 +2,7 @@
 
 > **Purpose:** Mobile platform performance optimizations layered on top of oxigdal-mobile — battery awareness, network quality detection, storage compression, background task scheduling.
 > **Status (2026-05-17):** 4,872 LoC · 79 #[test] attributes · 8 real-code mock/simulated stubs.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real battery state reading via platform APIs (replace mock `75.0%`)

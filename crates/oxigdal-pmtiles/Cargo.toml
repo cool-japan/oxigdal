@@ -56,3 +56,10 @@ url = { workspace = true }
 
 [lints]
 workspace = true
+
+# NOTE: `http-range` (oxigdal-streaming/cloud-http) and `cloud-storage` both
+# pull reqwest -> rustls -> aws-lc-sys (C/asm). `compression`, `parallel`,
+# `async` and `mbtiles` (pure-Rust OxiSQL) stay on a pure-Rust closure.
+[package.metadata.docs.rs]
+features = ["std", "compression", "parallel", "async", "mbtiles"]
+rustdoc-args = ["--cfg", "docsrs"]

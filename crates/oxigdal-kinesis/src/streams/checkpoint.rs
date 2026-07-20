@@ -204,18 +204,52 @@ impl CheckpointStore for InMemoryCheckpointStore {
     async fn release_lease(&self, shard_id: &str, worker_id: &str) -> Result<()> {
         let mut checkpoints = self.checkpoints.write();
 
-        if let Some(checkpoint) = checkpoints.get(shard_id) {
-            if checkpoint.worker_id.as_deref() == Some(worker_id) {
-                let mut updated = checkpoint.clone();
-                updated.worker_id = None;
-                updated.lease_expiration = None;
-                checkpoints.insert(shard_id.to_string(), updated);
-            }
+        if let Some(checkpoint) = checkpoints.get(shard_id)
+            && checkpoint.worker_id.as_deref() == Some(worker_id)
+        {
+            let mut updated = checkpoint.clone();
+            updated.worker_id = None;
+            updated.lease_expiration = None;
+            checkpoints.insert(shard_id.to_string(), updated);
         }
 
         Ok(())
     }
 }
+
+/// UpdateExpression used by [`DynamoDbCheckpointStore::acquire_lease`].
+///
+/// Sets the new owner and expiration, and seeds `checkpoint_time` /
+/// `sequence_number` only if the item is being created for the first time
+/// (`if_not_exists`), so acquiring a lease never clobbers a previously
+/// recorded sequence number.
+#[cfg(feature = "checkpointing")]
+const ACQUIRE_LEASE_UPDATE_EXPRESSION: &str = "SET worker_id = :worker_id, lease_expiration = :lease_expiration, \
+     checkpoint_time = if_not_exists(checkpoint_time, :now), \
+     sequence_number = if_not_exists(sequence_number, :empty_seq)";
+
+/// ConditionExpression used by [`DynamoDbCheckpointStore::acquire_lease`].
+///
+/// A lease may be (re-)acquired only if: the item does not exist yet, the
+/// existing lease has expired, or the caller already owns it. DynamoDB
+/// evaluates this atomically against the write, closing the read-then-write
+/// race that previously allowed two workers to both acquire the same lease.
+#[cfg(feature = "checkpointing")]
+const ACQUIRE_LEASE_CONDITION_EXPRESSION: &str =
+    "attribute_not_exists(shard_id) OR lease_expiration < :now OR worker_id = :worker_id";
+
+/// UpdateExpression used by [`DynamoDbCheckpointStore::renew_lease`].
+#[cfg(feature = "checkpointing")]
+const RENEW_LEASE_UPDATE_EXPRESSION: &str = "SET lease_expiration = :lease_expiration";
+
+/// ConditionExpression used by [`DynamoDbCheckpointStore::renew_lease`].
+///
+/// Only the current lease holder may extend the expiration; if `shard_id`
+/// does not exist yet or is owned by a different worker, the condition
+/// fails and `renew_lease` returns `Ok(false)` instead of racily overwriting
+/// another worker's lease.
+#[cfg(feature = "checkpointing")]
+const RENEW_LEASE_CONDITION_EXPRESSION: &str = "worker_id = :worker_id";
 
 /// DynamoDB checkpoint store
 #[cfg(feature = "checkpointing")]
@@ -506,31 +540,54 @@ impl CheckpointStore for DynamoDbCheckpointStore {
         worker_id: &str,
         lease_duration_secs: i64,
     ) -> Result<bool> {
-        // Implementation would use conditional updates in DynamoDB
-        // For simplicity, this is a basic implementation
-        let checkpoint = self.get_checkpoint(shard_id).await?;
+        // Atomic conditional lease acquisition: a single DynamoDB UpdateItem
+        // call with a ConditionExpression, so two workers racing on the same
+        // shard cannot both observe an "acquirable" lease and both write.
+        // DynamoDB evaluates the condition and applies the update atomically
+        // server-side; only one of two concurrent callers can win.
+        let now = Utc::now();
+        let new_expiration =
+            now + chrono::Duration::try_seconds(lease_duration_secs).unwrap_or_default();
 
-        if let Some(mut checkpoint) = checkpoint {
-            if checkpoint.is_lease_expired() || checkpoint.worker_id.as_deref() == Some(worker_id) {
-                checkpoint.worker_id = Some(worker_id.to_string());
-                checkpoint.lease_expiration = Some(
-                    Utc::now()
-                        + chrono::Duration::try_seconds(lease_duration_secs).unwrap_or_default(),
-                );
-                self.save_checkpoint(&checkpoint).await?;
-                Ok(true)
-            } else {
-                Ok(false)
+        let mut key = HashMap::new();
+        key.insert(
+            "shard_id".to_string(),
+            AttributeValue::S(shard_id.to_string()),
+        );
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .set_key(Some(key))
+            .update_expression(ACQUIRE_LEASE_UPDATE_EXPRESSION)
+            .condition_expression(ACQUIRE_LEASE_CONDITION_EXPRESSION)
+            .expression_attribute_values(":worker_id", AttributeValue::S(worker_id.to_string()))
+            .expression_attribute_values(
+                ":lease_expiration",
+                AttributeValue::S(new_expiration.to_rfc3339()),
+            )
+            .expression_attribute_values(":now", AttributeValue::S(now.to_rfc3339()))
+            .expression_attribute_values(":empty_seq", AttributeValue::S(String::new()))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                if e.as_service_error()
+                    .map(|service_err| service_err.is_conditional_check_failed_exception())
+                    .unwrap_or(false)
+                {
+                    // Another worker holds a live lease: not an error, just
+                    // a lost race.
+                    Ok(false)
+                } else {
+                    Err(KinesisError::Checkpoint {
+                        message: e.to_string(),
+                    })
+                }
             }
-        } else {
-            let checkpoint = Checkpoint::new(shard_id, "")
-                .with_worker_id(worker_id)
-                .with_lease_expiration(
-                    Utc::now()
-                        + chrono::Duration::try_seconds(lease_duration_secs).unwrap_or_default(),
-                );
-            self.save_checkpoint(&checkpoint).await?;
-            Ok(true)
         }
     }
 
@@ -540,33 +597,61 @@ impl CheckpointStore for DynamoDbCheckpointStore {
         worker_id: &str,
         lease_duration_secs: i64,
     ) -> Result<bool> {
-        let checkpoint = self.get_checkpoint(shard_id).await?;
+        // Same atomic-conditional-write treatment as acquire_lease: only the
+        // current lease holder may extend the expiration, verified
+        // server-side by DynamoDB rather than via a read-then-write race.
+        let new_expiration =
+            Utc::now() + chrono::Duration::try_seconds(lease_duration_secs).unwrap_or_default();
 
-        if let Some(mut checkpoint) = checkpoint {
-            if checkpoint.worker_id.as_deref() == Some(worker_id) {
-                checkpoint.lease_expiration = Some(
-                    Utc::now()
-                        + chrono::Duration::try_seconds(lease_duration_secs).unwrap_or_default(),
-                );
-                self.save_checkpoint(&checkpoint).await?;
-                Ok(true)
-            } else {
-                Ok(false)
+        let mut key = HashMap::new();
+        key.insert(
+            "shard_id".to_string(),
+            AttributeValue::S(shard_id.to_string()),
+        );
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .set_key(Some(key))
+            .update_expression(RENEW_LEASE_UPDATE_EXPRESSION)
+            .condition_expression(RENEW_LEASE_CONDITION_EXPRESSION)
+            .expression_attribute_values(":worker_id", AttributeValue::S(worker_id.to_string()))
+            .expression_attribute_values(
+                ":lease_expiration",
+                AttributeValue::S(new_expiration.to_rfc3339()),
+            )
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                if e.as_service_error()
+                    .map(|service_err| service_err.is_conditional_check_failed_exception())
+                    .unwrap_or(false)
+                {
+                    // Lease is not held by this worker (or shard_id does not
+                    // exist yet): not an error, just "cannot renew".
+                    Ok(false)
+                } else {
+                    Err(KinesisError::Checkpoint {
+                        message: e.to_string(),
+                    })
+                }
             }
-        } else {
-            Ok(false)
         }
     }
 
     async fn release_lease(&self, shard_id: &str, worker_id: &str) -> Result<()> {
         let checkpoint = self.get_checkpoint(shard_id).await?;
 
-        if let Some(mut checkpoint) = checkpoint {
-            if checkpoint.worker_id.as_deref() == Some(worker_id) {
-                checkpoint.worker_id = None;
-                checkpoint.lease_expiration = None;
-                self.save_checkpoint(&checkpoint).await?;
-            }
+        if let Some(mut checkpoint) = checkpoint
+            && checkpoint.worker_id.as_deref() == Some(worker_id)
+        {
+            checkpoint.worker_id = None;
+            checkpoint.lease_expiration = None;
+            self.save_checkpoint(&checkpoint).await?;
         }
 
         Ok(())
@@ -698,5 +783,78 @@ mod tests {
         // Now worker-2 should be able to acquire
         let acquired = store.acquire_lease("shard-0001", "worker-2", 60).await.ok();
         assert_eq!(acquired, Some(true));
+    }
+
+    // Regression test for the DynamoDbCheckpointStore split-brain lease bug:
+    // exactly one of N racing workers must win acquire_lease for the same
+    // shard. InMemoryCheckpointStore already serializes through a write
+    // lock, so this documents/pins the contract that DynamoDbCheckpointStore
+    // must now also uphold via its atomic ConditionExpression-guarded
+    // UpdateItem (see ACQUIRE_LEASE_CONDITION_EXPRESSION below, which cannot
+    // be exercised against a real DynamoDB endpoint from this offline test
+    // suite -- see lane followups).
+    #[tokio::test]
+    async fn test_concurrent_lease_acquisition_has_exactly_one_winner() {
+        let store = Arc::new(InMemoryCheckpointStore::new());
+        let mut handles = Vec::new();
+
+        for worker_index in 0..16 {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                store
+                    .acquire_lease("shard-race", &format!("worker-{worker_index}"), 60)
+                    .await
+                    .unwrap_or(false)
+            }));
+        }
+
+        let mut winners = 0;
+        for handle in handles {
+            if handle.await.unwrap_or(false) {
+                winners += 1;
+            }
+        }
+
+        assert_eq!(
+            winners, 1,
+            "exactly one racing worker must acquire the shard lease"
+        );
+    }
+
+    #[cfg(feature = "checkpointing")]
+    #[test]
+    fn test_acquire_lease_condition_expression_permits_expired_or_unowned_or_new() {
+        // Guards the exact race-closing condition: acquisition is allowed
+        // only when the item is new, the lease has expired, or the caller
+        // already owns it -- never unconditionally.
+        assert!(ACQUIRE_LEASE_CONDITION_EXPRESSION.contains("attribute_not_exists(shard_id)"));
+        assert!(ACQUIRE_LEASE_CONDITION_EXPRESSION.contains("lease_expiration < :now"));
+        assert!(ACQUIRE_LEASE_CONDITION_EXPRESSION.contains("worker_id = :worker_id"));
+        assert!(ACQUIRE_LEASE_CONDITION_EXPRESSION.contains(" OR "));
+    }
+
+    #[cfg(feature = "checkpointing")]
+    #[test]
+    fn test_acquire_lease_update_expression_preserves_existing_sequence_number() {
+        // `if_not_exists` must guard sequence_number/checkpoint_time so that
+        // re-acquiring an existing lease never clobbers previously recorded
+        // progress -- only worker_id/lease_expiration are unconditionally
+        // overwritten.
+        assert!(ACQUIRE_LEASE_UPDATE_EXPRESSION.contains("worker_id = :worker_id"));
+        assert!(ACQUIRE_LEASE_UPDATE_EXPRESSION.contains("lease_expiration = :lease_expiration"));
+        assert!(
+            ACQUIRE_LEASE_UPDATE_EXPRESSION.contains("if_not_exists(sequence_number, :empty_seq)")
+        );
+        assert!(ACQUIRE_LEASE_UPDATE_EXPRESSION.contains("if_not_exists(checkpoint_time, :now)"));
+    }
+
+    #[cfg(feature = "checkpointing")]
+    #[test]
+    fn test_renew_lease_condition_expression_requires_current_owner() {
+        assert_eq!(RENEW_LEASE_CONDITION_EXPRESSION, "worker_id = :worker_id");
+        assert_eq!(
+            RENEW_LEASE_UPDATE_EXPRESSION,
+            "SET lease_expiration = :lease_expiration"
+        );
     }
 }

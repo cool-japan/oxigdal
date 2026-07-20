@@ -297,7 +297,7 @@ impl<const BLOCK_SIZE: usize, const NUM_BLOCKS: usize, const BITMAP_SIZE: usize>
 
         // Verify alignment
         let ptr_addr = ptr as usize;
-        if ptr_addr % align != 0 {
+        if !ptr_addr.is_multiple_of(align) {
             // SAFETY: We just allocated this block
             unsafe { self.free_block(block_idx) };
             self.free_count.fetch_add(1, Ordering::Relaxed);

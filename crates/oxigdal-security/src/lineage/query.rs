@@ -148,10 +148,10 @@ impl LineageQuery {
         let mut result = Vec::new();
 
         for id in common_ids {
-            if let Some(node) = self.graph.get_node(&id) {
-                if self.apply_filters(&node) {
-                    result.push(node);
-                }
+            if let Some(node) = self.graph.get_node(&id)
+                && self.apply_filters(&node)
+            {
+                result.push(node);
             }
         }
 

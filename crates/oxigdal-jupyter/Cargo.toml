@@ -16,7 +16,7 @@ categories = ["science", "visualization", "development-tools"]
 [dependencies]
 # Internal dependencies
 oxigdal-core.workspace = true
-oxigdal-algorithms.workspace = true
+oxigdal-algorithms = { workspace = true, default-features = true }
 oxigdal-geotiff.workspace = true
 oxigdal-geojson.workspace = true
 

@@ -5,6 +5,7 @@
 use crate::vector::geometry::Geometry;
 use core::fmt;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "std")]
 use serde_json::Value as JsonValue;
 
 #[cfg(feature = "std")]
@@ -16,6 +17,7 @@ use std::string::String;
 use alloc::{
     collections::BTreeMap as HashMap,
     string::{String, ToString},
+    vec::Vec,
 };
 
 /// A feature with geometry and properties
@@ -347,6 +349,7 @@ impl fmt::Display for FieldValue {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<serde_json::Value> for FieldValue {
     fn from(v: serde_json::Value) -> Self {
         Self::from_json(&v)

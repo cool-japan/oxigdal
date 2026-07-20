@@ -331,7 +331,7 @@ pub fn adaptive_threshold_mean(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: format!("Window size must be odd and positive, got {window_size}"),
@@ -396,7 +396,7 @@ pub fn adaptive_threshold_gaussian(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: format!("Window size must be odd and positive, got {window_size}"),

@@ -1,4 +1,5 @@
 //! Integration tests for multi-tenancy.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::multitenancy::{
     TenantConfig, isolation::IsolationManager, quotas::QuotaManager, tenant::TenantManager,

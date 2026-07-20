@@ -61,17 +61,18 @@ pub fn read_raster_info(path: &Path) -> Result<RasterInfo> {
     })
 }
 
-/// Read all bands from a GeoTIFF file at the primary level
-pub fn read_band(path: &Path, _band_index: u32) -> Result<RasterBuffer> {
+/// Read a single band from a GeoTIFF file at the primary level
+///
+/// `band_index` is zero-based. This function is robust to the underlying
+/// driver returning either an already-isolated single band buffer or a full
+/// interleaved multi-band buffer (see `extract_single_band`): either way,
+/// the returned [`RasterBuffer`] contains only the requested band's samples.
+pub fn read_band(path: &Path, band_index: u32) -> Result<RasterBuffer> {
     let source = FileDataSource::open(path)
         .with_context(|| format!("Failed to open file: {}", path.display()))?;
 
     let reader = GeoTiffReader::open(source)
         .with_context(|| format!("Failed to read GeoTIFF: {}", path.display()))?;
-
-    let data = reader
-        .read_band(0, 0)
-        .with_context(|| "Failed to read band data")?;
 
     let width = reader.width();
     let height = reader.height();
@@ -79,9 +80,91 @@ pub fn read_band(path: &Path, _band_index: u32) -> Result<RasterBuffer> {
         .data_type()
         .ok_or_else(|| anyhow::anyhow!("Could not determine data type"))?;
     let nodata = reader.nodata();
+    let samples_per_pixel = reader.band_count();
+
+    if band_index >= samples_per_pixel {
+        anyhow::bail!(
+            "Band index {} out of range (file has {} band(s))",
+            band_index,
+            samples_per_pixel
+        );
+    }
+
+    let raw = reader
+        .read_band(0, band_index as usize)
+        .with_context(|| "Failed to read band data")?;
+
+    let data = extract_single_band(
+        &raw,
+        width,
+        height,
+        band_index,
+        data_type.size_bytes(),
+        samples_per_pixel as usize,
+    )?;
 
     RasterBuffer::new(data, width, height, data_type, nodata)
         .with_context(|| "Failed to create RasterBuffer from band data")
+}
+
+/// Extracts a single band's samples from raster data returned by a driver.
+///
+/// Tolerates two possible shapes of `raw`:
+/// - Already a single band's worth of data (`width * height * bytes_per_sample`
+///   bytes) — returned as-is.
+/// - A full interleaved multi-band buffer (`width * height * bytes_per_sample *
+///   samples_per_pixel` bytes) — the requested band's samples are
+///   de-interleaved out, one sample per pixel.
+///
+/// This defends against upstream drivers that ignore the requested band index
+/// and always return the full interleaved buffer for multi-band images.
+fn extract_single_band(
+    raw: &[u8],
+    width: u64,
+    height: u64,
+    band_index: u32,
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+) -> Result<Vec<u8>> {
+    let pixel_count = (width * height) as usize;
+    let single_band_len = pixel_count * bytes_per_sample;
+
+    if raw.len() == single_band_len {
+        return Ok(raw.to_vec());
+    }
+
+    if band_index as usize >= samples_per_pixel {
+        anyhow::bail!(
+            "Band index {} out of range (file has {} band(s))",
+            band_index,
+            samples_per_pixel
+        );
+    }
+
+    let interleaved_len = single_band_len * samples_per_pixel;
+    if raw.len() != interleaved_len {
+        anyhow::bail!(
+            "Unexpected band data size: got {} bytes, expected {} (single-band) or {} \
+             (interleaved, {} band(s))",
+            raw.len(),
+            single_band_len,
+            interleaved_len,
+            samples_per_pixel
+        );
+    }
+
+    let mut out = vec![0u8; single_band_len];
+    let band_offset = band_index as usize * bytes_per_sample;
+    let pixel_stride = bytes_per_sample * samples_per_pixel;
+
+    for pixel in 0..pixel_count {
+        let src_start = pixel * pixel_stride + band_offset;
+        let dst_start = pixel * bytes_per_sample;
+        out[dst_start..dst_start + bytes_per_sample]
+            .copy_from_slice(&raw[src_start..src_start + bytes_per_sample]);
+    }
+
+    Ok(out)
 }
 
 /// Read a region from a specific band of a GeoTIFF file
@@ -129,7 +212,14 @@ pub fn read_band_region(
     // Get tile/strip information
     let bytes_per_sample = data_type.size_bytes();
     let samples_per_pixel = reader.band_count() as usize;
-    let bytes_per_pixel = bytes_per_sample * samples_per_pixel;
+
+    if band_index as usize >= samples_per_pixel {
+        anyhow::bail!(
+            "Band index {} out of range (file has {} band(s))",
+            band_index,
+            samples_per_pixel
+        );
+    }
 
     // Check if this is a tiled layout
     let tile_size = reader.tile_size();
@@ -144,7 +234,7 @@ pub fn read_band_region(
             actual_width,
             actual_height,
         );
-        let config = RasterConfig::new(bytes_per_pixel, data_type, nodata);
+        let config = RasterConfig::new(bytes_per_sample, samples_per_pixel, data_type, nodata);
         return read_and_subset_strip(&reader, band_index, region, config);
     }
 
@@ -166,9 +256,15 @@ pub fn read_band_region(
         .div_ceil(tile_height)
         .min(tiles_y as u64) as u32;
 
-    // Allocate output buffer
-    let output_size = (actual_width * actual_height) as usize * bytes_per_pixel;
+    // Allocate output buffer (single band only)
+    let output_size = (actual_width * actual_height) as usize * bytes_per_sample;
     let mut output = vec![0u8; output_size];
+
+    // Tiles/strips read via `read_tile` always return raw data with all bands
+    // interleaved per pixel (this API has no band parameter), so the
+    // requested band's samples must be de-interleaved out during the copy.
+    let src_pixel_stride = bytes_per_sample * samples_per_pixel;
+    let band_offset = band_index as usize * bytes_per_sample;
 
     // Read and assemble tiles
     for tile_y in tile_y_start..tile_y_end {
@@ -187,28 +283,52 @@ pub fn read_band_region(
             let copy_x_end = (x_offset + actual_width).min(tile_img_x + tile_width);
             let copy_y_end = (y_offset + actual_height).min(tile_img_y + tile_height);
 
-            // Copy data row by row
+            if samples_per_pixel == 1 {
+                // Fast path: no de-interleaving needed, copy whole rows.
+                for row in copy_y_start..copy_y_end {
+                    let tile_row = (row - tile_img_y) as usize;
+                    let tile_col_start = (copy_x_start - tile_img_x) as usize;
+                    let tile_col_end = (copy_x_end - tile_img_x) as usize;
+
+                    let out_row = (row - y_offset) as usize;
+                    let out_col_start = (copy_x_start - x_offset) as usize;
+
+                    let src_offset =
+                        (tile_row * tile_width as usize + tile_col_start) * bytes_per_sample;
+                    let dst_offset =
+                        (out_row * actual_width as usize + out_col_start) * bytes_per_sample;
+                    let copy_bytes = (tile_col_end - tile_col_start) * bytes_per_sample;
+
+                    if src_offset + copy_bytes <= tile_data.len()
+                        && dst_offset + copy_bytes <= output.len()
+                    {
+                        output[dst_offset..dst_offset + copy_bytes]
+                            .copy_from_slice(&tile_data[src_offset..src_offset + copy_bytes]);
+                    }
+                }
+                continue;
+            }
+
+            // Multi-band tile: extract only the requested band's samples,
+            // one pixel at a time.
             for row in copy_y_start..copy_y_end {
-                // Source position in tile
                 let tile_row = (row - tile_img_y) as usize;
-                let tile_col_start = (copy_x_start - tile_img_x) as usize;
-                let tile_col_end = (copy_x_end - tile_img_x) as usize;
-
-                // Destination position in output
                 let out_row = (row - y_offset) as usize;
-                let out_col_start = (copy_x_start - x_offset) as usize;
 
-                let src_offset =
-                    (tile_row * tile_width as usize + tile_col_start) * bytes_per_pixel;
-                let dst_offset =
-                    (out_row * actual_width as usize + out_col_start) * bytes_per_pixel;
-                let copy_bytes = (tile_col_end - tile_col_start) * bytes_per_pixel;
+                for col in copy_x_start..copy_x_end {
+                    let tile_col = (col - tile_img_x) as usize;
+                    let out_col = (col - x_offset) as usize;
 
-                if src_offset + copy_bytes <= tile_data.len()
-                    && dst_offset + copy_bytes <= output.len()
-                {
-                    output[dst_offset..dst_offset + copy_bytes]
-                        .copy_from_slice(&tile_data[src_offset..src_offset + copy_bytes]);
+                    let src_offset = (tile_row * tile_width as usize + tile_col) * src_pixel_stride
+                        + band_offset;
+                    let dst_offset = (out_row * actual_width as usize + out_col) * bytes_per_sample;
+
+                    if src_offset + bytes_per_sample <= tile_data.len()
+                        && dst_offset + bytes_per_sample <= output.len()
+                    {
+                        output[dst_offset..dst_offset + bytes_per_sample]
+                            .copy_from_slice(&tile_data[src_offset..src_offset + bytes_per_sample]);
+                    }
                 }
             }
         }
@@ -252,15 +372,22 @@ impl ImageRegion {
 /// Raster data configuration
 #[derive(Debug, Clone, Copy)]
 struct RasterConfig {
-    bytes_per_pixel: usize,
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
     data_type: RasterDataType,
     nodata: NoDataValue,
 }
 
 impl RasterConfig {
-    fn new(bytes_per_pixel: usize, data_type: RasterDataType, nodata: NoDataValue) -> Self {
+    fn new(
+        bytes_per_sample: usize,
+        samples_per_pixel: usize,
+        data_type: RasterDataType,
+        nodata: NoDataValue,
+    ) -> Self {
         Self {
-            bytes_per_pixel,
+            bytes_per_sample,
+            samples_per_pixel,
             data_type,
             nodata,
         }
@@ -274,13 +401,24 @@ fn read_and_subset_strip(
     region: ImageRegion,
     config: RasterConfig,
 ) -> Result<RasterBuffer> {
-    // Read full band
-    let data = reader
+    // Read the band. The underlying driver may return either an
+    // already-isolated single band or a full interleaved multi-band buffer;
+    // `extract_single_band` normalizes either shape into single-band data.
+    let raw = reader
         .read_band(0, band_index as usize)
         .with_context(|| "Failed to read band data")?;
 
+    let data = extract_single_band(
+        &raw,
+        region.img_width,
+        region.img_height,
+        band_index,
+        config.bytes_per_sample,
+        config.samples_per_pixel,
+    )?;
+
     // Subset the data
-    let output_size = (region.width * region.height) as usize * config.bytes_per_pixel;
+    let output_size = (region.width * region.height) as usize * config.bytes_per_sample;
     let mut output = vec![0u8; output_size];
 
     for row in 0..region.height {
@@ -290,9 +428,9 @@ fn read_and_subset_strip(
         }
 
         let src_offset =
-            (src_row * region.img_width + region.x_offset) as usize * config.bytes_per_pixel;
-        let dst_offset = (row * region.width) as usize * config.bytes_per_pixel;
-        let copy_bytes = region.width as usize * config.bytes_per_pixel;
+            (src_row * region.img_width + region.x_offset) as usize * config.bytes_per_sample;
+        let dst_offset = (row * region.width) as usize * config.bytes_per_sample;
+        let copy_bytes = region.width as usize * config.bytes_per_sample;
 
         if src_offset + copy_bytes <= data.len() && dst_offset + copy_bytes <= output.len() {
             output[dst_offset..dst_offset + copy_bytes]

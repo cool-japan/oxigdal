@@ -106,7 +106,12 @@ impl DataColumnsCatalog {
     /// Returns an error only when the underlying SQLite B-tree traversal fails
     /// for a reason other than a missing table (e.g. malformed page data).
     pub fn load(gpkg: &GeoPackage) -> Result<Self, GpkgError> {
-        let rows = read_data_columns_rows(gpkg).unwrap_or_default();
+        // `read_data_columns_rows` already returns `Ok(Vec::new())` for the
+        // documented "table missing" case (the Schema extension is
+        // optional). Any `Err` it returns is therefore a genuine B-tree
+        // traversal failure (e.g. malformed page data) and must propagate,
+        // per the `# Errors` contract documented above — do not swallow it.
+        let rows = read_data_columns_rows(gpkg)?;
 
         let entry_count = rows.len();
         let mut by_table: HashMap<String, Vec<usize>> = HashMap::new();

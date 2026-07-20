@@ -143,10 +143,11 @@ impl FieldRenameMigrator {
                     if let Some(v) = map.remove(old_name) {
                         map.insert(new_name.clone(), v);
                     }
-                } else if path.is_backward() && &path.from >= version {
-                    if let Some(v) = map.remove(new_name) {
-                        map.insert(old_name.clone(), v);
-                    }
+                } else if path.is_backward()
+                    && &path.from >= version
+                    && let Some(v) = map.remove(new_name)
+                {
+                    map.insert(old_name.clone(), v);
                 }
             }
         }

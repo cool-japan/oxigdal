@@ -220,10 +220,10 @@ where
         return f64::NAN;
     }
     let z_here_t = dem[[row, col]];
-    if let Some(nd) = nodata {
-        if (z_here_t - nd).abs() < T::epsilon() {
-            return f64::NAN;
-        }
+    if let Some(nd) = nodata
+        && (z_here_t - nd).abs() < T::epsilon()
+    {
+        return f64::NAN;
     }
     let z_here: f64 = z_here_t.into();
     let step = D8_DIRS.iter().find(|&&(_, _, code)| code == dir);
@@ -239,10 +239,10 @@ where
     let nu = nr as usize;
     let nv = nc as usize;
     let z_down_t = dem[[nu, nv]];
-    if let Some(nd) = nodata {
-        if (z_down_t - nd).abs() < T::epsilon() {
-            return f64::NAN;
-        }
+    if let Some(nd) = nodata
+        && (z_down_t - nd).abs() < T::epsilon()
+    {
+        return f64::NAN;
     }
     let z_down: f64 = z_down_t.into();
     let distance = if dy.abs() == 1 && dx.abs() == 1 {
@@ -368,10 +368,11 @@ fn extract_segments(
     for row in 0..height {
         for col in 0..width {
             let i = row * width + col;
-            if mask[[row, col]] == 1 && channel_indegree[i] >= 2 {
-                if let Some(next) = downstream_in_channel[i] {
-                    head_queue.push(next);
-                }
+            if mask[[row, col]] == 1
+                && channel_indegree[i] >= 2
+                && let Some(next) = downstream_in_channel[i]
+            {
+                head_queue.push(next);
             }
         }
     }

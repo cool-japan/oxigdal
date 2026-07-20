@@ -97,10 +97,10 @@ impl MqttClient {
         self.inner.disconnect().await?;
 
         // Wait for event loop to stop
-        if let Some(handle) = self.event_loop_handle.take() {
-            if let Err(e) = handle.await {
-                warn!("Event loop task error: {}", e);
-            }
+        if let Some(handle) = self.event_loop_handle.take()
+            && let Err(e) = handle.await
+        {
+            warn!("Event loop task error: {}", e);
         }
 
         Ok(())

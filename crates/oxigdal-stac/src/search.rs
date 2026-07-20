@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 use reqwest::Client as HttpClient;
 
 /// Result of a successful STAC Transaction API HTTP operation.
@@ -18,7 +18,7 @@ use reqwest::Client as HttpClient;
 /// Returned by `StacClient::create_item`, `StacClient::update_item`,
 /// `StacClient::upsert_item`, and `StacClient::delete_item` (all
 /// feature-gated behind `reqwest` + `async`).
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 #[derive(Debug, Clone)]
 pub struct HttpTransactionResult {
     /// HTTP status code returned by the server.
@@ -28,7 +28,7 @@ pub struct HttpTransactionResult {
 }
 
 /// STAC API client for searching catalogs.
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 #[derive(Debug, Clone)]
 pub struct StacClient {
     /// Base URL of the STAC API.
@@ -43,7 +43,7 @@ pub struct StacClient {
         std::sync::Arc<std::sync::Mutex<Option<std::collections::HashSet<String>>>>,
 }
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 impl StacClient {
     /// Creates a new STAC API client.
     ///
@@ -147,7 +147,7 @@ impl StacClient {
     /// # Errors
     ///
     /// Returns error on HTTP failure, serialization error, or network error.
-    #[cfg(all(feature = "reqwest", feature = "async"))]
+    #[cfg(feature = "async")]
     pub async fn create_item(
         &self,
         collection_id: &str,
@@ -190,7 +190,7 @@ impl StacClient {
     /// # Errors
     ///
     /// Returns error on HTTP failure or network error.
-    #[cfg(all(feature = "reqwest", feature = "async"))]
+    #[cfg(feature = "async")]
     pub async fn update_item(
         &self,
         collection_id: &str,
@@ -238,7 +238,7 @@ impl StacClient {
     /// # Errors
     ///
     /// Returns error on network failure, or when the item JSON has no `"id"` field.
-    #[cfg(all(feature = "reqwest", feature = "async"))]
+    #[cfg(feature = "async")]
     pub async fn upsert_item(
         &self,
         collection_id: &str,
@@ -262,7 +262,7 @@ impl StacClient {
     /// # Errors
     ///
     /// Returns error on HTTP failure or network error.
-    #[cfg(all(feature = "reqwest", feature = "async"))]
+    #[cfg(feature = "async")]
     pub async fn delete_item(
         &self,
         collection_id: &str,
@@ -312,7 +312,7 @@ impl StacClient {
     /// on HTTP 404 or network timeout.
     ///
     /// [`supports()`]: StacClient::supports
-    #[cfg(all(feature = "reqwest", feature = "async"))]
+    #[cfg(feature = "async")]
     pub async fn with_conformance(self) -> Result<Self> {
         let url = format!("{}/", self.base_url.trim_end_matches('/'));
         match self.client.get(&url).send().await {
@@ -356,7 +356,7 @@ impl StacClient {
 }
 
 /// Builder for STAC search queries.
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 #[derive(Debug, Clone)]
 pub struct SearchBuilder {
     #[allow(dead_code)]
@@ -364,7 +364,7 @@ pub struct SearchBuilder {
     params: SearchParams,
 }
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 impl SearchBuilder {
     /// Creates a new search builder.
     ///
@@ -545,7 +545,7 @@ impl SearchBuilder {
     /// # Returns
     ///
     /// A paginator for the search
-    #[cfg(feature = "reqwest")]
+    #[cfg(feature = "async")]
     pub fn paginate(self) -> crate::pagination::Paginator {
         crate::pagination::Paginator::new(self.client, self.params)
     }
@@ -704,7 +704,7 @@ impl SearchResults {
 }
 
 #[cfg(test)]
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 mod tests {
     use super::*;
 

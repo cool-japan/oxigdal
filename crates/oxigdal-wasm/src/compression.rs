@@ -272,7 +272,7 @@ impl RleCompressor {
     }
     /// Decompresses RLE data
     pub fn decompress(data: &[u8]) -> WasmResult<Vec<u8>> {
-        if data.len() % 2 != 0 {
+        if !data.len().is_multiple_of(2) {
             return Err(WasmError::InvalidOperation {
                 operation: "RLE decompress".to_string(),
                 reason: "Data length must be even".to_string(),
@@ -390,6 +390,18 @@ impl HuffmanNode {
             Self::Internal { frequency, .. } => *frequency,
         }
     }
+    /// Smallest symbol contained in this subtree.
+    ///
+    /// Used as a deterministic tie-breaker when two nodes share a frequency, so
+    /// that `build_tree` produces an identical tree regardless of `HashMap`
+    /// iteration order. Without this, `compress` and `decompress` could build
+    /// mirror trees for equal-frequency symbols and swap their codes.
+    fn min_symbol(&self) -> u8 {
+        match self {
+            Self::Leaf { symbol, .. } => *symbol,
+            Self::Internal { left, right, .. } => left.min_symbol().min(right.min_symbol()),
+        }
+    }
 }
 /// Simplified Huffman encoding
 pub struct HuffmanCompressor;
@@ -412,7 +424,15 @@ impl HuffmanCompressor {
             .map(|(&symbol, &frequency)| HuffmanNode::Leaf { symbol, frequency })
             .collect();
         while nodes.len() > 1 {
-            nodes.sort_by_key(|n| std::cmp::Reverse(n.frequency()));
+            // Total, deterministic order: primary key frequency, tie-break on the
+            // smallest symbol in the subtree. Sorted descending so the two
+            // lowest-priority nodes sit at the end and are popped next. This
+            // makes the reconstructed tree independent of `HashMap` ordering.
+            nodes.sort_by(|a, b| {
+                b.frequency()
+                    .cmp(&a.frequency())
+                    .then_with(|| b.min_symbol().cmp(&a.min_symbol()))
+            });
             let right = nodes.pop()?;
             let left = nodes.pop()?;
             let internal = HuffmanNode::Internal {
@@ -601,10 +621,11 @@ impl HuffmanCompressor {
         }
 
         // Handle single-symbol edge case: entire input was one distinct byte
-        if result.is_empty() && original_len > 0 {
-            if let HuffmanNode::Leaf { symbol, .. } = &tree {
-                result.resize(original_len, *symbol);
-            }
+        if result.is_empty()
+            && original_len > 0
+            && let HuffmanNode::Leaf { symbol, .. } = &tree
+        {
+            result.resize(original_len, *symbol);
         }
 
         if result.len() != original_len {

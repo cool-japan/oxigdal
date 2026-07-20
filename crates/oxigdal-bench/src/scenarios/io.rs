@@ -440,13 +440,15 @@ impl BenchmarkScenario for MemoryMappedIoScenario {
     }
 
     fn execute(&mut self) -> Result<()> {
-        // Note: This is a placeholder for memory-mapped I/O
-        // Actual implementation would use memmap2 crate or similar
+        use oxigdal_core::io::MmapDataSource;
 
-        // For now, we'll just read the file normally
-        let mut file = File::open(&self.input_path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
+        // Memory-map the file so reads below go through the OS page cache
+        // without an explicit buffered copy, unlike the other scenarios in
+        // this module.
+        let mmap = MmapDataSource::open(&self.input_path).map_err(|e| {
+            BenchError::scenario_failed(self.name(), format!("Failed to mmap file: {e}"))
+        })?;
+        let buffer = mmap.as_bytes();
 
         // Simulate different read patterns
         let _sum: u64 = match self.read_pattern {
@@ -494,13 +496,72 @@ impl DirectIoScenario {
     }
 }
 
+impl DirectIoScenario {
+    /// Opens `input_path` requesting the OS's uncached / page-cache-bypassing
+    /// read path where one is available:
+    ///
+    /// - Linux: `O_DIRECT` on `open()`.
+    /// - macOS: `fcntl(fd, F_NOCACHE, 1)` after `open()` (Linux's `O_DIRECT`
+    ///   has no macOS equivalent as an open flag; `F_NOCACHE` is the
+    ///   documented substitute used by e.g. SQLite).
+    /// - Everything else: a plain buffered open (no bypass available here).
+    #[cfg(target_os = "linux")]
+    fn open_direct(&self) -> Result<File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        Ok(File::options()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(&self.input_path)?)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_direct(&self) -> Result<File> {
+        use std::os::unix::io::AsRawFd;
+        let file = File::open(&self.input_path)?;
+        // SAFETY: `fcntl` is called with a valid, currently-open file
+        // descriptor owned by `file` and a well-formed `F_NOCACHE` argument;
+        // it only flips a flag on the underlying file description and
+        // touches no memory through raw pointers.
+        #[allow(unsafe_code)]
+        let ret = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) };
+        if ret == -1 {
+            return Err(BenchError::scenario_failed(
+                self.name(),
+                format!(
+                    "fcntl(F_NOCACHE) failed: {}",
+                    std::io::Error::last_os_error()
+                ),
+            ));
+        }
+        Ok(file)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn open_direct(&self) -> Result<File> {
+        Ok(File::open(&self.input_path)?)
+    }
+}
+
 impl BenchmarkScenario for DirectIoScenario {
     fn name(&self) -> &str {
         "direct_io"
     }
 
     fn description(&self) -> &str {
-        "Benchmark direct I/O (O_DIRECT) performance"
+        #[cfg(target_os = "linux")]
+        {
+            "Benchmark direct I/O performance: O_DIRECT bypasses the page cache on open()"
+        }
+        #[cfg(target_os = "macos")]
+        {
+            "Benchmark direct I/O performance: F_NOCACHE bypasses the unified buffer cache \
+             (macOS has no O_DIRECT open flag; F_NOCACHE is the platform equivalent)"
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            "Benchmark aligned buffered read performance (this platform has no \
+             O_DIRECT/F_NOCACHE equivalent wired up here; the page cache is NOT bypassed)"
+        }
     }
 
     fn setup(&mut self) -> Result<()> {
@@ -511,18 +572,43 @@ impl BenchmarkScenario for DirectIoScenario {
             ));
         }
 
+        if self.alignment == 0 {
+            return Err(BenchError::scenario_failed(
+                self.name(),
+                "alignment must be non-zero".to_string(),
+            ));
+        }
+
         Ok(())
     }
 
     fn execute(&mut self) -> Result<()> {
-        // Note: Direct I/O requires platform-specific APIs
-        // This is a simplified version that just reads with aligned buffers
+        // Direct/uncached I/O requires the destination buffer to start on an
+        // `alignment`-byte boundary. `Vec<u8>`'s allocator alignment is not
+        // guaranteed to match block-device alignment, so carve an aligned
+        // sub-slice out of an over-sized allocation. This only inspects
+        // pointer *addresses* (safe, no dereference), so no `unsafe` is
+        // needed here.
+        let mut raw = vec![0u8; self.alignment * 2];
+        let addr = raw.as_ptr() as usize;
+        let pad = (self.alignment - (addr % self.alignment)) % self.alignment;
+        let buffer = raw.get_mut(pad..pad + self.alignment).ok_or_else(|| {
+            BenchError::scenario_failed(self.name(), "failed to align scratch buffer".to_string())
+        })?;
 
-        let mut file = File::open(&self.input_path)?;
-        let mut buffer = vec![0u8; self.alignment];
+        let mut file = self.open_direct()?;
 
         loop {
-            let bytes_read = file.read(&mut buffer)?;
+            let bytes_read = match file.read(buffer) {
+                Ok(n) => n,
+                // On Linux, O_DIRECT requires every read to be block-aligned
+                // in length; a shorter-than-`alignment` trailing block
+                // commonly surfaces as EINVAL. That is an expected O_DIRECT
+                // edge case (not a benchmark failure) -- treat it as EOF.
+                #[cfg(target_os = "linux")]
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => break,
+                Err(e) => return Err(e.into()),
+            };
             if bytes_read == 0 {
                 break;
             }
@@ -551,7 +637,8 @@ mod tests {
 
     #[test]
     fn test_sequential_read_scenario_creation() {
-        let scenario = SequentialReadScenario::new("/tmp/test.bin").with_buffer_size(16384);
+        let scenario = SequentialReadScenario::new(std::env::temp_dir().join("test.bin"))
+            .with_buffer_size(16384);
 
         assert_eq!(scenario.name(), "sequential_read");
         assert_eq!(scenario.buffer_size, 16384);
@@ -560,7 +647,8 @@ mod tests {
     #[test]
     fn test_sequential_write_scenario_creation() {
         let scenario =
-            SequentialWriteScenario::new("/tmp/output.bin", 1024 * 1024).with_buffer_size(32768);
+            SequentialWriteScenario::new(std::env::temp_dir().join("output.bin"), 1024 * 1024)
+                .with_buffer_size(32768);
 
         assert_eq!(scenario.name(), "sequential_write");
         assert_eq!(scenario.buffer_size, 32768);
@@ -568,7 +656,8 @@ mod tests {
 
     #[test]
     fn test_random_access_scenario_creation() {
-        let scenario = RandomAccessScenario::new("/tmp/test.bin", 100).with_chunk_size(8192);
+        let scenario = RandomAccessScenario::new(std::env::temp_dir().join("test.bin"), 100)
+            .with_chunk_size(8192);
 
         assert_eq!(scenario.name(), "random_access");
         assert_eq!(scenario.chunk_size, 8192);
@@ -595,10 +684,84 @@ mod tests {
 
     #[test]
     fn test_buffered_io_scenario_creation() {
-        let scenario = BufferedIoScenario::new("/tmp/test.bin", true);
+        let scenario = BufferedIoScenario::new(std::env::temp_dir().join("test.bin"), true);
         assert_eq!(scenario.name(), "buffered_io");
 
-        let scenario = BufferedIoScenario::new("/tmp/test.bin", false);
+        let scenario = BufferedIoScenario::new(std::env::temp_dir().join("test.bin"), false);
         assert_eq!(scenario.name(), "unbuffered_io");
+    }
+
+    #[test]
+    fn test_direct_io_scenario_creation() {
+        let scenario = DirectIoScenario::new(std::env::temp_dir().join("test_direct_io.bin"))
+            .with_alignment(8192);
+
+        assert_eq!(scenario.name(), "direct_io");
+        assert_eq!(scenario.alignment, 8192);
+    }
+
+    #[test]
+    fn test_direct_io_scenario_description_matches_platform_behavior() {
+        let scenario = DirectIoScenario::new(std::env::temp_dir().join("test_direct_io.bin"));
+        let description = scenario.description();
+
+        // The description must never claim an uncached bypass this build
+        // does not actually provide (see `open_direct` cfg branches above).
+        #[cfg(target_os = "linux")]
+        assert!(description.contains("O_DIRECT"));
+        #[cfg(target_os = "macos")]
+        assert!(description.contains("F_NOCACHE"));
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        assert!(description.contains("NOT bypassed"));
+    }
+
+    #[test]
+    fn test_direct_io_scenario_rejects_zero_alignment() {
+        let input_path = std::env::temp_dir().join("test_direct_io_zero_alignment.bin");
+        create_test_file(&input_path, 4096).expect("Failed to create test file");
+
+        let mut scenario = DirectIoScenario::new(&input_path).with_alignment(0);
+        let result = scenario.setup();
+
+        assert!(
+            result.is_err(),
+            "zero alignment must be rejected in setup()"
+        );
+
+        let _ = std::fs::remove_file(&input_path);
+    }
+
+    #[test]
+    fn test_direct_io_scenario_setup_rejects_missing_file() {
+        let mut scenario =
+            DirectIoScenario::new(std::env::temp_dir().join("test_direct_io_does_not_exist.bin"));
+        assert!(scenario.setup().is_err());
+    }
+
+    #[test]
+    fn test_direct_io_scenario_execute_reads_full_file() {
+        // Regression test: DirectIoScenario::execute() must actually read the
+        // whole file through the platform's uncached/direct path (or the
+        // honest buffered fallback), not silently no-op. `alignment` is kept
+        // small and a multiple of the OS page size is not required here
+        // since this file's fallback/`F_NOCACHE` paths (used on this test
+        // runner's platform) have no O_DIRECT-style block-alignment
+        // requirement; on Linux CI this exercises the real O_DIRECT open.
+        let input_path = std::env::temp_dir().join("test_direct_io_execute.bin");
+        // 3 alignment-sized blocks so the read loop iterates more than once.
+        create_test_file(&input_path, 4096 * 3).expect("Failed to create test file");
+
+        let mut scenario = DirectIoScenario::new(&input_path).with_alignment(4096);
+
+        scenario.setup().expect("setup should succeed");
+        let result = scenario.execute();
+        scenario.teardown().expect("teardown should succeed");
+
+        let _ = std::fs::remove_file(&input_path);
+
+        assert!(
+            result.is_ok(),
+            "DirectIoScenario::execute() failed: {result:?}"
+        );
     }
 }

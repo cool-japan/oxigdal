@@ -197,10 +197,10 @@ impl Tokenizer {
                 has_e = true;
                 self.advance();
                 // Handle optional sign after 'e'
-                if let Some(sign) = self.current() {
-                    if sign == '+' || sign == '-' {
-                        self.advance();
-                    }
+                if let Some(sign) = self.current()
+                    && (sign == '+' || sign == '-')
+                {
+                    self.advance();
                 }
             } else {
                 break;
@@ -876,10 +876,10 @@ impl Evaluator {
 
             Expr::Variable(name) => {
                 // Try to find the variable in the map
-                if let Some(&arr_idx) = self.variable_map.get(name) {
-                    if arr_idx < arrays.len() {
-                        return Ok(arrays[arr_idx][idx]);
-                    }
+                if let Some(&arr_idx) = self.variable_map.get(name)
+                    && arr_idx < arrays.len()
+                {
+                    return Ok(arrays[arr_idx][idx]);
                 }
 
                 // Try single letter variable (A=0, B=1, etc.)
@@ -1226,6 +1226,7 @@ impl Evaluator {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

@@ -215,13 +215,13 @@ fn algebraic_simplify(expr: Expr) -> Expr {
                 // x - 0 = x
                 (_, BinaryOp::Subtract, Expr::Number(n)) if n.abs() < f64::EPSILON => left,
 
-                // x * 0 = 0, 0 * x = 0
-                (_, BinaryOp::Multiply, Expr::Number(n))
-                | (Expr::Number(n), BinaryOp::Multiply, _)
-                    if n.abs() < f64::EPSILON =>
-                {
-                    Expr::Number(0.0)
-                }
+                // NOTE: `x * 0 = 0` and `0 * x = 0` are intentionally NOT simplified here.
+                // Per IEEE-754, `NaN * 0.0 == NaN` and `Inf * 0.0 == NaN`, not `0.0`. The
+                // `Evaluator` in this module uses NaN as a NoData sentinel (e.g. produced by
+                // dividing by a near-zero band), so folding `x * 0` to a constant `0.0` would
+                // silently turn per-pixel NoData into a false constant zero. See the
+                // `test_algebraic_simplify_mul_zero_not_folded` and
+                // `test_mul_zero_preserves_nan_semantics` regression tests.
 
                 // x * 1 = x, 1 * x = x
                 (_, BinaryOp::Multiply, Expr::Number(n)) if (n - 1.0).abs() < f64::EPSILON => left,
@@ -462,6 +462,72 @@ mod tests {
             }
             _ => 0,
         }
+    }
+
+    // ── Algebraic simplification tests ──────────────────────────────────────
+
+    /// `x * 0` and `0 * x` must NOT be folded to a constant `Number(0.0)`.
+    /// Per IEEE-754, `NaN * 0.0 == NaN` and `Inf * 0.0 == NaN` (not `0.0`), and the
+    /// `Evaluator` in this module relies on NaN as a NoData sentinel (e.g. from
+    /// division by a near-zero band). Folding this rule would silently turn
+    /// per-pixel NoData into a false constant `0.0`.
+    #[test]
+    fn test_algebraic_simplify_mul_zero_not_folded() {
+        let expr = Expr::BinaryOp {
+            left: Box::new(Expr::Band(1)),
+            op: BinaryOp::Multiply,
+            right: Box::new(Expr::Number(0.0)),
+        };
+        let result = algebraic_simplify(expr);
+        assert!(
+            matches!(
+                result,
+                Expr::BinaryOp {
+                    op: BinaryOp::Multiply,
+                    ..
+                }
+            ),
+            "B1 * 0 must remain a Multiply node, got {result:?}"
+        );
+        assert!(
+            !matches!(result, Expr::Number(_)),
+            "B1 * 0 must not be folded to a constant"
+        );
+
+        // Commuted form: 0 * x
+        let expr_commuted = Expr::BinaryOp {
+            left: Box::new(Expr::Number(0.0)),
+            op: BinaryOp::Multiply,
+            right: Box::new(Expr::Band(1)),
+        };
+        let result_commuted = algebraic_simplify(expr_commuted);
+        assert!(
+            !matches!(result_commuted, Expr::Number(_)),
+            "0 * B1 must not be folded to a constant"
+        );
+    }
+
+    /// Full pipeline regression: `(B1 / B2) * 0` where `B2` is 0 produces NaN
+    /// (NoData) from the division; multiplying by the literal `0` must not
+    /// turn that NaN into a false constant `0.0`.
+    #[test]
+    fn test_mul_zero_preserves_nan_semantics() {
+        use crate::raster::calculator::RasterCalculator;
+        use oxigdal_core::buffer::RasterBuffer;
+        use oxigdal_core::types::RasterDataType;
+
+        let mut b1 = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        let mut b2 = RasterBuffer::zeros(1, 1, RasterDataType::Float32);
+        assert!(b1.set_pixel(0, 0, 1.0).is_ok());
+        assert!(b2.set_pixel(0, 0, 0.0).is_ok());
+
+        let result = RasterCalculator::evaluate("(B1 / B2) * 0", &[b1, b2]).expect("evaluate");
+        let pixel = result.get_pixel(0, 0).expect("get_pixel");
+
+        assert!(
+            pixel.is_nan(),
+            "expected NoData (NaN) to survive `* 0`, got {pixel} instead"
+        );
     }
 
     // ── CSE tests ────────────────────────────────────────────────────────────

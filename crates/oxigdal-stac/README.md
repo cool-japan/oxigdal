@@ -198,8 +198,8 @@ if !result.is_valid {
 ## Features
 
 - **`std`** (default): Standard library support
-- **`async`**: Async HTTP client for STAC API
-- **`reqwest`**: HTTP client implementation
+- **`async`**: Async HTTP client for STAC API (`StacClient`, `SearchBuilder`, `Paginator`); activates the `reqwest` dependency
+- **`reqwest`**: Backwards-compat alias for `async` (kept for downstream crates that request `features = ["reqwest"]` directly)
 
 ## Supported Extensions
 

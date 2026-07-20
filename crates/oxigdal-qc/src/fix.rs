@@ -355,12 +355,12 @@ impl TopologyFixer {
             let mut fixed_feature = feature.clone();
             let mut snapped = false;
 
-            if let Some(geometry) = &feature.geometry {
-                if let Some(snapped_geom) = self.snap_geometry_to_grid(geometry, grid_size)? {
-                    fixed_feature.geometry = Some(snapped_geom);
-                    snapped = true;
-                    features_fixed += 1;
-                }
+            if let Some(geometry) = &feature.geometry
+                && let Some(snapped_geom) = self.snap_geometry_to_grid(geometry, grid_size)?
+            {
+                fixed_feature.geometry = Some(snapped_geom);
+                snapped = true;
+                features_fixed += 1;
             }
 
             if snapped {
@@ -500,7 +500,7 @@ mod tests {
         let result = fixer.fix_linestring(&linestring);
         assert!(result.is_ok());
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let (fixed, ops) =
             result.expect("linestring fix should succeed for duplicate vertex removal");
         assert_eq!(fixed.coords.len(), 2);

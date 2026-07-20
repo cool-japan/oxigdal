@@ -13,17 +13,38 @@ pub mod interval;
 
 use crate::engine::WorkflowDefinition;
 use crate::error::{Result, WorkflowError};
-use chrono::{DateTime, Utc};
+use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::Duration as StdDuration;
+use tokio::sync::{RwLock, Semaphore};
 use uuid::Uuid;
 
 pub use self::cron::{CronSchedule, CronScheduler};
-pub use self::dependency::{DependencyScheduler, WorkflowDependency};
-pub use self::event::{EventScheduler, EventTrigger};
+pub use self::dependency::{
+    DependencyRule, DependencyScheduler, DependencyStrategy, WorkflowDependency,
+};
+pub use self::event::{EventScheduler, EventTrigger, WorkflowEvent};
 pub use self::interval::{IntervalSchedule, IntervalScheduler};
+
+/// Trait implemented by callers to actually run a workflow when the scheduler
+/// determines a schedule is due.
+///
+/// The scheduler is intentionally decoupled from any particular
+/// [`crate::engine::WorkflowExecutor`]/[`crate::engine::TaskExecutor`] setup: it
+/// decides *when* a workflow should run and delegates *how* to run it to this
+/// trait. Implementations typically forward the workflow's DAG to a
+/// `WorkflowExecutor`.
+#[async_trait]
+pub trait WorkflowRunner: Send + Sync + 'static {
+    /// Execute the given workflow definition to completion.
+    ///
+    /// Returning `Err` marks the scheduled execution as failed; the error
+    /// message is recorded in the schedule's execution history.
+    async fn run(&self, workflow: &WorkflowDefinition) -> Result<()>;
+}
 
 /// Scheduler configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,11 +189,27 @@ pub struct Scheduler {
     event_scheduler: Arc<RwLock<EventScheduler>>,
     dependency_scheduler: Arc<RwLock<DependencyScheduler>>,
     running: Arc<RwLock<bool>>,
+    /// Optional workflow runner used to dispatch due executions. When `None`,
+    /// [`Scheduler::start`] returns an error rather than silently running a
+    /// scheduler that can never execute anything.
+    runner: Option<Arc<dyn WorkflowRunner>>,
 }
 
 impl Scheduler {
-    /// Create a new scheduler with the given configuration.
+    /// Create a new scheduler with the given configuration (no runner attached).
+    ///
+    /// Schedules can be added/removed and inspected, but [`Scheduler::start`]
+    /// will error until a runner is attached via [`Scheduler::with_runner`].
     pub fn new(config: SchedulerConfig) -> Self {
+        Self::build(config, None)
+    }
+
+    /// Create a new scheduler with a workflow runner attached.
+    pub fn with_runner(config: SchedulerConfig, runner: Arc<dyn WorkflowRunner>) -> Self {
+        Self::build(config, Some(runner))
+    }
+
+    fn build(config: SchedulerConfig, runner: Option<Arc<dyn WorkflowRunner>>) -> Self {
         Self {
             config: config.clone(),
             schedules: Arc::new(DashMap::new()),
@@ -181,7 +218,13 @@ impl Scheduler {
             event_scheduler: Arc::new(RwLock::new(EventScheduler::new(config.clone()))),
             dependency_scheduler: Arc::new(RwLock::new(DependencyScheduler::new(config.clone()))),
             running: Arc::new(RwLock::new(false)),
+            runner,
         }
+    }
+
+    /// Attach (or replace) the workflow runner used to dispatch executions.
+    pub fn set_runner(&mut self, runner: Arc<dyn WorkflowRunner>) {
+        self.runner = Some(runner);
     }
 
     /// Create a new scheduler with default configuration.
@@ -204,12 +247,50 @@ impl Scheduler {
                 scheduler.calculate_next_execution(expression, now)?
             }
             ScheduleType::Interval { interval_secs } => Some(
-                now + chrono::Duration::try_seconds(*interval_secs as i64)
+                now + Duration::try_seconds(*interval_secs as i64)
                     .ok_or_else(|| WorkflowError::scheduling("Invalid interval"))?,
             ),
             ScheduleType::Event { .. } | ScheduleType::Dependency { .. } => None,
             ScheduleType::Manual => None,
         };
+
+        // Wire up the type-specific sub-schedulers so event- and dependency-based
+        // schedules can actually be triggered (otherwise they would be inert).
+        match &schedule_type {
+            ScheduleType::Event { event_pattern } => {
+                // Register a trigger keyed by the schedule id; it fires whenever an
+                // event whose `event_type` equals `event_pattern` is published via
+                // `Scheduler::publish_event`.
+                let trigger = EventTrigger::exact(event_pattern.clone(), String::new());
+                self.event_scheduler
+                    .read()
+                    .await
+                    .register_trigger(schedule_id.clone(), trigger)
+                    .await?;
+            }
+            ScheduleType::Dependency { dependencies } => {
+                let rules = dependencies
+                    .iter()
+                    .map(|dep| DependencyRule {
+                        workflow_id: dep.clone(),
+                        required_status: ExecutionStatus::Success,
+                        time_window_secs: None,
+                        version_requirement: None,
+                    })
+                    .collect();
+                let workflow_dependency = WorkflowDependency {
+                    workflow_id: workflow.id.clone(),
+                    dependencies: rules,
+                    strategy: DependencyStrategy::All,
+                    description: None,
+                };
+                self.dependency_scheduler
+                    .read()
+                    .await
+                    .add_dependency(workflow_dependency)?;
+            }
+            _ => {}
+        }
 
         let scheduled = ScheduledWorkflow {
             schedule_id: schedule_id.clone(),
@@ -240,9 +321,32 @@ impl Scheduler {
 
     /// Remove a scheduled workflow.
     pub async fn remove_schedule(&self, schedule_id: &str) -> Result<()> {
-        self.schedules
+        let (_, removed) = self
+            .schedules
             .remove(schedule_id)
             .ok_or_else(|| WorkflowError::not_found(schedule_id))?;
+
+        // Tear down any type-specific sub-scheduler registration created in
+        // `add_schedule` so the scheduler does not leak triggers/dependencies.
+        match &removed.schedule_type {
+            ScheduleType::Event { .. } => {
+                // Ignore "not found" if the trigger was never registered.
+                let _ = self
+                    .event_scheduler
+                    .read()
+                    .await
+                    .unregister_trigger(schedule_id)
+                    .await;
+            }
+            ScheduleType::Dependency { .. } => {
+                let _ = self
+                    .dependency_scheduler
+                    .read()
+                    .await
+                    .remove_dependency(&removed.workflow.id);
+            }
+            _ => {}
+        }
 
         if self.config.enable_persistence {
             self.persist_state().await?;
@@ -274,7 +378,22 @@ impl Scheduler {
     }
 
     /// Start the scheduler.
+    ///
+    /// Spawns a background tick loop (respecting `config.tick_interval_ms`) that,
+    /// on every tick, finds due time-based (cron/interval) and satisfied
+    /// dependency schedules and dispatches them through the attached
+    /// [`WorkflowRunner`]. Event-based schedules are dispatched separately via
+    /// [`Scheduler::publish_event`].
+    ///
+    /// Returns an error if the scheduler is already running or if no runner has
+    /// been attached (dispatch would otherwise be impossible).
     pub async fn start(&self) -> Result<()> {
+        let runner = self.runner.clone().ok_or_else(|| {
+            WorkflowError::scheduling(
+                "No workflow runner configured; construct the scheduler with Scheduler::with_runner (or call set_runner) before starting",
+            )
+        })?;
+
         let mut running = self.running.write().await;
         if *running {
             return Err(WorkflowError::scheduling("Scheduler already running"));
@@ -282,33 +401,285 @@ impl Scheduler {
         *running = true;
         drop(running);
 
-        // Start all sub-schedulers
+        let schedules = self.schedules.clone();
+        let running_flag = self.running.clone();
         let cron_scheduler = self.cron_scheduler.clone();
         let interval_scheduler = self.interval_scheduler.clone();
-        let event_scheduler = self.event_scheduler.clone();
         let dependency_scheduler = self.dependency_scheduler.clone();
+        let config = self.config.clone();
+        let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_executions.max(1)));
 
         tokio::spawn(async move {
-            let _ = cron_scheduler.write().await;
-            // Scheduler loop would go here
-        });
+            let tick = StdDuration::from_millis(config.tick_interval_ms.max(1));
 
-        tokio::spawn(async move {
-            let _ = interval_scheduler.write().await;
-            // Scheduler loop would go here
-        });
+            loop {
+                if !*running_flag.read().await {
+                    break;
+                }
 
-        tokio::spawn(async move {
-            let _ = event_scheduler.write().await;
-            // Scheduler loop would go here
-        });
+                let now = Utc::now();
 
-        tokio::spawn(async move {
-            let _ = dependency_scheduler.write().await;
-            // Scheduler loop would go here
+                // Phase 1: collect candidate schedule ids without holding a
+                // DashMap reference across any `.await`.
+                let mut candidates: Vec<(String, ScheduleType, String, bool)> = Vec::new();
+                for entry in schedules.iter() {
+                    let s = entry.value();
+                    if !s.enabled {
+                        continue;
+                    }
+                    let time_due = matches!(
+                        s.schedule_type,
+                        ScheduleType::Cron { .. } | ScheduleType::Interval { .. }
+                    ) && s.next_execution.map(|n| n <= now).unwrap_or(false);
+                    let dep_candidate = matches!(s.schedule_type, ScheduleType::Dependency { .. })
+                        && s.last_execution.is_none();
+                    if time_due || dep_candidate {
+                        candidates.push((
+                            entry.key().clone(),
+                            s.schedule_type.clone(),
+                            s.workflow.id.clone(),
+                            dep_candidate,
+                        ));
+                    }
+                }
+
+                // Phase 2: for each candidate, confirm it should run, claim it
+                // (advance bookkeeping synchronously so it is not re-dispatched),
+                // then spawn the actual run under a concurrency permit.
+                for (schedule_id, schedule_type, workflow_id, dep_candidate) in candidates {
+                    if dep_candidate {
+                        let satisfied = dependency_scheduler
+                            .read()
+                            .await
+                            .are_dependencies_satisfied(&workflow_id)
+                            .unwrap_or(false);
+                        if !satisfied {
+                            continue;
+                        }
+                    }
+
+                    let next_execution = match Self::compute_next_execution(
+                        &cron_scheduler,
+                        &interval_scheduler,
+                        &schedule_type,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(next) => next,
+                        Err(e) => {
+                            tracing::warn!(
+                                "scheduler: failed to compute next execution for {}: {}",
+                                schedule_id,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Claim the execution: record a Running entry and advance
+                    // last/next execution so the next tick does not re-fire it.
+                    let execution_id = Uuid::new_v4().to_string();
+                    let workflow = {
+                        let mut s = match schedules.get_mut(&schedule_id) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        s.last_execution = Some(now);
+                        s.next_execution = next_execution;
+                        s.execution_history.push(ScheduleExecution {
+                            execution_id: execution_id.clone(),
+                            start_time: now,
+                            end_time: None,
+                            status: ExecutionStatus::Running,
+                            error_message: None,
+                        });
+                        let max_history = s.max_history;
+                        if s.execution_history.len() > max_history {
+                            s.execution_history.remove(0);
+                        }
+                        s.workflow.clone()
+                    };
+
+                    let permit = match Arc::clone(&semaphore).acquire_owned().await {
+                        Ok(permit) => permit,
+                        Err(_) => break,
+                    };
+
+                    let schedules_task = schedules.clone();
+                    let dependency_task = dependency_scheduler.clone();
+                    let runner_task = runner.clone();
+                    let config_task = config.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        Self::finish_execution(
+                            schedules_task,
+                            dependency_task,
+                            runner_task,
+                            config_task,
+                            schedule_id,
+                            execution_id,
+                            workflow,
+                        )
+                        .await;
+                    });
+                }
+
+                tokio::time::sleep(tick).await;
+            }
         });
 
         Ok(())
+    }
+
+    /// Publish an event that may trigger event-based schedules.
+    ///
+    /// Forwards the event to the internal event scheduler, then dispatches every
+    /// enabled `Event` schedule whose registered trigger matches. Returns the
+    /// list of schedule ids that were dispatched.
+    pub async fn publish_event(&self, event: WorkflowEvent) -> Result<Vec<String>> {
+        let runner = self.runner.clone().ok_or_else(|| {
+            WorkflowError::scheduling(
+                "No workflow runner configured; cannot dispatch event-triggered schedules",
+            )
+        })?;
+
+        let matched = self
+            .event_scheduler
+            .read()
+            .await
+            .publish_event(event)
+            .await?;
+
+        let now = Utc::now();
+        let mut dispatched = Vec::new();
+
+        for schedule_id in matched {
+            // Only dispatch enabled schedules that still exist.
+            let workflow = {
+                let mut s = match self.schedules.get_mut(&schedule_id) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                if !s.enabled {
+                    continue;
+                }
+                s.last_execution = Some(now);
+                s.workflow.clone()
+            };
+
+            let execution_id = Uuid::new_v4().to_string();
+            {
+                let mut s = match self.schedules.get_mut(&schedule_id) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                s.execution_history.push(ScheduleExecution {
+                    execution_id: execution_id.clone(),
+                    start_time: now,
+                    end_time: None,
+                    status: ExecutionStatus::Running,
+                    error_message: None,
+                });
+                let max_history = s.max_history;
+                if s.execution_history.len() > max_history {
+                    s.execution_history.remove(0);
+                }
+            }
+
+            Self::finish_execution(
+                self.schedules.clone(),
+                self.dependency_scheduler.clone(),
+                runner.clone(),
+                self.config.clone(),
+                schedule_id.clone(),
+                execution_id,
+                workflow,
+            )
+            .await;
+
+            dispatched.push(schedule_id);
+        }
+
+        Ok(dispatched)
+    }
+
+    /// Compute the next execution time for a schedule type after `now`.
+    async fn compute_next_execution(
+        cron_scheduler: &Arc<RwLock<CronScheduler>>,
+        interval_scheduler: &Arc<RwLock<IntervalScheduler>>,
+        schedule_type: &ScheduleType,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DateTime<Utc>>> {
+        match schedule_type {
+            ScheduleType::Cron { expression } => cron_scheduler
+                .read()
+                .await
+                .calculate_next_execution(expression, now),
+            ScheduleType::Interval { interval_secs } => interval_scheduler
+                .read()
+                .await
+                .calculate_next_execution(*interval_secs, Some(now))
+                .map(Some),
+            ScheduleType::Event { .. } | ScheduleType::Dependency { .. } | ScheduleType::Manual => {
+                Ok(None)
+            }
+        }
+    }
+
+    /// Run a claimed execution to completion and record the result.
+    ///
+    /// The corresponding `Running` execution record (identified by
+    /// `execution_id`) must already be present in the schedule's history.
+    async fn finish_execution(
+        schedules: Arc<DashMap<String, ScheduledWorkflow>>,
+        dependency_scheduler: Arc<RwLock<DependencyScheduler>>,
+        runner: Arc<dyn WorkflowRunner>,
+        config: SchedulerConfig,
+        schedule_id: String,
+        execution_id: String,
+        workflow: WorkflowDefinition,
+    ) {
+        let run_result = runner.run(&workflow).await;
+
+        // Record the outcome on the execution record.
+        if let Some(mut s) = schedules.get_mut(&schedule_id)
+            && let Some(record) = s
+                .execution_history
+                .iter_mut()
+                .find(|e| e.execution_id == execution_id)
+        {
+            record.end_time = Some(Utc::now());
+            match &run_result {
+                Ok(()) => record.status = ExecutionStatus::Success,
+                Err(e) => {
+                    record.status = ExecutionStatus::Failed;
+                    record.error_message = Some(e.to_string());
+                }
+            }
+        }
+
+        // On success, publish the completion so downstream dependency schedules
+        // can observe it.
+        if run_result.is_ok() {
+            dependency_scheduler
+                .read()
+                .await
+                .update_status(workflow.id.clone(), ExecutionStatus::Success);
+        } else if let Err(ref e) = run_result {
+            tracing::warn!(
+                "scheduler: workflow '{}' (schedule {}) failed: {}",
+                workflow.id,
+                schedule_id,
+                e
+            );
+        }
+
+        if config.enable_persistence
+            && let Err(e) = Self::persist_snapshot(&schedules, &config).await
+        {
+            tracing::warn!("scheduler: failed to persist state after execution: {}", e);
+        }
     }
 
     /// Stop the scheduler.
@@ -409,13 +780,13 @@ impl Scheduler {
         // Release the DashMap lock before async I/O.
         drop(schedule);
 
-        if self.config.enable_persistence {
-            if let Err(e) = self.persist_state().await {
-                tracing::warn!(
-                    "scheduler: failed to persist state after status update: {}",
-                    e
-                );
-            }
+        if self.config.enable_persistence
+            && let Err(e) = self.persist_state().await
+        {
+            tracing::warn!(
+                "scheduler: failed to persist state after status update: {}",
+                e
+            );
         }
 
         Ok(())
@@ -427,7 +798,19 @@ impl Scheduler {
     /// The write is crash-safe: data is first written to a `.tmp` sibling file, then
     /// atomically renamed into place, so a mid-write crash never leaves a corrupt file.
     async fn persist_state(&self) -> Result<()> {
-        let path_str = match &self.config.persistence_path {
+        Self::persist_snapshot(&self.schedules, &self.config).await
+    }
+
+    /// Persist a snapshot of the given schedules using the same crash-safe
+    /// write-to-tmp-then-rename strategy as [`Scheduler::persist_state`].
+    ///
+    /// Factored out so the background dispatch loop (which owns only cloned
+    /// `Arc`s, not `&self`) can persist after recording an execution.
+    async fn persist_snapshot(
+        schedules: &DashMap<String, ScheduledWorkflow>,
+        config: &SchedulerConfig,
+    ) -> Result<()> {
+        let path_str = match &config.persistence_path {
             Some(p) => p.clone(),
             None => return Ok(()),
         };
@@ -435,15 +818,14 @@ impl Scheduler {
         let path = std::path::PathBuf::from(&path_str);
 
         // Ensure the parent directory exists.
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await?;
         }
 
         // Snapshot the DashMap into a sorted Vec for deterministic output.
-        let mut snapshot: Vec<ScheduledWorkflow> = self
-            .schedules
+        let mut snapshot: Vec<ScheduledWorkflow> = schedules
             .iter()
             .map(|entry| entry.value().clone())
             .collect();
@@ -550,11 +932,183 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::dag::WorkflowDag;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Runner that counts how many workflows it ran (and can be made to fail).
+    struct CountingRunner {
+        count: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl WorkflowRunner for CountingRunner {
+        async fn run(&self, _workflow: &WorkflowDefinition) -> Result<()> {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                Err(WorkflowError::execution("intentional test failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn test_workflow(id: &str) -> WorkflowDefinition {
+        WorkflowDefinition {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            version: "1.0.0".to_string(),
+            dag: WorkflowDag::new(),
+        }
+    }
+
+    fn no_persist_config() -> SchedulerConfig {
+        SchedulerConfig {
+            enable_persistence: false,
+            tick_interval_ms: 40,
+            ..Default::default()
+        }
+    }
 
     #[tokio::test]
     async fn test_scheduler_creation() {
         let scheduler = Scheduler::with_defaults();
         assert!(!scheduler.is_running().await);
+    }
+
+    #[tokio::test]
+    async fn test_start_requires_runner() {
+        let scheduler = Scheduler::new(no_persist_config());
+        let result = scheduler.start().await;
+        assert!(result.is_err(), "start without a runner must error");
+        assert!(!scheduler.is_running().await);
+    }
+
+    #[tokio::test]
+    async fn test_event_schedule_dispatches() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let runner = Arc::new(CountingRunner {
+            count: Arc::clone(&count),
+            fail: false,
+        });
+        let scheduler = Scheduler::with_runner(no_persist_config(), runner);
+
+        let schedule_id = scheduler
+            .add_schedule(
+                test_workflow("wf-event"),
+                ScheduleType::Event {
+                    event_pattern: "data.arrived".to_string(),
+                },
+            )
+            .await
+            .expect("add event schedule");
+
+        let event = WorkflowEvent::new("data.arrived", serde_json::json!({"n": 1}));
+        let dispatched = scheduler.publish_event(event).await.expect("publish event");
+
+        assert_eq!(dispatched, vec![schedule_id.clone()]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        let sched = scheduler
+            .get_schedule(&schedule_id)
+            .expect("schedule exists");
+        assert_eq!(sched.execution_history.len(), 1);
+        assert_eq!(sched.execution_history[0].status, ExecutionStatus::Success);
+        assert!(sched.execution_history[0].end_time.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_event_non_matching_does_not_dispatch() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let runner = Arc::new(CountingRunner {
+            count: Arc::clone(&count),
+            fail: false,
+        });
+        let scheduler = Scheduler::with_runner(no_persist_config(), runner);
+
+        scheduler
+            .add_schedule(
+                test_workflow("wf-event"),
+                ScheduleType::Event {
+                    event_pattern: "data.arrived".to_string(),
+                },
+            )
+            .await
+            .expect("add event schedule");
+
+        let event = WorkflowEvent::new("something.else", serde_json::json!({}));
+        let dispatched = scheduler.publish_event(event).await.expect("publish");
+        assert!(dispatched.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_interval_schedule_executes() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let runner = Arc::new(CountingRunner {
+            count: Arc::clone(&count),
+            fail: false,
+        });
+        let scheduler = Arc::new(Scheduler::with_runner(no_persist_config(), runner));
+
+        let schedule_id = scheduler
+            .add_schedule(
+                test_workflow("wf-interval"),
+                ScheduleType::Interval { interval_secs: 1 },
+            )
+            .await
+            .expect("add interval schedule");
+
+        scheduler.start().await.expect("start scheduler");
+
+        // Poll (bounded) for the first successful execution.
+        let mut succeeded = false;
+        for _ in 0..100 {
+            tokio::time::sleep(StdDuration::from_millis(50)).await;
+            if let Some(s) = scheduler.get_schedule(&schedule_id)
+                && s.execution_history
+                    .iter()
+                    .any(|e| e.status == ExecutionStatus::Success)
+            {
+                succeeded = true;
+                break;
+            }
+        }
+
+        scheduler.stop().await.ok();
+
+        assert!(succeeded, "interval schedule never executed");
+        assert!(count.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_failed_execution_recorded() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let runner = Arc::new(CountingRunner {
+            count: Arc::clone(&count),
+            fail: true,
+        });
+        let scheduler = Scheduler::with_runner(no_persist_config(), runner);
+
+        let schedule_id = scheduler
+            .add_schedule(
+                test_workflow("wf-fail"),
+                ScheduleType::Event {
+                    event_pattern: "boom".to_string(),
+                },
+            )
+            .await
+            .expect("add event schedule");
+
+        let event = WorkflowEvent::new("boom", serde_json::json!({}));
+        scheduler.publish_event(event).await.expect("publish");
+
+        let sched = scheduler
+            .get_schedule(&schedule_id)
+            .expect("schedule exists");
+        assert_eq!(sched.execution_history.len(), 1);
+        assert_eq!(sched.execution_history[0].status, ExecutionStatus::Failed);
+        assert!(sched.execution_history[0].error_message.is_some());
     }
 
     #[tokio::test]

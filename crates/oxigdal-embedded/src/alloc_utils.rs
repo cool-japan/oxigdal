@@ -110,7 +110,14 @@ impl<const N: usize> StackAllocator<N> {
 
         let current_offset = self.offset.get();
         let base_addr = self.buffer.as_ptr() as usize;
-        let aligned_offset = (current_offset + align - 1) & !(align - 1);
+
+        // Align the real base address, not the bare offset. The returned pointer
+        // is only a multiple of `align` when `base_addr % align == 0`, which is
+        // not guaranteed for `[u8; N]` (alignment 1). Compute the aligned address
+        // from `base_addr + current_offset`, then derive the offset back out.
+        let current_addr = base_addr.wrapping_add(current_offset);
+        let aligned_addr = current_addr.wrapping_add(align - 1) & !(align - 1);
+        let aligned_offset = aligned_addr.wrapping_sub(base_addr);
 
         let new_offset = match aligned_offset.checked_add(size) {
             Some(offset) if offset <= N => offset,
@@ -124,9 +131,9 @@ impl<const N: usize> StackAllocator<N> {
 
         self.offset.set(new_offset);
 
-        let ptr_addr = base_addr.wrapping_add(aligned_offset);
-        // SAFETY: We've verified the pointer is within bounds
-        let ptr = unsafe { NonNull::new_unchecked(ptr_addr as *mut u8) };
+        // SAFETY: `aligned_addr` is within `[base_addr, base_addr + N)` (verified
+        // by the bounds check above) and is a non-null, properly aligned pointer.
+        let ptr = unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) };
         Ok(ptr)
     }
 
@@ -202,7 +209,13 @@ impl<const N: usize> Arena<N> {
         }
 
         let current_offset = self.offset.get();
-        let aligned_offset = (current_offset + align - 1) & !(align - 1);
+        let base_ptr = self.buffer.get() as *mut u8;
+        let base_addr = base_ptr as usize;
+
+        // Align the real base address, not the bare offset (see StackAllocator).
+        let current_addr = base_addr.wrapping_add(current_offset);
+        let aligned_addr = current_addr.wrapping_add(align - 1) & !(align - 1);
+        let aligned_offset = aligned_addr.wrapping_sub(base_addr);
 
         let new_offset = match aligned_offset.checked_add(size) {
             Some(offset) if offset <= N => offset,
@@ -216,8 +229,8 @@ impl<const N: usize> Arena<N> {
 
         self.offset.set(new_offset);
 
-        // SAFETY: We own the buffer and offset is within bounds
-        let base_ptr = self.buffer.get() as *mut u8;
+        // SAFETY: We own the buffer and `aligned_offset` is within bounds, so
+        // `base_ptr + aligned_offset == aligned_addr` points into the buffer.
         let ptr = unsafe { base_ptr.add(aligned_offset) };
         let nonnull = NonNull::new(ptr).ok_or(EmbeddedError::AllocationFailed)?;
         Ok(nonnull)
@@ -277,15 +290,20 @@ mod tests {
 
     #[test]
     fn test_stack_allocator() {
+        // Use an alignment (8) that is <= the allocator's struct alignment so no
+        // padding is inserted regardless of the buffer's base address; this
+        // keeps `pop(size)` exact for the LIFO-mechanics check. Over-alignment
+        // correctness (which may introduce base-dependent padding) is covered by
+        // `test_stack_allocator_over_alignment`.
         let allocator = StackAllocator::<1024>::new();
 
         let _ptr1 = allocator.allocate(64, 8).expect("allocation failed");
         assert_eq!(allocator.used(), 64);
 
-        let _ptr2 = allocator.allocate(128, 16).expect("allocation failed");
-        assert!(allocator.used() >= 64 + 128);
+        let _ptr2 = allocator.allocate(128, 8).expect("allocation failed");
+        assert_eq!(allocator.used(), 64 + 128);
 
-        // SAFETY: We're popping in LIFO order
+        // SAFETY: We're popping in LIFO order and no padding was inserted.
         unsafe {
             allocator.pop(128).expect("pop failed");
         }
@@ -303,6 +321,38 @@ mod tests {
 
         arena.clear();
         assert_eq!(arena.used(), 0);
+    }
+
+    #[test]
+    fn test_stack_allocator_over_alignment() {
+        // Regression: aligning the bare offset (not the real base address) yields
+        // pointers that are only aligned when the buffer base happens to be
+        // aligned. Exercise alignments larger than the struct's incidental
+        // alignment to catch the misalignment bug.
+        let allocator = StackAllocator::<4096>::new();
+        for &align in &[16usize, 32, 64, 128] {
+            let ptr = allocator
+                .allocate(8, align)
+                .expect("allocation should succeed");
+            assert_eq!(
+                ptr.as_ptr() as usize % align,
+                0,
+                "StackAllocator returned pointer misaligned for align={align}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_arena_over_alignment() {
+        let arena = Arena::<4096>::new();
+        for &align in &[16usize, 32, 64, 128] {
+            let ptr = arena.allocate(8, align).expect("allocation should succeed");
+            assert_eq!(
+                ptr.as_ptr() as usize % align,
+                0,
+                "Arena returned pointer misaligned for align={align}"
+            );
+        }
     }
 
     #[test]

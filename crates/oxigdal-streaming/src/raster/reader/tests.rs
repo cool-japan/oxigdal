@@ -1,3 +1,5 @@
+#![allow(clippy::panic)]
+
 use super::*;
 use std::env;
 

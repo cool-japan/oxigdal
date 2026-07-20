@@ -140,10 +140,10 @@ impl ArrowIpcReader {
         }
 
         // Optional continuation marker (0xFFFFFFFF).
-        if let Some(cont) = self.read_u32(self.offset) {
-            if cont == 0xFFFF_FFFF {
-                self.offset += 4;
-            }
+        if let Some(cont) = self.read_u32(self.offset)
+            && cont == 0xFFFF_FFFF
+        {
+            self.offset += 4;
         }
 
         // Metadata length (i32, LE).  Zero means EOS.

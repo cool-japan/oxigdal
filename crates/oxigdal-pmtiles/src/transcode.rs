@@ -311,10 +311,10 @@ pub fn transcode_archive_with_stats(
     // Mirror the source's JSON metadata.  The reader decompresses it via the
     // source's `internal_compression`; we re-emit it uncompressed (matching
     // the builder's behaviour).
-    if let Ok(metadata) = reader.metadata() {
-        if let Ok(json) = metadata.to_json() {
-            builder.set_metadata(json);
-        }
+    if let Ok(metadata) = reader.metadata()
+        && let Ok(json) = metadata.to_json()
+    {
+        builder.set_metadata(json);
     }
 
     // -----------------------------------------------------------------------

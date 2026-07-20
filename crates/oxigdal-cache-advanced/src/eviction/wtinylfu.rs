@@ -140,12 +140,12 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> EvictionPolicy<K> for WTinyLf
             self.in_probation.remove(key);
 
             // If protected is full, demote its oldest entry back to probation
-            if self.protected.len() >= self.protected_capacity {
-                if let Some(demoted) = self.protected.pop_front() {
-                    self.in_protected.remove(&demoted);
-                    self.in_probation.insert(demoted.clone(), ());
-                    self.probation.push_back(demoted);
-                }
+            if self.protected.len() >= self.protected_capacity
+                && let Some(demoted) = self.protected.pop_front()
+            {
+                self.in_protected.remove(&demoted);
+                self.in_probation.insert(demoted.clone(), ());
+                self.probation.push_back(demoted);
             }
 
             self.in_protected.insert(key.clone(), ());

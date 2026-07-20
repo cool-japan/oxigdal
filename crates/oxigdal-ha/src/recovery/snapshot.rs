@@ -136,14 +136,13 @@ impl SnapshotManager {
             .map_err(|e| HaError::Snapshot(format!("Failed to read directory entry: {}", e)))?
         {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("meta") {
-                if let Some(id_str) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(id) = Uuid::parse_str(id_str) {
-                        match self.load_metadata(id).await {
-                            Ok(metadata) => snapshots.push(metadata),
-                            Err(e) => warn!("Failed to load metadata for {}: {}", id, e),
-                        }
-                    }
+            if path.extension().and_then(|s| s.to_str()) == Some("meta")
+                && let Some(id_str) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(id) = Uuid::parse_str(id_str)
+            {
+                match self.load_metadata(id).await {
+                    Ok(metadata) => snapshots.push(metadata),
+                    Err(e) => warn!("Failed to load metadata for {}: {}", id, e),
                 }
             }
         }

@@ -194,11 +194,11 @@ fn apply_sieve_filter(
             let pixel_value = input_values[start_idx];
 
             // Skip NoData pixels
-            if let Some(nd) = no_data {
-                if (pixel_value - nd).abs() < f64::EPSILON {
-                    visited[start_idx] = true;
-                    continue;
-                }
+            if let Some(nd) = no_data
+                && (pixel_value - nd).abs() < f64::EPSILON
+            {
+                visited[start_idx] = true;
+                continue;
             }
 
             // Find connected component using BFS

@@ -85,6 +85,7 @@ pub fn polyconic_inverse(
     // Newton-Raphson iteration
     // Start with initial guess: φ = B = y/R + φ₀
     let mut lat = b;
+    let mut converged = false;
 
     const MAX_ITER: usize = 20;
     const TOL: f64 = 1e-12;
@@ -93,6 +94,7 @@ pub fn polyconic_inverse(
         if lat.abs() < 1e-14 {
             // Converged near equator
             lat = 0.0;
+            converged = true;
             break;
         }
 
@@ -110,7 +112,10 @@ pub fn polyconic_inverse(
         // From x equation: sin(E) = (x/R) * tan(φ)
         let sin_e = xr * tan_lat;
         if sin_e.abs() > 1.0 + 1e-10 {
-            // x is too large for this latitude; use an approximation
+            // x is too large for this latitude — (x, y) is outside the
+            // projection's valid domain for a genuine convergent solution.
+            // Do NOT fabricate a result from the stale `lat`; leave
+            // `converged = false` so the caller gets an error below.
             break;
         }
         let sin_e_clamped = sin_e.clamp(-1.0, 1.0);
@@ -131,6 +136,7 @@ pub fn polyconic_inverse(
         let fp = 1.0 - csc2 * (1.0 - cos_e) + cot_lat * sin_e_clamped * de_dphi;
 
         if fp.abs() < 1e-15 {
+            // Degenerate derivative — cannot proceed with Newton-Raphson.
             break;
         }
 
@@ -138,8 +144,15 @@ pub fn polyconic_inverse(
         lat -= delta;
 
         if delta.abs() < TOL {
+            converged = true;
             break;
         }
+    }
+
+    if !converged {
+        return Err(Error::invalid_coordinate(
+            "polyconic inverse: failed to converge",
+        ));
     }
 
     // Recover longitude from E = (λ − λ₀) sin(φ)
@@ -244,6 +257,42 @@ mod tests {
         assert!(polyconic_forward(f64::NAN, 0.0, 0.0, 0.0, R).is_err());
         assert!(polyconic_forward(f64::INFINITY, 0.0, 0.0, 0.0, R).is_err());
         assert!(polyconic_inverse(f64::NAN, 0.0, 0.0, 0.0, R).is_err());
+    }
+
+    #[test]
+    fn test_polyconic_inverse_out_of_domain_errors_instead_of_garbage() {
+        // Construct raw (x, y) — not from `polyconic_forward` — far outside
+        // the projection's valid domain: at the initial-guess latitude
+        // (~1 radian ≈ 57.3°), x is 10× the planetary radius, which makes
+        // `sin_e = xr * tan(lat)` blow far past the [-1, 1] domain of
+        // `asin`. Before the fix this silently returned `Ok` with a
+        // plausible-looking but numerically meaningless coordinate (the
+        // stale initial guess); it must now return an error instead.
+        let lon_0 = 0.0;
+        let lat_0 = 0.0;
+        let x = 10.0 * R;
+        let y = R; // yr = 1.0 rad -> initial lat guess ~57.3°
+
+        let result = polyconic_inverse(x, y, lon_0, lat_0, R);
+        assert!(
+            result.is_err(),
+            "expected an error for an out-of-domain (x, y), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_polyconic_inverse_valid_roundtrip_still_converges() {
+        // Sanity check that the `converged` bookkeeping did not break the
+        // ordinary convergence path used by every other round-trip test.
+        let lon_0 = (-96.0_f64).to_radians();
+        let lat_0 = 37.0_f64.to_radians();
+        let lon = (-95.0_f64).to_radians();
+        let lat = 39.0_f64.to_radians();
+
+        let (x, y) = polyconic_forward(lon, lat, lon_0, lat_0, R).expect("fwd");
+        let (lon2, lat2) = polyconic_inverse(x, y, lon_0, lat_0, R).expect("inv must converge");
+        assert!((lon - lon2).abs() < 1e-6);
+        assert!((lat - lat2).abs() < 1e-6);
     }
 
     #[test]

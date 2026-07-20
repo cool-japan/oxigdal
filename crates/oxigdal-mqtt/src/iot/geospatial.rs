@@ -115,10 +115,10 @@ impl GeoMessage {
             serde_json::Value::String(self.timestamp.to_rfc3339()),
         );
 
-        if let Some(ref props) = self.properties {
-            if let Some(obj) = props.as_object() {
-                properties.extend(obj.clone());
-            }
+        if let Some(ref props) = self.properties
+            && let Some(obj) = props.as_object()
+        {
+            properties.extend(obj.clone());
         }
 
         Feature {

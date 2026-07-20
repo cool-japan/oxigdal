@@ -432,8 +432,8 @@ impl Error {
     }
 }
 
-// Implement conversion from proj4rs errors
-#[cfg(feature = "std")]
+// Implement conversion from proj4rs errors (only when proj4rs-compat feature is enabled)
+#[cfg(feature = "proj4rs-compat")]
 impl From<proj4rs::errors::Error> for Error {
     fn from(err: proj4rs::errors::Error) -> Self {
         Self::from_proj4rs(format!("{:?}", err))
@@ -444,6 +444,33 @@ impl From<proj4rs::errors::Error> for Error {
 impl From<proj::ProjError> for Error {
     fn from(err: proj::ProjError) -> Self {
         Self::ProjSysError(format!("{}", err))
+    }
+}
+
+// Implement conversion from oxiproj errors
+impl From<oxiproj::TransformError> for Error {
+    fn from(e: oxiproj::TransformError) -> Self {
+        Self::TransformationError {
+            reason: e.to_string(),
+        }
+    }
+}
+
+impl From<oxiproj::ProjError> for Error {
+    fn from(e: oxiproj::ProjError) -> Self {
+        match e {
+            oxiproj::ProjError::InvalidCoord => Self::InvalidCoordinate {
+                reason: "invalid coordinate (OxiProj)".to_string(),
+            },
+            oxiproj::ProjError::OutsideProjectionDomain => Self::CoordinateOutOfBounds {
+                x: f64::NAN,
+                y: f64::NAN,
+            },
+            oxiproj::ProjError::NoConvergence => Self::ConvergenceError { iterations: 0 },
+            other => Self::TransformationError {
+                reason: other.to_string(),
+            },
+        }
     }
 }
 

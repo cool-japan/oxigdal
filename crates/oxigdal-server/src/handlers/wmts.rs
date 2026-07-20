@@ -284,13 +284,36 @@ pub struct GetTileParams {
 }
 
 /// RESTful GetTile path parameters
+///
+/// `tile_col` is captured as `"{col}.{ext}"` (e.g. `"12.png"`) rather than a bare `u32`:
+/// matchit (axum's router) allows only one dynamic parameter per path segment, so the file
+/// extension cannot be a separate literal suffix within the same `{tile_col}` segment. See
+/// `parse_tile_col_and_format`.
 #[derive(Debug, Deserialize)]
 pub struct GetTilePath {
     layer: String,
     tile_matrix_set: String,
     tile_matrix: String,
     tile_row: u32,
-    tile_col: u32,
+    tile_col: String,
+}
+
+/// Split a `"{col}.{ext}"` path segment (e.g. `"12.png"`) into the numeric tile column and
+/// its file extension.
+fn parse_tile_col_and_format(tile_col: &str) -> Result<(u32, String), WmtsError> {
+    let mut parts = tile_col.rsplitn(2, '.');
+    let ext = parts.next().unwrap_or_default();
+    let col = parts.next();
+
+    match col {
+        Some(col) => col
+            .parse::<u32>()
+            .map(|col| (col, ext.to_string()))
+            .map_err(|_| WmtsError::InvalidParameter(format!("Invalid TILECOL: {tile_col}"))),
+        None => Err(WmtsError::InvalidParameter(format!(
+            "Invalid TILECOL (missing file extension): {tile_col}"
+        ))),
+    }
 }
 
 /// Handle GetCapabilities request
@@ -301,13 +324,13 @@ pub async fn get_capabilities(
     debug!("WMTS GetCapabilities request");
 
     // Validate service parameter
-    if let Some(ref service) = params.service {
-        if service.to_uppercase() != "WMTS" {
-            return Err(WmtsError::InvalidParameter(format!(
-                "Invalid SERVICE: {}",
-                service
-            )));
-        }
+    if let Some(ref service) = params.service
+        && service.to_uppercase() != "WMTS"
+    {
+        return Err(WmtsError::InvalidParameter(format!(
+            "Invalid SERVICE: {}",
+            service
+        )));
     }
 
     // Get all layers
@@ -697,9 +720,14 @@ pub async fn get_tile_rest(
     State(state): State<Arc<WmtsState>>,
     AxumPath(path): AxumPath<GetTilePath>,
 ) -> Result<Response, WmtsError> {
+    let (tile_col, extension) = parse_tile_col_and_format(&path.tile_col)?;
+    let format = extension
+        .parse::<ImageFormat>()
+        .map_err(|_| WmtsError::InvalidParameter(format!("Unsupported format: {extension}")))?;
+
     debug!(
-        "WMTS GetTile (REST): layer={}, z={}, x={}, y={}",
-        path.layer, path.tile_matrix, path.tile_col, path.tile_row
+        "WMTS GetTile (REST): layer={}, z={}, x={}, y={}, format={:?}",
+        path.layer, path.tile_matrix, tile_col, path.tile_row, format
     );
 
     get_tile_impl(
@@ -708,8 +736,8 @@ pub async fn get_tile_rest(
         &path.tile_matrix_set,
         &path.tile_matrix,
         path.tile_row,
-        path.tile_col,
-        ImageFormat::Png,
+        tile_col,
+        format,
     )
     .await
 }
@@ -1109,13 +1137,48 @@ fn build_band_window(
         for dx in 0..src_width {
             let gx = src_x + dx;
             let gy = src_y + dy;
-            if gx < ds_width && gy < ds_height {
-                if let Ok(val) = full_buffer.get_pixel(gx, gy) {
-                    let _ = window.set_pixel(dx, dy, val);
-                }
+            if gx < ds_width
+                && gy < ds_height
+                && let Ok(val) = full_buffer.get_pixel(gx, gy)
+            {
+                let _ = window.set_pixel(dx, dy, val);
             }
         }
     }
 
     Ok(window)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_tile_col_and_format_valid() {
+        let (col, ext) = parse_tile_col_and_format("12.png").expect("should parse");
+        assert_eq!(col, 12);
+        assert_eq!(ext, "png");
+    }
+
+    #[test]
+    fn test_parse_tile_col_and_format_other_extension() {
+        let (col, ext) = parse_tile_col_and_format("0.jpeg").expect("should parse");
+        assert_eq!(col, 0);
+        assert_eq!(ext, "jpeg");
+    }
+
+    #[test]
+    fn test_parse_tile_col_and_format_missing_extension() {
+        assert!(parse_tile_col_and_format("12").is_err());
+    }
+
+    #[test]
+    fn test_parse_tile_col_and_format_non_numeric_column() {
+        assert!(parse_tile_col_and_format("abc.png").is_err());
+    }
+
+    #[test]
+    fn test_parse_tile_col_and_format_empty() {
+        assert!(parse_tile_col_and_format("").is_err());
+    }
 }

@@ -124,18 +124,20 @@ fn test_cov_polygon_multiple_holes() {
         vec![0.0, 20.0],
         vec![0.0, 0.0],
     ];
+    // Holes are wound clockwise (opposite of the counterclockwise exterior),
+    // per RFC 7946 §3.1.6's right-hand-rule orientation.
     let hole1 = vec![
         vec![2.0, 2.0],
-        vec![5.0, 2.0],
-        vec![5.0, 5.0],
         vec![2.0, 5.0],
+        vec![5.0, 5.0],
+        vec![5.0, 2.0],
         vec![2.0, 2.0],
     ];
     let hole2 = vec![
         vec![10.0, 10.0],
-        vec![15.0, 10.0],
-        vec![15.0, 15.0],
         vec![10.0, 15.0],
+        vec![15.0, 15.0],
+        vec![15.0, 10.0],
         vec![10.0, 10.0],
     ];
 

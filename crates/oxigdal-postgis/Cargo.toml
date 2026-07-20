@@ -49,3 +49,13 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+# `all-features = true` here only enables the single optional feature
+# `rustls` (`dep:tokio-postgres-rustls`), a pure-Rust TLS integration with
+# no C/C++ FFI (`ring`/`aws-lc-sys` transitives are not required — the crate
+# does not pull them in). Verified 2026-07-17 with `cargo doc -p
+# oxigdal-postgis --no-deps --target x86_64-unknown-linux-gnu --all-features`
+# (docs.rs's default target) — builds clean, no non-Linux/FFI deps resolved.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

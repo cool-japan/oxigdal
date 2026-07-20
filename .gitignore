@@ -49,6 +49,9 @@ Desktop.ini
 # Rustc ICE dumps
 rustc-ice-*.txt
 
+# Auto-fix tooling artifacts (auto-fix-audit.log already covered by *.log below)
+.auto-fix-backups/
+
 # Build artifacts
 *.so
 *.dylib

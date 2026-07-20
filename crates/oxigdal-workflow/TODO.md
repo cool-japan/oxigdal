@@ -2,7 +2,7 @@
 
 > **Purpose:** DAG-based workflow engine — orchestrates geospatial processing pipelines with cycle detection, retries, timeouts, scheduling.
 > **Status (2026-05-16):** 20,632 LoC · 197 tests · 4 real-code stubs (scheduler persistence, Temporal/Airflow/Prefect import, external HMAC)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Implement scheduler state persistence (save/load to disk)

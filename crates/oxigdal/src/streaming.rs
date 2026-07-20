@@ -368,7 +368,11 @@ impl Iterator for TileStream {
 /// Falls back to an empty stream when:
 /// - `info.path` is `None` (e.g., programmatic dataset)
 /// - the `geojson` feature is disabled
-/// - the file is not a FeatureCollection (single Feature / Geometry)
+/// - the file is valid JSON but not a FeatureCollection (single Feature /
+///   Geometry)
+///
+/// Genuine failures — I/O errors and malformed / truncated JSON — are surfaced
+/// as [`OxiGdalError`] rather than silently reported as an empty dataset.
 fn stream_geojson_features(info: &crate::DatasetInfo) -> Result<FeatureStream> {
     #[cfg(feature = "geojson")]
     {
@@ -391,7 +395,51 @@ fn stream_geojson_features(info: &crate::DatasetInfo) -> Result<FeatureStream> {
         // caller should use the oxigdal_streaming crate instead.
         let fc = match reader.read_feature_collection() {
             Ok(fc) => fc,
-            Err(_) => return Ok(FeatureStream::empty()),
+            Err(read_err) => {
+                // `read_feature_collection` collapses I/O errors, JSON syntax
+                // errors, and "valid JSON but not a FeatureCollection" into one
+                // Result. Only the last of these is a documented empty-stream
+                // fallback — distinguish it by re-parsing the raw bytes as a
+                // generic JSON value and inspecting the top-level "type".
+                drop(reader);
+                let raw = std::fs::read(&path).map_err(|e| {
+                    OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                        message: format!("cannot re-read GeoJSON '{path}': {e}"),
+                    })
+                })?;
+                match serde_json::from_slice::<JsonValue>(&raw) {
+                    Ok(value) => match value.get("type").and_then(JsonValue::as_str) {
+                        // A single Feature / Geometry (or any non-collection
+                        // GeoJSON object): documented empty-stream fallback.
+                        Some(ty) if ty != "FeatureCollection" => {
+                            return Ok(FeatureStream::empty());
+                        }
+                        // Declares itself a FeatureCollection yet failed to
+                        // parse as one — a real structural error.
+                        Some(_) => {
+                            return Err(OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                                message: format!(
+                                    "failed to parse GeoJSON FeatureCollection '{path}': {read_err}"
+                                ),
+                            }));
+                        }
+                        // No top-level "type": malformed GeoJSON.
+                        None => {
+                            return Err(OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                                message: format!(
+                                    "GeoJSON '{path}' has no top-level \"type\" field: {read_err}"
+                                ),
+                            }));
+                        }
+                    },
+                    // Not even valid JSON (truncated / corrupt) — surface it.
+                    Err(parse_err) => {
+                        return Err(OxiGdalError::Io(oxigdal_core::error::IoError::Read {
+                            message: format!("invalid GeoJSON '{path}': {parse_err}"),
+                        }));
+                    }
+                }
+            }
         };
 
         let features = fc
@@ -894,7 +942,15 @@ mod tests {
 
     #[test]
     fn test_streaming_ext_features_on_vector() {
-        let path = make_temp_file("stream_ext_geojson.geojson", b"{}");
+        // `{}` has no top-level "type" field, so it is malformed GeoJSON (not
+        // the documented "single Feature/Geometry" empty-stream fallback) and
+        // now correctly errors — see `stream_geojson_features`. Use a valid
+        // single Feature (non-FeatureCollection) to exercise the intended
+        // "features() on GeoJSON should succeed" path.
+        let path = make_temp_file(
+            "stream_ext_geojson.geojson",
+            br#"{"type":"Feature","geometry":null,"properties":{}}"#,
+        );
         let ds = open(&path).expect("open");
         let stream_result = ds.features();
         assert!(
@@ -936,8 +992,15 @@ mod tests {
 
     #[test]
     fn test_feature_stream_collect_empty() {
-        // `{}` is not a FeatureCollection, so the reader returns empty
-        let path = make_temp_file("stream_collect_empty.geojson", b"{}");
+        // A single Feature (not a FeatureCollection) is the documented
+        // empty-stream fallback, so the reader returns an empty stream rather
+        // than an error. `{}` is excluded: it has no top-level "type" field
+        // and is malformed GeoJSON per `stream_geojson_features`, which now
+        // surfaces it as an `Err` instead of silently swallowing it.
+        let path = make_temp_file(
+            "stream_collect_empty.geojson",
+            br#"{"type":"Feature","geometry":null,"properties":{}}"#,
+        );
         let ds = open(&path).expect("open");
         let features: Vec<_> = ds
             .features()

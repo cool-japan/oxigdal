@@ -334,7 +334,7 @@ mod tests {
             band_count: 1,
             band_names: vec!["Band1".to_string()],
             data_type: "Byte".to_string(),
-            source: CoverageSource::Memory,
+            source: CoverageSource::Memory(std::sync::Arc::new(Vec::new())),
             formats: vec!["image/tiff".to_string()],
         };
 

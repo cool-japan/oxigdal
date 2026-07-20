@@ -107,17 +107,17 @@ pub fn loess_smooth_1d(x: &[f64], y: &[f64], options: &LoessOptions) -> Result<V
             ),
         ));
     }
-    if let Some(w) = &options.weights {
-        if w.len() != y.len() {
-            return Err(TemporalError::invalid_parameter(
-                "weights",
-                format!(
-                    "length mismatch: weights have {} elements, y has {}",
-                    w.len(),
-                    y.len()
-                ),
-            ));
-        }
+    if let Some(w) = &options.weights
+        && w.len() != y.len()
+    {
+        return Err(TemporalError::invalid_parameter(
+            "weights",
+            format!(
+                "length mismatch: weights have {} elements, y has {}",
+                w.len(),
+                y.len()
+            ),
+        ));
     }
     let n = y.len();
     if n < 2 {

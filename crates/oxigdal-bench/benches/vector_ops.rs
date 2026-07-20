@@ -18,9 +18,24 @@ fn bench_geojson_read(c: &mut Criterion) {
             feature_count,
             |b, &count| {
                 b.iter(|| {
-                    // Placeholder for actual GeoJSON reading
-                    let _features = vec![0u8; count * 100];
-                    black_box(_features);
+                    // Simulate parsing GeoJSON features: generate and parse coordinate pairs
+                    let features: Vec<(f64, f64)> = (0..count)
+                        .map(|i| {
+                            let lon = ((i as f64 * 1.23456789) % 360.0) - 180.0;
+                            let lat = ((i as f64 * 0.98765432) % 180.0) - 90.0;
+                            (lon, lat)
+                        })
+                        .collect();
+                    // Simulate bounding-box computation during read
+                    let min_lon = features
+                        .iter()
+                        .map(|(x, _)| *x)
+                        .fold(f64::INFINITY, f64::min);
+                    let max_lon = features
+                        .iter()
+                        .map(|(x, _)| *x)
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    black_box((min_lon, max_lon))
                 });
             },
         );
@@ -43,8 +58,20 @@ fn bench_geojson_write(c: &mut Criterion) {
             |b, &count| {
                 let features = vec![0u8; count * 100];
                 b.iter(|| {
-                    // Placeholder for actual GeoJSON writing
-                    black_box(&features);
+                    // Simulate serializing GeoJSON: format coordinate pairs as JSON-like strings
+                    let json_bytes: Vec<u8> = features
+                        .chunks(100)
+                        .flat_map(|chunk| {
+                            let s: String = chunk
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &v)| format!("{{\"id\":{},\"v\":{}}}", i, v))
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            s.into_bytes()
+                        })
+                        .collect();
+                    black_box(json_bytes.len())
                 });
             },
         );
@@ -69,8 +96,34 @@ fn bench_simplification(c: &mut Criterion) {
                     (0..count).map(|i| (i as f64, (i as f64).sin())).collect();
 
                 b.iter(|| {
-                    // Placeholder for actual simplification
-                    black_box(&points);
+                    // Ramer-Douglas-Peucker-like simplification
+                    let tolerance = 0.5_f64;
+                    // Find the point farthest from the line between first and last point
+                    let first = points[0];
+                    let last = *points.last().unwrap_or(&first);
+                    let max_dist = points[1..points.len().saturating_sub(1)]
+                        .iter()
+                        .map(|&(px, py)| {
+                            // Distance from point to line segment
+                            let dx = last.0 - first.0;
+                            let dy = last.1 - first.1;
+                            let len_sq = dx * dx + dy * dy;
+                            if len_sq == 0.0 {
+                                let ex = px - first.0;
+                                let ey = py - first.1;
+                                (ex * ex + ey * ey).sqrt()
+                            } else {
+                                let t = ((px - first.0) * dx + (py - first.1) * dy) / len_sq;
+                                let t = t.clamp(0.0, 1.0);
+                                let proj_x = first.0 + t * dx;
+                                let proj_y = first.1 + t * dy;
+                                ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt()
+                            }
+                        })
+                        .fold(0.0_f64, f64::max);
+                    // Simplified result: keep points where deviation exceeds tolerance
+                    let simplified_count = if max_dist > tolerance { count } else { 2 };
+                    black_box(simplified_count)
                 });
             },
         );
@@ -95,9 +148,39 @@ fn bench_buffer_operations(c: &mut Criterion) {
                     vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
 
                 b.iter(|| {
-                    // Placeholder for actual buffer operation
-                    black_box(&points);
-                    black_box(distance);
+                    // Simulate polygon buffer: compute offset polygon vertices
+                    let buffered: Vec<(f64, f64)> = points
+                        .iter()
+                        .map(|&(x, y)| {
+                            // Simple outward offset in cardinal direction
+                            let nx = if x == 0.0 {
+                                -1.0
+                            } else if x > 0.0 {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                            let ny = if y == 0.0 {
+                                -1.0
+                            } else if y > 0.0 {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                            (x + nx * distance, y + ny * distance)
+                        })
+                        .collect();
+                    // Compute area of buffered polygon (shoelace formula)
+                    let n = buffered.len();
+                    let area: f64 = (0..n)
+                        .map(|i| {
+                            let j = (i + 1) % n;
+                            buffered[i].0 * buffered[j].1 - buffered[j].0 * buffered[i].1
+                        })
+                        .sum::<f64>()
+                        .abs()
+                        / 2.0;
+                    black_box(area)
                 });
             },
         );
@@ -123,14 +206,36 @@ fn bench_spatial_indexing(c: &mut Criterion) {
                     .collect();
 
                 b.iter(|| {
-                    // Placeholder for spatial index construction
-                    black_box(&features);
+                    // Simulate R-tree-style spatial index construction: sort by Hilbert curve key
+                    let mut indexed: Vec<(u64, (f64, f64))> = features
+                        .iter()
+                        .map(|&(x, y)| {
+                            // Compute Hilbert-like space-filling index key
+                            let ix = ((x + 100.0) * 100.0) as u64;
+                            let iy = ((y + 100.0) * 100.0) as u64;
+                            // Interleave bits (Morton code)
+                            let key = interleave_bits(ix, iy);
+                            (key, (x, y))
+                        })
+                        .collect();
+                    indexed.sort_unstable_by_key(|&(k, _)| k);
+                    black_box(indexed.len())
                 });
             },
         );
     }
 
     group.finish();
+}
+
+#[cfg(feature = "vector")]
+fn interleave_bits(x: u64, y: u64) -> u64 {
+    let mut result = 0u64;
+    for i in 0..32u64 {
+        result |= ((x >> i) & 1) << (2 * i);
+        result |= ((y >> i) & 1) << (2 * i + 1);
+    }
+    result
 }
 
 #[cfg(feature = "vector")]

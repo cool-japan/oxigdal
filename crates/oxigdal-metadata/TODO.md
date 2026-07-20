@@ -2,7 +2,7 @@
 
 > **Purpose:** Geospatial metadata standards — ISO 19115/19115-3, FGDC, INSPIRE, DataCite, DCAT — with cross-standard transforms, validation, and extractor stubs for source datasets.
 > **Status (2026-05-16):** 6,809 LoC (src) · 119 tests (35 inline + 84 in tests/) · 2 real-code stubs (extractors)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Implement real NetCDF/CF-Convention metadata extraction (currently inserts only `file_path` attribute).

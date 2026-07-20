@@ -278,24 +278,47 @@ fn test_bytes_codec_no_config_resolves() {
     assert!(result.is_ok(), "Bytes (None config) should succeed");
 }
 
-// ── 8. Crc32c falls back to NullCodec with a warning ─────────────────────────
+// ── 8. Crc32c computes and verifies a real CRC-32C checksum ──────────────────
 
-/// `crc32c` is a checksum codec not yet fully implemented; the dispatch must return
-/// a passthrough (NullCodec-equivalent) and must NOT return an error.
+/// `crc32c` used to fall back to a silent `NullCodec` passthrough, which meant
+/// bit-rot/corruption in a shard using this codec was accepted as valid instead
+/// of being rejected. It now dispatches to a real CRC-32C (Castagnoli) codec:
+/// `encode` must append a 4-byte checksum (growing the payload, unlike a
+/// passthrough), `decode` must strip and verify it, and a corrupted payload
+/// must be rejected rather than silently accepted.
 #[test]
-fn test_crc32c_falls_back_to_null_with_warning() {
+fn test_crc32c_computes_real_checksum() {
     let config = minimal_sharding_config(vec![CodecMetadata::Crc32c {
         configuration: None,
     }]);
     let result = parse_sharding_config(&config);
     assert!(
         result.is_ok(),
-        "crc32c should fall back to NullCodec (passthrough); err={:?}",
+        "crc32c should resolve to a real codec, not error; err={:?}",
         result.err()
     );
     let (chain, _) = result.expect("crc32c parse");
     let data = b"checksum test payload".to_vec();
-    assert_eq!(chain.encode(data.clone()).expect("encode"), data);
+
+    // A real (non-passthrough) codec grows the payload by the checksum size.
+    let encoded = chain.encode(data.clone()).expect("encode");
+    assert_ne!(
+        encoded, data,
+        "crc32c must not be a NullCodec passthrough on encode"
+    );
+    assert_eq!(encoded.len(), data.len() + 4);
+
+    // Round trip recovers the original payload.
+    let decoded = chain.decode(encoded.clone()).expect("decode");
+    assert_eq!(decoded, data);
+
+    // A corrupted payload must be rejected, not silently accepted.
+    let mut corrupted = encoded;
+    corrupted[0] ^= 0xFF;
+    assert!(
+        chain.decode(corrupted).is_err(),
+        "crc32c must reject corrupted data instead of silently passing it through"
+    );
 }
 
 // ── 9. Error message contains the codec name ─────────────────────────────────

@@ -2,7 +2,7 @@
 
 > **Purpose:** OpenTelemetry-based observability — distributed tracing, metrics, logs, anomaly detection, SLO/alerting — for OxiGDAL.
 > **Status (2026-05-16):** 20,096 LoC (src) · 157 tests (141 inline + 16 in tests/) · 0 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Drop the crate-wide `#![allow(clippy::unwrap_used)]` and audit residual `unwrap_or` patterns.

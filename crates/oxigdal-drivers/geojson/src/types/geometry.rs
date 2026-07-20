@@ -895,13 +895,13 @@ impl GeometryCollection {
         let mut max_y = f64::NEG_INFINITY;
 
         for geom in &self.geometries {
-            if let Some(bbox) = geom.compute_bbox() {
-                if bbox.len() >= 4 {
-                    min_x = min_x.min(bbox[0]);
-                    min_y = min_y.min(bbox[1]);
-                    max_x = max_x.max(bbox[2]);
-                    max_y = max_y.max(bbox[3]);
-                }
+            if let Some(bbox) = geom.compute_bbox()
+                && bbox.len() >= 4
+            {
+                min_x = min_x.min(bbox[0]);
+                min_y = min_y.min(bbox[1]);
+                max_x = max_x.max(bbox[2]);
+                max_y = max_y.max(bbox[3]);
             }
         }
 
@@ -971,12 +971,12 @@ fn validate_linear_ring(ring: &CoordinateSequence) -> Result<()> {
     }
 
     // First and last position must be the same
-    if let (Some(first), Some(last)) = (ring.first(), ring.last()) {
-        if first != last {
-            return Err(GeoJsonError::topology(
-                "Linear ring must be closed (first and last positions must be equal)",
-            ));
-        }
+    if let (Some(first), Some(last)) = (ring.first(), ring.last())
+        && first != last
+    {
+        return Err(GeoJsonError::topology(
+            "Linear ring must be closed (first and last positions must be equal)",
+        ));
     }
 
     // Validate all positions

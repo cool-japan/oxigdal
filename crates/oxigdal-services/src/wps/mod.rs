@@ -245,13 +245,13 @@ pub async fn handle_wps_request(
     Query(params): Query<WpsRequest>,
 ) -> Result<Response, ServiceError> {
     // Validate service parameter
-    if let Some(ref service) = params.service {
-        if service.to_uppercase() != "WPS" {
-            return Err(ServiceError::InvalidParameter(
-                "SERVICE".to_string(),
-                format!("Expected 'WPS', got '{}'", service),
-            ));
-        }
+    if let Some(ref service) = params.service
+        && service.to_uppercase() != "WPS"
+    {
+        return Err(ServiceError::InvalidParameter(
+            "SERVICE".to_string(),
+            format!("Expected 'WPS', got '{}'", service),
+        ));
     }
 
     // Route to appropriate handler based on request type

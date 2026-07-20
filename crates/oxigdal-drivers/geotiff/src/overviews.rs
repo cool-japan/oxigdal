@@ -434,10 +434,10 @@ pub fn resample_average(
             for sy in y_start..y_end {
                 for sx in x_start..x_end {
                     let v = src[(sy * src_w + sx) as usize];
-                    if let Some(nd) = nodata {
-                        if (v - nd).abs() < 1e-10 {
-                            continue;
-                        }
+                    if let Some(nd) = nodata
+                        && (v - nd).abs() < 1e-10
+                    {
+                        continue;
                     }
                     sum += v;
                     count += 1;
@@ -588,10 +588,10 @@ pub fn resample_gauss(
             return None;
         }
         let v = src[(row as u32 * src_w + col as u32) as usize];
-        if let Some(nd) = nodata {
-            if (v - nd).abs() < 1e-10 {
-                return None;
-            }
+        if let Some(nd) = nodata
+            && (v - nd).abs() < 1e-10
+        {
+            return None;
         }
         Some(v)
     };
@@ -657,10 +657,10 @@ pub fn resample_min(
             for sy in y_start..y_end {
                 for sx in x_start..x_end {
                     let v = src[(sy * src_w + sx) as usize];
-                    if let Some(nd) = nodata {
-                        if (v - nd).abs() < 1e-10 {
-                            continue;
-                        }
+                    if let Some(nd) = nodata
+                        && (v - nd).abs() < 1e-10
+                    {
+                        continue;
                     }
                     if v < min {
                         min = v;
@@ -702,10 +702,10 @@ pub fn resample_max(
             for sy in y_start..y_end {
                 for sx in x_start..x_end {
                     let v = src[(sy * src_w + sx) as usize];
-                    if let Some(nd) = nodata {
-                        if (v - nd).abs() < 1e-10 {
-                            continue;
-                        }
+                    if let Some(nd) = nodata
+                        && (v - nd).abs() < 1e-10
+                    {
+                        continue;
                     }
                     if v > max {
                         max = v;
@@ -747,10 +747,10 @@ pub fn resample_median(
             for sy in y_start..y_end {
                 for sx in x_start..x_end {
                     let v = src[(sy * src_w + sx) as usize];
-                    if let Some(nd) = nodata {
-                        if (v - nd).abs() < 1e-10 {
-                            continue;
-                        }
+                    if let Some(nd) = nodata
+                        && (v - nd).abs() < 1e-10
+                    {
+                        continue;
                     }
                     vals.push(v);
                 }
@@ -758,7 +758,7 @@ pub fn resample_median(
             if !vals.is_empty() {
                 vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let mid = vals.len() / 2;
-                let median = if vals.len() % 2 == 0 {
+                let median = if vals.len().is_multiple_of(2) {
                     (vals[mid - 1] + vals[mid]) / 2.0
                 } else {
                     vals[mid]
@@ -799,10 +799,10 @@ impl BandHistogram {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for &v in data {
-            if let Some(nd) = nodata {
-                if (v - nd).abs() < 1e-10 {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (v - nd).abs() < 1e-10
+            {
+                continue;
             }
             if v < min {
                 min = v;
@@ -824,10 +824,10 @@ impl BandHistogram {
         let mut buckets = vec![0u64; bucket_count as usize];
 
         for &v in data {
-            if let Some(nd) = nodata {
-                if (v - nd).abs() < 1e-10 {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (v - nd).abs() < 1e-10
+            {
+                continue;
             }
             let idx = ((v - min) / bucket_size) as usize;
             let idx = idx.min(bucket_count as usize - 1);
@@ -959,11 +959,11 @@ impl RasterStatistics {
             if i % stride != 0 {
                 continue;
             }
-            if let Some(nd) = nodata {
-                if (v - nd).abs() < 1e-10 {
-                    nodata_count += 1;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (v - nd).abs() < 1e-10
+            {
+                nodata_count += 1;
+                continue;
             }
             if v < min {
                 min = v;
@@ -987,10 +987,10 @@ impl RasterStatistics {
             if i % stride != 0 {
                 continue;
             }
-            if let Some(nd) = nodata {
-                if (v - nd).abs() < 1e-10 {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (v - nd).abs() < 1e-10
+            {
+                continue;
             }
             n += 1;
             let delta = v - mean;

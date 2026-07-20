@@ -2,7 +2,7 @@
 
 > **Purpose:** Multi-temporal raster analysis — time-indexed collections, temporal compositing, change detection, trend, phenology.
 > **Status (2026-05-16):** 9,209 LoC · 70 tests · 7 real-code stubs (5 empty submodules, 1 STL stub, 1 BFAST stub, 1 LandTrendr stub, 1 Zarr export placeholder)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Implement real BFAST (Breaks For Additive Season and Trend) change detection

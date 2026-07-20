@@ -6,7 +6,7 @@
 //! same low-level helpers that `gpkg_test.rs` uses, so we have no external
 //! file dependency and no `rusqlite` requirement.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::str::FromStr;
 

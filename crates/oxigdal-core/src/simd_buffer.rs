@@ -55,10 +55,12 @@
 //! # }
 //! ```
 
-use std::alloc::{self, Layout};
-use std::ptr::NonNull;
-use std::slice;
+use alloc::alloc::{Layout, alloc, dealloc};
+use core::ptr::NonNull;
+use core::slice;
 
+#[cfg(not(feature = "std"))]
+use crate::compat::*;
 use crate::error::{OxiGdalError, Result};
 
 /// A buffer with guaranteed SIMD-friendly alignment
@@ -99,13 +101,13 @@ impl<T> AlignedBuffer<T> {
             });
         }
 
-        if align < std::mem::align_of::<T>() {
+        if align < core::mem::align_of::<T>() {
             return Err(OxiGdalError::InvalidParameter {
                 parameter: "align",
                 message: format!(
                     "Alignment {} is less than natural alignment of {}",
                     align,
-                    std::mem::align_of::<T>()
+                    core::mem::align_of::<T>()
                 ),
             });
         }
@@ -118,7 +120,7 @@ impl<T> AlignedBuffer<T> {
         }
 
         let size = capacity
-            .checked_mul(std::mem::size_of::<T>())
+            .checked_mul(core::mem::size_of::<T>())
             .ok_or_else(|| OxiGdalError::InvalidParameter {
                 parameter: "capacity",
                 message: "Capacity overflow".to_string(),
@@ -129,7 +131,7 @@ impl<T> AlignedBuffer<T> {
         })?;
 
         // Safety: We've validated the layout above
-        let ptr = unsafe { alloc::alloc(layout) };
+        let ptr = unsafe { alloc(layout) };
 
         let ptr = NonNull::new(ptr)
             .ok_or_else(|| OxiGdalError::Internal {
@@ -163,7 +165,7 @@ impl<T> AlignedBuffer<T> {
 
         // Safety: The buffer is properly allocated and we have exclusive access
         unsafe {
-            std::ptr::write_bytes(buffer.ptr.as_ptr(), 0, capacity);
+            core::ptr::write_bytes(buffer.ptr.as_ptr(), 0, capacity);
         }
 
         Ok(buffer)
@@ -267,7 +269,7 @@ impl<T> Drop for AlignedBuffer<T> {
     fn drop(&mut self) {
         // Safety: The pointer was allocated with this layout
         unsafe {
-            alloc::dealloc(self.ptr.as_ptr().cast::<u8>(), self.layout);
+            dealloc(self.ptr.as_ptr().cast::<u8>(), self.layout);
         }
     }
 }
@@ -475,6 +477,9 @@ impl<T> Iterator for TileIterator<'_, T> {
 ///
 /// The raw bytes live in the arena's memory block; dropping an `ArenaTile` does
 /// not free memory.  The arena reclaims all tiles when it is reset or dropped.
+///
+/// Requires the `std` feature because it is backed by [`crate::memory::arena`].
+#[cfg(feature = "std")]
 pub struct ArenaTile<'a> {
     /// X offset in the parent buffer (pixels)
     pub x: usize,
@@ -495,6 +500,9 @@ pub struct ArenaTile<'a> {
 ///
 /// `'a` binds both the source buffer slice and the arena.  All `ArenaTile`
 /// values yielded by this iterator live as long as `'a`.
+///
+/// Requires the `std` feature because it is backed by [`crate::memory::arena`].
+#[cfg(feature = "std")]
 pub struct TileIteratorArena<'a> {
     /// Byte slice of the source buffer (row-major, interleaved or BSQ)
     src: &'a [u8],
@@ -518,6 +526,7 @@ pub struct TileIteratorArena<'a> {
     arena: &'a crate::memory::arena::Arena,
 }
 
+#[cfg(feature = "std")]
 impl<'a> TileIteratorArena<'a> {
     /// Creates a new `TileIteratorArena`.
     ///
@@ -562,6 +571,7 @@ impl<'a> TileIteratorArena<'a> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<'a> Iterator for TileIteratorArena<'a> {
     type Item = crate::error::Result<ArenaTile<'a>>;
 

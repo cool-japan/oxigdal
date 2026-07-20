@@ -32,10 +32,10 @@ fn test_output_dir() -> PathBuf {
     path.push("test_geotiffs");
 
     // Create directory if it doesn't exist
-    if let Err(e) = fs::create_dir_all(&path) {
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
-            panic!("Failed to create test directory: {}", e);
-        }
+    if let Err(e) = fs::create_dir_all(&path)
+        && e.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        panic!("Failed to create test directory: {}", e);
     }
 
     path

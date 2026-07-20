@@ -3,12 +3,20 @@
 use super::{GmlFeature, GmlFeatureCollection, GmlGeometry};
 use crate::error::{Error, Result};
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
+
+/// Default coordinate dimensionality per the GML spec when `srsDimension`
+/// is absent from every enclosing element.
+const DEFAULT_SRS_DIMENSION: usize = 2;
 
 /// GML parser.
 pub struct GmlParser<R> {
     reader: Reader<R>,
+    /// `srsDimension` inherited from the nearest enclosing element that
+    /// declared it (geometry element or `posList`/`pos` itself). Reset per
+    /// geometry so a dimension set on one feature never leaks into the next.
+    current_srs_dimension: Option<usize>,
 }
 
 impl<R: BufRead> GmlParser<R> {
@@ -17,7 +25,23 @@ impl<R: BufRead> GmlParser<R> {
         let mut xml_reader = Reader::from_reader(reader);
         xml_reader.config_mut().trim_text(true);
 
-        Ok(Self { reader: xml_reader })
+        Ok(Self {
+            reader: xml_reader,
+            current_srs_dimension: None,
+        })
+    }
+
+    /// Extract the `srsDimension` attribute from a start-tag event, if present.
+    fn extract_srs_dimension(e: &BytesStart) -> Option<usize> {
+        e.attributes().flatten().find_map(|attr| {
+            if attr.key.as_ref() == b"srsDimension" {
+                std::str::from_utf8(&attr.value)
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+            } else {
+                None
+            }
+        })
     }
 
     /// Parse GML document.
@@ -68,10 +92,13 @@ impl<R: BufRead> GmlParser<R> {
 
                     // Check for common geometry elements
                     if name.contains("Point") || name.contains("point") {
+                        self.current_srs_dimension = Self::extract_srs_dimension(&e);
                         feature.geometry = self.parse_point().ok();
                     } else if name.contains("LineString") || name.contains("linestring") {
+                        self.current_srs_dimension = Self::extract_srs_dimension(&e);
                         feature.geometry = self.parse_linestring().ok();
                     } else if name.contains("Polygon") || name.contains("polygon") {
+                        self.current_srs_dimension = Self::extract_srs_dimension(&e);
                         feature.geometry = self.parse_polygon().ok();
                     } else {
                         // Treat as property
@@ -155,7 +182,17 @@ impl<R: BufRead> GmlParser<R> {
                 Ok(Event::Start(e)) => {
                     let name = e.name();
                     if name.as_ref() == b"posList" || name.as_ref() == b"coordinates" {
-                        return self.parse_pos_list_or_coordinates();
+                        // This Start event has already been consumed by the
+                        // match above, so we read the tuples directly here
+                        // rather than delegating to
+                        // `parse_pos_list_or_coordinates` (which expects to
+                        // scan forward to its own un-consumed Start tag).
+                        if let Some(dim) = Self::extract_srs_dimension(&e) {
+                            self.current_srs_dimension = Some(dim);
+                        }
+                        let text = self.read_text()?;
+                        let dim = self.current_srs_dimension.unwrap_or(DEFAULT_SRS_DIMENSION);
+                        return parse_coordinate_text(&text, dim);
                     }
                 }
                 Ok(Event::End(_)) => {}
@@ -166,10 +203,30 @@ impl<R: BufRead> GmlParser<R> {
         }
     }
 
-    /// Parse posList or coordinates.
+    /// Parse a `posList`/`coordinates` element that has NOT yet been
+    /// consumed by the caller: scans forward for its Start tag (honoring any
+    /// `srsDimension` attribute found there), then reads its tuples.
     fn parse_pos_list_or_coordinates(&mut self) -> Result<Vec<Vec<f64>>> {
-        let text = self.read_text()?;
-        parse_coordinate_text(&text)
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e))
+                    if e.name().as_ref() == b"posList" || e.name().as_ref() == b"coordinates" =>
+                {
+                    if let Some(dim) = Self::extract_srs_dimension(&e) {
+                        self.current_srs_dimension = Some(dim);
+                    }
+                    let text = self.read_text()?;
+                    let dim = self.current_srs_dimension.unwrap_or(DEFAULT_SRS_DIMENSION);
+                    return parse_coordinate_text(&text, dim);
+                }
+                Ok(Event::End(_)) => {}
+                Ok(Event::Eof) => return Err(Error::gml("Unexpected EOF")),
+                Err(e) => return Err(Error::gml(format!("Parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
     }
 
     /// Parse single pos or coordinate.
@@ -180,8 +237,12 @@ impl<R: BufRead> GmlParser<R> {
                 Ok(Event::Start(e))
                     if e.name().as_ref() == b"pos" || e.name().as_ref() == b"coordinates" =>
                 {
+                    if let Some(dim) = Self::extract_srs_dimension(&e) {
+                        self.current_srs_dimension = Some(dim);
+                    }
                     let text = self.read_text()?;
-                    return parse_coordinate_text(&text);
+                    let dim = self.current_srs_dimension.unwrap_or(DEFAULT_SRS_DIMENSION);
+                    return parse_coordinate_text(&text, dim);
                 }
                 Ok(Event::End(_)) => {}
                 Ok(Event::Eof) => return Err(Error::gml("Unexpected EOF")),
@@ -213,8 +274,15 @@ impl<R: BufRead> GmlParser<R> {
     }
 }
 
-/// Parse coordinate text (space/comma separated numbers).
-fn parse_coordinate_text(text: &str) -> Result<Vec<Vec<f64>>> {
+/// Parse coordinate text (space/comma separated numbers) into tuples of the
+/// given `dim`ensionality. The dimension is provided explicitly by the
+/// caller (from the `srsDimension` attribute, defaulting to 2 per the GML
+/// spec) rather than guessed from the flat number count, which is ambiguous
+/// whenever a 2-D vertex count happens to be a multiple of 3.
+fn parse_coordinate_text(text: &str, dim: usize) -> Result<Vec<Vec<f64>>> {
+    // Guard against a malformed/zero srsDimension causing chunks(0) to panic.
+    let dim = dim.max(1);
+
     let mut coords = Vec::new();
     let numbers: Vec<f64> = text
         .split_whitespace()
@@ -222,8 +290,6 @@ fn parse_coordinate_text(text: &str) -> Result<Vec<Vec<f64>>> {
         .filter_map(|s| s.parse::<f64>().ok())
         .collect();
 
-    // Group into coordinate tuples (2D or 3D)
-    let dim = if numbers.len() % 3 == 0 { 3 } else { 2 };
     for chunk in numbers.chunks(dim) {
         coords.push(chunk.to_vec());
     }
@@ -234,11 +300,12 @@ fn parse_coordinate_text(text: &str) -> Result<Vec<Vec<f64>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufReader;
 
     #[test]
     fn test_parse_coordinate_text() {
         let text = "1.0 2.0 3.0 4.0";
-        let coords = parse_coordinate_text(text).ok();
+        let coords = parse_coordinate_text(text, 2).ok();
         assert!(coords.is_some());
         if let Some(c) = coords {
             assert_eq!(c.len(), 2);
@@ -250,11 +317,153 @@ mod tests {
     #[test]
     fn test_parse_coordinate_text_3d() {
         let text = "1.0 2.0 3.0 4.0 5.0 6.0";
-        let coords = parse_coordinate_text(text).ok();
+        let coords = parse_coordinate_text(text, 3).ok();
         assert!(coords.is_some());
         if let Some(c) = coords {
             assert_eq!(c.len(), 2);
             assert_eq!(c[0], vec![1.0, 2.0, 3.0]);
         }
+    }
+
+    #[test]
+    fn test_parse_coordinate_text_zero_dim_does_not_panic() {
+        // A malformed/zero srsDimension must not panic via chunks(0); it is
+        // clamped to 1.
+        let text = "1.0 2.0 3.0";
+        let coords = parse_coordinate_text(text, 0).ok();
+        assert!(coords.is_some());
+        if let Some(c) = coords {
+            assert_eq!(c.len(), 3);
+            assert_eq!(c[0], vec![1.0]);
+        }
+    }
+
+    // NOTE: `GmlParser::parse`'s top-level dispatch matches the exact,
+    // unprefixed byte strings `b"FeatureCollection"` / `b"featureMember"`
+    // (see the `match name.as_ref()` in `parse`), so these fixtures
+    // deliberately omit the `gml:` namespace prefix on those two wrapper
+    // elements to exercise the parser's actual current behavior. (The
+    // writer emitting `<gml:FeatureCollection>` while the parser expects
+    // unprefixed `<FeatureCollection>` is a pre-existing, separate mismatch
+    // outside the scope of the srsDimension fix under test here.) Geometry
+    // elements are also placed as direct children of `featureMember`
+    // (rather than wrapped in an intermediate `<Feature>` property
+    // container) since `parse_feature_member`'s generic property-capture
+    // path is not nesting-aware.
+
+    /// Regression test for the divisibility-by-3 heuristic bug: a 2-D
+    /// LineString with exactly 3 vertices (6 flat numbers) must NOT be
+    /// misclassified as 3-D. Without an explicit `srsDimension`, GML default
+    /// is 2, so `posList` text with 6 numbers must yield three 2-D tuples.
+    #[test]
+    fn test_gml_2d_linestring_six_numbers_not_misread_as_3d() -> Result<()> {
+        let xml = r#"<?xml version="1.0"?>
+<FeatureCollection>
+  <featureMember>
+    <LineString>
+      <posList>1.0 2.0 3.0 4.0 5.0 6.0</posList>
+    </LineString>
+  </featureMember>
+</FeatureCollection>"#;
+
+        let reader = BufReader::new(xml.as_bytes());
+        let mut parser = GmlParser::new(reader)?;
+        let collection = parser.parse()?;
+
+        assert_eq!(collection.features.len(), 1);
+        let geom = collection.features[0]
+            .geometry
+            .as_ref()
+            .ok_or_else(|| Error::gml("expected geometry"))?;
+        match geom {
+            GmlGeometry::LineString { coordinates } => {
+                assert_eq!(
+                    coordinates.len(),
+                    3,
+                    "expected 3 two-D vertices, not 2 3-D ones"
+                );
+                assert_eq!(coordinates[0], vec![1.0, 2.0]);
+                assert_eq!(coordinates[1], vec![3.0, 4.0]);
+                assert_eq!(coordinates[2], vec![5.0, 6.0]);
+            }
+            other => {
+                return Err(Error::gml(format!(
+                    "unexpected geometry variant: {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// An explicit `srsDimension="3"` on the geometry element must route
+    /// vertices into 3-D tuples even when the flat count would also parse
+    /// unambiguously as 2-D.
+    #[test]
+    fn test_gml_explicit_srs_dimension_3() -> Result<()> {
+        let xml = r#"<?xml version="1.0"?>
+<FeatureCollection>
+  <featureMember>
+    <LineString srsDimension="3">
+      <posList>1.0 2.0 3.0 4.0 5.0 6.0</posList>
+    </LineString>
+  </featureMember>
+</FeatureCollection>"#;
+
+        let reader = BufReader::new(xml.as_bytes());
+        let mut parser = GmlParser::new(reader)?;
+        let collection = parser.parse()?;
+
+        assert_eq!(collection.features.len(), 1);
+        let geom = collection.features[0]
+            .geometry
+            .as_ref()
+            .ok_or_else(|| Error::gml("expected geometry"))?;
+        match geom {
+            GmlGeometry::LineString { coordinates } => {
+                assert_eq!(coordinates.len(), 2);
+                assert_eq!(coordinates[0], vec![1.0, 2.0, 3.0]);
+                assert_eq!(coordinates[1], vec![4.0, 5.0, 6.0]);
+            }
+            other => {
+                return Err(Error::gml(format!(
+                    "unexpected geometry variant: {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// `srsDimension` declared directly on `posList` must also be honored.
+    #[test]
+    fn test_gml_srs_dimension_on_pos_list() -> Result<()> {
+        let xml = r#"<?xml version="1.0"?>
+<FeatureCollection>
+  <featureMember>
+    <LineString>
+      <posList srsDimension="3">1.0 2.0 3.0 4.0 5.0 6.0</posList>
+    </LineString>
+  </featureMember>
+</FeatureCollection>"#;
+
+        let reader = BufReader::new(xml.as_bytes());
+        let mut parser = GmlParser::new(reader)?;
+        let collection = parser.parse()?;
+
+        assert_eq!(collection.features.len(), 1);
+        let geom = collection.features[0]
+            .geometry
+            .as_ref()
+            .ok_or_else(|| Error::gml("expected geometry"))?;
+        match geom {
+            GmlGeometry::LineString { coordinates } => {
+                assert_eq!(coordinates.len(), 2);
+            }
+            other => {
+                return Err(Error::gml(format!(
+                    "unexpected geometry variant: {other:?}"
+                )));
+            }
+        }
+        Ok(())
     }
 }

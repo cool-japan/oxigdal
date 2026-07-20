@@ -49,18 +49,41 @@ zstd = ["oxigdal-geotiff/zstd"]
 [dependencies]
 oxigdal-core = { workspace = true }
 oxigdal-geotiff = { workspace = true }
-oxigdal-algorithms = { workspace = true }
+oxigdal-algorithms = { workspace = true, default-features = true }
 oxigdal-proj = { workspace = true }
-oxigdal-stac = { workspace = true, features = ["std", "reqwest"] }
+oxigdal-stac = { workspace = true, features = ["std"] }
 oxigdal-geojson = { workspace = true }
 oxigdal-geoparquet = { workspace = true }
 oxigdal-zarr = { workspace = true }
 oxigdal-netcdf = { workspace = true }
 oxigdal-shapefile = { workspace = true }
+oxigdal-cloud = { workspace = true }
+oxigdal-analytics = { workspace = true }
+oxigdal-temporal = { workspace = true }
+oxigdal-sensors = { workspace = true }
+oxigdal-ml = { workspace = true }
+oxigdal-qc = { workspace = true }
+oxigdal-gpu = { workspace = true }
+oxigdal-mobile = { workspace = true }
+oxigdal-server = { workspace = true }
+oxigdal-postgis = { workspace = true }
+
+# Vector geometry
+geo = { workspace = true }
+geo-types = { workspace = true }
+
+# Array types used by oxigdal-sensors' spectral index / calibration APIs
+scirs2-core = { workspace = true, features = ["array"] }
+
+# Web services (tutorial 07)
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
 futures = { workspace = true }
+rayon = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -74,11 +97,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
-
-# Cloud
-aws-sdk-s3 = { workspace = true }
-aws-config = { workspace = true }
-reqwest = { workspace = true }
 
 [lints]
 workspace = true

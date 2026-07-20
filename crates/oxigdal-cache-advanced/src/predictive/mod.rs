@@ -130,26 +130,26 @@ impl MarkovPredictor {
 
     /// Predict next keys
     pub fn predict(&self, top_n: usize) -> Vec<Prediction> {
-        if let Some(current) = &self.current_key {
-            if let Some(transitions) = self.transitions.get(current) {
-                let mut predictions: Vec<_> = transitions
-                    .iter()
-                    .map(|(key, prob)| Prediction {
-                        key: key.clone(),
-                        confidence: *prob,
-                        predicted_time: None,
-                    })
-                    .collect();
+        if let Some(current) = &self.current_key
+            && let Some(transitions) = self.transitions.get(current)
+        {
+            let mut predictions: Vec<_> = transitions
+                .iter()
+                .map(|(key, prob)| Prediction {
+                    key: key.clone(),
+                    confidence: *prob,
+                    predicted_time: None,
+                })
+                .collect();
 
-                predictions.sort_by(|a, b| {
-                    b.confidence
-                        .partial_cmp(&a.confidence)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+            predictions.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
 
-                predictions.truncate(top_n);
-                return predictions;
-            }
+            predictions.truncate(top_n);
+            return predictions;
         }
 
         Vec::new()
@@ -506,27 +506,27 @@ impl NeuralPredictor {
 
     /// Predict next keys
     pub fn predict(&mut self, current_key: &CacheKey, top_n: usize) -> Vec<Prediction> {
-        if let Some(&idx) = self.key_to_idx.get(current_key) {
-            if let Some(output) = self.forward(idx) {
-                let mut predictions: Vec<_> = output
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &prob)| Prediction {
-                        key: self.idx_to_key.get(i).cloned().unwrap_or_default(),
-                        confidence: prob,
-                        predicted_time: None,
-                    })
-                    .collect();
+        if let Some(&idx) = self.key_to_idx.get(current_key)
+            && let Some(output) = self.forward(idx)
+        {
+            let mut predictions: Vec<_> = output
+                .iter()
+                .enumerate()
+                .map(|(i, &prob)| Prediction {
+                    key: self.idx_to_key.get(i).cloned().unwrap_or_default(),
+                    confidence: prob,
+                    predicted_time: None,
+                })
+                .collect();
 
-                predictions.sort_by(|a, b| {
-                    b.confidence
-                        .partial_cmp(&a.confidence)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+            predictions.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
 
-                predictions.truncate(top_n);
-                return predictions;
-            }
+            predictions.truncate(top_n);
+            return predictions;
         }
 
         Vec::new()

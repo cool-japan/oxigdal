@@ -106,6 +106,7 @@ pub mod resources;
 pub mod scheduler;
 pub mod security;
 pub mod task_graph;
+pub mod transport;
 pub mod worker_pool;
 pub mod workflow;
 
@@ -163,6 +164,7 @@ pub use resources::{AccountingManager, QuotaManager, ReservationManager};
 pub use scheduler::{LoadBalanceStrategy, Scheduler, SchedulerConfig, SchedulerStats};
 pub use security::{Role, SecurityManager, SecurityStats, User};
 pub use task_graph::{ExecutionPlan, ResourceRequirements, Task, TaskGraph, TaskId, TaskStatus};
+pub use transport::{NodeTransport, UnconfiguredTransport, VoteRequest, VoteResponse};
 pub use worker_pool::{
     SelectionStrategy, Worker, WorkerCapabilities, WorkerCapacity, WorkerId, WorkerPool,
     WorkerStatus, WorkerUsage,

@@ -3,7 +3,7 @@
 //! This module provides quality control checks for vector feature attributes,
 //! including required fields, domain validation, and data type validation.
 
-use crate::error::{QcIssue, QcResult, Severity};
+use crate::error::{QcError, QcIssue, QcResult, Severity};
 use oxigdal_core::vector::{FeatureCollection, FeatureId, FieldValue};
 use std::collections::HashSet;
 
@@ -293,33 +293,30 @@ impl AttributionChecker {
                     }
 
                     // Check data type
-                    if !value.is_null() {
-                        if let Some(type_violation) =
+                    if !value.is_null()
+                        && let Some(type_violation) =
                             self.check_type(value, field_def, &feature_id)?
-                        {
-                            type_violations.push(type_violation);
-                        }
+                    {
+                        type_violations.push(type_violation);
                     }
 
                     // Check domain
-                    if let Some(ref domain) = field_def.domain {
-                        if let Some(domain_violation) =
+                    if let Some(ref domain) = field_def.domain
+                        && let Some(domain_violation) =
                             self.check_domain(value, domain, &field_def.name, &feature_id)?
-                        {
-                            domain_violations.push(domain_violation);
-                        }
+                    {
+                        domain_violations.push(domain_violation);
                     }
                 }
             }
 
             // Check referential integrity
             for constraint in &self.config.referential_constraints {
-                if let Some(value) = feature.properties.get(&constraint.field_name) {
-                    if let Some(ref_violation) =
+                if let Some(value) = feature.properties.get(&constraint.field_name)
+                    && let Some(ref_violation) =
                         self.check_referential_integrity(value, constraint, &feature_id)?
-                    {
-                        referential_violations.push(ref_violation);
-                    }
+                {
+                    referential_violations.push(ref_violation);
                 }
             }
 
@@ -485,47 +482,61 @@ impl AttributionChecker {
                     _ => None,
                 };
 
-                if let Some(num) = num_value {
-                    if num < *min || num > *max {
-                        return Ok(Some(DomainViolation {
-                            feature_id: feature_id.clone(),
-                            field_name: field_name.to_string(),
-                            value: format!("{}", num),
-                            expected_domain: format!("[{}, {}]", min, max),
-                            severity: Severity::Minor,
-                        }));
-                    }
+                if let Some(num) = num_value
+                    && (num < *min || num > *max)
+                {
+                    return Ok(Some(DomainViolation {
+                        feature_id: feature_id.clone(),
+                        field_name: field_name.to_string(),
+                        value: format!("{}", num),
+                        expected_domain: format!("[{}, {}]", min, max),
+                        severity: Severity::Minor,
+                    }));
                 }
             }
             ValueDomain::Enumeration(allowed_values) => {
-                if let FieldValue::String(s) = value {
-                    if !allowed_values.contains(s) {
-                        return Ok(Some(DomainViolation {
-                            feature_id: feature_id.clone(),
-                            field_name: field_name.to_string(),
-                            value: s.clone(),
-                            expected_domain: format!("One of: {:?}", allowed_values),
-                            severity: Severity::Minor,
-                        }));
-                    }
+                if let FieldValue::String(s) = value
+                    && !allowed_values.contains(s)
+                {
+                    return Ok(Some(DomainViolation {
+                        feature_id: feature_id.clone(),
+                        field_name: field_name.to_string(),
+                        value: s.clone(),
+                        expected_domain: format!("One of: {:?}", allowed_values),
+                        severity: Severity::Minor,
+                    }));
                 }
             }
             ValueDomain::StringLength { min, max } => {
+                if let FieldValue::String(s) = value
+                    && (s.len() < *min || s.len() > *max)
+                {
+                    return Ok(Some(DomainViolation {
+                        feature_id: feature_id.clone(),
+                        field_name: field_name.to_string(),
+                        value: s.clone(),
+                        expected_domain: format!("Length: [{}, {}]", min, max),
+                        severity: Severity::Minor,
+                    }));
+                }
+            }
+            ValueDomain::Pattern(pattern) => {
                 if let FieldValue::String(s) = value {
-                    if s.len() < *min || s.len() > *max {
+                    let re = regex::Regex::new(pattern).map_err(|e| {
+                        QcError::InvalidConfiguration(format!(
+                            "Invalid pattern for field '{field_name}': '{pattern}' is not a valid regex: {e}"
+                        ))
+                    })?;
+                    if !re.is_match(s) {
                         return Ok(Some(DomainViolation {
                             feature_id: feature_id.clone(),
                             field_name: field_name.to_string(),
                             value: s.clone(),
-                            expected_domain: format!("Length: [{}, {}]", min, max),
+                            expected_domain: format!("Matches pattern: {pattern}"),
                             severity: Severity::Minor,
                         }));
                     }
                 }
-            }
-            ValueDomain::Pattern(_pattern) => {
-                // Pattern matching would require regex crate
-                // Simplified implementation
             }
         }
 
@@ -539,16 +550,16 @@ impl AttributionChecker {
         constraint: &ReferentialConstraint,
         feature_id: &Option<String>,
     ) -> QcResult<Option<ReferentialViolation>> {
-        if let FieldValue::String(s) = value {
-            if !constraint.valid_values.contains(s) {
-                return Ok(Some(ReferentialViolation {
-                    feature_id: feature_id.clone(),
-                    field_name: constraint.field_name.clone(),
-                    foreign_key: s.clone(),
-                    referenced_table: constraint.referenced_table.clone(),
-                    severity: Severity::Major,
-                }));
-            }
+        if let FieldValue::String(s) = value
+            && !constraint.valid_values.contains(s)
+        {
+            return Ok(Some(ReferentialViolation {
+                feature_id: feature_id.clone(),
+                field_name: constraint.field_name.clone(),
+                foreign_key: s.clone(),
+                referenced_table: constraint.referenced_table.clone(),
+                severity: Severity::Major,
+            }));
         }
 
         Ok(None)
@@ -595,7 +606,7 @@ mod tests {
         let result = checker.validate(&collection);
         assert!(result.is_ok());
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let result = result.expect("validation should succeed for required field test");
         assert_eq!(result.incomplete_features, 1);
         assert_eq!(result.required_field_violations.len(), 1);
@@ -605,5 +616,86 @@ mod tests {
     fn test_field_type() {
         assert_eq!(format!("{:?}", FieldType::String), "String");
         assert_eq!(format!("{:?}", FieldType::Integer), "Integer");
+    }
+
+    // ── ValueDomain::Pattern enforcement ───────────────────────────────────
+
+    #[test]
+    fn test_pattern_domain_matching_value_no_violation() {
+        let checker = AttributionChecker::new();
+        let domain = ValueDomain::Pattern(r"^[A-Z]{2}-\d{4}$".to_string());
+        let value = FieldValue::String("AB-1234".to_string());
+
+        let result = checker
+            .check_domain(&value, &domain, "code", &None)
+            .expect("pattern check should succeed for a valid regex");
+
+        assert!(
+            result.is_none(),
+            "a value matching the pattern must not produce a violation"
+        );
+    }
+
+    #[test]
+    fn test_pattern_domain_non_matching_value_is_violation() {
+        let checker = AttributionChecker::new();
+        let domain = ValueDomain::Pattern(r"^[A-Z]{2}-\d{4}$".to_string());
+        let value = FieldValue::String("not-a-code".to_string());
+
+        let result = checker
+            .check_domain(&value, &domain, "code", &None)
+            .expect("pattern check should succeed for a valid regex");
+
+        let violation = result.expect("a value that fails to match the pattern must be flagged");
+        assert_eq!(violation.field_name, "code");
+        assert_eq!(violation.value, "not-a-code");
+    }
+
+    #[test]
+    fn test_pattern_domain_invalid_regex_returns_error() {
+        let checker = AttributionChecker::new();
+        // Unbalanced group is not a valid regex.
+        let domain = ValueDomain::Pattern("(unterminated".to_string());
+        let value = FieldValue::String("anything".to_string());
+
+        let result = checker.check_domain(&value, &domain, "code", &None);
+        assert!(
+            result.is_err(),
+            "an invalid pattern must surface as an error, not silently pass"
+        );
+    }
+
+    #[test]
+    fn test_pattern_domain_enforced_through_validate() {
+        let mut config = AttributionConfig::default();
+        config.field_definitions.push(FieldDefinition {
+            name: "postal_code".to_string(),
+            expected_type: FieldType::String,
+            required: false,
+            nullable: false,
+            domain: Some(ValueDomain::Pattern(r"^\d{5}$".to_string())),
+            default_value: None,
+        });
+
+        let checker = AttributionChecker::with_config(config);
+
+        let mut feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
+        feature.properties.insert(
+            "postal_code".to_string(),
+            FieldValue::String("abc".to_string()),
+        );
+        let collection = FeatureCollection {
+            features: vec![feature],
+            metadata: None,
+        };
+
+        let result = checker
+            .validate(&collection)
+            .expect("validation should succeed even when a pattern domain is violated");
+        assert_eq!(
+            result.domain_violations.len(),
+            1,
+            "ValueDomain::Pattern must actually be enforced through validate()"
+        );
     }
 }

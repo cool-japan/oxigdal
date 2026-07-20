@@ -35,10 +35,10 @@ where
     let mut cells: Vec<(usize, usize, f64)> = Vec::new();
     for y in 0..height {
         for x in 0..width {
-            if let Some(nd) = nodata {
-                if (dem[[y, x]] - nd).abs() < T::epsilon() {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (dem[[y, x]] - nd).abs() < T::epsilon()
+            {
+                continue;
             }
             cells.push((y, x, dem[[y, x]].into()));
         }

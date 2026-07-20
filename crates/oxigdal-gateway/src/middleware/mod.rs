@@ -78,7 +78,11 @@ pub trait Middleware: Send + Sync {
     async fn before_request(&self, request: &mut Request) -> Result<()>;
 
     /// Processes a response before it's sent to the client.
-    async fn after_response(&self, response: &mut Response) -> Result<()>;
+    ///
+    /// Receives the originating (post-`before_request`) [`Request`] alongside the response so
+    /// that response-side decisions -- most importantly CORS's `Access-Control-Allow-Origin`
+    /// -- can be made against the actual inbound request instead of blindly.
+    async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()>;
 }
 
 /// Middleware chain for processing requests and responses.
@@ -99,6 +103,16 @@ impl MiddlewareChain {
         self.middlewares.push(middleware);
     }
 
+    /// Number of middleware components currently registered in the chain.
+    pub fn len(&self) -> usize {
+        self.middlewares.len()
+    }
+
+    /// Whether the chain has no middleware components registered.
+    pub fn is_empty(&self) -> bool {
+        self.middlewares.is_empty()
+    }
+
     /// Processes a request through the middleware chain.
     pub async fn process_request(&self, mut request: Request) -> Result<Request> {
         for middleware in &self.middlewares {
@@ -109,9 +123,17 @@ impl MiddlewareChain {
     }
 
     /// Processes a response through the middleware chain.
-    pub async fn process_response(&self, mut response: Response) -> Result<Response> {
+    ///
+    /// `request` must be the same (post-`process_request`) request that produced `response`,
+    /// so that response-side middleware (e.g. CORS) can validate against the real inbound
+    /// `Origin` rather than acting blindly.
+    pub async fn process_response(
+        &self,
+        request: &Request,
+        mut response: Response,
+    ) -> Result<Response> {
         for middleware in self.middlewares.iter().rev() {
-            middleware.after_response(&mut response).await?;
+            middleware.after_response(request, &mut response).await?;
         }
 
         Ok(response)

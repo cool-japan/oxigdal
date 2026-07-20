@@ -7,7 +7,10 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use oxigdal_algorithms::raster::compute_zonal_stats as compute_zonal;
 use oxigdal_algorithms::raster::{HillshadeParams, hillshade as compute_hillshade};
-use oxigdal_algorithms::raster::{aspect as compute_aspect, slope as compute_slope};
+use oxigdal_algorithms::raster::{
+    SlopeAspectConfig, SlopeUnits, aspect_advanced as compute_aspect_advanced,
+    slope_advanced as compute_slope_advanced,
+};
 use oxigdal_algorithms::resampling::{Resampler, ResamplingMethod as CoreResamplingMethod};
 use oxigdal_algorithms::vector::{
     AreaMethod as CoreAreaMethod, BufferCapStyle, BufferJoinStyle,
@@ -198,19 +201,46 @@ pub fn simplify(
     Ok(GeometryWrapper::from_geometry(simplified))
 }
 
+/// Validates that a ground-unit pixel size is usable for terrain algorithms.
+///
+/// A non-positive or non-finite pixel size would silently produce `NaN`/`Inf`
+/// slope, aspect, or hillshade values (since it is used as a division/scale
+/// factor), so it is rejected explicitly instead of propagating garbage data.
+fn validate_pixel_size(pixel_size: f64) -> Result<()> {
+    if pixel_size.is_finite() && pixel_size > 0.0 {
+        Ok(())
+    } else {
+        Err(NodeError {
+            code: "INVALID_PARAMETER".to_string(),
+            message: format!(
+                "pixel_size must be a positive, finite number (in the DEM's ground units), got {}",
+                pixel_size
+            ),
+        }
+        .into())
+    }
+}
+
 /// Computes hillshade from a DEM
+///
+/// `pixel_size` is the ground distance covered by one pixel (e.g. meters or
+/// degrees, matching the DEM's coordinate reference system) and must be
+/// supplied by the caller since raw pixel buffers carry no georeferencing.
 #[napi]
 pub fn hillshade(
     dem: &BufferWrapper,
     azimuth: f64,
     altitude: f64,
     z_factor: f64,
+    pixel_size: f64,
 ) -> Result<BufferWrapper> {
+    validate_pixel_size(pixel_size)?;
+
     let params = HillshadeParams {
         azimuth,
         altitude,
         z_factor,
-        pixel_size: 1.0,
+        pixel_size,
         scale: 255.0,
     };
 
@@ -219,18 +249,45 @@ pub fn hillshade(
 }
 
 /// Computes slope from a DEM
+///
+/// `pixel_size` is the ground distance covered by one pixel (e.g. meters or
+/// degrees, matching the DEM's coordinate reference system). When
+/// `as_percent` is `true`, the result is percent rise instead of degrees.
 #[napi]
-pub fn slope(dem: &BufferWrapper, z_factor: f64, _as_percent: bool) -> Result<BufferWrapper> {
-    // Note: pixel_size is assumed to be 1.0 for now
-    let result = compute_slope(dem.inner(), 1.0, z_factor).to_napi()?;
+pub fn slope(
+    dem: &BufferWrapper,
+    pixel_size: f64,
+    z_factor: f64,
+    as_percent: bool,
+) -> Result<BufferWrapper> {
+    validate_pixel_size(pixel_size)?;
+
+    let config = SlopeAspectConfig {
+        slope_units: if as_percent {
+            SlopeUnits::Percent
+        } else {
+            SlopeUnits::Degrees
+        },
+        z_factor,
+        ..Default::default()
+    };
+
+    let result = compute_slope_advanced(dem.inner(), pixel_size, &config).to_napi()?;
     Ok(BufferWrapper::from_raster_buffer(result))
 }
 
 /// Computes aspect from a DEM
+///
+/// `pixel_size` is the ground distance covered by one pixel (e.g. meters or
+/// degrees, matching the DEM's coordinate reference system). Aspect (the
+/// compass direction a slope faces) does not depend on the vertical
+/// exaggeration factor since it is a ratio of the x/y gradients.
 #[napi]
-pub fn aspect(dem: &BufferWrapper) -> Result<BufferWrapper> {
-    // Note: pixel_size and z_factor are assumed to be 1.0 for now
-    let result = compute_aspect(dem.inner(), 1.0, 1.0).to_napi()?;
+pub fn aspect(dem: &BufferWrapper, pixel_size: f64) -> Result<BufferWrapper> {
+    validate_pixel_size(pixel_size)?;
+
+    let result = compute_aspect_advanced(dem.inner(), pixel_size, &SlopeAspectConfig::default())
+        .to_napi()?;
     Ok(BufferWrapper::from_raster_buffer(result))
 }
 
@@ -297,5 +354,135 @@ fn evaluate_expression(expr: &str, bands: Vec<&BufferWrapper>) -> Result<RasterB
             message: "Complex expressions not yet supported".to_string(),
         }
         .into())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use oxigdal_core::types::RasterDataType;
+
+    /// Builds a 5x5 float32 DEM ramping linearly along x: elevation = x * 10.0.
+    fn ramp_dem() -> BufferWrapper {
+        let mut buf = RasterBuffer::zeros(5, 5, RasterDataType::Float32);
+        for y in 0..5 {
+            for x in 0..5 {
+                buf.set_pixel(x, y, (x as f64) * 10.0)
+                    .expect("set_pixel should succeed for in-bounds coordinates");
+            }
+        }
+        BufferWrapper::from_raster_buffer(buf)
+    }
+
+    /// Asserts a `Result<BufferWrapper>` is an error and returns its message.
+    ///
+    /// `BufferWrapper` does not implement `Debug` (it wraps a large pixel
+    /// buffer), so `Result::expect_err`/`unwrap_err` cannot be used directly.
+    fn expect_error_message(result: Result<BufferWrapper>) -> String {
+        match result {
+            Ok(_) => panic!("expected an error, got Ok(..)"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn slope_rejects_non_positive_pixel_size() {
+        let dem = ramp_dem();
+
+        let message = expect_error_message(slope(&dem, 0.0, 1.0, false));
+        assert!(message.contains("INVALID_PARAMETER"));
+
+        let message = expect_error_message(slope(&dem, -5.0, 1.0, false));
+        assert!(message.contains("INVALID_PARAMETER"));
+
+        let message = expect_error_message(slope(&dem, f64::NAN, 1.0, false));
+        assert!(message.contains("INVALID_PARAMETER"));
+    }
+
+    #[test]
+    fn hillshade_rejects_non_positive_pixel_size() {
+        let dem = ramp_dem();
+        let message = expect_error_message(hillshade(&dem, 315.0, 45.0, 1.0, 0.0));
+        assert!(message.contains("INVALID_PARAMETER"));
+    }
+
+    #[test]
+    fn aspect_rejects_non_positive_pixel_size() {
+        let dem = ramp_dem();
+        let message = expect_error_message(aspect(&dem, f64::INFINITY));
+        assert!(message.contains("INVALID_PARAMETER"));
+    }
+
+    #[test]
+    fn slope_scales_inversely_with_pixel_size() {
+        let dem = ramp_dem();
+
+        let slope_1m = slope(&dem, 1.0, 1.0, false).expect("slope at 1.0 pixel_size");
+        let slope_10m = slope(&dem, 10.0, 1.0, false).expect("slope at 10.0 pixel_size");
+
+        // At an interior pixel, the same elevation ramp spread over a larger
+        // pixel_size means a gentler rise/run gradient, hence a smaller slope
+        // angle. This is exactly the bug: previously pixel_size was hardcoded
+        // to 1.0 regardless of what was passed in, so both calls would have
+        // produced identical output.
+        let center_1m = slope_1m.get_pixel(2, 2).expect("center pixel readable");
+        let center_10m = slope_10m.get_pixel(2, 2).expect("center pixel readable");
+
+        assert!(
+            center_1m > center_10m,
+            "slope with pixel_size=1.0 ({center_1m}) should exceed slope with pixel_size=10.0 ({center_10m})"
+        );
+    }
+
+    #[test]
+    fn slope_as_percent_flag_changes_units() {
+        let dem = ramp_dem();
+
+        let degrees = slope(&dem, 1.0, 1.0, false).expect("slope in degrees");
+        let percent = slope(&dem, 1.0, 1.0, true).expect("slope in percent");
+
+        let degrees_value = degrees.get_pixel(2, 2).expect("center pixel readable");
+        let percent_value = percent.get_pixel(2, 2).expect("center pixel readable");
+
+        // Previously `as_percent` was discarded entirely, so both calls would
+        // yield identical (degree-based) output regardless of the flag.
+        assert!(
+            (degrees_value - percent_value).abs() > 1e-6,
+            "as_percent=true must change the output units: degrees={degrees_value}, percent={percent_value}"
+        );
+
+        // tan(degrees) * 100 == percent, cross-checking against the known
+        // conversion formula rather than just asserting inequality. The
+        // buffers are float32, so allow for that reduced precision rather
+        // than requiring f64-level exactness.
+        let expected_percent = degrees_value.to_radians().tan() * 100.0;
+        assert!(
+            (expected_percent - percent_value).abs() < 1e-2,
+            "percent value {percent_value} should equal tan(degrees) * 100 = {expected_percent}"
+        );
+    }
+
+    #[test]
+    fn hillshade_pixel_size_affects_output() {
+        let dem = ramp_dem();
+
+        let shade_1m = hillshade(&dem, 315.0, 45.0, 1.0, 1.0).expect("hillshade at 1.0");
+        let shade_10m = hillshade(&dem, 315.0, 45.0, 1.0, 10.0).expect("hillshade at 10.0");
+
+        let value_1m = shade_1m.get_pixel(2, 2).expect("center pixel readable");
+        let value_10m = shade_10m.get_pixel(2, 2).expect("center pixel readable");
+
+        assert!(
+            (value_1m - value_10m).abs() > 1e-6,
+            "hillshade should differ when pixel_size changes: {value_1m} vs {value_10m}"
+        );
+    }
+
+    #[test]
+    fn aspect_pixel_size_accepted_for_valid_input() {
+        let dem = ramp_dem();
+        let result = aspect(&dem, 30.0);
+        assert!(result.is_ok(), "aspect should accept a valid pixel_size");
     }
 }

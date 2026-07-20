@@ -8,7 +8,7 @@
 //!  - that the item at the window centre has distance 0 and ranks first,
 //!  - parity between `RTree::search_top_k` and `SpatialQuery::top_k_in_window`.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_index::{Bbox2D, RTree, SpatialQuery};
 

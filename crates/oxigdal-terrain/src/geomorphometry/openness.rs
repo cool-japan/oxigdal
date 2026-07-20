@@ -20,10 +20,10 @@ where
     for y in 0..height {
         for x in 0..width {
             let center = dem[[y, x]];
-            if let Some(nd) = nodata {
-                if (center - nd).abs() < T::epsilon() {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (center - nd).abs() < T::epsilon()
+            {
+                continue;
             }
 
             let mut angle_sum = 0.0;
@@ -70,10 +70,10 @@ where
     for y in 0..height {
         for x in 0..width {
             let center = dem[[y, x]];
-            if let Some(nd) = nodata {
-                if (center - nd).abs() < T::epsilon() {
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && (center - nd).abs() < T::epsilon()
+            {
+                continue;
             }
 
             let mut angle_sum = 0.0;

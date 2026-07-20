@@ -436,7 +436,7 @@ fn median_period_from_timestamps(timestamps: &[i64]) -> Option<f64> {
         return None;
     }
     diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_dt = if diffs.len() % 2 == 0 {
+    let median_dt = if diffs.len().is_multiple_of(2) {
         (diffs[diffs.len() / 2 - 1] + diffs[diffs.len() / 2]) / 2.0
     } else {
         diffs[diffs.len() / 2]

@@ -1528,3 +1528,181 @@ mod edge_case_tests {
         Ok(())
     }
 }
+
+// =============================================================================
+// Module: Profile command / Profiler tests
+// =============================================================================
+mod profile_tests {
+    #[allow(unused_imports)]
+    use super::*;
+    use oxigdal_cli::util::profiler::{Operation, Profiler};
+    use std::str::FromStr;
+
+    /// Test 121: Profiler report contains expected statistical fields
+    #[test]
+    fn test_profiler_report_format() {
+        let mut p = Profiler::new("report_test");
+        for _ in 0..5 {
+            p.start();
+            // tiny workload so the test stays fast
+            let _: u64 = (0u64..1_000).sum();
+            p.stop();
+        }
+        let report = p.report();
+        // Must contain all expected labels
+        assert!(report.contains("count=5"), "report must show count=5");
+        assert!(report.contains("min="), "report must have min");
+        assert!(report.contains("mean="), "report must have mean");
+        assert!(report.contains("median="), "report must have median");
+        assert!(report.contains("p95="), "report must have p95");
+        assert!(report.contains("p99="), "report must have p99");
+        assert!(report.contains("max="), "report must have max");
+        assert!(report.contains("ms"), "times must be in milliseconds");
+        assert!(
+            report.contains("report_test"),
+            "report must include the profiler name"
+        );
+    }
+
+    /// Test 122: Profiler export_json has the correct JSON structure
+    #[test]
+    fn test_profiler_export_json() {
+        let mut p = Profiler::new("json_struct_test");
+        for _ in 0..3 {
+            p.start();
+            let _: u64 = (0u64..500).sum();
+            p.stop();
+        }
+        let json_str = p.export_json().expect("export_json must succeed");
+        let v: serde_json::Value =
+            serde_json::from_str(&json_str).expect("exported JSON must be valid");
+
+        // Required top-level keys
+        assert!(v["name"].is_string(), "JSON must have string 'name'");
+        assert_eq!(v["name"], "json_struct_test");
+        assert!(v["count"].is_number(), "JSON must have numeric 'count'");
+        assert_eq!(v["count"], 3);
+        assert!(v["min_ms"].is_number(), "JSON must have numeric 'min_ms'");
+        assert!(v["mean_ms"].is_number(), "JSON must have numeric 'mean_ms'");
+        assert!(
+            v["median_ms"].is_number(),
+            "JSON must have numeric 'median_ms'"
+        );
+        assert!(v["p95_ms"].is_number(), "JSON must have numeric 'p95_ms'");
+        assert!(v["p99_ms"].is_number(), "JSON must have numeric 'p99_ms'");
+        assert!(v["max_ms"].is_number(), "JSON must have numeric 'max_ms'");
+        assert!(
+            v["measurements_ms"].is_array(),
+            "JSON must have 'measurements_ms' array"
+        );
+        assert_eq!(
+            v["measurements_ms"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
+            3,
+            "measurements_ms must have 3 entries"
+        );
+
+        // Sanity: max >= mean >= min
+        let min = v["min_ms"].as_f64().unwrap_or(0.0);
+        let mean = v["mean_ms"].as_f64().unwrap_or(0.0);
+        let max = v["max_ms"].as_f64().unwrap_or(0.0);
+        assert!(max >= mean, "max must be >= mean");
+        assert!(mean >= min, "mean must be >= min");
+    }
+
+    /// Test 123: Profiler with no measurements produces a graceful empty report
+    #[test]
+    fn test_profiler_no_measurements() {
+        let p = Profiler::new("empty_profiler");
+        let report = p.report();
+        assert!(
+            report.contains("No measurements"),
+            "empty profiler report must say 'No measurements'"
+        );
+        assert!(
+            report.contains("empty_profiler"),
+            "empty profiler report must include the name"
+        );
+
+        // export_json should still succeed with count=0
+        let json_str = p
+            .export_json()
+            .expect("export_json must not fail for empty profiler");
+        let v: serde_json::Value =
+            serde_json::from_str(&json_str).expect("empty profiler JSON must be valid");
+        assert_eq!(v["count"], 0);
+        assert!(
+            v["measurements_ms"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+            "measurements_ms must be empty for zero-measurement profiler"
+        );
+    }
+
+    /// Test 124: Operation::from_str recognises all valid operation names
+    #[test]
+    fn test_operation_from_str() {
+        let valid_cases = &[
+            ("open", Operation::Open),
+            ("Open", Operation::Open),
+            ("OPEN", Operation::Open),
+            ("open-dataset", Operation::Open),
+            ("opendataset", Operation::Open),
+            ("read-features", Operation::ReadFeatures),
+            ("readfeatures", Operation::ReadFeatures),
+            ("features", Operation::ReadFeatures),
+            ("read-bands", Operation::ReadBands),
+            ("readbands", Operation::ReadBands),
+            ("bands", Operation::ReadBands),
+            ("stats", Operation::Stats),
+            ("compute-stats", Operation::Stats),
+            ("computestats", Operation::Stats),
+        ];
+
+        for (input, expected) in valid_cases {
+            let result = Operation::from_str(input);
+            assert!(
+                result.is_ok(),
+                "'{input}' should parse to a valid Operation, got: {:?}",
+                result
+            );
+            assert_eq!(
+                result.ok(),
+                Some(*expected),
+                "'{input}' should map to {expected:?}"
+            );
+        }
+
+        // Invalid inputs
+        let invalid_cases = &["", "unknown", "read_features", "BANDS_ALL", "42"];
+        for input in invalid_cases {
+            let result = Operation::from_str(input);
+            assert!(
+                result.is_err(),
+                "'{input}' should fail to parse as an Operation"
+            );
+        }
+    }
+
+    /// Test 125: Profile command returns an error for a nonexistent input file
+    #[test]
+    fn test_profile_command_nonexistent_file() {
+        let op = Operation::Open;
+        let result = op.execute("/nonexistent/path/that/cannot/exist.fgb");
+        assert!(
+            result.is_err(),
+            "opening a nonexistent file must return an error"
+        );
+        let err_msg = result
+            .expect_err("opening a nonexistent file must return an error")
+            .to_string();
+        // The error chain should mention the file or describe the failure
+        assert!(
+            !err_msg.is_empty(),
+            "error message must not be empty for nonexistent file"
+        );
+    }
+}

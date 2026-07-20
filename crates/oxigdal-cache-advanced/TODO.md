@@ -2,7 +2,7 @@
 
 > **Purpose:** Multi-tier caching for OxiGDAL — L1 in-memory, L2 on-disk, optional L3 network; eviction policies (LRU/LFU/ARC/W-TinyLFU), adaptive compression (lz4/zstd/snappy via `oxiarc-*`), predictive prefetching, coherency, partitioning, warming, write policies.
 > **Status (2026-05-16):** 7,270 LoC · 31 tests · 1 real stub (`distributed.rs:212` remote lookup returns `None` placeholder; rest of distributed path conceptual).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] L1 (memory) cache with LRU + LFU + ARC + W-TinyLFU eviction policies

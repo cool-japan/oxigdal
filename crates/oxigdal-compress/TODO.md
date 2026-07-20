@@ -2,7 +2,7 @@
 
 > **Purpose:** Advanced compression codecs and auto-selection for geospatial data (LZ4, Zstd, Brotli, Snappy, DEFLATE, delta/RLE/dictionary, ZFP/SZ floating-point).
 > **Status (2026-05-16):** 4,471 Rust LoC · 91 tests · 3 real stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

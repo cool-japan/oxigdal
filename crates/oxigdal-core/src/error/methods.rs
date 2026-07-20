@@ -3,6 +3,9 @@
 use super::builder::ErrorContext;
 use super::types::*;
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 #[cfg(feature = "std")]
 use std::path::Path;
 

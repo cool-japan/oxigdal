@@ -416,19 +416,18 @@ impl ChangeDetector {
                     }
                     if let Ok(result) =
                         crate::change::landtrendr::landtrendr_segment(&values, &options)
+                        && !result.vertices.is_empty()
                     {
-                        if !result.vertices.is_empty() {
-                            let first = result.vertices.first().map(|v| v.value).unwrap_or(0.0);
-                            let last = result.vertices.last().map(|v| v.value).unwrap_or(0.0);
-                            magnitude[[i, j, k]] = (last - first).abs();
-                            direction[[i, j, k]] = if last > first {
-                                1
-                            } else if last < first {
-                                -1
-                            } else {
-                                0
-                            };
-                        }
+                        let first = result.vertices.first().map(|v| v.value).unwrap_or(0.0);
+                        let last = result.vertices.last().map(|v| v.value).unwrap_or(0.0);
+                        magnitude[[i, j, k]] = (last - first).abs();
+                        direction[[i, j, k]] = if last > first {
+                            1
+                        } else if last < first {
+                            -1
+                        } else {
+                            0
+                        };
                     }
                 }
             }

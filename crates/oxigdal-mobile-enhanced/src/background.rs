@@ -340,13 +340,12 @@ impl BackgroundScheduler {
         let mut removed = 0;
 
         tasks.retain(|_, info| {
-            if info.is_finished() {
-                if let Some(completed_at) = info.completed_at {
-                    if now.duration_since(completed_at) > older_than {
-                        removed += 1;
-                        return false;
-                    }
-                }
+            if info.is_finished()
+                && let Some(completed_at) = info.completed_at
+                && now.duration_since(completed_at) > older_than
+            {
+                removed += 1;
+                return false;
             }
             true
         });

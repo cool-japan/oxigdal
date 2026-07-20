@@ -67,12 +67,22 @@ pub struct ReportGenerator;
 impl ReportGenerator {
     /// Generate a compliance report for the given SLOs.
     pub fn generate(
-        _slos: &[Slo],
+        slos: &[Slo],
         period_start: DateTime<Utc>,
         period_end: DateTime<Utc>,
     ) -> Result<ComplianceReport> {
-        // Placeholder - would query actual metrics
-        let slo_statuses = Vec::new();
+        let slo_statuses: Vec<SloStatus> = slos
+            .iter()
+            .map(|slo| {
+                let achievement = (100.0 - slo.error_budget.consumed).clamp(0.0, 100.0);
+                SloStatus::new(
+                    slo.name.clone(),
+                    achievement,
+                    slo.target,
+                    slo.error_budget.clone(),
+                )
+            })
+            .collect();
         Ok(ComplianceReport::new(
             period_start,
             period_end,

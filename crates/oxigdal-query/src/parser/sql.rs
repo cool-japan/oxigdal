@@ -78,11 +78,11 @@ fn convert_query(query: &sql_ast::Query) -> Result<SelectStatement> {
         }
 
         // Convert ORDER BY clause
-        if let Some(order_by) = &query.order_by {
-            if let sql_ast::OrderByKind::Expressions(exprs) = &order_by.kind {
-                for order_expr in exprs {
-                    stmt.order_by.push(convert_order_by_expr(order_expr)?);
-                }
+        if let Some(order_by) = &query.order_by
+            && let sql_ast::OrderByKind::Expressions(exprs) = &order_by.kind
+        {
+            for order_expr in exprs {
+                stmt.order_by.push(convert_order_by_expr(order_expr)?);
             }
         }
 
@@ -370,13 +370,13 @@ fn convert_expr(expr: &sql_ast::Expr) -> Result<Expr> {
             pattern,
             ..
         } => {
-            // ILIKE (case-insensitive) is treated as regular LIKE for now
+            // ILIKE performs case-insensitive pattern matching.
             Ok(Expr::BinaryOp {
                 left: Box::new(convert_expr(expr)?),
                 op: if *negated {
-                    BinaryOperator::NotLike
+                    BinaryOperator::NotILike
                 } else {
-                    BinaryOperator::Like
+                    BinaryOperator::ILike
                 },
                 right: Box::new(convert_expr(pattern)?),
             })

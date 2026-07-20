@@ -379,6 +379,7 @@ impl GpuContext {
                 power_preference: config.power_preference.into(),
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await;
 
@@ -467,10 +468,23 @@ impl GpuContext {
 
     /// Poll the device for completed operations.
     ///
-    /// This should be called periodically to process GPU operations.
-    pub fn poll(&self, _wait: bool) {
-        // wgpu 28 doesn't have explicit poll control, device polls automatically
-        // This method is kept for API compatibility
+    /// This must be called to service pending GPU work — most importantly the
+    /// `map_async` callbacks that back [`crate::GpuBuffer::read`]. Without a
+    /// poll those callbacks are never invoked and a readback future never
+    /// resolves.
+    ///
+    /// When `wait` is `true` this blocks until the device is idle
+    /// ([`wgpu::PollType::Wait`]); when `false` it performs a single
+    /// non-blocking poll ([`wgpu::PollType::Poll`]). Poll errors (e.g. a lost
+    /// device) are intentionally swallowed here — callers observe device loss
+    /// through the operation that submitted the work.
+    pub fn poll(&self, wait: bool) {
+        let poll_type = if wait {
+            wgpu::PollType::wait_indefinitely()
+        } else {
+            wgpu::PollType::Poll
+        };
+        let _ = self.device.poll(poll_type);
     }
 
     /// Spawn a background thread that keeps the wgpu device polled.

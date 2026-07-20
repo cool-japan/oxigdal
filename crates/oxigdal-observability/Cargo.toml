@@ -43,8 +43,8 @@ thiserror = { workspace = true }
 # Time handling
 chrono = { workspace = true }
 
-# HTTP client for exporters
-reqwest = { workspace = true, features = ["json"] }
+# HTTP client for exporters (optional: only needed for http-exporter feature)
+reqwest = { workspace = true, features = ["json"], optional = true }
 
 # Statistics for anomaly detection
 statrs.workspace = true
@@ -69,6 +69,7 @@ default = ["otlp"]
 # jaeger feature kept for API compatibility; opentelemetry-jaeger dep removed (RUSTSEC-2025-0123)
 jaeger = []
 otlp = ["opentelemetry-otlp"]
+http-exporter = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio-test.workspace = true
@@ -81,3 +82,9 @@ harness = false
 
 [lints]
 workspace = true
+
+# NOTE: `http-exporter` pulls reqwest -> rustls -> aws-lc-sys (C/asm).
+# `otlp` and `jaeger` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["otlp", "jaeger"]
+rustdoc-args = ["--cfg", "docsrs"]

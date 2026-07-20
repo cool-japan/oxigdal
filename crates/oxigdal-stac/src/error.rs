@@ -57,7 +57,7 @@ pub enum StacError {
     Deserialization(String),
 
     /// HTTP request error.
-    #[cfg(feature = "reqwest")]
+    #[cfg(feature = "async")]
     #[error("HTTP request error: {0}")]
     Http(String),
 
@@ -141,7 +141,7 @@ impl From<chrono::ParseError> for StacError {
     }
 }
 
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "async")]
 impl From<reqwest::Error> for StacError {
     fn from(err: reqwest::Error) -> Self {
         StacError::Http(err.to_string())

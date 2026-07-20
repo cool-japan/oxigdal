@@ -3,12 +3,13 @@
 //! This module provides a comprehensive reader for Zarr v3 arrays,
 //! including codec pipeline support, sharding, and storage transformers.
 
-use crate::codecs::{Codec, CodecChain};
+use crate::codecs::CodecChain;
+use crate::codecs::dispatch::build_codec_from_metadata;
 use crate::error::{Result, ZarrError};
-use crate::metadata::v3::{ArrayMetadataV3, CodecMetadata};
+use crate::metadata::v3::{ArrayMetadataV3, CodecMetadata, ShardingConfig};
 use crate::sharding::{IndexLocation, ShardReader};
 use crate::storage::{Store, StoreKey};
-use crate::transformers::{Transformer, TransformerChain};
+use crate::transformers::{TransformerChain, build_transformer_from_metadata};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -114,16 +115,22 @@ impl<S: Store> ZarrV3Reader<S> {
     /// Returns error if chunk cannot be read or decoded
     pub fn read_chunk(&self, coords: &[usize]) -> Result<Vec<u8>> {
         // Check cache first
-        if let Some(cache) = &self.cache {
-            if let Some(data) = cache.get(coords) {
-                return Ok(data.clone());
-            }
+        if let Some(cache) = &self.cache
+            && let Some(data) = cache.get(coords)
+        {
+            return Ok(data.clone());
         }
 
-        // Build chunk key
-        let chunk_key = self.build_chunk_key(coords)?;
+        // For sharded arrays, delegate to the sharding read path BEFORE building
+        // the chunk key so that shard-file coords vs inner-chunk coords are kept
+        // distinct.
+        if let Some(shard_config) = self.find_sharding_config() {
+            let shard_config = shard_config.clone();
+            return self.read_sharded_chunk(coords, &shard_config);
+        }
 
-        // Read from storage
+        // Non-sharded path: build chunk key and read directly
+        let chunk_key = self.build_chunk_key(coords)?;
         let encoded_data = match self.store.get(&StoreKey::new(chunk_key)) {
             Ok(data) => data,
             Err(_) => {
@@ -134,16 +141,6 @@ impl<S: Store> ZarrV3Reader<S> {
 
         // Apply storage transformers (decode)
         let transformed_data = self.transformers.decode(encoded_data)?;
-
-        // Check if this is a sharded array
-        if let Some(codecs) = &self.metadata.codecs {
-            if codecs
-                .iter()
-                .any(|c| matches!(c, CodecMetadata::ShardingIndexed { .. }))
-            {
-                return self.read_from_shard(&transformed_data, coords);
-            }
-        }
 
         // Apply codec pipeline (decode)
         let decoded_data = self.codecs.decode(transformed_data)?;
@@ -352,44 +349,89 @@ impl<S: Store> ZarrV3Reader<S> {
         Ok(result)
     }
 
-    /// Reads data from a shard
-    fn read_from_shard(&self, shard_data: &[u8], coords: &[usize]) -> Result<Vec<u8>> {
-        // Extract sharding configuration
-        if let Some(codecs) = &self.metadata.codecs {
-            for codec_meta in codecs {
-                if let CodecMetadata::ShardingIndexed { configuration } = codec_meta {
-                    // Build codec chains for shard
-                    let (chunk_codec, index_codec) =
-                        crate::sharding::parse_sharding_config(configuration)?;
-
-                    let index_location = configuration
-                        .index_location
-                        .as_ref()
-                        .and_then(|loc| IndexLocation::from_str(loc).ok())
-                        .unwrap_or_default();
-
-                    // Create shard reader
-                    let shard_reader = ShardReader::new(
-                        shard_data.to_vec(),
-                        configuration.chunk_shape.clone(),
-                        chunk_codec,
-                        index_codec,
-                        index_location,
-                    )?;
-
-                    // Read chunk from shard
-                    if let Some(data) = shard_reader.read_chunk(coords)? {
-                        return Ok(data);
-                    }
-                    // Chunk not in shard, return fill value
-                    return self.create_fill_chunk();
-                }
+    /// Returns the sharding configuration if this array uses the
+    /// `sharding_indexed` codec, otherwise `None`.
+    fn find_sharding_config(&self) -> Option<&ShardingConfig> {
+        self.metadata.codecs.as_ref()?.iter().find_map(|c| {
+            if let CodecMetadata::ShardingIndexed { configuration } = c {
+                Some(configuration)
+            } else {
+                None
             }
+        })
+    }
+
+    /// Reads an inner chunk from a sharded array.
+    ///
+    /// `coords` are global inner-chunk coordinates at the finest grid
+    /// resolution.  This method computes the shard-file coordinates
+    /// (`shard_coords = coords / chunks_per_shard`) and the coordinates
+    /// within the shard (`inner_coords = coords % chunks_per_shard`) before
+    /// fetching the shard file and delegating to [`ShardReader`].
+    fn read_sharded_chunk(
+        &self,
+        coords: &[usize],
+        shard_config: &ShardingConfig,
+    ) -> Result<Vec<u8>> {
+        let chunks_per_shard = &shard_config.chunk_shape;
+
+        if coords.len() != chunks_per_shard.len() {
+            return Err(ZarrError::InvalidDimension {
+                message: format!(
+                    "coords ndim {} != chunks_per_shard ndim {}",
+                    coords.len(),
+                    chunks_per_shard.len()
+                ),
+            });
         }
 
-        Err(ZarrError::Internal {
-            message: "Sharding configuration not found".to_string(),
-        })
+        // Compute which shard file to read
+        let shard_coords: Vec<usize> = coords
+            .iter()
+            .zip(chunks_per_shard.iter())
+            .map(|(&c, &n)| c / n)
+            .collect();
+
+        // Compute position of inner chunk within the shard
+        let inner_coords: Vec<usize> = coords
+            .iter()
+            .zip(chunks_per_shard.iter())
+            .map(|(&c, &n)| c % n)
+            .collect();
+
+        // Fetch the shard file from storage
+        let shard_key = self.build_chunk_key(&shard_coords)?;
+        let shard_bytes = match self.store.get(&StoreKey::new(shard_key)) {
+            Ok(data) => data,
+            Err(_) => return self.create_fill_chunk(),
+        };
+
+        // Apply storage transformers to shard bytes
+        let transformed = self.transformers.decode(shard_bytes)?;
+
+        // Build codec chains for inner chunks and index
+        let (chunk_codec, index_codec) = crate::sharding::parse_sharding_config(shard_config)?;
+
+        let index_location = shard_config
+            .index_location
+            .as_deref()
+            .and_then(|loc| IndexLocation::from_str(loc).ok())
+            .unwrap_or_default();
+
+        // Create shard reader (parses the index footer/header)
+        let shard_reader = ShardReader::new(
+            transformed,
+            chunks_per_shard.clone(),
+            chunk_codec,
+            index_codec,
+            index_location,
+        )?;
+
+        // Read inner chunk using inner (shard-relative) coordinates
+        match shard_reader.read_chunk(&inner_coords)? {
+            Some(data) => Ok(data),
+            None => self.create_fill_chunk(),
+        }
     }
 
     /// Calculates which chunks overlap with the given ranges
@@ -447,55 +489,6 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
         strides[dim] = strides[dim + 1] * shape[dim + 1];
     }
     strides
-}
-
-/// Builds a codec from metadata
-fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<dyn Codec>> {
-    use crate::codecs::NullCodec;
-
-    // This is a simplified implementation
-    // In production, dispatch to appropriate codec based on metadata
-    match metadata {
-        CodecMetadata::Gzip { .. } => {
-            #[cfg(feature = "gzip")]
-            {
-                use crate::codecs::gzip::GzipCodec;
-                Ok(Box::new(GzipCodec::new(6)?))
-            }
-            #[cfg(not(feature = "gzip"))]
-            {
-                Err(ZarrError::NotSupported {
-                    operation: "gzip codec".to_string(),
-                })
-            }
-        }
-        CodecMetadata::Zstd { .. } => {
-            #[cfg(feature = "zstd")]
-            {
-                use crate::codecs::zstd_codec::ZstdCodec;
-                Ok(Box::new(ZstdCodec::new(3)?))
-            }
-            #[cfg(not(feature = "zstd"))]
-            {
-                Err(ZarrError::NotSupported {
-                    operation: "zstd codec".to_string(),
-                })
-            }
-        }
-        CodecMetadata::Bytes { .. } => Ok(Box::new(NullCodec)),
-        _ => Ok(Box::new(NullCodec)),
-    }
-}
-
-/// Builds a transformer from metadata
-fn build_transformer_from_metadata(
-    _metadata: &crate::metadata::v3::StorageTransformer,
-) -> Result<Box<dyn Transformer>> {
-    use crate::transformers::NoOpTransformer;
-
-    // This is a simplified implementation
-    // In production, dispatch to appropriate transformer based on metadata
-    Ok(Box::new(NoOpTransformer))
 }
 
 #[cfg(test)]
@@ -583,5 +576,200 @@ mod tests {
 
         let strides = compute_strides(&[5]);
         assert_eq!(strides, vec![1]);
+    }
+
+    #[test]
+    fn test_zarr_v3_reader_sharded_array() {
+        use crate::codecs::CodecChain;
+        use crate::sharding::{IndexLocation, ShardWriter};
+
+        // Build a sharded array: shape=[4], outer_chunk=[4] (1 shard), chunks_per_shard=[2]
+        // So 2 inner chunks of 2 elements each (f32 = 4 bytes each = 8 bytes per inner chunk)
+        let mut store = MemoryStore::new();
+
+        let shard_config = ShardingConfig {
+            chunk_shape: vec![2],
+            codecs: vec![CodecMetadata::Bytes {
+                configuration: None,
+            }],
+            index_codecs: vec![CodecMetadata::Bytes {
+                configuration: None,
+            }],
+            index_location: Some("end".to_string()),
+        };
+        let codecs = vec![CodecMetadata::ShardingIndexed {
+            configuration: shard_config.clone(),
+        }];
+        let metadata = ArrayMetadataV3::new(vec![4], vec![4], "float32").with_codecs(codecs);
+
+        let metadata_json = serde_json::to_vec(&metadata).expect("serialize");
+        store
+            .set(&StoreKey::new("arr/zarr.json".to_string()), &metadata_json)
+            .expect("set metadata");
+
+        // Build shard: inner_chunk[0] = [1.0f32, 2.0f32], inner_chunk[1] = [3.0f32, 4.0f32]
+        let inner0: Vec<u8> = [1.0f32, 2.0f32]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let inner1: Vec<u8> = [3.0f32, 4.0f32]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        let mut writer = ShardWriter::new(
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        );
+        writer
+            .write_chunk(vec![0], inner0.clone())
+            .expect("write inner 0");
+        writer
+            .write_chunk(vec![1], inner1.clone())
+            .expect("write inner 1");
+        let shard_bytes = writer.finalize().expect("finalize shard");
+
+        // Store shard at key "arr/c/0" (default chunk key encoding for coords [0])
+        store
+            .set(&StoreKey::new("arr/c/0".to_string()), &shard_bytes)
+            .expect("set shard");
+
+        let reader = ZarrV3Reader::new(store, "arr").expect("create reader");
+
+        // read_chunk([0]) should return inner_chunk[0] (first 2 f32 values)
+        let data0 = reader.read_chunk(&[0]).expect("read chunk 0");
+        assert_eq!(data0, inner0, "inner chunk 0 mismatch");
+
+        // read_chunk([1]) should return inner_chunk[1] (second 2 f32 values)
+        let data1 = reader.read_chunk(&[1]).expect("read chunk 1");
+        assert_eq!(data1, inner1, "inner chunk 1 mismatch");
+    }
+
+    #[test]
+    fn test_zarr_v3_reader_blosc_codec_never_silently_passes_through() {
+        use crate::metadata::v3::BloscConfig;
+
+        // An intentionally-invalid Blosc compressor name guarantees a
+        // deterministic `Err` from `BloscCodec::new` whether or not the
+        // `blosc` cargo feature happens to be enabled: with the feature on,
+        // construction itself fails on the bad `cname`; with it off, the
+        // dispatcher returns `CodecNotAvailable` before ever looking at
+        // `cname`. Either way, opening a reader over an array declaring
+        // `blosc` compression must error -- it must never silently
+        // construct an identity codec and hand back still-compressed bytes
+        // as if they were decoded.
+        let mut store = MemoryStore::new();
+        let metadata = ArrayMetadataV3::new(vec![10], vec![10], "uint8").with_codecs(vec![
+            CodecMetadata::Blosc {
+                configuration: BloscConfig {
+                    cname: "not-a-real-blosc-compressor".to_string(),
+                    clevel: 5,
+                    shuffle: 0,
+                    typesize: None,
+                    blocksize: None,
+                },
+            },
+        ]);
+
+        let metadata_json = serde_json::to_vec(&metadata).expect("serialize");
+        store
+            .set(&StoreKey::new("arr/zarr.json".to_string()), &metadata_json)
+            .expect("set metadata");
+
+        let result = ZarrV3Reader::new(store, "arr");
+        assert!(
+            result.is_err(),
+            "reader construction over a blosc-compressed array must error, not silently \
+             build an identity codec"
+        );
+    }
+
+    #[test]
+    fn test_zarr_v3_reader_encryption_transformer_never_silently_no_ops() {
+        use crate::metadata::v3::{EncryptionConfig, StorageTransformer};
+
+        // No `key` parameter is supplied, so the encryption transformer
+        // cannot be constructed. Opening the reader must fail loudly rather
+        // than silently substituting a NoOpTransformer -- otherwise
+        // encrypted-at-rest chunk data would be handed back to callers as
+        // if it were plaintext.
+        let mut store = MemoryStore::new();
+        let metadata =
+            ArrayMetadataV3::new(vec![10], vec![10], "uint8").with_storage_transformers(vec![
+                StorageTransformer::Encryption {
+                    configuration: EncryptionConfig {
+                        algorithm: "AES-256-GCM".to_string(),
+                        key_id: "test-key".to_string(),
+                        params: HashMap::new(),
+                    },
+                },
+            ]);
+
+        let metadata_json = serde_json::to_vec(&metadata).expect("serialize");
+        store
+            .set(&StoreKey::new("arr/zarr.json".to_string()), &metadata_json)
+            .expect("set metadata");
+
+        let result = ZarrV3Reader::new(store, "arr");
+        assert!(
+            result.is_err(),
+            "reader construction over an encrypted array with no key material must error, \
+             not silently build a NoOpTransformer"
+        );
+    }
+
+    #[test]
+    fn test_zarr_v3_reader_encryption_transformer_roundtrips_with_key() {
+        use crate::metadata::v3::{EncryptionConfig, StorageTransformer};
+        use crate::transformers::{AesGcmTransformer, TransformerChain};
+
+        // Full round trip: a chunk encrypted with the same key material
+        // declared in `storage_transformers` metadata must be readable back
+        // out through the public reader API (not just at the transformer
+        // unit level).
+        let mut store = MemoryStore::new();
+        let mut params = HashMap::new();
+        params.insert(
+            "key".to_string(),
+            serde_json::Value::String("ab".repeat(32)),
+        );
+        let metadata =
+            ArrayMetadataV3::new(vec![2], vec![2], "float32").with_storage_transformers(vec![
+                StorageTransformer::Encryption {
+                    configuration: EncryptionConfig {
+                        algorithm: "AES-256-GCM".to_string(),
+                        key_id: "test-key".to_string(),
+                        params,
+                    },
+                },
+            ]);
+
+        let metadata_json = serde_json::to_vec(&metadata).expect("serialize");
+        store
+            .set(&StoreKey::new("arr/zarr.json".to_string()), &metadata_json)
+            .expect("set metadata");
+
+        let plaintext_chunk: Vec<u8> = [1.0f32, 2.0f32]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        let key = (0..32).map(|_| 0xAB).collect::<Vec<u8>>();
+        let encryptor = AesGcmTransformer::new(key, "test-key").expect("build encryptor");
+        let chain = TransformerChain::new(vec![Box::new(encryptor)]);
+        let encrypted_chunk = chain
+            .encode(plaintext_chunk.clone())
+            .expect("encrypt chunk");
+        assert_ne!(encrypted_chunk, plaintext_chunk);
+
+        store
+            .set(&StoreKey::new("arr/c/0".to_string()), &encrypted_chunk)
+            .expect("set chunk");
+
+        let reader = ZarrV3Reader::new(store, "arr").expect("create reader");
+        let decoded = reader.read_chunk(&[0]).expect("read chunk");
+        assert_eq!(decoded, plaintext_chunk);
     }
 }

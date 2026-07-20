@@ -210,10 +210,10 @@ impl DagVisualizer {
             if self.config.show_durations {
                 label_parts.push(format!("id: {}", node.id));
             }
-            if self.config.show_descriptions {
-                if let Some(ref desc) = node.description {
-                    label_parts.push(desc.clone());
-                }
+            if self.config.show_descriptions
+                && let Some(ref desc) = node.description
+            {
+                label_parts.push(desc.clone());
             }
             if self.config.show_resources {
                 label_parts.push(format!(
@@ -572,19 +572,19 @@ impl DagVisualizer {
                     ));
 
                     // Edge label
-                    if self.config.show_edge_labels {
-                        if let Some(ref condition) = edge.condition {
-                            let label_x = (x1 + x2) / 2.0;
-                            let label_y = mid_y - 6.0;
-                            svg.push_str(&format!(
-                                "  <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" \
+                    if self.config.show_edge_labels
+                        && let Some(ref condition) = edge.condition
+                    {
+                        let label_x = (x1 + x2) / 2.0;
+                        let label_y = mid_y - 6.0;
+                        svg.push_str(&format!(
+                            "  <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" \
                                  font-family=\"Helvetica\" font-size=\"9\" fill=\"{}\">{}</text>\n",
-                                label_x,
-                                label_y,
-                                stroke,
-                                html_escape(condition)
-                            ));
-                        }
+                            label_x,
+                            label_y,
+                            stroke,
+                            html_escape(condition)
+                        ));
                     }
                 }
             }

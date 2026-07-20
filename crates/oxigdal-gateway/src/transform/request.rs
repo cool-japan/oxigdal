@@ -89,15 +89,15 @@ impl RequestTransformer {
         )?;
 
         // Transform body if needed
-        if !request.body.is_empty() {
-            if let Some(content_type) = request.content_type() {
-                request.body = self.engine.transform_request_body(
-                    &request.path,
-                    &request.method,
-                    request.body,
-                    content_type,
-                )?;
-            }
+        if !request.body.is_empty()
+            && let Some(content_type) = request.content_type()
+        {
+            request.body = self.engine.transform_request_body(
+                &request.path,
+                &request.method,
+                request.body,
+                content_type,
+            )?;
         }
 
         Ok(request)

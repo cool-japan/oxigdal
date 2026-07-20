@@ -485,12 +485,12 @@ impl MemoryPool {
         let mut prev_offset: Option<u64> = None;
         for (offset, block) in blocks.iter() {
             if block.is_free {
-                if let Some(prev_off) = prev_offset {
-                    if let Some(prev_block) = blocks.get(&prev_off) {
-                        if prev_block.is_free && prev_block.offset + prev_block.size == *offset {
-                            to_merge.push(*offset);
-                        }
-                    }
+                if let Some(prev_off) = prev_offset
+                    && let Some(prev_block) = blocks.get(&prev_off)
+                    && prev_block.is_free
+                    && prev_block.offset + prev_block.size == *offset
+                {
+                    to_merge.push(*offset);
                 }
                 prev_offset = Some(*offset);
             } else {
@@ -504,12 +504,11 @@ impl MemoryPool {
                 // Find previous block
                 let prev_offset = blocks.range(..offset).next_back().map(|(k, _)| *k);
 
-                if let Some(prev_off) = prev_offset {
-                    if let Some(prev_block) = blocks.get_mut(&prev_off) {
-                        if prev_block.is_free {
-                            prev_block.size += block.size;
-                        }
-                    }
+                if let Some(prev_off) = prev_offset
+                    && let Some(prev_block) = blocks.get_mut(&prev_off)
+                    && prev_block.is_free
+                {
+                    prev_block.size += block.size;
                 }
             }
         }

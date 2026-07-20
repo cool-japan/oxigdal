@@ -29,7 +29,7 @@ dashmap = { workspace = true }
 # WebSocket dependencies
 axum = { workspace = true, features = ["ws"] }
 tower = { workspace = true }
-tower-http = { workspace = true, features = ["cors", "compression-full", "trace"] }
+tower-http = { workspace = true, features = ["cors", "compression-br", "compression-gzip", "compression-deflate", "trace"] }
 tokio-tungstenite.workspace = true
 
 # Serialization
@@ -50,3 +50,7 @@ criterion = { workspace = true }
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

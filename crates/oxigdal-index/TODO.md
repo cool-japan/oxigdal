@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure-Rust spatial index (R-tree) for OxiGDAL vector data.
 > **Status (2026-05-16):** 3,719 Rust LoC · 186 tests · 0 real stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 

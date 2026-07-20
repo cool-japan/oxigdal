@@ -198,7 +198,7 @@ impl Codec for ZfpCodec {
     fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self.dtype {
             ZfpDataType::Float32 => {
-                if data.len() % 4 != 0 {
+                if !data.len().is_multiple_of(4) {
                     return Err(ZarrError::Codec(CodecError::CompressionFailed {
                         message: "Data length not multiple of 4 for float32".to_string(),
                     }));
@@ -213,7 +213,7 @@ impl Codec for ZfpCodec {
                 self.compress_f32(&floats)
             }
             ZfpDataType::Float64 => {
-                if data.len() % 8 != 0 {
+                if !data.len().is_multiple_of(8) {
                     return Err(ZarrError::Codec(CodecError::CompressionFailed {
                         message: "Data length not multiple of 8 for float64".to_string(),
                     }));

@@ -87,10 +87,10 @@ impl TerrainProfile {
         let mut prev: Option<f64> = None;
         for p in &self.points {
             if let Some(cur) = p.elevation {
-                if let Some(prv) = prev {
-                    if cur > prv {
-                        gain += cur - prv;
-                    }
+                if let Some(prv) = prev
+                    && cur > prv
+                {
+                    gain += cur - prv;
                 }
                 prev = Some(cur);
             }
@@ -106,10 +106,10 @@ impl TerrainProfile {
         let mut prev: Option<f64> = None;
         for p in &self.points {
             if let Some(cur) = p.elevation {
-                if let Some(prv) = prev {
-                    if cur < prv {
-                        loss += prv - cur;
-                    }
+                if let Some(prv) = prev
+                    && cur < prv
+                {
+                    loss += prv - cur;
                 }
                 prev = Some(cur);
             }

@@ -134,17 +134,31 @@ impl MoransI {
         // Calculate expected value and variance
         let expected_i = -1.0 / ((n - 1) as f64);
 
-        // Calculate variance (under normality assumption)
         let s1 = self.calculate_s1(&weights.weights);
         let s2_stat = self.calculate_s2(&weights.weights, n);
-        let _s3 = self.calculate_s3(&deviations, n);
-        let s4 = self.calculate_s4(&deviations, n);
-        let s5 = self.calculate_s5(&deviations, n);
 
         let n_f64 = n as f64;
-        let variance_i = ((n_f64 * s1 - n_f64 * s2_stat + 3.0 * s0 * s0) * s4)
-            / ((n_f64 - 1.0) * (n_f64 + 1.0) * s5)
-            - (expected_i * expected_i);
+        let n2 = n_f64 * n_f64;
+        let s0_sq = s0 * s0;
+
+        // Var(I) closed forms (Cliff & Ord 1981), matching the formulas used
+        // by GeoDa/PySAL's `esda.Moran`. The randomization-assumption
+        // formula (which does not require the values to be normally
+        // distributed) is preferred and uses the kurtosis coefficient
+        // `b2 = m4 / m2^2` of the deviations; its denominator vanishes at
+        // n == 3, so that boundary case falls back to the normality
+        // formula.
+        let variance_i = if n >= 4 {
+            let b2 = self.calculate_kurtosis(&deviations, n);
+            let numerator = n_f64 * ((n2 - 3.0 * n_f64 + 3.0) * s1 - n_f64 * s2_stat + 3.0 * s0_sq)
+                - b2 * ((n2 - n_f64) * s1 - 2.0 * n_f64 * s2_stat + 6.0 * s0_sq);
+            let denominator = (n_f64 - 1.0) * (n_f64 - 2.0) * (n_f64 - 3.0) * s0_sq;
+            numerator / denominator - expected_i * expected_i
+        } else {
+            let numerator = n2 * s1 - n_f64 * s2_stat + 3.0 * s0_sq;
+            let denominator = (n2 - 1.0) * s0_sq;
+            numerator / denominator - expected_i * expected_i
+        };
 
         // Calculate z-score and p-value
         let z_score = if variance_i > f64::EPSILON {
@@ -194,19 +208,15 @@ impl MoransI {
         s2
     }
 
-    fn calculate_s3(&self, deviations: &[f64], n: usize) -> f64 {
-        let m2 = deviations.iter().map(|&d| d * d).sum::<f64>() / (n as f64);
-        let m4 = deviations.iter().map(|&d| d.powi(4)).sum::<f64>() / (n as f64);
-        (n as f64) * m4 / (m2 * m2)
-    }
-
-    fn calculate_s4(&self, deviations: &[f64], n: usize) -> f64 {
-        deviations.iter().map(|&d| d * d).sum::<f64>() / (n as f64)
-    }
-
-    fn calculate_s5(&self, deviations: &[f64], n: usize) -> f64 {
-        let m2 = deviations.iter().map(|&d| d * d).sum::<f64>() / (n as f64);
-        m2 * m2
+    /// Kurtosis coefficient `b2 = m4 / m2^2` of the deviations, where
+    /// `m2`/`m4` are the (biased, population) second and fourth central
+    /// moments. Used by the randomization-assumption variance formula for
+    /// Moran's I (Cliff & Ord 1981).
+    fn calculate_kurtosis(&self, deviations: &[f64], n: usize) -> f64 {
+        let n_f64 = n as f64;
+        let m2 = deviations.iter().map(|&d| d * d).sum::<f64>() / n_f64;
+        let m4 = deviations.iter().map(|&d| d.powi(4)).sum::<f64>() / n_f64;
+        m4 / (m2 * m2)
     }
 }
 
@@ -224,7 +234,18 @@ impl LocalMoransI {
         Self { confidence }
     }
 
-    /// Calculate local Moran's I for all locations
+    /// Calculate local Moran's I for all locations using the Anselin (1995)
+    /// analytical randomization variance.
+    ///
+    /// For each location `i`, `z_scores[i]` and `p_values[i]` are derived
+    /// from the closed-form randomization variance `Var(I_i)` (Anselin
+    /// 1995, eq. 12), which depends on the local spatial weights (`Σw_ij`,
+    /// `Σw_ij²`) and the leave-one-out kurtosis coefficient of the
+    /// deviations. This gives an approximate analytical p-value; for exact
+    /// inference (recommended whenever performance allows), prefer
+    /// [`Self::calculate_with_permutations`], which computes an empirical
+    /// null distribution via conditional permutation and does not rely on
+    /// this normal-theory approximation.
     ///
     /// # Arguments
     /// * `values` - Values for each location
@@ -272,24 +293,58 @@ impl LocalMoransI {
         // Calculate spatial lag
         let spatial_lag = weights.spatial_lag(values)?;
 
+        let n_f64 = n as f64;
+        let n1 = n_f64 - 1.0;
+        let n2 = n_f64 - 2.0;
+        let deviations_sq: Vec<f64> = deviations.iter().map(|&d| d * d).collect();
+        let sum_dev2: f64 = deviations_sq.iter().sum();
+        let sum_dev4: f64 = deviations.iter().map(|&d| d.powi(4)).sum();
+
         // Calculate Local I for each location
         for i in 0..n {
             let zi = deviations[i] / s2.sqrt();
             let mut sum_wij_zj = 0.0;
+            let mut wi_dot = 0.0;
+            let mut wi_dot2 = 0.0;
 
             for j in 0..n {
                 if i != j {
+                    let w_ij = weights.weights[[i, j]];
                     let zj = deviations[j] / s2.sqrt();
-                    sum_wij_zj += weights.weights[[i, j]] * zj;
+                    sum_wij_zj += w_ij * zj;
+                    wi_dot += w_ij;
+                    wi_dot2 += w_ij * w_ij;
                 }
             }
 
             local_i[i] = zi * sum_wij_zj;
 
-            // Calculate variance and z-score (simplified)
-            // For proper inference, should use permutation tests or analytical variance
-            let variance_i: f64 = 1.0; // Simplified - assumes standardization
-            z_scores[i] = local_i[i] / variance_i.sqrt();
+            // Anselin (1995) eq. 11: E[I_i] under randomization.
+            let expected_i = -wi_dot / n1;
+
+            // Leave-one-out kurtosis coefficient b2_(i): the fourth/second
+            // central moments of the n-1 deviations excluding location i
+            // (Anselin 1995, eq. 12-13).
+            let sum_dev2_loo = sum_dev2 - deviations_sq[i];
+            let sum_dev4_loo = sum_dev4 - deviations_sq[i] * deviations_sq[i];
+
+            z_scores[i] = if sum_dev2_loo > f64::EPSILON {
+                let m2_loo = sum_dev2_loo / n1;
+                let m4_loo = sum_dev4_loo / n1;
+                let b2 = m4_loo / (m2_loo * m2_loo);
+
+                let variance_i = (wi_dot2 * (n_f64 - b2)) / n1
+                    + ((wi_dot * wi_dot - wi_dot2) * (2.0 * b2 - n_f64)) / (n1 * n2)
+                    - (wi_dot * wi_dot) / (n1 * n1);
+
+                if variance_i > f64::EPSILON {
+                    (local_i[i] - expected_i) / variance_i.sqrt()
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
 
             // Calculate p-value
             p_values[i] = 2.0 * (1.0 - standard_normal_cdf(z_scores[i].abs()));
@@ -558,6 +613,153 @@ mod tests {
             .expect("Local Moran's I calculation should succeed");
 
         assert_eq!(result.local_i.len(), 6);
-        // First cluster should be LL, second cluster should be HH
+
+        // Regression coverage for the Anselin (1995) analytical variance:
+        // z_scores/p_values must be finite valid probabilities for every
+        // location.
+        for i in 0..6 {
+            assert!(
+                result.z_scores[i].is_finite(),
+                "z_scores[{i}] must be finite"
+            );
+            assert!(
+                (0.0..=1.0).contains(&result.p_values[i]),
+                "p_values[{i}] = {} must be a valid probability",
+                result.p_values[i]
+            );
+        }
+        // Endpoints (1 neighbor -> wi_dot = wi_dot2 = 1) have a hand-derived
+        // Var(I_0) = 0.96 != 1.0, so under the old `variance_i = 1.0`
+        // hardcode z_scores[0] was *exactly* local_i[0] (division by 1.0);
+        // this pins the fix directly. (Interior locations 1..4 have
+        // wi_dot = 2 and, for this particular symmetric +/-4.5 dataset,
+        // z_score coincidentally also comes out to 2.0 = local_i, so they
+        // are not usable as a regression signal here.)
+        assert_eq!(result.local_i[0], 1.0);
+        assert!(
+            (result.z_scores[0] - 1.224_744_871_391_589).abs() < 1e-9,
+            "z_scores[0] = {}, expected (local_i[0] - E[I_0]) / sqrt(0.96)",
+            result.z_scores[0]
+        );
+        // Local I itself (unaffected by the variance fix) should still
+        // show the expected clustering pattern.
+        assert!(result.local_i[0] > 0.0, "location 0 sits in an LL cluster");
+        assert!(result.local_i[5] > 0.0, "location 5 sits in an HH cluster");
+    }
+
+    /// Locks down the exact Var(I) closed form (Cliff & Ord 1981
+    /// randomization assumption) against a hand-computed value, so a
+    /// regression back to the dimensionally-wrong formula (`n*s1` instead
+    /// of `n^2*s1`, dividing by `s5` instead of `s0^2`) cannot ship
+    /// silently again.
+    #[test]
+    fn test_global_morans_i_variance_matches_closed_form() {
+        let values = array![1.0, 2.0, 3.0, 4.0];
+        // Path graph 0-1-2-3 (symmetric binary adjacency, NOT
+        // row-standardized so S0/S1/S2 are easy to hand-verify).
+        let mut weights_matrix = scirs2_core::ndarray::Array2::zeros((4, 4));
+        for i in 0..3 {
+            weights_matrix[[i, i + 1]] = 1.0;
+            weights_matrix[[i + 1, i]] = 1.0;
+        }
+        let weights = SpatialWeights::from_adjacency(weights_matrix)
+            .expect("Creating spatial weights from adjacency matrix should succeed");
+
+        let morans_i = MoransI::new(0.05);
+        let result = morans_i
+            .calculate(&values.view(), &weights)
+            .expect("Global Moran's I calculation should succeed");
+
+        // Hand-derived: S0=6, S1=12, S2=40, b2=41/25, E[I]=-1/3 =>
+        // Var(I) = 8/45.
+        let expected_variance = 8.0 / 45.0;
+        assert!(
+            (result.variance_i - expected_variance).abs() < 1e-9,
+            "variance_i = {}, expected {}",
+            result.variance_i,
+            expected_variance
+        );
+
+        let expected_i_statistic = 1.0 / 3.0;
+        assert!(
+            (result.i_statistic - expected_i_statistic).abs() < 1e-9,
+            "i_statistic = {}, expected {}",
+            result.i_statistic,
+            expected_i_statistic
+        );
+
+        let expected_z = (2.0f64 / 3.0) / expected_variance.sqrt();
+        assert!(
+            (result.z_score - expected_z).abs() < 1e-6,
+            "z_score = {}, expected {}",
+            result.z_score,
+            expected_z
+        );
+    }
+
+    /// The n == 3 boundary makes the randomization-assumption denominator
+    /// `(n-1)(n-2)(n-3)` vanish; `calculate()` must fall back to the
+    /// normality-assumption formula instead of dividing by zero /
+    /// producing NaN.
+    #[test]
+    fn test_global_morans_i_n_equals_three_no_nan() {
+        let values = array![1.0, 5.0, 2.0];
+        let mut weights_matrix = scirs2_core::ndarray::Array2::zeros((3, 3));
+        weights_matrix[[0, 1]] = 1.0;
+        weights_matrix[[1, 0]] = 1.0;
+        weights_matrix[[1, 2]] = 1.0;
+        weights_matrix[[2, 1]] = 1.0;
+
+        let weights = SpatialWeights::from_adjacency(weights_matrix)
+            .expect("Creating spatial weights from adjacency matrix should succeed");
+        let morans_i = MoransI::new(0.05);
+        let result = morans_i
+            .calculate(&values.view(), &weights)
+            .expect("Global Moran's I calculation should succeed for n == 3");
+
+        assert!(result.variance_i.is_finite());
+        assert!(result.variance_i >= 0.0);
+        assert!(result.z_score.is_finite());
+        assert!((0.0..=1.0).contains(&result.p_value));
+    }
+
+    /// The analytical `calculate()` z-scores should broadly agree in sign
+    /// and order of magnitude with the Monte Carlo
+    /// `calculate_with_permutations()` z-scores, since both target the same
+    /// randomization null distribution. This guards against the analytical
+    /// formula drifting to a statistically nonsensical result even though
+    /// the closed-form regression test above already pins the exact
+    /// arithmetic for a specific case.
+    #[test]
+    fn test_local_morans_i_analytical_agrees_with_permutations() {
+        let values = array![1.0, 1.2, 0.9, 8.0, 8.3, 7.8, 1.1, 8.1];
+        let n = values.len();
+        let mut weights_matrix = scirs2_core::ndarray::Array2::zeros((n, n));
+        for i in 0..n - 1 {
+            weights_matrix[[i, i + 1]] = 1.0;
+            weights_matrix[[i + 1, i]] = 1.0;
+        }
+        let weights = SpatialWeights::from_adjacency(weights_matrix)
+            .expect("Creating spatial weights from adjacency matrix should succeed");
+
+        let local_i = LocalMoransI::new(0.05);
+        let analytical = local_i
+            .calculate(&values.view(), &weights)
+            .expect("Analytical local Moran's I should succeed");
+        let permuted = local_i
+            .calculate_with_permutations(&values.view(), &weights, 4999, 42)
+            .expect("Permutation-based local Moran's I should succeed");
+
+        for i in 0..n {
+            assert!(analytical.z_scores[i].is_finite());
+            // Same sign (or both ~0) — the two inference methods must at
+            // least agree on the direction of local association.
+            assert!(
+                analytical.z_scores[i] * permuted.z_scores[i] >= -1e-6,
+                "z_scores disagree in sign at {i}: analytical={}, permuted={}",
+                analytical.z_scores[i],
+                permuted.z_scores[i]
+            );
+        }
     }
 }

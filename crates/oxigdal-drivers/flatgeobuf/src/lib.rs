@@ -12,6 +12,8 @@
 #![allow(clippy::missing_panics_doc)]
 
 pub mod error;
+pub mod fbs;
+pub mod feature_codec;
 pub mod geometry;
 pub mod header;
 pub mod index;

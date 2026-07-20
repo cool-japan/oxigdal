@@ -2,7 +2,7 @@
 
 > **Purpose:** Core abstractions for OxiGDAL — Pure Rust GDAL reimplementation with zero-copy buffers and cloud-native support
 > **Status (2026-05-16):** 13,527 Rust LoC · 341 tests · 0 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
 - [x] Add `RasterBuffer` typed accessors (get_f32, get_f64, get_u16, etc.) with bounds checking

@@ -263,7 +263,24 @@ impl AbacEngine {
         request.subject.id.hash(&mut hasher);
         request.resource.id.hash(&mut hasher);
         format!("{:?}", request.action).hash(&mut hasher);
+        Self::hash_attributes(&request.subject.attributes, &mut hasher);
+        Self::hash_attributes(&request.resource.attributes, &mut hasher);
+        Self::hash_attributes(&request.context.attributes, &mut hasher);
         hasher.finish()
+    }
+
+    /// Hash a `HashMap<String, String>` deterministically regardless of
+    /// iteration order by sorting entries by key before hashing.
+    fn hash_attributes<H: std::hash::Hasher>(attributes: &HashMap<String, String>, hasher: &mut H) {
+        use std::hash::Hash;
+
+        let mut entries: Vec<(&String, &String)> = attributes.iter().collect();
+        entries.sort_by_key(|&(key, _)| key);
+        entries.len().hash(hasher);
+        for (key, value) in entries {
+            key.hash(hasher);
+            value.hash(hasher);
+        }
     }
 }
 
@@ -408,5 +425,81 @@ mod tests {
 
         let decision = engine.evaluate(&request).expect("Evaluation failed");
         assert_eq!(decision, AccessDecision::Allow);
+    }
+
+    #[test]
+    fn test_cache_respects_context_attributes() {
+        // Regression test: the ABAC decision cache must not collide on
+        // requests that share subject id / resource id / action but differ
+        // in context attributes that a policy actually conditions on.
+        let engine = AbacEngine::new();
+
+        let policy = AbacPolicy::new(
+            "ip-restricted".to_string(),
+            "Allow Read from trusted IP".to_string(),
+            vec![Action::Read],
+            PolicyEffect::Allow,
+        )
+        .with_context_condition(Condition::new(
+            "ip".to_string(),
+            ConditionOperator::Equals,
+            "10.0.0.1".to_string(),
+        ));
+
+        engine.add_policy(policy).expect("Failed to add policy");
+
+        let subject = Subject::new("user-123".to_string(), SubjectType::User);
+        let resource = Resource::new("dataset-456".to_string(), ResourceType::Dataset);
+
+        let trusted_context =
+            AccessContext::new().with_attribute("ip".to_string(), "10.0.0.1".to_string());
+        let untrusted_context =
+            AccessContext::new().with_attribute("ip".to_string(), "6.6.6.6".to_string());
+
+        let trusted_request = AccessRequest::new(
+            subject.clone(),
+            resource.clone(),
+            Action::Read,
+            trusted_context,
+        );
+        let untrusted_request =
+            AccessRequest::new(subject, resource, Action::Read, untrusted_context);
+
+        let trusted_decision = engine
+            .evaluate(&trusted_request)
+            .expect("Evaluation failed");
+        assert_eq!(trusted_decision, AccessDecision::Allow);
+
+        // Before the fix, this would incorrectly return the cached Allow
+        // decision from the trusted-IP request above, even though this
+        // request has a different (untrusted) IP context attribute.
+        let untrusted_decision = engine
+            .evaluate(&untrusted_request)
+            .expect("Evaluation failed");
+        assert_eq!(untrusted_decision, AccessDecision::Deny);
+    }
+
+    #[test]
+    fn test_hash_attributes_order_independent() {
+        // The cache key must be identical regardless of HashMap iteration
+        // order for logically-equal attribute sets.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut a = HashMap::new();
+        a.insert("b".to_string(), "2".to_string());
+        a.insert("a".to_string(), "1".to_string());
+
+        let mut b = HashMap::new();
+        b.insert("a".to_string(), "1".to_string());
+        b.insert("b".to_string(), "2".to_string());
+
+        let mut hasher_a = DefaultHasher::new();
+        AbacEngine::hash_attributes(&a, &mut hasher_a);
+
+        let mut hasher_b = DefaultHasher::new();
+        AbacEngine::hash_attributes(&b, &mut hasher_b);
+
+        assert_eq!(hasher_a.finish(), hasher_b.finish());
     }
 }

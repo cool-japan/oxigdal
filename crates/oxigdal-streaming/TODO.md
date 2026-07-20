@@ -2,7 +2,7 @@
 
 > **Purpose:** Real-time data processing and streaming pipelines for OxiGDAL — windowing, watermarking, transformations, stateful operators, cloud object-store I/O.
 > **Status (2026-05-16):** 17,383 LoC · 617 tests · 2 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Wire `XyzProtocol::get_tile` to an actual HTTP fetch instead of returning empty bytes (completed 2026-05-17)

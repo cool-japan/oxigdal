@@ -267,14 +267,12 @@ impl TimeSeriesLoader {
             })?;
             let path = entry.path();
 
-            if path.is_file() {
-                if let Some(filename) = path.file_name() {
-                    if let Some(name) = filename.to_str() {
-                        if name.contains(pattern) {
-                            paths.push(path);
-                        }
-                    }
-                }
+            if path.is_file()
+                && let Some(filename) = path.file_name()
+                && let Some(name) = filename.to_str()
+                && name.contains(pattern)
+            {
+                paths.push(path);
             }
         }
 

@@ -10,7 +10,7 @@
 //! and cleaned up at the end of each test.
 
 #![allow(clippy::panic)]
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs::File;
 use std::io::{self, Write};

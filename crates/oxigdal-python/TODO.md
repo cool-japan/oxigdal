@@ -2,7 +2,7 @@
 
 > **Purpose:** PyO3 0.28 bindings exposing raster I/O, vector ops, and algorithms to Python with NumPy zero-copy where possible.
 > **Status (2026-05-17):** 13,458 LoC · 78 #[test] attributes · 1 real-code TODO (numpy complex dtype).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Native complex dtype (`complex64`/`complex128`) for `RasterArray::to_numpy`

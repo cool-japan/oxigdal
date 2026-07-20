@@ -461,6 +461,7 @@ impl<T> AdaptiveGrid<T> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod unit_tests {
     use super::*;
 

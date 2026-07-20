@@ -110,6 +110,31 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
             u32::from_be_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
         }
     };
+    let read_u64 = |buf: &[u8], off: usize| -> u64 {
+        if is_le {
+            u64::from_le_bytes([
+                buf[off],
+                buf[off + 1],
+                buf[off + 2],
+                buf[off + 3],
+                buf[off + 4],
+                buf[off + 5],
+                buf[off + 6],
+                buf[off + 7],
+            ])
+        } else {
+            u64::from_be_bytes([
+                buf[off],
+                buf[off + 1],
+                buf[off + 2],
+                buf[off + 3],
+                buf[off + 4],
+                buf[off + 5],
+                buf[off + 6],
+                buf[off + 7],
+            ])
+        }
+    };
 
     let version = read_u16(&header, 2);
     let is_bigtiff = version == 43;
@@ -121,7 +146,11 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
 
     // Read first IFD offset
     let ifd_offset = if is_bigtiff {
-        // BigTIFF: bytes 8-15 contain the 8-byte IFD offset
+        // BigTIFF: bytes 8-15 contain the 8-byte IFD offset. Read the full
+        // 8-byte value rather than truncating to a fixed 4-byte half — on
+        // big-endian files the low-order bytes sit at the *end* of the
+        // field (bytes 12-15), not the start, so slicing off the first 4
+        // bytes silently returns zero for big-endian BigTIFFs.
         if header.len() < 16 {
             return Ok(ExtractedMetadata {
                 format: Some("GeoTIFF".to_string()),
@@ -129,13 +158,15 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
                 ..Default::default()
             });
         }
-        // Read 8-byte offset (take lower 32 bits for our 64KB buffer)
-        read_u32(&header, 8) as usize
+        read_u64(&header, 8) as usize
     } else {
         read_u32(&header, 4) as usize
     };
 
-    if ifd_offset >= header.len() || ifd_offset + 2 > header.len() {
+    // BigTIFF's IFD entry-count field is 8 bytes (vs. 2 bytes for classic
+    // TIFF), so the minimum header size needed to read it differs.
+    let entry_count_field_size = if is_bigtiff { 8 } else { 2 };
+    if ifd_offset >= header.len() || ifd_offset + entry_count_field_size > header.len() {
         return Ok(ExtractedMetadata {
             format: Some("GeoTIFF".to_string()),
             attributes,
@@ -143,9 +174,15 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
         });
     }
 
-    let entry_count = read_u16(&header, ifd_offset) as usize;
+    let entry_count = if is_bigtiff {
+        read_u64(&header, ifd_offset) as usize
+    } else {
+        read_u16(&header, ifd_offset) as usize
+    };
+    // BigTIFF entries are 20 bytes (tag2+type2+count8+value8) vs. classic
+    // TIFF's 12 bytes (tag2+type2+count4+value4).
     let entry_size = if is_bigtiff { 20 } else { 12 };
-    let entries_start = ifd_offset + 2;
+    let entries_start = ifd_offset + entry_count_field_size;
 
     let mut width: Option<u32> = None;
     let mut height: Option<u32> = None;
@@ -196,6 +233,19 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
         }
     };
 
+    // Out-of-line data offsets are stored as a 4-byte LONG in classic TIFF
+    // but an 8-byte LONG8 in BigTIFF; read the width matching the format.
+    let read_data_offset = |buf: &[u8], off: usize| -> usize {
+        if is_bigtiff {
+            read_u64(buf, off) as usize
+        } else {
+            read_u32(buf, off) as usize
+        }
+    };
+    // Number of bytes available for an inline (non-offset) value within the
+    // entry's value/offset field: 4 bytes for classic TIFF, 8 for BigTIFF.
+    let inline_value_bytes: usize = if is_bigtiff { 8 } else { 4 };
+
     for i in 0..entry_count {
         let entry_off = entries_start + i * entry_size;
         if entry_off + entry_size > header.len() {
@@ -204,10 +254,18 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
 
         let tag = read_u16(&header, entry_off);
         let type_id = read_u16(&header, entry_off + 2);
-        let count = read_u32(&header, entry_off + 4) as usize;
-        let value_offset_pos = entry_off + 8;
+        // BigTIFF entry layout: tag u16 @0, type u16 @2, count u64 @4,
+        // value/offset u64 @12. Classic TIFF: tag u16 @0, type u16 @2,
+        // count u32 @4, value/offset u32 @8.
+        let (count, value_offset_pos) = if is_bigtiff {
+            (read_u64(&header, entry_off + 4) as usize, entry_off + 12)
+        } else {
+            (read_u32(&header, entry_off + 4) as usize, entry_off + 8)
+        };
 
-        // For SHORT/LONG values that fit in 4 bytes, value is inline
+        // For SHORT/LONG values that fit in the value/offset field, the
+        // value is stored inline; otherwise it is a byte offset elsewhere
+        // in the file.
         match tag {
             TAG_IMAGE_WIDTH => {
                 width = Some(if type_id == 3 {
@@ -236,7 +294,7 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
             }
             TAG_MODEL_PIXEL_SCALE => {
                 // DOUBLE values (type 12), count typically 3
-                let data_off = read_u32(&header, value_offset_pos) as usize;
+                let data_off = read_data_offset(&header, value_offset_pos);
                 if data_off + count * 8 <= header.len() {
                     for j in 0..count {
                         model_pixel_scale.push(read_f64(&header, data_off + j * 8));
@@ -245,7 +303,7 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
             }
             TAG_MODEL_TIEPOINT => {
                 // DOUBLE values (type 12), count typically 6
-                let data_off = read_u32(&header, value_offset_pos) as usize;
+                let data_off = read_data_offset(&header, value_offset_pos);
                 if data_off + count * 8 <= header.len() {
                     for j in 0..count {
                         model_tiepoint.push(read_f64(&header, data_off + j * 8));
@@ -254,13 +312,13 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
             }
             TAG_GEO_KEY_DIRECTORY => {
                 // SHORT values (type 3)
-                if count * 2 <= 4 {
+                if count * 2 <= inline_value_bytes {
                     // Inline
                     for j in 0..count {
                         geo_key_directory.push(read_u16(&header, value_offset_pos + j * 2));
                     }
                 } else {
-                    let data_off = read_u32(&header, value_offset_pos) as usize;
+                    let data_off = read_data_offset(&header, value_offset_pos);
                     if data_off + count * 2 <= header.len() {
                         for j in 0..count {
                             geo_key_directory.push(read_u16(&header, data_off + j * 2));
@@ -269,31 +327,30 @@ fn extract_from_geotiff<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
                 }
             }
             TAG_GEO_ASCII_PARAMS => {
-                let data_off = read_u32(&header, value_offset_pos) as usize;
-                if data_off + count <= header.len() {
-                    if let Ok(s) = std::str::from_utf8(&header[data_off..data_off + count]) {
-                        geo_ascii_params = Some(s.trim_end_matches('\0').to_string());
-                    }
+                let data_off = read_data_offset(&header, value_offset_pos);
+                if data_off + count <= header.len()
+                    && let Ok(s) = std::str::from_utf8(&header[data_off..data_off + count])
+                {
+                    geo_ascii_params = Some(s.trim_end_matches('\0').to_string());
                 }
             }
             TAG_GDAL_METADATA => {
-                let data_off = read_u32(&header, value_offset_pos) as usize;
-                if data_off + count <= header.len() {
-                    if let Ok(s) = std::str::from_utf8(&header[data_off..data_off + count]) {
-                        attributes.insert(
-                            "gdal_metadata".to_string(),
-                            s.trim_end_matches('\0').to_string(),
-                        );
-                    }
+                let data_off = read_data_offset(&header, value_offset_pos);
+                if data_off + count <= header.len()
+                    && let Ok(s) = std::str::from_utf8(&header[data_off..data_off + count])
+                {
+                    attributes.insert(
+                        "gdal_metadata".to_string(),
+                        s.trim_end_matches('\0').to_string(),
+                    );
                 }
             }
             TAG_GDAL_NODATA => {
-                let data_off = read_u32(&header, value_offset_pos) as usize;
-                if data_off + count <= header.len() {
-                    if let Ok(s) = std::str::from_utf8(&header[data_off..data_off + count]) {
-                        attributes
-                            .insert("nodata".to_string(), s.trim_end_matches('\0').to_string());
-                    }
+                let data_off = read_data_offset(&header, value_offset_pos);
+                if data_off + count <= header.len()
+                    && let Ok(s) = std::str::from_utf8(&header[data_off..data_off + count])
+                {
+                    attributes.insert("nodata".to_string(), s.trim_end_matches('\0').to_string());
                 }
             }
             _ => {}
@@ -454,15 +511,17 @@ fn parse_crs_from_geokeys(
     }
 
     // Build CRS string
-    if let Some(epsg) = projected_type {
-        if epsg != 0 && epsg != 32767 {
-            return Some(format!("EPSG:{epsg}"));
-        }
+    if let Some(epsg) = projected_type
+        && epsg != 0
+        && epsg != 32767
+    {
+        return Some(format!("EPSG:{epsg}"));
     }
-    if let Some(epsg) = geographic_type {
-        if epsg != 0 && epsg != 32767 {
-            return Some(format!("EPSG:{epsg}"));
-        }
+    if let Some(epsg) = geographic_type
+        && epsg != 0
+        && epsg != 32767
+    {
+        return Some(format!("EPSG:{epsg}"));
     }
     if let Some(citation) = proj_citation {
         return Some(citation);
@@ -491,38 +550,323 @@ fn extract_from_netcdf<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
     #[cfg(not(feature = "netcdf"))]
     {
         let path_str = path.as_ref().to_string_lossy().to_string();
-        let mut attributes = std::collections::HashMap::new();
-        attributes.insert("file_path".to_string(), path_str);
-        Ok(ExtractedMetadata {
-            format: Some("NetCDF".to_string()),
-            attributes,
-            ..Default::default()
-        })
+        Err(MetadataError::Unsupported(format!(
+            "NetCDF extraction not available for '{}': enable the 'netcdf' feature",
+            path_str
+        )))
     }
 }
 
 /// Extract metadata from HDF5.
 fn extract_from_hdf5<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
-    let path_str = path.as_ref().to_string_lossy().to_string();
-    let mut attributes = std::collections::HashMap::new();
-    attributes.insert("file_path".to_string(), path_str);
+    #[cfg(feature = "hdf5")]
+    {
+        extract_from_hdf5_impl(path)
+    }
+    #[cfg(not(feature = "hdf5"))]
+    {
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        Err(MetadataError::Unsupported(format!(
+            "HDF5 extraction not available for '{}': enable the 'hdf5' feature",
+            path_str
+        )))
+    }
+}
 
-    let metadata = ExtractedMetadata {
-        format: Some("HDF5".to_string()),
-        attributes,
-        ..Default::default()
+/// Convert an `oxigdal_hdf5::Hdf5Error` into a `MetadataError`.
+#[cfg(feature = "hdf5")]
+fn hdf5_err(e: oxigdal_hdf5::Hdf5Error) -> MetadataError {
+    MetadataError::ExtractionError(e.to_string())
+}
+
+/// Stringify an `AttributeValue` for storage in the attributes map.
+#[cfg(feature = "hdf5")]
+fn attribute_value_to_string(val: &oxigdal_hdf5::AttributeValue) -> String {
+    use oxigdal_hdf5::AttributeValue;
+    match val {
+        AttributeValue::String(s) => s.clone(),
+        AttributeValue::Int8(v) => v.to_string(),
+        AttributeValue::UInt8(v) => v.to_string(),
+        AttributeValue::Int16(v) => v.to_string(),
+        AttributeValue::UInt16(v) => v.to_string(),
+        AttributeValue::Int32(v) => v.to_string(),
+        AttributeValue::UInt32(v) => v.to_string(),
+        AttributeValue::Int64(v) => v.to_string(),
+        AttributeValue::UInt64(v) => v.to_string(),
+        AttributeValue::Float32(v) => v.to_string(),
+        AttributeValue::Float64(v) => v.to_string(),
+        AttributeValue::Int8Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::UInt8Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::Int16Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::UInt16Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::Int32Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::UInt32Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::Int64Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::UInt64Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::Float32Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::Float64Array(arr) => arr
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        AttributeValue::StringArray(arr) => arr.join(","),
+    }
+}
+
+/// Collect all attributes from a group's `Attributes` into the output map,
+/// using the given prefix for the key (e.g. `"hdf5_attr_"` for root attributes).
+#[cfg(feature = "hdf5")]
+fn collect_group_attributes(
+    attrs: &oxigdal_hdf5::Attributes,
+    prefix: &str,
+    out: &mut std::collections::HashMap<String, String>,
+) {
+    for attr in attrs.iter() {
+        let key = format!("{}{}", prefix, attr.name());
+        let val = attribute_value_to_string(attr.value());
+        out.insert(key, val);
+    }
+}
+
+/// Walk every group known to the reader (up to depth 3 below root) and collect:
+/// - group names into `hdf5_groups`
+/// - group attributes with prefix `hdf5_grp_<group_path>_attr_<name>`
+#[cfg(feature = "hdf5")]
+fn walk_groups(
+    reader: &oxigdal_hdf5::Hdf5Reader,
+    out: &mut std::collections::HashMap<String, String>,
+) {
+    let mut group_names: Vec<String> = Vec::new();
+    for path in reader.list_groups() {
+        // Skip root itself from the listing
+        if path == "/" {
+            continue;
+        }
+        // Depth = number of '/' minus 1 (root slash doesn't count)
+        let depth = path.chars().filter(|&c| c == '/').count();
+        if depth > 3 {
+            continue;
+        }
+        group_names.push(path.to_string());
+        if let Ok(grp) = reader.group(path) {
+            let prefix = format!(
+                "hdf5_grp_{}_attr_",
+                path.trim_start_matches('/').replace('/', "_")
+            );
+            collect_group_attributes(grp.attributes(), &prefix, out);
+        }
+    }
+    group_names.sort();
+    if !group_names.is_empty() {
+        out.insert("hdf5_groups".to_string(), group_names.join(";"));
+    }
+}
+
+/// Walk every dataset known to the reader and record name, shape, and datatype.
+#[cfg(feature = "hdf5")]
+fn walk_datasets(
+    reader: &oxigdal_hdf5::Hdf5Reader,
+    out: &mut std::collections::HashMap<String, String>,
+) {
+    let mut dataset_names: Vec<String> = Vec::new();
+    for path in reader.list_datasets() {
+        dataset_names.push(path.to_string());
+        if let Ok(ds) = reader.dataset(path) {
+            let safe_key = path.trim_start_matches('/').replace('/', "_");
+            let shape_str: Vec<String> = ds.dims().iter().map(|d| d.to_string()).collect();
+            out.insert(format!("hdf5_ds_{}_shape", safe_key), shape_str.join("x"));
+            out.insert(
+                format!("hdf5_ds_{}_dtype", safe_key),
+                ds.datatype().name().to_string(),
+            );
+        }
+    }
+    dataset_names.sort();
+    if !dataset_names.is_empty() {
+        out.insert("hdf5_datasets".to_string(), dataset_names.join(";"));
+    }
+}
+
+/// Map well-known CF/NetCDF-style or geospatial HDF5 attributes from the flat
+/// `attributes` map onto the structured fields of `ExtractedMetadata`.
+///
+/// Keys already contain the `hdf5_attr_` prefix at this stage.
+#[cfg(feature = "hdf5")]
+#[allow(clippy::type_complexity)]
+fn map_well_known_attributes(
+    attributes: &std::collections::HashMap<String, String>,
+) -> (
+    Option<String>, // title
+    Option<String>, // abstract_text
+    Option<String>, // crs
+    Option<BoundingBox>,
+    Vec<String>, // keywords
+) {
+    let lookup = |name: &str| attributes.get(&format!("hdf5_attr_{}", name)).cloned();
+
+    // Title
+    let title = lookup("title")
+        .or_else(|| lookup("long_name"))
+        .or_else(|| lookup("Name"));
+
+    // Abstract / description
+    let abstract_text = lookup("comment")
+        .or_else(|| lookup("description"))
+        .or_else(|| lookup("summary"))
+        .or_else(|| lookup("abstract"));
+
+    // CRS
+    let crs = lookup("crs_wkt")
+        .or_else(|| lookup("projection"))
+        .or_else(|| lookup("CoordinateProjection"))
+        .or_else(|| {
+            // CF convention: EPSG code in attribute "grid_mapping_name" is less
+            // common, but "EPSG" is sometimes stored directly.
+            lookup("EPSG").map(|v| format!("EPSG:{v}"))
+        });
+
+    // Bounding box: various common conventions
+    let bbox = {
+        let try_f64 = |s: &str| -> Option<f64> { s.parse().ok() };
+        // CF convention attributes
+        let west = lookup("westernmost_longitude")
+            .or_else(|| lookup("geospatial_lon_min"))
+            .or_else(|| lookup("WEST_LONGITUDE"))
+            .and_then(|v| try_f64(&v));
+        let east = lookup("easternmost_longitude")
+            .or_else(|| lookup("geospatial_lon_max"))
+            .or_else(|| lookup("EAST_LONGITUDE"))
+            .and_then(|v| try_f64(&v));
+        let south = lookup("southernmost_latitude")
+            .or_else(|| lookup("geospatial_lat_min"))
+            .or_else(|| lookup("SOUTH_LATITUDE"))
+            .and_then(|v| try_f64(&v));
+        let north = lookup("northernmost_latitude")
+            .or_else(|| lookup("geospatial_lat_max"))
+            .or_else(|| lookup("NORTH_LATITUDE"))
+            .and_then(|v| try_f64(&v));
+        match (west, east, south, north) {
+            (Some(w), Some(e), Some(s), Some(n)) if w <= e && s <= n => {
+                Some(BoundingBox::new(w, e, s, n))
+            }
+            _ => None,
+        }
     };
 
-    // In a real implementation, we would use the oxigdal-hdf5 crate
+    // Keywords: CF "keywords" attribute, comma-separated
+    let keywords = lookup("keywords")
+        .map(|v| {
+            v.split(',')
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Placeholder for HDF5-specific extraction
-    // This would include:
-    // - Reading file attributes
-    // - Extracting dataset metadata
-    // - Reading group structure
-    // - Extracting embedded metadata standards
+    (title, abstract_text, crs, bbox, keywords)
+}
 
-    Ok(metadata)
+/// Real HDF5 metadata extraction implementation (requires `hdf5` feature).
+#[cfg(feature = "hdf5")]
+fn extract_from_hdf5_impl<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
+    let path_ref = path.as_ref();
+    let path_str = path_ref.to_string_lossy().to_string();
+
+    // Open the HDF5 file — error maps to ExtractionError
+    let reader = oxigdal_hdf5::Hdf5Reader::open(path_ref).map_err(|e| {
+        MetadataError::ExtractionError(format!("Cannot open HDF5 file '{}': {}", path_str, e))
+    })?;
+
+    let mut attributes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    attributes.insert("file_path".to_string(), path_str.clone());
+
+    // Record superblock version
+    let superblock_ver = format!("{:?}", reader.superblock_version());
+    attributes.insert("hdf5_superblock_version".to_string(), superblock_ver);
+
+    // Collect root group attributes with prefix `hdf5_attr_`
+    let root = reader.root().map_err(hdf5_err)?;
+    collect_group_attributes(root.attributes(), "hdf5_attr_", &mut attributes);
+
+    // Walk sub-groups (depth ≤ 3) and collect their attributes
+    walk_groups(&reader, &mut attributes);
+
+    // Walk datasets and record shape + dtype
+    walk_datasets(&reader, &mut attributes);
+
+    // Check for well-known geospatial metadata groups and promote their
+    // attributes to the root-level `hdf5_attr_` namespace if not already present.
+    for meta_group in &["/METADATA", "/metadata", "/HDF_METADATA"] {
+        if reader.is_group(meta_group)
+            && let Ok(grp) = reader.group(meta_group)
+        {
+            for attr in grp.attributes().iter() {
+                let key = format!("hdf5_attr_{}", attr.name());
+                attributes
+                    .entry(key)
+                    .or_insert_with(|| attribute_value_to_string(attr.value()));
+            }
+        }
+    }
+
+    // Set file title from filename if not overridden by attributes
+    let file_title = path_ref
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+
+    // Map well-known attributes onto structured fields
+    let (attr_title, abstract_text, crs, bbox, keywords) = map_well_known_attributes(&attributes);
+
+    let title = attr_title.or(file_title);
+
+    Ok(ExtractedMetadata {
+        title,
+        abstract_text,
+        bbox,
+        crs,
+        format: Some("HDF5".to_string()),
+        keywords,
+        attributes,
+        ..Default::default()
+    })
 }
 
 /// Extract metadata from STAC.
@@ -542,14 +886,10 @@ fn extract_from_stac<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
 #[cfg(not(feature = "stac"))]
 fn extract_from_stac<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
     let path_str = path.as_ref().to_string_lossy().to_string();
-    let mut attributes = std::collections::HashMap::new();
-    attributes.insert("file_path".to_string(), path_str);
-
-    Ok(ExtractedMetadata {
-        format: Some("STAC".to_string()),
-        attributes,
-        ..Default::default()
-    })
+    Err(MetadataError::Unsupported(format!(
+        "STAC extraction not available for '{}': enable the 'stac' feature",
+        path_str
+    )))
 }
 
 /// Extract metadata from a STAC Item JSON string.
@@ -570,10 +910,10 @@ pub fn extract_from_stac_json(json: &str) -> Result<ExtractedMetadata> {
         attributes.insert("collection".to_string(), collection.clone());
     }
 
-    if let Some(ref extensions) = item.stac_extensions {
-        if !extensions.is_empty() {
-            attributes.insert("stac_extensions".to_string(), extensions.join(", "));
-        }
+    if let Some(ref extensions) = item.stac_extensions
+        && !extensions.is_empty()
+    {
+        attributes.insert("stac_extensions".to_string(), extensions.join(", "));
     }
 
     // Extract bbox
@@ -679,8 +1019,11 @@ fn extract_crs_from_properties(
     }
     // proj:wkt2
     if let Some(wkt2) = fields.get("proj:wkt2").and_then(|v| v.as_str()) {
-        // Return a truncated indicator rather than the full WKT2
-        return Some(format!("WKT2:{}", &wkt2[..wkt2.len().min(64)]));
+        // Return a truncated indicator rather than the full WKT2. Truncate by
+        // character count (not byte offset) so a multi-byte UTF-8 character
+        // straddling the cut point can never split-panic.
+        let truncated: String = wkt2.chars().take(64).collect();
+        return Some(format!("WKT2:{truncated}"));
     }
     None
 }
@@ -891,562 +1234,9 @@ where
     paths.into_iter().map(extract_metadata).collect()
 }
 
+// Tests live in `extract_tests.rs` (rather than an inline `mod tests { ... }`)
+// to keep this file under the workspace's 2000-line-per-file limit.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extractor_builder() {
-        let extractor = MetadataExtractor::new()
-            .with_spatial(true)
-            .with_temporal(false)
-            .with_max_keywords(10);
-
-        assert!(extractor.extract_spatial);
-        assert!(!extractor.extract_temporal);
-        assert_eq!(extractor.max_keywords, 10);
-    }
-
-    #[test]
-    fn test_extracted_metadata_default() {
-        let metadata = ExtractedMetadata::default();
-        assert!(metadata.title.is_none());
-        assert!(metadata.bbox.is_none());
-        assert!(metadata.keywords.is_empty());
-    }
-
-    #[test]
-    fn test_unsupported_extension() {
-        let path = std::env::temp_dir().join("oxigdal_nonexistent_test_bx9f.xyz");
-        let result = extract_metadata(path);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_no_extension() {
-        let path = std::env::temp_dir().join("oxigdal_nonexistent_somefile_bx9f");
-        let result = extract_metadata(path);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_geotiff_extraction_with_real_tiff() {
-        // Create a minimal valid TIFF file with GeoTIFF tags
-        let tiff_bytes = build_test_geotiff(
-            256,
-            256,
-            8,
-            1,
-            Some(&[0.0, 0.0, 0.0, -120.0, 40.0, 0.0]), // tiepoint
-            Some(&[0.01, 0.01, 0.0]),                  // pixel scale
-            Some(&[
-                1, 1, 0,
-                3, // GeoKey directory header: version=1, revision=1, minor=0, numKeys=3
-                1024, 0, 1, 1, // GTModelTypeGeoKey = ModelTypeProjected
-                1025, 0, 1, 1, // GTRasterTypeGeoKey = RasterPixelIsArea
-                2048, 0, 1, 4326, // GeographicTypeGeoKey = EPSG:4326
-            ]),
-        );
-
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("test.tif");
-        std::fs::write(&path, &tiff_bytes).expect("failed to write test TIFF");
-
-        let metadata = extract_from_geotiff(&path).expect("extraction should succeed");
-        assert_eq!(metadata.format.as_deref(), Some("GeoTIFF"));
-        assert!(metadata.title.is_some());
-
-        // Check CRS from GeoKeys
-        assert_eq!(metadata.crs.as_deref(), Some("EPSG:4326"));
-
-        // Check bounding box computed from tiepoint + pixel scale + dimensions
-        let bbox = metadata.bbox.expect("should have bbox");
-        assert!((bbox.west - (-120.0)).abs() < 1e-6);
-        assert!((bbox.north - 40.0).abs() < 1e-6);
-        assert!((bbox.east - (-120.0 + 0.01 * 256.0)).abs() < 1e-6);
-        assert!((bbox.south - (40.0 - 0.01 * 256.0)).abs() < 1e-6);
-
-        // Check spatial resolution
-        assert!(
-            (metadata.spatial_resolution.expect("should have resolution") - 0.01).abs() < 1e-10
-        );
-
-        // Check attributes
-        assert_eq!(
-            metadata.attributes.get("width").map(|s| s.as_str()),
-            Some("256")
-        );
-        assert_eq!(
-            metadata.attributes.get("height").map(|s| s.as_str()),
-            Some("256")
-        );
-        assert_eq!(
-            metadata
-                .attributes
-                .get("bits_per_sample")
-                .map(|s| s.as_str()),
-            Some("8")
-        );
-        assert_eq!(
-            metadata.attributes.get("compression").map(|s| s.as_str()),
-            Some("None")
-        );
-    }
-
-    #[test]
-    fn test_geotiff_extraction_projected_crs() {
-        let tiff_bytes = build_test_geotiff(
-            512,
-            512,
-            16,
-            1,
-            Some(&[0.0, 0.0, 0.0, 500000.0, 4500000.0, 0.0]),
-            Some(&[10.0, 10.0, 0.0]),
-            Some(&[
-                1, 1, 0, 2, 1024, 0, 1, 1, // ModelTypeProjected
-                3072, 0, 1, 32632, // ProjectedCSTypeGeoKey = EPSG:32632 (UTM 32N)
-            ]),
-        );
-
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("projected.tif");
-        std::fs::write(&path, &tiff_bytes).expect("failed to write test TIFF");
-
-        let metadata = extract_from_geotiff(&path).expect("extraction should succeed");
-        assert_eq!(metadata.crs.as_deref(), Some("EPSG:32632"));
-        assert_eq!(
-            metadata
-                .attributes
-                .get("bits_per_sample")
-                .map(|s| s.as_str()),
-            Some("16")
-        );
-    }
-
-    #[test]
-    fn test_geotiff_extraction_no_geokeys() {
-        let tiff_bytes = build_test_geotiff(100, 100, 8, 3, None, None, None);
-
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("plain.tif");
-        std::fs::write(&path, &tiff_bytes).expect("failed to write test TIFF");
-
-        let metadata = extract_from_geotiff(&path).expect("extraction should succeed");
-        assert_eq!(metadata.format.as_deref(), Some("GeoTIFF"));
-        assert!(metadata.crs.is_none());
-        assert!(metadata.bbox.is_none());
-        assert_eq!(
-            metadata
-                .attributes
-                .get("samples_per_pixel")
-                .map(|s| s.as_str()),
-            Some("3")
-        );
-    }
-
-    #[test]
-    fn test_geotiff_not_a_tiff() {
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("bad.tif");
-        std::fs::write(&path, b"not a tiff file").expect("failed to write");
-
-        let result = extract_from_geotiff(&path);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_geotiff_too_small() {
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("tiny.tif");
-        std::fs::write(&path, b"II").expect("failed to write");
-
-        let result = extract_from_geotiff(&path);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_geokeys_user_defined_projected() {
-        let keys = vec![
-            1u16, 1, 0, 1, 1024, 0, 1, 1, // ModelTypeProjected = user-defined
-        ];
-        let crs = parse_crs_from_geokeys(&keys, &None);
-        assert_eq!(crs.as_deref(), Some("Projected CRS (user-defined)"));
-    }
-
-    #[test]
-    fn test_geokeys_user_defined_geographic() {
-        let keys = vec![
-            1u16, 1, 0, 1, 1024, 0, 1, 2, // ModelTypeGeographic
-        ];
-        let crs = parse_crs_from_geokeys(&keys, &None);
-        assert_eq!(crs.as_deref(), Some("Geographic CRS (user-defined)"));
-    }
-
-    #[test]
-    fn test_geokeys_empty() {
-        let crs = parse_crs_from_geokeys(&[], &None);
-        assert!(crs.is_none());
-    }
-
-    #[test]
-    fn test_to_iso19115_conversion() {
-        let metadata = ExtractedMetadata {
-            title: Some("Test Dataset".to_string()),
-            abstract_text: Some("A test dataset".to_string()),
-            bbox: Some(BoundingBox::new(-180.0, -90.0, 180.0, 90.0)),
-            crs: Some("EPSG:4326".to_string()),
-            keywords: vec!["geospatial".to_string(), "test".to_string()],
-            ..Default::default()
-        };
-
-        let iso = to_iso19115(&metadata).expect("conversion should succeed");
-        assert_eq!(iso.identification_info.len(), 1);
-        assert_eq!(iso.identification_info[0].citation.title, "Test Dataset");
-        assert_eq!(iso.reference_system_info.len(), 1);
-    }
-
-    #[test]
-    fn test_to_fgdc_conversion() {
-        let metadata = ExtractedMetadata {
-            title: Some("FGDC Test".to_string()),
-            abstract_text: Some("FGDC test dataset".to_string()),
-            bbox: Some(BoundingBox::new(-100.0, 30.0, -90.0, 40.0)),
-            ..Default::default()
-        };
-
-        let fgdc = to_fgdc(&metadata).expect("conversion should succeed");
-        assert_eq!(fgdc.idinfo.citation.citeinfo.title, "FGDC Test");
-    }
-
-    #[test]
-    fn test_batch_extract_mixed() {
-        let results = batch_extract(vec![
-            std::path::PathBuf::from("/nonexistent/file.tif"),
-            std::path::PathBuf::from("/nonexistent/file.xyz"),
-        ]);
-        assert_eq!(results.len(), 2);
-        assert!(results[0].is_err()); // file doesn't exist
-        assert!(results[1].is_err()); // unsupported format
-    }
-
-    #[test]
-    fn test_extractor_filters_spatial() {
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("filter_test.tif");
-
-        let tiff_bytes = build_test_geotiff(
-            64,
-            64,
-            8,
-            1,
-            Some(&[0.0, 0.0, 0.0, 10.0, 50.0, 0.0]),
-            Some(&[0.1, 0.1, 0.0]),
-            Some(&[1, 1, 0, 1, 2048, 0, 1, 4326]),
-        );
-        std::fs::write(&path, &tiff_bytes).expect("failed to write test TIFF");
-
-        let extractor = MetadataExtractor::new().with_spatial(false);
-        let metadata = extractor.extract(&path).expect("extraction should succeed");
-        assert!(metadata.bbox.is_none());
-        assert!(metadata.crs.is_none());
-        assert!(metadata.spatial_resolution.is_none());
-    }
-
-    /// Build a minimal valid TIFF file with optional GeoTIFF tags for testing.
-    fn build_test_geotiff(
-        width: u32,
-        height: u32,
-        bits_per_sample: u16,
-        samples_per_pixel: u16,
-        tiepoint: Option<&[f64]>,
-        pixel_scale: Option<&[f64]>,
-        geokeys: Option<&[u16]>,
-    ) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(4096);
-
-        // TIFF header: little-endian, magic 42
-        buf.extend_from_slice(b"II");
-        buf.extend_from_slice(&42u16.to_le_bytes());
-
-        // IFD offset at byte 8
-        let ifd_offset = 8u32;
-        buf.extend_from_slice(&ifd_offset.to_le_bytes());
-
-        // Count how many IFD entries we need
-        let mut entry_count: u16 = 5; // width, height, bits_per_sample, compression, samples_per_pixel
-        if tiepoint.is_some() {
-            entry_count += 1;
-        }
-        if pixel_scale.is_some() {
-            entry_count += 1;
-        }
-        if geokeys.is_some() {
-            entry_count += 1;
-        }
-
-        // IFD entry count
-        buf.extend_from_slice(&entry_count.to_le_bytes());
-
-        // Helper: write an IFD entry (tag, type, count, value/offset)
-        let write_entry_long = |buf: &mut Vec<u8>, tag: u16, value: u32| {
-            buf.extend_from_slice(&tag.to_le_bytes());
-            buf.extend_from_slice(&3u16.to_le_bytes()); // SHORT type (for width/height we use LONG)
-            buf.extend_from_slice(&1u32.to_le_bytes()); // count
-            // For LONG values that should be tag type 4:
-            // Actually let's use SHORT for small values, LONG for larger
-            if value <= u32::from(u16::MAX) {
-                buf.extend_from_slice(&(value as u16).to_le_bytes());
-                buf.extend_from_slice(&0u16.to_le_bytes()); // pad
-            } else {
-                // Re-write type as LONG
-                let type_off = buf.len() - 8;
-                buf[type_off] = 4; // LONG type
-                buf[type_off + 1] = 0;
-                buf.extend_from_slice(&value.to_le_bytes());
-            }
-        };
-
-        let write_entry_short = |buf: &mut Vec<u8>, tag: u16, value: u16| {
-            buf.extend_from_slice(&tag.to_le_bytes());
-            buf.extend_from_slice(&3u16.to_le_bytes()); // SHORT type
-            buf.extend_from_slice(&1u32.to_le_bytes()); // count
-            buf.extend_from_slice(&value.to_le_bytes());
-            buf.extend_from_slice(&0u16.to_le_bytes()); // pad
-        };
-
-        // IFD entries (must be sorted by tag)
-        write_entry_long(&mut buf, 256, width); // ImageWidth
-        write_entry_long(&mut buf, 257, height); // ImageLength
-        write_entry_short(&mut buf, 258, bits_per_sample); // BitsPerSample
-        write_entry_short(&mut buf, 259, 1); // Compression = None
-        write_entry_short(&mut buf, 277, samples_per_pixel); // SamplesPerPixel
-
-        // Compute offset for external data (after all IFD entries + next IFD offset)
-        let entries_so_far = 5;
-        let remaining_entries = entry_count - entries_so_far as u16;
-        let _ifd_end_offset = buf.len() + (remaining_entries as usize * 12) + 4; // +4 for next IFD pointer
-
-        // We need to plan offsets for data sections that come after the IFD
-        struct DeferredData {
-            entry_offset: usize, // where the offset field is in the IFD entry
-            data: Vec<u8>,
-        }
-        let mut deferred: Vec<DeferredData> = Vec::new();
-
-        // Write GeoTIFF tag entries with placeholder offsets
-        if let Some(ps) = pixel_scale {
-            let entry_offset = buf.len() + 8; // offset of the value/offset field
-            buf.extend_from_slice(&33550u16.to_le_bytes()); // ModelPixelScaleTag
-            buf.extend_from_slice(&12u16.to_le_bytes()); // DOUBLE type
-            buf.extend_from_slice(&(ps.len() as u32).to_le_bytes()); // count
-            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder offset
-            let data: Vec<u8> = ps.iter().flat_map(|v| v.to_le_bytes()).collect();
-            deferred.push(DeferredData { entry_offset, data });
-        }
-
-        if let Some(tp) = tiepoint {
-            let entry_offset = buf.len() + 8;
-            buf.extend_from_slice(&33922u16.to_le_bytes()); // ModelTiepointTag
-            buf.extend_from_slice(&12u16.to_le_bytes()); // DOUBLE type
-            buf.extend_from_slice(&(tp.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&0u32.to_le_bytes());
-            let data: Vec<u8> = tp.iter().flat_map(|v| v.to_le_bytes()).collect();
-            deferred.push(DeferredData { entry_offset, data });
-        }
-
-        if let Some(gk) = geokeys {
-            let entry_offset = buf.len() + 8;
-            buf.extend_from_slice(&34735u16.to_le_bytes()); // GeoKeyDirectoryTag
-            buf.extend_from_slice(&3u16.to_le_bytes()); // SHORT type
-            buf.extend_from_slice(&(gk.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&0u32.to_le_bytes());
-            let data: Vec<u8> = gk.iter().flat_map(|v| v.to_le_bytes()).collect();
-            deferred.push(DeferredData { entry_offset, data });
-        }
-
-        // Next IFD offset = 0 (no more IFDs)
-        buf.extend_from_slice(&0u32.to_le_bytes());
-
-        // Now write deferred data and patch offsets
-        for def in &deferred {
-            let data_offset = buf.len() as u32;
-            // Patch the offset in the IFD entry
-            buf[def.entry_offset..def.entry_offset + 4].copy_from_slice(&data_offset.to_le_bytes());
-            buf.extend_from_slice(&def.data);
-        }
-
-        buf
-    }
-
-    #[cfg(feature = "stac")]
-    #[test]
-    fn test_stac_extraction_full_item() {
-        let json = r#"{
-            "type": "Feature",
-            "stac_version": "1.0.0",
-            "stac_extensions": [
-                "https://stac-extensions.github.io/projection/v1.1.0/schema.json"
-            ],
-            "id": "test-item-001",
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[[-122.5, 37.5], [-122.0, 37.5], [-122.0, 38.0], [-122.5, 38.0], [-122.5, 37.5]]]
-            },
-            "bbox": [-122.5, 37.5, -122.0, 38.0],
-            "properties": {
-                "datetime": "2024-01-15T10:30:00Z",
-                "title": "San Francisco Bay Area",
-                "description": "Sentinel-2 L2A imagery over SF Bay",
-                "proj:epsg": 32610,
-                "gsd": 10.0,
-                "platform": "sentinel-2a",
-                "constellation": "sentinel-2",
-                "keywords": ["sentinel", "optical", "bay-area"]
-            },
-            "links": [],
-            "assets": {
-                "visual": {
-                    "href": "https://example.com/visual.tif",
-                    "type": "image/tiff; application=geotiff"
-                },
-                "thumbnail": {
-                    "href": "https://example.com/thumb.png",
-                    "type": "image/png"
-                }
-            },
-            "collection": "sentinel-2-l2a"
-        }"#;
-
-        let metadata = extract_from_stac_json(json).expect("extraction should succeed");
-
-        assert_eq!(metadata.title.as_deref(), Some("San Francisco Bay Area"));
-        assert_eq!(
-            metadata.abstract_text.as_deref(),
-            Some("Sentinel-2 L2A imagery over SF Bay")
-        );
-        assert_eq!(metadata.format.as_deref(), Some("STAC"));
-        assert_eq!(metadata.crs.as_deref(), Some("EPSG:32610"));
-        assert!((metadata.spatial_resolution.expect("should have gsd") - 10.0).abs() < 1e-10);
-
-        let bbox = metadata.bbox.expect("should have bbox");
-        assert!((bbox.west - (-122.5)).abs() < 1e-6);
-        assert!((bbox.south - 37.5).abs() < 1e-6);
-        assert!((bbox.east - (-122.0)).abs() < 1e-6);
-        assert!((bbox.north - 38.0).abs() < 1e-6);
-
-        assert!(
-            metadata
-                .temporal_extent
-                .as_ref()
-                .expect("should have temporal")
-                .start
-                .is_some()
-        );
-
-        assert_eq!(metadata.keywords, vec!["sentinel", "optical", "bay-area"]);
-        assert_eq!(
-            metadata.attributes.get("id").map(|s| s.as_str()),
-            Some("test-item-001")
-        );
-        assert_eq!(
-            metadata.attributes.get("collection").map(|s| s.as_str()),
-            Some("sentinel-2-l2a")
-        );
-        assert_eq!(
-            metadata.attributes.get("platform").map(|s| s.as_str()),
-            Some("sentinel-2a")
-        );
-        assert!(metadata.attributes.contains_key("asset_keys"));
-    }
-
-    #[cfg(feature = "stac")]
-    #[test]
-    fn test_stac_extraction_minimal_item() {
-        let json = r#"{
-            "type": "Feature",
-            "stac_version": "1.0.0",
-            "id": "minimal-item",
-            "geometry": null,
-            "bbox": null,
-            "properties": {
-                "datetime": null
-            },
-            "links": [],
-            "assets": {}
-        }"#;
-
-        let metadata = extract_from_stac_json(json).expect("extraction should succeed");
-
-        assert!(metadata.title.is_none());
-        assert!(metadata.abstract_text.is_none());
-        assert!(metadata.bbox.is_none());
-        assert!(metadata.temporal_extent.is_none());
-        assert!(metadata.crs.is_none());
-        assert_eq!(metadata.format.as_deref(), Some("STAC"));
-        assert_eq!(
-            metadata.attributes.get("id").map(|s| s.as_str()),
-            Some("minimal-item")
-        );
-    }
-
-    #[cfg(feature = "stac")]
-    #[test]
-    fn test_stac_extraction_with_temporal_range() {
-        let json = r#"{
-            "type": "Feature",
-            "stac_version": "1.0.0",
-            "id": "temporal-range",
-            "geometry": null,
-            "bbox": null,
-            "properties": {
-                "datetime": null,
-                "start_datetime": "2024-01-01T00:00:00Z",
-                "end_datetime": "2024-01-31T23:59:59Z"
-            },
-            "links": [],
-            "assets": {}
-        }"#;
-
-        let metadata = extract_from_stac_json(json).expect("extraction should succeed");
-        let extent = metadata
-            .temporal_extent
-            .expect("should have temporal extent");
-        assert!(extent.start.is_some());
-        assert!(extent.end.is_some());
-    }
-
-    #[cfg(feature = "stac")]
-    #[test]
-    fn test_stac_extraction_invalid_json() {
-        let result = extract_from_stac_json("not valid json");
-        assert!(result.is_err());
-    }
-
-    #[cfg(feature = "stac")]
-    #[test]
-    fn test_stac_extraction_from_file() {
-        let json = r#"{
-            "type": "Feature",
-            "stac_version": "1.0.0",
-            "id": "file-test",
-            "geometry": null,
-            "bbox": [-10.0, -20.0, 10.0, 20.0],
-            "properties": {
-                "datetime": "2024-06-01T12:00:00Z",
-                "title": "File Test Item"
-            },
-            "links": [],
-            "assets": {}
-        }"#;
-
-        let dir = tempfile::tempdir().expect("failed to create tempdir");
-        let path = dir.path().join("item.json");
-        std::fs::write(&path, json).expect("failed to write");
-
-        let metadata = extract_metadata(&path).expect("extraction should succeed");
-        assert_eq!(metadata.title.as_deref(), Some("File Test Item"));
-        assert_eq!(metadata.format.as_deref(), Some("STAC"));
-        let bbox = metadata.bbox.expect("should have bbox");
-        assert!((bbox.west - (-10.0)).abs() < 1e-6);
-    }
-}
+#[allow(clippy::unwrap_used)]
+#[path = "extract_tests.rs"]
+mod tests;

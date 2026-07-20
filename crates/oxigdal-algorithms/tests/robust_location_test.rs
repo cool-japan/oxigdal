@@ -1,5 +1,5 @@
 //! Integration tests for robust location estimators (W6, Slice 18).
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxigdal_algorithms::{
     RobustLocationOptions, geometric_median, geometric_median_3d, geometric_median_with_options,

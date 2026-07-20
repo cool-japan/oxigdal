@@ -24,8 +24,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-dev-tools = "0.1.5"
-oxigdal-core = "0.1.5"
+oxigdal-dev-tools = "0.1.7"
+oxigdal-core = "0.1.7"
 ```
 
 ## Quick Start

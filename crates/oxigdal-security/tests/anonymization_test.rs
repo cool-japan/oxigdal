@@ -1,4 +1,5 @@
 //! Integration tests for anonymization.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::anonymization::{generalization::KAnonymity, masking::MaskingStrategy};
 

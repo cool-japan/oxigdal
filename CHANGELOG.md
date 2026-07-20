@@ -7,6 +7,151 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-20
+
+### Added
+
+- **oxigdal-cloud-enhanced**: real Azure IMDS managed-identity tokens via `azure_identity::ManagedIdentityCredential`, replacing the placeholder-token stub; real GCP metadata-server access/identity tokens plus IAM Credentials API impersonation, with `GCE_METADATA_HOST` overridable for mock-server tests
+- **oxigdal-cloud**: multicloud `build_backend()` factory (S3/GCS/AzureBlob/Http, feature-gated) with a backend cache; `get`/`put`/`delete`/`exists_in_provider` are now functional against real backends
+- **oxigdal-drivers-advanced**: JPEG2000 decode now delegates to `oxigdal-jpeg2000` for real decode with full header parsing, replacing the gray-placeholder-pixel stub
+- **oxigdal-services**: WFS-T Memory/File transactions fully implemented — insert/update/delete/replace with per-path write serialization
+- **oxigdal-services**: WCS File/Url/Memory coverages now do real GeoTIFF read/write via `oxigdal-geotiff`; `encode_as_geotiff` produces real GeoTIFF bytes (was stub output)
+- **oxigdal-ml-foundation**: `onnx_export.rs` — pure-Rust ONNX protobuf encoder (ir_version 8, opset 13), round-trip-validated against `oxionnx`
+- **oxigdal-ml-foundation**: augmentation noise generation now uses real Gaussian sampling (`scirs2_core` seeded RNG) instead of a synthetic pattern
+- **oxigdal-ml**: `OnnxModel::infer_multiband` — real multi-channel `[1, C, H, W]` NCHW tensor inference over a `MultiBandBuffer` (band-sequential channel order, unpacked back into one output band per channel); previously `infer` accepted only a single-band `RasterBuffer`
+- **oxigdal-workflow**: Temporal/Prefect `import_workflow` round-trips exporter-generated definitions via metadata headers for lossless ID recovery; export now emits real activity bodies
+- **oxigdal-etl**: `calculate_ndvi` map transform implemented, with a zero-denominator guard so masked/no-data pixels emit `0.0` rather than `NaN`
+- **oxigdal-cli**: `info`/`stats` implemented for FlatGeobuf, GeoParquet, Zarr, GeoPackage, JPEG2000, COPC, PMTiles, MBTiles (previously "not yet implemented")
+- **oxigdal-algorithms**: Lanczos resampling `Wrap` and `Mirror` edge modes implemented (`rem_euclid` / reflect-101)
+- **oxigdal-geojson-stream**: TopoJSON writer now emits real arcs for LineString/MultiLineString — open-chain topology with endpoint junctions, no-rotation splitting, and shared-arc dedup via negative reversed indices (was an empty `"arcs": []` stub)
+- **oxigdal-gpu**: subgroup/warp operations emit native WGSL subgroup builtins with a workgroup-shared-memory emulation fallback; Metal filter/reduction/nearest-neighbor shader generators implemented; ballot/vote/`SimdGroupOperations` upgraded; new execute-and-compare GPU tests (verified on Metal)
+- **oxigdal-bench**: raster/io scenarios now do real work (tile reads, `MmapDataSource`) instead of synthetic placeholders
+- **oxigdal-wasm**: `WasmCogViewer.openBytes` — drag-drop local GeoTIFF with full codec support including LZW/Zstd via `CogReader<MemorySource>`; `readTileElevation` (SampleFormat tag 339 parsing); `WasmTerrain` — hillshade/multidirectional hillshade/slope/aspect/color-relief-shaded (Horn method, `ImageData` output); `WasmProjection` + `wgs84ToWebMercator`/`webMercatorToWgs84` shims
+- **GeoLab demo** (`demo/cog-viewer`): rebranded OxiGDAL GeoLab — drag-drop loading, terrain-analysis panel, honest byte counters, all CDN dependencies vendored locally; staged to cooljapan.tech/geolab/ (deploy manual)
+- **oxigdal-security**: new `attestation` module — tamper-evident session ledger: domain-separated blake3 hash chain (`SessionLog`), Merkle root + per-entry inclusion proofs, Ed25519 session seal (`SessionSigner::seal`), and `verify_attestation()` re-verifying chain/root/signature from the attestation JSON alone; golden-fixture and tamper-detection tests; native skeptic's verifier example `verify_attestation.rs`; compiles for wasm32 under `--no-default-features --features attestation`
+- **oxigdal-wasm**: `sentinel` module (GeoSentinel) — `WasmStacClient` Earth Search STAC scene-pair search with client-side cloud/nodata/grid filtering; self-contained UTM↔WGS84 (Krüger series, EPSG 326xx/327xx); `GeoSentinel` change-detection pipeline: windowed COG reads → BOA offset → NDVI drop → fixed/Otsu threshold → polygonization → Karney geodesic hectares → GeoJSON, plus true-color and diff-heatmap RGBA overlays
+- **oxigdal-wasm**: `vault` module (GeoVault) — `WasmVaultSession` blake3 hash-chained operation log sealed with Ed25519 into attestation JSON, `verifyAttestation`, blake3 `fileDigestHex` for dropped files
+- **oxigdal-wasm**: `anomaly` module — self-contained Z-score / IQR / modified-Z-score / percentile / σ-bounds detectors (parity-ported from `oxigdal-analytics` / `oxigdal-qc`) with mask, `ImageData`, and summary-JSON outputs
+- **oxigdal-wasm**: COG reader overview-level reads — full per-overview IFD parsing (each level gets its own tile directory, predictor, and sample layout), `read_tile_level`, and `read_window_u16` / `read_window_rgb8` window assembly; PREDICTOR=2 horizontal-differencing undo (TIFF tag 317) for u8/u16 samples on all tile and window paths
+- **oxigdal-geoparquet**: new `plan` / `pushdown` APIs — `plan_pushdown()` computes row-group bbox + attribute-statistics pruning and exact column-chunk byte ranges from metadata alone (zero I/O); `execute_pushdown()` runs pushdown over any `parquet::ChunkReader` (`GeoParquetReader::read_pushdown` is now a thin wrapper)
+- **oxigdal-geoparquet**: bbox-column detection now honors GeoParquet 1.1 `covering.bbox` paths from the `geo` metadata (authoritative) with a plain `bbox` struct-root fallback — VIDA-style files (5.9 GB / 9,533 row groups) now prune correctly
+- **oxigdal-geoparquet**: `AttributeFilter::Cmp` scalar comparisons (`>`, `>=`, `<`, `<=`, `<>`) with Int64/Float64 literal↔column coercion (a bare integer compares correctly against a Float64 column and a whole-valued decimal against an integer column); multiple filters compose as a conjunction via `with_attribute_filters`
+- **oxigdal-wasm-geoparquet** (new crate): browser GeoParquet range-request client — remote footer decode, `SparseChunkReader` over prefetched byte ranges, 64 KiB-gap range coalescing, SQL `WHERE`-fragment → predicate lowering (sqlparser, typed rejections naming unsupported constructs), `RecordBatch` → GeoJSON conversion, and `RemoteGeoParquet` open/plan/query with byte and request accounting (npm: `@cooljapan/oxigdal-geoparquet`)
+- **GeoSentinel demo** (`demo/geosentinel`): in-browser Sentinel-2 change detection — STAC pair search, streamed COG windows, NDVI-drop polygons with geodesic hectares, GeoJSON export, before/after crossfade; staged to cooljapan.tech/geosentinel/ (deploy manual)
+- **GeoVault demo** (`demo/geovault`): sovereign clean-room workstation — CSP-enforced zero egress, live session ledger, seal → attestation download, independent `verify.html` verifier; synthetic Site K-7 DEM via new `oxigdal-geotiff` example `geovault_scene.rs`; staged to cooljapan.tech/geovault/ (deploy manual)
+- **GeoParquet Live demo** (`demo/geoparquet`): bounding-box + SQL attribute queries against the 5.9 GB VIDA GeoParquet via predicate pushdown over HTTP ranges — row-group strip visualization, plan-cost preview before any fetch, Cache API footer caching, offline sample + new `oxigdal-geoparquet` example `generate_sample.rs`; staged to cooljapan.tech/geoparquet/ (deploy manual)
+- **oxigdal-server**: new example `render_hero.rs` (DEM → combined hillshade → colormap → PNG)
+- docs.rs metadata added to all 64 remaining publishable crates (21 curated for Pure-Rust-only docs builds)
+- New `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`
+
+### Changed
+
+- **oxigdal-cloud-enhanced**: `reqwest` made optional, gated behind the `gcp` feature
+- **oxigdal-ml-foundation**: weights save/load moved to `oxicode` (COOLJAPAN no-bincode policy)
+- **oxigdal-services**: Database transactions/feature-sources/SQL count moved behind new non-default `postgis` feature (`oxigdal-postgis` pool, `ST_GeomFromGeoJSON`/`ST_AsGeoJSON`); WCS `Url` coverage fetch moved behind new non-default `remote` feature
+- **oxigdal-drivers-advanced**: `jpeg2000` feature is now dependency-gated (pulls in `oxigdal-jpeg2000` only when enabled)
+- **oxigdal-security**: dependencies split behind new `enterprise` / `tls` / `attestation` features (default enables all three) — the heavyweight server-side surface (tokio, dashmap, petgraph, scirs2-core, oxiarc-zstd, regex, parking_lot, uuid, chrono, crypto stack) is now optional under `enterprise`; `tls` implies `enterprise`; `attestation` pulls only `blake3` + `ed25519-dalek`, keeping the wasm32 surface lean
+- **GeoLab demo**: shared `@cooljapan/oxigdal` WASM package rebuilt (pkg refresh) — GeoLab, GeoSentinel, and GeoVault all serve the same refreshed package
+- Examples/benches reorganized: 31 orphaned top-level examples wired into `oxigdal-examples` (API rot fixed, 5 duplicates pruned); 11 benches wired into `oxigdal-bench`
+- README: stats refreshed, doc links updated, GeoLab hero image made clickable, new `## Demo` section with native-render gallery (`docs/media/`); section grown to `## Demos` with hero/GIF/gallery/honest-notes blocks for GeoSentinel, GeoVault, and GeoParquet Live
+- Dependencies bumped to latest per the Latest Crates Policy: `oxiproj`/`oxiproj-core` 0.1.1 → 0.1.2, `oxisql-core`/`oxisql-sqlite-compat` 0.3.2 → 0.4.0, `oxinetcdf` 0.1.4 → 0.2.0, `oxih5` 0.1.4 → 0.2.0 — version-only `Cargo.toml` changes; the `oxih5`/`oxinetcdf` jump to 0.2.0 was verified source-compatible with the `oxigdal-drivers/hdf5`/`oxigdal-netcdf` driver code (no driver-side changes required)
+
+### Fixed (production-hardening campaign, 2026-07)
+
+Parallel multi-lane defect sweep across the workspace: 233 verified defects fixed across
+69 crates (correctness, unwrap-elimination, clippy, doc/README accuracy). Headline items:
+
+**Format drivers**
+
+- **oxigdal-geotiff**: floating-point predictor (TIFF `Predictor=3`) decode *and* encode now
+  actually implemented — was previously a silent no-op that passed float32/float64 tile data
+  through unmodified, corrupting round-trips of predictor-encoded float COGs
+- **oxigdal-jpeg2000**: MQ arithmetic decoder `INITDEC` procedure brought into ITU-T T.800
+  Annex C spec conformance
+- **oxigdal-drivers/gml**: `srsDimension` attribute now parsed, so 3D coordinate geometries
+  are no longer silently treated as 2D
+- **oxigdal-drivers-advanced (VRT)**: `FirstValid` pixel-function compositing fixed for
+  multi-byte sample types (u16/f32/f64 — was only correct for single-byte u8 samples);
+  `BandMath` pixel function now substitutes `B10` and higher band variables (previously only
+  `B1`–`B9` were recognized, silently dropping bands past 9 from expressions)
+- **oxigdal-drivers/hdf5** and **oxigdal-netcdf**: both drivers re-backed by the real
+  Pure-Rust `oxih5 0.1.4` / `oxinetcdf 0.1.4` crates (crates.io, no libhdf5/libnetcdf FFI).
+  `oxigdal-drivers/hdf5` previously read a custom `OXIGDAL_HDF5_METADATA_V1` JSON sidecar
+  and returned zeros for real `.h5` files; it now reads and writes genuine HDF5 via `oxih5`.
+  `oxigdal-netcdf` now reads genuine NetCDF-4/CF files via `oxinetcdf`. Public API is
+  unchanged (`Hdf5Reader::open`, `Attribute`/`AttributeValue`/`Datatype`/`Hdf5Version`/
+  `Hdf5Writer`, `NetCdfReader::open`); 730 tests passing across the 4 affected crates,
+  clippy clean. Honest limitations carried forward: `oxih5` 0.1.4 fully reads
+  v0-superblock `.h5` files, while v2/v3-superblock files open but currently yield an empty
+  tree (best-effort, never faked); the writer produces contiguous real HDF5 (chunk/
+  compression hints are dropped, values are correct); the NetCDF reader surfaces the root
+  group, and `scale_factor`/`add_offset`/`_FillValue` are exposed as attributes but not
+  auto-applied
+
+**Algorithms**
+
+- **oxigdal-algorithms**: the raster/DSL calculator's algebraic optimizer no longer folds
+  `x * 0` / `0 * x` to a constant `0.0` — since `NaN * 0.0 == NaN` and `Inf * 0.0 == NaN`,
+  the previous simplification silently discarded NoData/Inf semantics in NoData-masked
+  raster expressions; covered by a new NaN-semantics regression test
+- **oxigdal-algorithms**: Weiler-Atherton polygon clipping's concave-region fallback path no
+  longer silently returns a geometrically wrong (angularly-sorted) shape — the mismatch is
+  now surfaced as an explicit condition rather than masked as a plausible-looking result;
+  full boundary-walk reconstruction for concave fallbacks remains future work (see TODO.md)
+
+**Security**
+
+- **oxigdal-security**: RBAC `resource_pattern` matching is now actually consulted by the
+  authorization check — was previously parsed and stored but never read, a
+  privilege-widening bug that let any pattern-scoped permission match every resource
+- **oxigdal-gateway**: TOTP verification switched to a constant-time comparison and gained a
+  ±1 time-step (30s) clock-skew tolerance window per RFC 6238 §5.2; backup-code and
+  SMS-challenge comparisons are now constant-time as well
+
+**Cloud & infra**
+
+- **oxigdal-server**: `server.toml` is now actually loaded via `OXIGDAL_CONFIG` in
+  Docker/Kubernetes deployments — was previously parsed and then discarded, silently
+  running on built-in defaults regardless of the mounted config file
+- **oxigdal-stac**: implicit `reqwest` feature pull replaced with an explicit `async`
+  feature (with `reqwest` kept as a backwards-compatible alias) — the HTTP client and its
+  `aws-lc-sys` transitive dependency are no longer pulled in for consumers who never use the
+  async surface
+- **oxigdal-streaming**: Kafka/Kinesis connector commit-strategy and consumer-lease
+  correctness fixes
+- **oxigdal-query**: `GROUP BY` execution implemented in the SQL executor (was previously a
+  no-op that ignored the clause)
+
+**Bindings**
+
+- **oxigdal (umbrella)**: `DatasetWriter::finalize()` now writes a real format, or returns a
+  typed error, instead of emitting a fake `OXIG`-prefixed placeholder blob on unsupported
+  paths
+
+**no_std & platform**
+
+- **oxigdal-core**: now compiles under `--no-default-features --features alloc` (no_std +
+  `alloc`, no `std`) — the build previously failed under this combination, blocking
+  `oxigdal-embedded`/`oxigdal-noalloc` no_std consumers
+
+### Fixed
+
+- **oxigdal-etl**: `transform_crs` now implemented via `oxigdal_proj::transform_epsg`, offloaded to `tokio::task::spawn_blocking` — previously panicked with "Cannot start a runtime from within a runtime" when invoked inside any Tokio runtime, because `transform_epsg` opens the bundled PROJ database and builds its own current-thread runtime internally; this is a real bug fix, not a hardening change
+- **oxigdal-etl**: `calculate_bbox` fixed — was unconditionally returning `[0, 0, 0, 0]`
+- **oxigdal-ml-foundation**: unavailable `scirs2` input-gradient paths now return honest typed errors instead of silently returning zero gradients
+- **oxigdal-gpkg**: tile matrix set `srs_id` now writes the real EPSG:4326 SRS encoding via new `int2_st()` helper (was a hardcoded placeholder value of `4`)
+- **oxigdal-cli**: `merge` placeholder test replaced with a real assertion
+- **oxigdal-wasm**: COG IFD parser — `BitsPerSample` / `SampleFormat` entries carrying one SHORT per sample (count > 1, e.g. RGB TCI COGs) were read as inline scalars, yielding a garbage bit depth from the offset word and silently disabling predictor undo for multi-band tiles; arrays now go through offset-following array reads (first entry authoritative)
+- **oxigdal-drivers/flatgeobuf**: reader and writer now produce and parse the *real* FlatBuffers wire format — size-prefixed `Header`/`Feature` tables per the official FlatGeobuf schema, written via `flatbuffers::FlatBufferBuilder` and read back through a new bounds-checked vtable walker (`fbs` module) — instead of an ad-hoc custom binary layout; files are now interoperable with GDAL and other FlatGeobuf tooling. New `tests/real_format.rs` independently walks the on-disk bytes to confirm they are genuine FlatBuffers, not just round-trippable against this crate's own reader
+- **oxigdal-geotiff**: LERC decode (TIFF Compression tag 34887) now implements the real Esri/GDAL LERC2 bit-stuffed block format — header parsing, run-length-encoded validity mask, `BitStuffer2` variable-bit-width unpacking, and exact dequantization — via a new `lerc_codec::lerc2` decoder; previously the codec only round-tripped its own raw-value payload and returned an explicit error on genuine GDAL/Esri-produced LERC streams. LERC *encoding* to the interoperable bit-stuffed format remains explicitly unimplemented (typed error, not a fabricated blob)
+- **oxigdal-jpeg2000**: Tier-2 packet-header parsing (new `tier2::layout`/`tier2::packet`/`tier2::tile` modules) now drives code-block decoding from the real per-(resolution, subband, code-block) precinct geometry and COD progression order, replacing a naive even-division byte split across code-blocks that did not reflect the actual packet structure of real JPEG2000 codestreams. Supports LRCP/RLCP progression, single quality layer, maximum-size precincts, and the reversible 5/3 wavelet; unsupported progression orders or multi-layer streams now return a typed `UnsupportedFeature` error instead of mis-decoding silently
+- **oxigdal-drivers/hdf5**: the ScaleOffset (`H5Z_SCALEOFFSET`, id 6) and N-Bit (`H5Z_NBIT`, id 5) filters now implement libhdf5's actual on-disk `cd_values`/per-chunk layouts (matching `H5Zscaleoffset.c`/`H5Znbit.c`) instead of an invented header format, so chunks produced by h5py/netcdf-c decode correctly and chunks written here are byte-compatible with libhdf5; a new `filters::pipeline_message` parser decodes the real Object Header Filter Pipeline message (both v1 and v2 on-disk layouts) that supplies each filter's parameters
+- **oxigdal-embedded**: the `power` module now makes explicit that `PowerManager` performs no hardware power/clock transitions unless a board-support `PowerController` is installed (new trait extension point) — CPU-frequency scaling and clock/power gating are SoC-vendor-specific and were previously implied rather than actually performed; `request_mode_strict` added for callers where a silent no-op would be a correctness bug
+- **oxigdal-algorithms**: both raster-algebra expression front-ends (the Pest-based `dsl` parser and the hand-written raster calculator parser) are recursive descent and had no bound on input nesting depth — a deeply nested expression such as `((((...))))` or a long `-----x` unary chain aborted the whole process with a stack overflow (`SIGABRT`), an unrecoverable crash reachable from untrusted expression text. Both now enforce a measured `MAX_EXPRESSION_DEPTH` (64) before recursing, returning the typed `AlgorithmError::NestingTooDeep` instead of crashing; wired through to `oxigdal-node`'s error mapping as well
+- Test fixtures: two `oxigdal-cli` integration tests silently depended on demo fixtures excluded by `.gitignore` (`demo/cog-viewer/*.zarr`, `*.fgb`), so they only passed on machines where a developer had manually regenerated the fixture locally and failed deterministically on a clean checkout (previously misdiagnosed as a Linux-only flake). `test_read_zarr_info_demo_fixture` is fixed by committing the actual `iron-belt.zarr` fixture; `test_read_flatgeobuf_info_demo_fixture` is fixed by falling back to an equivalent in-process synthesized FlatGeobuf fixture when the demo file is absent, keeping the test self-contained either way
+- README: quickstart example now compiles as written (`crs()` returns `Option`)
+- Hygiene: removed a stray rustc-ICE dump, auto-fix-generated logs/backups, and 3 stray `.bak` files from crate `src/` trees; `.gitignore` hardened; `.cargo/config.toml` stale `rusqlite`/`proj-sys` entries removed; `pypi-publish.yml` stale `openssl-devel` step removed; `pyproject.toml` and `package.json` synced to 0.1.7
+
 ## [0.1.6] - 2026-06-15
 
 ### Added
@@ -569,8 +714,9 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigdal>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigdal/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.6...HEAD
-[0.1.6]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.6
+[Unreleased]: https://github.com/cool-japan/oxigdal/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.7
+[0.1.6]: https://github.com/cool-japan/oxigdal/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/cool-japan/oxigdal/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/cool-japan/oxigdal/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/cool-japan/oxigdal/compare/v0.1.2...v0.1.3

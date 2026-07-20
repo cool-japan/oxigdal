@@ -44,6 +44,8 @@ pub struct KafkaConsumer {
     metrics: Arc<RwLock<ConsumerMetrics>>,
     /// Subscribed topics
     subscribed_topics: Arc<RwLock<Vec<String>>>,
+    /// Background task driving `CommitStrategy::AutoInterval` commits, if configured.
+    auto_commit_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Custom consumer context for handling callbacks
@@ -153,15 +155,41 @@ impl KafkaConsumer {
             .map_err(|e| Error::Configuration(format!("Failed to create consumer: {}", e)))?;
 
         let offset_manager = Arc::new(OffsetManager::new(config.commit_strategy.clone()));
+        let consumer = Arc::new(consumer);
+
+        // `AutoInterval` is the only strategy that isn't driven directly by
+        // `receive_with_timeout`/`receive_batch`; run a background ticker
+        // that periodically flushes any tracked-but-uncommitted offsets.
+        let auto_commit_task = if config.commit_strategy == CommitStrategy::AutoInterval {
+            let interval_ms = u64::from(config.auto_commit_interval_ms.max(1));
+            let bg_consumer = Arc::clone(&consumer);
+            let bg_offset_manager = Arc::clone(&offset_manager);
+            Some(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_millis(interval_ms));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // The first tick fires immediately; skip it so the first
+                // automatic commit happens after a full interval elapses.
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = Self::commit_offsets(&bg_consumer, &bg_offset_manager).await {
+                        warn!("Automatic interval offset commit failed: {}", e);
+                    }
+                }
+            }))
+        } else {
+            None
+        };
 
         info!("Kafka consumer created successfully");
 
         Ok(Self {
-            consumer: Arc::new(consumer),
+            consumer,
             config,
             offset_manager,
             metrics: Arc::new(RwLock::new(ConsumerMetrics::default())),
             subscribed_topics: Arc::new(RwLock::new(Vec::new())),
+            auto_commit_task,
         })
     }
 
@@ -202,12 +230,26 @@ impl KafkaConsumer {
         let elapsed = start.elapsed();
 
         // Update metrics
+        let payload_len = kafka_msg.payload.as_ref().map_or(0, |p| p.len());
         let mut metrics = self.metrics.write().await;
-        metrics.record_message_received(kafka_msg.payload.len(), elapsed);
+        metrics.record_message_received(payload_len, elapsed);
+        drop(metrics);
 
         // Track offset
         self.offset_manager
             .track_offset(&kafka_msg.topic, kafka_msg.partition, kafka_msg.offset);
+
+        // `AutoPerMessage` commits right after every message. `AutoPerBatch`
+        // is handled by `receive_batch` once a whole batch completes, and
+        // `AutoInterval` is driven by the background task started in
+        // `new_with_callback`, so neither is triggered here.
+        if matches!(
+            self.offset_manager.strategy(),
+            CommitStrategy::AutoPerMessage
+        ) && self.offset_manager.should_commit(1)
+        {
+            self.commit().await?;
+        }
 
         Ok(kafka_msg)
     }
@@ -230,12 +272,30 @@ impl KafkaConsumer {
             }
         }
 
+        // `AutoPerBatch` commits once per completed `receive_batch` call
+        // rather than after every individual message.
+        if matches!(self.offset_manager.strategy(), CommitStrategy::AutoPerBatch)
+            && self.offset_manager.should_commit(messages.len())
+        {
+            self.commit().await?;
+        }
+
         Ok(messages)
     }
 
     /// Commit offsets manually
     pub async fn commit(&self) -> Result<()> {
-        let offsets = self.offset_manager.get_offsets_to_commit();
+        Self::commit_offsets(&self.consumer, &self.offset_manager).await
+    }
+
+    /// Commit any tracked-but-uncommitted offsets to the broker.
+    ///
+    /// Shared between `commit()` and the background `AutoInterval` task.
+    async fn commit_offsets(
+        consumer: &StreamConsumer<CustomContext>,
+        offset_manager: &OffsetManager,
+    ) -> Result<()> {
+        let offsets = offset_manager.get_offsets_to_commit();
         if offsets.is_empty() {
             return Ok(());
         }
@@ -246,11 +306,11 @@ impl KafkaConsumer {
                 .map_err(|e| Error::OffsetCommit(format!("Failed to add offset: {}", e)))?;
         }
 
-        self.consumer
+        consumer
             .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
             .map_err(|e| Error::OffsetCommit(format!("Failed to commit offsets: {}", e)))?;
 
-        self.offset_manager.mark_committed(&tpl);
+        offset_manager.mark_committed(&tpl);
 
         debug!("Committed offsets: {:?}", tpl);
         Ok(())
@@ -342,10 +402,12 @@ impl KafkaConsumer {
         let timestamp = msg.timestamp().to_millis().unwrap_or(0);
 
         let key = msg.key().map(Bytes::copy_from_slice);
-        let payload = msg
-            .payload()
-            .ok_or_else(|| Error::Deserialization("Message has no payload".to_string()))?;
-        let payload = Bytes::copy_from_slice(payload);
+        // Kafka log-compacted topics use a `null` payload as the standard
+        // tombstone/delete marker (e.g. Debezium CDC pipelines). Treat it as
+        // a valid message with no payload rather than a hard error, so
+        // consumers of compacted topics can progress past deletes instead
+        // of retrying the same offset forever.
+        let payload = msg.payload().map(Bytes::copy_from_slice);
 
         let mut headers = HashMap::new();
         if let Some(msg_headers) = msg.headers() {
@@ -376,6 +438,18 @@ impl KafkaConsumer {
     }
 }
 
+impl Drop for KafkaConsumer {
+    fn drop(&mut self) {
+        // Stop the background `AutoInterval` commit ticker, if one was
+        // started, so it doesn't keep running (and holding an `Arc` clone
+        // of the underlying rdkafka consumer alive) after this consumer is
+        // dropped.
+        if let Some(handle) = self.auto_commit_task.take() {
+            handle.abort();
+        }
+    }
+}
+
 /// Kafka message
 #[derive(Debug, Clone)]
 pub struct KafkaMessage {
@@ -389,8 +463,10 @@ pub struct KafkaMessage {
     pub timestamp: i64,
     /// Message key (optional)
     pub key: Option<Bytes>,
-    /// Message payload
-    pub payload: Bytes,
+    /// Message payload. `None` for log-compaction tombstone records (a
+    /// Kafka message with a `null` value), which are a valid, standard way
+    /// to signal a delete on compacted topics (e.g. Debezium CDC).
+    pub payload: Option<Bytes>,
     /// Message headers
     pub headers: HashMap<String, Bytes>,
 }
@@ -417,16 +493,38 @@ impl KafkaMessage {
         })
     }
 
-    /// Get payload as string
-    pub fn payload_str(&self) -> Result<String> {
-        String::from_utf8(self.payload.to_vec())
-            .map_err(|e| Error::Deserialization(format!("Invalid UTF-8 in payload: {}", e)))
+    /// Returns `true` if this is a log-compaction tombstone record (a
+    /// Kafka message with a `null` payload, used to signal a delete on
+    /// compacted topics).
+    pub fn is_tombstone(&self) -> bool {
+        self.payload.is_none()
     }
 
-    /// Deserialize payload as JSON
-    pub fn payload_json<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_slice(&self.payload)
-            .map_err(|e| Error::Deserialization(format!("Failed to deserialize JSON: {}", e)))
+    /// Get payload as string.
+    ///
+    /// Returns `Ok(None)` for tombstone messages (see [`Self::is_tombstone`]).
+    pub fn payload_str(&self) -> Result<Option<String>> {
+        self.payload
+            .as_ref()
+            .map(|payload| {
+                String::from_utf8(payload.to_vec())
+                    .map_err(|e| Error::Deserialization(format!("Invalid UTF-8 in payload: {}", e)))
+            })
+            .transpose()
+    }
+
+    /// Deserialize payload as JSON.
+    ///
+    /// Returns `Ok(None)` for tombstone messages (see [`Self::is_tombstone`]).
+    pub fn payload_json<T: serde::de::DeserializeOwned>(&self) -> Result<Option<T>> {
+        self.payload
+            .as_ref()
+            .map(|payload| {
+                serde_json::from_slice(payload).map_err(|e| {
+                    Error::Deserialization(format!("Failed to deserialize JSON: {}", e))
+                })
+            })
+            .transpose()
     }
 }
 
@@ -445,7 +543,7 @@ mod tests {
             offset: 123,
             timestamp: 1234567890,
             key: Some(Bytes::from("test-key")),
-            payload: Bytes::from("test-payload"),
+            payload: Some(Bytes::from("test-payload")),
             headers,
         };
 
@@ -454,6 +552,55 @@ mod tests {
         assert_eq!(msg.offset, 123);
         assert!(msg.header("content-type").is_some());
         assert!(msg.header("missing").is_none());
+        assert!(!msg.is_tombstone());
+        assert_eq!(
+            msg.payload_str().ok().flatten(),
+            Some("test-payload".to_string())
+        );
+    }
+
+    #[test]
+    fn test_kafka_message_tombstone() {
+        // Log-compaction tombstone: a Kafka record with a `null` value.
+        let msg = KafkaMessage {
+            topic: "compacted-topic".to_string(),
+            partition: 0,
+            offset: 42,
+            timestamp: 1234567890,
+            key: Some(Bytes::from("deleted-key")),
+            payload: None,
+            headers: HashMap::new(),
+        };
+
+        assert!(msg.is_tombstone());
+        assert_eq!(
+            msg.payload_str().expect("tombstone payload_str is Ok"),
+            None
+        );
+        assert_eq!(
+            msg.payload_json::<serde_json::Value>()
+                .expect("tombstone payload_json is Ok"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_kafka_message_payload_json_non_tombstone() {
+        let msg = KafkaMessage {
+            topic: "test-topic".to_string(),
+            partition: 0,
+            offset: 1,
+            timestamp: 0,
+            key: None,
+            payload: Some(Bytes::from(r#"{"value":1}"#)),
+            headers: HashMap::new(),
+        };
+
+        let value: serde_json::Value = msg
+            .payload_json()
+            .expect("payload_json should succeed")
+            .expect("payload should be present");
+        assert_eq!(value["value"], 1);
     }
 
     #[tokio::test]

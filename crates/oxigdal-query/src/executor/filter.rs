@@ -115,7 +115,12 @@ impl Filter {
     }
 
     /// Evaluate an expression for a specific row.
-    fn evaluate_expr(&self, expr: &Expr, batch: &RecordBatch, row_idx: usize) -> Result<Value> {
+    pub(crate) fn evaluate_expr(
+        &self,
+        expr: &Expr,
+        batch: &RecordBatch,
+        row_idx: usize,
+    ) -> Result<Value> {
         match expr {
             Expr::Column { table: _, name } => {
                 let column = batch
@@ -224,9 +229,18 @@ impl Filter {
                 self.evaluate_binary_op(&Value::Int64(*l), op, &Value::Int64(*r as i64))
             }
             (Value::Int32(l), Value::Int32(r)) => match op {
-                BinaryOperator::Plus => Ok(Value::Int32(l + r)),
-                BinaryOperator::Minus => Ok(Value::Int32(l - r)),
-                BinaryOperator::Multiply => Ok(Value::Int32(l * r)),
+                // Checked arithmetic: overflow yields NULL rather than panicking
+                // (debug) or silently wrapping (release), mirroring the
+                // divide/modulo-by-zero-returns-NULL convention below.
+                BinaryOperator::Plus => {
+                    Ok(l.checked_add(*r).map(Value::Int32).unwrap_or(Value::Null))
+                }
+                BinaryOperator::Minus => {
+                    Ok(l.checked_sub(*r).map(Value::Int32).unwrap_or(Value::Null))
+                }
+                BinaryOperator::Multiply => {
+                    Ok(l.checked_mul(*r).map(Value::Int32).unwrap_or(Value::Null))
+                }
                 BinaryOperator::Divide => {
                     if *r == 0 {
                         Ok(Value::Null)
@@ -250,9 +264,17 @@ impl Filter {
                 _ => Err(QueryError::unsupported("Unsupported operator for integers")),
             },
             (Value::Int64(l), Value::Int64(r)) => match op {
-                BinaryOperator::Plus => Ok(Value::Int64(l + r)),
-                BinaryOperator::Minus => Ok(Value::Int64(l - r)),
-                BinaryOperator::Multiply => Ok(Value::Int64(l * r)),
+                // Checked arithmetic: overflow yields NULL rather than panicking
+                // (debug) or silently wrapping (release).
+                BinaryOperator::Plus => {
+                    Ok(l.checked_add(*r).map(Value::Int64).unwrap_or(Value::Null))
+                }
+                BinaryOperator::Minus => {
+                    Ok(l.checked_sub(*r).map(Value::Int64).unwrap_or(Value::Null))
+                }
+                BinaryOperator::Multiply => {
+                    Ok(l.checked_mul(*r).map(Value::Int64).unwrap_or(Value::Null))
+                }
                 BinaryOperator::Divide => {
                     if *r == 0 {
                         Ok(Value::Null)
@@ -332,6 +354,24 @@ impl Filter {
                 BinaryOperator::Eq => Ok(Value::Boolean(l == r)),
                 BinaryOperator::NotEq => Ok(Value::Boolean(l != r)),
                 BinaryOperator::Concat => Ok(Value::String(format!("{}{}", l, r))),
+                // Lexicographic ordering.
+                BinaryOperator::Lt => Ok(Value::Boolean(l < r)),
+                BinaryOperator::LtEq => Ok(Value::Boolean(l <= r)),
+                BinaryOperator::Gt => Ok(Value::Boolean(l > r)),
+                BinaryOperator::GtEq => Ok(Value::Boolean(l >= r)),
+                // Pattern matching (`l` is the value, `r` is the pattern).
+                BinaryOperator::Like => Ok(Value::Boolean(crate::executor::like::like_match(
+                    l, r, false,
+                ))),
+                BinaryOperator::NotLike => Ok(Value::Boolean(!crate::executor::like::like_match(
+                    l, r, false,
+                ))),
+                BinaryOperator::ILike => Ok(Value::Boolean(crate::executor::like::like_match(
+                    l, r, true,
+                ))),
+                BinaryOperator::NotILike => Ok(Value::Boolean(!crate::executor::like::like_match(
+                    l, r, true,
+                ))),
                 _ => Err(QueryError::unsupported("Unsupported operator for strings")),
             },
             _ => Err(QueryError::execution(
@@ -359,6 +399,20 @@ impl Filter {
             _ => Err(QueryError::unsupported("Unsupported unary operation")),
         }
     }
+}
+
+/// Evaluate an expression for a single row without a pre-built [`Filter`].
+///
+/// Shared by the Sort and Aggregate operators so `ORDER BY` / `GROUP BY` can
+/// evaluate arbitrary scalar expressions (columns, arithmetic, functions)
+/// through the exact same evaluator used for WHERE-clause predicates. The
+/// dummy predicate is never inspected by [`Filter::evaluate_expr`].
+pub(crate) fn evaluate_expr_for_row(
+    expr: &Expr,
+    batch: &RecordBatch,
+    row_idx: usize,
+) -> Result<Value> {
+    Filter::new(Expr::Wildcard).evaluate_expr(expr, batch, row_idx)
 }
 
 /// Runtime value.
@@ -438,6 +492,144 @@ mod tests {
 
         assert_eq!(filtered.num_rows, 3); // 30, 40, 50 are > 25
 
+        Ok(())
+    }
+
+    fn string_batch() -> Result<RecordBatch> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "name".to_string(),
+            crate::executor::scan::DataType::String,
+            true,
+        )]));
+        let columns = vec![ColumnData::String(vec![
+            Some("Apple".to_string()),
+            Some("banana".to_string()),
+            Some("Cherry".to_string()),
+            Some("foobar".to_string()),
+        ])];
+        RecordBatch::new(schema, columns, 4)
+    }
+
+    fn name_col(expr_name: &str) -> Expr {
+        Expr::Column {
+            table: None,
+            name: expr_name.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_where_like_case_sensitive() -> Result<()> {
+        let batch = string_batch()?;
+        // WHERE name LIKE '%oo%' should match only "foobar".
+        let predicate = Expr::BinaryOp {
+            left: Box::new(name_col("name")),
+            op: BinaryOperator::Like,
+            right: Box::new(Expr::Literal(Literal::String("%oo%".to_string()))),
+        };
+        let filtered = Filter::new(predicate).execute(&batch)?;
+        assert_eq!(filtered.num_rows, 1);
+
+        // LIKE is case-sensitive: uppercase pattern matches nothing here.
+        let predicate = Expr::BinaryOp {
+            left: Box::new(name_col("name")),
+            op: BinaryOperator::Like,
+            right: Box::new(Expr::Literal(Literal::String("A%".to_string()))),
+        };
+        let filtered = Filter::new(predicate).execute(&batch)?;
+        assert_eq!(filtered.num_rows, 1); // only "Apple"
+
+        let predicate = Expr::BinaryOp {
+            left: Box::new(name_col("name")),
+            op: BinaryOperator::Like,
+            right: Box::new(Expr::Literal(Literal::String("a%".to_string()))),
+        };
+        let filtered = Filter::new(predicate).execute(&batch)?;
+        assert_eq!(filtered.num_rows, 0); // "Apple" is capital A, none start lowercase 'a'
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_not_like() -> Result<()> {
+        let batch = string_batch()?;
+        let predicate = Expr::BinaryOp {
+            left: Box::new(name_col("name")),
+            op: BinaryOperator::NotLike,
+            right: Box::new(Expr::Literal(Literal::String("%oo%".to_string()))),
+        };
+        let filtered = Filter::new(predicate).execute(&batch)?;
+        assert_eq!(filtered.num_rows, 3); // everything except "foobar"
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_ilike_case_insensitive() -> Result<()> {
+        let batch = string_batch()?;
+        let predicate = Expr::BinaryOp {
+            left: Box::new(name_col("name")),
+            op: BinaryOperator::ILike,
+            right: Box::new(Expr::Literal(Literal::String("a%".to_string()))),
+        };
+        let filtered = Filter::new(predicate).execute(&batch)?;
+        assert_eq!(filtered.num_rows, 1); // "Apple" matches case-insensitively
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_string_ordering() -> Result<()> {
+        let batch = string_batch()?;
+        // WHERE name > 'C' -> lexicographic: "Cherry", "banana", "foobar"
+        // ASCII: uppercase letters sort before lowercase, so "Cherry" > "C",
+        // "banana"/"foobar" (lowercase) > "C" too; "Apple" < "C".
+        let predicate = Expr::BinaryOp {
+            left: Box::new(name_col("name")),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expr::Literal(Literal::String("C".to_string()))),
+        };
+        let filtered = Filter::new(predicate).execute(&batch)?;
+        assert_eq!(filtered.num_rows, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_int_overflow_returns_null_not_panic() -> Result<()> {
+        // i32::MAX + 1 must not panic; the arithmetic yields NULL, so the
+        // comparison against it is NULL (not selected) rather than crashing.
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "v".to_string(),
+            crate::executor::scan::DataType::Int32,
+            false,
+        )]));
+        let columns = vec![ColumnData::Int32(vec![Some(i32::MAX), Some(1)])];
+        let batch = RecordBatch::new(schema, columns, 2)?;
+
+        // WHERE v + 1 > 0
+        let predicate = Expr::BinaryOp {
+            left: Box::new(Expr::BinaryOp {
+                left: Box::new(name_col("v")),
+                op: BinaryOperator::Plus,
+                right: Box::new(Expr::Literal(Literal::Integer(1))),
+            }),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expr::Literal(Literal::Integer(0))),
+        };
+        // Literal::Integer maps to Int64, so v(Int32) + 1(Int64) coerces to
+        // i64 and does not overflow. Test the pure-i32 overflow path directly.
+        let ovf = Filter::new(Expr::Wildcard).evaluate_binary_op(
+            &Value::Int32(i32::MAX),
+            BinaryOperator::Plus,
+            &Value::Int32(1),
+        )?;
+        assert_eq!(ovf, Value::Null);
+
+        let ovf64 = Filter::new(Expr::Wildcard).evaluate_binary_op(
+            &Value::Int64(i64::MAX),
+            BinaryOperator::Multiply,
+            &Value::Int64(2),
+        )?;
+        assert_eq!(ovf64, Value::Null);
+
+        // Sanity: the end-to-end predicate still executes without panicking.
+        let _ = Filter::new(predicate).execute(&batch)?;
         Ok(())
     }
 }

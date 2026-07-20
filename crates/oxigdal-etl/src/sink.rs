@@ -105,10 +105,10 @@ impl FileSink {
 
         if file_guard.is_none() {
             // Create parent directories if needed
-            if self.config.create_dirs {
-                if let Some(parent) = self.config.path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
+            if self.config.create_dirs
+                && let Some(parent) = self.config.path.parent()
+            {
+                tokio::fs::create_dir_all(parent).await?;
             }
 
             // Open or create file

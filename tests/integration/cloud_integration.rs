@@ -2,6 +2,9 @@
 //!
 //! Tests for S3, Azure Blob, and Google Cloud Storage integration.
 
+#![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Test S3 read operations
@@ -71,12 +74,27 @@ fn test_cloud_caching() -> Result<()> {
 }
 
 /// Test signed URL generation
+///
+/// This test validates the URL-shape contract for signed URL generation.
+/// The `generate_signed_url` helper is a local stub that returns a well-formed
+/// HTTPS URL; actual cloud-provider signed URLs require live credentials and
+/// are covered by the `#[ignore]`-gated tests above.
 #[test]
 fn test_signed_url_generation() -> Result<()> {
     let s3_path = "s3://private-bucket/file.tif";
 
-    // Placeholder: Would generate actual signed URL
-    let _signed_url = generate_signed_url(s3_path, 3600)?;
+    let signed_url = generate_signed_url(s3_path, 3600)?;
+
+    // Verify the returned URL is non-empty and uses HTTPS.
+    assert!(!signed_url.is_empty(), "signed URL must not be empty");
+    assert!(
+        signed_url.starts_with("https://"),
+        "signed URL must use HTTPS scheme, got: {signed_url}"
+    );
+
+    // Verify that a zero expiry still produces a URL.
+    let url_zero_expiry = generate_signed_url(s3_path, 0)?;
+    assert!(!url_zero_expiry.is_empty());
 
     Ok(())
 }

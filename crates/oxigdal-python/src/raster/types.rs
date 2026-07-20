@@ -59,12 +59,12 @@ impl RasterMetadataPy {
         nodata: Option<f64>,
         geotransform: Option<Vec<f64>>,
     ) -> PyResult<Self> {
-        if let Some(ref gt) = geotransform {
-            if gt.len() != 6 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "GeoTransform must have 6 elements",
-                ));
-            }
+        if let Some(ref gt) = geotransform
+            && gt.len() != 6
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "GeoTransform must have 6 elements",
+            ));
         }
 
         Ok(Self {

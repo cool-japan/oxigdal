@@ -223,9 +223,67 @@ impl Bounds {
 pub struct FileGenerator;
 
 impl FileGenerator {
-    /// Generate a simple GeoTIFF-like file
-    pub fn generate_geotiff(_path: &Path, _width: usize, _height: usize) -> Result<()> {
-        // Placeholder - would need actual GeoTIFF writer
+    /// Generate a minimal valid single-band Float32 GeoTIFF with WGS84 georeferencing.
+    ///
+    /// The file is written using the `oxigdal-geotiff` driver so it is a fully
+    /// conformant TIFF/GeoTIFF that can be re-opened by any compliant reader.
+    ///
+    /// # Arguments
+    /// * `path`   – Destination file path.
+    /// * `width`  – Image width in pixels (must be ≥ 1).
+    /// * `height` – Image height in pixels (must be ≥ 1).
+    ///
+    /// The georeferencing covers a small WGS84 bounding box centred on the
+    /// prime meridian / equator (lon 0..1°, lat 1..0° — north-up).
+    pub fn generate_geotiff(path: &Path, width: usize, height: usize) -> Result<()> {
+        use oxigdal_core::types::{GeoTransform, RasterDataType};
+        use oxigdal_geotiff::tiff::Compression;
+        use oxigdal_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
+
+        if width == 0 || height == 0 {
+            return Err(crate::DevToolsError::Generator(
+                "width and height must be >= 1".to_string(),
+            ));
+        }
+
+        // Build a simple gradient raster (Float32, 1 band).
+        // Values increase linearly from 0.0 at top-left to 1.0 at bottom-right.
+        let pixel_count = width * height;
+        let max_idx = (pixel_count - 1) as f32;
+        let float_data: Vec<f32> = (0..pixel_count)
+            .map(|i| i as f32 / max_idx.max(1.0))
+            .collect();
+
+        // Re-interpret as raw bytes for the writer (little-endian f32).
+        let raw: Vec<u8> = float_data.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        // WGS84 bounding box: upper-left (0°E, 1°N), lower-right (1°E, 0°N).
+        // pixel_width  =  1.0 / width  degrees per pixel  (west→east)
+        // pixel_height = -1.0 / height degrees per pixel  (north→south, negative)
+        let pixel_width = 1.0_f64 / width as f64;
+        let pixel_height = -1.0_f64 / height as f64;
+        let geo_transform = GeoTransform::new(
+            0.0,          // origin_x  (upper-left longitude)
+            pixel_width,  // pixel_width
+            0.0,          // row_rotation (north-up → 0)
+            1.0,          // origin_y  (upper-left latitude)
+            0.0,          // col_rotation (north-up → 0)
+            pixel_height, // pixel_height (negative = north-up)
+        );
+
+        let config = WriterConfig::new(
+            width as u64,
+            height as u64,
+            1, // single band
+            RasterDataType::Float32,
+        )
+        .with_compression(Compression::Lzw)
+        .with_geo_transform(geo_transform)
+        .with_epsg_code(4326); // WGS84 geographic CRS
+
+        let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())?;
+        writer.write(&raw)?;
+
         Ok(())
     }
 
@@ -355,5 +413,52 @@ mod tests {
         assert!(content.contains("Point"));
 
         Ok(())
+    }
+
+    #[test]
+    fn test_generate_geotiff_creates_nonempty_file() -> Result<()> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "oxigdal_devtools_test_{}.tif",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        FileGenerator::generate_geotiff(&path, 32, 32)?;
+
+        let metadata = std::fs::metadata(&path)?;
+        assert!(metadata.is_file(), "output must be a regular file");
+        assert!(metadata.len() > 0, "generated GeoTIFF must be non-empty");
+
+        // Verify TIFF magic bytes (little-endian: II + 42 or II + 43 for BigTIFF).
+        let bytes = std::fs::read(&path)?;
+        assert!(bytes.len() >= 4, "file too short to contain a TIFF header");
+        let is_tiff_le = bytes[0] == b'I'
+            && bytes[1] == b'I'
+            && bytes[3] == 0
+            && (bytes[2] == 42 || bytes[2] == 43); // 42 = classic TIFF, 43 = BigTIFF
+        let is_tiff_be = bytes[0] == b'M' && bytes[1] == b'M' && (bytes[3] == 42 || bytes[3] == 43);
+        assert!(
+            is_tiff_le || is_tiff_be,
+            "file does not start with a valid TIFF magic sequence"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_geotiff_rejects_zero_dimensions() {
+        let path = std::env::temp_dir().join("oxigdal_devtools_zero.tif");
+        assert!(
+            FileGenerator::generate_geotiff(&path, 0, 16).is_err(),
+            "zero width should return an error"
+        );
+        assert!(
+            FileGenerator::generate_geotiff(&path, 16, 0).is_err(),
+            "zero height should return an error"
+        );
     }
 }

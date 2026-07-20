@@ -3,6 +3,42 @@
 //! This module provides encryption-at-rest configuration for geospatial data
 //! stored in rs3gw backends.
 
+/// AEAD nonce length in bytes (96-bit nonce, shared by AES-256-GCM and
+/// ChaCha20-Poly1305).
+#[cfg(feature = "encryption")]
+const NONCE_LEN: usize = 12;
+
+/// Errors that can occur while encrypting or decrypting object payloads.
+#[cfg(feature = "encryption")]
+#[derive(Debug, thiserror::Error)]
+pub enum EncryptionError {
+    /// Encryption was requested but the config is disabled or has no key.
+    #[error("encryption is not enabled or no key is configured")]
+    NotEnabled,
+
+    /// The configured key does not have the required length (32 bytes).
+    #[error("invalid key length: {0} bytes (expected 32)")]
+    InvalidKeyLength(usize),
+
+    /// The system random number generator failed while producing a nonce.
+    #[error("random number generator failure while producing a nonce")]
+    Rng,
+
+    /// The AEAD cipher rejected the plaintext during encryption.
+    #[error("AEAD encryption failed")]
+    Encrypt,
+
+    /// The AEAD cipher rejected the ciphertext during decryption (wrong key,
+    /// tampered data, or the object was never encrypted).
+    #[error("AEAD decryption failed (wrong key or corrupted/plaintext data)")]
+    Decrypt,
+
+    /// The stored blob is shorter than the nonce prefix, so it cannot be a
+    /// valid ciphertext produced by [`EncryptionConfig::encrypt`].
+    #[error("ciphertext too short: {0} bytes (need at least {NONCE_LEN} for the nonce)")]
+    CiphertextTooShort(usize),
+}
+
 /// Encryption algorithm
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EncryptionAlgorithm {
@@ -128,6 +164,106 @@ impl EncryptionConfig {
         }
 
         Ok(())
+    }
+
+    /// Encrypts a payload with the configured AEAD algorithm.
+    ///
+    /// The returned blob is `nonce (12 bytes) || ciphertext || auth-tag`. A
+    /// fresh random nonce is generated for every call, so encrypting the same
+    /// plaintext twice yields different ciphertexts — this is required because
+    /// Zarr chunks are written independently and reusing a nonce with the same
+    /// key would break the security guarantees of GCM/Poly1305.
+    ///
+    /// # Errors
+    /// Returns an error if encryption is not enabled, the key length is wrong,
+    /// the RNG fails, or the underlying AEAD cipher rejects the input.
+    #[cfg(feature = "encryption")]
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+        let key = self.key.as_deref().ok_or(EncryptionError::NotEnabled)?;
+        if key.len() != 32 {
+            return Err(EncryptionError::InvalidKeyLength(key.len()));
+        }
+
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        getrandom::fill(&mut nonce_bytes).map_err(|_| EncryptionError::Rng)?;
+
+        let ciphertext = match self.algorithm {
+            EncryptionAlgorithm::Aes256Gcm => {
+                use aes_gcm::aead::{Aead, KeyInit};
+                use aes_gcm::{Aes256Gcm, Nonce};
+
+                let cipher = Aes256Gcm::new_from_slice(key)
+                    .map_err(|_| EncryptionError::InvalidKeyLength(key.len()))?;
+                let nonce = Nonce::from(nonce_bytes);
+                cipher
+                    .encrypt(&nonce, plaintext)
+                    .map_err(|_| EncryptionError::Encrypt)?
+            }
+            EncryptionAlgorithm::ChaCha20Poly1305 => {
+                use chacha20poly1305::aead::{Aead, KeyInit};
+                use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+
+                let cipher = ChaCha20Poly1305::new_from_slice(key)
+                    .map_err(|_| EncryptionError::InvalidKeyLength(key.len()))?;
+                let nonce = Nonce::from(nonce_bytes);
+                cipher
+                    .encrypt(&nonce, plaintext)
+                    .map_err(|_| EncryptionError::Encrypt)?
+            }
+        };
+
+        let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    /// Decrypts a payload previously produced by [`Self::encrypt`].
+    ///
+    /// The input must be `nonce (12 bytes) || ciphertext || auth-tag`.
+    ///
+    /// # Errors
+    /// Returns an error if encryption is not enabled, the key length is wrong,
+    /// the blob is shorter than the nonce prefix, or authentication fails
+    /// (wrong key, tampered ciphertext, or data that was never encrypted).
+    #[cfg(feature = "encryption")]
+    pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+        let key = self.key.as_deref().ok_or(EncryptionError::NotEnabled)?;
+        if key.len() != 32 {
+            return Err(EncryptionError::InvalidKeyLength(key.len()));
+        }
+        if data.len() < NONCE_LEN {
+            return Err(EncryptionError::CiphertextTooShort(data.len()));
+        }
+
+        let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
+
+        let plaintext = match self.algorithm {
+            EncryptionAlgorithm::Aes256Gcm => {
+                use aes_gcm::aead::{Aead, KeyInit};
+                use aes_gcm::{Aes256Gcm, Nonce};
+
+                let cipher = Aes256Gcm::new_from_slice(key)
+                    .map_err(|_| EncryptionError::InvalidKeyLength(key.len()))?;
+                let nonce = Nonce::try_from(nonce_bytes).map_err(|_| EncryptionError::Decrypt)?;
+                cipher
+                    .decrypt(&nonce, ciphertext)
+                    .map_err(|_| EncryptionError::Decrypt)?
+            }
+            EncryptionAlgorithm::ChaCha20Poly1305 => {
+                use chacha20poly1305::aead::{Aead, KeyInit};
+                use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+
+                let cipher = ChaCha20Poly1305::new_from_slice(key)
+                    .map_err(|_| EncryptionError::InvalidKeyLength(key.len()))?;
+                let nonce = Nonce::try_from(nonce_bytes).map_err(|_| EncryptionError::Decrypt)?;
+                cipher
+                    .decrypt(&nonce, ciphertext)
+                    .map_err(|_| EncryptionError::Decrypt)?
+            }
+        };
+
+        Ok(plaintext)
     }
 }
 
@@ -342,5 +478,97 @@ mod tests {
 
         assert_eq!(config.algorithm, EncryptionAlgorithm::ChaCha20Poly1305);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip_aes() {
+        let key = generate_key().expect("Failed to generate key");
+        let config = EncryptionConfig::new().with_key(key);
+
+        let plaintext = b"sensitive geospatial chunk data";
+        let blob = config.encrypt(plaintext).expect("encrypt failed");
+
+        // Ciphertext must not contain the plaintext in the clear.
+        assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
+        // nonce (12) + tag (16) overhead is present.
+        assert!(blob.len() >= plaintext.len() + NONCE_LEN + 16);
+
+        let recovered = config.decrypt(&blob).expect("decrypt failed");
+        assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip_chacha() {
+        let key = generate_key().expect("Failed to generate key");
+        let config = EncryptionConfig::new()
+            .with_key(key)
+            .with_algorithm(EncryptionAlgorithm::ChaCha20Poly1305);
+
+        let plaintext = b"another chunk that must stay private";
+        let blob = config.encrypt(plaintext).expect("encrypt failed");
+        assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
+
+        let recovered = config.decrypt(&blob).expect("decrypt failed");
+        assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_unique_nonce_per_call() {
+        let key = generate_key().expect("Failed to generate key");
+        let config = EncryptionConfig::new().with_key(key);
+
+        let plaintext = b"repeatable content";
+        let a = config.encrypt(plaintext).expect("encrypt failed");
+        let b = config.encrypt(plaintext).expect("encrypt failed");
+
+        // Same plaintext + same key must yield different ciphertext (fresh nonce).
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_decrypt_rejects_tampered_ciphertext() {
+        let key = generate_key().expect("Failed to generate key");
+        let config = EncryptionConfig::new().with_key(key);
+
+        let mut blob = config.encrypt(b"trusted bytes").expect("encrypt failed");
+        // Flip a bit in the ciphertext body (past the nonce).
+        let last = blob.len() - 1;
+        blob[last] ^= 0x01;
+
+        assert!(matches!(
+            config.decrypt(&blob),
+            Err(EncryptionError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn test_decrypt_rejects_wrong_key() {
+        let config_a = EncryptionConfig::new().with_key(generate_key().expect("key"));
+        let config_b = EncryptionConfig::new().with_key(generate_key().expect("key"));
+
+        let blob = config_a.encrypt(b"secret").expect("encrypt failed");
+        assert!(matches!(
+            config_b.decrypt(&blob),
+            Err(EncryptionError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn test_decrypt_rejects_short_blob() {
+        let config = EncryptionConfig::new().with_key(generate_key().expect("key"));
+        let short = [0u8; 5];
+        assert!(matches!(
+            config.decrypt(&short),
+            Err(EncryptionError::CiphertextTooShort(5))
+        ));
+    }
+
+    #[test]
+    fn test_encrypt_requires_enabled() {
+        let config = EncryptionConfig::disabled();
+        assert!(matches!(
+            config.encrypt(b"data"),
+            Err(EncryptionError::NotEnabled)
+        ));
     }
 }

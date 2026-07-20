@@ -124,6 +124,14 @@ impl ByteOrderType {
         }
     }
 
+    /// Writes an f32 value with this byte order
+    pub fn write_f32(self, buf: &mut [u8], value: f32) {
+        match self {
+            Self::LittleEndian => LittleEndian::write_f32(buf, value),
+            Self::BigEndian => BigEndian::write_f32(buf, value),
+        }
+    }
+
     /// Writes an f64 value with this byte order
     pub fn write_f64(self, buf: &mut [u8], value: f64) {
         match self {

@@ -1,4 +1,5 @@
 //! Integration tests for audit logging.
+#![cfg(feature = "enterprise")]
 
 use oxigdal_security::audit::{
     AuditEventType, AuditLogEntry, AuditResult,

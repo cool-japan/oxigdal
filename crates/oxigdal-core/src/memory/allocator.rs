@@ -202,19 +202,19 @@ impl SlabAllocator {
         // Try to get a block from the free list
         {
             let mut free_lists = self.free_lists.write();
-            if let Some(blocks) = free_lists.get_mut(&slab_size) {
-                if let Some(ptr) = blocks.pop() {
-                    self.stats.record_slab_hit();
-                    self.stats.record_allocation(slab_size);
+            if let Some(blocks) = free_lists.get_mut(&slab_size)
+                && let Some(ptr) = blocks.pop()
+            {
+                self.stats.record_slab_hit();
+                self.stats.record_allocation(slab_size);
 
-                    #[cfg(debug_assertions)]
-                    {
-                        let mut allocated = self.allocated_blocks.lock();
-                        allocated.entry(slab_size).or_default().push(ptr);
-                    }
-
-                    return Ok(ptr);
+                #[cfg(debug_assertions)]
+                {
+                    let mut allocated = self.allocated_blocks.lock();
+                    allocated.entry(slab_size).or_default().push(ptr);
                 }
+
+                return Ok(ptr);
             }
         }
 

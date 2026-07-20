@@ -23,8 +23,20 @@ console_error_panic_hook = ["dep:console_error_panic_hook"]
 [dependencies]
 oxigdal-core = { workspace = true }
 oxigdal-geotiff = { workspace = true }
+# STAC API client (std surface only — wasm-clean, no reqwest/tokio)
+oxigdal-stac = { workspace = true }
+# Raster algorithms (polygonize, geodesic area) — std surface, wasm-clean
+oxigdal-algorithms = { workspace = true, default-features = false, features = ["std"] }
+# Tamper-evident session attestation (blake3 chain / Merkle / Ed25519 seal)
+oxigdal-security = { workspace = true, default-features = false, features = ["attestation"] }
+# Raw blake3 for the GeoVault `fileDigestHex` export (dropped-file identity, matches b3sum)
+blake3 = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+# Concurrent (not parallel — wasm32 has no OS threads) in-flight tile fetches
+# for COG windowed reads: `futures::stream::FuturesUnordered` lets the
+# browser pipeline many concurrent `fetch()` calls on one origin.
+futures = { workspace = true }
 js-sys = { workspace = true }
 web-sys = { workspace = true }
 serde = { workspace = true }
@@ -35,8 +47,18 @@ oxiarc-deflate = { workspace = true }
 # Error handling
 console_error_panic_hook = { workspace = true, optional = true }
 
+# getrandom 0.4 needs an explicit backend on wasm32-unknown-unknown; the `wasm_js`
+# feature pairs with the target-scoped `--cfg getrandom_backend="wasm_js"` rustflags
+# in the workspace .cargo/config.toml.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+
 [dev-dependencies]
 wasm-bindgen-test.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

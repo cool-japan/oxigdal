@@ -3,6 +3,9 @@
 //! This module provides various bounding box types for representing spatial extents
 //! in both geographic (lat/lon) and projected coordinate systems.
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use core::fmt;
 
 use serde::{Deserialize, Serialize};

@@ -162,46 +162,46 @@ impl StorageQuery {
 
     /// Check if entry matches query.
     pub fn matches(&self, entry: &AuditLogEntry) -> bool {
-        if let Some(ref subject) = self.subject {
-            if entry.subject.as_ref() != Some(subject) {
-                return false;
-            }
+        if let Some(ref subject) = self.subject
+            && entry.subject.as_ref() != Some(subject)
+        {
+            return false;
         }
 
-        if let Some(ref resource) = self.resource {
-            if entry.resource.as_ref() != Some(resource) {
-                return false;
-            }
+        if let Some(ref resource) = self.resource
+            && entry.resource.as_ref() != Some(resource)
+        {
+            return false;
         }
 
-        if let Some(event_type) = self.event_type {
-            if entry.event_type != event_type {
-                return false;
-            }
+        if let Some(event_type) = self.event_type
+            && entry.event_type != event_type
+        {
+            return false;
         }
 
-        if let Some(result) = self.result {
-            if entry.result != result {
-                return false;
-            }
+        if let Some(result) = self.result
+            && entry.result != result
+        {
+            return false;
         }
 
-        if let Some(ref tenant_id) = self.tenant_id {
-            if entry.tenant_id.as_ref() != Some(tenant_id) {
-                return false;
-            }
+        if let Some(ref tenant_id) = self.tenant_id
+            && entry.tenant_id.as_ref() != Some(tenant_id)
+        {
+            return false;
         }
 
-        if let Some(start) = self.start_time {
-            if entry.timestamp < start {
-                return false;
-            }
+        if let Some(start) = self.start_time
+            && entry.timestamp < start
+        {
+            return false;
         }
 
-        if let Some(end) = self.end_time {
-            if entry.timestamp > end {
-                return false;
-            }
+        if let Some(end) = self.end_time
+            && entry.timestamp > end
+        {
+            return false;
         }
 
         true

@@ -59,7 +59,9 @@ pub enum DeploymentStrategy {
         /// Traffic split percentage for new version
         split_percent: u8,
     },
-    /// Shadow mode (no user-facing traffic)
+    /// Shadow mode: the version is recorded as deployed for observation while
+    /// the stable version keeps serving all user-facing traffic. The shadow
+    /// version never returns user-facing results.
     Shadow,
 }
 
@@ -122,6 +124,16 @@ enum RoutingStrategy {
         canary: String,
         /// Canary traffic percentage
         canary_percent: u8,
+    },
+    /// Shadow deployment: `stable` serves all user-facing traffic while `shadow`
+    /// is recorded as deployed for observation only. This records deployment
+    /// intent/state; it does not itself mirror live requests (this module has no
+    /// request-serving path).
+    Shadow {
+        /// User-facing stable version
+        stable: String,
+        /// Shadow version (never serves user-facing results)
+        shadow: String,
     },
 }
 
@@ -275,19 +287,31 @@ impl ModelServer {
             return HealthStatus::Unhealthy;
         }
 
-        // Check memory usage (simple heuristic)
+        // Check live memory pressure. The most severe threshold must be tested
+        // first so that > 95% reports Unhealthy rather than being shadowed by the
+        // > 90% Degraded branch.
         if let Ok(memory_info) = Self::get_memory_usage() {
-            // If memory usage > 90%, return degraded
-            if memory_info.usage_percent > 90.0 {
-                return HealthStatus::Degraded;
-            }
-            // If memory usage > 95%, return unhealthy
-            if memory_info.usage_percent > 95.0 {
-                return HealthStatus::Unhealthy;
+            if let Some(status) = Self::memory_pressure_status(memory_info.usage_percent) {
+                return status;
             }
         }
 
         HealthStatus::Healthy
+    }
+
+    /// Maps a memory-usage percentage to a degraded/unhealthy health status.
+    ///
+    /// Returns `None` when usage is within safe limits. Extracted as a pure
+    /// function so the degradation thresholds are unit-testable without
+    /// fabricating system memory.
+    fn memory_pressure_status(usage_percent: f32) -> Option<HealthStatus> {
+        if usage_percent > 95.0 {
+            Some(HealthStatus::Unhealthy)
+        } else if usage_percent > 90.0 {
+            Some(HealthStatus::Degraded)
+        } else {
+            None
+        }
     }
 
     /// Gets current memory usage information
@@ -366,25 +390,52 @@ impl ModelServer {
 
     #[cfg(target_os = "macos")]
     fn get_memory_usage_macos() -> Result<MemoryInfo> {
-        // Simplified implementation for macOS
-        // In production, would use sysctl or vm_stat
-        Ok(MemoryInfo {
-            total_mb: 16384, // Placeholder
-            used_mb: 8192,   // Placeholder
-            available_mb: 8192,
-            usage_percent: 50.0,
-        })
+        // Query live memory via the Pure-Rust `sysinfo` crate (already a
+        // dependency), which reads real system statistics on macOS.
+        Self::get_memory_usage_sysinfo()
     }
 
     #[cfg(target_os = "windows")]
     fn get_memory_usage_windows() -> Result<MemoryInfo> {
-        // Simplified implementation for Windows
-        // In production, would use Windows API
+        // Query live memory via the Pure-Rust `sysinfo` crate (already a
+        // dependency), which wraps GlobalMemoryStatusEx on Windows.
+        Self::get_memory_usage_sysinfo()
+    }
+
+    /// Reads live memory statistics via the Pure-Rust `sysinfo` crate.
+    ///
+    /// `sysinfo` reports memory in bytes; values are converted to MB. This is
+    /// used on platforms without a bespoke reader (macOS, Windows) so that
+    /// `health_check` observes real memory pressure instead of a fabricated
+    /// constant.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn get_memory_usage_sysinfo() -> Result<MemoryInfo> {
+        use sysinfo::System;
+
+        let mut system = System::new();
+        system.refresh_memory();
+
+        // sysinfo returns bytes (>= 0.30).
+        let total_bytes = system.total_memory();
+        if total_bytes == 0 {
+            return Err(MlError::InvalidConfig(
+                "sysinfo reported zero total memory".to_string(),
+            ));
+        }
+        let available_bytes = system.available_memory();
+
+        let total_mb = total_bytes / (1024 * 1024);
+        let available_mb = available_bytes / (1024 * 1024);
+        let used_mb = total_mb.saturating_sub(available_mb);
+        let usage_percent = ((total_bytes.saturating_sub(available_bytes)) as f64
+            / total_bytes as f64
+            * 100.0) as f32;
+
         Ok(MemoryInfo {
-            total_mb: 16384, // Placeholder
-            used_mb: 8192,   // Placeholder
-            available_mb: 8192,
-            usage_percent: 50.0,
+            total_mb,
+            used_mb,
+            available_mb,
+            usage_percent,
         })
     }
 
@@ -459,7 +510,21 @@ impl ModelServer {
     fn deploy_shadow(&mut self, version_id: &str) -> Result<()> {
         debug!("Deploying in shadow mode");
 
-        // Shadow mode: new version receives traffic but results are not used
+        // Shadow mode records the new version as deployed-for-observation while
+        // the current active (stable) version keeps serving all user-facing
+        // traffic. `active_version` is deliberately NOT changed so the shadow
+        // version never becomes user-facing. This records deployment state so it
+        // is introspectable and consistent with the other deploy_* methods; it
+        // does not mirror live requests (no request-serving path exists here).
+        let stable_version = self.active_version();
+
+        if let Ok(mut routing) = self.routing.write() {
+            *routing = RoutingStrategy::Shadow {
+                stable: stable_version,
+                shadow: version_id.to_string(),
+            };
+        }
+
         info!("Version {} deployed in shadow mode", version_id);
         Ok(())
     }
@@ -578,6 +643,90 @@ mod tests {
     fn test_health_status() {
         assert_eq!(HealthStatus::Healthy, HealthStatus::Healthy);
         assert_ne!(HealthStatus::Healthy, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_memory_pressure_status_thresholds() {
+        // Below 90%: healthy (None).
+        assert_eq!(ModelServer::memory_pressure_status(50.0), None);
+        assert_eq!(ModelServer::memory_pressure_status(90.0), None);
+        // Between 90% and 95%: degraded.
+        assert_eq!(
+            ModelServer::memory_pressure_status(92.0),
+            Some(HealthStatus::Degraded)
+        );
+        // Above 95%: unhealthy (must NOT be shadowed by the degraded branch).
+        assert_eq!(
+            ModelServer::memory_pressure_status(97.0),
+            Some(HealthStatus::Unhealthy)
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn test_get_memory_usage_is_live_not_constant() {
+        // On supported platforms, memory stats must be real (non-zero total,
+        // usage within 0..=100), not the old fabricated 50% / 16384 MB constant.
+        let info = ModelServer::get_memory_usage().expect("memory usage query");
+        assert!(info.total_mb > 0, "total memory should be positive");
+        assert!(
+            info.usage_percent >= 0.0 && info.usage_percent <= 100.0,
+            "usage_percent out of range: {}",
+            info.usage_percent
+        );
+        assert!(info.available_mb <= info.total_mb);
+    }
+
+    #[test]
+    fn test_deploy_shadow_records_state() {
+        use std::io::Write;
+
+        // register_version requires the model file to exist on disk.
+        let dir = std::env::temp_dir();
+        let stable_path = dir.join("oxigdal_ml_shadow_stable.onnx");
+        let shadow_path = dir.join("oxigdal_ml_shadow_new.onnx");
+        for p in [&stable_path, &shadow_path] {
+            let mut f = std::fs::File::create(p).expect("create temp model file");
+            f.write_all(b"onnx").expect("write temp model");
+        }
+
+        let mut server = ModelServer::new(ServerConfig::default());
+        server
+            .register_version("v1", stable_path.clone(), HashMap::new())
+            .expect("register v1");
+        server
+            .register_version("v2", shadow_path.clone(), HashMap::new())
+            .expect("register v2");
+
+        // v1 becomes the active/stable version.
+        server
+            .deploy("v1", DeploymentStrategy::Replace)
+            .expect("deploy v1");
+        assert_eq!(server.active_version(), "v1");
+
+        // Deploy v2 in shadow mode: routing state must reflect it, and the active
+        // (user-facing) version must stay v1.
+        server
+            .deploy("v2", DeploymentStrategy::Shadow)
+            .expect("deploy v2 shadow");
+        assert_eq!(
+            server.active_version(),
+            "v1",
+            "shadow must not become active"
+        );
+
+        let routing = server.routing.read().expect("read routing");
+        match &*routing {
+            RoutingStrategy::Shadow { stable, shadow } => {
+                assert_eq!(stable, "v1");
+                assert_eq!(shadow, "v2");
+            }
+            other => panic!("expected Shadow routing, got {:?}", other),
+        }
+        drop(routing);
+
+        let _ = std::fs::remove_file(stable_path);
+        let _ = std::fs::remove_file(shadow_path);
     }
 
     #[test]

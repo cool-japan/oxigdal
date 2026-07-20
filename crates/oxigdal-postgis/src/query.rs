@@ -6,9 +6,11 @@ use crate::connection::ConnectionPool;
 use crate::error::{QueryError, Result};
 use crate::sql::{ColumnName, TableName, WhereClause, functions};
 use crate::types::FeatureBuilder;
+use crate::wkb::WkbEncoder;
 use oxigdal_core::types::BoundingBox;
 use oxigdal_core::vector::feature::Feature;
 use oxigdal_core::vector::geometry::Geometry;
+use postgres_types::ToSql;
 
 /// Spatial query builder
 pub struct SpatialQuery {
@@ -21,6 +23,10 @@ pub struct SpatialQuery {
     offset: Option<usize>,
     order_by: Vec<String>,
     srid: Option<i32>,
+    /// Bind parameters (currently WKB-encoded geometries) referenced by
+    /// positional placeholders (`$1`, `$2`, ...) embedded in `where_clause`
+    /// and `order_by` expressions.
+    params: Vec<Vec<u8>>,
 }
 
 impl SpatialQuery {
@@ -36,7 +42,17 @@ impl SpatialQuery {
             offset: None,
             order_by: Vec::new(),
             srid: None,
+            params: Vec::new(),
         })
+    }
+
+    /// Encodes `geometry` to WKB, stores it as a bind parameter, and returns
+    /// its 1-based positional placeholder index (`$N`) for use in a
+    /// generated SQL fragment.
+    fn push_geometry_param(&mut self, geometry: &Geometry) -> Result<usize> {
+        let wkb = WkbEncoder::new().encode(geometry)?;
+        self.params.push(wkb);
+        Ok(self.params.len())
     }
 
     /// Sets the geometry column name
@@ -71,44 +87,48 @@ impl SpatialQuery {
     }
 
     /// Filters features that intersect with a geometry
-    pub fn where_intersects(mut self, _geometry: &Geometry) -> Result<Self> {
+    pub fn where_intersects(mut self, geometry: &Geometry) -> Result<Self> {
+        let param_index = self.push_geometry_param(geometry)?;
         let condition = format!(
             "ST_Intersects({}, {})",
             ColumnName::new(&self.geometry_column)?.quoted(),
-            functions::geom_from_wkb(1, self.srid)
+            functions::geom_from_wkb(param_index, self.srid)
         );
         self.where_clause = self.where_clause.and(condition);
         Ok(self)
     }
 
     /// Filters features that contain a geometry
-    pub fn where_contains(mut self, _geometry: &Geometry) -> Result<Self> {
+    pub fn where_contains(mut self, geometry: &Geometry) -> Result<Self> {
+        let param_index = self.push_geometry_param(geometry)?;
         let condition = format!(
             "ST_Contains({}, {})",
             ColumnName::new(&self.geometry_column)?.quoted(),
-            functions::geom_from_wkb(1, self.srid)
+            functions::geom_from_wkb(param_index, self.srid)
         );
         self.where_clause = self.where_clause.and(condition);
         Ok(self)
     }
 
     /// Filters features within a geometry
-    pub fn where_within(mut self, _geometry: &Geometry) -> Result<Self> {
+    pub fn where_within(mut self, geometry: &Geometry) -> Result<Self> {
+        let param_index = self.push_geometry_param(geometry)?;
         let condition = format!(
             "ST_Within({}, {})",
             ColumnName::new(&self.geometry_column)?.quoted(),
-            functions::geom_from_wkb(1, self.srid)
+            functions::geom_from_wkb(param_index, self.srid)
         );
         self.where_clause = self.where_clause.and(condition);
         Ok(self)
     }
 
     /// Filters features within a distance
-    pub fn where_dwithin(mut self, _geometry: &Geometry, distance: f64) -> Result<Self> {
+    pub fn where_dwithin(mut self, geometry: &Geometry, distance: f64) -> Result<Self> {
+        let param_index = self.push_geometry_param(geometry)?;
         let condition = format!(
             "ST_DWithin({}, {}, {distance})",
             ColumnName::new(&self.geometry_column)?.quoted(),
-            functions::geom_from_wkb(1, self.srid)
+            functions::geom_from_wkb(param_index, self.srid)
         );
         self.where_clause = self.where_clause.and(condition);
         Ok(self)
@@ -140,11 +160,12 @@ impl SpatialQuery {
     }
 
     /// Orders by distance from a geometry
-    pub fn order_by_distance(mut self, _geometry: &Geometry) -> Result<Self> {
+    pub fn order_by_distance(mut self, geometry: &Geometry) -> Result<Self> {
+        let param_index = self.push_geometry_param(geometry)?;
         let distance_expr = format!(
             "ST_Distance({}, {})",
             ColumnName::new(&self.geometry_column)?.quoted(),
-            functions::geom_from_wkb(1, self.srid)
+            functions::geom_from_wkb(param_index, self.srid)
         );
         self.order_by.push(format!("{distance_expr} ASC"));
         Ok(self)
@@ -190,12 +211,19 @@ impl SpatialQuery {
         let sql = self.build_sql()?;
         let client = pool.get().await?;
 
-        let rows = client
-            .query(&sql, &[])
-            .await
-            .map_err(|e| QueryError::ExecutionFailed {
-                message: e.to_string(),
-            })?;
+        let bind_params: Vec<&(dyn ToSql + Sync)> = self
+            .params
+            .iter()
+            .map(|p| p as &(dyn ToSql + Sync))
+            .collect();
+
+        let rows =
+            client
+                .query(&sql, &bind_params)
+                .await
+                .map_err(|e| QueryError::ExecutionFailed {
+                    message: e.to_string(),
+                })?;
 
         let mut features = Vec::with_capacity(rows.len());
         for row in rows {
@@ -219,12 +247,16 @@ impl SpatialQuery {
         }
 
         let client = pool.get().await?;
-        let row = client
-            .query_one(&sql, &[])
-            .await
-            .map_err(|e| QueryError::ExecutionFailed {
+        let bind_params: Vec<&(dyn ToSql + Sync)> = self
+            .params
+            .iter()
+            .map(|p| p as &(dyn ToSql + Sync))
+            .collect();
+        let row = client.query_one(&sql, &bind_params).await.map_err(|e| {
+            QueryError::ExecutionFailed {
                 message: e.to_string(),
-            })?;
+            }
+        })?;
 
         let count: i64 = row.get(0);
         Ok(count)
@@ -329,8 +361,10 @@ impl SpatialJoin {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use oxigdal_core::vector::geometry::Point;
 
     #[test]
     fn test_spatial_query_basic() {
@@ -389,5 +423,113 @@ mod tests {
         let sql = sql.expect("SQL build failed");
         assert!(sql.contains("INNER JOIN"));
         assert!(sql.contains("ST_Intersects"));
+    }
+
+    fn sample_geometry() -> Geometry {
+        Geometry::Point(Point::new(1.5, 2.5))
+    }
+
+    #[test]
+    fn test_where_intersects_binds_geometry_param() {
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .where_intersects(&sample_geometry())
+            .expect("where_intersects failed");
+
+        // Exactly one bind parameter should have been recorded, and it must
+        // be the WKB encoding of the geometry passed in (not discarded).
+        assert_eq!(query.params.len(), 1);
+        let expected_wkb = WkbEncoder::new()
+            .encode(&sample_geometry())
+            .expect("wkb encode failed");
+        assert_eq!(query.params[0], expected_wkb);
+
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ST_Intersects"));
+        assert!(sql.contains("ST_GeomFromWKB($1)"));
+    }
+
+    #[test]
+    fn test_where_contains_binds_geometry_param() {
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .where_contains(&sample_geometry())
+            .expect("where_contains failed");
+
+        assert_eq!(query.params.len(), 1);
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ST_Contains"));
+        assert!(sql.contains("ST_GeomFromWKB($1)"));
+    }
+
+    #[test]
+    fn test_where_within_binds_geometry_param() {
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .where_within(&sample_geometry())
+            .expect("where_within failed");
+
+        assert_eq!(query.params.len(), 1);
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ST_Within"));
+        assert!(sql.contains("ST_GeomFromWKB($1)"));
+    }
+
+    #[test]
+    fn test_where_dwithin_binds_geometry_param() {
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .where_dwithin(&sample_geometry(), 100.0)
+            .expect("where_dwithin failed");
+
+        assert_eq!(query.params.len(), 1);
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ST_DWithin"));
+        assert!(sql.contains("100"));
+        assert!(sql.contains("ST_GeomFromWKB($1)"));
+    }
+
+    #[test]
+    fn test_order_by_distance_binds_geometry_param() {
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .order_by_distance(&sample_geometry())
+            .expect("order_by_distance failed");
+
+        assert_eq!(query.params.len(), 1);
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ORDER BY"));
+        assert!(sql.contains("ST_Distance"));
+        assert!(sql.contains("ST_GeomFromWKB($1)"));
+    }
+
+    #[test]
+    fn test_chained_spatial_predicates_use_distinct_param_indices() {
+        // Regression test: chaining two geometry predicates must NOT collide
+        // on the same `$1` placeholder — each bound geometry gets its own
+        // incrementing positional index.
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .where_intersects(&sample_geometry())
+            .expect("where_intersects failed")
+            .where_dwithin(&sample_geometry(), 50.0)
+            .expect("where_dwithin failed");
+
+        assert_eq!(query.params.len(), 2);
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ST_GeomFromWKB($1)"));
+        assert!(sql.contains("ST_GeomFromWKB($2)"));
+    }
+
+    #[test]
+    fn test_spatial_predicate_respects_srid() {
+        let query = SpatialQuery::new("buildings")
+            .expect("query creation failed")
+            .srid(4326)
+            .where_intersects(&sample_geometry())
+            .expect("where_intersects failed");
+
+        let sql = query.build_sql().expect("SQL build failed");
+        assert!(sql.contains("ST_GeomFromWKB($1, 4326)"));
     }
 }

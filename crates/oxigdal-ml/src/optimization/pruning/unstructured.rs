@@ -100,7 +100,7 @@ impl WeightTensor {
         let std = variance.sqrt();
 
         let median_idx = self.data.len() / 2;
-        let median = if self.data.len() % 2 == 0 {
+        let median = if self.data.len().is_multiple_of(2) {
             (sorted
                 .get(median_idx.saturating_sub(1))
                 .copied()

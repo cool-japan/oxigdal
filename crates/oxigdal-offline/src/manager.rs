@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::conflict::ConflictDetector;
 use crate::error::{Error, Result};
+use crate::history::{AncestorStore, InMemoryAncestorStore};
 use crate::merge::MergeEngine;
 use crate::optimistic::OptimisticTracker;
 use crate::queue::SyncQueue;
@@ -27,6 +28,10 @@ pub struct OfflineManager {
     queue: SyncQueue,
     sync_engine: Option<SyncEngine>,
     optimistic_tracker: OptimisticTracker,
+    /// Version-history store recording every locally-written record version, so that
+    /// [`ConflictDetector::find_common_ancestor`] can supply a real base for three-way
+    /// merges instead of always reporting "no ancestor available".
+    ancestor_store: Arc<dyn AncestorStore>,
 }
 
 impl OfflineManager {
@@ -62,6 +67,7 @@ impl OfflineManager {
             queue,
             sync_engine: None,
             optimistic_tracker,
+            ancestor_store: Arc::new(InMemoryAncestorStore::new()),
         })
     }
 
@@ -94,7 +100,8 @@ impl OfflineManager {
     /// # Errors
     /// Returns an error if the retry policy configuration is invalid.
     pub fn with_remote(mut self, remote: Box<dyn RemoteBackend>) -> Result<Self> {
-        let conflict_detector = ConflictDetector::new();
+        let conflict_detector =
+            ConflictDetector::new().with_ancestor_store(self.ancestor_store.clone());
         let merge_engine = MergeEngine::new(self.config.merge_strategy);
         let retry_policy = crate::retry::RetryPolicy::new(
             self.config.retry_max_attempts,
@@ -126,6 +133,10 @@ impl OfflineManager {
             let mut storage = self.storage.write().await;
             storage.put_record(&record).await?;
         }
+
+        // Remember this version so future conflicts on this record can find a real
+        // common ancestor instead of degrading to a strategy that ignores history.
+        self.ancestor_store.record_version(&record);
 
         // Create operation for sync queue
         let operation = Operation::insert(&record);
@@ -171,6 +182,10 @@ impl OfflineManager {
             let mut storage = self.storage.write().await;
             storage.put_record(&record).await?;
         }
+
+        // Remember this version so future conflicts on this record can find a real
+        // common ancestor instead of degrading to a strategy that ignores history.
+        self.ancestor_store.record_version(&record);
 
         // Create operation for sync queue
         let operation = Operation::update(&record, old_version);
@@ -305,6 +320,16 @@ impl OfflineManager {
     /// Get configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Get a handle to the manager's version-history store.
+    ///
+    /// [`Self::write`] and [`Self::update`] automatically record every locally-written
+    /// record version here. Attach it to a [`ConflictDetector`] via `with_ancestor_store`
+    /// (as [`Self::with_remote`] does internally) to give [`crate::merge::MergeStrategy::ThreeWayMerge`]
+    /// a real common ancestor to work with instead of failing or falling back.
+    pub fn ancestor_store(&self) -> Arc<dyn AncestorStore> {
+        self.ancestor_store.clone()
     }
 }
 
@@ -451,6 +476,40 @@ mod tests {
         let stats = manager.statistics().await.expect("failed to get stats");
         assert_eq!(stats.storage_stats.record_count, 1);
         assert_eq!(stats.queue_size, 1);
+    }
+
+    #[tokio::test]
+    async fn test_ancestor_store_populated_by_write_and_update() {
+        let manager = create_test_manager().await;
+
+        manager
+            .write("test_key", b"v0")
+            .await
+            .expect("failed to write");
+        let v1 = manager
+            .update("test_key", b"v1")
+            .await
+            .expect("failed to update");
+
+        let store = manager.ancestor_store();
+        let detector = crate::conflict::ConflictDetector::new().with_ancestor_store(store);
+
+        // Simulate an independently-diverged remote copy of the same record, further
+        // ahead than the last version this manager knows about.
+        let mut remote = v1.clone();
+        remote.version = crate::types::Version::from_u64(2);
+        remote.data = Bytes::from("remote-edit");
+        remote.updated_at = chrono::Utc::now();
+
+        let conflict = detector
+            .detect(&v1, &remote)
+            .expect("detect should succeed")
+            .expect("should be a conflict");
+
+        let base = conflict
+            .base
+            .expect("history should supply a real ancestor");
+        assert_eq!(base.data, Bytes::from("v0"));
     }
 
     #[tokio::test]

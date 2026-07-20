@@ -2,7 +2,7 @@
 
 > **Purpose:** Google Cloud Pub/Sub integration for OxiGDAL — Pure Rust publisher/subscriber with schema validation and monitoring.
 > **Status (2026-05-16):** 4,618 LoC · 175 tests · 1 real-code stub
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace synthetic batched-publish ID with the broker-assigned `messageId` once flush completes

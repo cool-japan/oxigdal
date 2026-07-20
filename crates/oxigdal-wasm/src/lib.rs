@@ -234,6 +234,7 @@ use oxigdal_core::error::OxiGdalError;
 use oxigdal_core::io::ByteRange;
 
 mod animation;
+mod anomaly;
 mod bindings;
 mod canvas;
 mod cog_reader;
@@ -241,17 +242,23 @@ mod color;
 mod compression;
 mod error;
 mod fetch;
+mod memory_source;
 mod profiler;
 mod rendering;
 mod streaming;
+mod terrain;
 #[cfg(test)]
 mod tests;
 mod tile;
+mod vault;
 mod worker;
 
 // WASM Component Model (wasm32-wasip2) support
 pub mod component;
 pub mod wasm_memory;
+
+// GeoSentinel — in-browser Sentinel-2 change detection (UTM, STAC, COG pipeline)
+pub mod sentinel;
 
 pub use animation::{
     Animation, Easing, EasingFunction, PanAnimation, SpringAnimation, ZoomAnimation,
@@ -279,6 +286,7 @@ pub use fetch::{
     EnhancedFetchBackend, FetchBackend, FetchStats, PrioritizedRequest, RequestPriority,
     RequestQueue, RetryConfig,
 };
+pub use memory_source::MemorySource;
 pub use profiler::{
     Bottleneck, BottleneckDetector, CounterStats, FrameRateStats, FrameRateTracker, MemoryMonitor,
     MemorySnapshot, MemoryStats, PerformanceCounter, Profiler, ProfilerSummary, WasmProfiler,
@@ -292,6 +300,7 @@ pub use streaming::{
     PrefetchScheduler, ProgressiveLoader, QualityAdapter, StreamBuffer, StreamBufferStats,
     StreamingQuality, StreamingStats, TileStreamer,
 };
+pub use terrain::WasmTerrain;
 pub use tile::{
     CacheStats, CachedTile, PrefetchStrategy, TileBounds, TileCache, TileCoord, TilePrefetcher,
     TilePyramid, WasmTileCache,
@@ -355,6 +364,12 @@ pub struct WasmCogViewer {
     overview_count: usize,
     /// EPSG code for the coordinate reference system (if available)
     epsg_code: Option<u32>,
+    /// Bits per (first) sample — needed to decode raw elevation tiles
+    bits_per_sample: u16,
+    /// TIFF SampleFormat (1=uint, 2=int, 3=float) — needed for elevation decode
+    sample_format: u16,
+    /// True if the source TIFF stores samples little-endian
+    little_endian: bool,
     /// GeoTIFF geotransform data (for calculating geographic bounds)
     pixel_scale_x: Option<f64>,
     pixel_scale_y: Option<f64>,
@@ -362,6 +377,9 @@ pub struct WasmCogViewer {
     tiepoint_pixel_y: Option<f64>,
     tiepoint_geo_x: Option<f64>,
     tiepoint_geo_y: Option<f64>,
+    /// In-memory reader for `openBytes` (drag-drop) sources with full codec
+    /// support. When `Some`, tile reads use this instead of the URL fast path.
+    mem_reader: Option<oxigdal_geotiff::CogReader<MemorySource>>,
 }
 
 #[wasm_bindgen]
@@ -378,12 +396,16 @@ impl WasmCogViewer {
             band_count: 0,
             overview_count: 0,
             epsg_code: None,
+            bits_per_sample: 8,
+            sample_format: 1,
+            little_endian: true,
             pixel_scale_x: None,
             pixel_scale_y: None,
             tiepoint_pixel_x: None,
             tiepoint_pixel_y: None,
             tiepoint_geo_x: None,
             tiepoint_geo_y: None,
+            mem_reader: None,
         }
     }
 
@@ -445,6 +467,12 @@ impl WasmCogViewer {
         self.band_count = u32::from(metadata.samples_per_pixel);
         self.overview_count = metadata.overview_count;
         self.epsg_code = metadata.epsg_code;
+        self.bits_per_sample = metadata.bits_per_sample;
+        self.sample_format = metadata.sample_format;
+        self.little_endian = reader.is_little_endian();
+
+        // A URL-opened viewer never uses the in-memory reader.
+        self.mem_reader = None;
 
         // Extract geotransform for bounds calculation
         self.pixel_scale_x = metadata.pixel_scale_x;
@@ -561,14 +589,101 @@ impl WasmCogViewer {
         self.tiepoint_geo_y
     }
 
-    /// Reads a tile and returns raw bytes
+    /// Opens a COG/GeoTIFF from an in-memory byte buffer (e.g. a drag-and-dropped
+    /// local file).
+    ///
+    /// Unlike the URL path — which streams via HTTP range requests and only
+    /// supports uncompressed and DEFLATE tiles — the bytes path drives the full
+    /// synchronous `oxigdal_geotiff::CogReader`, so it handles the complete codec
+    /// set (None/Deflate/LZW/Zstd/PackBits/JPEG/WebP) plus horizontal/floating
+    /// predictors. Tile reads afterwards use the in-memory reader.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The full file contents.
+    /// * `name` - Optional display name, stored as the viewer's `url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error if the bytes are not a valid TIFF/COG.
+    #[wasm_bindgen(js_name = openBytes)]
+    pub fn open_bytes(&mut self, data: &[u8], name: Option<String>) -> Result<(), JsValue> {
+        // Endianness is decided by the first two bytes of the TIFF header.
+        let little_endian = data.len() >= 2 && &data[0..2] == b"II";
+
+        let source = MemorySource::new(data.to_vec());
+        let reader = oxigdal_geotiff::CogReader::open(source).map_err(|e| to_js_error(&e))?;
+
+        // Extract all metadata before moving the reader into `self`.
+        let info = reader.primary_info();
+        self.width = info.width;
+        self.height = info.height;
+        self.tile_width = info.tile_width.unwrap_or(256);
+        self.tile_height = info.tile_height.unwrap_or(256);
+        self.band_count = u32::from(info.samples_per_pixel);
+        self.bits_per_sample = info.bits_per_sample.first().copied().unwrap_or(8);
+        self.sample_format = info.sample_format as u16;
+        self.overview_count = reader.overview_count();
+        self.epsg_code = reader.geo_keys().and_then(|g| g.epsg_code());
+        self.little_endian = little_endian;
+
+        // GeoTransform → geotransform fields (best-effort). The URL path stores
+        // raw (positive) ModelPixelScale values, so mirror that convention here:
+        // `pixel_height` is negative for north-up rasters, hence `.abs()`.
+        if let Ok(Some(gt)) = reader.geo_transform() {
+            self.pixel_scale_x = Some(gt.pixel_width.abs());
+            self.pixel_scale_y = Some(gt.pixel_height.abs());
+            self.tiepoint_pixel_x = Some(0.0);
+            self.tiepoint_pixel_y = Some(0.0);
+            self.tiepoint_geo_x = Some(gt.origin_x);
+            self.tiepoint_geo_y = Some(gt.origin_y);
+        } else {
+            self.pixel_scale_x = None;
+            self.pixel_scale_y = None;
+            self.tiepoint_pixel_x = None;
+            self.tiepoint_pixel_y = None;
+            self.tiepoint_geo_x = None;
+            self.tiepoint_geo_y = None;
+        }
+
+        self.url = name;
+        self.mem_reader = Some(reader);
+
+        console::log_1(
+            &format!(
+                "Opened bytes: {}x{}, {} bands, {} overviews, sample_format={}, bits={}",
+                self.width,
+                self.height,
+                self.band_count,
+                self.overview_count,
+                self.sample_format,
+                self.bits_per_sample
+            )
+            .into(),
+        );
+
+        Ok(())
+    }
+
+    /// Reads a tile and returns raw (decoded) bytes.
+    ///
+    /// For bytes-opened viewers this delegates to the in-memory `CogReader`
+    /// (decompression and predictor handled internally, full codec support).
+    /// For URL-opened viewers it streams the tile over HTTP range requests.
     #[wasm_bindgen]
     pub async fn read_tile(
         &self,
-        _level: usize,
+        level: usize,
         tile_x: u32,
         tile_y: u32,
     ) -> std::result::Result<Vec<u8>, JsValue> {
+        // In-memory (drag-drop) path: full codec support, synchronous.
+        if let Some(reader) = self.mem_reader.as_ref() {
+            return reader
+                .read_tile(level, tile_x, tile_y)
+                .map_err(|e| to_js_error(&e));
+        }
+
         let url = self
             .url
             .as_ref()
@@ -584,6 +699,28 @@ impl WasmCogViewer {
             .read_tile(tile_x, tile_y)
             .await
             .map_err(|e| to_js_error(&e))
+    }
+
+    /// Reads a tile and decodes its raw samples to `f32` elevation values.
+    ///
+    /// The decoding honours the source's SampleFormat and BitsPerSample
+    /// (u8 / u16 / i16 / i32 / f32, plus u32 / f64), so elevation DEMs such as
+    /// the SRTM `i16` little-endian tiles are returned as real heights. Works
+    /// for both URL-opened and bytes-opened viewers.
+    #[wasm_bindgen(js_name = readTileElevation)]
+    pub async fn read_tile_elevation(
+        &self,
+        level: usize,
+        tile_x: u32,
+        tile_y: u32,
+    ) -> std::result::Result<Vec<f32>, JsValue> {
+        let raw = self.read_tile(level, tile_x, tile_y).await?;
+        Ok(decode_elevation(
+            &raw,
+            self.sample_format,
+            self.bits_per_sample,
+            self.little_endian,
+        ))
     }
 
     /// Reads a tile and converts to RGBA ImageData for canvas rendering
@@ -653,6 +790,102 @@ impl Default for WasmCogViewer {
 /// Converts an `OxiGdalError` to a `JsValue`
 fn to_js_error(err: &OxiGdalError) -> JsValue {
     JsValue::from_str(&err.to_string())
+}
+
+/// Decodes raw (already-decompressed) tile sample bytes into `f32` values,
+/// honouring the TIFF `SampleFormat` and `BitsPerSample`.
+///
+/// Supported combinations: 8-bit unsigned, 16-bit unsigned/signed, 32-bit
+/// unsigned/signed/float, and 64-bit float. Unknown combinations fall back to
+/// treating each byte as a `u8`.
+fn decode_elevation(
+    raw: &[u8],
+    sample_format: u16,
+    bits_per_sample: u16,
+    little_endian: bool,
+) -> Vec<f32> {
+    // Reads a fixed-size little/big-endian chunk into an array.
+    match (sample_format, bits_per_sample) {
+        // 8-bit: endianness irrelevant.
+        (_, 8) => raw.iter().map(|&b| f32::from(b)).collect(),
+        // 16-bit signed integer (e.g. SRTM elevation).
+        (2, 16) => raw
+            .chunks_exact(2)
+            .map(|c| {
+                let v = if little_endian {
+                    i16::from_le_bytes([c[0], c[1]])
+                } else {
+                    i16::from_be_bytes([c[0], c[1]])
+                };
+                f32::from(v)
+            })
+            .collect(),
+        // 16-bit unsigned integer.
+        (_, 16) => raw
+            .chunks_exact(2)
+            .map(|c| {
+                let v = if little_endian {
+                    u16::from_le_bytes([c[0], c[1]])
+                } else {
+                    u16::from_be_bytes([c[0], c[1]])
+                };
+                f32::from(v)
+            })
+            .collect(),
+        // 32-bit IEEE float.
+        (3, 32) => raw
+            .chunks_exact(4)
+            .map(|c| {
+                let bytes = [c[0], c[1], c[2], c[3]];
+                if little_endian {
+                    f32::from_le_bytes(bytes)
+                } else {
+                    f32::from_be_bytes(bytes)
+                }
+            })
+            .collect(),
+        // 32-bit signed integer.
+        (2, 32) => raw
+            .chunks_exact(4)
+            .map(|c| {
+                let bytes = [c[0], c[1], c[2], c[3]];
+                let v = if little_endian {
+                    i32::from_le_bytes(bytes)
+                } else {
+                    i32::from_be_bytes(bytes)
+                };
+                v as f32
+            })
+            .collect(),
+        // 32-bit unsigned integer.
+        (_, 32) => raw
+            .chunks_exact(4)
+            .map(|c| {
+                let bytes = [c[0], c[1], c[2], c[3]];
+                let v = if little_endian {
+                    u32::from_le_bytes(bytes)
+                } else {
+                    u32::from_be_bytes(bytes)
+                };
+                v as f32
+            })
+            .collect(),
+        // 64-bit IEEE float.
+        (3, 64) => raw
+            .chunks_exact(8)
+            .map(|c| {
+                let bytes = [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]];
+                let v = if little_endian {
+                    f64::from_le_bytes(bytes)
+                } else {
+                    f64::from_be_bytes(bytes)
+                };
+                v as f32
+            })
+            .collect(),
+        // Fallback: treat bytes as u8 samples.
+        _ => raw.iter().map(|&b| f32::from(b)).collect(),
+    }
 }
 
 /// Version information
@@ -1291,10 +1524,10 @@ impl AdvancedCogViewer {
         let timestamp = js_sys::Date::now() / 1000.0;
 
         // Check cache
-        if let Some(ref mut cache) = self.cache {
-            if let Some(data) = cache.get(&coord, timestamp) {
-                return Ok(data);
-            }
+        if let Some(ref mut cache) = self.cache
+            && let Some(data) = cache.get(&coord, timestamp)
+        {
+            return Ok(data);
         }
 
         // Cache miss - fetch tile
@@ -1539,5 +1772,54 @@ impl GeoJsonExporter {
             "properties": props
         })
         .to_string()
+    }
+}
+
+#[cfg(test)]
+mod decode_elevation_tests {
+    use super::decode_elevation;
+
+    #[test]
+    fn decodes_u8_samples() {
+        let raw = [0u8, 128, 255];
+        let out = decode_elevation(&raw, 1, 8, true);
+        assert_eq!(out, vec![0.0, 128.0, 255.0]);
+    }
+
+    #[test]
+    fn decodes_i16_little_endian() {
+        // -100 and 300 as i16 LE.
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(-100i16).to_le_bytes());
+        raw.extend_from_slice(&300i16.to_le_bytes());
+        let out = decode_elevation(&raw, 2, 16, true);
+        assert_eq!(out, vec![-100.0, 300.0]);
+    }
+
+    #[test]
+    fn decodes_i16_big_endian() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(-100i16).to_be_bytes());
+        raw.extend_from_slice(&300i16.to_be_bytes());
+        let out = decode_elevation(&raw, 2, 16, false);
+        assert_eq!(out, vec![-100.0, 300.0]);
+    }
+
+    #[test]
+    fn decodes_u16_and_i32_and_f32() {
+        let u16_raw = 40000u16.to_le_bytes();
+        assert_eq!(decode_elevation(&u16_raw, 1, 16, true), vec![40000.0]);
+
+        let i32_raw = (-1_000_000i32).to_le_bytes();
+        assert_eq!(decode_elevation(&i32_raw, 2, 32, true), vec![-1_000_000.0]);
+
+        let f32_raw = 1234.5f32.to_le_bytes();
+        assert_eq!(decode_elevation(&f32_raw, 3, 32, true), vec![1234.5]);
+    }
+
+    #[test]
+    fn decodes_f64() {
+        let raw = 2.5f64.to_le_bytes();
+        assert_eq!(decode_elevation(&raw, 3, 64, true), vec![2.5]);
     }
 }

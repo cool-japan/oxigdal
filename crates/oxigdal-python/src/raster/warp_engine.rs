@@ -118,10 +118,10 @@ impl RasterWarpEngine {
         let value = self.src_data.get(idx).copied()?;
 
         // Check for nodata
-        if let Some(nodata) = self.src_nodata {
-            if (value - nodata).abs() < 1e-10 || value.is_nan() {
-                return None;
-            }
+        if let Some(nodata) = self.src_nodata
+            && ((value - nodata).abs() < 1e-10 || value.is_nan())
+        {
+            return None;
         }
 
         Some(value)

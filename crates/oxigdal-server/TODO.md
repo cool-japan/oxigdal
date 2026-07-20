@@ -2,7 +2,7 @@
 
 > **Purpose:** WMS 1.3.0 / WMTS 1.0.0 / XYZ tile server for OxiGDAL rasters, built on axum + hyper.
 > **Status (2026-05-16):** 7,168 LoC (src) · 66 tests (51 inline + 15 in tests/) · 1 real-code stub
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wire `stats_handler` to the shared `TileCache` instance via Axum `State`.

@@ -67,10 +67,10 @@ pub fn gaussian_blur(
 
     let size = kernel_size.unwrap_or_else(|| {
         let s = (6.0 * sigma + 1.0) as usize;
-        if s % 2 == 0 { s + 1 } else { s }
+        if s.is_multiple_of(2) { s + 1 } else { s }
     });
 
-    if size % 2 == 0 {
+    if size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "kernel_size",
             message: format!("must be odd, got {}", size),
@@ -438,7 +438,7 @@ fn median_filter_byte_optimized(src: &RasterBuffer, kernel_size: usize) -> Resul
 ///
 /// Returns an error if kernel_size is even or operation fails
 pub fn median_filter(src: &RasterBuffer, kernel_size: usize) -> Result<RasterBuffer> {
-    if kernel_size % 2 == 0 {
+    if kernel_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "kernel_size",
             message: "Kernel size must be odd".to_string(),
@@ -637,7 +637,7 @@ pub fn sharpen(src: &RasterBuffer, amount: f64) -> Result<RasterBuffer> {
 ///
 /// Returns an error if kernel_size is even or operation fails
 pub fn low_pass_filter(src: &RasterBuffer, kernel_size: usize) -> Result<RasterBuffer> {
-    if kernel_size % 2 == 0 {
+    if kernel_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "kernel_size",
             message: "Kernel size must be odd".to_string(),

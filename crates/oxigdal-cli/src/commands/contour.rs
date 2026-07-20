@@ -108,10 +108,10 @@ pub fn execute(args: ContourArgs, _format: OutputFormat) -> Result<()> {
         let mut max_val = f64::NEG_INFINITY;
 
         for &val in &dem_values {
-            if let Some(nd) = args.no_data {
-                if (val - nd).abs() < f64::EPSILON {
-                    continue;
-                }
+            if let Some(nd) = args.no_data
+                && (val - nd).abs() < f64::EPSILON
+            {
+                continue;
             }
 
             min_val = min_val.min(val);

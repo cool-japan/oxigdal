@@ -28,7 +28,7 @@ chrono = { workspace = true }
 
 # Internal dependencies
 oxigdal-core = { workspace = true }
-oxigdal-algorithms = { workspace = true }
+oxigdal-algorithms = { workspace = true, default-features = true }
 oxigdal-index = { workspace = true }
 oxigdal-geotiff = { workspace = true }
 oxigdal-proj = { workspace = true }
@@ -37,6 +37,9 @@ oxigdal-gpkg = { workspace = true }
 
 # TOML parsing for rules
 toml = { workspace = true }
+
+# Pattern matching (ValueDomain::Pattern / RuleType::Pattern)
+regex = { workspace = true }
 
 # HTML generation
 quick-xml = { workspace = true, optional = true }
@@ -48,7 +51,14 @@ approx = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 tempfile = { workspace = true }
-oxigdal-geojson = { workspace = true }
+# Path-only (no version): dev-dependencies are stripped from the published
+# manifest, so a workspace-inherited version requirement here would force
+# cargo to resolve `oxigdal-geojson = "^0.1.7"` against crates.io during
+# `cargo publish`, which fails before that version exists. This is package
+# `oxigdal-geojson` at crates/oxigdal-drivers/geojson (the GeoJSON driver),
+# not the distinct `oxigdal-geojson-stream` package that lives at
+# crates/oxigdal-geojson/ (TopoJSON/GeoJSON-streaming code).
+oxigdal-geojson = { path = "../oxigdal-drivers/geojson" }
 
 [lib]
 name = "oxigdal_qc"
@@ -56,3 +66,7 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

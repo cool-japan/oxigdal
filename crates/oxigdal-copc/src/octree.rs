@@ -474,10 +474,9 @@ impl Octree {
                 if let Some(&(_, d)) = result
                     .iter()
                     .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    && d < best_dist
                 {
-                    if d < best_dist {
-                        best_dist = d;
-                    }
+                    best_dist = d;
                 }
             }
         }

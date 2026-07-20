@@ -4,3 +4,8 @@
 # code. Per COOLJAPAN policy, expect() with descriptive messages is acceptable
 # in tests and benchmarks since panics there are desired failure signals.
 allow-expect-in-tests = true
+
+# allow-panic-in-tests: suppress `clippy::panic` warnings in test/bench code.
+# Per COOLJAPAN policy, panic! in tests/benches is a desired failure signal
+# (e.g. `match ... { _ => panic!("unexpected variant") }` assertions).
+allow-panic-in-tests = true

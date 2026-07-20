@@ -121,6 +121,7 @@ pub enum Error {
     Other(String),
 }
 
+#[cfg(feature = "backend-rdkafka")]
 impl From<rdkafka::error::KafkaError> for Error {
     fn from(err: rdkafka::error::KafkaError) -> Self {
         Error::KafkaClient(err.to_string())
@@ -140,6 +141,7 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+#[cfg(feature = "schema-registry")]
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         Error::Http(err.to_string())

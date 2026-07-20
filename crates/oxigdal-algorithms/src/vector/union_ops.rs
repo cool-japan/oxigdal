@@ -371,22 +371,31 @@ pub fn convex_hull(points: &[Coordinate]) -> Result<Vec<Coordinate>> {
     }
 
     let pivot = points[lowest_idx];
-    let mut sorted_points: Vec<(usize, Coordinate, f64)> = points
+    let mut sorted_points: Vec<(usize, Coordinate, f64, f64)> = points
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != lowest_idx)
         .map(|(i, p)| {
             let angle = (p.y - pivot.y).atan2(p.x - pivot.x);
-            (i, *p, angle)
+            let dist_sq = (p.x - pivot.x).powi(2) + (p.y - pivot.y).powi(2);
+            (i, *p, angle, dist_sq)
         })
         .collect();
 
-    // Sort by polar angle
-    sorted_points.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by polar angle, then by squared distance from the pivot ascending.
+    // The secondary key is essential: Graham scan's `cross <= 0.0` pop step only
+    // reduces a collinear (same-angle) run correctly when its points are ordered
+    // nearest-to-farthest. Without it, a farthest point preceding a nearer one in
+    // input order is silently popped, dropping a true hull vertex.
+    sorted_points.sort_by(|a, b| {
+        a.2.partial_cmp(&b.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))
+    });
 
     let mut hull = vec![pivot];
 
-    for (_, point, _) in sorted_points {
+    for (_, point, _, _) in sorted_points {
         // Remove points that would create a clockwise turn
         while hull.len() >= 2 {
             let n = hull.len();
@@ -770,6 +779,52 @@ mod tests {
         let points = vec![Coordinate::new_2d(0.0, 0.0), Coordinate::new_2d(1.0, 1.0)];
         let result = convex_hull(&points);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_convex_hull_collinear_farthest_before_nearest() {
+        // Regression: the far point (4,0) appears before the nearer collinear
+        // point (2,0) in input order. With only an angle sort, the Graham scan
+        // would pop (4,0) and keep the interior point (2,0), producing a wrong,
+        // smaller hull. The distance tie-break must keep (4,0) and drop (2,0).
+        let points = vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(4.0, 0.0), // true extreme vertex, appears first
+            Coordinate::new_2d(2.0, 0.0), // collinear interior point, appears second
+            Coordinate::new_2d(0.0, 4.0),
+            Coordinate::new_2d(4.0, 4.0),
+        ];
+        let hull = convex_hull(&points).expect("hull must compute");
+
+        let contains = |x: f64, y: f64| {
+            hull.iter()
+                .any(|c| (c.x - x).abs() < 1e-9 && (c.y - y).abs() < 1e-9)
+        };
+
+        // The true extreme corner must be present; the collinear interior point
+        // must NOT be.
+        assert!(contains(4.0, 0.0), "hull must contain the extreme (4,0)");
+        assert!(
+            !contains(2.0, 0.0),
+            "hull must NOT contain the collinear interior point (2,0)"
+        );
+        // The four square corners form the hull.
+        assert_eq!(
+            hull.len(),
+            4,
+            "expected 4 hull vertices, got {}",
+            hull.len()
+        );
+        assert!(contains(0.0, 0.0));
+        assert!(contains(4.0, 4.0));
+        assert!(contains(0.0, 4.0));
+
+        // Area must equal the full 4×4 square (16), not a reduced shape.
+        let area = ring_area(&hull).abs();
+        assert!(
+            (area - 16.0).abs() < 1e-9,
+            "hull area should be 16, got {area}"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Integration tests for property schema inference.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_geojson_stream::{
     FeatureCollection, GeoJsonFeature, InferredType, infer_schema, infer_schema_from_collection,

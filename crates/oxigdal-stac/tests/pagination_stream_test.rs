@@ -5,7 +5,7 @@
 //! `Stream` via Tokio.  All I/O is done synchronously inside the server thread
 //! using `std::net::TcpListener`; no additional HTTP server crate is needed.
 
-#![cfg(all(feature = "reqwest", feature = "async"))]
+#![cfg(feature = "async")]
 #![allow(clippy::panic)]
 #![allow(clippy::expect_used)]
 

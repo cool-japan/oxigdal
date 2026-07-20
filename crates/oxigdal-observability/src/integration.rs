@@ -1,11 +1,14 @@
 //! Integration with external monitoring systems.
 
+#[cfg(feature = "http-exporter")]
 use crate::error::Result;
+#[cfg(feature = "http-exporter")]
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 /// Integration manager for external systems.
 pub struct IntegrationManager {
+    #[cfg(feature = "http-exporter")]
     client: Client,
     grafana: Option<GrafanaIntegration>,
     prometheus: Option<PrometheusIntegration>,
@@ -15,19 +18,23 @@ pub struct IntegrationManager {
 /// Grafana integration.
 #[derive(Debug, Clone)]
 pub struct GrafanaIntegration {
+    #[allow(dead_code)]
     url: String,
+    #[allow(dead_code)]
     api_key: String,
 }
 
 /// Prometheus integration.
 #[derive(Debug, Clone)]
 pub struct PrometheusIntegration {
+    #[allow(dead_code)]
     url: String,
 }
 
 /// Datadog integration.
 #[derive(Debug, Clone)]
 pub struct DatadogIntegration {
+    #[allow(dead_code)]
     api_key: String,
     #[allow(dead_code)]
     app_key: String,
@@ -37,6 +44,7 @@ impl IntegrationManager {
     /// Create a new integration manager.
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "http-exporter")]
             client: Client::new(),
             grafana: None,
             prometheus: None,
@@ -63,6 +71,7 @@ impl IntegrationManager {
     }
 
     /// Import dashboard to Grafana.
+    #[cfg(feature = "http-exporter")]
     pub async fn import_grafana_dashboard(&self, dashboard_json: &str) -> Result<()> {
         let grafana = self.grafana.as_ref().ok_or_else(|| {
             crate::error::ObservabilityError::InvalidConfig("Grafana not configured".to_string())
@@ -82,6 +91,7 @@ impl IntegrationManager {
     }
 
     /// Query Prometheus.
+    #[cfg(feature = "http-exporter")]
     pub async fn query_prometheus(&self, query: &str) -> Result<PrometheusResponse> {
         let prom = self.prometheus.as_ref().ok_or_else(|| {
             crate::error::ObservabilityError::InvalidConfig("Prometheus not configured".to_string())
@@ -98,6 +108,7 @@ impl IntegrationManager {
     }
 
     /// Send metrics to Datadog.
+    #[cfg(feature = "http-exporter")]
     pub async fn send_datadog_metrics(&self, metrics: Vec<DatadogMetric>) -> Result<()> {
         let datadog = self.datadog.as_ref().ok_or_else(|| {
             crate::error::ObservabilityError::InvalidConfig("Datadog not configured".to_string())

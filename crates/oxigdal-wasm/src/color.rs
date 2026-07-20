@@ -565,7 +565,29 @@ impl WhiteBalance {
 /// Color quantization
 pub struct ColorQuantizer;
 impl ColorQuantizer {
-    /// Quantizes colors to a specified number of colors
+    /// Maps a single channel value onto one of `levels` evenly spaced steps
+    /// spanning the full `0..=255` range (round-to-nearest-level).
+    ///
+    /// With `levels == 1` every value collapses to `0`; the caller is
+    /// expected to have already rejected `levels == 0`.
+    fn quantize_channel_value(value: u8, levels: usize) -> u8 {
+        if levels <= 1 {
+            // A single level has nothing to space evenly across 0..=255;
+            // collapse to a fixed value rather than dividing by zero or
+            // falling back to a 2-level (on/off) split.
+            return 0;
+        }
+        let steps = (levels - 1) as f64;
+        let level = (f64::from(value) / 255.0 * steps).round();
+        (level / steps * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+
+    /// Quantizes colors to a specified number of colors.
+    ///
+    /// Output channel values are evenly spaced across the full `0..=255`
+    /// range (e.g. `num_colors = 4` produces `{0, 85, 170, 255}`), so full
+    /// white (`255`) always quantizes back to `255` rather than clamping to
+    /// a reduced sub-range.
     pub fn quantize(data: &mut [u8], num_colors: usize) -> WasmResult<()> {
         if num_colors == 0 {
             return Err(WasmError::Canvas(CanvasError::InvalidDimensions {
@@ -574,24 +596,25 @@ impl ColorQuantizer {
                 reason: "Number of colors must be greater than 0".to_string(),
             }));
         }
-        let step = 256 / num_colors;
         for chunk in data.chunks_exact_mut(4) {
-            chunk[0] = ((chunk[0] as usize / step) * step) as u8;
-            chunk[1] = ((chunk[1] as usize / step) * step) as u8;
-            chunk[2] = ((chunk[2] as usize / step) * step) as u8;
+            chunk[0] = Self::quantize_channel_value(chunk[0], num_colors);
+            chunk[1] = Self::quantize_channel_value(chunk[1], num_colors);
+            chunk[2] = Self::quantize_channel_value(chunk[2], num_colors);
         }
         Ok(())
     }
-    /// Applies posterization effect
+    /// Applies posterization effect.
+    ///
+    /// Uses the same full-range level mapping as [`Self::quantize`] (they
+    /// are equivalent operations under different names/signatures).
     pub fn posterize(data: &mut [u8], levels: u8) {
         if levels == 0 {
             return;
         }
-        let step = 256 / levels as usize;
+        let levels = levels as usize;
         for chunk in data.chunks_exact_mut(4) {
             for i in 0..3 {
-                let value = chunk[i] as usize;
-                chunk[i] = ((value / step) * step) as u8;
+                chunk[i] = Self::quantize_channel_value(chunk[i], levels);
             }
         }
     }
@@ -724,22 +747,59 @@ mod tests {
         assert_eq!(data[2], 255);
     }
     #[test]
-    #[ignore]
     fn test_color_quantization() {
         let mut data = vec![100, 150, 200, 255];
         ColorQuantizer::quantize(&mut data, 4).expect("Quantization failed");
-        assert!(data[0] == 85 || data[0] == 0);
-        assert!(data[1] == 170 || data[1] == 85);
-        assert!(data[2] == 170 || data[2] == 255);
+        // Levels for num_colors=4 are evenly spaced across 0..=255:
+        // {0, 85, 170, 255}.
+        assert_eq!(data[0], 85);
+        assert_eq!(data[1], 170);
+        assert_eq!(data[2], 170);
+        assert_eq!(data[3], 255, "alpha channel must be untouched");
+    }
+    #[test]
+    fn test_color_quantization_reaches_full_range() {
+        // Regression test: the old `256 / num_colors` step formula could
+        // never produce 255 (e.g. num_colors=4 topped out at 192), so full
+        // white silently degraded. The fixed level-based mapping must be
+        // able to reach both endpoints of the 0..=255 range.
+        let mut data = vec![255, 255, 255, 255, 0, 0, 0, 255];
+        ColorQuantizer::quantize(&mut data, 4).expect("Quantization failed");
+        assert_eq!(&data[0..3], &[255, 255, 255], "white must stay 255");
+        assert_eq!(&data[4..7], &[0, 0, 0], "black must stay 0");
+    }
+    #[test]
+    fn test_color_quantization_single_color() {
+        // levels=1 must not divide by zero and must produce a deterministic
+        // single output value (0) rather than panicking.
+        let mut data = vec![10, 128, 255, 255];
+        ColorQuantizer::quantize(&mut data, 1).expect("Quantization failed");
+        assert_eq!(&data[0..3], &[0, 0, 0]);
+    }
+    #[test]
+    fn test_color_quantization_rejects_zero_colors() {
+        let mut data = vec![10, 128, 255, 255];
+        assert!(ColorQuantizer::quantize(&mut data, 0).is_err());
     }
     #[test]
     fn test_posterize() {
         let mut data = vec![10, 50, 100, 255, 150, 200, 250, 255];
         ColorQuantizer::posterize(&mut data, 4);
-        for i in (0..data.len()).step_by(4).take(2) {
-            assert_eq!(data[i] % 64, 0);
-            assert_eq!(data[i + 1] % 64, 0);
-            assert_eq!(data[i + 2] % 64, 0);
-        }
+        // Same {0, 85, 170, 255} level set as quantize() for num_colors=4.
+        assert_eq!(&data[0..4], &[0, 85, 85, 255]);
+        assert_eq!(&data[4..8], &[170, 170, 255, 255]);
+    }
+    #[test]
+    fn test_posterize_reaches_full_range() {
+        let mut data = vec![255, 255, 255, 255, 0, 0, 0, 255];
+        ColorQuantizer::posterize(&mut data, 4);
+        assert_eq!(&data[0..3], &[255, 255, 255]);
+        assert_eq!(&data[4..7], &[0, 0, 0]);
+    }
+    #[test]
+    fn test_posterize_zero_levels_is_noop() {
+        let mut data = vec![10, 50, 100, 255];
+        ColorQuantizer::posterize(&mut data, 0);
+        assert_eq!(data, vec![10, 50, 100, 255]);
     }
 }

@@ -24,12 +24,17 @@ use super::warp_engine::{RasterWarpEngine, ResamplingMethod};
 ///     resampling (str, optional): Resampling method ("nearest", "bilinear", "cubic", "lanczos")
 ///     src_nodata (float, optional): Source nodata value
 ///     dst_nodata (float, optional): Destination nodata value
-///     cutline (str, optional): Path to cutline vector file
-///     options (dict, optional): Additional warp options
+///     cutline (str, optional): Path to a cutline vector file. NOT YET
+///         IMPLEMENTED -- passing a cutline raises NotImplementedError rather
+///         than silently returning an unclipped result. Use clip() instead.
+///     options (dict, optional): Additional warp/creation options. Recognized
+///         keys: "COMPRESS" (LZW|DEFLATE|ZSTD|NONE), "TILED" (YES|NO),
+///         "BLOCKXSIZE"/"BLOCKYSIZE" (int). Unknown keys raise ValueError.
 ///
 /// Raises:
 ///     IOError: If reading or writing fails
-///     ValueError: If parameters are invalid
+///     ValueError: If parameters or options are invalid
+///     NotImplementedError: If a cutline is provided
 ///
 /// Example:
 ///     >>> # Reproject to Web Mercator
@@ -38,12 +43,14 @@ use super::warp_engine::{RasterWarpEngine, ResamplingMethod};
 ///     >>> # Resize raster with cubic resampling
 ///     >>> oxigdal.warp("input.tif", "output.tif", width=1024, height=1024, resampling="cubic")
 ///     >>>
-///     >>> # Clip to extent
-///     >>> oxigdal.warp("input.tif", "output.tif", cutline="boundary.geojson")
+///     >>> # Reproject with DEFLATE compression
+///     >>> oxigdal.warp("input.tif", "output.tif", dst_crs="EPSG:3857",
+///     ...              options={"COMPRESS": "DEFLATE"})
 #[pyfunction]
 #[pyo3(signature = (src_path, dst_path, dst_crs=None, width=None, height=None, resampling="bilinear", src_nodata=None, dst_nodata=None, cutline=None, options=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn warp(
+    py: Python<'_>,
     src_path: &str,
     dst_path: &str,
     dst_crs: Option<&str>,
@@ -63,128 +70,189 @@ pub fn warp(
         ))
     })?;
 
-    // Note: cutline support is not yet implemented
-    let _ = cutline;
-
-    // Parse driver options
-    let _ = options;
-
-    // Read source metadata
-    let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
-    let src_width = src_metadata.width as usize;
-    let src_height = src_metadata.height as usize;
-    let band_count = src_metadata.band_count;
-    let data_type = src_metadata.data_type;
-
-    // Get source geotransform
-    let src_geotransform = src_metadata
-        .geo_transform
-        .map(|gt| gt.to_gdal_array())
-        .unwrap_or([0.0, 1.0, 0.0, src_height as f64, 0.0, -1.0]);
-
-    // Parse source CRS from metadata
-    let src_crs_opt: Option<Crs> = src_metadata
-        .crs_wkt
-        .as_ref()
-        .and_then(|wkt| Crs::from_wkt(wkt).ok());
-
-    // Parse target CRS
-    let target_crs = if let Some(crs_str) = dst_crs {
-        Some(parse_crs_string(crs_str)?)
-    } else {
-        None
-    };
-
-    // Collect warped bands and output metadata
-    let mut all_warped_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
-    let mut out_width: usize = 0;
-    let mut out_height: usize = 0;
-    let mut out_gt = [0.0f64; 6];
-
-    for band_idx in 1..=band_count {
-        let (band_values, _w, _h, _meta) = crate::dataset::read_geotiff_band(src_path, band_idx)?;
-
-        // Create warp engine
-        let engine = RasterWarpEngine::new(
-            band_values,
-            src_width,
-            src_height,
-            src_nodata.or(src_metadata.nodata.as_f64()),
-            src_geotransform,
-            src_crs_opt.clone(),
-        );
-
-        // Perform warp
-        let (warped_data, ow, oh, ogt) = engine
-            .warp(
-                target_crs.as_ref(),
-                width.map(|w| w as usize),
-                height.map(|h| h as usize),
-                dst_nodata,
-                method,
-            )
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("Warp failed: {}", e))
-            })?;
-
-        out_width = ow;
-        out_height = oh;
-        out_gt = ogt;
-        all_warped_data.push(warped_data);
+    // Cutline-based clipping (rasterizing a vector boundary into a mask applied
+    // to the warped output) is not yet implemented. Rather than silently
+    // ignoring the request -- which would return a full, unclipped reprojection
+    // and mislead a caller following the documented example -- fail explicitly.
+    if cutline.is_some() {
+        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "cutline-based clipping is not yet supported by warp(); omit the `cutline` \
+             argument, or use clip() to restrict the output to a bounding box or GeoJSON extent",
+        ));
     }
 
-    // Build output geotransform
-    let output_gt = oxigdal_core::types::GeoTransform::from_gdal_array(out_gt);
-
-    // Determine output nodata
-    let output_nodata = match dst_nodata {
-        Some(v) => oxigdal_core::types::NoDataValue::Float(v),
-        None => src_metadata.nodata,
-    };
-
-    // Determine output EPSG code
-    let output_epsg = if dst_crs.is_some() {
-        dst_crs.and_then(|crs_str| {
-            crs_str
-                .strip_prefix("EPSG:")
-                .and_then(|code| code.parse::<u32>().ok())
-        })
-    } else {
-        None
-    };
-
-    // Interleave band data for writing
-    let pixel_count = out_width * out_height;
-    let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
-    for px in 0..pixel_count {
-        for band_data in &all_warped_data {
-            let val = if px < band_data.len() {
-                band_data[px]
-            } else {
-                dst_nodata.unwrap_or(f64::NAN)
-            };
-            interleaved.push(val);
+    // Parse recognized driver/warp options. Unknown keys are rejected instead of
+    // being silently discarded so callers get immediate feedback.
+    let mut out_compression = oxigdal_geotiff::Compression::Lzw;
+    let mut out_tiled = true;
+    let mut out_tile_size: u32 = 256;
+    if let Some(opts) = options {
+        for (key, value) in opts.iter() {
+            let key_str: String = key.extract().map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err("warp option keys must be strings")
+            })?;
+            match key_str.to_uppercase().as_str() {
+                "COMPRESS" => {
+                    let v: String = value.extract().map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err("COMPRESS value must be a string")
+                    })?;
+                    out_compression = match v.to_uppercase().as_str() {
+                        "LZW" => oxigdal_geotiff::Compression::Lzw,
+                        "DEFLATE" | "ZLIB" => oxigdal_geotiff::Compression::Deflate,
+                        "ZSTD" => oxigdal_geotiff::Compression::Zstd,
+                        "NONE" => oxigdal_geotiff::Compression::None,
+                        other => {
+                            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                                "Unsupported COMPRESS value '{}'. Valid: LZW, DEFLATE, ZSTD, NONE",
+                                other
+                            )));
+                        }
+                    };
+                }
+                "TILED" => {
+                    let v: String = value.extract().map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err("TILED value must be a string")
+                    })?;
+                    out_tiled = v.to_uppercase() == "YES";
+                }
+                "BLOCKXSIZE" | "BLOCKYSIZE" => {
+                    out_tile_size = value.extract().map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "BLOCKXSIZE/BLOCKYSIZE value must be an integer",
+                        )
+                    })?;
+                }
+                other => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Unsupported warp option '{}'. Supported: COMPRESS, TILED, BLOCKXSIZE, BLOCKYSIZE",
+                        other
+                    )));
+                }
+            }
         }
     }
 
-    // Write output GeoTIFF
-    let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
-        out_width as u64,
-        out_height as u64,
-        band_count as u16,
-        data_type,
-    );
-    write_config.geo_transform = Some(output_gt);
-    write_config.epsg_code = output_epsg;
-    write_config.nodata = output_nodata;
-    write_config.compression = oxigdal_geotiff::Compression::Lzw;
-    write_config.tiled = true;
-    write_config.tile_size = 256;
-    write_config.build_overviews = false;
+    // All remaining work is blocking file I/O and CPU-bound resampling; release
+    // the GIL so other Python threads keep running during the warp.
+    py.detach(|| -> PyResult<()> {
+        // Read source metadata
+        let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
+        let src_width = src_metadata.width as usize;
+        let src_height = src_metadata.height as usize;
+        let band_count = src_metadata.band_count;
+        let data_type = src_metadata.data_type;
 
-    crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+        // Get source geotransform
+        let src_geotransform = src_metadata
+            .geo_transform
+            .map(|gt| gt.to_gdal_array())
+            .unwrap_or([0.0, 1.0, 0.0, src_height as f64, 0.0, -1.0]);
 
-    Ok(())
+        // Parse source CRS from metadata
+        let src_crs_opt: Option<Crs> = src_metadata
+            .crs_wkt
+            .as_ref()
+            .and_then(|wkt| Crs::from_wkt(wkt).ok());
+
+        // Parse target CRS
+        let target_crs = if let Some(crs_str) = dst_crs {
+            Some(parse_crs_string(crs_str)?)
+        } else {
+            None
+        };
+
+        // Collect warped bands and output metadata
+        let mut all_warped_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
+        let mut out_width: usize = 0;
+        let mut out_height: usize = 0;
+        let mut out_gt = [0.0f64; 6];
+
+        for band_idx in 1..=band_count {
+            let (band_values, _w, _h, _meta) =
+                crate::dataset::read_geotiff_band(src_path, band_idx)?;
+
+            // Create warp engine
+            let engine = RasterWarpEngine::new(
+                band_values,
+                src_width,
+                src_height,
+                src_nodata.or(src_metadata.nodata.as_f64()),
+                src_geotransform,
+                src_crs_opt.clone(),
+            );
+
+            // Perform warp
+            let (warped_data, ow, oh, ogt) = engine
+                .warp(
+                    target_crs.as_ref(),
+                    width.map(|w| w as usize),
+                    height.map(|h| h as usize),
+                    dst_nodata,
+                    method,
+                )
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("Warp failed: {}", e))
+                })?;
+
+            out_width = ow;
+            out_height = oh;
+            out_gt = ogt;
+            all_warped_data.push(warped_data);
+        }
+
+        // Build output geotransform
+        let output_gt = oxigdal_core::types::GeoTransform::from_gdal_array(out_gt);
+
+        // Determine output nodata
+        let output_nodata = match dst_nodata {
+            Some(v) => oxigdal_core::types::NoDataValue::Float(v),
+            None => src_metadata.nodata,
+        };
+
+        // Determine output EPSG code
+        let output_epsg = if dst_crs.is_some() {
+            dst_crs.and_then(|crs_str| {
+                crs_str
+                    .strip_prefix("EPSG:")
+                    .and_then(|code| code.parse::<u32>().ok())
+            })
+        } else {
+            None
+        };
+
+        // Interleave band data for writing
+        let pixel_count = out_width * out_height;
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
+        for px in 0..pixel_count {
+            for band_data in &all_warped_data {
+                let val = if px < band_data.len() {
+                    band_data[px]
+                } else {
+                    dst_nodata.unwrap_or(f64::NAN)
+                };
+                interleaved.push(val);
+            }
+        }
+
+        // Write output GeoTIFF
+        let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
+            out_width as u64,
+            out_height as u64,
+            band_count as u16,
+            data_type,
+        );
+        write_config.geo_transform = Some(output_gt);
+        write_config.epsg_code = output_epsg;
+        write_config.nodata = output_nodata;
+        write_config.compression = out_compression;
+        write_config.tiled = out_tiled;
+        write_config.tile_size = out_tile_size;
+        write_config.build_overviews = false;
+
+        crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+
+        Ok(())
+    })
 }
 
 /// Resamples a raster to a different resolution.
@@ -209,6 +277,7 @@ pub fn warp(
 #[pyfunction]
 #[pyo3(signature = (src_path, dst_path, target_resolution, resampling="bilinear", nodata=None))]
 pub fn resample(
+    py: Python<'_>,
     src_path: &str,
     dst_path: &str,
     target_resolution: (f64, f64),
@@ -229,91 +298,96 @@ pub fn resample(
         ))
     })?;
 
-    // Read source metadata
-    let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
-    let src_width = src_metadata.width as usize;
-    let src_height = src_metadata.height as usize;
-    let band_count = src_metadata.band_count;
-    let data_type = src_metadata.data_type;
+    // All remaining work is blocking I/O and CPU-bound resampling; release the
+    // GIL so other Python threads keep running.
+    py.detach(|| -> PyResult<()> {
+        // Read source metadata
+        let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
+        let src_width = src_metadata.width as usize;
+        let src_height = src_metadata.height as usize;
+        let band_count = src_metadata.band_count;
+        let data_type = src_metadata.data_type;
 
-    // Get source geotransform
-    let src_geotransform = src_metadata
-        .geo_transform
-        .map(|gt| gt.to_gdal_array())
-        .unwrap_or([0.0, 1.0, 0.0, src_height as f64, 0.0, -1.0]);
+        // Get source geotransform
+        let src_geotransform = src_metadata
+            .geo_transform
+            .map(|gt| gt.to_gdal_array())
+            .unwrap_or([0.0, 1.0, 0.0, src_height as f64, 0.0, -1.0]);
 
-    let effective_nodata = nodata.or(src_metadata.nodata.as_f64());
+        let effective_nodata = nodata.or(src_metadata.nodata.as_f64());
 
-    // Collect resampled bands
-    let mut all_resampled_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
-    let mut out_width: usize = 0;
-    let mut out_height: usize = 0;
-    let mut out_gt = [0.0f64; 6];
+        // Collect resampled bands
+        let mut all_resampled_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
+        let mut out_width: usize = 0;
+        let mut out_height: usize = 0;
+        let mut out_gt = [0.0f64; 6];
 
-    for band_idx in 1..=band_count {
-        let (band_values, _w, _h, _meta) = crate::dataset::read_geotiff_band(src_path, band_idx)?;
+        for band_idx in 1..=band_count {
+            let (band_values, _w, _h, _meta) =
+                crate::dataset::read_geotiff_band(src_path, band_idx)?;
 
-        let engine = RasterWarpEngine::new(
-            band_values,
-            src_width,
-            src_height,
-            effective_nodata,
-            src_geotransform,
-            None,
-        );
+            let engine = RasterWarpEngine::new(
+                band_values,
+                src_width,
+                src_height,
+                effective_nodata,
+                src_geotransform,
+                None,
+            );
 
-        let (resampled_data, ow, oh, ogt) = engine
-            .resample_to_resolution(target_resolution.0, target_resolution.1, nodata, method)
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("Resample failed: {}", e))
-            })?;
+            let (resampled_data, ow, oh, ogt) = engine
+                .resample_to_resolution(target_resolution.0, target_resolution.1, nodata, method)
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("Resample failed: {}", e))
+                })?;
 
-        out_width = ow;
-        out_height = oh;
-        out_gt = ogt;
-        all_resampled_data.push(resampled_data);
-    }
-
-    // Build output geotransform
-    let output_gt = oxigdal_core::types::GeoTransform::from_gdal_array(out_gt);
-
-    let output_nodata = match nodata {
-        Some(v) => oxigdal_core::types::NoDataValue::Float(v),
-        None => src_metadata.nodata,
-    };
-
-    // Interleave band data
-    let pixel_count = out_width * out_height;
-    let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
-    for px in 0..pixel_count {
-        for band_data in &all_resampled_data {
-            let val = if px < band_data.len() {
-                band_data[px]
-            } else {
-                nodata.unwrap_or(f64::NAN)
-            };
-            interleaved.push(val);
+            out_width = ow;
+            out_height = oh;
+            out_gt = ogt;
+            all_resampled_data.push(resampled_data);
         }
-    }
 
-    // Write output GeoTIFF
-    let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
-        out_width as u64,
-        out_height as u64,
-        band_count as u16,
-        data_type,
-    );
-    write_config.geo_transform = Some(output_gt);
-    write_config.epsg_code = None;
-    write_config.nodata = output_nodata;
-    write_config.compression = oxigdal_geotiff::Compression::Lzw;
-    write_config.tiled = true;
-    write_config.tile_size = 256;
-    write_config.build_overviews = false;
+        // Build output geotransform
+        let output_gt = oxigdal_core::types::GeoTransform::from_gdal_array(out_gt);
 
-    crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+        let output_nodata = match nodata {
+            Some(v) => oxigdal_core::types::NoDataValue::Float(v),
+            None => src_metadata.nodata,
+        };
 
-    Ok(())
+        // Interleave band data
+        let pixel_count = out_width * out_height;
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
+        for px in 0..pixel_count {
+            for band_data in &all_resampled_data {
+                let val = if px < band_data.len() {
+                    band_data[px]
+                } else {
+                    nodata.unwrap_or(f64::NAN)
+                };
+                interleaved.push(val);
+            }
+        }
+
+        // Write output GeoTIFF
+        let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
+            out_width as u64,
+            out_height as u64,
+            band_count as u16,
+            data_type,
+        );
+        write_config.geo_transform = Some(output_gt);
+        write_config.epsg_code = None;
+        write_config.nodata = output_nodata;
+        write_config.compression = oxigdal_geotiff::Compression::Lzw;
+        write_config.tiled = true;
+        write_config.tile_size = 256;
+        write_config.build_overviews = false;
+
+        crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+
+        Ok(())
+    })
 }
 
 /// Writes a NumPy array to a raster file.
@@ -346,6 +420,7 @@ pub fn resample(
 #[allow(clippy::too_many_arguments)]
 #[allow(unused_variables)]
 pub fn write(
+    py: Python<'_>,
     path: &str,
     array: &Bound<'_, PyAny>,
     metadata: Option<&Bound<'_, PyAny>>,
@@ -383,43 +458,41 @@ pub fn write(
     let mut epsg_code: Option<u32> = None;
     let mut nodata_value = oxigdal_core::types::NoDataValue::None;
 
-    if let Some(meta) = metadata {
-        if let Ok(dict) = meta.cast::<PyDict>() {
-            // Extract geotransform
-            if let Some(gt_list) = dict
-                .get_item("geotransform")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<Vec<f64>>().ok())
-            {
-                if gt_list.len() == 6 {
-                    geo_transform = Some(oxigdal_core::types::GeoTransform::from_gdal_array([
-                        gt_list[0], gt_list[1], gt_list[2], gt_list[3], gt_list[4], gt_list[5],
-                    ]));
-                }
-            }
+    if let Some(meta) = metadata
+        && let Ok(dict) = meta.cast::<PyDict>()
+    {
+        // Extract geotransform
+        if let Some(gt_list) = dict
+            .get_item("geotransform")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<Vec<f64>>().ok())
+            && gt_list.len() == 6
+        {
+            geo_transform = Some(oxigdal_core::types::GeoTransform::from_gdal_array([
+                gt_list[0], gt_list[1], gt_list[2], gt_list[3], gt_list[4], gt_list[5],
+            ]));
+        }
 
-            // Extract CRS / EPSG code
-            if let Some(crs_str) = dict
-                .get_item("crs")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<String>().ok())
-            {
-                if let Some(code_str) = crs_str.strip_prefix("EPSG:") {
-                    epsg_code = code_str.parse::<u32>().ok();
-                }
-            }
+        // Extract CRS / EPSG code
+        if let Some(crs_str) = dict
+            .get_item("crs")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<String>().ok())
+            && let Some(code_str) = crs_str.strip_prefix("EPSG:")
+        {
+            epsg_code = code_str.parse::<u32>().ok();
+        }
 
-            // Extract nodata
-            if let Some(nd) = dict
-                .get_item("nodata")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<f64>().ok())
-            {
-                nodata_value = oxigdal_core::types::NoDataValue::Float(nd);
-            }
+        // Extract nodata
+        if let Some(nd) = dict
+            .get_item("nodata")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<f64>().ok())
+        {
+            nodata_value = oxigdal_core::types::NoDataValue::Float(nd);
         }
     }
 
@@ -443,9 +516,13 @@ pub fn write(
         let width = shape[1] as u64;
 
         let readonly = arr2d.readonly();
-        let slice = readonly
+        // Own the pixel data so the blocking encode + disk write can run
+        // with the GIL released.
+        let owned: Vec<f64> = readonly
             .as_slice()
-            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Array must be contiguous"))?;
+            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Array must be contiguous"))?
+            .to_vec();
+        drop(readonly);
 
         let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
             width,
@@ -461,7 +538,7 @@ pub fn write(
         write_config.tile_size = blocksize;
         write_config.build_overviews = build_ovr;
 
-        crate::dataset::write_geotiff_data(path, slice, write_config)?;
+        py.detach(|| crate::dataset::write_geotiff_data(path, &owned, write_config))?;
     } else if ndim == 3 {
         // Multi-band: shape is (bands, height, width)
         let arr3d = array.extract::<Bound<'_, PyArray3<f64>>>()?;
@@ -471,25 +548,13 @@ pub fn write(
         let width = shape[2] as u64;
 
         let readonly = arr3d.readonly();
-        let flat_data = readonly
+        // Own the pixel data so the interleaving + blocking encode/write can
+        // run with the GIL released.
+        let flat_owned: Vec<f64> = readonly
             .as_slice()
-            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Array must be contiguous"))?;
-
-        // The 3D array is in (bands, height, width) order (BSQ).
-        // GeoTIFF writer expects interleaved (BIP) data: for each pixel, all bands.
-        let pixel_count = (width * height) as usize;
-        let mut interleaved = Vec::with_capacity(pixel_count * bands as usize);
-        for px in 0..pixel_count {
-            for band_idx in 0..bands as usize {
-                let src_idx = band_idx * pixel_count + px;
-                let val = if src_idx < flat_data.len() {
-                    flat_data[src_idx]
-                } else {
-                    0.0
-                };
-                interleaved.push(val);
-            }
-        }
+            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Array must be contiguous"))?
+            .to_vec();
+        drop(readonly);
 
         let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
             width,
@@ -505,7 +570,25 @@ pub fn write(
         write_config.tile_size = blocksize;
         write_config.build_overviews = build_ovr;
 
-        crate::dataset::write_geotiff_data(path, &interleaved, write_config)?;
+        py.detach(|| -> PyResult<()> {
+            // The 3D array is in (bands, height, width) order (BSQ).
+            // GeoTIFF writer expects interleaved (BIP) data: for each pixel, all bands.
+            let pixel_count = (width * height) as usize;
+            let mut interleaved = Vec::with_capacity(pixel_count * bands as usize);
+            for px in 0..pixel_count {
+                for band_idx in 0..bands as usize {
+                    let src_idx = band_idx * pixel_count + px;
+                    let val = if src_idx < flat_owned.len() {
+                        flat_owned[src_idx]
+                    } else {
+                        0.0
+                    };
+                    interleaved.push(val);
+                }
+            }
+
+            crate::dataset::write_geotiff_data(path, &interleaved, write_config)
+        })?;
     } else {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "Array must be 2D or 3D",
@@ -554,95 +637,111 @@ pub fn read<'py>(
     out_shape: Option<(usize, usize)>,
     masked: bool,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    // Read full band data from file
-    let (full_data, full_width, full_height, _meta) =
-        crate::dataset::read_geotiff_band(path, band)?;
+    // Copy out the plain window fields (if any) before releasing the GIL:
+    // `WindowPy` is a GIL-managed pyclass, so only its Copy field values --
+    // not the reference itself -- may cross the detach boundary.
+    let window_bounds: Option<(usize, usize, usize, usize)> = window.map(|win| {
+        (
+            win.col_off as usize,
+            win.row_off as usize,
+            win.width as usize,
+            win.height as usize,
+        )
+    });
 
-    let nodata_val = _meta.nodata.as_f64();
+    // File decode, windowing, resampling, and masking are all blocking I/O
+    // and/or CPU-bound work; release the GIL while they run.
+    let nested = py.detach(|| -> PyResult<Vec<Vec<f64>>> {
+        // Read full band data from file
+        let (full_data, full_width, full_height, _meta) =
+            crate::dataset::read_geotiff_band(path, band)?;
 
-    // Apply window if specified
-    let (data, width, height) = if let Some(win) = window {
-        let col_off = win.col_off as usize;
-        let row_off = win.row_off as usize;
-        let win_width = win.width as usize;
-        let win_height = win.height as usize;
-        let fw = full_width as usize;
-        let fh = full_height as usize;
+        let nodata_val = _meta.nodata.as_f64();
 
-        // Validate window bounds
-        if col_off + win_width > fw || row_off + win_height > fh {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Window ({}, {}, {}, {}) exceeds raster bounds ({}x{})",
-                col_off, row_off, win_width, win_height, fw, fh
-            )));
-        }
+        // Apply window if specified
+        let (data, width, height) =
+            if let Some((col_off, row_off, win_width, win_height)) = window_bounds {
+                let fw = full_width as usize;
+                let fh = full_height as usize;
 
-        let mut windowed = Vec::with_capacity(win_width * win_height);
-        for row in row_off..(row_off + win_height) {
-            for col in col_off..(col_off + win_width) {
-                windowed.push(full_data[row * fw + col]);
-            }
-        }
+                // Validate window bounds
+                if col_off + win_width > fw || row_off + win_height > fh {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Window ({}, {}, {}, {}) exceeds raster bounds ({}x{})",
+                        col_off, row_off, win_width, win_height, fw, fh
+                    )));
+                }
 
-        (windowed, win_width, win_height)
-    } else {
-        (full_data, full_width as usize, full_height as usize)
-    };
-
-    // Apply resampling if out_shape is specified
-    let (final_data, final_width, _final_height) = if let Some((target_h, target_w)) = out_shape {
-        if target_w == 0 || target_h == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Output shape dimensions must be positive",
-            ));
-        }
-
-        // Use the warp engine for resampling
-        let gt = [0.0, 1.0, 0.0, height as f64, 0.0, -1.0];
-        let engine = RasterWarpEngine::new(data, width, height, nodata_val, gt, None);
-
-        let (resampled, rw, rh, _rgt) = engine
-            .warp(
-                None,
-                Some(target_w),
-                Some(target_h),
-                nodata_val,
-                ResamplingMethod::Bilinear,
-            )
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("Resampling failed: {}", e))
-            })?;
-
-        (resampled, rw, rh)
-    } else {
-        (data, width, height)
-    };
-
-    // Apply nodata masking if requested
-    let output_data = if masked {
-        if let Some(nd) = nodata_val {
-            final_data
-                .iter()
-                .map(|&v| {
-                    if (v - nd).abs() < 1e-10 || v.is_nan() {
-                        f64::NAN
-                    } else {
-                        v
+                let mut windowed = Vec::with_capacity(win_width * win_height);
+                for row in row_off..(row_off + win_height) {
+                    for col in col_off..(col_off + win_width) {
+                        windowed.push(full_data[row * fw + col]);
                     }
-                })
-                .collect()
+                }
+
+                (windowed, win_width, win_height)
+            } else {
+                (full_data, full_width as usize, full_height as usize)
+            };
+
+        // Apply resampling if out_shape is specified
+        let (final_data, final_width, _final_height) = if let Some((target_h, target_w)) = out_shape
+        {
+            if target_w == 0 || target_h == 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "Output shape dimensions must be positive",
+                ));
+            }
+
+            // Use the warp engine for resampling
+            let gt = [0.0, 1.0, 0.0, height as f64, 0.0, -1.0];
+            let engine = RasterWarpEngine::new(data, width, height, nodata_val, gt, None);
+
+            let (resampled, rw, rh, _rgt) = engine
+                .warp(
+                    None,
+                    Some(target_w),
+                    Some(target_h),
+                    nodata_val,
+                    ResamplingMethod::Bilinear,
+                )
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("Resampling failed: {}", e))
+                })?;
+
+            (resampled, rw, rh)
+        } else {
+            (data, width, height)
+        };
+
+        // Apply nodata masking if requested
+        let output_data = if masked {
+            if let Some(nd) = nodata_val {
+                final_data
+                    .iter()
+                    .map(|&v| {
+                        if (v - nd).abs() < 1e-10 || v.is_nan() {
+                            f64::NAN
+                        } else {
+                            v
+                        }
+                    })
+                    .collect()
+            } else {
+                final_data
+            }
         } else {
             final_data
-        }
-    } else {
-        final_data
-    };
+        };
 
-    // Convert to 2D numpy array
-    let nested: Vec<Vec<f64>> = output_data
-        .chunks(final_width)
-        .map(|chunk| chunk.to_vec())
-        .collect();
+        // Convert to 2D nested vec (numpy array creation itself needs the GIL)
+        let nested: Vec<Vec<f64>> = output_data
+            .chunks(final_width)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+
+        Ok(nested)
+    })?;
 
     numpy::PyArray2::from_vec2(py, &nested).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create NumPy array: {}", e))
@@ -679,102 +778,125 @@ pub fn read_bands<'py>(
     out_shape: Option<(usize, usize)>,
     bands: Option<Vec<u32>>,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    // Read metadata for band count and dimensions
-    let src_metadata = crate::dataset::read_geotiff_metadata(path)?;
-    let band_count = src_metadata.band_count;
+    // Copy out the plain window fields (if any) before releasing the GIL:
+    // `WindowPy` is a GIL-managed pyclass, so only its Copy field values --
+    // not the reference itself -- may cross the detach boundary.
+    let window_bounds: Option<(usize, usize, usize, usize)> = window.map(|win| {
+        (
+            win.col_off as usize,
+            win.row_off as usize,
+            win.width as usize,
+            win.height as usize,
+        )
+    });
 
-    let bands_to_read = bands.unwrap_or_else(|| (1..=band_count).collect());
+    // Metadata/band decode, windowing, and resampling are all blocking I/O
+    // and/or CPU-bound work; release the GIL while they run.
+    let nested = py.detach(|| -> PyResult<Vec<Vec<Vec<f64>>>> {
+        // Read metadata for band count and dimensions
+        let src_metadata = crate::dataset::read_geotiff_metadata(path)?;
+        let band_count = src_metadata.band_count;
 
-    // Validate requested bands
-    for &b in &bands_to_read {
-        if b < 1 || b > band_count {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Band {} out of range (1-{})",
-                b, band_count
-            )));
-        }
-    }
+        let bands_to_read = bands.unwrap_or_else(|| (1..=band_count).collect());
 
-    // Read each band
-    let mut band_arrays: Vec<Vec<f64>> = Vec::with_capacity(bands_to_read.len());
-    let mut data_width: usize = 0;
-
-    for &band_idx in &bands_to_read {
-        let (band_data, w, h, _meta) = crate::dataset::read_geotiff_band(path, band_idx)?;
-        data_width = w as usize;
-        let mut current_height = h as usize;
-
-        // Apply window if specified
-        let windowed = if let Some(win) = window {
-            let col_off = win.col_off as usize;
-            let row_off = win.row_off as usize;
-            let win_width = win.width as usize;
-            let win_height = win.height as usize;
-
-            if col_off + win_width > data_width || row_off + win_height > current_height {
+        // Validate requested bands
+        for &b in &bands_to_read {
+            if b < 1 || b > band_count {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "Window ({}, {}, {}, {}) exceeds raster bounds ({}x{})",
-                    col_off, row_off, win_width, win_height, data_width, current_height
+                    "Band {} out of range (1-{})",
+                    b, band_count
                 )));
             }
+        }
 
-            let mut result = Vec::with_capacity(win_width * win_height);
-            for row in row_off..(row_off + win_height) {
-                for col in col_off..(col_off + win_width) {
-                    result.push(band_data[row * data_width + col]);
+        // Read each band
+        let mut band_arrays: Vec<Vec<f64>> = Vec::with_capacity(bands_to_read.len());
+        let mut data_width: usize = 0;
+
+        for &band_idx in &bands_to_read {
+            let (band_data, w, h, _meta) = crate::dataset::read_geotiff_band(path, band_idx)?;
+            data_width = w as usize;
+            let mut current_height = h as usize;
+
+            // Apply window if specified
+            let windowed = if let Some((col_off, row_off, win_width, win_height)) = window_bounds {
+                if col_off + win_width > data_width || row_off + win_height > current_height {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Window ({}, {}, {}, {}) exceeds raster bounds ({}x{})",
+                        col_off, row_off, win_width, win_height, data_width, current_height
+                    )));
                 }
-            }
-            data_width = win_width;
-            current_height = win_height;
-            result
-        } else {
-            band_data
-        };
 
-        // Apply resampling if out_shape is specified
-        let final_data = if let Some((target_h, target_w)) = out_shape {
-            if target_w == 0 || target_h == 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "Output shape dimensions must be positive",
-                ));
-            }
+                let mut result = Vec::with_capacity(win_width * win_height);
+                for row in row_off..(row_off + win_height) {
+                    for col in col_off..(col_off + win_width) {
+                        result.push(band_data[row * data_width + col]);
+                    }
+                }
+                data_width = win_width;
+                current_height = win_height;
+                result
+            } else {
+                band_data
+            };
 
-            let gt = [0.0, 1.0, 0.0, current_height as f64, 0.0, -1.0];
-            let nodata_val = _meta.nodata.as_f64();
-            let engine =
-                RasterWarpEngine::new(windowed, data_width, current_height, nodata_val, gt, None);
+            // Apply resampling if out_shape is specified
+            let final_data = if let Some((target_h, target_w)) = out_shape {
+                if target_w == 0 || target_h == 0 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Output shape dimensions must be positive",
+                    ));
+                }
 
-            let (resampled, rw, _rh, _rgt) = engine
-                .warp(
-                    None,
-                    Some(target_w),
-                    Some(target_h),
+                let gt = [0.0, 1.0, 0.0, current_height as f64, 0.0, -1.0];
+                let nodata_val = _meta.nodata.as_f64();
+                let engine = RasterWarpEngine::new(
+                    windowed,
+                    data_width,
+                    current_height,
                     nodata_val,
-                    ResamplingMethod::Bilinear,
-                )
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("Resampling failed: {}", e))
-                })?;
+                    gt,
+                    None,
+                );
 
-            data_width = rw;
-            resampled
-        } else {
-            windowed
-        };
+                let (resampled, rw, _rh, _rgt) = engine
+                    .warp(
+                        None,
+                        Some(target_w),
+                        Some(target_h),
+                        nodata_val,
+                        ResamplingMethod::Bilinear,
+                    )
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "Resampling failed: {}",
+                            e
+                        ))
+                    })?;
 
-        band_arrays.push(final_data);
-    }
+                data_width = rw;
+                resampled
+            } else {
+                windowed
+            };
 
-    // Build 3D nested vector (bands, height, width)
-    let nested: Vec<Vec<Vec<f64>>> = band_arrays
-        .iter()
-        .map(|band_data| {
-            band_data
-                .chunks(data_width)
-                .map(|row| row.to_vec())
-                .collect()
-        })
-        .collect();
+            band_arrays.push(final_data);
+        }
+
+        // Build 3D nested vector (bands, height, width); numpy array
+        // creation itself needs the GIL and happens after this closure.
+        let nested: Vec<Vec<Vec<f64>>> = band_arrays
+            .iter()
+            .map(|band_data| {
+                band_data
+                    .chunks(data_width)
+                    .map(|row| row.to_vec())
+                    .collect()
+            })
+            .collect();
+
+        Ok(nested)
+    })?;
 
     numpy::PyArray3::from_vec3(py, &nested).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create 3D array: {}", e))
@@ -798,8 +920,10 @@ pub fn read_bands<'py>(
 ///     >>> print(f"Bands: {meta.band_count}")
 ///     >>> print(f"CRS: {meta.crs}")
 #[pyfunction]
-pub fn get_metadata(path: &str) -> PyResult<RasterMetadataPy> {
-    let metadata = crate::dataset::read_geotiff_metadata(path)?;
+pub fn get_metadata(py: Python<'_>, path: &str) -> PyResult<RasterMetadataPy> {
+    // Opening the file and parsing its header/metadata is blocking I/O;
+    // release the GIL while it runs.
+    let metadata = py.detach(|| crate::dataset::read_geotiff_metadata(path))?;
 
     let data_type_str = match metadata.data_type {
         oxigdal_core::types::RasterDataType::UInt8 => "uint8",
@@ -857,7 +981,12 @@ pub fn get_metadata(path: &str) -> PyResult<RasterMetadataPy> {
 ///     >>> oxigdal.build_overviews("input.tif", [2, 4], resampling="nearest")
 #[pyfunction]
 #[pyo3(signature = (path, levels, resampling="average"))]
-pub fn build_overviews(path: &str, levels: Vec<i32>, resampling: &str) -> PyResult<()> {
+pub fn build_overviews(
+    py: Python<'_>,
+    path: &str,
+    levels: Vec<i32>,
+    resampling: &str,
+) -> PyResult<()> {
     if levels.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "At least one overview level required",
@@ -880,95 +1009,103 @@ pub fn build_overviews(path: &str, levels: Vec<i32>, resampling: &str) -> PyResu
         ))
     })?;
 
-    // Read the source file metadata and data
-    let src_metadata = crate::dataset::read_geotiff_metadata(path)?;
-    let band_count = src_metadata.band_count;
-    let data_type = src_metadata.data_type;
+    // Reading all bands, re-encoding, and rewriting the file is blocking
+    // disk I/O plus a full data copy; release the GIL while it runs.
+    py.detach(|| -> PyResult<()> {
+        // Read the source file metadata and data
+        let src_metadata = crate::dataset::read_geotiff_metadata(path)?;
+        let band_count = src_metadata.band_count;
+        let data_type = src_metadata.data_type;
 
-    // Read all bands
-    let mut all_band_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
-    for band_idx in 1..=band_count {
-        let (band_data, _w, _h, _meta) = crate::dataset::read_geotiff_band(path, band_idx)?;
-        all_band_data.push(band_data);
-    }
-
-    // Interleave band data
-    let pixel_count = (src_metadata.width * src_metadata.height) as usize;
-    let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
-    for px in 0..pixel_count {
-        for band_data in &all_band_data {
-            let val = if px < band_data.len() {
-                band_data[px]
-            } else {
-                0.0
-            };
-            interleaved.push(val);
+        // Read all bands
+        let mut all_band_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
+        for band_idx in 1..=band_count {
+            let (band_data, _w, _h, _meta) = crate::dataset::read_geotiff_band(path, band_idx)?;
+            all_band_data.push(band_data);
         }
-    }
 
-    // Determine compression from source (default to LZW)
-    let compression = oxigdal_geotiff::Compression::Lzw;
-
-    // Convert overview levels from i32 to u32
-    let overview_u32: Vec<u32> = levels.iter().map(|&l| l as u32).collect();
-
-    // Map resampling method
-    let ovr_resampling = match _method {
-        ResamplingMethod::Nearest => oxigdal_geotiff::OverviewResampling::Nearest,
-        ResamplingMethod::Average => oxigdal_geotiff::OverviewResampling::Average,
-        ResamplingMethod::Bilinear => oxigdal_geotiff::OverviewResampling::Bilinear,
-        ResamplingMethod::Mode => oxigdal_geotiff::OverviewResampling::Mode,
-        _ => oxigdal_geotiff::OverviewResampling::Average,
-    };
-
-    // Rewrite the file with overviews
-    let mut config = oxigdal_geotiff::WriterConfig::new(
-        src_metadata.width,
-        src_metadata.height,
-        band_count as u16,
-        data_type,
-    )
-    .with_compression(compression)
-    .with_nodata(src_metadata.nodata)
-    .with_overviews(true, ovr_resampling)
-    .with_overview_levels(overview_u32)
-    .with_tile_size(256, 256);
-
-    if let Some(gt) = src_metadata.geo_transform {
-        config = config.with_geo_transform(gt);
-    }
-
-    // Convert f64 data to bytes
-    let bytes_per_sample = data_type.size_bytes();
-    let total_bytes = pixel_count * band_count as usize * bytes_per_sample;
-    let mut byte_data = vec![0u8; total_bytes];
-    for (i, &value) in interleaved.iter().enumerate() {
-        let offset = i * bytes_per_sample;
-        if offset + bytes_per_sample <= byte_data.len() {
-            crate::dataset::write_value_to_bytes_pub(&mut byte_data[offset..], value, data_type);
+        // Interleave band data
+        let pixel_count = (src_metadata.width * src_metadata.height) as usize;
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
+        for px in 0..pixel_count {
+            for band_data in &all_band_data {
+                let val = if px < band_data.len() {
+                    band_data[px]
+                } else {
+                    0.0
+                };
+                interleaved.push(val);
+            }
         }
-    }
 
-    let mut writer = oxigdal_geotiff::GeoTiffWriter::create(
-        path,
-        config,
-        oxigdal_geotiff::GeoTiffWriterOptions::default(),
-    )
-    .map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!(
-            "Failed to create GeoTIFF writer for overviews: {}",
-            e
-        ))
-    })?;
+        // Determine compression from source (default to LZW)
+        let compression = oxigdal_geotiff::Compression::Lzw;
 
-    writer.write(&byte_data).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!(
-            "Failed to write GeoTIFF with overviews: {}",
-            e
-        ))
-    })?;
+        // Convert overview levels from i32 to u32
+        let overview_u32: Vec<u32> = levels.iter().map(|&l| l as u32).collect();
 
-    Ok(())
+        // Map resampling method
+        let ovr_resampling = match _method {
+            ResamplingMethod::Nearest => oxigdal_geotiff::OverviewResampling::Nearest,
+            ResamplingMethod::Average => oxigdal_geotiff::OverviewResampling::Average,
+            ResamplingMethod::Bilinear => oxigdal_geotiff::OverviewResampling::Bilinear,
+            ResamplingMethod::Mode => oxigdal_geotiff::OverviewResampling::Mode,
+            _ => oxigdal_geotiff::OverviewResampling::Average,
+        };
+
+        // Rewrite the file with overviews
+        let mut config = oxigdal_geotiff::WriterConfig::new(
+            src_metadata.width,
+            src_metadata.height,
+            band_count as u16,
+            data_type,
+        )
+        .with_compression(compression)
+        .with_nodata(src_metadata.nodata)
+        .with_overviews(true, ovr_resampling)
+        .with_overview_levels(overview_u32)
+        .with_tile_size(256, 256);
+
+        if let Some(gt) = src_metadata.geo_transform {
+            config = config.with_geo_transform(gt);
+        }
+
+        // Convert f64 data to bytes
+        let bytes_per_sample = data_type.size_bytes();
+        let total_bytes = pixel_count * band_count as usize * bytes_per_sample;
+        let mut byte_data = vec![0u8; total_bytes];
+        for (i, &value) in interleaved.iter().enumerate() {
+            let offset = i * bytes_per_sample;
+            if offset + bytes_per_sample <= byte_data.len() {
+                crate::dataset::write_value_to_bytes_pub(
+                    &mut byte_data[offset..],
+                    value,
+                    data_type,
+                );
+            }
+        }
+
+        let mut writer = oxigdal_geotiff::GeoTiffWriter::create(
+            path,
+            config,
+            oxigdal_geotiff::GeoTiffWriterOptions::default(),
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!(
+                "Failed to create GeoTIFF writer for overviews: {}",
+                e
+            ))
+        })?;
+
+        writer.write(&byte_data).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!(
+                "Failed to write GeoTIFF with overviews: {}",
+                e
+            ))
+        })?;
+
+        Ok(())
+    })
 }
 
 /// Clips a raster to a geometry or bounds.
@@ -994,6 +1131,7 @@ pub fn build_overviews(path: &str, levels: Vec<i32>, resampling: &str) -> PyResu
 #[pyfunction]
 #[pyo3(signature = (src_path, dst_path, geometry=None, bounds=None, nodata=None))]
 pub fn clip(
+    py: Python<'_>,
     src_path: &str,
     dst_path: &str,
     geometry: Option<&Bound<'_, PyDict>>,
@@ -1006,160 +1144,149 @@ pub fn clip(
         ));
     }
 
-    if let Some(ref b) = bounds {
-        if b.len() != 4 {
+    if let Some(ref b) = bounds
+        && b.len() != 4
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Bounds must have 4 elements [minx, miny, maxx, maxy]",
+        ));
+    }
+
+    // Geometry-based clipping currently only needs to know whether a
+    // geometry was provided at all (the clip extent falls back to the full
+    // source raster in that case, as already documented above); extracting
+    // that flag is the only GIL-touching step, done here before the GIL is
+    // released for the actual file I/O.
+    let has_geometry = geometry.is_some();
+
+    // Reading bands, clipping, interleaving, and writing the output is
+    // blocking disk I/O plus a full data copy; release the GIL while it runs.
+    py.detach(|| -> PyResult<()> {
+        // Read source metadata
+        let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
+        let src_width = src_metadata.width as usize;
+        let src_height = src_metadata.height as usize;
+        let band_count = src_metadata.band_count;
+        let data_type = src_metadata.data_type;
+
+        // Get source geotransform
+        let src_gt =
+            src_metadata
+                .geo_transform
+                .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
+                    0.0,
+                    src_height as f64,
+                    1.0,
+                    -1.0,
+                ));
+
+        // Determine clip bounds
+        let clip_bounds = if let Some(ref b) = bounds {
+            (b[0], b[1], b[2], b[3]) // minx, miny, maxx, maxy
+        } else if has_geometry {
+            // For geometry clipping, the extent used is currently the overall
+            // source extent (see the comment on `has_geometry` above).
+            let full_bounds = src_gt.compute_bounds(src_metadata.width, src_metadata.height);
+            (
+                full_bounds.min_x,
+                full_bounds.min_y,
+                full_bounds.max_x,
+                full_bounds.max_y,
+            )
+        } else {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "Bounds must have 4 elements [minx, miny, maxx, maxy]",
+                "Either geometry or bounds must be provided",
+            ));
+        };
+
+        let (minx, miny, maxx, maxy) = clip_bounds;
+
+        // Compute pixel coordinates of the clip window
+        let (col_start_f, row_start_f) = src_gt.world_to_pixel(minx, maxy).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Transform failed: {}", e))
+        })?;
+        let (col_end_f, row_end_f) = src_gt.world_to_pixel(maxx, miny).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Transform failed: {}", e))
+        })?;
+
+        let col_start = (col_start_f.floor() as usize).min(src_width);
+        let row_start = (row_start_f.floor() as usize).min(src_height);
+        let col_end = (col_end_f.ceil() as usize).min(src_width);
+        let row_end = (row_end_f.ceil() as usize).min(src_height);
+
+        if col_start >= col_end || row_start >= row_end {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Clip bounds result in empty output",
             ));
         }
-    }
 
-    // Read source metadata
-    let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
-    let src_width = src_metadata.width as usize;
-    let src_height = src_metadata.height as usize;
-    let band_count = src_metadata.band_count;
-    let data_type = src_metadata.data_type;
+        let out_width = col_end - col_start;
+        let out_height = row_end - row_start;
 
-    // Get source geotransform
-    let src_gt = src_metadata
-        .geo_transform
-        .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
-            0.0,
-            src_height as f64,
-            1.0,
-            -1.0,
-        ));
+        let effective_nodata =
+            nodata.unwrap_or_else(|| src_metadata.nodata.as_f64().unwrap_or(f64::NAN));
+        let nodata_value = oxigdal_core::types::NoDataValue::Float(effective_nodata);
 
-    // Determine clip bounds
-    let clip_bounds = if let Some(ref b) = bounds {
-        (b[0], b[1], b[2], b[3]) // minx, miny, maxx, maxy
-    } else if geometry.is_some() {
-        // For geometry clipping, extract bounds from the geometry dict
-        // GeoJSON geometry has a "coordinates" field
-        if let Some(geo_dict) = geometry {
-            // Try to extract bbox from geometry type
-            let geo_type: String = geo_dict
-                .get_item("type")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract().ok())
-                .unwrap_or_else(|| "Polygon".to_string());
+        // Output geotransform
+        let (out_origin_x, out_origin_y) =
+            src_gt.pixel_to_world(col_start as f64, row_start as f64);
+        let out_gt = oxigdal_core::types::GeoTransform::north_up(
+            out_origin_x,
+            out_origin_y,
+            src_gt.pixel_width,
+            src_gt.pixel_height,
+        );
 
-            if geo_type == "Polygon" || geo_type == "MultiPolygon" {
-                // For polygon, compute bounding box from coordinates
-                // For simplicity, use the overall extent
-                let full_bounds = src_gt.compute_bounds(src_metadata.width, src_metadata.height);
-                (
-                    full_bounds.min_x,
-                    full_bounds.min_y,
-                    full_bounds.max_x,
-                    full_bounds.max_y,
-                )
-            } else {
-                let full_bounds = src_gt.compute_bounds(src_metadata.width, src_metadata.height);
-                (
-                    full_bounds.min_x,
-                    full_bounds.min_y,
-                    full_bounds.max_x,
-                    full_bounds.max_y,
-                )
-            }
-        } else {
-            return Err(pyo3::exceptions::PyValueError::new_err("Invalid geometry"));
-        }
-    } else {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "Either geometry or bounds must be provided",
-        ));
-    };
+        // Read and clip each band
+        let mut all_clipped: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
+        for band_idx in 1..=band_count {
+            let (band_data, _w, _h, _meta) = crate::dataset::read_geotiff_band(src_path, band_idx)?;
 
-    let (minx, miny, maxx, maxy) = clip_bounds;
-
-    // Compute pixel coordinates of the clip window
-    let (col_start_f, row_start_f) = src_gt.world_to_pixel(minx, maxy).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Transform failed: {}", e))
-    })?;
-    let (col_end_f, row_end_f) = src_gt.world_to_pixel(maxx, miny).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Transform failed: {}", e))
-    })?;
-
-    let col_start = (col_start_f.floor() as usize).min(src_width);
-    let row_start = (row_start_f.floor() as usize).min(src_height);
-    let col_end = (col_end_f.ceil() as usize).min(src_width);
-    let row_end = (row_end_f.ceil() as usize).min(src_height);
-
-    if col_start >= col_end || row_start >= row_end {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "Clip bounds result in empty output",
-        ));
-    }
-
-    let out_width = col_end - col_start;
-    let out_height = row_end - row_start;
-
-    let effective_nodata =
-        nodata.unwrap_or_else(|| src_metadata.nodata.as_f64().unwrap_or(f64::NAN));
-    let nodata_value = oxigdal_core::types::NoDataValue::Float(effective_nodata);
-
-    // Output geotransform
-    let (out_origin_x, out_origin_y) = src_gt.pixel_to_world(col_start as f64, row_start as f64);
-    let out_gt = oxigdal_core::types::GeoTransform::north_up(
-        out_origin_x,
-        out_origin_y,
-        src_gt.pixel_width,
-        src_gt.pixel_height,
-    );
-
-    // Read and clip each band
-    let mut all_clipped: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
-    for band_idx in 1..=band_count {
-        let (band_data, _w, _h, _meta) = crate::dataset::read_geotiff_band(src_path, band_idx)?;
-
-        let mut clipped = Vec::with_capacity(out_width * out_height);
-        for row in row_start..row_end {
-            for col in col_start..col_end {
-                if row < src_height && col < src_width {
-                    clipped.push(band_data[row * src_width + col]);
-                } else {
-                    clipped.push(effective_nodata);
+            let mut clipped = Vec::with_capacity(out_width * out_height);
+            for row in row_start..row_end {
+                for col in col_start..col_end {
+                    if row < src_height && col < src_width {
+                        clipped.push(band_data[row * src_width + col]);
+                    } else {
+                        clipped.push(effective_nodata);
+                    }
                 }
             }
+            all_clipped.push(clipped);
         }
-        all_clipped.push(clipped);
-    }
 
-    // Interleave band data
-    let pixel_count = out_width * out_height;
-    let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
-    for px in 0..pixel_count {
-        for band_data in &all_clipped {
-            interleaved.push(if px < band_data.len() {
-                band_data[px]
-            } else {
-                effective_nodata
-            });
+        // Interleave band data
+        let pixel_count = out_width * out_height;
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
+        for px in 0..pixel_count {
+            for band_data in &all_clipped {
+                interleaved.push(if px < band_data.len() {
+                    band_data[px]
+                } else {
+                    effective_nodata
+                });
+            }
         }
-    }
 
-    // Write output
-    let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
-        out_width as u64,
-        out_height as u64,
-        band_count as u16,
-        data_type,
-    );
-    write_config.geo_transform = Some(out_gt);
-    write_config.epsg_code = None;
-    write_config.nodata = nodata_value;
-    write_config.compression = oxigdal_geotiff::Compression::Lzw;
-    write_config.tiled = true;
-    write_config.tile_size = 256;
-    write_config.build_overviews = false;
+        // Write output
+        let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
+            out_width as u64,
+            out_height as u64,
+            band_count as u16,
+            data_type,
+        );
+        write_config.geo_transform = Some(out_gt);
+        write_config.epsg_code = None;
+        write_config.nodata = nodata_value;
+        write_config.compression = oxigdal_geotiff::Compression::Lzw;
+        write_config.tiled = true;
+        write_config.tile_size = 256;
+        write_config.build_overviews = false;
 
-    crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+        crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Merges multiple rasters into a single raster.
@@ -1184,6 +1311,7 @@ pub fn clip(
 #[pyfunction]
 #[pyo3(signature = (src_paths, dst_path, nodata=None, method="first", target_aligned_pixels=false))]
 pub fn merge(
+    py: Python<'_>,
     src_paths: Vec<String>,
     dst_path: &str,
     nodata: Option<f64>,
@@ -1204,225 +1332,233 @@ pub fn merge(
         )));
     }
 
-    // Read metadata from all source files
-    let mut all_metadata: Vec<oxigdal_core::types::RasterMetadata> =
-        Vec::with_capacity(src_paths.len());
-    for src_path in &src_paths {
-        let meta = crate::dataset::read_geotiff_metadata(src_path)?;
-        all_metadata.push(meta);
-    }
+    // Reading every source file, resampling into the merged grid, and
+    // writing the output is blocking disk I/O plus CPU-bound work; release
+    // the GIL while it runs.
+    py.detach(|| -> PyResult<()> {
+        // Read metadata from all source files
+        let mut all_metadata: Vec<oxigdal_core::types::RasterMetadata> =
+            Vec::with_capacity(src_paths.len());
+        for src_path in &src_paths {
+            let meta = crate::dataset::read_geotiff_metadata(src_path)?;
+            all_metadata.push(meta);
+        }
 
-    // Determine output extent by combining all source extents
-    let first_meta = &all_metadata[0];
-    let band_count = first_meta.band_count;
-    let data_type = first_meta.data_type;
+        // Determine output extent by combining all source extents
+        let first_meta = &all_metadata[0];
+        let band_count = first_meta.band_count;
+        let data_type = first_meta.data_type;
 
-    let mut global_min_x = f64::INFINITY;
-    let mut global_min_y = f64::INFINITY;
-    let mut global_max_x = f64::NEG_INFINITY;
-    let mut global_max_y = f64::NEG_INFINITY;
+        let mut global_min_x = f64::INFINITY;
+        let mut global_min_y = f64::INFINITY;
+        let mut global_max_x = f64::NEG_INFINITY;
+        let mut global_max_y = f64::NEG_INFINITY;
 
-    // Use the resolution from the first raster
-    let src_gt = first_meta
-        .geo_transform
-        .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
-            0.0,
-            first_meta.height as f64,
-            1.0,
-            -1.0,
-        ));
-    let pixel_width = src_gt.pixel_width;
-    let pixel_height = src_gt.pixel_height;
+        // Use the resolution from the first raster
+        let src_gt =
+            first_meta
+                .geo_transform
+                .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
+                    0.0,
+                    first_meta.height as f64,
+                    1.0,
+                    -1.0,
+                ));
+        let pixel_width = src_gt.pixel_width;
+        let pixel_height = src_gt.pixel_height;
 
-    for meta in &all_metadata {
-        let gt = meta
-            .geo_transform
-            .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
-                0.0,
-                meta.height as f64,
-                1.0,
-                -1.0,
-            ));
-        let bounds = gt.compute_bounds(meta.width, meta.height);
-        global_min_x = global_min_x.min(bounds.min_x);
-        global_min_y = global_min_y.min(bounds.min_y);
-        global_max_x = global_max_x.max(bounds.max_x);
-        global_max_y = global_max_y.max(bounds.max_y);
-    }
-
-    // Align pixels if requested
-    if target_aligned_pixels {
-        global_min_x = (global_min_x / pixel_width).floor() * pixel_width;
-        global_max_y = (global_max_y / pixel_height.abs()).ceil() * pixel_height.abs();
-    }
-
-    // Compute output dimensions
-    let out_width = ((global_max_x - global_min_x) / pixel_width.abs()).ceil() as usize;
-    let out_height = ((global_max_y - global_min_y) / pixel_height.abs()).ceil() as usize;
-
-    if out_width == 0 || out_height == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "Merged output dimensions would be zero",
-        ));
-    }
-
-    let effective_nodata = nodata.unwrap_or_else(|| first_meta.nodata.as_f64().unwrap_or(f64::NAN));
-    let nodata_val = oxigdal_core::types::NoDataValue::Float(effective_nodata);
-
-    // Output geotransform
-    let out_gt = oxigdal_core::types::GeoTransform::north_up(
-        global_min_x,
-        global_max_y,
-        pixel_width,
-        pixel_height,
-    );
-
-    // Initialize output buffers for each band with nodata
-    let pixel_count = out_width * out_height;
-    let mut output_bands: Vec<Vec<f64>> = (0..band_count)
-        .map(|_| vec![effective_nodata; pixel_count])
-        .collect();
-
-    // For "mean" method, track counts
-    let mut count_buf: Vec<Vec<u32>> = if method == "mean" {
-        (0..band_count).map(|_| vec![0u32; pixel_count]).collect()
-    } else {
-        Vec::new()
-    };
-
-    // Process each source file
-    for (src_idx, src_path) in src_paths.iter().enumerate() {
-        let meta = &all_metadata[src_idx];
-        let src_gt_local =
-            meta.geo_transform
+        for meta in &all_metadata {
+            let gt = meta
+                .geo_transform
                 .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
                     0.0,
                     meta.height as f64,
                     1.0,
                     -1.0,
                 ));
+            let bounds = gt.compute_bounds(meta.width, meta.height);
+            global_min_x = global_min_x.min(bounds.min_x);
+            global_min_y = global_min_y.min(bounds.min_y);
+            global_max_x = global_max_x.max(bounds.max_x);
+            global_max_y = global_max_y.max(bounds.max_y);
+        }
 
-        for band_idx in 0..band_count {
-            let (band_data, sw, sh, _) = crate::dataset::read_geotiff_band(src_path, band_idx + 1)?;
-            let sw = sw as usize;
-            let sh = sh as usize;
+        // Align pixels if requested
+        if target_aligned_pixels {
+            global_min_x = (global_min_x / pixel_width).floor() * pixel_width;
+            global_max_y = (global_max_y / pixel_height.abs()).ceil() * pixel_height.abs();
+        }
 
-            for src_row in 0..sh {
-                for src_col in 0..sw {
-                    let value = band_data[src_row * sw + src_col];
+        // Compute output dimensions
+        let out_width = ((global_max_x - global_min_x) / pixel_width.abs()).ceil() as usize;
+        let out_height = ((global_max_y - global_min_y) / pixel_height.abs()).ceil() as usize;
 
-                    // Skip nodata
-                    if (value - effective_nodata).abs() < 1e-10 || value.is_nan() {
-                        continue;
-                    }
+        if out_width == 0 || out_height == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Merged output dimensions would be zero",
+            ));
+        }
 
-                    // Transform source pixel to world coords
-                    let (world_x, world_y) =
-                        src_gt_local.pixel_to_world(src_col as f64 + 0.5, src_row as f64 + 0.5);
+        let effective_nodata =
+            nodata.unwrap_or_else(|| first_meta.nodata.as_f64().unwrap_or(f64::NAN));
+        let nodata_val = oxigdal_core::types::NoDataValue::Float(effective_nodata);
 
-                    // Transform to output pixel coords
-                    let out_col =
-                        ((world_x - out_gt.origin_x) / out_gt.pixel_width).floor() as isize;
-                    let out_row =
-                        ((world_y - out_gt.origin_y) / out_gt.pixel_height).floor() as isize;
+        // Output geotransform
+        let out_gt = oxigdal_core::types::GeoTransform::north_up(
+            global_min_x,
+            global_max_y,
+            pixel_width,
+            pixel_height,
+        );
 
-                    if out_col < 0
-                        || out_row < 0
-                        || out_col as usize >= out_width
-                        || out_row as usize >= out_height
-                    {
-                        continue;
-                    }
+        // Initialize output buffers for each band with nodata
+        let pixel_count = out_width * out_height;
+        let mut output_bands: Vec<Vec<f64>> = (0..band_count)
+            .map(|_| vec![effective_nodata; pixel_count])
+            .collect();
 
-                    let out_idx = out_row as usize * out_width + out_col as usize;
-                    let band_buf = &mut output_bands[band_idx as usize];
+        // For "mean" method, track counts
+        let mut count_buf: Vec<Vec<u32>> = if method == "mean" {
+            (0..band_count).map(|_| vec![0u32; pixel_count]).collect()
+        } else {
+            Vec::new()
+        };
 
-                    match method {
-                        "first" => {
-                            if (band_buf[out_idx] - effective_nodata).abs() < 1e-10
-                                || band_buf[out_idx].is_nan()
-                            {
+        // Process each source file
+        for (src_idx, src_path) in src_paths.iter().enumerate() {
+            let meta = &all_metadata[src_idx];
+            let src_gt_local =
+                meta.geo_transform
+                    .unwrap_or(oxigdal_core::types::GeoTransform::north_up(
+                        0.0,
+                        meta.height as f64,
+                        1.0,
+                        -1.0,
+                    ));
+
+            for band_idx in 0..band_count {
+                let (band_data, sw, sh, _) =
+                    crate::dataset::read_geotiff_band(src_path, band_idx + 1)?;
+                let sw = sw as usize;
+                let sh = sh as usize;
+
+                for src_row in 0..sh {
+                    for src_col in 0..sw {
+                        let value = band_data[src_row * sw + src_col];
+
+                        // Skip nodata
+                        if (value - effective_nodata).abs() < 1e-10 || value.is_nan() {
+                            continue;
+                        }
+
+                        // Transform source pixel to world coords
+                        let (world_x, world_y) =
+                            src_gt_local.pixel_to_world(src_col as f64 + 0.5, src_row as f64 + 0.5);
+
+                        // Transform to output pixel coords
+                        let out_col =
+                            ((world_x - out_gt.origin_x) / out_gt.pixel_width).floor() as isize;
+                        let out_row =
+                            ((world_y - out_gt.origin_y) / out_gt.pixel_height).floor() as isize;
+
+                        if out_col < 0
+                            || out_row < 0
+                            || out_col as usize >= out_width
+                            || out_row as usize >= out_height
+                        {
+                            continue;
+                        }
+
+                        let out_idx = out_row as usize * out_width + out_col as usize;
+                        let band_buf = &mut output_bands[band_idx as usize];
+
+                        match method {
+                            "first" => {
+                                if (band_buf[out_idx] - effective_nodata).abs() < 1e-10
+                                    || band_buf[out_idx].is_nan()
+                                {
+                                    band_buf[out_idx] = value;
+                                }
+                            }
+                            "last" => {
                                 band_buf[out_idx] = value;
                             }
-                        }
-                        "last" => {
-                            band_buf[out_idx] = value;
-                        }
-                        "min" => {
-                            if (band_buf[out_idx] - effective_nodata).abs() < 1e-10
-                                || band_buf[out_idx].is_nan()
-                            {
-                                band_buf[out_idx] = value;
-                            } else {
-                                band_buf[out_idx] = band_buf[out_idx].min(value);
+                            "min" => {
+                                if (band_buf[out_idx] - effective_nodata).abs() < 1e-10
+                                    || band_buf[out_idx].is_nan()
+                                {
+                                    band_buf[out_idx] = value;
+                                } else {
+                                    band_buf[out_idx] = band_buf[out_idx].min(value);
+                                }
                             }
-                        }
-                        "max" => {
-                            if (band_buf[out_idx] - effective_nodata).abs() < 1e-10
-                                || band_buf[out_idx].is_nan()
-                            {
-                                band_buf[out_idx] = value;
-                            } else {
-                                band_buf[out_idx] = band_buf[out_idx].max(value);
+                            "max" => {
+                                if (band_buf[out_idx] - effective_nodata).abs() < 1e-10
+                                    || band_buf[out_idx].is_nan()
+                                {
+                                    band_buf[out_idx] = value;
+                                } else {
+                                    band_buf[out_idx] = band_buf[out_idx].max(value);
+                                }
                             }
-                        }
-                        "mean" => {
-                            let cnt = &mut count_buf[band_idx as usize];
-                            if cnt[out_idx] == 0 {
-                                band_buf[out_idx] = value;
-                            } else {
-                                band_buf[out_idx] += value;
+                            "mean" => {
+                                let cnt = &mut count_buf[band_idx as usize];
+                                if cnt[out_idx] == 0 {
+                                    band_buf[out_idx] = value;
+                                } else {
+                                    band_buf[out_idx] += value;
+                                }
+                                cnt[out_idx] += 1;
                             }
-                            cnt[out_idx] += 1;
-                        }
-                        _ => {
-                            band_buf[out_idx] = value;
+                            _ => {
+                                band_buf[out_idx] = value;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    // For "mean" method, compute averages
-    if method == "mean" {
-        for band_idx in 0..band_count as usize {
-            let cnt = &count_buf[band_idx];
-            let buf = &mut output_bands[band_idx];
-            for i in 0..pixel_count {
-                if cnt[i] > 1 {
-                    buf[i] /= cnt[i] as f64;
+        // For "mean" method, compute averages
+        if method == "mean" {
+            for band_idx in 0..band_count as usize {
+                let cnt = &count_buf[band_idx];
+                let buf = &mut output_bands[band_idx];
+                for i in 0..pixel_count {
+                    if cnt[i] > 1 {
+                        buf[i] /= cnt[i] as f64;
+                    }
                 }
             }
         }
-    }
 
-    // Interleave band data
-    let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
-    for px in 0..pixel_count {
-        for band_data in &output_bands {
-            interleaved.push(band_data[px]);
+        // Interleave band data
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
+        for px in 0..pixel_count {
+            for band_data in &output_bands {
+                interleaved.push(band_data[px]);
+            }
         }
-    }
 
-    // Write output
-    let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
-        out_width as u64,
-        out_height as u64,
-        band_count as u16,
-        data_type,
-    );
-    write_config.geo_transform = Some(out_gt);
-    write_config.epsg_code = None;
-    write_config.nodata = nodata_val;
-    write_config.compression = oxigdal_geotiff::Compression::Lzw;
-    write_config.tiled = true;
-    write_config.tile_size = 256;
-    write_config.build_overviews = false;
+        // Write output
+        let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
+            out_width as u64,
+            out_height as u64,
+            band_count as u16,
+            data_type,
+        );
+        write_config.geo_transform = Some(out_gt);
+        write_config.epsg_code = None;
+        write_config.nodata = nodata_val;
+        write_config.compression = oxigdal_geotiff::Compression::Lzw;
+        write_config.tiled = true;
+        write_config.tile_size = 256;
+        write_config.build_overviews = false;
 
-    crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+        crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Translates (copies) a raster with format conversion.
@@ -1448,18 +1584,15 @@ pub fn merge(
 #[pyfunction]
 #[pyo3(signature = (src_path, dst_path, driver=None, options=None, strict=false))]
 pub fn translate(
+    py: Python<'_>,
     src_path: &str,
     dst_path: &str,
     driver: Option<&str>,
     options: Option<&Bound<'_, PyDict>>,
     strict: bool,
 ) -> PyResult<()> {
-    // Read source metadata
-    let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
-    let band_count = src_metadata.band_count;
-    let data_type = src_metadata.data_type;
-
-    // Parse options for compression and tiling
+    // Parse options for compression and tiling. Dict access needs the GIL,
+    // so this happens before it is released below.
     let compression = if let Some(opts) = options {
         opts.get_item("COMPRESS")
             .ok()
@@ -1509,42 +1642,115 @@ pub fn translate(
         }
     }
 
-    // Read all bands from source
-    let mut all_band_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
-    for band_idx in 1..=band_count {
-        let (band_data, _w, _h, _meta) = crate::dataset::read_geotiff_band(src_path, band_idx)?;
-        all_band_data.push(band_data);
-    }
+    // Reading the source metadata/bands and writing the translated output is
+    // blocking disk I/O; release the GIL while it runs.
+    py.detach(|| -> PyResult<()> {
+        // Read source metadata
+        let src_metadata = crate::dataset::read_geotiff_metadata(src_path)?;
+        let band_count = src_metadata.band_count;
+        let data_type = src_metadata.data_type;
 
-    // Interleave band data
-    let pixel_count = (src_metadata.width * src_metadata.height) as usize;
-    let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
-    for px in 0..pixel_count {
-        for band_data in &all_band_data {
-            interleaved.push(if px < band_data.len() {
-                band_data[px]
-            } else {
-                0.0
-            });
+        // Read all bands from source
+        let mut all_band_data: Vec<Vec<f64>> = Vec::with_capacity(band_count as usize);
+        for band_idx in 1..=band_count {
+            let (band_data, _w, _h, _meta) = crate::dataset::read_geotiff_band(src_path, band_idx)?;
+            all_band_data.push(band_data);
         }
+
+        // Interleave band data
+        let pixel_count = (src_metadata.width * src_metadata.height) as usize;
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count as usize);
+        for px in 0..pixel_count {
+            for band_data in &all_band_data {
+                interleaved.push(if px < band_data.len() {
+                    band_data[px]
+                } else {
+                    0.0
+                });
+            }
+        }
+
+        // Write output with specified options
+        let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
+            src_metadata.width,
+            src_metadata.height,
+            band_count as u16,
+            data_type,
+        );
+        write_config.geo_transform = src_metadata.geo_transform;
+        write_config.epsg_code = None;
+        write_config.nodata = src_metadata.nodata;
+        write_config.compression = compression;
+        write_config.tiled = tiled;
+        write_config.tile_size = tile_size;
+        write_config.build_overviews = false;
+
+        crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exercises the `py.detach`-wrapped write/read paths end-to-end: a
+    /// single-band array written via `write()` (GIL released during the
+    /// blocking encode) must read back byte-for-byte identical via `read()`
+    /// (GIL released during the blocking decode). This guards against the
+    /// window/array data crossing the detach boundary incorrectly.
+    #[test]
+    fn test_write_read_roundtrip_across_gil_release() {
+        Python::initialize();
+        Python::attach(|py| {
+            let test_path = std::env::temp_dir().join("oxigdal_operations_roundtrip_test.tif");
+            let path_str = test_path.to_string_lossy().to_string();
+
+            let data: Vec<Vec<f64>> = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
+            let arr = numpy::PyArray2::from_vec2(py, &data).expect("build input array");
+            let arr_any = arr.into_any();
+
+            write(py, &path_str, &arr_any, None, None, None, false, 256, None)
+                .expect("write should succeed");
+
+            let read_back = read(py, &path_str, 1, None, None, false).expect("read should succeed");
+            let readonly = read_back.readonly();
+            let slice = readonly.as_slice().expect("result must be contiguous");
+            assert_eq!(slice, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+            let _ = std::fs::remove_file(&test_path);
+        });
     }
 
-    // Write output with specified options
-    let mut write_config = crate::dataset::GeoTiffWriteConfig::new(
-        src_metadata.width,
-        src_metadata.height,
-        band_count as u16,
-        data_type,
-    );
-    write_config.geo_transform = src_metadata.geo_transform;
-    write_config.epsg_code = None;
-    write_config.nodata = src_metadata.nodata;
-    write_config.compression = compression;
-    write_config.tiled = tiled;
-    write_config.tile_size = tile_size;
-    write_config.build_overviews = false;
+    /// Exercises the `py.detach`-wrapped `read_bands()` path together with an
+    /// explicit `Window`, whose plain `Copy` fields must be captured before
+    /// the GIL is released rather than the `WindowPy` reference itself.
+    #[test]
+    fn test_read_bands_with_window_across_gil_release() {
+        Python::initialize();
+        Python::attach(|py| {
+            let test_path = std::env::temp_dir().join("oxigdal_operations_read_bands_test.tif");
+            let path_str = test_path.to_string_lossy().to_string();
 
-    crate::dataset::write_geotiff_data(dst_path, &interleaved, write_config)?;
+            // 2 bands, 2x2 pixels, band-sequential (bands, height, width).
+            let data: Vec<Vec<Vec<f64>>> = vec![
+                vec![vec![1.0, 2.0], vec![3.0, 4.0]],
+                vec![vec![10.0, 20.0], vec![30.0, 40.0]],
+            ];
+            let arr = numpy::PyArray3::from_vec3(py, &data).expect("build input array");
+            let arr_any = arr.into_any();
 
-    Ok(())
+            write(py, &path_str, &arr_any, None, None, None, false, 256, None)
+                .expect("write should succeed");
+
+            let window = WindowPy::new(0, 0, 1, 1);
+            let result =
+                read_bands(py, &path_str, Some(&window), None, None).expect("read_bands failed");
+            let readonly = result.readonly();
+            let slice = readonly.as_slice().expect("result must be contiguous");
+            // Windowed to the single top-left pixel of both bands.
+            assert_eq!(slice, &[1.0, 10.0]);
+
+            let _ = std::fs::remove_file(&test_path);
+        });
+    }
 }

@@ -73,10 +73,10 @@ impl VersionNegotiator {
         let parts: Vec<&str> = path.split('/').collect();
 
         for part in parts {
-            if part.starts_with('v') || part.starts_with('V') {
-                if let Ok(version) = part.parse::<ApiVersion>() {
-                    return self.resolve_version(version);
-                }
+            if (part.starts_with('v') || part.starts_with('V'))
+                && let Ok(version) = part.parse::<ApiVersion>()
+            {
+                return self.resolve_version(version);
             }
         }
 
@@ -102,10 +102,10 @@ impl VersionNegotiator {
             .collect();
 
         for (key, value) in params {
-            if key == self.query_param {
-                if let Ok(version) = value.parse::<ApiVersion>() {
-                    return self.resolve_version(version);
-                }
+            if key == self.query_param
+                && let Ok(version) = value.parse::<ApiVersion>()
+            {
+                return self.resolve_version(version);
             }
         }
 
@@ -178,20 +178,20 @@ impl VersionNegotiator {
         let mut headers = HeaderMap::new();
 
         // Add resolved version header
-        if let Ok(value) = HeaderValue::from_str(&context.resolved.to_string()) {
-            if let Ok(header_name) = http::HeaderName::from_bytes(self.header_name.as_bytes()) {
-                headers.insert(header_name, value);
-            }
+        if let Ok(value) = HeaderValue::from_str(&context.resolved.to_string())
+            && let Ok(header_name) = http::HeaderName::from_bytes(self.header_name.as_bytes())
+        {
+            headers.insert(header_name, value);
         }
 
         // Add deprecation warning if negotiated
-        if context.negotiated {
-            if let Ok(value) = HeaderValue::from_str(&format!(
+        if context.negotiated
+            && let Ok(value) = HeaderValue::from_str(&format!(
                 "Requested version {} not available, using {}",
                 context.requested, context.resolved
-            )) {
-                headers.insert("Warning", value);
-            }
+            ))
+        {
+            headers.insert("Warning", value);
         }
 
         headers

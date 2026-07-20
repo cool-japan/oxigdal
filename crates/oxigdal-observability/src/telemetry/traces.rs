@@ -22,13 +22,14 @@ pub async fn init_tracing(config: &TelemetryConfig, resource: Resource) -> Resul
                 "OTLP feature not enabled".to_string(),
             ));
         }
-    } else if let Some(ref _jaeger_ep) = config.jaeger_endpoint {
+    } else if let Some(ref jaeger_endpoint) = config.jaeger_endpoint {
         #[cfg(feature = "jaeger")]
         {
-            create_jaeger_tracer_provider(_jaeger_ep, sampler, resource)?
+            create_jaeger_tracer_provider(jaeger_endpoint, sampler, resource).await?
         }
         #[cfg(not(feature = "jaeger"))]
         {
+            let _ = jaeger_endpoint;
             return Err(ObservabilityError::ConfigError(
                 "Jaeger feature not enabled".to_string(),
             ));
@@ -80,35 +81,48 @@ async fn create_otlp_tracer_provider(
     Ok(provider)
 }
 
-/// Create Jaeger tracer provider.
-/// Note: opentelemetry-jaeger crate is deprecated. Using OTLP with Jaeger's native OTLP support
-/// is now recommended. This function provides a fallback using the SDK's simple exporter.
+/// Create a tracer provider for a configured Jaeger endpoint.
+///
+/// The `opentelemetry-jaeger` crate is unmaintained (RUSTSEC-2025-0123) and has been removed
+/// from this crate's dependency closure entirely, so there is no legacy Jaeger agent protocol
+/// exporter available. Modern Jaeger (>= 1.35) ingests spans natively via OTLP, so when the
+/// `otlp` feature is also enabled this delegates to the OTLP exporter pointed at the
+/// configured endpoint -- point it at Jaeger's OTLP receiver (gRPC port 4317 by default)
+/// rather than the legacy agent port.
+///
+/// Without the `otlp` feature there is no transport capable of reaching Jaeger at all, so this
+/// fails loudly with a [`ObservabilityError::ConfigError`] instead of silently dumping spans to
+/// stdout while reporting success.
 #[cfg(feature = "jaeger")]
-fn create_jaeger_tracer_provider(
+async fn create_jaeger_tracer_provider(
     endpoint: &str,
     sampler: Sampler,
     resource: Resource,
 ) -> Result<SdkTracerProvider> {
-    // The opentelemetry-jaeger crate is deprecated as of 2023-11
-    // Modern Jaeger supports OTLP natively, so we recommend using OTLP instead.
-    // For backwards compatibility, we create a provider with a stdout exporter
-    // and warn that Jaeger agent support is deprecated.
-    tracing::warn!(
-        "Jaeger agent endpoint '{}' specified, but opentelemetry-jaeger is deprecated. \
-         Consider using OTLP endpoint with Jaeger's native OTLP support instead.",
-        endpoint
-    );
+    #[cfg(feature = "otlp")]
+    {
+        tracing::warn!(
+            "Jaeger agent endpoint '{}' specified, but the opentelemetry-jaeger crate is \
+             deprecated/unmaintained (RUSTSEC-2025-0123) and is not a dependency of this build. \
+             Routing spans through the OTLP exporter instead -- point '{}' at Jaeger's native \
+             OTLP receiver (gRPC port 4317), not the legacy Jaeger agent port.",
+            endpoint,
+            endpoint
+        );
+        create_otlp_tracer_provider(endpoint, sampler, resource).await
+    }
 
-    // Fall back to stdout for now - production should use OTLP
-    let exporter = opentelemetry_stdout::SpanExporter::default();
-    let provider = SdkTracerProvider::builder()
-        .with_sampler(sampler)
-        .with_id_generator(RandomIdGenerator::default())
-        .with_resource(resource)
-        .with_simple_exporter(exporter)
-        .build();
-
-    Ok(provider)
+    #[cfg(not(feature = "otlp"))]
+    {
+        let _ = (sampler, resource);
+        Err(ObservabilityError::ConfigError(format!(
+            "Jaeger agent endpoint '{endpoint}' was configured, but the opentelemetry-jaeger \
+             crate is deprecated/unmaintained (RUSTSEC-2025-0123) and has been removed from \
+             this crate's dependencies -- there is no transport available to reach Jaeger. \
+             Enable the 'otlp' feature so spans are routed to Jaeger's native OTLP receiver \
+             instead of the legacy agent protocol."
+        )))
+    }
 }
 
 /// Create stdout tracer provider for development.
@@ -279,6 +293,35 @@ mod tests {
             span.metadata().expect("span should have metadata").name(),
             "custom_span"
         );
+    }
+
+    #[cfg(all(feature = "jaeger", feature = "otlp"))]
+    #[tokio::test]
+    async fn test_jaeger_endpoint_routes_through_otlp_when_otlp_enabled() {
+        // With both `jaeger` and `otlp` enabled, a configured Jaeger endpoint must be routed
+        // through the OTLP exporter (Jaeger's native OTLP receiver) rather than silently
+        // falling back to a stdout exporter.
+        let resource = Resource::builder_empty().build();
+        let provider =
+            create_jaeger_tracer_provider("http://localhost:4317", Sampler::AlwaysOn, resource)
+                .await;
+        assert!(
+            provider.is_ok(),
+            "jaeger_endpoint should delegate to the OTLP exporter when the otlp feature is \
+             enabled, not fail or silently use stdout"
+        );
+    }
+
+    #[cfg(all(feature = "jaeger", not(feature = "otlp")))]
+    #[tokio::test]
+    async fn test_jaeger_endpoint_fails_loudly_without_otlp_feature() {
+        // Without the otlp feature there is no transport that can reach Jaeger at all, so this
+        // must fail loudly instead of silently dumping spans to stdout while reporting success.
+        let resource = Resource::builder_empty().build();
+        let result =
+            create_jaeger_tracer_provider("http://localhost:4317", Sampler::AlwaysOn, resource)
+                .await;
+        assert!(result.is_err());
     }
 
     #[test]

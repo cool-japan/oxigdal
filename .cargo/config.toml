@@ -2,15 +2,12 @@
 DYLD_LIBRARY_PATH = "/Library/Developer/CommandLineTools/usr/lib"
 LIBCLANG_PATH = "/Library/Developer/CommandLineTools/usr/lib"
 
-# Safe upgrade alias: excludes packages pinned for proj-sys compatibility
-# rusqlite <=0.37 / libsqlite3-sys <=0.35 required because:
-#   proj-sys v0.27.0 requires libsqlite3-sys >=0.28, <0.36
-#   rusqlite 0.38+ uses libsqlite3-sys ^0.36 which conflicts with proj-sys
-#
 # Shell alias to use instead of bare `cargo upgrade -i`:
 #   alias upgrade='cargo upgrade-safe && cargo update'
-# Override global upgrade-safe: exclude packages pinned for proj-sys compatibility
-# rusqlite <=0.37 / libsqlite3-sys <=0.35 required because:
-#   proj-sys v0.27.0 requires libsqlite3-sys >=0.28, <0.36
 [alias]
-upgrade-safe = "upgrade -i --ignore-rust-version --exclude rusqlite --exclude libsqlite3-sys"
+upgrade-safe = "upgrade -i --ignore-rust-version"
+
+# getrandom 0.4 needs an explicit backend on wasm32-unknown-unknown.
+# Target-scoped: native builds are unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

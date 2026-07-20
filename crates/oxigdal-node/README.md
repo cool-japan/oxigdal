@@ -60,14 +60,18 @@ async function analyzeTerrainAsync() {
   const dataset = await oxigdal.openRasterAsync('dem.tif');
   const dem = dataset.readBand(0);
 
+  // pixelSize is the DEM's ground resolution (e.g. meters or degrees),
+  // matching its coordinate reference system.
+  const pixelSize = 30.0;
+
   // Compute hillshade
-  const hillshade = await oxigdal.hillshadeAsync(dem, 315, 45, 1.0);
+  const hillshade = await oxigdal.hillshadeAsync(dem, 315, 45, 1.0, pixelSize);
 
   // Compute slope in degrees
-  const slope = await oxigdal.slopeAsync(dem, 1.0, false);
+  const slope = await oxigdal.slopeAsync(dem, pixelSize, 1.0, false);
 
   // Compute aspect
-  const aspect = await oxigdal.aspectAsync(dem);
+  const aspect = await oxigdal.aspectAsync(dem, pixelSize);
 
   // Save results
   const hsDataset = oxigdal.createRaster(dataset.width, dataset.height, 1, 'uint8');
@@ -226,14 +230,17 @@ const resampled = oxigdal.resample(
 #### Terrain Analysis
 
 ```javascript
-// Hillshade
-const hillshade = oxigdal.hillshade(dem, azimuth, altitude, zFactor);
+// pixelSize is the DEM's ground resolution (e.g. meters or degrees),
+// matching its coordinate reference system.
 
-// Slope (degrees or percent)
-const slope = oxigdal.slope(dem, zFactor, asPercent);
+// Hillshade
+const hillshade = oxigdal.hillshade(dem, azimuth, altitude, zFactor, pixelSize);
+
+// Slope (degrees or percent, depending on asPercent)
+const slope = oxigdal.slope(dem, pixelSize, zFactor, asPercent);
 
 // Aspect
-const aspect = oxigdal.aspect(dem);
+const aspect = oxigdal.aspect(dem, pixelSize);
 
 // Zonal statistics
 const stats = oxigdal.zonalStats(raster, zones);
@@ -268,14 +275,22 @@ await oxigdal.writeGeojsonAsync(path, collection);
 
 // Processing
 const resampled = await oxigdal.resampleAsync(buffer, width, height, method);
-const hillshade = await oxigdal.hillshadeAsync(dem, azimuth, altitude, zFactor);
-const slope = await oxigdal.slopeAsync(dem, zFactor, asPercent);
-const aspect = await oxigdal.aspectAsync(dem);
+const hillshade = await oxigdal.hillshadeAsync(dem, azimuth, altitude, zFactor, pixelSize);
+const slope = await oxigdal.slopeAsync(dem, pixelSize, zFactor, asPercent);
+const aspect = await oxigdal.aspectAsync(dem, pixelSize);
 const stats = await oxigdal.zonalStatsAsync(raster, zones);
 
 // Batch processing
 const paths = await oxigdal.batchProcessRasters(inputPaths, outputDir, operation);
 const result = await oxigdal.processRasterParallel(dataset, operation, config);
+
+// Progress reporting: register a callback before starting a long-running
+// operation to receive periodic progress fractions in [0.0, 1.0].
+oxigdal.setProgressCallback((progress) => {
+  console.log(`Progress: ${(progress * 100).toFixed(1)}%`);
+});
+await oxigdal.batchProcessRasters(inputPaths, outputDir, operation);
+oxigdal.clearProgressCallback();
 ```
 
 ### Stream Processing
@@ -378,7 +393,7 @@ const band: oxigdal.BufferWrapper = dataset.readBand(0);
 const stats: oxigdal.Statistics = band.statistics();
 
 async function process(): Promise<void> {
-  const hillshade = await oxigdal.hillshadeAsync(band, 315, 45, 1.0);
+  const hillshade = await oxigdal.hillshadeAsync(band, 315, 45, 1.0, 30.0);
   // ...
 }
 ```

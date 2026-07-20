@@ -306,8 +306,9 @@ impl AesGcmTransformer {
         getrandom::fill(&mut nb).map_err(|e| ZarrError::Internal {
             message: format!("entropy: {e}"),
         })?;
+        let nonce = Nonce::from(nb);
         let ct = cipher
-            .encrypt(Nonce::from_slice(&nb), data)
+            .encrypt(&nonce, data)
             .map_err(|_| ZarrError::Internal {
                 message: "AES-GCM encrypt failed".into(),
             })?;
@@ -330,11 +331,12 @@ impl AesGcmTransformer {
             message: e.to_string(),
         })?;
         let (nb, ct) = data.split_at(12);
-        cipher
-            .decrypt(Nonce::from_slice(nb), ct)
-            .map_err(|_| ZarrError::Internal {
-                message: "AES-GCM decrypt failed (authentication error)".into(),
-            })
+        let nonce = Nonce::try_from(nb).map_err(|_| ZarrError::Internal {
+            message: "AES-GCM nonce has invalid length".into(),
+        })?;
+        cipher.decrypt(&nonce, ct).map_err(|_| ZarrError::Internal {
+            message: "AES-GCM decrypt failed (authentication error)".into(),
+        })
     }
 }
 
@@ -403,6 +405,124 @@ impl Transformer for CustomTransformer {
         // Note: Cannot clone closures, so we return a no-op transformer
         Box::new(NoOpTransformer)
     }
+}
+
+/// Builds a storage-transformer implementation from Zarr v3
+/// `storage_transformers` metadata.
+///
+/// Shared by both the v3 reader (`reader::v3`) and v3 writer (`writer::v3`)
+/// so their transformer dispatch cannot drift out of sync.
+///
+/// # Errors
+/// Never silently discards a transformer:
+/// - [`StorageTransformer::Checksum`] dispatches on `configuration.algorithm`
+///   to a real [`Crc32Transformer`] or [`Sha256Transformer`]; an
+///   unrecognised algorithm name returns
+///   [`CodecError::UnknownCodec`](crate::error::CodecError::UnknownCodec).
+/// - [`StorageTransformer::Encryption`] dispatches to a real
+///   [`AesGcmTransformer`] built from the transformer's own configuration.
+///   Zarr v3 has no standard mechanism for carrying key material in
+///   `zarr.json`, so this crate looks for a hex-encoded 32-byte key under
+///   `configuration.key` (an implementation-defined, opt-in extension
+///   point -- callers that want external key management should keep key
+///   material out of `zarr.json` and are expected to build their own
+///   [`AesGcmTransformer`] directly rather than going through this
+///   metadata-only path). An unsupported algorithm or missing key returns a
+///   typed error rather than falling back to plaintext.
+/// - [`StorageTransformer::Generic`] (any transformer type this crate does
+///   not recognise) returns
+///   [`CodecError::UnknownCodec`](crate::error::CodecError::UnknownCodec).
+pub(crate) fn build_transformer_from_metadata(
+    metadata: &crate::metadata::v3::StorageTransformer,
+) -> Result<Box<dyn Transformer>> {
+    use crate::error::CodecError;
+    use crate::metadata::v3::StorageTransformer;
+
+    match metadata {
+        StorageTransformer::Checksum { configuration } => {
+            match configuration.algorithm.to_ascii_uppercase().as_str() {
+                "CRC32" | "CRC-32" => Ok(Box::new(Crc32Transformer::new(true))),
+                "SHA256" | "SHA-256" => Ok(Box::new(Sha256Transformer::new(true))),
+                other => Err(ZarrError::Codec(CodecError::UnknownCodec {
+                    codec: format!("checksum storage transformer algorithm '{other}'"),
+                })),
+            }
+        }
+        StorageTransformer::Encryption { configuration } => {
+            build_encryption_transformer(configuration)
+        }
+        StorageTransformer::Generic => Err(ZarrError::Codec(CodecError::UnknownCodec {
+            codec: "unknown (Generic storage transformer)".to_string(),
+        })),
+    }
+}
+
+/// Builds an [`AesGcmTransformer`] from encryption storage-transformer
+/// configuration.
+///
+/// # Errors
+/// Returns a typed error (never `Ok(NoOpTransformer)`) when the algorithm is
+/// unsupported or key material cannot be recovered, so ciphertext is never
+/// silently treated as plaintext.
+fn build_encryption_transformer(
+    configuration: &crate::metadata::v3::EncryptionConfig,
+) -> Result<Box<dyn Transformer>> {
+    use crate::error::{CodecError, MetadataError};
+
+    if !configuration.algorithm.eq_ignore_ascii_case("AES-256-GCM") {
+        return Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+            codec: format!("encryption algorithm '{}'", configuration.algorithm),
+        }));
+    }
+
+    let key_hex = configuration
+        .params
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ZarrError::Metadata(MetadataError::InvalidField {
+                field: "storage_transformers[].configuration.key",
+                message:
+                    "encryption storage transformer requires a hex-encoded 32-byte AES-256 key \
+                     under configuration.key; refusing to fall back to plaintext"
+                        .to_string(),
+            })
+        })?;
+
+    let key = decode_hex_key(key_hex)?;
+    Ok(Box::new(AesGcmTransformer::new(
+        key,
+        configuration.key_id.clone(),
+    )?))
+}
+
+/// Decodes a hex-encoded byte string.
+///
+/// # Errors
+/// Returns [`MetadataError::InvalidField`] if `hex` has odd length or
+/// contains non-hex-digit characters.
+fn decode_hex_key(hex: &str) -> Result<Vec<u8>> {
+    use crate::error::MetadataError;
+
+    let invalid = || {
+        ZarrError::Metadata(MetadataError::InvalidField {
+            field: "storage_transformers[].configuration.key",
+            message: format!("'{hex}' is not a valid hex-encoded key"),
+        })
+    };
+
+    if !hex.len().is_multiple_of(2) {
+        return Err(invalid());
+    }
+
+    let bytes = hex.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16).ok_or_else(invalid)?;
+        let lo = (pair[1] as char).to_digit(16).ok_or_else(invalid)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Ok(out)
 }
 
 /// No-op transformer (does nothing)
@@ -532,5 +652,112 @@ mod tests {
 
         assert_eq!(metadata.get("algorithm"), Some(&"AES-256-GCM".to_string()));
         assert_eq!(metadata.get("key_id"), Some(&"my-key".to_string()));
+    }
+
+    #[test]
+    fn test_build_transformer_from_metadata_checksum_crc32() {
+        use crate::metadata::v3::{ChecksumConfig, StorageTransformer};
+
+        let meta = StorageTransformer::Checksum {
+            configuration: ChecksumConfig {
+                algorithm: "CRC32".to_string(),
+                format: None,
+            },
+        };
+        let transformer = build_transformer_from_metadata(&meta).expect("build");
+        assert_eq!(transformer.id(), "crc32");
+    }
+
+    #[test]
+    fn test_build_transformer_from_metadata_checksum_sha256() {
+        use crate::metadata::v3::{ChecksumConfig, StorageTransformer};
+
+        let meta = StorageTransformer::Checksum {
+            configuration: ChecksumConfig {
+                algorithm: "sha256".to_string(),
+                format: None,
+            },
+        };
+        let transformer = build_transformer_from_metadata(&meta).expect("build");
+        assert_eq!(transformer.id(), "sha256");
+    }
+
+    #[test]
+    fn test_build_transformer_from_metadata_checksum_unknown_errors() {
+        use crate::metadata::v3::{ChecksumConfig, StorageTransformer};
+
+        let meta = StorageTransformer::Checksum {
+            configuration: ChecksumConfig {
+                algorithm: "made-up-algo".to_string(),
+                format: None,
+            },
+        };
+        let result = build_transformer_from_metadata(&meta);
+        assert!(matches!(
+            result,
+            Err(ZarrError::Codec(
+                crate::error::CodecError::UnknownCodec { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_build_transformer_from_metadata_encryption_without_key_errors() {
+        use crate::metadata::v3::{EncryptionConfig, StorageTransformer};
+
+        let meta = StorageTransformer::Encryption {
+            configuration: EncryptionConfig {
+                algorithm: "AES-256-GCM".to_string(),
+                key_id: "test-key".to_string(),
+                params: HashMap::new(),
+            },
+        };
+        // Ciphertext must never be silently fed through as plaintext: with
+        // no key material available this must error, never fall back to a
+        // NoOpTransformer.
+        let result = build_transformer_from_metadata(&meta);
+        assert!(
+            result.is_err(),
+            "expected an error building a transformer with no key"
+        );
+    }
+
+    #[test]
+    fn test_build_transformer_from_metadata_encryption_with_key_roundtrips() {
+        use crate::metadata::v3::{EncryptionConfig, StorageTransformer};
+
+        let mut params = HashMap::new();
+        params.insert(
+            "key".to_string(),
+            serde_json::Value::String("42".repeat(32)),
+        );
+        let meta = StorageTransformer::Encryption {
+            configuration: EncryptionConfig {
+                algorithm: "AES-256-GCM".to_string(),
+                key_id: "test-key".to_string(),
+                params,
+            },
+        };
+        let transformer = build_transformer_from_metadata(&meta).expect("build");
+        assert_eq!(transformer.id(), "aes-256-gcm");
+
+        let data = b"round trip through metadata-built transformer";
+        let encrypted = transformer.encode(data).expect("encrypt");
+        assert_ne!(encrypted, data);
+        let decrypted = transformer.decode(&encrypted).expect("decrypt");
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_build_transformer_from_metadata_generic_errors() {
+        use crate::metadata::v3::StorageTransformer;
+
+        let result = build_transformer_from_metadata(&StorageTransformer::Generic);
+        assert!(matches!(
+            result,
+            Err(ZarrError::Codec(
+                crate::error::CodecError::UnknownCodec { .. }
+            ))
+        ));
     }
 }

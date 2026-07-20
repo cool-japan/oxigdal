@@ -109,12 +109,12 @@ impl TransactionalProducer {
         }
 
         // Check if transaction is expired
-        if let Some(ref metadata) = *current {
-            if metadata.is_expired() {
-                drop(current);
-                self.abort_transaction().await?;
-                return Err(Error::Timeout("Transaction timeout".to_string()));
-            }
+        if let Some(ref metadata) = *current
+            && metadata.is_expired()
+        {
+            drop(current);
+            self.abort_transaction().await?;
+            return Err(Error::Timeout("Transaction timeout".to_string()));
         }
         drop(current);
 

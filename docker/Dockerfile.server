@@ -18,7 +18,6 @@ WORKDIR /build
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY benchmarks ./benchmarks
 
 # Build server in release mode with optimizations
 RUN cargo build --release --bin oxigdal-server \
@@ -43,8 +42,12 @@ COPY --from=builder /build/target/release/oxigdal-server /usr/local/bin/oxigdal-
 RUN mkdir -p /data /config /cache && \
     chown -R oxigdal:oxigdal /data /config /cache
 
-# Copy default configuration if exists
-COPY --chown=oxigdal:oxigdal docker/config/server.toml /config/server.toml 2>/dev/null || true
+# Copy default configuration. `docker COPY` is not shell-interpreted (it takes literal
+# whitespace-separated source paths), so it cannot express a "copy if present" fallback -
+# docker/config/server.toml is committed unconditionally so this always succeeds. Operators
+# who want a different config should bind-mount over /config/server.toml instead of editing
+# this image.
+COPY --chown=oxigdal:oxigdal docker/config/server.toml /config/server.toml
 
 # Switch to non-root user
 USER oxigdal
@@ -68,14 +71,21 @@ ENV RUST_LOG=info \
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Default command starts server
+# Default command starts server. --config is passed explicitly as defense in depth alongside
+# the OXIGDAL_CONFIG env var above (crates/oxigdal-server's `config` CLI arg also reads
+# OXIGDAL_CONFIG directly via clap's `env` attribute; either mechanism alone is sufficient).
 ENTRYPOINT ["oxigdal-server"]
-CMD ["--host", "0.0.0.0", "--port", "8080"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--config", "/config/server.toml"]
+
+# Build-time version, defaulting to the last released version; override with
+# `--build-arg OXIGDAL_VERSION=$(docker/build.sh --print-version)` (see docker/build.sh) so
+# this label never drifts from the workspace Cargo.toml version again.
+ARG OXIGDAL_VERSION=0.1.7
 
 LABEL org.opencontainers.image.title="OxiGDAL Server" \
       org.opencontainers.image.description="WMS/WMTS tile server for OxiGDAL" \
       org.opencontainers.image.vendor="COOLJAPAN OU (Team Kitasan)" \
       org.opencontainers.image.source="https://github.com/cool-japan/oxigdal" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="${OXIGDAL_VERSION}" \
       org.opencontainers.image.url="https://github.com/cool-japan/oxigdal"

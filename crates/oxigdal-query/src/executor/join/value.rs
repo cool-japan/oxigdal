@@ -86,7 +86,11 @@ impl JoinValue {
     /// Add two values.
     pub fn add(&self, other: &JoinValue) -> Option<JoinValue> {
         match (self, other) {
-            (JoinValue::Integer(a), JoinValue::Integer(b)) => Some(JoinValue::Integer(a + b)),
+            // Checked arithmetic: overflow yields None (surfaced as an execution
+            // error by the caller) instead of panicking or silently wrapping.
+            (JoinValue::Integer(a), JoinValue::Integer(b)) => {
+                a.checked_add(*b).map(JoinValue::Integer)
+            }
             (JoinValue::Integer(a), JoinValue::Float(b)) => Some(JoinValue::Float(*a as f64 + b)),
             (JoinValue::Float(a), JoinValue::Integer(b)) => Some(JoinValue::Float(a + *b as f64)),
             (JoinValue::Float(a), JoinValue::Float(b)) => Some(JoinValue::Float(a + b)),
@@ -100,7 +104,9 @@ impl JoinValue {
     /// Subtract two values.
     pub fn subtract(&self, other: &JoinValue) -> Option<JoinValue> {
         match (self, other) {
-            (JoinValue::Integer(a), JoinValue::Integer(b)) => Some(JoinValue::Integer(a - b)),
+            (JoinValue::Integer(a), JoinValue::Integer(b)) => {
+                a.checked_sub(*b).map(JoinValue::Integer)
+            }
             (JoinValue::Integer(a), JoinValue::Float(b)) => Some(JoinValue::Float(*a as f64 - b)),
             (JoinValue::Float(a), JoinValue::Integer(b)) => Some(JoinValue::Float(a - *b as f64)),
             (JoinValue::Float(a), JoinValue::Float(b)) => Some(JoinValue::Float(a - b)),
@@ -111,7 +117,9 @@ impl JoinValue {
     /// Multiply two values.
     pub fn multiply(&self, other: &JoinValue) -> Option<JoinValue> {
         match (self, other) {
-            (JoinValue::Integer(a), JoinValue::Integer(b)) => Some(JoinValue::Integer(a * b)),
+            (JoinValue::Integer(a), JoinValue::Integer(b)) => {
+                a.checked_mul(*b).map(JoinValue::Integer)
+            }
             (JoinValue::Integer(a), JoinValue::Float(b)) => Some(JoinValue::Float(*a as f64 * b)),
             (JoinValue::Float(a), JoinValue::Integer(b)) => Some(JoinValue::Float(a * *b as f64)),
             (JoinValue::Float(a), JoinValue::Float(b)) => Some(JoinValue::Float(a * b)),
@@ -166,7 +174,7 @@ impl JoinValue {
         }
     }
 
-    /// Check if string matches LIKE pattern.
+    /// Check if string matches a case-sensitive `LIKE` pattern.
     pub fn matches_like(&self, pattern: &JoinValue) -> Option<bool> {
         match (self, pattern) {
             (JoinValue::String(s), JoinValue::String(p)) => Some(Self::like_match(s, p)),
@@ -174,47 +182,18 @@ impl JoinValue {
         }
     }
 
-    /// Simple LIKE pattern matching (supports % and _).
-    pub fn like_match(text: &str, pattern: &str) -> bool {
-        let text_chars: Vec<char> = text.chars().collect();
-        let pattern_chars: Vec<char> = pattern.chars().collect();
-
-        Self::like_match_recursive(&text_chars, 0, &pattern_chars, 0)
+    /// Check if string matches a case-insensitive `ILIKE` pattern.
+    pub fn matches_ilike(&self, pattern: &JoinValue) -> Option<bool> {
+        match (self, pattern) {
+            (JoinValue::String(s), JoinValue::String(p)) => {
+                Some(crate::executor::like::like_match(s, p, true))
+            }
+            _ => None,
+        }
     }
 
-    fn like_match_recursive(text: &[char], ti: usize, pattern: &[char], pi: usize) -> bool {
-        if pi >= pattern.len() {
-            return ti >= text.len();
-        }
-
-        let pattern_char = pattern[pi];
-
-        match pattern_char {
-            '%' => {
-                // Match zero or more characters
-                for i in ti..=text.len() {
-                    if Self::like_match_recursive(text, i, pattern, pi + 1) {
-                        return true;
-                    }
-                }
-                false
-            }
-            '_' => {
-                // Match exactly one character
-                if ti < text.len() {
-                    Self::like_match_recursive(text, ti + 1, pattern, pi + 1)
-                } else {
-                    false
-                }
-            }
-            c => {
-                // Match exact character (case-insensitive for simplicity)
-                if ti < text.len() && text[ti].eq_ignore_ascii_case(&c) {
-                    Self::like_match_recursive(text, ti + 1, pattern, pi + 1)
-                } else {
-                    false
-                }
-            }
-        }
+    /// Simple case-sensitive `LIKE` pattern matching (supports `%` and `_`).
+    pub fn like_match(text: &str, pattern: &str) -> bool {
+        crate::executor::like::like_match(text, pattern, false)
     }
 }

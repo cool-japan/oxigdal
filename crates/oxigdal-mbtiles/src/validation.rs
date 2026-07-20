@@ -277,24 +277,24 @@ fn check_bounds(metadata: &MBTilesMetadata, issues: &mut Vec<ValidationIssue>) {
 
 /// `minzoom`/`maxzoom` must each be within `0..=30` and `minzoom ≤ maxzoom`.
 fn check_zooms(metadata: &MBTilesMetadata, issues: &mut Vec<ValidationIssue>) {
-    if let Some(minzoom) = metadata.minzoom {
-        if i64::from(minzoom) > MAX_ZOOM {
-            issues.push(ValidationIssue::ZoomOutOfRange {
-                value: i64::from(minzoom),
-            });
-        }
+    if let Some(minzoom) = metadata.minzoom
+        && i64::from(minzoom) > MAX_ZOOM
+    {
+        issues.push(ValidationIssue::ZoomOutOfRange {
+            value: i64::from(minzoom),
+        });
     }
-    if let Some(maxzoom) = metadata.maxzoom {
-        if i64::from(maxzoom) > MAX_ZOOM {
-            issues.push(ValidationIssue::ZoomOutOfRange {
-                value: i64::from(maxzoom),
-            });
-        }
+    if let Some(maxzoom) = metadata.maxzoom
+        && i64::from(maxzoom) > MAX_ZOOM
+    {
+        issues.push(ValidationIssue::ZoomOutOfRange {
+            value: i64::from(maxzoom),
+        });
     }
-    if let (Some(minzoom), Some(maxzoom)) = (metadata.minzoom, metadata.maxzoom) {
-        if minzoom > maxzoom {
-            issues.push(ValidationIssue::MinZoomGreaterThanMaxZoom { minzoom, maxzoom });
-        }
+    if let (Some(minzoom), Some(maxzoom)) = (metadata.minzoom, metadata.maxzoom)
+        && minzoom > maxzoom
+    {
+        issues.push(ValidationIssue::MinZoomGreaterThanMaxZoom { minzoom, maxzoom });
     }
 }
 

@@ -149,13 +149,13 @@ impl ColumnStatistics {
         // Simplified range selectivity estimation
         match (&self.min_value, &self.max_value) {
             (Some(min), Some(max)) => {
-                if let (Literal::Integer(min_val), Literal::Integer(max_val)) = (min, max) {
-                    if let (Literal::Integer(low_val), Literal::Integer(high_val)) = (low, high) {
-                        let range = (max_val - min_val) as f64;
-                        if range > 0.0 {
-                            let selected = (high_val - low_val) as f64;
-                            return (selected / range).clamp(0.0, 1.0);
-                        }
+                if let (Literal::Integer(min_val), Literal::Integer(max_val)) = (min, max)
+                    && let (Literal::Integer(low_val), Literal::Integer(high_val)) = (low, high)
+                {
+                    let range = (max_val - min_val) as f64;
+                    if range > 0.0 {
+                        let selected = (high_val - low_val) as f64;
+                        return (selected / range).clamp(0.0, 1.0);
                     }
                 }
                 // Default range selectivity
@@ -323,13 +323,11 @@ impl CostModel {
         match expr {
             Expr::BinaryOp { left, op, right } => match op {
                 BinaryOperator::Eq => {
-                    if let Expr::Column { name, .. } = &**left {
-                        if let Some(stats) = self.get_statistics(table) {
-                            if let Some(col_stats) = stats.columns.iter().find(|c| c.name == *name)
-                            {
-                                return col_stats.equality_selectivity(stats.row_count);
-                            }
-                        }
+                    if let Expr::Column { name, .. } = &**left
+                        && let Some(stats) = self.get_statistics(table)
+                        && let Some(col_stats) = stats.columns.iter().find(|c| c.name == *name)
+                    {
+                        return col_stats.equality_selectivity(stats.row_count);
                     }
                     0.1 // Default equality selectivity
                 }

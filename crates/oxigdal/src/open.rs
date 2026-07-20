@@ -419,6 +419,8 @@ fn build_dataset_info(path: &Path, format: DatasetFormat) -> DatasetInfo {
 const TAG_IMAGE_WIDTH: u16 = 256;
 const TAG_IMAGE_LENGTH: u16 = 257;
 const TAG_SAMPLES_PER_PIXEL: u16 = 277;
+const TAG_BITS_PER_SAMPLE: u16 = 258;
+const TAG_SAMPLE_FORMAT: u16 = 339;
 const TAG_MODEL_PIXEL_SCALE: u16 = 33550;
 const TAG_MODEL_TIEPOINT: u16 = 33922;
 const TAG_GEO_KEY_DIRECTORY: u16 = 34735;
@@ -496,6 +498,117 @@ fn ifd_entry_value_u32(buf: &[u8], entry_offset: usize, le: bool) -> Option<u32>
         4 => tiff_read_u32(buf, entry_offset + 8, le),
         _ => None,
     }
+}
+
+/// Read the first element of a SHORT-typed IFD entry, handling both the inline
+/// storage form and the out-of-line offset form.
+///
+/// Returns `None` for non-SHORT entries or when the referenced data lies beyond
+/// the prefix buffer we read.  Used for `BitsPerSample` / `SampleFormat`, whose
+/// per-sample arrays are stored out-of-line once `samples_per_pixel` exceeds the
+/// inline capacity (2 SHORTs for classic TIFF, 4 for BigTIFF).
+fn ifd_entry_first_short(buf: &[u8], entry_offset: usize, le: bool, bigtiff: bool) -> Option<u16> {
+    let type_id = tiff_read_u16(buf, entry_offset + 2, le)?;
+    if type_id != 3 {
+        return None; // only SHORT is handled here
+    }
+    let (count, value_field, inline_cap) = if bigtiff {
+        (
+            tiff_read_u64(buf, entry_offset + 4, le)?,
+            entry_offset + 12,
+            8usize,
+        )
+    } else {
+        (
+            u64::from(tiff_read_u32(buf, entry_offset + 4, le)?),
+            entry_offset + 8,
+            4usize,
+        )
+    };
+    // 2 bytes per SHORT element.
+    let total = count.saturating_mul(2);
+    if total as usize <= inline_cap {
+        tiff_read_u16(buf, value_field, le)
+    } else {
+        let off = if bigtiff {
+            tiff_read_u64(buf, value_field, le)? as usize
+        } else {
+            tiff_read_u32(buf, value_field, le)? as usize
+        };
+        tiff_read_u16(buf, off, le)
+    }
+}
+
+/// Parse the first IFD of a TIFF file and determine its pixel [`RasterDataType`]
+/// from the `BitsPerSample` and `SampleFormat` tags.
+///
+/// Falls back to `UInt8` (8-bit unsigned — the dominant imagery case and the
+/// TIFF-spec default sample format) when the tags are absent but the file is a
+/// valid TIFF.  Returns `None` only when the file cannot be parsed as a TIFF.
+///
+/// Exposed as `pub(crate)` so that `vrt_builder.rs` can emit the correct GDAL
+/// `dataType` for each source band instead of hardcoding `Float32`.
+pub(crate) fn extract_tiff_data_type(path: &Path) -> Option<oxigdal_core::types::RasterDataType> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 8192];
+    let n = file.read(&mut buf).ok()?;
+    buf.truncate(n);
+    if buf.len() < 8 {
+        return None;
+    }
+
+    let le = buf[0] == 0x49;
+    let version = tiff_read_u16(&buf, 2, le)?;
+    let bigtiff = version == BIGTIFF_VERSION;
+    let (ifd_offset, entry_size) = if bigtiff {
+        (tiff_read_u64(&buf, 8, le)? as usize, 20usize)
+    } else if version == TIFF_VERSION {
+        (tiff_read_u32(&buf, 4, le)? as usize, 12usize)
+    } else {
+        return None;
+    };
+
+    let num_entries = if bigtiff {
+        tiff_read_u64(&buf, ifd_offset, le)? as usize
+    } else {
+        tiff_read_u16(&buf, ifd_offset, le)? as usize
+    };
+    let entries_start = if bigtiff {
+        ifd_offset + 8
+    } else {
+        ifd_offset + 2
+    };
+
+    let mut bits_per_sample: Option<u16> = None;
+    let mut sample_format: u16 = 1; // TIFF default: unsigned integer
+
+    for i in 0..num_entries {
+        let eo = entries_start + i * entry_size;
+        if eo + entry_size > buf.len() {
+            break;
+        }
+        let tag = tiff_read_u16(&buf, eo, le)?;
+        match tag {
+            TAG_BITS_PER_SAMPLE => {
+                if let Some(v) = ifd_entry_first_short(&buf, eo, le, bigtiff) {
+                    bits_per_sample = Some(v);
+                }
+            }
+            TAG_SAMPLE_FORMAT => {
+                if let Some(v) = ifd_entry_first_short(&buf, eo, le, bigtiff) {
+                    sample_format = v;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let bits = bits_per_sample.unwrap_or(8);
+    Some(
+        oxigdal_core::types::RasterDataType::from_tiff_sample_format(sample_format, bits)
+            .unwrap_or(oxigdal_core::types::RasterDataType::UInt8),
+    )
 }
 
 /// Parse the first IFD of a TIFF file and extract basic metadata.
@@ -875,6 +988,7 @@ impl DatasetFormat {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use crate::magic::{HDF5_MAGIC, JP2_MAGIC};

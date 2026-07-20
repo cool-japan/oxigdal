@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure Rust geospatial data abstraction library — the Rust alternative to GDAL
 > **Status (2026-05-16):** 5,639 Rust LoC · 236 tests · 0 real-code stubs (all `stub/placeholder` mentions are benign doc/comment text)
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
 - [x] Implement actual raster band reading in Dataset (currently returns stub metadata) (planned 2026-04-17)

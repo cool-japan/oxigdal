@@ -184,23 +184,32 @@ impl RbacEngine {
         false
     }
 
-    /// Check if a subject has a specific permission.
+    /// Check if a subject has a specific permission on a specific resource.
+    ///
+    /// `resource_id` is matched against each candidate [`Permission`]'s
+    /// `resource_pattern` (via [`Permission::matches_resource`]). A
+    /// permission with no pattern (`resource_pattern: None`) matches every
+    /// resource of the given `resource_type`; a permission scoped with
+    /// [`Permission::with_pattern`] only grants access to resources whose
+    /// ID matches that pattern.
     pub fn has_permission(
         &self,
         subject_id: &str,
         action: Action,
         resource_type: ResourceType,
+        resource_id: &str,
     ) -> bool {
         let effective_roles = self.get_effective_roles(subject_id);
 
         for role_id in effective_roles {
             if let Some(role) = self.roles.get(&role_id) {
                 for permission_id in &role.permissions {
-                    if let Some(permission) = self.permissions.get(permission_id) {
-                        if permission.action == action && permission.resource_type == resource_type
-                        {
-                            return true;
-                        }
+                    if let Some(permission) = self.permissions.get(permission_id)
+                        && permission.action == action
+                        && permission.resource_type == resource_type
+                        && permission.matches_resource(resource_id)
+                    {
+                        return true;
                     }
                 }
             }
@@ -218,11 +227,11 @@ impl RbacEngine {
         for role_id in effective_roles {
             if let Some(role) = self.roles.get(&role_id) {
                 for permission_id in &role.permissions {
-                    if !seen.contains(permission_id) {
-                        if let Some(permission) = self.permissions.get(permission_id) {
-                            permissions.push(permission.clone());
-                            seen.insert(permission_id.clone());
-                        }
+                    if !seen.contains(permission_id)
+                        && let Some(permission) = self.permissions.get(permission_id)
+                    {
+                        permissions.push(permission.clone());
+                        seen.insert(permission_id.clone());
                     }
                 }
             }
@@ -260,6 +269,7 @@ impl AccessControlEvaluator for RbacEngine {
             &request.subject.id,
             request.action,
             request.resource.resource_type,
+            &request.resource.id,
         );
 
         if has_permission {
@@ -375,7 +385,151 @@ mod tests {
             .assign_role("user-123", "viewer")
             .expect("Failed to assign role");
 
-        assert!(engine.has_permission("user-123", Action::Read, ResourceType::Dataset));
-        assert!(!engine.has_permission("user-123", Action::Write, ResourceType::Dataset));
+        assert!(engine.has_permission(
+            "user-123",
+            Action::Read,
+            ResourceType::Dataset,
+            "dataset-456"
+        ));
+        assert!(!engine.has_permission(
+            "user-123",
+            Action::Write,
+            ResourceType::Dataset,
+            "dataset-456"
+        ));
+    }
+
+    #[test]
+    fn test_permission_resource_pattern_is_enforced() {
+        // Regression test: a permission scoped with `.with_pattern(...)`
+        // must only grant access to resources whose ID matches the
+        // pattern, not to every resource of the given ResourceType.
+        let engine = RbacEngine::new();
+
+        let scoped_permission = Permission::new(
+            "read-dataset-123".to_string(),
+            "Read Dataset 123".to_string(),
+            Action::Read,
+            ResourceType::Dataset,
+        )
+        .with_pattern("dataset-123".to_string());
+
+        let mut role = Role::new("scoped-viewer".to_string(), "Scoped Viewer".to_string());
+        role.add_permission("read-dataset-123".to_string());
+
+        engine
+            .add_permission(scoped_permission)
+            .expect("Failed to add permission");
+        engine.add_role(role).expect("Failed to add role");
+        engine
+            .assign_role("user-123", "scoped-viewer")
+            .expect("Failed to assign role");
+
+        // Access to the exact resource the permission is scoped to must be
+        // granted.
+        assert!(engine.has_permission(
+            "user-123",
+            Action::Read,
+            ResourceType::Dataset,
+            "dataset-123"
+        ));
+
+        // Before the fix, this incorrectly returned `true` because
+        // resource identity was discarded entirely -- the resource-scoped
+        // grant became resource-type-wide.
+        assert!(!engine.has_permission(
+            "user-123",
+            Action::Read,
+            ResourceType::Dataset,
+            "dataset-999"
+        ));
+    }
+
+    #[test]
+    fn test_permission_resource_pattern_glob_is_enforced() {
+        let engine = RbacEngine::new();
+
+        let scoped_permission = Permission::new(
+            "read-dataset-glob".to_string(),
+            "Read Dataset Glob".to_string(),
+            Action::Read,
+            ResourceType::Dataset,
+        )
+        .with_pattern("dataset-*".to_string());
+
+        let mut role = Role::new("glob-viewer".to_string(), "Glob Viewer".to_string());
+        role.add_permission("read-dataset-glob".to_string());
+
+        engine
+            .add_permission(scoped_permission)
+            .expect("Failed to add permission");
+        engine.add_role(role).expect("Failed to add role");
+        engine
+            .assign_role("user-123", "glob-viewer")
+            .expect("Failed to assign role");
+
+        assert!(engine.has_permission(
+            "user-123",
+            Action::Read,
+            ResourceType::Dataset,
+            "dataset-abc"
+        ));
+        assert!(!engine.has_permission(
+            "user-123",
+            Action::Read,
+            ResourceType::Dataset,
+            "other-abc"
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_respects_resource_pattern() {
+        // Regression test at the AccessControlEvaluator::evaluate level
+        // (the code path actually exercised by PolicyEngine), not just
+        // has_permission directly.
+        use crate::access_control::{AccessContext, AccessRequest, Resource, Subject, SubjectType};
+
+        let engine = RbacEngine::new();
+
+        let scoped_permission = Permission::new(
+            "read-dataset-123".to_string(),
+            "Read Dataset 123".to_string(),
+            Action::Read,
+            ResourceType::Dataset,
+        )
+        .with_pattern("dataset-123".to_string());
+
+        let mut role = Role::new("scoped-viewer".to_string(), "Scoped Viewer".to_string());
+        role.add_permission("read-dataset-123".to_string());
+
+        engine
+            .add_permission(scoped_permission)
+            .expect("Failed to add permission");
+        engine.add_role(role).expect("Failed to add role");
+        engine
+            .assign_role("user-123", "scoped-viewer")
+            .expect("Failed to assign role");
+
+        let subject = Subject::new("user-123".to_string(), SubjectType::User);
+        let allowed_resource = Resource::new("dataset-123".to_string(), ResourceType::Dataset);
+        let denied_resource = Resource::new("dataset-999".to_string(), ResourceType::Dataset);
+
+        let allowed_request = AccessRequest::new(
+            subject.clone(),
+            allowed_resource,
+            Action::Read,
+            AccessContext::new(),
+        );
+        let denied_request =
+            AccessRequest::new(subject, denied_resource, Action::Read, AccessContext::new());
+
+        assert_eq!(
+            engine.evaluate(&allowed_request).expect("evaluate failed"),
+            AccessDecision::Allow
+        );
+        assert_eq!(
+            engine.evaluate(&denied_request).expect("evaluate failed"),
+            AccessDecision::Deny
+        );
     }
 }

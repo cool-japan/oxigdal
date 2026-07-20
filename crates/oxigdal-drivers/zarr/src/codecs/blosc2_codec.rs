@@ -250,17 +250,46 @@ impl Blosc2Codec {
 
     /// Compresses data using the underlying compressor
     fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // For Pure Rust implementation, we use the built-in compression
-        // In production, integrate with actual compression libraries
-
         match self.compressor {
             BloscCompressor::Lz4 => {
-                // Placeholder: use actual LZ4 compression
-                Ok(data.to_vec())
+                #[cfg(feature = "lz4")]
+                {
+                    let orig_size = data.len() as i32;
+                    let compressed =
+                        oxiarc_lz4::compress_block_with_accel(data, 1).map_err(|e| {
+                            ZarrError::Codec(CodecError::CompressionFailed {
+                                message: format!("LZ4 compression failed: {e}"),
+                            })
+                        })?;
+                    let mut result = Vec::with_capacity(4 + compressed.len());
+                    result.extend_from_slice(&orig_size.to_le_bytes());
+                    result.extend_from_slice(&compressed);
+                    Ok(result)
+                }
+                #[cfg(not(feature = "lz4"))]
+                {
+                    Ok(data.to_vec())
+                }
             }
             BloscCompressor::Lz4hc => {
-                // Placeholder: use actual LZ4HC compression
-                Ok(data.to_vec())
+                #[cfg(feature = "lz4")]
+                {
+                    let orig_size = data.len() as i32;
+                    let level = i32::from(self.clevel);
+                    let compressed = oxiarc_lz4::compress_block_hc(data, level).map_err(|e| {
+                        ZarrError::Codec(CodecError::CompressionFailed {
+                            message: format!("LZ4HC compression failed: {e}"),
+                        })
+                    })?;
+                    let mut result = Vec::with_capacity(4 + compressed.len());
+                    result.extend_from_slice(&orig_size.to_le_bytes());
+                    result.extend_from_slice(&compressed);
+                    Ok(result)
+                }
+                #[cfg(not(feature = "lz4"))]
+                {
+                    Ok(data.to_vec())
+                }
             }
             BloscCompressor::Zlib => {
                 // Placeholder: use actual Zlib compression
@@ -294,13 +323,26 @@ impl Blosc2Codec {
     /// Decompresses data using the underlying compressor
     fn decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self.compressor {
-            BloscCompressor::Lz4 => {
-                // Placeholder: use actual LZ4 decompression
-                Ok(data.to_vec())
-            }
-            BloscCompressor::Lz4hc => {
-                // Placeholder: use actual LZ4HC decompression
-                Ok(data.to_vec())
+            BloscCompressor::Lz4 | BloscCompressor::Lz4hc => {
+                #[cfg(feature = "lz4")]
+                {
+                    if data.len() < 4 {
+                        return Err(ZarrError::Codec(CodecError::DecompressionFailed {
+                            message: "LZ4 data too short for size prefix".to_string(),
+                        }));
+                    }
+                    let orig_size =
+                        i32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                    oxiarc_lz4::decompress_block(&data[4..], orig_size).map_err(|e| {
+                        ZarrError::Codec(CodecError::DecompressionFailed {
+                            message: format!("LZ4 decompression failed: {e}"),
+                        })
+                    })
+                }
+                #[cfg(not(feature = "lz4"))]
+                {
+                    Ok(data.to_vec())
+                }
             }
             BloscCompressor::Zlib => {
                 // Placeholder: use actual Zlib decompression
@@ -444,6 +486,37 @@ mod tests {
         let encoded = codec.encode(&data).expect("encode");
         let decoded = codec.decode(&encoded).expect("decode");
 
+        assert_eq!(decoded, data);
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn test_lz4_roundtrip() {
+        let codec = Blosc2Codec::new("lz4", 3, 0, None, None).expect("create");
+        let data: Vec<u8> = b"Hello, Zarr! LZ4 blosc2 roundtrip test. "
+            .repeat(100)
+            .to_vec();
+
+        let encoded = codec.encode(&data).expect("encode");
+        // Compressed output should differ from input (size prefix + compressed bytes)
+        assert_ne!(encoded, data);
+
+        let decoded = codec.decode(&encoded).expect("decode");
+        assert_eq!(decoded, data);
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn test_lz4hc_roundtrip() {
+        let codec = Blosc2Codec::new("lz4hc", 6, 0, None, None).expect("create");
+        let data: Vec<u8> = b"Hello, Zarr! LZ4HC blosc2 roundtrip test. "
+            .repeat(100)
+            .to_vec();
+
+        let encoded = codec.encode(&data).expect("encode");
+        assert_ne!(encoded, data);
+
+        let decoded = codec.decode(&encoded).expect("decode");
         assert_eq!(decoded, data);
     }
 }

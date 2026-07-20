@@ -68,7 +68,11 @@ pub(crate) fn smooth_savgol(y: &[f64], window: usize, poly_order: usize) -> Vec<
 
     // ── Parameter validation and normalisation ────────────────────────────────
     // Force window to be odd.
-    let window = if window % 2 == 0 { window + 1 } else { window };
+    let window = if window.is_multiple_of(2) {
+        window + 1
+    } else {
+        window
+    };
     // Clamp window to [3, n].
     let window = window.max(3).min(n);
     // poly_order must be strictly less than window.

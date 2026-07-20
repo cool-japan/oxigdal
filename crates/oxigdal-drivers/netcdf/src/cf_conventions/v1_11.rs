@@ -466,19 +466,19 @@ pub fn validate_cf_version(conventions: &str) -> Option<CfVersion> {
     let mut best: Option<CfVersion> = None;
     for part in conventions.split(',') {
         let part = part.trim();
-        if let Some(stripped) = part.strip_prefix("CF-") {
-            if let Some(v) = CfVersion::parse_version(stripped) {
-                best = Some(match best {
-                    None => v,
-                    Some(existing) => {
-                        if v > existing {
-                            v
-                        } else {
-                            existing
-                        }
+        if let Some(stripped) = part.strip_prefix("CF-")
+            && let Some(v) = CfVersion::parse_version(stripped)
+        {
+            best = Some(match best {
+                None => v,
+                Some(existing) => {
+                    if v > existing {
+                        v
+                    } else {
+                        existing
                     }
-                });
-            }
+                }
+            });
         }
     }
     best

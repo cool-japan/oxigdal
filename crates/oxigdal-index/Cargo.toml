@@ -19,3 +19,7 @@ delaunator.workspace = true
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

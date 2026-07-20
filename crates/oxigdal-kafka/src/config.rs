@@ -203,6 +203,7 @@ impl KafkaConfig {
     }
 
     /// Apply configuration to rdkafka ClientConfig
+    #[cfg(feature = "backend-rdkafka")]
     pub fn apply_to_client_config(&self, config: &mut rdkafka::ClientConfig) {
         config.set("bootstrap.servers", &self.bootstrap_servers);
 

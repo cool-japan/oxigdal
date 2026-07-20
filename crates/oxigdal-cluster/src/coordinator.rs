@@ -5,6 +5,7 @@
 //! health check aggregation.
 
 use crate::error::{ClusterError, Result};
+use crate::transport::{NodeTransport, UnconfiguredTransport, VoteRequest, VoteResponse};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,15 @@ struct CoordinatorInner {
 
     /// Statistics
     stats: Arc<CoordinatorStats>,
+
+    /// Transport used to send consensus RPCs (vote requests) to peers.
+    transport: Arc<dyn NodeTransport>,
+
+    /// Persisted vote record: term -> candidate this node voted for in that term.
+    ///
+    /// Enforces the Raft invariant of at most one vote granted per term, so a
+    /// peer cannot be double-counted across concurrent candidates.
+    voted_for: Arc<RwLock<HashMap<u64, NodeId>>>,
 }
 
 /// Coordinator configuration.
@@ -236,7 +246,17 @@ struct CoordinatorStats {
 
 impl ClusterCoordinator {
     /// Create a new cluster coordinator.
+    ///
+    /// The coordinator uses [`UnconfiguredTransport`] and therefore cannot reach
+    /// remote peers: it is safe by construction and will not fabricate a quorum.
+    /// Wire a real network transport with [`ClusterCoordinator::with_transport`]
+    /// to enable genuine multi-node leader election.
     pub fn new(config: CoordinatorConfig) -> Self {
+        Self::with_transport(config, Arc::new(UnconfiguredTransport))
+    }
+
+    /// Create a coordinator backed by a specific [`NodeTransport`] implementation.
+    pub fn with_transport(config: CoordinatorConfig, transport: Arc<dyn NodeTransport>) -> Self {
         let node_id = NodeId::new();
 
         Self {
@@ -256,6 +276,8 @@ impl ClusterCoordinator {
                 running: AtomicBool::new(false),
                 health_notify: Arc::new(Notify::new()),
                 stats: Arc::new(CoordinatorStats::default()),
+                transport,
+                voted_for: Arc::new(RwLock::new(HashMap::new())),
             }),
         }
     }
@@ -323,11 +345,10 @@ impl ClusterCoordinator {
                         }
                         NodeRole::Follower => {
                             // Check for election timeout
-                            if self.should_start_election() {
-                                if let Err(e) = self.start_election().await {
+                            if self.should_start_election()
+                                && let Err(e) = self.start_election().await {
                                     error!("Failed to start election: {}", e);
                                 }
-                            }
                         }
                         NodeRole::Candidate => {
                             // Election in progress, handled separately
@@ -380,6 +401,23 @@ impl ClusterCoordinator {
 
     /// Start leader election.
     async fn start_election(&self) -> Result<()> {
+        // Known cluster size including this node.
+        let total_members = self.inner.members.len() + 1; // +1 for self
+
+        // Safety guard: refuse to run an election when the known cluster is smaller
+        // than the configured minimum. This blocks a lone or nearly-isolated node
+        // from crowning itself while the rest of the cluster is unreachable.
+        if total_members < self.inner.config.min_cluster_size {
+            debug!(
+                "Known cluster size {} is below min_cluster_size {}; skipping election",
+                total_members, self.inner.config.min_cluster_size
+            );
+            let mut state = self.inner.state.write();
+            state.role = NodeRole::Follower;
+            state.election_in_progress = false;
+            return Ok(());
+        }
+
         info!("Starting leader election");
 
         let term = {
@@ -387,8 +425,15 @@ impl ClusterCoordinator {
             state.term += 1;
             state.role = NodeRole::Candidate;
             state.election_in_progress = true;
+            state.leader = None;
             state.term
         }; // Lock is dropped here
+
+        // This node votes for itself in this term.
+        self.inner
+            .voted_for
+            .write()
+            .insert(term, self.inner.node_id);
 
         self.inner.stats.elections.fetch_add(1, Ordering::Relaxed);
 
@@ -397,14 +442,26 @@ impl ClusterCoordinator {
             .term_changes
             .fetch_add(1, Ordering::Relaxed);
 
-        // Request votes from other members
+        // Request votes from other members via the transport.
         let votes = self.request_votes(term).await?;
 
-        // Check if we won the election
-        let total_members = self.inner.members.len() + 1; // +1 for self
-        let quorum = (total_members / 2) + 1;
+        // A higher term seen during vote collection makes us step down; abort.
+        {
+            let state = self.inner.state.read();
+            if state.role != NodeRole::Candidate || state.term != term {
+                return Ok(());
+            }
+        }
 
-        if votes >= quorum {
+        // Win condition: a strict majority of the known cluster AND never fewer
+        // than min_cluster_size participating votes. Both guards must hold, which is
+        // what prevents a minority partition from ever electing a leader.
+        let quorum = (total_members / 2) + 1;
+        let required = quorum
+            .max(self.inner.config.min_cluster_size)
+            .min(total_members);
+
+        if votes >= required {
             self.become_leader(term)?;
         } else {
             // Lost election, become follower
@@ -416,20 +473,144 @@ impl ClusterCoordinator {
         Ok(())
     }
 
-    /// Request votes from other members.
-    async fn request_votes(&self, _term: u64) -> Result<usize> {
-        // In a real implementation, this would send vote requests to other nodes
-        // For now, simulate by checking cluster size
+    /// Request votes from every known peer through the transport.
+    ///
+    /// Only votes actually granted by a reachable peer are counted; unreachable
+    /// peers (transport errors or timeouts) count as no vote. If any peer reports a
+    /// higher term, this node steps down and the returned tally is zero so the
+    /// caller abandons the election.
+    async fn request_votes(&self, term: u64) -> Result<usize> {
+        let candidate_id = self.inner.node_id;
 
-        let active_members = self
+        // Snapshot all known peers regardless of locally-tracked status: a peer this
+        // node believes is down may in fact be the one holding a fresher term.
+        let peers: Vec<(NodeId, String)> = self
             .inner
             .members
             .iter()
-            .filter(|entry| entry.value().status == MemberStatus::Active)
-            .count();
+            .map(|entry| (*entry.key(), entry.value().address.clone()))
+            .collect();
 
-        // Assume we get votes from active members (simplified)
-        Ok(active_members + 1) // +1 for self-vote
+        let timeout = self.inner.config.election_timeout;
+
+        let requests = peers.into_iter().map(|(peer, address)| {
+            let transport = Arc::clone(&self.inner.transport);
+            let request = VoteRequest {
+                term,
+                candidate_id,
+                last_log_index: 0,
+                last_log_term: 0,
+            };
+            async move {
+                match tokio::time::timeout(timeout, transport.request_vote(peer, &address, request))
+                    .await
+                {
+                    Ok(Ok(response)) => Some(response),
+                    Ok(Err(e)) => {
+                        warn!("Vote request to {} failed: {}", peer, e);
+                        None
+                    }
+                    Err(_) => {
+                        warn!("Vote request to {} timed out", peer);
+                        None
+                    }
+                }
+            }
+        });
+
+        let responses: Vec<Option<VoteResponse>> = futures::future::join_all(requests).await;
+
+        // Start with this node's own self-vote.
+        let mut granted = 1usize;
+        let mut highest_term = term;
+
+        for response in responses.into_iter().flatten() {
+            if response.term > highest_term {
+                highest_term = response.term;
+            }
+            // Only count a grant from a peer that is on our term (or older).
+            if response.vote_granted && response.term <= term {
+                granted += 1;
+            }
+        }
+
+        if highest_term > term {
+            warn!(
+                "Observed higher term {} during election for term {}; stepping down",
+                highest_term, term
+            );
+            self.step_down(highest_term);
+            return Ok(0);
+        }
+
+        Ok(granted)
+    }
+
+    /// Step down to follower, adopting a newer term if one was observed.
+    fn step_down(&self, new_term: u64) {
+        let mut state = self.inner.state.write();
+        if new_term > state.term {
+            state.term = new_term;
+            self.inner
+                .stats
+                .term_changes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        state.role = NodeRole::Follower;
+        state.election_in_progress = false;
+        state.leader = None;
+    }
+
+    /// Handle an incoming vote request from a candidate peer (callee side).
+    ///
+    /// A real network transport dispatches received [`VoteRequest`] RPCs here. The
+    /// vote is granted at most once per term (Raft's single-vote invariant),
+    /// rejected outright when the candidate's term is stale, and this node adopts a
+    /// newer term (stepping down) when the candidate is ahead.
+    pub fn handle_vote_request(&self, request: VoteRequest) -> VoteResponse {
+        let current_term = {
+            let mut state = self.inner.state.write();
+
+            // Reject candidates behind our current term.
+            if request.term < state.term {
+                return VoteResponse {
+                    term: state.term,
+                    vote_granted: false,
+                };
+            }
+
+            // A newer term means we are stale: adopt it and revert to follower.
+            if request.term > state.term {
+                state.term = request.term;
+                state.role = NodeRole::Follower;
+                state.leader = None;
+                state.election_in_progress = false;
+                self.inner
+                    .stats
+                    .term_changes
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+
+            state.term
+        };
+
+        let mut voted_for = self.inner.voted_for.write();
+        let vote_granted = match voted_for.get(&current_term) {
+            // Idempotent: re-granting to the same candidate is safe; a different
+            // candidate in the same term is refused.
+            Some(existing) => *existing == request.candidate_id,
+            None => {
+                // No log replication layer yet, so the up-to-date-log check is a
+                // no-op; last_log_index/last_log_term are carried for when it lands.
+                voted_for.insert(current_term, request.candidate_id);
+                true
+            }
+        };
+
+        VoteResponse {
+            term: current_term,
+            vote_granted,
+        }
     }
 
     /// Become the cluster leader.
@@ -655,6 +836,207 @@ pub struct CoordinatorStatistics {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+
+    /// Shared in-memory registry of coordinators, keyed by node id, each tagged
+    /// with a partition group. Peers can only reach peers in the same group.
+    #[derive(Clone, Default)]
+    struct MockNet {
+        handlers: Arc<RwLock<HashMap<NodeId, (usize, ClusterCoordinator)>>>,
+    }
+
+    impl MockNet {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn register(&self, id: NodeId, group: usize, coord: ClusterCoordinator) {
+            self.handlers.write().insert(id, (group, coord));
+        }
+
+        fn lookup(&self, id: NodeId) -> Option<(usize, ClusterCoordinator)> {
+            self.handlers.read().get(&id).cloned()
+        }
+    }
+
+    /// Transport that routes a vote request to the target coordinator's real
+    /// `handle_vote_request`, but only if the target shares this node's partition
+    /// group; otherwise it reports a network error (simulating a partition).
+    struct MockTransport {
+        net: MockNet,
+        group: usize,
+    }
+
+    #[async_trait]
+    impl NodeTransport for MockTransport {
+        async fn request_vote(
+            &self,
+            peer: NodeId,
+            _peer_address: &str,
+            request: VoteRequest,
+        ) -> Result<VoteResponse> {
+            let (peer_group, handler) = self
+                .net
+                .lookup(peer)
+                .ok_or_else(|| ClusterError::NetworkError(format!("unknown peer {peer}")))?;
+            if peer_group != self.group {
+                return Err(ClusterError::NetworkError(format!(
+                    "partitioned from {peer}"
+                )));
+            }
+            Ok(handler.handle_vote_request(request))
+        }
+    }
+
+    fn make_member(node_id: NodeId) -> ClusterMember {
+        ClusterMember {
+            node_id,
+            address: format!("mock://{node_id}"),
+            role: NodeRole::Follower,
+            status: MemberStatus::Active,
+            joined_at: Instant::now(),
+            last_seen: Instant::now(),
+            version: "test".to_string(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Build `groups.len()` coordinators wired through a shared MockNet, each in
+    /// the given partition group, fully cross-registered as members.
+    fn build_cluster(groups: &[usize], config: CoordinatorConfig) -> Vec<ClusterCoordinator> {
+        let net = MockNet::new();
+        let mut coords = Vec::new();
+        for &g in groups {
+            let transport = Arc::new(MockTransport {
+                net: net.clone(),
+                group: g,
+            });
+            let coord = ClusterCoordinator::with_transport(config.clone(), transport);
+            net.register(coord.node_id(), g, coord.clone());
+            coords.push(coord);
+        }
+        for i in 0..coords.len() {
+            for j in 0..coords.len() {
+                if i != j {
+                    coords[i]
+                        .register_member(make_member(coords[j].node_id()))
+                        .ok();
+                }
+            }
+        }
+        coords
+    }
+
+    #[tokio::test]
+    async fn test_partition_prevents_split_brain() {
+        let config = CoordinatorConfig {
+            min_cluster_size: 3,
+            ..Default::default()
+        };
+        // Nodes 0,1,2 form the majority partition; nodes 3,4 the minority.
+        let coords = build_cluster(&[0, 0, 0, 1, 1], config);
+
+        // Both partitions independently attempt to elect a leader in the same term.
+        coords[0]
+            .start_election()
+            .await
+            .expect("majority election should run");
+        coords[3]
+            .start_election()
+            .await
+            .expect("minority election should run");
+
+        assert!(
+            coords[0].is_leader(),
+            "majority partition should elect a leader"
+        );
+        assert!(
+            !coords[3].is_leader(),
+            "minority partition must not elect a leader"
+        );
+
+        let leaders = coords.iter().filter(|c| c.is_leader()).count();
+        assert_eq!(leaders, 1, "split-brain: more than one leader elected");
+    }
+
+    #[tokio::test]
+    async fn test_full_cluster_elects_single_leader() {
+        let config = CoordinatorConfig {
+            min_cluster_size: 3,
+            ..Default::default()
+        };
+        let coords = build_cluster(&[0, 0, 0, 0, 0], config);
+
+        coords[0]
+            .start_election()
+            .await
+            .expect("election should run");
+
+        assert!(coords[0].is_leader());
+        assert_eq!(coords.iter().filter(|c| c.is_leader()).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unconfigured_transport_never_fabricates_quorum() {
+        // Default coordinator uses UnconfiguredTransport: it can reach no peer.
+        let coord = ClusterCoordinator::with_defaults();
+        for _ in 0..4 {
+            coord.register_member(make_member(NodeId::new())).ok();
+        }
+
+        coord.start_election().await.expect("election should run");
+
+        assert!(
+            !coord.is_leader(),
+            "must not become leader from locally-fabricated votes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_below_min_cluster_size_skips_election() {
+        let config = CoordinatorConfig {
+            min_cluster_size: 5,
+            ..Default::default()
+        };
+        let coord = ClusterCoordinator::new(config);
+        coord.register_member(make_member(NodeId::new())).ok(); // total known = 2 < 5
+
+        coord.start_election().await.expect("should return Ok");
+
+        assert!(!coord.is_leader());
+        let stats = coord.get_statistics();
+        assert_eq!(
+            stats.elections, 0,
+            "election must be skipped when below min_cluster_size"
+        );
+    }
+
+    #[test]
+    fn test_handle_vote_request_single_vote_per_term() {
+        let coord = ClusterCoordinator::with_defaults();
+        let candidate_a = NodeId::new();
+        let candidate_b = NodeId::new();
+
+        let req = |term: u64, id: NodeId| VoteRequest {
+            term,
+            candidate_id: id,
+            last_log_index: 0,
+            last_log_term: 0,
+        };
+
+        // First vote in term 1 is granted.
+        assert!(coord.handle_vote_request(req(1, candidate_a)).vote_granted);
+        // Re-asking with the same candidate is idempotent.
+        assert!(coord.handle_vote_request(req(1, candidate_a)).vote_granted);
+        // A different candidate in the same term is refused.
+        assert!(!coord.handle_vote_request(req(1, candidate_b)).vote_granted);
+        // A stale term is refused.
+        assert!(!coord.handle_vote_request(req(0, candidate_b)).vote_granted);
+        // A higher term is granted and adopted.
+        let resp = coord.handle_vote_request(req(2, candidate_b));
+        assert!(resp.vote_granted);
+        assert_eq!(resp.term, 2);
+    }
 
     #[test]
     fn test_coordinator_creation() {

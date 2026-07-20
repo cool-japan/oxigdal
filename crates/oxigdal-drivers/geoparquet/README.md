@@ -13,7 +13,7 @@ A pure Rust implementation of the GeoParquet 1.0 specification for OxiGDAL. This
 - **WKB Geometry Support**: Encode and decode all geometry types (Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon, GeometryCollection)
 - **Spatial Indexing**: Build R-tree spatial indexes for efficient row-group level spatial queries
 - **Zero-Copy Operations**: Leverages Apache Arrow for in-memory data processing without unnecessary copies
-- **Flexible Compression**: Support for Snappy, Gzip, Zstd, LZ4, and Brotli compression codecs
+- **Flexible Compression**: Support for Snappy, Gzip, LZ4, and Brotli compression codecs (all pure-Rust; Zstd is unsupported as it needs the C `libzstd` FFI)
 - **Spatial Statistics**: Store and query bounding box metadata at row-group level
 - **CRS Support**: Handle Coordinate Reference Systems (WGS84, custom EPSG codes, etc.)
 - **Async I/O**: Optional async support for non-blocking file operations
@@ -32,17 +32,21 @@ oxigdal-geoparquet = "0.1"
 
 ```toml
 [dependencies]
-oxigdal-geoparquet = { version = "0.1", features = ["async", "zstd"] }
+oxigdal-geoparquet = { version = "0.1", features = ["async", "brotli"] }
 ```
 
 Available features:
 - `std` (default): Standard library support
 - `async` (optional): Async I/O support with Tokio
-- `snappy` (default): Snappy compression
-- `gzip` (optional): Gzip compression via flate2
+- `snappy` (optional): Snappy compression
+- `gzip` (optional): Gzip compression (pure-Rust `miniz_oxide` backend)
 - `brotli` (optional): Brotli compression
 - `lz4` (optional): LZ4 compression
-- `zstd` (default): Zstd compression
+
+> **Zstd**: not offered as a feature. The upstream Parquet Zstd codec is backed
+> by the C `libzstd` FFI (`zstd-sys`), which violates the COOLJAPAN Pure-Rust
+> policy. Parquet columns using Zstd compression are therefore unsupported in
+> this pure-Rust build (they surface a typed error rather than linking C code).
 
 ## Quick Start
 
@@ -140,24 +144,17 @@ let polygon = Geometry::Polygon(Polygon::new(exterior, vec![]));
 
 ```rust
 use oxigdal_geoparquet::GeoParquetReader;
-use oxigdal_core::types::BoundingBox;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = GeoParquetReader::open("data.parquet")?;
+    // Push a bounding-box filter down into Parquet decoding. When the file
+    // carries GeoParquet 1.1 `covering.bbox` columns this prunes row groups and
+    // avoids WKB decoding; otherwise the box is applied as a WKB post-filter.
+    let batches = GeoParquetReader::open("data.parquet")?
+        .with_bbox_filter((-122.5, 37.7, -122.3, 37.9))
+        .read_pushdown()?;
 
-    // Build spatial index for faster queries
-    reader.build_spatial_index()?;
-
-    // Query geometries in a bounding box
-    let bbox = BoundingBox::new(-122.5, 37.7, -122.3, 37.9)?;
-    let row_groups = reader.query_spatial_index(&bbox)?;
-
-    // Read only relevant row groups
-    for row_group_idx in row_groups {
-        let geometries = reader.read_geometries(row_group_idx)?;
-        println!("Found {} geometries in row group {}",
-                 geometries.len(), row_group_idx);
-    }
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    println!("Matched {rows} features in {} record batch(es)", batches.len());
 
     Ok(())
 }
@@ -192,11 +189,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compression is set at creation time
     // Use cargo features to enable different codecs:
-    // - snappy: Fast, moderate compression (default)
-    // - gzip: Good compression ratio
-    // - zstd: Better compression than snappy with good speed
-    // - lz4: Very fast compression
+    // - snappy: Fast, moderate compression
+    // - gzip:   Good compression ratio
+    // - lz4:    Very fast compression
     // - brotli: Best compression ratio
+    // (Zstd is unsupported in the pure-Rust build; it requires the C libzstd FFI.)
 
     Ok(())
 }
@@ -225,7 +222,9 @@ Main interface for reading GeoParquet files:
 - `num_row_groups()` - Number of row groups
 - `build_spatial_index()` - Build R-tree index
 - `read_geometries(row_group)` - Read geometries from a row group
-- `query_spatial_index(bbox)` - Find row groups intersecting a bounding box
+- `with_bbox_filter((xmin, ymin, xmax, ymax))` - Set a bounding-box filter (builder)
+- `read_pushdown()` - Execute a filtered read with row-group pruning + predicate pushdown
+- `read_filtered(SpatialFilter)` - Stream batches matching a spatial filter
 
 #### GeoParquetWriter
 Main interface for writing GeoParquet files:

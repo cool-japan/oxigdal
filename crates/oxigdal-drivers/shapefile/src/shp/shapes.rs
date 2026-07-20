@@ -549,14 +549,14 @@ impl MultiPartShapeZ {
                 points.len()
             )));
         }
-        if let Some(ref mv) = m_values {
-            if mv.len() != points.len() {
-                return Err(ShapefileError::invalid_geometry(format!(
-                    "m_values length ({}) must match points length ({})",
-                    mv.len(),
-                    points.len()
-                )));
-            }
+        if let Some(ref mv) = m_values
+            && mv.len() != points.len()
+        {
+            return Err(ShapefileError::invalid_geometry(format!(
+                "m_values length ({}) must match points length ({})",
+                mv.len(),
+                points.len()
+            )));
         }
 
         let base = MultiPartShape::new(parts, points)?;
@@ -900,14 +900,14 @@ impl MultiPatchShape {
                 points.len()
             )));
         }
-        if let Some(ref mv) = m_values {
-            if mv.len() != points.len() {
-                return Err(ShapefileError::invalid_geometry(format!(
-                    "m_values length ({}) must match points length ({})",
-                    mv.len(),
-                    points.len()
-                )));
-            }
+        if let Some(ref mv) = m_values
+            && mv.len() != points.len()
+        {
+            return Err(ShapefileError::invalid_geometry(format!(
+                "m_values length ({}) must match points length ({})",
+                mv.len(),
+                points.len()
+            )));
         }
 
         let base = MultiPartShape::new(parts, points)?;

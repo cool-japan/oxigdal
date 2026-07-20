@@ -99,13 +99,13 @@ impl TopicConfig {
             ));
         }
 
-        if let Some(retention) = self.message_retention_duration {
-            if !(600..=604800).contains(&retention) {
-                return Err(PubSubError::configuration(
-                    "Message retention must be between 600 and 604800 seconds (10 minutes to 7 days)",
-                    "message_retention_duration",
-                ));
-            }
+        if let Some(retention) = self.message_retention_duration
+            && !(600..=604800).contains(&retention)
+        {
+            return Err(PubSubError::configuration(
+                "Message retention must be between 600 and 604800 seconds (10 minutes to 7 days)",
+                "message_retention_duration",
+            ));
         }
 
         Ok(())

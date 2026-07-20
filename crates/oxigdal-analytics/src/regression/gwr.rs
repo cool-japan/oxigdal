@@ -248,12 +248,12 @@ pub fn gwr_fit(
         )));
     }
     for (name, values) in [("coordinates", None), ("response", Some(y))] {
-        if let Some(values) = values {
-            if values.iter().any(|v| !v.is_finite()) {
-                return Err(AnalyticsError::invalid_input(format!(
-                    "{name} values must be finite"
-                )));
-            }
+        if let Some(values) = values
+            && values.iter().any(|v| !v.is_finite())
+        {
+            return Err(AnalyticsError::invalid_input(format!(
+                "{name} values must be finite"
+            )));
         }
     }
     if coords

@@ -140,15 +140,15 @@ impl Widget for MapWidget {
     }
 
     fn update_state(&mut self, state: HashMap<String, serde_json::Value>) -> Result<()> {
-        if let Some(center) = state.get("center") {
-            if let Ok(c) = serde_json::from_value::<(f64, f64)>(center.clone()) {
-                self.center = c;
-            }
+        if let Some(center) = state.get("center")
+            && let Ok(c) = serde_json::from_value::<(f64, f64)>(center.clone())
+        {
+            self.center = c;
         }
-        if let Some(zoom) = state.get("zoom") {
-            if let Ok(z) = serde_json::from_value::<u8>(zoom.clone()) {
-                self.zoom = z;
-            }
+        if let Some(zoom) = state.get("zoom")
+            && let Ok(z) = serde_json::from_value::<u8>(zoom.clone())
+        {
+            self.zoom = z;
         }
         Ok(())
     }
@@ -263,10 +263,10 @@ impl Widget for SliderWidget {
     }
 
     fn update_state(&mut self, state: HashMap<String, serde_json::Value>) -> Result<()> {
-        if let Some(value) = state.get("value") {
-            if let Ok(v) = serde_json::from_value::<f64>(value.clone()) {
-                self.set_value(v)?;
-            }
+        if let Some(value) = state.get("value")
+            && let Ok(v) = serde_json::from_value::<f64>(value.clone())
+        {
+            self.set_value(v)?;
         }
         Ok(())
     }
@@ -366,10 +366,10 @@ impl Widget for DropdownWidget {
     }
 
     fn update_state(&mut self, state: HashMap<String, serde_json::Value>) -> Result<()> {
-        if let Some(index) = state.get("selected_index") {
-            if let Ok(i) = serde_json::from_value::<usize>(index.clone()) {
-                self.set_selected_index(i)?;
-            }
+        if let Some(index) = state.get("selected_index")
+            && let Ok(i) = serde_json::from_value::<usize>(index.clone())
+        {
+            self.set_selected_index(i)?;
         }
         Ok(())
     }

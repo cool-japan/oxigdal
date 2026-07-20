@@ -2,7 +2,7 @@
 
 > **Purpose:** WebSocket streaming (axum-based) for OxiGDAL — real-time tile / feature / event delivery with subscriptions, filtering, and backpressure.
 > **Status (2026-05-16):** 3,866 LoC · 100 tests · 3 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace zero-filled tile data with real tile generation in `TileHandler::generate_viewport_tiles`

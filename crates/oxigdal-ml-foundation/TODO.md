@@ -2,7 +2,7 @@
 
 > **Purpose:** Pure-Rust training infrastructure for the OxiGDAL ML stack — architectures (UNet, ResNet), training loops, optimizers, transfer learning, augmentation, and the SciRS2-backed autograd backend.
 > **Status (2026-05-16):** 9,746 LoC · 187 tests · 7+ real stubs (SciRS2 backend backward-pass, autograd-backend ONNX export, augmentation/noise.rs fixed-noise placeholder, dataset.rs batch-size placeholders).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real Pure-Rust forward + backward pass on the SciRS2 backend

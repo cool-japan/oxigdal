@@ -308,9 +308,34 @@ impl<R: Read> DbfReader<R> {
         // Read header
         let header = DbfHeader::read(&mut reader)?;
 
-        // Calculate number of field descriptors
-        let num_fields =
-            (header.header_size as usize - DBF_HEADER_SIZE - 1) / FIELD_DESCRIPTOR_SIZE;
+        // Calculate number of field descriptors.
+        //
+        // `header_size` is read verbatim from the (possibly truncated, corrupt,
+        // or attacker-controlled) file. It must be strictly larger than the
+        // fixed 32-byte header plus the 1-byte terminator, otherwise the
+        // subtraction below would underflow (panic in debug builds, wrap to a
+        // near-`usize::MAX` value in release builds and then request a
+        // multi-terabyte `Vec::with_capacity`). Guard with a checked subtraction.
+        let usable = (header.header_size as usize)
+            .checked_sub(DBF_HEADER_SIZE + 1)
+            .ok_or_else(|| ShapefileError::InvalidDbfHeader {
+                message: format!(
+                    "header_size {} too small (must be > {})",
+                    header.header_size,
+                    DBF_HEADER_SIZE + 1
+                ),
+            })?;
+        let num_fields = usable / FIELD_DESCRIPTOR_SIZE;
+
+        // Sanity bound: real DBF tables have at most a few thousand fields. A
+        // crafted (large-but-not-underflowing) `header_size` must not be able to
+        // request a huge `Vec::with_capacity` allocation.
+        const MAX_DBF_FIELDS: usize = 65_535;
+        if num_fields > MAX_DBF_FIELDS {
+            return Err(ShapefileError::InvalidDbfHeader {
+                message: format!("implausible DBF field count {num_fields} (max {MAX_DBF_FIELDS})"),
+            });
+        }
 
         // Read field descriptors
         let mut field_descriptors = Vec::with_capacity(num_fields);
@@ -724,5 +749,64 @@ mod tests {
 
         let read_records = reader.read_all_records().expect("read records");
         assert_eq!(read_records.len(), 2);
+    }
+
+    /// Builds a raw 32-byte DBF header whose `header_size` field is set to the
+    /// given value, with just enough trailing bytes for `DbfReader::new` to try
+    /// to proceed. Used to exercise the `header_size` underflow guard.
+    fn raw_dbf_with_header_size(header_size: u16) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.push(3u8); // version
+        buf.extend_from_slice(&[0u8, 0u8, 0u8]); // date YY/MM/DD
+        buf.extend_from_slice(&0u32.to_le_bytes()); // record_count
+        buf.extend_from_slice(&header_size.to_le_bytes()); // header_size
+        buf.extend_from_slice(&1u16.to_le_bytes()); // record_size
+        buf.extend_from_slice(&[0u8; 20]); // reserved
+        // A few extra bytes so any (incorrect) field-descriptor read would have
+        // data to consume; a correct implementation errors before reaching here.
+        buf.extend_from_slice(&[0u8; 8]);
+        buf
+    }
+
+    /// Regression: a DBF file whose `header_size` is `<= DBF_HEADER_SIZE + 1`
+    /// must return `InvalidDbfHeader` rather than panic (debug) or attempt a
+    /// huge allocation (release) via `usize` subtraction underflow.
+    #[test]
+    fn test_dbf_header_size_zero_no_underflow() {
+        for header_size in [0u16, 1, 16, 32, 33] {
+            let raw = raw_dbf_with_header_size(header_size);
+            let cursor = Cursor::new(raw);
+            let result = DbfReader::new(cursor);
+            assert!(
+                matches!(result, Err(ShapefileError::InvalidDbfHeader { .. })),
+                "header_size {header_size} must yield InvalidDbfHeader, got {:?}",
+                result.map(|_| "Ok").map_err(|e| e.to_string())
+            );
+        }
+    }
+
+    /// A `header_size` just past the terminator boundary (34 = 32 + 1 field
+    /// worth would be 1) still parses structurally; here 65 encodes exactly one
+    /// 32-byte field descriptor, confirming the guard does not over-reject.
+    #[test]
+    fn test_dbf_header_size_valid_boundary_accepts() {
+        // 32 (header) + 32 (one field) + 1 (terminator) = 65
+        let fields = vec![
+            FieldDescriptor::new("NAME".to_string(), FieldType::Character, 10, 0)
+                .expect("valid field"),
+        ];
+        let header = DbfHeader::new(0, &fields).expect("valid header");
+        let mut buffer = Cursor::new(Vec::new());
+        header.write(&mut buffer).expect("write header");
+        for field in &fields {
+            field.write(&mut buffer).expect("write field");
+        }
+        buffer
+            .write_all(&[HEADER_TERMINATOR])
+            .expect("write terminator");
+        buffer.write_all(&[FILE_TERMINATOR]).expect("write EOF");
+        buffer.set_position(0);
+        let reader = DbfReader::new(buffer).expect("valid single-field DBF must open");
+        assert_eq!(reader.field_descriptors().len(), 1);
     }
 }

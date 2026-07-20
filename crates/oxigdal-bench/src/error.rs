@@ -296,7 +296,8 @@ mod tests {
 
     #[test]
     fn test_baseline_error() {
-        let err = BenchError::baseline("/tmp/baseline.json", "Corrupted file");
+        let err =
+            BenchError::baseline(std::env::temp_dir().join("baseline.json"), "Corrupted file");
         assert!(err.to_string().contains("baseline.json"));
         assert!(err.to_string().contains("Corrupted"));
     }

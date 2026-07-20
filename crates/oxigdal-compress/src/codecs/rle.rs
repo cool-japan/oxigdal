@@ -35,9 +35,24 @@ impl RleCodec {
         }
     }
 
-    /// Create a new RLE codec with custom configuration
-    pub fn with_config(config: RleConfig) -> Self {
-        Self { config }
+    /// Create a new RLE codec with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompressionError::ConfigurationError`] if
+    /// `config.max_run_length` is `0` or exceeds `u16::MAX`, since the
+    /// on-disk run-length field is a little-endian `u16` and any larger
+    /// value would silently truncate (`run_length as u16`), corrupting
+    /// compressed output.
+    pub fn with_config(config: RleConfig) -> Result<Self> {
+        if config.max_run_length == 0 || config.max_run_length > u16::MAX as usize {
+            return Err(CompressionError::ConfigurationError(format!(
+                "RleConfig::max_run_length must be in 1..={}, got {}",
+                u16::MAX,
+                config.max_run_length
+            )));
+        }
+        Ok(Self { config })
     }
 
     /// Compress data using run-length encoding
@@ -125,7 +140,7 @@ impl RleCodec {
             return Ok(Vec::new());
         }
 
-        if input.len() % 2 != 0 {
+        if !input.len().is_multiple_of(2) {
             return Err(CompressionError::RleError(
                 "Invalid RLE data: odd length".to_string(),
             ));
@@ -236,5 +251,49 @@ mod tests {
         let data = vec![1u8; 1000];
         let ratio = RleCodec::estimate_ratio(&data);
         assert!(ratio > 100.0); // Should compress very well
+    }
+
+    #[test]
+    fn test_rle_with_config_rejects_max_run_length_above_u16_max() {
+        let config = RleConfig {
+            max_run_length: 100_000, // > u16::MAX, would silently truncate
+        };
+        let result = RleCodec::with_config(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rle_with_config_rejects_zero_max_run_length() {
+        let config = RleConfig { max_run_length: 0 };
+        let result = RleCodec::with_config(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rle_with_config_accepts_u16_max() {
+        let config = RleConfig {
+            max_run_length: u16::MAX as usize,
+        };
+        let codec = RleCodec::with_config(config).expect("valid config should be accepted");
+        let data = vec![7u8; u16::MAX as usize];
+        let compressed = codec.compress(&data).expect("compression failed");
+        let decompressed = codec.decompress(&compressed).expect("decompression failed");
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn test_rle_long_run_does_not_truncate_run_length() {
+        // Regression test: with an unvalidated max_run_length previously it was
+        // possible to construct a codec where a run of 100_000 identical bytes
+        // would truncate to 100_000 % 65536 = 34464 on the wire. With a valid
+        // (clamped) config, a run longer than max_run_length must be split into
+        // multiple runs rather than truncated, and must round-trip exactly.
+        let codec = RleCodec::new(); // default max_run_length = 65535
+        let data = vec![9u8; 100_000];
+
+        let compressed = codec.compress(&data).expect("compression failed");
+        let decompressed = codec.decompress(&compressed).expect("decompression failed");
+        assert_eq!(decompressed, data);
+        assert_eq!(decompressed.len(), 100_000);
     }
 }

@@ -14,7 +14,7 @@ fn test_preprocessing_normalization() {
     let buffer = RasterBuffer::zeros(100, 100, RasterDataType::Float32);
     let params = NormalizationParams::imagenet();
 
-    let result = normalize(&buffer, &params);
+    let result = normalize(&buffer, &params, 0);
     assert!(result.is_ok());
 
     let normalized = result
@@ -22,6 +22,33 @@ fn test_preprocessing_normalization() {
         .unwrap_or_else(|| RasterBuffer::zeros(1, 1, RasterDataType::Float32));
     assert_eq!(normalized.width(), 100);
     assert_eq!(normalized.height(), 100);
+}
+
+#[test]
+fn test_preprocessing_normalization_per_channel_stats() {
+    // Regression: normalize() must honor the requested channel's mean/std rather
+    // than silently applying channel 0 for every band.
+    // Float64 buffer so the assertions can use a tight tolerance.
+    let mut buffer = RasterBuffer::zeros(4, 4, RasterDataType::Float64);
+    for y in 0..4 {
+        for x in 0..4 {
+            let _ = buffer.set_pixel(x, y, 1.0);
+        }
+    }
+    let params = NormalizationParams::imagenet();
+
+    let g = normalize(&buffer, &params, 1).expect("normalize G channel");
+    let b = normalize(&buffer, &params, 2).expect("normalize B channel");
+
+    let expected_g = (1.0 - 0.456) / 0.224;
+    let expected_b = (1.0 - 0.406) / 0.225;
+
+    assert!((g.get_pixel(2, 2).unwrap_or(0.0) - expected_g).abs() < 1e-9);
+    assert!((b.get_pixel(2, 2).unwrap_or(0.0) - expected_b).abs() < 1e-9);
+
+    // Out-of-range channel index is a typed error, not a silent index-0 fallback.
+    let single = NormalizationParams::zero_mean_unit_variance();
+    assert!(normalize(&buffer, &single, 5).is_err());
 }
 
 #[test]
@@ -210,6 +237,22 @@ fn test_postprocessing_mask_to_polygons() {
 
     let polygons = result.ok().unwrap_or_default();
     assert!(!polygons.is_empty());
+
+    // The 20x20 solid block must trace to a real outline enclosing area 400,
+    // not a degenerate/oversized shape.
+    if let Some(poly) = polygons.first() {
+        let coords: Vec<_> = poly.exterior().coords().collect();
+        let mut area = 0.0;
+        for i in 0..coords.len().saturating_sub(1) {
+            area += coords[i].x * coords[i + 1].y - coords[i + 1].x * coords[i].y;
+        }
+        let area = (area / 2.0).abs();
+        assert!(
+            (area - 400.0).abs() < 1e-6,
+            "expected area 400, got {}",
+            area
+        );
+    }
 }
 
 #[test]
@@ -251,7 +294,7 @@ fn test_end_to_end_workflow() {
 
     // 1. Preprocessing
     let params = NormalizationParams::zero_mean_unit_variance();
-    let normalized = normalize(&input, &params);
+    let normalized = normalize(&input, &params, 0);
     assert!(normalized.is_ok());
 
     // 2. Simulate inference (would normally use a model)
@@ -300,6 +343,6 @@ fn test_error_handling() {
         mean: vec![0.0],
         std: vec![0.0],
     };
-    let result = normalize(&buffer, &params);
+    let result = normalize(&buffer, &params, 0);
     assert!(result.is_err());
 }

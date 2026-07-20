@@ -5,7 +5,7 @@
 //! - Zevenbergen-Thorne (2nd order polynomial, smooth surfaces)
 
 use crate::error::{Result, TerrainError};
-use num_traits::Float;
+use num_traits::{Float, NumCast};
 use scirs2_core::prelude::*;
 
 /// Slope units for output
@@ -29,6 +29,14 @@ pub enum SlopeAlgorithm {
 }
 
 /// Edge handling strategy
+///
+/// Note: all public entry points in this crate (`slope_horn`,
+/// `slope_zevenbergen_thorne`, the `aspect_*` functions, and
+/// `hillshade_traditional`) currently hardcode [`EdgeStrategy::Extend`]
+/// internally. `Mirror` and `Constant` are fully implemented in the shared
+/// `get_value` helper and covered by unit tests, but are not yet reachable
+/// through a public parameter. Threading edge-strategy selection through the
+/// public API is tracked as follow-up work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeStrategy {
     /// Extend edge values
@@ -73,11 +81,11 @@ where
             let center = dem[[y, x]];
 
             // Skip NoData values
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    slope[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                slope[[y, x]] = f64::NAN;
+                continue;
             }
 
             // Get 3x3 neighborhood
@@ -142,11 +150,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    slope[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                slope[[y, x]] = f64::NAN;
+                continue;
             }
 
             let b = get_value(dem, y.wrapping_sub(1), x, EdgeStrategy::Extend);
@@ -205,7 +213,7 @@ fn validate_inputs<T>(dem: &Array2<T>, cell_size: f64) -> Result<()> {
     Ok(())
 }
 
-fn get_value<T: Copy>(dem: &Array2<T>, y: usize, x: usize, strategy: EdgeStrategy) -> T {
+fn get_value<T: Copy + NumCast>(dem: &Array2<T>, y: usize, x: usize, strategy: EdgeStrategy) -> T {
     let (height, width) = dem.dim();
 
     // Check bounds
@@ -223,10 +231,16 @@ fn get_value<T: Copy>(dem: &Array2<T>, y: usize, x: usize, strategy: EdgeStrateg
                 let x_mirror = if x >= width { 2 * width - x - 2 } else { x };
                 dem[[y_mirror, x_mirror]]
             }
-            EdgeStrategy::Constant(_val) => {
-                // This is a bit of a hack - we convert i32 to T
-                // In practice, this would need proper type conversion
-                dem[[0, 0]] // Placeholder
+            EdgeStrategy::Constant(val) => {
+                // Convert the supplied i32 constant into T. If the type
+                // cannot represent the value, fall back to edge-extend
+                // (corner pixel) rather than silently returning a
+                // mistaken value or panicking.
+                NumCast::from(val).unwrap_or_else(|| {
+                    let y_clamped = y.min(height - 1);
+                    let x_clamped = x.min(width - 1);
+                    dem[[y_clamped, x_clamped]]
+                })
             }
         }
     }
@@ -313,5 +327,54 @@ mod tests {
         let dem = Array2::from_elem((2, 2), 100.0_f64);
         let result = slope_horn(&dem, 10.0, SlopeUnits::Degrees, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_value_constant_returns_supplied_constant() {
+        let mut dem = Array2::zeros((3, 3));
+        for y in 0..3 {
+            for x in 0..3 {
+                dem[[y, x]] = (y * 3 + x) as f64;
+            }
+        }
+
+        // Out-of-bounds access with Constant(42) must return 42.0, not
+        // dem[[0, 0]] (which is 0.0).
+        let v = get_value(&dem, 5, 5, EdgeStrategy::Constant(42));
+        assert_relative_eq!(v, 42.0, epsilon = 1e-12);
+
+        let v = get_value(&dem, 3, 1, EdgeStrategy::Constant(-7));
+        assert_relative_eq!(v, -7.0, epsilon = 1e-12);
+
+        // In-bounds access ignores the strategy entirely.
+        let v = get_value(&dem, 1, 1, EdgeStrategy::Constant(999));
+        assert_relative_eq!(v, dem[[1, 1]], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_get_value_mirror() {
+        let mut dem = Array2::zeros((3, 3));
+        for y in 0..3 {
+            for x in 0..3 {
+                dem[[y, x]] = (y * 3 + x) as f64;
+            }
+        }
+
+        // y == height (3) mirrors to row height-2 == 1.
+        let v = get_value(&dem, 3, 1, EdgeStrategy::Mirror);
+        assert_relative_eq!(v, dem[[1, 1]], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_get_value_extend() {
+        let mut dem = Array2::zeros((3, 3));
+        for y in 0..3 {
+            for x in 0..3 {
+                dem[[y, x]] = (y * 3 + x) as f64;
+            }
+        }
+
+        let v = get_value(&dem, 10, 10, EdgeStrategy::Extend);
+        assert_relative_eq!(v, dem[[2, 2]], epsilon = 1e-12);
     }
 }

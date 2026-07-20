@@ -198,8 +198,8 @@ pub(crate) fn heuristic_single_selectivity(pred: &Expr) -> f64 {
                 let r = heuristic_single_selectivity(right);
                 l + r - l * r
             }
-            BinaryOperator::Like => 0.1,
-            BinaryOperator::NotLike => 0.9,
+            BinaryOperator::Like | BinaryOperator::ILike => 0.1,
+            BinaryOperator::NotLike | BinaryOperator::NotILike => 0.9,
             _ => 0.5,
         },
         Expr::IsNull(_) => 0.05,
@@ -310,19 +310,19 @@ fn greedy_join_order(
             });
 
         // Apply any remaining predicates
-        if !all_predicates.is_empty() {
-            if let TableReference::Join { ref mut on, .. } = result {
-                let remaining = super::combine_predicates_with_and(all_predicates);
-                *on = match (on.take(), remaining) {
-                    (Some(existing), Some(new_pred)) => Some(Expr::BinaryOp {
-                        left: Box::new(existing),
-                        op: BinaryOperator::And,
-                        right: Box::new(new_pred),
-                    }),
-                    (Some(existing), None) => Some(existing),
-                    (None, some_pred) => some_pred,
-                };
-            }
+        if !all_predicates.is_empty()
+            && let TableReference::Join { ref mut on, .. } = result
+        {
+            let remaining = super::combine_predicates_with_and(all_predicates);
+            *on = match (on.take(), remaining) {
+                (Some(existing), Some(new_pred)) => Some(Expr::BinaryOp {
+                    left: Box::new(existing),
+                    op: BinaryOperator::And,
+                    right: Box::new(new_pred),
+                }),
+                (Some(existing), None) => Some(existing),
+                (None, some_pred) => some_pred,
+            };
         }
 
         return result;
@@ -399,26 +399,26 @@ fn greedy_join_order(
         });
 
     // Apply any remaining predicates to the outermost join's ON condition
-    if !all_predicates.is_empty() {
-        if let TableReference::Join { ref mut on, .. } = result {
-            let remaining = combine_predicates_with_and(all_predicates);
-            *on = match (on.take(), remaining) {
-                (Some(existing), Some(new_pred)) => Some(Expr::BinaryOp {
-                    left: Box::new(existing),
-                    op: BinaryOperator::And,
-                    right: Box::new(new_pred),
-                }),
-                (Some(existing), None) => Some(existing),
-                (None, some_pred) => some_pred,
-            };
-        }
+    if !all_predicates.is_empty()
+        && let TableReference::Join { ref mut on, .. } = result
+    {
+        let remaining = combine_predicates_with_and(all_predicates);
+        *on = match (on.take(), remaining) {
+            (Some(existing), Some(new_pred)) => Some(Expr::BinaryOp {
+                left: Box::new(existing),
+                op: BinaryOperator::And,
+                right: Box::new(new_pred),
+            }),
+            (Some(existing), None) => Some(existing),
+            (None, some_pred) => some_pred,
+        };
     }
 
     result
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;

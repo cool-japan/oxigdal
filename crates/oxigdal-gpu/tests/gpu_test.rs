@@ -28,11 +28,11 @@ async fn test_gpu_context_creation() {
 }
 #[tokio::test]
 async fn test_gpu_context_multiple_instances() {
-    if let Ok(ctx1) = GpuContext::new().await {
-        if let Ok(ctx2) = GpuContext::new().await {
-            assert!(ctx1.is_valid());
-            assert!(ctx2.is_valid());
-        }
+    if let Ok(ctx1) = GpuContext::new().await
+        && let Ok(ctx2) = GpuContext::new().await
+    {
+        assert!(ctx1.is_valid());
+        assert!(ctx2.is_valid());
     }
 }
 #[tokio::test]
@@ -57,14 +57,13 @@ async fn test_buffer_operations() {
         if let Ok(buffer) = buffer {
             assert_eq!(buffer.len(), 1000);
             let staging = GpuBuffer::staging(&context, 1000);
-            if let Ok(mut staging) = staging {
-                if staging.copy_from(&buffer).is_ok() {
-                    if let Ok(result) = staging.read().await {
-                        assert_eq!(result.len(), data.len());
-                        for (a, b) in result.iter().zip(data.iter()) {
-                            assert!((a - b).abs() < 1e-5);
-                        }
-                    }
+            if let Ok(mut staging) = staging
+                && staging.copy_from(&buffer).is_ok()
+                && let Ok(result) = staging.read().await
+            {
+                assert_eq!(result.len(), data.len());
+                for (a, b) in result.iter().zip(data.iter()) {
+                    assert!((a - b).abs() < 1e-5);
                 }
             }
         }
@@ -105,15 +104,13 @@ async fn test_buffer_copy_operations() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        ) && let Ok(mut dst) = GpuBuffer::new(
+            &context,
+            100,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         ) {
-            if let Ok(mut dst) = GpuBuffer::new(
-                &context,
-                100,
-                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            ) {
-                let copy_result = dst.copy_from(&src);
-                assert!(copy_result.is_ok());
-            }
+            let copy_result = dst.copy_from(&src);
+            assert!(copy_result.is_ok());
         }
     }
 }
@@ -142,18 +139,17 @@ async fn test_element_wise_operations() {
                     5,
                     BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
                 );
-                if let Ok(mut output) = output {
-                    if kernel.execute(&buffer_a, &buffer_b, &mut output).is_ok() {
-                        let staging = GpuBuffer::staging(&context, 5);
-                        if let Ok(mut staging) = staging {
-                            if staging.copy_from(&output).is_ok() {
-                                if let Ok(result) = staging.read().await {
-                                    let expected = vec![11.0, 22.0, 33.0, 44.0, 55.0];
-                                    for (r, e) in result.iter().zip(expected.iter()) {
-                                        assert!((r - e).abs() < 1e-5);
-                                    }
-                                }
-                            }
+                if let Ok(mut output) = output
+                    && kernel.execute(&buffer_a, &buffer_b, &mut output).is_ok()
+                {
+                    let staging = GpuBuffer::staging(&context, 5);
+                    if let Ok(mut staging) = staging
+                        && staging.copy_from(&output).is_ok()
+                        && let Ok(result) = staging.read().await
+                    {
+                        let expected = vec![11.0, 22.0, 33.0, 44.0, 55.0];
+                        for (r, e) in result.iter().zip(expected.iter()) {
+                            assert!((r - e).abs() < 1e-5);
                         }
                     }
                 }
@@ -178,35 +174,35 @@ async fn test_element_wise_operations_all_types() {
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             ),
         ) {
-            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Subtract) {
-                if let Ok(output) = GpuBuffer::new(
+            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Subtract)
+                && let Ok(output) = GpuBuffer::new(
                     &context,
                     3,
                     BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-                ) {
-                    let mut out = output;
-                    assert!(kernel.execute(&buf_a, &buf_b, &mut out).is_ok());
-                }
+                )
+            {
+                let mut out = output;
+                assert!(kernel.execute(&buf_a, &buf_b, &mut out).is_ok());
             }
-            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Multiply) {
-                if let Ok(output) = GpuBuffer::new(
+            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Multiply)
+                && let Ok(output) = GpuBuffer::new(
                     &context,
                     3,
                     BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-                ) {
-                    let mut out = output;
-                    assert!(kernel.execute(&buf_a, &buf_b, &mut out).is_ok());
-                }
+                )
+            {
+                let mut out = output;
+                assert!(kernel.execute(&buf_a, &buf_b, &mut out).is_ok());
             }
-            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Divide) {
-                if let Ok(output) = GpuBuffer::new(
+            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Divide)
+                && let Ok(output) = GpuBuffer::new(
                     &context,
                     3,
                     BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-                ) {
-                    let mut out = output;
-                    assert!(kernel.execute(&buf_a, &buf_b, &mut out).is_ok());
-                }
+                )
+            {
+                let mut out = output;
+                assert!(kernel.execute(&buf_a, &buf_b, &mut out).is_ok());
             }
         }
     }
@@ -227,15 +223,36 @@ async fn test_element_wise_division_by_zero() {
                 &b,
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             ),
-        ) {
-            if let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Divide) {
-                if let Ok(output) = GpuBuffer::new(
-                    &context,
-                    3,
-                    BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-                ) {
-                    let mut out = output;
-                    let _ = kernel.execute(&buf_a, &buf_b, &mut out);
+        ) && let Ok(kernel) = RasterKernel::new(&context, ElementWiseOp::Divide)
+            && let Ok(output) = GpuBuffer::new(
+                &context,
+                3,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            )
+        {
+            let mut out = output;
+            // The divide kernel must succeed even with a zero divisor.
+            assert!(
+                kernel.execute(&buf_a, &buf_b, &mut out).is_ok(),
+                "divide kernel execution must not fail on divide-by-zero input"
+            );
+
+            // Read the result back and assert the divide kernel's documented
+            // divide-by-zero contract: `safe_div` (see shaders/divide.wgsl)
+            // returns 0.0 when the denominator is (near) zero rather than
+            // producing an IEEE +inf/NaN. Every element must therefore be
+            // exactly 0.0 — not garbage and not an unexecuted buffer value.
+            if let Ok(mut staging) = GpuBuffer::staging(&context, 3)
+                && staging.copy_from(&out).is_ok()
+                && let Ok(result) = staging.read().await
+            {
+                assert_eq!(result.len(), 3, "readback must return exactly 3 elements");
+                for (idx, &value) in result.iter().enumerate() {
+                    assert_eq!(
+                        value, 0.0,
+                        "element {idx}: safe division {}/0.0 must yield 0.0, got {value}",
+                        a[idx]
+                    );
                 }
             }
         }
@@ -251,12 +268,12 @@ async fn test_compute_pipeline() {
                 .add(10.0)
                 .and_then(|p| p.multiply(2.0))
                 .and_then(|p| p.clamp(0.0, 100.0));
-            if let Ok(result) = result {
-                if let Ok(output) = result.read().await {
-                    assert_eq!(output.len(), data.len());
-                    for value in output.iter() {
-                        assert!((value - 22.0).abs() < 1e-5);
-                    }
+            if let Ok(result) = result
+                && let Ok(output) = result.read().await
+            {
+                assert_eq!(output.len(), data.len());
+                for value in output.iter() {
+                    assert!((value - 22.0).abs() < 1e-5);
                 }
             }
         }
@@ -282,12 +299,12 @@ async fn test_compute_pipeline_edge_values() {
         let data: Vec<f32> = vec![f32::MIN, 0.0, f32::MAX];
         if let Ok(pipeline) = ComputePipeline::from_data(&context, &data, 1, 3) {
             let result = pipeline.clamp(0.0, 1.0);
-            if let Ok(result) = result {
-                if let Ok(output) = result.read().await {
-                    for val in output {
-                        assert!(val.is_finite());
-                        assert!(val >= 0.0 && val <= 1.0);
-                    }
+            if let Ok(result) = result
+                && let Ok(output) = result.read().await
+            {
+                for val in output {
+                    assert!(val.is_finite());
+                    assert!(val >= 0.0 && val <= 1.0);
                 }
             }
         }
@@ -301,13 +318,12 @@ async fn test_statistics() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-        ) {
-            if let Ok(stats) = compute_statistics(&context, &buffer).await {
-                assert!((stats.min - 1.0).abs() < 1e-5);
-                assert!((stats.max - 10.0).abs() < 1e-5);
-                assert!((stats.sum - 55.0).abs() < 1e-5);
-                assert!((stats.mean() - 5.5).abs() < 1e-5);
-            }
+        ) && let Ok(stats) = compute_statistics(&context, &buffer).await
+        {
+            assert!((stats.min - 1.0).abs() < 1e-5);
+            assert!((stats.max - 10.0).abs() < 1e-5);
+            assert!((stats.sum - 55.0).abs() < 1e-5);
+            assert!((stats.mean() - 5.5).abs() < 1e-5);
         }
     }
 }
@@ -319,13 +335,12 @@ async fn test_statistics_single_value() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-        ) {
-            if let Ok(stats) = compute_statistics(&context, &buffer).await {
-                assert!((stats.min - 42.0).abs() < 1e-5);
-                assert!((stats.max - 42.0).abs() < 1e-5);
-                assert!((stats.sum - 42.0).abs() < 1e-5);
-                assert!((stats.mean() - 42.0).abs() < 1e-5);
-            }
+        ) && let Ok(stats) = compute_statistics(&context, &buffer).await
+        {
+            assert!((stats.min - 42.0).abs() < 1e-5);
+            assert!((stats.max - 42.0).abs() < 1e-5);
+            assert!((stats.sum - 42.0).abs() < 1e-5);
+            assert!((stats.mean() - 42.0).abs() < 1e-5);
         }
     }
 }
@@ -337,13 +352,12 @@ async fn test_statistics_negative_values() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-        ) {
-            if let Ok(stats) = compute_statistics(&context, &buffer).await {
-                assert!((stats.min - (-5.0)).abs() < 1e-5);
-                assert!((stats.max - 5.0).abs() < 1e-5);
-                assert!((stats.sum - 0.0).abs() < 1e-5);
-                assert!((stats.mean() - 0.0).abs() < 1e-5);
-            }
+        ) && let Ok(stats) = compute_statistics(&context, &buffer).await
+        {
+            assert!((stats.min - (-5.0)).abs() < 1e-5);
+            assert!((stats.max - 5.0).abs() < 1e-5);
+            assert!((stats.sum - 0.0).abs() < 1e-5);
+            assert!((stats.mean() - 0.0).abs() < 1e-5);
         }
     }
 }
@@ -357,25 +371,22 @@ async fn test_resampling() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        ) && let Ok(output) = resize(
+            &context,
+            &buffer,
+            4,
+            4,
+            2,
+            2,
+            ResamplingMethod::NearestNeighbor,
         ) {
-            if let Ok(output) = resize(
-                &context,
-                &buffer,
-                4,
-                4,
-                2,
-                2,
-                ResamplingMethod::NearestNeighbor,
-            ) {
-                let staging = GpuBuffer::staging(&context, 4);
-                if let Ok(mut staging) = staging {
-                    if staging.copy_from(&output).is_ok() {
-                        if let Ok(result) = staging.read().await {
-                            assert_eq!(result.len(), 4);
-                            println!("Resampled result: {:?}", result);
-                        }
-                    }
-                }
+            let staging = GpuBuffer::staging(&context, 4);
+            if let Ok(mut staging) = staging
+                && staging.copy_from(&output).is_ok()
+                && let Ok(result) = staging.read().await
+            {
+                assert_eq!(result.len(), 4);
+                println!("Resampled result: {:?}", result);
             }
         }
     }
@@ -390,24 +401,21 @@ async fn test_resampling_upscale() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        ) && let Ok(output) = resize(
+            &context,
+            &buffer,
+            2,
+            2,
+            4,
+            4,
+            ResamplingMethod::NearestNeighbor,
         ) {
-            if let Ok(output) = resize(
-                &context,
-                &buffer,
-                2,
-                2,
-                4,
-                4,
-                ResamplingMethod::NearestNeighbor,
-            ) {
-                let staging = GpuBuffer::staging(&context, 16);
-                if let Ok(mut staging) = staging {
-                    if staging.copy_from(&output).is_ok() {
-                        if let Ok(result) = staging.read().await {
-                            assert_eq!(result.len(), 16);
-                        }
-                    }
-                }
+            let staging = GpuBuffer::staging(&context, 16);
+            if let Ok(mut staging) = staging
+                && staging.copy_from(&output).is_ok()
+                && let Ok(result) = staging.read().await
+            {
+                assert_eq!(result.len(), 16);
             }
         }
     }
@@ -420,12 +428,11 @@ async fn test_resampling_bilinear() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        ) {
-            if let Ok(output) = resize(&context, &buffer, 2, 2, 4, 4, ResamplingMethod::Bilinear) {
-                let staging = GpuBuffer::staging(&context, 16);
-                if let Ok(mut staging) = staging {
-                    assert!(staging.copy_from(&output).is_ok());
-                }
+        ) && let Ok(output) = resize(&context, &buffer, 2, 2, 4, 4, ResamplingMethod::Bilinear)
+        {
+            let staging = GpuBuffer::staging(&context, 16);
+            if let Ok(mut staging) = staging {
+                assert!(staging.copy_from(&output).is_ok());
             }
         }
     }
@@ -441,18 +448,16 @@ async fn test_gaussian_blur() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        ) {
-            if let Ok(output) = gaussian_blur(&context, &buffer, 64, 64, 2.0) {
-                let staging = GpuBuffer::staging(&context, 64 * 64);
-                if let Ok(mut staging) = staging {
-                    if staging.copy_from(&output).is_ok() {
-                        if let Ok(result) = staging.read().await {
-                            let center_value = result[32 * 64 + 32];
-                            assert!(center_value > 0.0);
-                            println!("Center value after blur: {}", center_value);
-                        }
-                    }
-                }
+        ) && let Ok(output) = gaussian_blur(&context, &buffer, 64, 64, 2.0)
+        {
+            let staging = GpuBuffer::staging(&context, 64 * 64);
+            if let Ok(mut staging) = staging
+                && staging.copy_from(&output).is_ok()
+                && let Ok(result) = staging.read().await
+            {
+                let center_value = result[32 * 64 + 32];
+                assert!(center_value > 0.0);
+                println!("Center value after blur: {}", center_value);
             }
         }
     }
@@ -466,12 +471,11 @@ async fn test_gaussian_blur_small_sigma() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        ) {
-            if let Ok(output) = gaussian_blur(&context, &buffer, 32, 32, 0.5) {
-                let staging = GpuBuffer::staging(&context, 32 * 32);
-                if let Ok(mut staging) = staging {
-                    assert!(staging.copy_from(&output).is_ok());
-                }
+        ) && let Ok(output) = gaussian_blur(&context, &buffer, 32, 32, 0.5)
+        {
+            let staging = GpuBuffer::staging(&context, 32 * 32);
+            if let Ok(mut staging) = staging {
+                assert!(staging.copy_from(&output).is_ok());
             }
         }
     }
@@ -485,12 +489,11 @@ async fn test_gaussian_blur_large_sigma() {
             &context,
             &data,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        ) {
-            if let Ok(output) = gaussian_blur(&context, &buffer, 32, 32, 10.0) {
-                let staging = GpuBuffer::staging(&context, 32 * 32);
-                if let Ok(mut staging) = staging {
-                    assert!(staging.copy_from(&output).is_ok());
-                }
+        ) && let Ok(output) = gaussian_blur(&context, &buffer, 32, 32, 10.0)
+        {
+            let staging = GpuBuffer::staging(&context, 32 * 32);
+            if let Ok(mut staging) = staging {
+                assert!(staging.copy_from(&output).is_ok());
             }
         }
     }
@@ -571,9 +574,24 @@ async fn test_raster_buffer_many_bands() {
 }
 #[tokio::test]
 async fn test_is_gpu_available() {
+    // Cross-validate the two public detection entry points against each other
+    // instead of asserting a tautology. `is_gpu_available()` succeeds only when
+    // a full GpuContext (adapter + device) can be created, which strictly
+    // implies that adapter enumeration must have found at least one adapter.
+    // (The converse need not hold: an adapter can exist while device creation
+    // fails, so we only assert the sound direction.)
+    let adapters = get_available_adapters().await;
     let available = is_gpu_available().await;
-    println!("GPU available: {}", available);
-    assert!(available || !available);
+    println!(
+        "GPU available: {available}; adapters found: {}",
+        adapters.len()
+    );
+    if available {
+        assert!(
+            !adapters.is_empty(),
+            "is_gpu_available() reports a usable GPU but get_available_adapters() found none"
+        );
+    }
 }
 #[tokio::test]
 async fn test_get_available_adapters() {
@@ -585,6 +603,36 @@ async fn test_get_available_adapters() {
 }
 #[tokio::test]
 async fn test_fallback_to_cpu() {
-    println!("CPU fallback mechanisms are in place");
-    assert!(true);
+    // Actually exercise the CPU-fallback mechanism rather than just printing.
+    // `execute_with_fallback` runs the GPU closure; on a fallback-triggering
+    // error it must invoke the CPU closure and report the CPU execution path.
+    let cfg = FallbackConfig::default();
+
+    // GPU op fails with a device-lost error (a fallback-triggering kind); the
+    // CPU op computes a known reference value.
+    let input: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    let expected_sum: f32 = input.iter().sum();
+
+    let result = execute_with_fallback(
+        &cfg,
+        || Err::<f32, GpuError>(GpuError::device_lost("simulated GPU failure")),
+        || input.iter().sum::<f32>(),
+    )
+    .expect("fallback must produce a CPU result, not propagate the error");
+
+    assert_eq!(
+        result.path,
+        ExecutionPath::Cpu,
+        "a device-lost error must route execution to the CPU path"
+    );
+    assert_eq!(
+        result.value, expected_sum,
+        "the CPU fallback must compute the reference value"
+    );
+
+    // Sanity check the success path: when the GPU op succeeds, no fallback.
+    let ok_result = execute_with_fallback(&cfg, || Ok::<f32, GpuError>(42.0), || 0.0)
+        .expect("successful GPU op must not error");
+    assert_eq!(ok_result.path, ExecutionPath::Gpu);
+    assert_eq!(ok_result.value, 42.0);
 }

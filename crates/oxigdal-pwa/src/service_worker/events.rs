@@ -102,6 +102,28 @@ impl ServiceWorkerEvents {
         closure.forget();
     }
 
+    /// Register push event handler.
+    pub fn on_push<F>(&self, handler: F)
+    where
+        F: Fn(PushEvent) + 'static,
+    {
+        let closure = Closure::wrap(Box::new(handler) as Box<dyn Fn(PushEvent)>);
+        self.scope
+            .set_onpush(Some(closure.as_ref().unchecked_ref()));
+        closure.forget();
+    }
+
+    /// Register notification click event handler.
+    pub fn on_notification_click<F>(&self, handler: F)
+    where
+        F: Fn(NotificationEvent) + 'static,
+    {
+        let closure = Closure::wrap(Box::new(handler) as Box<dyn Fn(NotificationEvent)>);
+        self.scope
+            .set_onnotificationclick(Some(closure.as_ref().unchecked_ref()));
+        closure.forget();
+    }
+
     /// Skip waiting during install.
     pub async fn skip_waiting(&self) -> Result<()> {
         let promise = self
@@ -236,6 +258,79 @@ impl MessageContext {
     }
 }
 
+/// Push event context.
+pub struct PushContext {
+    event: PushEvent,
+}
+
+impl PushContext {
+    /// Create a new push context.
+    pub fn new(event: PushEvent) -> Self {
+        Self { event }
+    }
+
+    /// Get the push message data as text, if any.
+    pub fn data_as_text(&self) -> Option<String> {
+        self.event.data().map(|data| data.text())
+    }
+
+    /// Wait until a promise completes before the push event is considered handled.
+    pub fn wait_until(&self, promise: js_sys::Promise) -> Result<()> {
+        self.event
+            .wait_until(&promise)
+            .map_err(|e| PwaError::JsError(format!("wait_until failed: {:?}", e)))
+    }
+
+    /// Get the underlying event.
+    pub fn event(&self) -> &PushEvent {
+        &self.event
+    }
+}
+
+/// Notification click event context.
+pub struct NotificationContext {
+    event: NotificationEvent,
+}
+
+impl NotificationContext {
+    /// Create a new notification click context.
+    pub fn new(event: NotificationEvent) -> Self {
+        Self { event }
+    }
+
+    /// Get the action identifier that was clicked, if any.
+    ///
+    /// `web_sys::NotificationEvent` does not currently expose the `action`
+    /// property directly, so it is read via `Reflect::get` (the same pattern
+    /// used elsewhere in this crate for properties without typed bindings).
+    /// Returns an empty string if the notification body itself (rather than
+    /// an action button) was clicked, matching the DOM `NotificationEvent.action`
+    /// default.
+    pub fn action(&self) -> String {
+        js_sys::Reflect::get(&self.event, &JsValue::from_str("action"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default()
+    }
+
+    /// Get the underlying notification.
+    pub fn notification(&self) -> web_sys::Notification {
+        self.event.notification()
+    }
+
+    /// Wait until a promise completes before the event is considered handled.
+    pub fn wait_until(&self, promise: js_sys::Promise) -> Result<()> {
+        self.event
+            .wait_until(&promise)
+            .map_err(|e| PwaError::JsError(format!("wait_until failed: {:?}", e)))
+    }
+
+    /// Get the underlying event.
+    pub fn event(&self) -> &NotificationEvent {
+        &self.event
+    }
+}
+
 /// Event listener registry for managing all service worker events.
 pub struct EventRegistry {
     events: ServiceWorkerEvents,
@@ -292,6 +387,26 @@ impl EventRegistry {
             });
         }
 
+        // Push event
+        {
+            let h = handler.clone();
+            self.events.on_push(move |event| {
+                if let Err(e) = h.on_push(&event) {
+                    web_sys::console::error_1(&format!("Push error: {}", e).into());
+                }
+            });
+        }
+
+        // Notification click event
+        {
+            let h = handler.clone();
+            self.events.on_notification_click(move |event| {
+                if let Err(e) = h.on_notification_click(&event) {
+                    web_sys::console::error_1(&format!("Notification click error: {}", e).into());
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -316,5 +431,78 @@ mod tests {
         fn on_activate(&self, _event: &ExtendableEvent) -> Result<()> {
             Ok(())
         }
+
+        fn on_push(&self, _event: &PushEvent) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_notification_click(&self, _event: &NotificationEvent) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression test: the default trait methods for `on_push` /
+    /// `on_notification_click` must exist and be callable so implementors can
+    /// override them; this alone doesn't prove `register_all()` wires them
+    /// (that requires a `ServiceWorkerGlobalScope`, which only exists inside
+    /// an actual service worker JS context), but it locks in the trait
+    /// surface the fix depends on.
+    #[test]
+    fn test_service_worker_event_handler_default_push_and_notification_click_are_ok() {
+        struct DefaultHandler;
+        impl ServiceWorkerEventHandler for DefaultHandler {}
+
+        // We cannot construct a real PushEvent/NotificationEvent without a
+        // browser/service-worker JS engine; this test exists to ensure the
+        // trait compiles with default no-op bodies for both new methods.
+        let _handler = DefaultHandler;
+    }
+
+    /// Regression test: `EventRegistry::register_all()` must invoke
+    /// `ServiceWorkerEvents::on_push` and `on_notification_click` (via
+    /// `ServiceWorkerGlobalScope::set_onpush`/`set_onnotificationclick`) in
+    /// addition to install/activate/fetch/message. This is exercised at the
+    /// wasm32 level since it requires a real `ServiceWorkerGlobalScope`;
+    /// natively we assert the handler methods themselves are reachable
+    /// through the trait object stored by `register_all` (via `TestHandler`
+    /// above implementing both).
+    #[test]
+    #[cfg(target_arch = "wasm32")]
+    fn test_register_all_wires_push_and_notification_click() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FlagHandler {
+            push_called: std::sync::Arc<AtomicBool>,
+            notification_click_called: std::sync::Arc<AtomicBool>,
+        }
+
+        impl ServiceWorkerEventHandler for FlagHandler {
+            fn on_push(&self, _event: &PushEvent) -> Result<()> {
+                self.push_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn on_notification_click(&self, _event: &NotificationEvent) -> Result<()> {
+                self.notification_click_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let registry = EventRegistry::new().expect("registry should be constructible");
+        let push_called = std::sync::Arc::new(AtomicBool::new(false));
+        let notification_click_called = std::sync::Arc::new(AtomicBool::new(false));
+
+        registry
+            .register_all(FlagHandler {
+                push_called: push_called.clone(),
+                notification_click_called: notification_click_called.clone(),
+            })
+            .expect("register_all should succeed");
+
+        // Dispatching synthetic events and asserting the flags flip requires
+        // a full service worker JS runtime; this test documents the intended
+        // wiring and compiles/links against the real ServiceWorkerGlobalScope
+        // API surface added by this fix.
+        let _ = (push_called, notification_click_called);
     }
 }

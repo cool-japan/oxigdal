@@ -5,7 +5,7 @@
 //!   - Publicly verified online Vincenty calculators (WGS84)
 //!   - BeamCalc / Geoscience Australia online tools
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxigdal_proj::geodesic::{
     GeodesicError, GeodesicParams, WGS84_A, WGS84_B, WGS84_MEAN_RADIUS, haversine_distance_m,

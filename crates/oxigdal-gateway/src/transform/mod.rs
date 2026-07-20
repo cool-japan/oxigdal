@@ -213,16 +213,16 @@ impl TransformEngine {
 
     /// Checks if a rule matches the request.
     fn matches_rule(&self, rule: &TransformRule, path: &str, method: &str) -> bool {
-        if let Some(pattern) = &rule.path_pattern {
-            if !Self::matches_pattern(path, pattern) {
-                return false;
-            }
+        if let Some(pattern) = &rule.path_pattern
+            && !Self::matches_pattern(path, pattern)
+        {
+            return false;
         }
 
-        if let Some(pattern) = &rule.method_pattern {
-            if method != pattern {
-                return false;
-            }
+        if let Some(pattern) = &rule.method_pattern
+            && method != pattern
+        {
+            return false;
         }
 
         true

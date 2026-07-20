@@ -244,6 +244,7 @@ impl SinkOperator for LoggingSink {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use chrono::Utc;

@@ -1,0 +1,16 @@
+{
+  "datasets": [
+    {
+      "name": "Site K-7 DEM (synthetic)",
+      "url": "data/site-k7.tif",
+      "description": "512×512 Float32 DEM, procedurally generated — an excavation pit, a linear trench and a spike cluster are planted for the anomaly workbench. SYNTHETIC DATA: no real location is depicted.",
+      "bands": 1,
+      "resolution": "~30 m nominal",
+      "source": "oxigdal-geotiff example geovault_scene (seeded, deterministic)"
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "note": "Local-only datasets. GeoVault's clean-room policy (connect-src 'self') means it can never load remote data; every dataset ships with the app or is dropped in by the analyst."
+  }
+}

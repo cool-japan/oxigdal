@@ -398,10 +398,10 @@ impl HttpPmTilesReader {
         let length = end_inclusive.saturating_sub(start) + 1;
 
         // Fast path: ETag cache hit — no network call needed.
-        if let Some(ref mut cache) = self.etag_cache {
-            if let Some((cached_data, _etag)) = cache.get(start, length) {
-                return Ok(cached_data);
-            }
+        if let Some(ref mut cache) = self.etag_cache
+            && let Some((cached_data, _etag)) = cache.get(start, length)
+        {
+            return Ok(cached_data);
         }
 
         // Slow path: network fetch.

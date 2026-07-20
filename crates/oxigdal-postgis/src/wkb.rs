@@ -4,7 +4,7 @@
 //! PostGIS uses Extended WKB (EWKB) which includes SRID information.
 
 use crate::error::{Result, WkbError};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use oxigdal_core::vector::geometry::*;
 use std::io::Cursor;
 
@@ -34,6 +34,48 @@ impl ByteOrder {
             _ => Err(WkbError::InvalidByteOrder { byte }.into()),
         }
     }
+}
+
+/// Reads a `u32` from `cursor` using the endianness indicated by `byte_order`.
+fn read_u32(cursor: &mut Cursor<&[u8]>, byte_order: ByteOrder) -> Result<u32> {
+    match byte_order {
+        ByteOrder::LittleEndian => cursor.read_u32::<LittleEndian>(),
+        ByteOrder::BigEndian => cursor.read_u32::<BigEndian>(),
+    }
+    .map_err(|e| {
+        WkbError::DecodingFailed {
+            message: e.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Reads an `i32` from `cursor` using the endianness indicated by `byte_order`.
+fn read_i32(cursor: &mut Cursor<&[u8]>, byte_order: ByteOrder) -> Result<i32> {
+    match byte_order {
+        ByteOrder::LittleEndian => cursor.read_i32::<LittleEndian>(),
+        ByteOrder::BigEndian => cursor.read_i32::<BigEndian>(),
+    }
+    .map_err(|e| {
+        WkbError::DecodingFailed {
+            message: e.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Reads an `f64` from `cursor` using the endianness indicated by `byte_order`.
+fn read_f64(cursor: &mut Cursor<&[u8]>, byte_order: ByteOrder) -> Result<f64> {
+    match byte_order {
+        ByteOrder::LittleEndian => cursor.read_f64::<LittleEndian>(),
+        ByteOrder::BigEndian => cursor.read_f64::<BigEndian>(),
+    }
+    .map_err(|e| {
+        WkbError::DecodingFailed {
+            message: e.to_string(),
+        }
+        .into()
+    })
 }
 
 /// WKB geometry type codes
@@ -410,19 +452,17 @@ impl WkbDecoder {
     }
 
     fn decode_geometry(&mut self, cursor: &mut Cursor<&[u8]>) -> Result<Geometry> {
-        // Read byte order
-        let byte_order = cursor.read_u8().map_err(|e| WkbError::DecodingFailed {
+        // Read byte order marker and use it for every subsequent field in
+        // this geometry (WKB permits both NDR/little-endian and
+        // XDR/big-endian encodings; PostGIS and other producers may emit
+        // either).
+        let byte_order_byte = cursor.read_u8().map_err(|e| WkbError::DecodingFailed {
             message: e.to_string(),
         })?;
-        let _byte_order = ByteOrder::from_byte(byte_order)?;
+        let byte_order = ByteOrder::from_byte(byte_order_byte)?;
 
         // Read geometry type
-        let type_code =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+        let type_code = read_u32(cursor, byte_order)?;
 
         // Extract flags
         let has_srid = (type_code & SRID_FLAG) != 0;
@@ -431,37 +471,32 @@ impl WkbDecoder {
 
         // Read SRID if present
         if has_srid {
-            self.srid =
-                Some(
-                    cursor
-                        .read_i32::<LittleEndian>()
-                        .map_err(|e| WkbError::DecodingFailed {
-                            message: e.to_string(),
-                        })?,
-                );
+            self.srid = Some(read_i32(cursor, byte_order)?);
         }
 
         let geom_type = WkbGeometryType::from_code(type_code)?;
 
         match geom_type {
-            WkbGeometryType::Point => Ok(Geometry::Point(self.decode_point(cursor, has_z, has_m)?)),
+            WkbGeometryType::Point => Ok(Geometry::Point(
+                self.decode_point(cursor, byte_order, has_z, has_m)?,
+            )),
             WkbGeometryType::LineString => Ok(Geometry::LineString(
-                self.decode_linestring(cursor, has_z, has_m)?,
+                self.decode_linestring(cursor, byte_order, has_z, has_m)?,
             )),
             WkbGeometryType::Polygon => Ok(Geometry::Polygon(
-                self.decode_polygon(cursor, has_z, has_m)?,
+                self.decode_polygon(cursor, byte_order, has_z, has_m)?,
             )),
-            WkbGeometryType::MultiPoint => {
-                Ok(Geometry::MultiPoint(self.decode_multipoint(cursor)?))
-            }
+            WkbGeometryType::MultiPoint => Ok(Geometry::MultiPoint(
+                self.decode_multipoint(cursor, byte_order)?,
+            )),
             WkbGeometryType::MultiLineString => Ok(Geometry::MultiLineString(
-                self.decode_multilinestring(cursor)?,
+                self.decode_multilinestring(cursor, byte_order)?,
             )),
-            WkbGeometryType::MultiPolygon => {
-                Ok(Geometry::MultiPolygon(self.decode_multipolygon(cursor)?))
-            }
+            WkbGeometryType::MultiPolygon => Ok(Geometry::MultiPolygon(
+                self.decode_multipolygon(cursor, byte_order)?,
+            )),
             WkbGeometryType::GeometryCollection => Ok(Geometry::GeometryCollection(
-                self.decode_geometrycollection(cursor)?,
+                self.decode_geometrycollection(cursor, byte_order)?,
             )),
         }
     }
@@ -469,40 +504,21 @@ impl WkbDecoder {
     fn decode_coordinate(
         &self,
         cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
         has_z: bool,
         has_m: bool,
     ) -> Result<Coordinate> {
-        let x = cursor
-            .read_f64::<LittleEndian>()
-            .map_err(|e| WkbError::DecodingFailed {
-                message: e.to_string(),
-            })?;
-        let y = cursor
-            .read_f64::<LittleEndian>()
-            .map_err(|e| WkbError::DecodingFailed {
-                message: e.to_string(),
-            })?;
+        let x = read_f64(cursor, byte_order)?;
+        let y = read_f64(cursor, byte_order)?;
 
         let z = if has_z {
-            Some(
-                cursor
-                    .read_f64::<LittleEndian>()
-                    .map_err(|e| WkbError::DecodingFailed {
-                        message: e.to_string(),
-                    })?,
-            )
+            Some(read_f64(cursor, byte_order)?)
         } else {
             None
         };
 
         let m = if has_m {
-            Some(
-                cursor
-                    .read_f64::<LittleEndian>()
-                    .map_err(|e| WkbError::DecodingFailed {
-                        message: e.to_string(),
-                    })?,
-            )
+            Some(read_f64(cursor, byte_order)?)
         } else {
             None
         };
@@ -510,27 +526,29 @@ impl WkbDecoder {
         Ok(Coordinate { x, y, z, m })
     }
 
-    fn decode_point(&self, cursor: &mut Cursor<&[u8]>, has_z: bool, has_m: bool) -> Result<Point> {
-        let coord = self.decode_coordinate(cursor, has_z, has_m)?;
+    fn decode_point(
+        &self,
+        cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
+        has_z: bool,
+        has_m: bool,
+    ) -> Result<Point> {
+        let coord = self.decode_coordinate(cursor, byte_order, has_z, has_m)?;
         Ok(Point { coord })
     }
 
     fn decode_linestring(
         &self,
         cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
         has_z: bool,
         has_m: bool,
     ) -> Result<LineString> {
-        let num_points =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+        let num_points = read_u32(cursor, byte_order)?;
 
         let mut coords = Vec::with_capacity(num_points as usize);
         for _ in 0..num_points {
-            coords.push(self.decode_coordinate(cursor, has_z, has_m)?);
+            coords.push(self.decode_coordinate(cursor, byte_order, has_z, has_m)?);
         }
 
         LineString::new(coords).map_err(|e| e.into())
@@ -539,15 +557,11 @@ impl WkbDecoder {
     fn decode_polygon(
         &self,
         cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
         has_z: bool,
         has_m: bool,
     ) -> Result<Polygon> {
-        let num_rings =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+        let num_rings = read_u32(cursor, byte_order)?;
 
         if num_rings == 0 {
             return Err(WkbError::InvalidRing {
@@ -557,12 +571,12 @@ impl WkbDecoder {
         }
 
         // Read exterior ring
-        let exterior = self.decode_ring(cursor, has_z, has_m)?;
+        let exterior = self.decode_ring(cursor, byte_order, has_z, has_m)?;
 
         // Read interior rings
         let mut interiors = Vec::with_capacity((num_rings - 1) as usize);
         for _ in 1..num_rings {
-            interiors.push(self.decode_ring(cursor, has_z, has_m)?);
+            interiors.push(self.decode_ring(cursor, byte_order, has_z, has_m)?);
         }
 
         Polygon::new(exterior, interiors).map_err(|e| e.into())
@@ -571,31 +585,26 @@ impl WkbDecoder {
     fn decode_ring(
         &self,
         cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
         has_z: bool,
         has_m: bool,
     ) -> Result<LineString> {
-        let num_points =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+        let num_points = read_u32(cursor, byte_order)?;
 
         let mut coords = Vec::with_capacity(num_points as usize);
         for _ in 0..num_points {
-            coords.push(self.decode_coordinate(cursor, has_z, has_m)?);
+            coords.push(self.decode_coordinate(cursor, byte_order, has_z, has_m)?);
         }
 
         Ok(LineString { coords })
     }
 
-    fn decode_multipoint(&mut self, cursor: &mut Cursor<&[u8]>) -> Result<MultiPoint> {
-        let num_points =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+    fn decode_multipoint(
+        &mut self,
+        cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
+    ) -> Result<MultiPoint> {
+        let num_points = read_u32(cursor, byte_order)?;
 
         let mut points = Vec::with_capacity(num_points as usize);
         for _ in 0..num_points {
@@ -612,13 +621,12 @@ impl WkbDecoder {
         Ok(MultiPoint { points })
     }
 
-    fn decode_multilinestring(&mut self, cursor: &mut Cursor<&[u8]>) -> Result<MultiLineString> {
-        let num_linestrings =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+    fn decode_multilinestring(
+        &mut self,
+        cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
+    ) -> Result<MultiLineString> {
+        let num_linestrings = read_u32(cursor, byte_order)?;
 
         let mut line_strings = Vec::with_capacity(num_linestrings as usize);
         for _ in 0..num_linestrings {
@@ -635,13 +643,12 @@ impl WkbDecoder {
         Ok(MultiLineString { line_strings })
     }
 
-    fn decode_multipolygon(&mut self, cursor: &mut Cursor<&[u8]>) -> Result<MultiPolygon> {
-        let num_polygons =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+    fn decode_multipolygon(
+        &mut self,
+        cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
+    ) -> Result<MultiPolygon> {
+        let num_polygons = read_u32(cursor, byte_order)?;
 
         let mut polygons = Vec::with_capacity(num_polygons as usize);
         for _ in 0..num_polygons {
@@ -661,13 +668,9 @@ impl WkbDecoder {
     fn decode_geometrycollection(
         &mut self,
         cursor: &mut Cursor<&[u8]>,
+        byte_order: ByteOrder,
     ) -> Result<GeometryCollection> {
-        let num_geometries =
-            cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| WkbError::DecodingFailed {
-                    message: e.to_string(),
-                })?;
+        let num_geometries = read_u32(cursor, byte_order)?;
 
         let mut geometries = Vec::with_capacity(num_geometries as usize);
         for _ in 0..num_geometries {
@@ -819,5 +822,86 @@ mod tests {
         let decoded = decoder.decode(&wkb).ok();
         assert!(decoded.is_some());
         assert_eq!(decoder.srid(), Some(4326));
+    }
+
+    /// Regression test: a big-endian (XDR) WKB Point, legal per the WKB
+    /// spec and producible by engines other than this crate's own
+    /// little-endian-only encoder, must be decoded with the byte order
+    /// declared by its own marker byte -- not silently reinterpreted as
+    /// little-endian garbage.
+    #[test]
+    fn test_point_decode_big_endian() {
+        let mut wkb = Vec::new();
+        wkb.push(0x00u8); // XDR / big-endian marker
+        wkb.extend_from_slice(&1u32.to_be_bytes()); // Point type code
+        wkb.extend_from_slice(&1.5f64.to_be_bytes()); // x
+        wkb.extend_from_slice(&2.5f64.to_be_bytes()); // y
+
+        let mut decoder = WkbDecoder::new();
+        let decoded = decoder.decode(&wkb).expect("big-endian decode failed");
+
+        if let Geometry::Point(point) = decoded {
+            assert_eq!(point.coord.x, 1.5);
+            assert_eq!(point.coord.y, 2.5);
+        } else {
+            panic!("Expected Point geometry");
+        }
+    }
+
+    /// Regression test: a big-endian WKB LineString must have its point
+    /// count and every coordinate read as big-endian, not just the header.
+    #[test]
+    fn test_linestring_decode_big_endian() {
+        let mut wkb = Vec::new();
+        wkb.push(0x00u8); // XDR / big-endian marker
+        wkb.extend_from_slice(&2u32.to_be_bytes()); // LineString type code
+        wkb.extend_from_slice(&2u32.to_be_bytes()); // num points
+        wkb.extend_from_slice(&0.0f64.to_be_bytes());
+        wkb.extend_from_slice(&0.0f64.to_be_bytes());
+        wkb.extend_from_slice(&10.0f64.to_be_bytes());
+        wkb.extend_from_slice(&20.0f64.to_be_bytes());
+
+        let mut decoder = WkbDecoder::new();
+        let decoded = decoder.decode(&wkb).expect("big-endian decode failed");
+
+        if let Geometry::LineString(ls) = decoded {
+            assert_eq!(ls.coords.len(), 2);
+            assert_eq!(ls.coords[1].x, 10.0);
+            assert_eq!(ls.coords[1].y, 20.0);
+        } else {
+            panic!("Expected LineString geometry");
+        }
+    }
+
+    /// Regression test: WKB permits each embedded sub-geometry of a
+    /// multi-geometry to declare its own byte order independent of the
+    /// enclosing collection's. The outer MultiPoint header here is
+    /// little-endian while its single member Point is big-endian.
+    #[test]
+    fn test_multipoint_mixed_byte_order_members() {
+        let mut wkb = Vec::new();
+        // Outer header: little-endian MultiPoint with 1 member.
+        wkb.push(0x01u8);
+        wkb.extend_from_slice(&4u32.to_le_bytes()); // MultiPoint type code
+        wkb.extend_from_slice(&1u32.to_le_bytes()); // num points
+
+        // Member: big-endian Point.
+        wkb.push(0x00u8);
+        wkb.extend_from_slice(&1u32.to_be_bytes());
+        wkb.extend_from_slice(&3.0f64.to_be_bytes());
+        wkb.extend_from_slice(&4.0f64.to_be_bytes());
+
+        let mut decoder = WkbDecoder::new();
+        let decoded = decoder
+            .decode(&wkb)
+            .expect("mixed byte-order decode failed");
+
+        if let Geometry::MultiPoint(mp) = decoded {
+            assert_eq!(mp.points.len(), 1);
+            assert_eq!(mp.points[0].coord.x, 3.0);
+            assert_eq!(mp.points[0].coord.y, 4.0);
+        } else {
+            panic!("Expected MultiPoint geometry");
+        }
     }
 }

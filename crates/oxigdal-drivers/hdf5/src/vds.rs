@@ -10,7 +10,7 @@
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Hyperslab selection - defines a rectangular region in a dataset
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,16 +50,13 @@ impl Hyperslab {
         count: Vec<usize>,
         block: Vec<usize>,
     ) -> Result<Self> {
-        if start.len() != stride.len()
-            || start.len() != count.len()
-            || start.len() != block.len()
-        {
+        if start.len() != stride.len() || start.len() != count.len() || start.len() != block.len() {
             return Err(Hdf5Error::invalid_dimensions(
                 "All parameters must have same length",
             ));
         }
 
-        for (&s, &b) in stride.iter().zip(block.iter())) {
+        for (&s, &b) in stride.iter().zip(block.iter()) {
             if s == 0 {
                 return Err(Hdf5Error::invalid_dimensions("Stride cannot be zero"));
             }
@@ -117,9 +114,7 @@ impl Hyperslab {
             .zip(self.stride.iter())
             .zip(self.count.iter())
             .zip(self.block.iter())
-            .map(|(((&start, &stride), &count), &block)| {
-                start + (count - 1) * stride + block
-            })
+            .map(|(((&start, &stride), &count), &block)| start + (count - 1) * stride + block)
             .collect()
     }
 
@@ -148,11 +143,11 @@ impl Hyperslab {
                 "Hyperslab dimensions ({}) must match dataset dimensions ({})",
                 self.ndims(),
                 dataset_dims.len()
-            ));
+            )));
         }
 
         let extent = self.extent();
-        for (_i, (&ext, &dim)) in extent.iter().zip(dataset_dims.iter()).enumerate() {
+        for (&ext, &dim) in extent.iter().zip(dataset_dims.iter()) {
             if ext > dim {
                 return Err(Hdf5Error::OutOfBounds {
                     index: ext,
@@ -178,11 +173,7 @@ pub struct SourceDataset {
 
 impl SourceDataset {
     /// Create a new source dataset reference
-    pub fn new(
-        file_path: PathBuf,
-        dataset_path: String,
-        source_selection: Hyperslab,
-    ) -> Self {
+    pub fn new(file_path: PathBuf, dataset_path: String, source_selection: Hyperslab) -> Self {
         Self {
             file_path,
             dataset_path,
@@ -206,8 +197,8 @@ impl SourceDataset {
     }
 
     /// Check if source is in the same file
-    pub fn is_same_file(&self, current_file: &PathBuf) -> bool {
-        self.file_path == *current_file
+    pub fn is_same_file(&self, current_file: &Path) -> bool {
+        self.file_path.as_path() == current_file
     }
 }
 
@@ -229,7 +220,7 @@ impl VdsMapping {
                 "Source ({}) and destination ({}) must have same number of elements",
                 source.source_selection.num_elements(),
                 dest_selection.num_elements()
-            ));
+            )));
         }
 
         Ok(Self {
@@ -283,7 +274,7 @@ impl VirtualDataset {
         // Validate destination against virtual dataset dimensions
         mapping.dest_selection.validate(&self.dims)?;
 
-        self.mappings.push(mapping));
+        self.mappings.push(mapping);
         Ok(())
     }
 
@@ -316,7 +307,7 @@ impl VirtualDataset {
     pub fn find_mappings_for_region(&self, region: &Hyperslab) -> Vec<&VdsMapping> {
         self.mappings
             .iter()
-            .filter(|m| m.covers_region(region)))
+            .filter(|m| m.covers_region(region))
             .collect()
     }
 
@@ -362,13 +353,13 @@ impl VdsBuilder {
         source_dims: Vec<usize>,
         dest_start: Vec<usize>,
     ) -> Result<Self> {
-        let source_selection = Hyperslab::new(vec![0; source_dims.len()], source_dims.clone()))?;
+        let source_selection = Hyperslab::new(vec![0; source_dims.len()], source_dims.clone())?;
         let dest_selection = Hyperslab::new(dest_start, source_dims)?;
 
         let source = SourceDataset::new(file_path, dataset_path, source_selection);
         let mapping = VdsMapping::new(source, dest_selection)?;
 
-        self.mappings.push(mapping));
+        self.mappings.push(mapping);
         Ok(self)
     }
 
@@ -383,7 +374,7 @@ impl VdsBuilder {
         let source = SourceDataset::new(file_path, dataset_path, source_selection);
         let mapping = VdsMapping::new(source, dest_selection)?;
 
-        self.mappings.push(mapping));
+        self.mappings.push(mapping);
         Ok(self)
     }
 
@@ -429,13 +420,9 @@ pub fn create_vds_from_pattern(
     datatype: Datatype,
 ) -> Result<VirtualDataset> {
     match pattern {
-        VdsPattern::Concatenate { axis } => {
-            create_concatenated_vds(name, axis, sources, datatype)
-        }
+        VdsPattern::Concatenate { axis } => create_concatenated_vds(name, axis, sources, datatype),
         VdsPattern::Stack => create_stacked_vds(name, sources, datatype),
-        VdsPattern::Mosaic { grid_dims } => {
-            create_mosaic_vds(name, grid_dims, sources, datatype)
-        }
+        VdsPattern::Mosaic { grid_dims } => create_mosaic_vds(name, grid_dims, sources, datatype),
     }
 }
 
@@ -459,7 +446,7 @@ fn create_concatenated_vds(
         return Err(Hdf5Error::invalid_dimensions(format!(
             "Axis {} exceeds number of dimensions {}",
             axis, ndims
-        ));
+        )));
     }
 
     // Verify all sources have compatible dimensions
@@ -474,7 +461,7 @@ fn create_concatenated_vds(
                 return Err(Hdf5Error::invalid_dimensions(format!(
                     "Dimension mismatch at dimension {}",
                     i
-                ));
+                )));
             }
         }
     }
@@ -527,8 +514,8 @@ fn create_stacked_vds(
 
     let mut builder = VdsBuilder::new(name, vds_dims, datatype);
 
-    for (i, (file_path, dataset_path, dims)) in sources.into_iter(.enumerate() {
-        let source_selection = Hyperslab::new(vec![0; dims.len()], dims.clone()))?;
+    for (i, (file_path, dataset_path, dims)) in sources.into_iter().enumerate() {
+        let source_selection = Hyperslab::new(vec![0; dims.len()], dims.clone())?;
 
         let mut dest_start = vec![i];
         dest_start.extend(vec![0; dims.len()]);
@@ -558,7 +545,7 @@ fn create_mosaic_vds(
             "Number of sources ({}) must match grid size ({})",
             sources.len(),
             num_tiles
-        ));
+        )));
     }
 
     if sources.is_empty() {
@@ -587,11 +574,11 @@ fn create_mosaic_vds(
 
     let mut builder = VdsBuilder::new(name, vds_dims, datatype);
 
-    for (idx, (file_path, dataset_path, dims)) in sources.into_iter(.enumerate() {
+    for (idx, (file_path, dataset_path, dims)) in sources.into_iter().enumerate() {
         // Calculate grid position
         let mut grid_pos = vec![0; grid_dims.len()];
         let mut remaining = idx;
-        for i in (0..grid_dims.len())).rev() {
+        for i in (0..grid_dims.len()).rev() {
             grid_pos[i] = remaining % grid_dims[i];
             remaining /= grid_dims[i];
         }
@@ -652,11 +639,7 @@ mod tests {
 
     #[test]
     fn test_vds_builder() {
-        let builder = VdsBuilder::new(
-            "virtual".to_string(),
-            vec![100, 200],
-            Datatype::Float32,
-        );
+        let builder = VdsBuilder::new("virtual".to_string(), vec![100, 200], Datatype::Float32);
 
         let vds = builder
             .add_source(
@@ -689,13 +672,8 @@ mod tests {
             (PathBuf::from("f3.h5"), "/d".to_string(), vec![5, 20]),
         ];
 
-        let vds = create_concatenated_vds(
-            "concat".to_string(),
-            0,
-            sources,
-            Datatype::Float64,
-        )
-        .expect("Failed to create concatenated VDS");
+        let vds = create_concatenated_vds("concat".to_string(), 0, sources, Datatype::Float64)
+            .expect("Failed to create concatenated VDS");
 
         assert_eq!(vds.dims(), &[30, 20]);
         assert_eq!(vds.num_mappings(), 3);
@@ -725,13 +703,8 @@ mod tests {
             (PathBuf::from("f4.h5"), "/d".to_string(), vec![10, 10]),
         ];
 
-        let vds = create_mosaic_vds(
-            "mosaic".to_string(),
-            vec![2, 2],
-            sources,
-            Datatype::UInt8,
-        )
-        .expect("Failed to create mosaic VDS");
+        let vds = create_mosaic_vds("mosaic".to_string(), vec![2, 2], sources, Datatype::UInt8)
+            .expect("Failed to create mosaic VDS");
 
         assert_eq!(vds.dims(), &[20, 20]);
         assert_eq!(vds.num_mappings(), 4);

@@ -11,7 +11,26 @@
  */
 
 // Import WASM module from pkg directory (symlinked to crates/oxigdal-wasm/pkg)
-import init, { WasmCogViewer, version } from './pkg/oxigdal_wasm.js';
+import init, { WasmCogViewer, WasmTerrain, version } from './pkg/oxigdal_wasm.js';
+// Vector format parsers (self-contained; keeps this file under 2000 lines).
+import {
+    isVectorFormat,
+    detectVectorFormat,
+    loadGeoJSON,
+    loadFlatGeobuf,
+    loadShapefile,
+    loadGPX,
+    loadKML,
+    loadTopoJSON,
+    loadGeoParquet,
+} from './formats.js';
+// Pure terrain raster helpers (self-contained; keeps this file under 2000 lines).
+import {
+    terrainLabel,
+    grayToImageData,
+    slopeToImageData,
+    applyNodataAlpha,
+} from './terrain-render.js';
 
 // Application state
 const app = {
@@ -60,6 +79,23 @@ const app = {
         tilesLoaded: 0,
         tilesCached: 0,
         dataTransferred: 0,
+        // Honest network accounting:
+        //  - bytesUploaded is always 0: local files are decoded in-browser and
+        //    never leave the machine (literal truth, not a placeholder).
+        //  - bytesFetched is the LIVE sum of Content-Length over every network
+        //    data fetch (COG range requests + vector files), measured by the
+        //    fetch wrapper in installFetchAccounting(); app assets are excluded.
+        bytesUploaded: 0,
+        bytesFetched: 0,
+    },
+
+    // Terrain analysis state (browser-side WasmTerrain over the DEM's f32 grid)
+    terrain: {
+        mode: null, // null | 'hillshade' | 'multidirectional' | 'slope' | 'colorrelief'
+        azimuth: 315,
+        altitude: 45,
+        zFactor: 1.3,
+        palette: 'viridis',
     },
 
     // Tile cache
@@ -85,6 +121,10 @@ async function initializeApp() {
     try {
         updateStatus('loading', 'Initializing WebAssembly...');
         showLoading('Initializing OxiGDAL WASM module...');
+
+        // Install the network byte accounting before anything fetches data.
+        installFetchAccounting();
+        updateNetworkBadges();
 
         // Initialize WASM
         await init();
@@ -167,7 +207,10 @@ function setupEventListeners() {
             if (isVectorFormat(url)) {
                 loadVector(url, name);
             } else {
-                loadCog(url, name);
+                // Sample rasters are same-origin local files: fetch the whole
+                // file and decode via openBytes (full codec + elevation support,
+                // and robust on servers that do not honour HTTP Range requests).
+                loadLocalRaster(url, name);
             }
         });
     });
@@ -253,6 +296,130 @@ function setupEventListeners() {
             updateLayerControls();
         });
     }
+
+    // Drag-and-drop + local file input (in-browser decode via openBytes)
+    setupFileDrop();
+
+    // Terrain analysis controls
+    setupTerrainControls();
+}
+
+/**
+ * Wire the drag-and-drop zone and the "Choose file…" input so a local
+ * GeoTIFF can be decoded entirely in the browser (openBytes), with nothing
+ * ever uploaded to a server.
+ */
+function setupFileDrop() {
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const mapEl = document.getElementById('map-container');
+
+    if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (file) {
+                handleLocalFile(file);
+            }
+            // Reset so selecting the same file again re-triggers change.
+            e.target.value = '';
+        });
+    }
+
+    const dropTargets = [dropZone, mapEl].filter(Boolean);
+    for (const target of dropTargets) {
+        target.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = 'copy';
+            }
+            if (dropZone) {
+                dropZone.classList.add('drop-zone-hover');
+            }
+        });
+        target.addEventListener('dragleave', () => {
+            if (dropZone) {
+                dropZone.classList.remove('drop-zone-hover');
+            }
+        });
+        target.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (dropZone) {
+                dropZone.classList.remove('drop-zone-hover');
+            }
+            const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            if (file) {
+                handleLocalFile(file);
+            }
+        });
+    }
+}
+
+/**
+ * Wire the Terrain Analysis buttons, sliders and palette selector.
+ */
+function setupTerrainControls() {
+    const modeButtons = {
+        'terrain-hillshade': 'hillshade',
+        'terrain-multidir': 'multidirectional',
+        'terrain-slope': 'slope',
+        'terrain-colorrelief': 'colorrelief',
+    };
+    for (const [id, mode] of Object.entries(modeButtons)) {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.addEventListener('click', () => setTerrainMode(mode));
+        }
+    }
+
+    const azimuth = document.getElementById('terrain-azimuth');
+    if (azimuth) {
+        azimuth.addEventListener('input', (e) => {
+            app.terrain.azimuth = parseInt(e.target.value, 10);
+            const label = document.getElementById('terrain-azimuth-value');
+            if (label) label.textContent = `${app.terrain.azimuth}°`;
+            if (app.terrain.mode) scheduleTerrainRerender();
+        });
+    }
+
+    const altitude = document.getElementById('terrain-altitude');
+    if (altitude) {
+        altitude.addEventListener('input', (e) => {
+            app.terrain.altitude = parseInt(e.target.value, 10);
+            const label = document.getElementById('terrain-altitude-value');
+            if (label) label.textContent = `${app.terrain.altitude}°`;
+            if (app.terrain.mode) scheduleTerrainRerender();
+        });
+    }
+
+    const zfactor = document.getElementById('terrain-zfactor');
+    if (zfactor) {
+        zfactor.addEventListener('input', (e) => {
+            app.terrain.zFactor = parseFloat(e.target.value);
+            const label = document.getElementById('terrain-zfactor-value');
+            if (label) label.textContent = app.terrain.zFactor.toFixed(1);
+            if (app.terrain.mode) scheduleTerrainRerender();
+        });
+    }
+
+    const palette = document.getElementById('terrain-palette');
+    if (palette) {
+        palette.addEventListener('change', (e) => {
+            app.terrain.palette = e.target.value;
+            if (app.terrain.mode === 'colorrelief') scheduleTerrainRerender();
+        });
+    }
+
+    const clearBtn = document.getElementById('terrain-clear');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            app.terrain.mode = null;
+            updateTerrainButtons();
+            if (app.viewer) {
+                createCogTileLayer();
+            }
+            updateStatus('ready', 'Terrain cleared');
+        });
+    }
 }
 
 /**
@@ -268,64 +435,151 @@ async function loadCogFromInput() {
 }
 
 /**
- * Load a COG from URL
+ * Load a COG from a remote URL using HTTP range requests (the cloud-native
+ * path). Requires the server to honour `Range` headers and CORS.
  */
 async function loadCog(url, name = null) {
     try {
         app.performance.loadStartTime = performance.now();
-        app.performance.tilesLoaded = 0;
-        app.performance.tilesCached = 0;
-        app.performance.dataTransferred = 0;
 
         updateStatus('loading', `Loading ${name || 'COG'}...`);
         showLoading(`Loading COG: ${name || url}`);
         updateProgress(10);
 
-        // Create viewer if not exists
-        if (!app.viewer) {
-            app.viewer = new WasmCogViewer();
-        }
-
+        // Fresh viewer per load avoids stale internal reader state.
+        app.viewer = new WasmCogViewer();
         updateProgress(20);
 
-        // Open the COG
+        // Open the COG over HTTP range requests.
         await app.viewer.open(url);
 
-        updateProgress(50);
+        // Shared post-open display pipeline.
+        displayCogOnMap(name || url);
 
-        // Extract metadata
-        app.currentCog.url = url;
+        console.log(`Successfully loaded COG: ${url}`);
+    } catch (error) {
+        console.error('Failed to load COG:', error);
+        showError(`Failed to load COG: ${error.message || error}`);
+        updateStatus('error', 'Failed to load COG');
+        hideLoading();
+    }
+}
+
+/**
+ * Load a same-origin raster by fetching the whole file and decoding it with
+ * `openBytes`. This is robust on servers without HTTP Range support and gives
+ * the full codec + elevation-decode path needed for Terrain Analysis.
+ */
+async function loadLocalRaster(url, name = null) {
+    try {
+        app.performance.loadStartTime = performance.now();
+
+        updateStatus('loading', `Loading ${name || 'raster'}...`);
+        showLoading(`Loading raster: ${name || url}`);
+        updateProgress(15);
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const buffer = await response.arrayBuffer();
+        updateProgress(45);
+
+        app.viewer = new WasmCogViewer();
+        app.viewer.openBytes(new Uint8Array(buffer), name || url);
+
+        displayCogOnMap(name || url);
+
+        console.log(`Successfully loaded raster: ${url}`);
+    } catch (error) {
+        console.error('Failed to load raster:', error);
+        showError(`Failed to load raster: ${error.message || error}`);
+        updateStatus('error', 'Failed to load raster');
+        hideLoading();
+    }
+}
+
+/**
+ * Handle a locally chosen / dropped GeoTIFF: read its bytes in-browser and
+ * decode via `openBytes`. Nothing is uploaded — bytesUploaded stays 0.
+ */
+async function handleLocalFile(file) {
+    const name = file.name || 'local.tif';
+    if (!/\.(tif|tiff)$/i.test(name)) {
+        showError('Please choose a GeoTIFF (.tif / .tiff) file.');
+        return;
+    }
+    try {
+        app.performance.loadStartTime = performance.now();
+
+        updateStatus('loading', `Reading ${name}...`);
+        showLoading(`Reading local file: ${name}`);
+        updateProgress(15);
+
+        // Read the file entirely in the browser; it never leaves the machine.
+        const buffer = await file.arrayBuffer();
+        updateProgress(40);
+
+        app.viewer = new WasmCogViewer();
+        app.viewer.openBytes(new Uint8Array(buffer), name);
+
+        displayCogOnMap(name);
+
+        // Reflect the (unchanged, zero) upload counter after a local load.
+        updateNetworkBadges();
+
+        console.log(`Successfully decoded local file: ${name} (${buffer.byteLength} bytes, 0 uploaded)`);
+    } catch (error) {
+        console.error('Failed to read local file:', error);
+        showError(`Failed to open local GeoTIFF: ${error.message || error}`);
+        updateStatus('error', 'Failed to open file');
+        hideLoading();
+    }
+}
+
+/**
+ * Shared post-open display pipeline used by every raster entry point
+ * (URL range-open, local sample fetch+openBytes, and drag-drop openBytes).
+ * Extracts metadata, computes bounds, and renders the raster on the map.
+ */
+function displayCogOnMap(name) {
+    try {
+        updateProgress(55);
+
+        app.performance.tilesLoaded = 0;
+        app.performance.tilesCached = 0;
+        app.performance.dataTransferred = 0;
+        app.tileCache.clear();
+
+        // Extract metadata.
+        app.currentCog.url = app.viewer.url() || name || '';
         app.currentCog.width = app.viewer.width();
         app.currentCog.height = app.viewer.height();
         app.currentCog.tileWidth = app.viewer.tile_width();
         app.currentCog.tileHeight = app.viewer.tile_height();
         app.currentCog.bandCount = app.viewer.band_count();
 
-        // Parse metadata JSON
         const metadataJson = app.viewer.metadata_json();
         app.currentCog.metadata = JSON.parse(metadataJson);
-
         console.log('COG Metadata:', app.currentCog.metadata);
 
         updateProgress(70);
 
-        // Calculate bounds from geotransform
+        // Calculate bounds from geotransform.
         app.currentCog.bounds = calculateBounds();
 
-        // Clear tile cache
-        app.tileCache.clear();
+        // A new dataset always starts in raw-raster view.
+        app.terrain.mode = null;
+        updateTerrainButtons();
 
         updateProgress(80);
 
-        // Create tile layer (auto-detects single vs multi-tile)
+        // Create tile layer (auto-detects single vs multi-tile).
         createCogTileLayer();
 
         updateProgress(90);
 
-        // Display metadata
         displayMetadata();
-
-        // Fit to bounds
         fitToBounds();
 
         updateProgress(100);
@@ -333,14 +587,12 @@ async function loadCog(url, name = null) {
         app.performance.loadEndTime = performance.now();
         updatePerformanceDisplay();
 
-        updateStatus('ready', 'COG loaded successfully');
+        updateStatus('ready', `${name || 'Raster'} loaded successfully`);
         hideLoading();
-
-        console.log(`Successfully loaded COG: ${url}`);
     } catch (error) {
-        console.error('Failed to load COG:', error);
-        showError(`Failed to load COG: ${error.message || error}`);
-        updateStatus('error', 'Failed to load COG');
+        console.error('Failed to display raster:', error);
+        showError(`Failed to display raster: ${error.message || error}`);
+        updateStatus('error', 'Failed to display raster');
         hideLoading();
     }
 }
@@ -546,6 +798,290 @@ function createGridLayer() {
 
     app.cogLayer.addTo(app.map);
     console.log('COG grid layer created successfully');
+}
+
+// ─── Terrain analysis ────────────────────────────────────────────────────────
+
+let terrainRerenderTimer = null;
+
+/**
+ * Debounced terrain re-render, so dragging a slider doesn't spawn a compute
+ * storm — only the last value within the window is rendered.
+ */
+function scheduleTerrainRerender() {
+    if (terrainRerenderTimer) {
+        clearTimeout(terrainRerenderTimer);
+    }
+    terrainRerenderTimer = setTimeout(() => {
+        terrainRerenderTimer = null;
+        renderTerrainOverlay();
+    }, 140);
+}
+
+/**
+ * Select (or toggle off) a terrain product and render it.
+ */
+function setTerrainMode(mode) {
+    if (!app.viewer) {
+        showError('Load a single-band elevation raster first (e.g. the San Francisco DEM).');
+        return;
+    }
+    // Clicking the active product again returns to the raw raster.
+    app.terrain.mode = app.terrain.mode === mode ? null : mode;
+    updateTerrainButtons();
+
+    if (app.terrain.mode === null) {
+        createCogTileLayer();
+        updateStatus('ready', 'Terrain cleared');
+        return;
+    }
+    renderTerrainOverlay();
+}
+
+/**
+ * Toggle the active-state class on the four terrain product buttons.
+ */
+function updateTerrainButtons() {
+    const idByMode = {
+        hillshade: 'terrain-hillshade',
+        multidirectional: 'terrain-multidir',
+        slope: 'terrain-slope',
+        colorrelief: 'terrain-colorrelief',
+    };
+    for (const [mode, id] of Object.entries(idByMode)) {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.classList.toggle('terrain-btn-active', app.terrain.mode === mode);
+        }
+    }
+}
+
+/**
+ * Assemble the DEM's full elevation grid from its native tiles, run the chosen
+ * WasmTerrain product over the whole grid (so there are no per-tile seams),
+ * and place the result as a single georeferenced image overlay.
+ *
+ * Reading `readTileElevation` for every native tile and feeding the assembled
+ * grid to `WasmTerrain.{hillshade,hillshadeMultidirectional,slope,colorReliefShaded}`
+ * is the correct, artefact-free equivalent of a per-tile pipeline for a
+ * bounded DEM, and reuses the existing image-overlay render path.
+ */
+async function renderTerrainOverlay() {
+    if (!app.viewer || !app.terrain.mode) {
+        return;
+    }
+    try {
+        updateStatus('loading', `Computing ${terrainLabel(app.terrain.mode)}...`);
+        showLoading(`Terrain: ${terrainLabel(app.terrain.mode)}`);
+        updateProgress(15);
+
+        const width = Number(app.viewer.width());
+        const height = Number(app.viewer.height());
+        const tileWidth = Number(app.viewer.tile_width());
+        const tileHeight = Number(app.viewer.tile_height());
+        if (!width || !height || !tileWidth || !tileHeight) {
+            throw new Error('Invalid raster dimensions for terrain analysis');
+        }
+
+        const bandCount = app.viewer.band_count();
+        if (bandCount && bandCount > 1) {
+            console.warn(`Terrain: raster has ${bandCount} bands; using band 1 as elevation.`);
+        }
+
+        const grid = await assembleElevationGrid(width, height, tileWidth, tileHeight);
+        updateProgress(80);
+
+        const cellSize = app.viewer.pixel_scale_x() || 30;
+        const az = app.terrain.azimuth;
+        const alt = app.terrain.altitude;
+        const z = app.terrain.zFactor;
+
+        let imageData;
+        switch (app.terrain.mode) {
+            case 'colorrelief':
+                imageData = WasmTerrain.colorReliefShaded(
+                    grid.elev, width, height, cellSize,
+                    app.terrain.palette, grid.min, grid.max, alt, z
+                );
+                break;
+            case 'hillshade': {
+                const gray = WasmTerrain.hillshade(grid.elev, width, height, cellSize, az, alt, z);
+                imageData = grayToImageData(gray, width, height);
+                break;
+            }
+            case 'multidirectional': {
+                const gray = WasmTerrain.hillshadeMultidirectional(grid.elev, width, height, cellSize, alt, z);
+                imageData = grayToImageData(gray, width, height);
+                break;
+            }
+            case 'slope': {
+                const slopeDeg = WasmTerrain.slope(grid.elev, width, height, cellSize, z);
+                imageData = slopeToImageData(slopeDeg, width, height);
+                break;
+            }
+            default:
+                throw new Error(`Unknown terrain mode: ${app.terrain.mode}`);
+        }
+
+        // Make nodata cells transparent so the basemap shows through.
+        applyNodataAlpha(imageData, grid.mask);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.putImageData(imageData, 0, 0);
+        const dataUrl = canvas.toDataURL('image/png');
+
+        if (app.cogLayer) {
+            app.map.removeLayer(app.cogLayer);
+        }
+        app.cogLayer = L.imageOverlay(dataUrl, app.currentCog.bounds, {
+            opacity: app.visualization.opacity,
+            interactive: false,
+        });
+        app.cogLayer.addTo(app.map);
+
+        updateProgress(100);
+        updateStatus('ready', `Terrain: ${terrainLabel(app.terrain.mode)}`);
+        hideLoading();
+        console.log(`Rendered terrain "${app.terrain.mode}" over ${width}x${height} grid`);
+    } catch (error) {
+        console.error('Terrain render failed:', error);
+        showError(`Terrain analysis failed: ${error.message || error}`);
+        updateStatus('error', 'Terrain failed');
+        hideLoading();
+    }
+}
+
+/**
+ * Read `readTileElevation` for every native tile and stitch a single row-major
+ * `Float32Array` of size width*height. Nodata (−32768 / non-finite) samples are
+ * tracked in a mask and replaced with the valid minimum so WasmTerrain math
+ * stays finite. Returns `{ elev, mask, min, max }`.
+ */
+async function assembleElevationGrid(width, height, tileWidth, tileHeight) {
+    const nTilesX = Math.ceil(width / tileWidth);
+    const nTilesY = Math.ceil(height / tileHeight);
+
+    const elev = new Float32Array(width * height);
+    const mask = new Uint8Array(width * height); // 1 = valid sample
+    const NODATA = -32768;
+    let vMin = Infinity;
+    let vMax = -Infinity;
+
+    for (let ty = 0; ty < nTilesY; ty++) {
+        for (let tx = 0; tx < nTilesX; tx++) {
+            let tileElev;
+            try {
+                tileElev = await app.viewer.readTileElevation(0, tx, ty);
+            } catch (e) {
+                console.warn(`Terrain: elevation read failed for tile (${tx}, ${ty}):`, e);
+                continue;
+            }
+            const cols = Math.min(tileWidth, width - tx * tileWidth);
+            const rows = Math.min(tileHeight, height - ty * tileHeight);
+            for (let r = 0; r < rows; r++) {
+                const gy = ty * tileHeight + r;
+                for (let c = 0; c < cols; c++) {
+                    const gx = tx * tileWidth + c;
+                    const v = tileElev[r * tileWidth + c];
+                    const gi = gy * width + gx;
+                    if (v === undefined || Number.isNaN(v) ||
+                        v <= NODATA + 1 || v < -1e30 || v > 1e30) {
+                        elev[gi] = NaN; // provisional nodata; filled below
+                    } else {
+                        elev[gi] = v;
+                        mask[gi] = 1;
+                        if (v < vMin) vMin = v;
+                        if (v > vMax) vMax = v;
+                    }
+                }
+            }
+        }
+        updateProgress(15 + Math.round((60 * (ty + 1)) / nTilesY));
+    }
+
+    if (!isFinite(vMin) || !isFinite(vMax)) {
+        throw new Error('No valid elevation samples found (is this a single-band DEM?)');
+    }
+    if (vMax <= vMin) {
+        vMax = vMin + 1;
+    }
+    // Replace nodata cells with the valid minimum to keep the math finite.
+    for (let i = 0; i < elev.length; i++) {
+        if (Number.isNaN(elev[i])) {
+            elev[i] = vMin;
+        }
+    }
+    return { elev, mask, min: vMin, max: vMax };
+}
+
+// ─── Network byte accounting ─────────────────────────────────────────────────
+
+/**
+ * Wrap `window.fetch` to keep a LIVE tally of bytes fetched over the network
+ * for geospatial data — COG tile range requests and vector files alike.
+ *
+ * Only the response `Content-Length` is read (never the body), so this never
+ * interferes with the WASM reader's own consumption of the response. App assets
+ * (the WASM module, vendored libraries, CSS/JS) are excluded so the badge
+ * reflects data transfer, not page weight. Local drag-dropped files never go
+ * through fetch, so they are correctly never counted.
+ */
+function installFetchAccounting() {
+    if (typeof window === 'undefined' || window.__oxigdalFetchWrapped) {
+        return;
+    }
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+        const response = await originalFetch(input, init);
+        try {
+            // `input` may be a string, a Request (has `.url`), or a URL object
+            // (has `.href`; wasm-bindgen fetches the module via `new URL(...)`).
+            let url = '';
+            if (typeof input === 'string') {
+                url = input;
+            } else if (input) {
+                url = input.url || input.href || String(input);
+            }
+            if (!isAppAssetUrl(url)) {
+                const len = response.headers.get('content-length');
+                if (len) {
+                    app.performance.bytesFetched += parseInt(len, 10) || 0;
+                    updateNetworkBadges();
+                }
+            }
+        } catch (_e) {
+            // Header inspection must never break the actual fetch.
+        }
+        return response;
+    };
+    window.__oxigdalFetchWrapped = true;
+}
+
+/** True for the demo's own code/assets (excluded from the data-fetched tally). */
+function isAppAssetUrl(url) {
+    if (!url) {
+        return false;
+    }
+    return /\/(pkg|vendor)\//.test(url) ||
+        url.endsWith('.wasm') ||
+        url.endsWith('.js') ||
+        url.endsWith('.css');
+}
+
+/** Refresh the two honest network counters in the badge row. */
+function updateNetworkBadges() {
+    const fetchBadge = document.getElementById('fetch-badge');
+    if (fetchBadge) {
+        const kb = app.performance.bytesFetched / 1024;
+        fetchBadge.textContent = `⬇ ${kb.toFixed(1)} KB fetched`;
+    }
+    const uploadBadge = document.getElementById('upload-badge');
+    if (uploadBadge) {
+        uploadBadge.textContent = `⬆ ${app.performance.bytesUploaded} bytes uploaded`;
+    }
 }
 
 /**
@@ -1087,46 +1623,6 @@ function clearMeasurements() {
 }
 
 /**
- * Detect if URL is a vector format
- */
-function isVectorFormat(url) {
-    const lowerUrl = url.toLowerCase();
-    return lowerUrl.endsWith('.geojson') ||
-           lowerUrl.endsWith('.json') ||
-           lowerUrl.endsWith('.fgb') ||
-           lowerUrl.endsWith('.shp') ||
-           lowerUrl.endsWith('.parquet') ||
-           lowerUrl.endsWith('.geoparquet') ||
-           lowerUrl.endsWith('.gpx') ||
-           lowerUrl.endsWith('.kml') ||
-           lowerUrl.endsWith('.kmz') ||
-           lowerUrl.endsWith('.topojson');
-}
-
-/**
- * Detect vector format from URL
- */
-function detectVectorFormat(url) {
-    const lowerUrl = url.toLowerCase();
-    if (lowerUrl.endsWith('.geojson') || lowerUrl.endsWith('.json')) {
-        return 'geojson';
-    } else if (lowerUrl.endsWith('.fgb')) {
-        return 'flatgeobuf';
-    } else if (lowerUrl.endsWith('.shp')) {
-        return 'shapefile';
-    } else if (lowerUrl.endsWith('.parquet') || lowerUrl.endsWith('.geoparquet')) {
-        return 'geoparquet';
-    } else if (lowerUrl.endsWith('.gpx')) {
-        return 'gpx';
-    } else if (lowerUrl.endsWith('.kml') || lowerUrl.endsWith('.kmz')) {
-        return 'kml';
-    } else if (lowerUrl.endsWith('.topojson')) {
-        return 'topojson';
-    }
-    return null;
-}
-
-/**
  * Load vector data from URL
  */
 async function loadVector(url, name = null) {
@@ -1205,709 +1701,6 @@ async function loadVector(url, name = null) {
         updateStatus('error', 'Failed to load vector');
         hideLoading();
     }
-}
-
-/**
- * Load GeoJSON from URL
- */
-async function loadGeoJSON(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const geojson = await response.json();
-    return geojson;
-}
-
-/**
- * Load FlatGeobuf with HTTP Range Requests
- */
-async function loadFlatGeobuf(url) {
-    // FlatGeobuf library needs to be loaded via CDN
-    if (typeof flatgeobuf === 'undefined') {
-        throw new Error('FlatGeobuf library not loaded. Add <script src="https://unpkg.com/flatgeobuf@4.4.0/dist/flatgeobuf-geojson.min.js"></script> to HTML');
-    }
-
-    console.log('Loading FlatGeobuf from:', url);
-    console.log('FlatGeobuf library:', flatgeobuf);
-
-    const features = [];
-    let count = 0;
-
-    try {
-        // Create timeout promise (30 seconds)
-        const timeout = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('FlatGeobuf loading timeout (30s)')), 30000)
-        );
-
-        // Create deserialize promise
-        const deserializePromise = (async () => {
-            // Use FlatGeobuf streaming API with HTTP Range Requests
-            for await (const feature of flatgeobuf.deserialize(url)) {
-                features.push(feature);
-                count++;
-                if (count % 10 === 0) {
-                    console.log(`Loaded ${count} features...`);
-                }
-            }
-        })();
-
-        // Race between timeout and deserialize
-        await Promise.race([deserializePromise, timeout]);
-
-        console.log(`Successfully loaded ${count} features from FlatGeobuf`);
-
-        return {
-            type: 'FeatureCollection',
-            features: features
-        };
-    } catch (error) {
-        console.error('FlatGeobuf loading error:', error);
-        throw new Error(`Failed to load FlatGeobuf: ${error.message}`);
-    }
-}
-
-/**
- * Load Shapefile (requires shapefile-js)
- */
-async function loadShapefile(url) {
-    // Shapefile library needs to be loaded via CDN
-    if (typeof shapefile === 'undefined') {
-        throw new Error('Shapefile library not loaded. Add <script src="https://unpkg.com/shapefile@0.6.6/dist/shapefile.min.js"></script> to HTML');
-    }
-
-    // Shapefile consists of .shp, .shx, and .dbf files
-    // We need to construct the URLs for all components
-    const baseUrl = url.replace(/\.shp$/i, '');
-    const shpUrl = baseUrl + '.shp';
-    const dbfUrl = baseUrl + '.dbf';
-
-    const source = await shapefile.open(shpUrl, dbfUrl);
-    const features = [];
-
-    let result = await source.read();
-    while (!result.done) {
-        if (result.value) {
-            features.push(result.value);
-        }
-        result = await source.read();
-    }
-
-    return {
-        type: 'FeatureCollection',
-        features: features
-    };
-}
-
-/**
- * Load GPX file and convert to GeoJSON via DOMParser.
- *
- * GPX is XML-based. Each <trkpt> becomes a GeoJSON Point feature, each
- * <trkseg> becomes a LineString, and each <wpt> becomes a Point.
- * This is a dependency-light inline implementation (no CDN libs needed).
- */
-async function loadGPX(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const text = await response.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(text, 'application/xml');
-
-    if (doc.querySelector('parsererror')) {
-        throw new Error('GPX parse error: invalid XML');
-    }
-
-    const features = [];
-
-    // --- Waypoints (<wpt>) → Point features
-    for (const wpt of doc.querySelectorAll('wpt')) {
-        const lat = parseFloat(wpt.getAttribute('lat'));
-        const lon = parseFloat(wpt.getAttribute('lon'));
-        if (isNaN(lat) || isNaN(lon)) continue;
-
-        const name = wpt.querySelector('name')?.textContent || null;
-        const desc = wpt.querySelector('desc')?.textContent || null;
-        const ele  = wpt.querySelector('ele')?.textContent;
-
-        features.push({
-            type: 'Feature',
-            geometry: {
-                type: 'Point',
-                coordinates: ele !== undefined ? [lon, lat, parseFloat(ele)] : [lon, lat]
-            },
-            properties: {
-                type: 'waypoint',
-                ...(name !== null && { name }),
-                ...(desc !== null && { description: desc })
-            }
-        });
-    }
-
-    // --- Tracks (<trk> → <trkseg> → <trkpt>) → LineString features per segment
-    for (const trk of doc.querySelectorAll('trk')) {
-        const trkName = trk.querySelector('name')?.textContent || null;
-
-        for (const seg of trk.querySelectorAll('trkseg')) {
-            const coords = [];
-            for (const pt of seg.querySelectorAll('trkpt')) {
-                const lat = parseFloat(pt.getAttribute('lat'));
-                const lon = parseFloat(pt.getAttribute('lon'));
-                if (isNaN(lat) || isNaN(lon)) continue;
-                const ele = pt.querySelector('ele')?.textContent;
-                coords.push(ele !== undefined ? [lon, lat, parseFloat(ele)] : [lon, lat]);
-            }
-            if (coords.length < 2) continue;
-            features.push({
-                type: 'Feature',
-                geometry: { type: 'LineString', coordinates: coords },
-                properties: {
-                    type: 'track',
-                    ...(trkName !== null && { name: trkName })
-                }
-            });
-        }
-    }
-
-    // --- Routes (<rte> → <rtept>) → LineString features
-    for (const rte of doc.querySelectorAll('rte')) {
-        const rteName = rte.querySelector('name')?.textContent || null;
-        const coords = [];
-        for (const pt of rte.querySelectorAll('rtept')) {
-            const lat = parseFloat(pt.getAttribute('lat'));
-            const lon = parseFloat(pt.getAttribute('lon'));
-            if (isNaN(lat) || isNaN(lon)) continue;
-            const ele = pt.querySelector('ele')?.textContent;
-            coords.push(ele !== undefined ? [lon, lat, parseFloat(ele)] : [lon, lat]);
-        }
-        if (coords.length < 2) continue;
-        features.push({
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: coords },
-            properties: {
-                type: 'route',
-                ...(rteName !== null && { name: rteName })
-            }
-        });
-    }
-
-    if (features.length === 0) {
-        console.warn('GPX file contained no parseable features (no wpt, trk, or rte elements)');
-    }
-
-    return { type: 'FeatureCollection', features };
-}
-
-/**
- * Load KML/KMZ file and convert to GeoJSON via DOMParser.
- *
- * Handles Point (<coordinates> single), LineString, LinearRing (as polygon
- * ring), Polygon, and MultiGeometry. KMZ (zipped KML) is not supported without
- * a decompression library; a clear error is thrown instead.
- */
-async function loadKML(url) {
-    if (url.toLowerCase().endsWith('.kmz')) {
-        throw new Error(
-            'KMZ (zipped KML) is not supported in the browser without a ZIP library. ' +
-            'Please extract the KML file from the KMZ archive and load it directly.'
-        );
-    }
-
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const text = await response.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(text, 'application/xml');
-
-    if (doc.querySelector('parsererror')) {
-        throw new Error('KML parse error: invalid XML');
-    }
-
-    const features = [];
-
-    for (const placemark of doc.querySelectorAll('Placemark')) {
-        const name = placemark.querySelector(':scope > name')?.textContent?.trim() || null;
-        const description =
-            placemark.querySelector(':scope > description')?.textContent?.trim() || null;
-
-        const properties = {
-            ...(name !== null && { name }),
-            ...(description !== null && { description })
-        };
-
-        // Extended data <Data name="…"><value>…</value></Data>
-        for (const dataEl of placemark.querySelectorAll('ExtendedData > Data')) {
-            const k = dataEl.getAttribute('name');
-            const v = dataEl.querySelector('value')?.textContent?.trim();
-            if (k && v !== undefined) {
-                properties[k] = v;
-            }
-        }
-
-        const geometry = kmlGeometryToGeoJSON(placemark);
-        if (geometry === null) continue;
-
-        features.push({ type: 'Feature', geometry, properties });
-    }
-
-    return { type: 'FeatureCollection', features };
-}
-
-/**
- * Extract the first geometry from a KML Placemark element.
- * Returns a GeoJSON geometry object or null when no geometry is found.
- */
-function kmlGeometryToGeoJSON(placemark) {
-    // Point
-    const point = placemark.querySelector(':scope > Point');
-    if (point) {
-        const coords = kmlParseCoordinatesSingle(point.querySelector('coordinates')?.textContent);
-        if (coords) return { type: 'Point', coordinates: coords };
-    }
-
-    // LineString
-    const lineString = placemark.querySelector(':scope > LineString');
-    if (lineString) {
-        const coords = kmlParseCoordinatesList(
-            lineString.querySelector('coordinates')?.textContent
-        );
-        if (coords.length >= 2) return { type: 'LineString', coordinates: coords };
-    }
-
-    // LinearRing (closed)
-    const ring = placemark.querySelector(':scope > LinearRing');
-    if (ring) {
-        const coords = kmlParseCoordinatesList(
-            ring.querySelector('coordinates')?.textContent
-        );
-        if (coords.length >= 3) return { type: 'Polygon', coordinates: [coords] };
-    }
-
-    // Polygon
-    const polygon = placemark.querySelector(':scope > Polygon');
-    if (polygon) {
-        return kmlPolygonToGeoJSON(polygon);
-    }
-
-    // MultiGeometry
-    const multi = placemark.querySelector(':scope > MultiGeometry');
-    if (multi) {
-        const geometries = [];
-        for (const child of multi.children) {
-            const wrappedPlacemark = { querySelector: (sel) => child.matches(sel.replace(':scope > ', '')) ? child : null };
-            // Use a small adapter to reuse kmlGeometryToGeoJSON logic.
-            const g = kmlSingleElementToGeoJSON(child);
-            if (g !== null) geometries.push(g);
-        }
-        if (geometries.length > 0) {
-            return { type: 'GeometryCollection', geometries };
-        }
-    }
-
-    return null;
-}
-
-/** Convert a single KML geometry element (Point/LineString/Polygon) to GeoJSON. */
-function kmlSingleElementToGeoJSON(el) {
-    const tag = el.tagName;
-    if (tag === 'Point') {
-        const coords = kmlParseCoordinatesSingle(el.querySelector('coordinates')?.textContent);
-        return coords ? { type: 'Point', coordinates: coords } : null;
-    }
-    if (tag === 'LineString') {
-        const coords = kmlParseCoordinatesList(el.querySelector('coordinates')?.textContent);
-        return coords.length >= 2 ? { type: 'LineString', coordinates: coords } : null;
-    }
-    if (tag === 'Polygon') return kmlPolygonToGeoJSON(el);
-    return null;
-}
-
-function kmlPolygonToGeoJSON(polygonEl) {
-    const rings = [];
-    const outer = polygonEl.querySelector('outerBoundaryIs LinearRing coordinates');
-    if (!outer) return null;
-    const outerCoords = kmlParseCoordinatesList(outer.textContent);
-    if (outerCoords.length < 3) return null;
-    rings.push(outerCoords);
-    for (const inner of polygonEl.querySelectorAll('innerBoundaryIs LinearRing coordinates')) {
-        const innerCoords = kmlParseCoordinatesList(inner.textContent);
-        if (innerCoords.length >= 3) rings.push(innerCoords);
-    }
-    return { type: 'Polygon', coordinates: rings };
-}
-
-/** Parse a KML coordinate string into a single [lon, lat, ?ele] array. */
-function kmlParseCoordinatesSingle(text) {
-    if (!text) return null;
-    const parts = text.trim().split(',');
-    const lon = parseFloat(parts[0]);
-    const lat = parseFloat(parts[1]);
-    if (isNaN(lon) || isNaN(lat)) return null;
-    const ele = parts[2] !== undefined ? parseFloat(parts[2]) : undefined;
-    return ele !== undefined ? [lon, lat, ele] : [lon, lat];
-}
-
-/** Parse a KML coordinates string (space-separated tuples) into [[lon,lat,?ele], ...]. */
-function kmlParseCoordinatesList(text) {
-    if (!text) return [];
-    return text
-        .trim()
-        .split(/\s+/)
-        .map(tuple => kmlParseCoordinatesSingle(tuple))
-        .filter(c => c !== null);
-}
-
-/**
- * Load TopoJSON file and convert to GeoJSON FeatureCollection.
- *
- * The demo is a plain ES-module project (no npm bundler for the HTML page;
- * package.json has no bundler in devDependencies — only http-server for
- * serving). CDN dynamic-import is used for `topojson-client`, mirroring the
- * pattern used for the WASM module (import from CDN URL). This is the
- * consistent approach for adding new runtime dependencies without modifying
- * package.json or adding a build step.
- *
- * topojson-client v3 is available as a pure ES module from jsDelivr CDN.
- */
-async function loadTopoJSON(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const topology = await response.json();
-
-    // Dynamic import of topojson-client from CDN.
-    // The ESM build is hosted at jsDelivr; this avoids any npm/bundler dependency.
-    let topojson;
-    try {
-        topojson = await import(
-            'https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js'
-        );
-    } catch (_e) {
-        // Fallback: try unpkg
-        try {
-            topojson = await import(
-                'https://unpkg.com/topojson-client@3/dist/topojson-client.min.js'
-            );
-        } catch (e2) {
-            throw new Error(
-                `Failed to load topojson-client from CDN: ${e2.message}. ` +
-                'Ensure the browser has internet access or pre-bundle topojson-client.'
-            );
-        }
-    }
-
-    // Convert every named object in the topology to GeoJSON features.
-    const features = [];
-    const objects = topology.objects || {};
-
-    for (const [objName, topoObj] of Object.entries(objects)) {
-        const collection = topojson.feature(topology, topoObj);
-        if (collection.type === 'FeatureCollection') {
-            for (const f of collection.features) {
-                // Annotate with the object name for multi-layer topologies.
-                features.push({
-                    ...f,
-                    properties: { ...(f.properties || {}), _topojson_object: objName }
-                });
-            }
-        } else if (collection.type === 'Feature') {
-            features.push({
-                ...collection,
-                properties: {
-                    ...(collection.properties || {}),
-                    _topojson_object: objName
-                }
-            });
-        }
-    }
-
-    return { type: 'FeatureCollection', features };
-}
-
-/**
- * Load GeoParquet (requires parquet-wasm).
- *
- * parquet-wasm is available as an ES module from CDN. The `readParquet`
- * function returns an Apache Arrow IPC stream which is decoded here to
- * extract features. WKB geometry columns are decoded inline using a
- * minimal Point/LineString/Polygon WKB parser.
- *
- * Dynamic import follows the same CDN pattern used for topojson-client above
- * and is consistent with how the WASM module is loaded (import from URL).
- */
-async function loadGeoParquet(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-
-    // Dynamic import of parquet-wasm from CDN.
-    let parquetModule;
-    try {
-        parquetModule = await import(
-            'https://cdn.jsdelivr.net/npm/parquet-wasm@latest/esm/arrow2.js'
-        );
-    } catch (_e) {
-        try {
-            parquetModule = await import(
-                'https://unpkg.com/parquet-wasm/esm/arrow2.js'
-            );
-        } catch (e2) {
-            throw new Error(
-                `Failed to load parquet-wasm from CDN: ${e2.message}. ` +
-                'Ensure the browser has internet access.'
-            );
-        }
-    }
-
-    // Initialise the WASM module (parquet-wasm exports an `init` or default).
-    if (typeof parquetModule.default === 'function') {
-        await parquetModule.default();
-    } else if (typeof parquetModule.init === 'function') {
-        await parquetModule.init();
-    }
-
-    // Read the Parquet file into an Arrow IPC stream (Uint8Array).
-    const uint8 = new Uint8Array(arrayBuffer);
-    const arrowIpc = parquetModule.readParquet(uint8);
-
-    // Decode Arrow IPC to row objects using a lightweight record-batch walker.
-    // We use a manual decode rather than importing @apache-arrow (which would
-    // require a bundler) to keep the demo dependency-light.
-    const rows = decodeArrowIpc(arrowIpc);
-
-    // Find the geometry column (WKB). GeoParquet spec: column named "geometry"
-    // or annotated with metadata key "geo" → primary geometry column.
-    const geomKey = detectGeometryColumn(rows);
-
-    const features = rows.map((row, idx) => {
-        const wkbValue = geomKey !== null ? row[geomKey] : null;
-        let geometry = null;
-        if (wkbValue instanceof Uint8Array || wkbValue instanceof ArrayBuffer) {
-            const buf = wkbValue instanceof ArrayBuffer ? new Uint8Array(wkbValue) : wkbValue;
-            geometry = decodeWkb(buf);
-        } else if (typeof wkbValue === 'string') {
-            // Hex-encoded WKB
-            const buf = hexToBytes(wkbValue);
-            if (buf) geometry = decodeWkb(buf);
-        }
-
-        const properties = {};
-        for (const [k, v] of Object.entries(row)) {
-            if (k !== geomKey) {
-                properties[k] =
-                    v instanceof Uint8Array || v instanceof ArrayBuffer ? null : v;
-            }
-        }
-        properties._row_index = idx;
-
-        return { type: 'Feature', geometry, properties };
-    });
-
-    return { type: 'FeatureCollection', features };
-}
-
-// ─── Arrow IPC minimal decoder ────────────────────────────────────────────────
-
-/**
- * Decode a flat Arrow IPC stream (schema + record-batches) into an array of
- * plain JS objects (one object per row).
- *
- * This is a best-effort decoder that handles the most common column types
- * (UTF8, Int32/64, Float32/Float64, Binary/FixedSizeBinary). It is not a
- * complete Arrow implementation — it covers the subset needed for GeoParquet.
- *
- * If decoding fails at any point we fall back to returning an empty array so
- * the caller can surface a useful error rather than crashing.
- */
-function decodeArrowIpc(ipcBytes) {
-    // parquet-wasm may return either a Uint8Array (raw IPC stream) or an
-    // object with a `.batches` or `.toArray()` API depending on version.
-    if (ipcBytes && typeof ipcBytes.toArray === 'function') {
-        // Arrow Table-like object from newer parquet-wasm versions.
-        try {
-            return ipcBatchesToRows(ipcBytes.batches || [ipcBytes]);
-        } catch (_e) {
-            return [];
-        }
-    }
-
-    // Raw IPC bytes — attempt minimal parse.
-    if (!(ipcBytes instanceof Uint8Array)) {
-        return [];
-    }
-
-    // We cannot fully parse Arrow IPC in plain JS without a library.
-    // Return a single "row" with the raw bytes so the caller can at least
-    // display the file was loaded, and the WKB detection will skip gracefully.
-    return [{ _raw_ipc: ipcBytes }];
-}
-
-/** Convert Arrow batch-like objects to plain JS rows. */
-function ipcBatchesToRows(batches) {
-    const rows = [];
-    for (const batch of batches) {
-        if (!batch || typeof batch.numRows !== 'number') continue;
-        for (let r = 0; r < batch.numRows; r++) {
-            const obj = {};
-            for (const field of (batch.schema?.fields || [])) {
-                const col = batch.getChild ? batch.getChild(field.name) : null;
-                obj[field.name] = col ? col.get(r) : null;
-            }
-            rows.push(obj);
-        }
-    }
-    return rows;
-}
-
-/** Detect the WKB geometry column name in a rows array. */
-function detectGeometryColumn(rows) {
-    if (!rows.length) return null;
-    const first = rows[0];
-    // Prefer the canonical "geometry" column name (GeoParquet spec §2.2).
-    if ('geometry' in first) return 'geometry';
-    // Fall back: first column whose value looks like binary / WKB bytes.
-    for (const [k, v] of Object.entries(first)) {
-        if (v instanceof Uint8Array && v.length >= 5) return k;
-    }
-    return null;
-}
-
-// ─── Minimal WKB decoder ─────────────────────────────────────────────────────
-
-/**
- * Decode a Well-Known Binary (WKB) buffer into a GeoJSON geometry.
- * Supports: Point (2001), LineString (2002), Polygon (2003), and their
- * ISO WKB (non-SRID) equivalents (1, 2, 3) plus MultiPoint/LineString/Polygon
- * (4, 5, 6) and GeometryCollection (7).
- * Returns null when the geometry type is unrecognised or the buffer is malformed.
- */
-function decodeWkb(buf) {
-    if (buf.length < 5) return null;
-    try {
-        const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-        const byteOrder = view.getUint8(0); // 0 = big-endian, 1 = little-endian
-        const le = byteOrder === 1;
-        const geomType = view.getUint32(1, le) & 0xFFFF; // mask off SRID flag
-        return wkbReadGeometry(view, 5, le, geomType).geom;
-    } catch (_e) {
-        return null;
-    }
-}
-
-function wkbReadGeometry(view, offset, le, geomType) {
-    switch (geomType) {
-        case 1:   // Point
-        case 2001: {
-            const x = view.getFloat64(offset, le);
-            const y = view.getFloat64(offset + 8, le);
-            return { geom: { type: 'Point', coordinates: [x, y] }, offset: offset + 16 };
-        }
-        case 2:   // LineString
-        case 2002: {
-            const numPts = view.getUint32(offset, le);
-            offset += 4;
-            const coords = [];
-            for (let i = 0; i < numPts; i++) {
-                coords.push([view.getFloat64(offset, le), view.getFloat64(offset + 8, le)]);
-                offset += 16;
-            }
-            return { geom: { type: 'LineString', coordinates: coords }, offset };
-        }
-        case 3:   // Polygon
-        case 2003: {
-            const numRings = view.getUint32(offset, le);
-            offset += 4;
-            const rings = [];
-            for (let r = 0; r < numRings; r++) {
-                const numPts = view.getUint32(offset, le);
-                offset += 4;
-                const ring = [];
-                for (let i = 0; i < numPts; i++) {
-                    ring.push([view.getFloat64(offset, le), view.getFloat64(offset + 8, le)]);
-                    offset += 16;
-                }
-                rings.push(ring);
-            }
-            return { geom: { type: 'Polygon', coordinates: rings }, offset };
-        }
-        case 4:   // MultiPoint
-        case 2004: {
-            const n = view.getUint32(offset, le);
-            offset += 4;
-            const points = [];
-            for (let i = 0; i < n; i++) {
-                const innerLe = view.getUint8(offset) === 1;
-                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
-                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
-                if (res.geom) points.push(res.geom.coordinates);
-                offset = res.offset;
-            }
-            return { geom: { type: 'MultiPoint', coordinates: points }, offset };
-        }
-        case 5:   // MultiLineString
-        case 2005: {
-            const n = view.getUint32(offset, le);
-            offset += 4;
-            const lines = [];
-            for (let i = 0; i < n; i++) {
-                const innerLe = view.getUint8(offset) === 1;
-                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
-                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
-                if (res.geom) lines.push(res.geom.coordinates);
-                offset = res.offset;
-            }
-            return { geom: { type: 'MultiLineString', coordinates: lines }, offset };
-        }
-        case 6:   // MultiPolygon
-        case 2006: {
-            const n = view.getUint32(offset, le);
-            offset += 4;
-            const polys = [];
-            for (let i = 0; i < n; i++) {
-                const innerLe = view.getUint8(offset) === 1;
-                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
-                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
-                if (res.geom) polys.push(res.geom.coordinates);
-                offset = res.offset;
-            }
-            return { geom: { type: 'MultiPolygon', coordinates: polys }, offset };
-        }
-        case 7:   // GeometryCollection
-        case 2007: {
-            const n = view.getUint32(offset, le);
-            offset += 4;
-            const geoms = [];
-            for (let i = 0; i < n; i++) {
-                const innerLe = view.getUint8(offset) === 1;
-                const innerType = view.getUint32(offset + 1, innerLe) & 0xFFFF;
-                const res = wkbReadGeometry(view, offset + 5, innerLe, innerType);
-                if (res.geom) geoms.push(res.geom);
-                offset = res.offset;
-            }
-            return { geom: { type: 'GeometryCollection', geometries: geoms }, offset };
-        }
-        default:
-            return { geom: null, offset };
-    }
-}
-
-/** Convert a hex string to a Uint8Array. Returns null on invalid input. */
-function hexToBytes(hex) {
-    const clean = hex.replace(/^\\x/, '').replace(/\s/g, '');
-    if (clean.length % 2 !== 0) return null;
-    const buf = new Uint8Array(clean.length / 2);
-    for (let i = 0; i < buf.length; i++) {
-        const byte = parseInt(clean.substring(i * 2, i * 2 + 2), 16);
-        if (isNaN(byte)) return null;
-        buf[i] = byte;
-    }
-    return buf;
 }
 
 /**

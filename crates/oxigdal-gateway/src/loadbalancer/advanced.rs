@@ -1262,11 +1262,11 @@ impl DrainManager {
             let prev = counter.fetch_sub(1, Ordering::Relaxed);
             if prev == 1 {
                 // Last connection closed
-                if let Some(mut state) = self.states.get_mut(backend_id) {
-                    if *state == DrainState::Draining {
-                        *state = DrainState::Drained;
-                        tracing::info!("Backend fully drained: {}", backend_id);
-                    }
+                if let Some(mut state) = self.states.get_mut(backend_id)
+                    && *state == DrainState::Draining
+                {
+                    *state = DrainState::Drained;
+                    tracing::info!("Backend fully drained: {}", backend_id);
                 }
             }
         }

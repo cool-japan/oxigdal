@@ -560,19 +560,18 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_reduction_kernel() {
-        if let Ok(context) = GpuContext::new().await {
-            if let Ok(kernel) = ReductionKernel::new(&context, ReductionOp::Sum) {
-                let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        if let Ok(context) = GpuContext::new().await
+            && let Ok(kernel) = ReductionKernel::new(&context, ReductionOp::Sum)
+        {
+            let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
-                if let Ok(buffer) = GpuBuffer::from_data(
-                    &context,
-                    &data,
-                    BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-                ) {
-                    if let Ok(result) = kernel.execute(&buffer, ReductionOp::Sum).await {
-                        assert!((result - 15.0).abs() < 1e-5);
-                    }
-                }
+            if let Ok(buffer) = GpuBuffer::from_data(
+                &context,
+                &data,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            ) && let Ok(result) = kernel.execute(&buffer, ReductionOp::Sum).await
+            {
+                assert!((result - 15.0).abs() < 1e-5);
             }
         }
     }

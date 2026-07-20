@@ -113,10 +113,10 @@ impl AppState {
     /// Send message to all subscribers of a subscription type.
     #[allow(dead_code)]
     fn send_to_subscribers(&self, subscription_id: &str, message: Message) {
-        if let Some(sub) = self.subscriptions.get(subscription_id) {
-            if let Err(e) = self.send_to_client(&sub.client_id, message) {
-                warn!("Failed to send to subscriber {}: {}", sub.client_id, e);
-            }
+        if let Some(sub) = self.subscriptions.get(subscription_id)
+            && let Err(e) = self.send_to_client(&sub.client_id, message)
+        {
+            warn!("Failed to send to subscriber {}: {}", sub.client_id, e);
         }
     }
 }

@@ -58,10 +58,10 @@ fn projected_to_proj(root: &WktNode) -> Result<String> {
     collect_descendants(root, "PARAMETER", &mut params);
     let lookup = |names: &[&str]| -> Option<f64> {
         for p in &params {
-            if let Some(name) = &p.value {
-                if names.iter().any(|n| name.eq_ignore_ascii_case(n)) {
-                    return ordered_numbers(p).first().copied();
-                }
+            if let Some(name) = &p.value
+                && names.iter().any(|n| name.eq_ignore_ascii_case(n))
+            {
+                return ordered_numbers(p).first().copied();
             }
         }
         None

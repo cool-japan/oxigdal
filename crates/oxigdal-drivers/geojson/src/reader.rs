@@ -134,11 +134,20 @@ impl<R: Read> GeoJsonReader<R> {
         Ok(geom)
     }
 
-    /// Creates a streaming iterator over features in a FeatureCollection
+    /// Creates an iterator over features in a FeatureCollection
     ///
-    /// This is memory-efficient for large files as it doesn't load the entire
-    /// collection into memory at once.
-    pub fn iter_features(self) -> FeatureIterator<R> {
+    /// Note: this reads and fully parses the entire underlying document up
+    /// front (it is not incremental/streaming — see [`FeatureIterator`] for
+    /// details); iteration itself, however, yields features one at a time
+    /// without cloning the whole collection into the caller's hands at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying reader fails or the document isn't
+    /// valid GeoJSON. Callers that need to distinguish "empty collection" from
+    /// "read/parse failure" should use this fallible constructor rather than
+    /// treating an empty iterator as success.
+    pub fn iter_features(self) -> Result<FeatureIterator<R>> {
         FeatureIterator::new(self.reader, self.validator)
     }
 
@@ -203,13 +212,22 @@ impl GeoJsonDocument {
     }
 }
 
-/// Streaming iterator over features
+/// Iterator over features in a `FeatureCollection`
 ///
-/// This allows processing large FeatureCollections without loading the entire
-/// file into memory.
+/// # Memory profile
 ///
-/// Note: This is a simplified implementation. For production use with very large
-/// files, consider using a streaming JSON parser.
+/// This implementation reads the whole underlying reader into memory and
+/// fully deserializes the `FeatureCollection` up front (in `FeatureIterator::new`);
+/// it has the same peak-memory profile as [`GeoJsonReader::read_feature_collection`].
+/// It is **not** an incremental/streaming JSON parser. The name and per-item
+/// [`Iterator`] interface are kept because they let callers process features
+/// one at a time (e.g. bail out early, or avoid holding a second collection),
+/// but large files are still fully buffered and parsed before the first
+/// feature is yielded.
+///
+/// For genuinely constant-memory processing of very large files, a real
+/// streaming JSON parser (e.g. token-by-token, only materializing one
+/// `Feature` at a time) would be required; that is tracked as future work.
 pub struct FeatureIterator<R: Read> {
     #[allow(dead_code)] // Reserved for future streaming optimization
     buffer: Vec<u8>,
@@ -220,24 +238,23 @@ pub struct FeatureIterator<R: Read> {
 }
 
 impl<R: Read> FeatureIterator<R> {
-    fn new(mut reader: R, validator: Option<Validator>) -> Self {
+    fn new(mut reader: R, validator: Option<Validator>) -> Result<Self> {
         let mut buffer = Vec::new();
-        let _ = reader.read_to_end(&mut buffer);
+        reader.read_to_end(&mut buffer)?;
 
-        // Parse the FeatureCollection
-        let features = if let Ok(fc) = serde_json::from_slice::<FeatureCollection>(&buffer) {
-            fc.features
-        } else {
-            Vec::new()
-        };
+        // Parse the FeatureCollection, propagating I/O and JSON-parse errors
+        // instead of silently substituting an empty feature list: a truncated
+        // read or malformed document must be distinguishable from a
+        // legitimately-empty, well-formed FeatureCollection.
+        let fc: FeatureCollection = serde_json::from_slice(&buffer)?;
 
-        Self {
+        Ok(Self {
             buffer,
-            features,
+            features: fc.features,
             current_index: 0,
             validator,
             _phantom: PhantomData,
-        }
+        })
     }
 
     /// Returns the next feature
@@ -628,6 +645,53 @@ mod tests {
         // Should succeed without validation even with invalid coordinates
         let result = reader.read();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_iter_features_success() {
+        let json = r#"{
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [100.0, 0.0]},
+                    "properties": {"name": "Point 1"}
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [101.0, 1.0]},
+                    "properties": {"name": "Point 2"}
+                }
+            ]
+        }"#;
+
+        let cursor = Cursor::new(json.as_bytes());
+        let reader = GeoJsonReader::new(cursor);
+        let iter = reader.iter_features().expect("valid feature collection");
+        let features: Result<Vec<Feature>> = iter.collect();
+        let features = features.expect("all features valid");
+        assert_eq!(features.len(), 2);
+    }
+
+    #[test]
+    fn test_iter_features_malformed_json_returns_error_not_empty_iterator() {
+        // Truncated/invalid JSON must surface as an error from `iter_features`,
+        // not silently produce a zero-feature iterator indistinguishable from
+        // a legitimately-empty FeatureCollection.
+        let json = r#"{"type": "FeatureCollection", "features": [ { "type": "Fea"#;
+        let cursor = Cursor::new(json.as_bytes());
+        let reader = GeoJsonReader::new(cursor);
+        let result = reader.iter_features();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_iter_features_non_feature_collection_json_returns_error() {
+        let json = r#"{"type": "Point", "coordinates": [1.0, 2.0]}"#;
+        let cursor = Cursor::new(json.as_bytes());
+        let reader = GeoJsonReader::new(cursor);
+        let result = reader.iter_features();
+        assert!(result.is_err());
     }
 
     #[test]

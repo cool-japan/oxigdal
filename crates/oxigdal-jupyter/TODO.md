@@ -2,7 +2,7 @@
 
 > **Purpose:** Jupyter integration — magic commands, rich display, interactive widgets, plotters visualization. Cargo deps include `evcxr`.
 > **Status (2026-05-17):** 3,120 LoC · 104 #[test] attributes (per MEMORY) · multiple scaffolding stubs in magic execute path (no `TODO/FIXME/stub` literals — stubs hide behind `(example)` placeholders).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace `(example)` placeholder responses in magic-command execution with real OxiGDAL calls

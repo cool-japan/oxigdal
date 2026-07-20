@@ -154,10 +154,10 @@ pub fn remove_duplicates(coords: &[Position]) -> Vec<Position> {
     let mut result = vec![coords[0].clone()];
 
     for coord in coords.iter().skip(1) {
-        if let Some(last) = result.last() {
-            if !positions_equal(last, coord) {
-                result.push(coord.clone());
-            }
+        if let Some(last) = result.last()
+            && !positions_equal(last, coord)
+        {
+            result.push(coord.clone());
         }
     }
 

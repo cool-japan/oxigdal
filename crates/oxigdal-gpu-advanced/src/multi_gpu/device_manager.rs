@@ -186,17 +186,17 @@ impl DeviceFilter {
         let limits = adapter.limits();
 
         // Check device type
-        if let Some(req_type) = self.required_type {
-            if info.device_type != req_type {
-                return false;
-            }
+        if let Some(req_type) = self.required_type
+            && info.device_type != req_type
+        {
+            return false;
         }
 
         // Check backend
-        if let Some(pref_backend) = self.preferred_backend {
-            if info.backend != pref_backend {
-                return false;
-            }
+        if let Some(pref_backend) = self.preferred_backend
+            && info.backend != pref_backend
+        {
+            return false;
         }
 
         // Check performance class
@@ -209,10 +209,10 @@ impl DeviceFilter {
         }
 
         // Check minimum memory
-        if let Some(min_mem) = self.min_memory {
-            if limits.max_buffer_size < min_mem {
-                return false;
-            }
+        if let Some(min_mem) = self.min_memory
+            && limits.max_buffer_size < min_mem
+        {
+            return false;
         }
 
         // Check features

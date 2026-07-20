@@ -38,11 +38,13 @@
 
 pub mod allocator;
 pub mod arena;
-#[cfg(unix)]
+// Memory-mapped I/O, NUMA and huge-page allocators are OS-specific and require
+// the standard library, so they are gated on both `unix` and the `std` feature.
+#[cfg(all(unix, feature = "std"))]
 pub mod hugepages;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "std"))]
 pub mod mmap;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "std"))]
 pub mod numa;
 pub mod pool;
 pub mod zero_copy;
@@ -52,11 +54,11 @@ pub use allocator::{
     Allocator, AllocatorStats, BuddyAllocator, SlabAllocator, ThreadLocalAllocator,
 };
 pub use arena::{Arena, ArenaPool, ArenaStats};
-#[cfg(unix)]
+#[cfg(all(unix, feature = "std"))]
 pub use hugepages::{HugePageAllocator, HugePageConfig, HugePageSize, HugePageStats};
-#[cfg(unix)]
+#[cfg(all(unix, feature = "std"))]
 pub use mmap::{MemoryMap, MemoryMapConfig, MemoryMapMode};
-#[cfg(unix)]
+#[cfg(all(unix, feature = "std"))]
 pub use numa::{NumaAllocator, NumaConfig, NumaNode, NumaStats};
 pub use pool::{Pool, PoolConfig, PoolStats};
 pub use zero_copy::{SharedBuffer, ZeroCopyBuffer, ZeroCopyConfig};

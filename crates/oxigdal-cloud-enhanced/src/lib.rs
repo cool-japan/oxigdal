@@ -8,8 +8,13 @@
 
 pub mod error;
 
+#[cfg(feature = "aws")]
 pub mod aws;
+
+#[cfg(feature = "azure")]
 pub mod azure;
+
+#[cfg(feature = "gcp")]
 pub mod gcp;
 
 pub use error::{CloudEnhancedError, Result};

@@ -41,11 +41,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    roughness[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                roughness[[y, x]] = f64::NAN;
+                continue;
             }
 
             let mut values = Vec::new();
@@ -59,10 +59,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         values.push(val.into());
@@ -100,11 +100,11 @@ where
         for x in 0..width {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    roughness[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                roughness[[y, x]] = f64::NAN;
+                continue;
             }
 
             let mut min_val = f64::INFINITY;
@@ -118,10 +118,10 @@ where
                     if ny >= 0 && ny < height as isize && nx >= 0 && nx < width as isize {
                         let val = dem[[ny as usize, nx as usize]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         let val_f64 = val.into();
@@ -163,11 +163,11 @@ where
         for x in 1..width - 1 {
             let center = dem[[y, x]];
 
-            if let Some(nd) = nodata {
-                if is_nodata(center, nd) {
-                    vrm[[y, x]] = f64::NAN;
-                    continue;
-                }
+            if let Some(nd) = nodata
+                && is_nodata(center, nd)
+            {
+                vrm[[y, x]] = f64::NAN;
+                continue;
             }
 
             let mut vectors = Vec::new();
@@ -181,10 +181,10 @@ where
                     if ny < height && nx < width {
                         let val = dem[[ny, nx]];
 
-                        if let Some(nd) = nodata {
-                            if is_nodata(val, nd) {
-                                continue;
-                            }
+                        if let Some(nd) = nodata
+                            && is_nodata(val, nd)
+                        {
+                            continue;
                         }
 
                         // Calculate normal vector components

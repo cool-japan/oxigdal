@@ -248,10 +248,10 @@ impl Worker {
                         TaskResult::success(task.id, batch.clone(), execution_time_ms);
 
                     // Update status back to idle if no more tasks
-                    if self.running_tasks.read().map_or(true, |r| r.is_empty()) {
-                        if let Ok(mut status) = self.status.write() {
-                            *status = WorkerStatus::Idle;
-                        }
+                    if self.running_tasks.read().map_or(true, |r| r.is_empty())
+                        && let Ok(mut status) = self.status.write()
+                    {
+                        *status = WorkerStatus::Idle;
                     }
 
                     Ok(task_result)
@@ -267,10 +267,10 @@ impl Worker {
                         TaskResult::failure(task.id, e.to_string(), execution_time_ms);
 
                     // Update status back to idle if no more tasks
-                    if self.running_tasks.read().map_or(true, |r| r.is_empty()) {
-                        if let Ok(mut status) = self.status.write() {
-                            *status = WorkerStatus::Idle;
-                        }
+                    if self.running_tasks.read().map_or(true, |r| r.is_empty())
+                        && let Ok(mut status) = self.status.write()
+                    {
+                        *status = WorkerStatus::Idle;
                     }
 
                     Ok(task_result)
@@ -289,27 +289,13 @@ impl Worker {
         match operation {
             TaskOperation::Filter { expression } => {
                 debug!("Applying filter: {}", expression);
-                // Placeholder: In real implementation, apply filter using Arrow compute
-                Ok(data)
+                let filtered = crate::operations::apply_filter(data.as_ref(), expression)?;
+                Ok(Arc::new(filtered))
             }
             TaskOperation::CalculateIndex { index_type, bands } => {
                 debug!("Calculating index: {} with bands {:?}", index_type, bands);
-                // Placeholder: In real implementation, calculate the index
-                Ok(data)
-            }
-            TaskOperation::Reproject { target_epsg } => {
-                debug!("Reprojecting to EPSG:{}", target_epsg);
-                // Placeholder: In real implementation, reproject using oxigdal-proj
-                Ok(data)
-            }
-            TaskOperation::Resample {
-                width,
-                height,
-                method,
-            } => {
-                debug!("Resampling to {}x{} using {}", width, height, method);
-                // Placeholder: In real implementation, resample the raster
-                Ok(data)
+                let out = crate::operations::calculate_index(data.as_ref(), index_type, bands)?;
+                Ok(Arc::new(out))
             }
             TaskOperation::Clip {
                 min_x,
@@ -321,29 +307,61 @@ impl Worker {
                     "Clipping to bbox: [{}, {}, {}, {}]",
                     min_x, min_y, max_x, max_y
                 );
-                // Placeholder: In real implementation, clip to bbox
-                Ok(data)
+                let clipped =
+                    crate::operations::clip_bbox(data.as_ref(), *min_x, *min_y, *max_x, *max_y)?;
+                Ok(Arc::new(clipped))
+            }
+            // The following operations require the raster/CRS engines and are not yet
+            // wired into the distributed worker. They MUST fail loudly rather than
+            // silently return the input unchanged, so the coordinator never mistakes a
+            // skipped operation for a completed one.
+            TaskOperation::Reproject { target_epsg } => {
+                debug!(
+                    "Reproject to EPSG:{} requested (not implemented)",
+                    target_epsg
+                );
+                Err(DistributedError::operation_not_implemented(format!(
+                    "Reproject to EPSG:{} is not yet supported by the distributed worker \
+                     (requires oxigdal-proj integration)",
+                    target_epsg
+                )))
+            }
+            TaskOperation::Resample {
+                width,
+                height,
+                method,
+            } => {
+                debug!(
+                    "Resample to {}x{} ({}) requested (not implemented)",
+                    width, height, method
+                );
+                Err(DistributedError::operation_not_implemented(format!(
+                    "Resample to {}x{} using '{}' is not yet supported by the distributed \
+                     worker (requires oxigdal-raster integration)",
+                    width, height, method
+                )))
             }
             TaskOperation::Convolve {
-                kernel,
+                kernel: _,
                 kernel_width,
                 kernel_height,
             } => {
                 debug!(
-                    "Applying convolution with {}x{} kernel",
+                    "Convolve {}x{} requested (not implemented)",
                     kernel_width, kernel_height
                 );
-                // Placeholder: In real implementation, apply convolution
-                let _ = kernel; // Suppress unused warning
-                Ok(data)
+                Err(DistributedError::operation_not_implemented(format!(
+                    "Convolution with a {}x{} kernel is not yet supported by the distributed \
+                     worker (requires oxigdal-raster integration)",
+                    kernel_width, kernel_height
+                )))
             }
-            TaskOperation::Custom { name, params } => {
-                debug!(
-                    "Executing custom operation: {} with params: {}",
-                    name, params
-                );
-                // Placeholder: In real implementation, execute custom operation
-                Ok(data)
+            TaskOperation::Custom { name, params: _ } => {
+                debug!("Custom operation '{}' requested (no handler)", name);
+                Err(DistributedError::operation_not_implemented(format!(
+                    "Custom operation '{}' has no registered handler on this worker",
+                    name
+                )))
             }
         }
     }
@@ -533,6 +551,96 @@ mod tests {
         assert!(result.is_ok());
         let task_result = result?;
         assert!(task_result.is_success());
+        // The filter must actually run: 5 input rows (1..=5), 3 survive `value > 2`.
+        let out = task_result
+            .data
+            .ok_or_else(|| Box::<dyn std::error::Error>::from("success result must carry data"))?;
+        assert_eq!(out.num_rows(), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_worker_filter_bad_expression_fails()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let worker = Worker::new(WorkerConfig::new("worker-test".to_string()));
+        let task = Task::new(
+            TaskId(2),
+            PartitionId(0),
+            TaskOperation::Filter {
+                expression: "nonexistent_column > 2".to_string(),
+            },
+        );
+        let result = worker.execute_task(task, create_test_batch()?).await?;
+        // Unknown column must surface as a task failure, not a silent success.
+        assert!(result.is_failure());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_worker_calculate_index_adds_column()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use arrow::array::Float64Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("red", DataType::Float64, false),
+            Field::new("nir", DataType::Float64, false),
+        ]));
+        let batch = Arc::new(RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![3.0, 6.0])),
+            ],
+        )?);
+
+        let worker = Worker::new(WorkerConfig::new("worker-test".to_string()));
+        let task = Task::new(
+            TaskId(3),
+            PartitionId(0),
+            TaskOperation::CalculateIndex {
+                index_type: "NDVI".to_string(),
+                bands: vec![0, 1],
+            },
+        );
+        let result = worker.execute_task(task, batch).await?;
+        assert!(result.is_success());
+        let out = result
+            .data
+            .ok_or_else(|| Box::<dyn std::error::Error>::from("must carry data"))?;
+        assert_eq!(out.num_columns(), 3);
+        assert_eq!(out.schema().field(2).name(), "NDVI");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_worker_unimplemented_ops_fail_loudly()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let worker = Worker::new(WorkerConfig::new("worker-test".to_string()));
+
+        let ops = vec![
+            TaskOperation::Reproject { target_epsg: 4326 },
+            TaskOperation::Resample {
+                width: 10,
+                height: 10,
+                method: "bilinear".to_string(),
+            },
+            TaskOperation::Convolve {
+                kernel: vec![1.0; 9],
+                kernel_width: 3,
+                kernel_height: 3,
+            },
+            TaskOperation::Custom {
+                name: "mystery".to_string(),
+                params: "{}".to_string(),
+            },
+        ];
+
+        for (i, op) in ops.into_iter().enumerate() {
+            let task = Task::new(TaskId(100 + i as u64), PartitionId(0), op);
+            let result = worker.execute_task(task, create_test_batch()?).await?;
+            // These operations are not implemented and MUST report failure rather than
+            // returning the unmodified input as if they had succeeded.
+            assert!(result.is_failure(), "operation {} should have failed", i);
+        }
         Ok(())
     }
 

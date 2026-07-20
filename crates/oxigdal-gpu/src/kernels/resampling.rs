@@ -128,12 +128,12 @@ impl ResamplingKernel {
         );
 
         // Validate Lanczos window parameter before touching the GPU.
-        if let ResamplingMethod::Lanczos { a } = method {
-            if a == 0 || a > 8 {
-                return Err(GpuError::invalid_kernel_params(format!(
-                    "Lanczos window parameter a={a} out of valid range 1..=8"
-                )));
-            }
+        if let ResamplingMethod::Lanczos { a } = method
+            && (a == 0 || a > 8)
+        {
+            return Err(GpuError::invalid_kernel_params(format!(
+                "Lanczos window parameter a={a} out of valid range 1..=8"
+            )));
         }
 
         let shader_source = Self::resampling_shader(method, workgroup_size);
@@ -658,11 +658,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_resampling_kernel() {
-        if let Ok(context) = GpuContext::new().await {
-            if let Ok(_kernel) = ResamplingKernel::new(&context, ResamplingMethod::NearestNeighbor)
-            {
-                // Kernel created successfully
-            }
+        if let Ok(context) = GpuContext::new().await
+            && let Ok(_kernel) = ResamplingKernel::new(&context, ResamplingMethod::NearestNeighbor)
+        {
+            // Kernel created successfully
         }
     }
 
@@ -676,18 +675,16 @@ mod tests {
                 &context,
                 &input_data,
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            ) && let Ok(_output) = resize(
+                &context,
+                &input,
+                4,
+                4,
+                2,
+                2,
+                ResamplingMethod::NearestNeighbor,
             ) {
-                if let Ok(_output) = resize(
-                    &context,
-                    &input,
-                    4,
-                    4,
-                    2,
-                    2,
-                    ResamplingMethod::NearestNeighbor,
-                ) {
-                    // Successfully resized
-                }
+                // Successfully resized
             }
         }
     }

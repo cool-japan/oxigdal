@@ -2,7 +2,7 @@
 
 > **Purpose:** WebAssembly bindings for browser-based COG viewing, tile streaming, and image processing.
 > **Status (2026-05-17):** 17,977 LoC · 407 #[test]/#[wasm_bindgen_test] attributes (403 pass / 3 skipped per MEMORY) · 5 real-code stubs (excluding tests/).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace `MemoryTracker::record_current` placeholder with `performance.memory` JS heap probe

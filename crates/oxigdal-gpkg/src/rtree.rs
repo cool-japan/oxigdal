@@ -15,31 +15,48 @@
 //! ## Wire format
 //!
 //! Each row in the `_node` table is `(nodeno INTEGER, data BLOB)`. The BLOB
-//! encodes a SQLite R-tree node in **big-endian** byte order:
+//! encodes a SQLite R-tree node in **big-endian** byte order. Note that the
+//! node's own identifier is *not* stored inside the BLOB — it is the `nodeno`
+//! column value, tracked separately by the caller (see [`GpkgRTreeReader`]'s
+//! `nodes: HashMap<i64, Vec<u8>>`):
 //!
 //! | offset | size | field |
 //! |--------|------|-------|
-//! | 0      | 4    | node number (i32 BE) — 1-indexed; node 1 is root |
-//! | 4      | 4    | number of cells (i32 BE) |
-//! | 8+     | 24×n | cell array |
+//! | 0      | 2    | root only: tree depth (u16 BE); other nodes: unused |
+//! | 2      | 2    | number of cells (u16 BE) |
+//! | 4+     | 24×n | cell array |
 //!
 //! Each 24-byte cell contains:
 //!
 //! | offset | size | field |
 //! |--------|------|-------|
-//! | 0      | 4    | min_x (f32 BE) |
-//! | 4      | 4    | max_x (f32 BE) |
-//! | 8      | 4    | min_y (f32 BE) |
-//! | 12     | 4    | max_y (f32 BE) |
-//! | 16     | 8    | id (i64 BE) — rowid for leaf cells, child_node for interior |
+//! | 0      | 8    | id (i64 BE) — rowid for leaf cells, child_node for interior |
+//! | 8      | 4    | min_x (f32 BE) |
+//! | 12     | 4    | max_x (f32 BE) |
+//! | 16     | 4    | min_y (f32 BE) |
+//! | 20     | 4    | max_y (f32 BE) |
 //!
-//! **Leaf vs interior discrimination:** if the 8-byte `id` field is ≤
-//! `max_node_id` *and* corresponds to an existing entry in the node map, the
-//! cell is treated as an interior node pointer; otherwise it is a feature rowid
-//! (leaf entry). This matches the strategy used by SQLite's own R-tree module.
+//! **Leaf vs interior discrimination:** SQLite's R-tree does *not* mark
+//! individual nodes as leaf/interior in their own bytes; instead the
+//! **root** node's header (`nodeno == 1`) stores the tree's total depth as a
+//! big-endian `u16` at offset 0 (`iDepth` in SQLite's own source). A
+//! traversal starts at the root with `depth = iDepth`; a node at `depth ==
+//! 0` is a leaf (cells are feature rowids), otherwise it is interior (cells
+//! are child node ids) and each child is visited with `depth - 1`. This
+//! guarantees termination in bounded recursion depth even against corrupt
+//! or adversarial files, unlike a heuristic that peeks at cell id values
+//! (which can misclassify a leaf node as interior whenever a feature rowid
+//! happens to collide with a live node id — for example the extremely
+//! common case of a single-leaf tree whose first feature has rowid 1 and
+//! whose root is also node 1, previously causing unbounded recursion here).
 //!
-//! Reference: SQLite R-tree module source (`ext/rtree/rtree.c`) and OGC
-//! GeoPackage Encoding Standard v1.3.1 Appendix F.
+//! Reference: SQLite R-tree module source (`ext/rtree/rtree.c`, function
+//! `nodeAcquire`/`rtreeDepth`), verified empirically against `rt_node.data`
+//! BLOBs produced by SQLite 3.51.0 for both a single-leaf
+//! `CREATE VIRTUAL TABLE rt USING rtree(id, minx, maxx, miny, maxy)` table
+//! and a 2 000-row table that forces a 3-level tree (root header `0002 0002`
+//! — depth 2, 2 cells — while every non-root node's first 2 bytes are
+//! `0000`), and OGC GeoPackage Encoding Standard v1.3.1 Appendix F.
 
 use std::collections::HashMap;
 
@@ -52,8 +69,13 @@ use crate::gpkg::GeoPackage;
 /// Size of a single 2-D R-tree cell inside a node BLOB (bytes).
 const CELL_BYTES: usize = 24;
 
-/// Minimum node BLOB size: 4-byte node number + 4-byte cell count.
-const NODE_HEADER_BYTES: usize = 8;
+/// Minimum node BLOB size: 2 reserved bytes + 2-byte (u16 BE) cell count.
+///
+/// SQLite's R-tree node BLOB does *not* embed the node's own identifier —
+/// only a 2-byte reserved field (unused by this reader) followed by the
+/// cell count. See the module-level "Wire format" section for the full
+/// layout, verified against real SQLite-generated `_node` shadow tables.
+const NODE_HEADER_BYTES: usize = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public data structures
@@ -137,30 +159,33 @@ enum RTreeNode {
 // Raw-blob parsing helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Extract the node number and cell count from the 8-byte node BLOB header.
+/// Extract the cell count from the 4-byte node BLOB header.
 ///
-/// Returns `(node_number, num_cells)`.
+/// The first 2 bytes are a reserved field (unused; not the node's own
+/// identifier — that comes from the `nodeno` column, tracked separately by
+/// the caller) and are discarded. Returns `num_cells` as read from the
+/// big-endian `u16` at offset 2.
 ///
 /// # Errors
 /// Returns [`GpkgError::InvalidFormat`] when the blob is shorter than
 /// [`NODE_HEADER_BYTES`].
-fn parse_node_header(blob: &[u8]) -> Result<(i32, i32), GpkgError> {
+fn parse_node_header(blob: &[u8]) -> Result<u16, GpkgError> {
     if blob.len() < NODE_HEADER_BYTES {
         return Err(GpkgError::InvalidFormat(format!(
             "R-tree node blob is only {} bytes; need at least {NODE_HEADER_BYTES}",
             blob.len()
         )));
     }
-    // Safety: we just verified blob.len() >= 8, so both slices are valid.
-    let node_number = i32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]);
-    let num_cells = i32::from_be_bytes([blob[4], blob[5], blob[6], blob[7]]);
-    Ok((node_number, num_cells))
+    // Safety: we just verified blob.len() >= 4, so the slice is valid.
+    // Bytes 0-1 are a reserved field and are intentionally discarded.
+    let num_cells = u16::from_be_bytes([blob[2], blob[3]]);
+    Ok(num_cells)
 }
 
 /// Extract one raw cell at `offset` within the post-header cell array.
 ///
 /// The cell layout (2-D, 24 bytes) is:
-/// `min_x(4) max_x(4) min_y(4) max_y(4) id(8)` — all big-endian.
+/// `id(8) min_x(4) max_x(4) min_y(4) max_y(4)` — all big-endian.
 ///
 /// Returns `(min_x, max_x, min_y, max_y, id)`, or `None` if `offset +
 /// CELL_BYTES > data.len()`.
@@ -168,70 +193,44 @@ fn parse_raw_cell(data: &[u8], offset: usize) -> Option<(f32, f32, f32, f32, i64
     if offset + CELL_BYTES > data.len() {
         return None;
     }
-    let min_x = f32::from_be_bytes(data[offset..offset + 4].try_into().ok()?);
-    let max_x = f32::from_be_bytes(data[offset + 4..offset + 8].try_into().ok()?);
-    let min_y = f32::from_be_bytes(data[offset + 8..offset + 12].try_into().ok()?);
-    let max_y = f32::from_be_bytes(data[offset + 12..offset + 16].try_into().ok()?);
-    let id = i64::from_be_bytes(data[offset + 16..offset + 24].try_into().ok()?);
+    let id = i64::from_be_bytes(data[offset..offset + 8].try_into().ok()?);
+    let min_x = f32::from_be_bytes(data[offset + 8..offset + 12].try_into().ok()?);
+    let max_x = f32::from_be_bytes(data[offset + 12..offset + 16].try_into().ok()?);
+    let min_y = f32::from_be_bytes(data[offset + 16..offset + 20].try_into().ok()?);
+    let max_y = f32::from_be_bytes(data[offset + 20..offset + 24].try_into().ok()?);
     Some((min_x, max_x, min_y, max_y, id))
+}
+
+/// Read the tree-depth field (`iDepth`) from a **root** node's header.
+///
+/// Only meaningful for the root node (`nodeno == 1`); the corresponding
+/// bytes in every other node are unused. Returns `0` (leaf-only tree) when
+/// the blob is too short to contain the field, which cannot happen for any
+/// blob that has already passed the [`NODE_HEADER_BYTES`] length check
+/// performed before a blob is stored in [`GpkgRTreeReader::nodes`], but the
+/// `#[doc(hidden)]` `for_testing` constructor accepts arbitrary blobs so this
+/// stays a safe fallback rather than a panic.
+fn read_root_depth(blob: &[u8]) -> u16 {
+    match blob.first_chunk::<2>() {
+        Some(bytes) => u16::from_be_bytes(*bytes),
+        None => 0,
+    }
 }
 
 /// Decode a full R-tree node BLOB into an [`RTreeNode`].
 ///
-/// `max_node_id` is used to discriminate interior cells (id ≤ max_node_id and
-/// present in the node map) from leaf entries (feature rowids).
-///
-/// `node_ids` is the set of all known node identifiers; used together with
-/// `max_node_id` for reliable leaf/interior classification.
-fn decode_node(
-    blob: &[u8],
-    max_node_id: i64,
-    node_ids: &HashMap<i64, Vec<u8>>,
-) -> Result<RTreeNode, GpkgError> {
-    let (_, num_cells) = parse_node_header(blob)?;
-    let num_cells = num_cells.max(0) as usize;
+/// `depth` is the node's distance from the leaf level: `0` means this node
+/// **is** a leaf (cells are feature rowids); any other value means this node
+/// is interior (cells are child node ids), and each child must be decoded
+/// with `depth - 1`. The caller starts the traversal at the root with
+/// `depth` equal to the root's declared `iDepth` (see [`read_root_depth`]).
+fn decode_node(blob: &[u8], depth: u16) -> Result<RTreeNode, GpkgError> {
+    let num_cells = parse_node_header(blob)? as usize;
 
-    // Cell array begins immediately after the 8-byte header.
+    // Cell array begins immediately after the 4-byte header.
     let cell_data = &blob[NODE_HEADER_BYTES..];
 
-    // Classify the node as interior or leaf by probing the first cell's id
-    // field.  A node is interior when its cells' id values are valid node
-    // identifiers (≤ max_node_id and present in the node map).
-    //
-    // Edge case: an empty node (num_cells == 0) is treated as a leaf because
-    // there is nothing to recurse into.
-    if num_cells == 0 {
-        return Ok(RTreeNode::Leaf(Vec::new()));
-    }
-
-    // Peek at the id of the first cell to decide node type.
-    let first_id = {
-        let (_, _, _, _, id) = parse_raw_cell(cell_data, 0).ok_or_else(|| {
-            GpkgError::InvalidFormat("R-tree node BLOB too short to hold even one cell".into())
-        })?;
-        id
-    };
-
-    let is_interior = first_id > 0 && first_id <= max_node_id && node_ids.contains_key(&first_id);
-
-    if is_interior {
-        let mut cells = Vec::with_capacity(num_cells);
-        for i in 0..num_cells {
-            let Some((min_x, max_x, min_y, max_y, child_node)) =
-                parse_raw_cell(cell_data, i * CELL_BYTES)
-            else {
-                break;
-            };
-            cells.push(InteriorCell {
-                child_node,
-                min_x,
-                max_x,
-                min_y,
-                max_y,
-            });
-        }
-        Ok(RTreeNode::Interior(cells))
-    } else {
+    if depth == 0 {
         let mut entries = Vec::with_capacity(num_cells);
         for i in 0..num_cells {
             let Some((min_x, max_x, min_y, max_y, rowid)) =
@@ -248,6 +247,23 @@ fn decode_node(
             });
         }
         Ok(RTreeNode::Leaf(entries))
+    } else {
+        let mut cells = Vec::with_capacity(num_cells);
+        for i in 0..num_cells {
+            let Some((min_x, max_x, min_y, max_y, child_node)) =
+                parse_raw_cell(cell_data, i * CELL_BYTES)
+            else {
+                break;
+            };
+            cells.push(InteriorCell {
+                child_node,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            });
+        }
+        Ok(RTreeNode::Interior(cells))
     }
 }
 
@@ -277,6 +293,12 @@ pub struct GpkgRTreeReader {
     nodes: HashMap<i64, Vec<u8>>,
     /// Largest node id seen when the reader was opened.
     max_node_id: i64,
+    /// Tree depth (`iDepth`) read from the root node's header (node 1).
+    ///
+    /// `0` when the tree has a single, leaf-only root, or when no root node
+    /// (`nodeno == 1`) is present at all (in which case [`Self::search`] and
+    /// [`Self::all_entries`] short-circuit to empty results regardless).
+    root_depth: u16,
 }
 
 impl GpkgRTreeReader {
@@ -362,7 +384,12 @@ impl GpkgRTreeReader {
             nodes.insert(node_id, blob);
         }
 
-        Ok(Self { nodes, max_node_id })
+        let root_depth = nodes.get(&1).map(|blob| read_root_depth(blob)).unwrap_or(0);
+        Ok(Self {
+            nodes,
+            max_node_id,
+            root_depth,
+        })
     }
 
     /// Create a reader directly from a pre-built node map.
@@ -370,9 +397,19 @@ impl GpkgRTreeReader {
     /// Intended for tests that need to exercise the search logic without a real
     /// SQLite file on disk.  Marked `#[doc(hidden)]` so it does not appear in
     /// the public API reference.
+    ///
+    /// The tree depth used to discriminate leaf vs. interior nodes during
+    /// traversal is read from the root node's (`nodeno == 1`) header, exactly
+    /// as it would be for a real SQLite-produced shadow table; there is no
+    /// separate depth parameter to keep this constructor's signature stable.
     #[doc(hidden)]
     pub fn for_testing(nodes: HashMap<i64, Vec<u8>>, max_node_id: i64) -> Self {
-        Self { nodes, max_node_id }
+        let root_depth = nodes.get(&1).map(|blob| read_root_depth(blob)).unwrap_or(0);
+        Self {
+            nodes,
+            max_node_id,
+            root_depth,
+        }
     }
 
     // ── Query API ─────────────────────────────────────────────────────────────
@@ -391,7 +428,15 @@ impl GpkgRTreeReader {
 
         // R-tree root is always node 1.
         if let Some(root_blob) = self.nodes.get(&1) {
-            self.search_node(root_blob, min_x, min_y, max_x, max_y, &mut results);
+            self.search_node(
+                root_blob,
+                self.root_depth,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+                &mut results,
+            );
         }
 
         results
@@ -399,16 +444,24 @@ impl GpkgRTreeReader {
 
     /// Recursively search a single node blob and append matching rowids to
     /// `results`.
+    ///
+    /// `depth` is this node's distance from the leaf level (0 = leaf); it is
+    /// decremented by exactly 1 on every recursive descent into a child, so
+    /// recursion is bounded by the root's declared tree depth regardless of
+    /// the blob's cell contents — this cannot loop even on a corrupt or
+    /// adversarial file.
+    #[allow(clippy::too_many_arguments)]
     fn search_node(
         &self,
         blob: &[u8],
+        depth: u16,
         min_x: f64,
         min_y: f64,
         max_x: f64,
         max_y: f64,
         results: &mut Vec<i64>,
     ) {
-        let node = match decode_node(blob, self.max_node_id, &self.nodes) {
+        let node = match decode_node(blob, depth) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("Failed to decode R-tree node: {e}");
@@ -419,10 +472,18 @@ impl GpkgRTreeReader {
         match node {
             RTreeNode::Interior(cells) => {
                 for cell in cells {
-                    if cell.intersects(min_x, min_y, max_x, max_y) {
-                        if let Some(child_blob) = self.nodes.get(&cell.child_node) {
-                            self.search_node(child_blob, min_x, min_y, max_x, max_y, results);
-                        }
+                    if cell.intersects(min_x, min_y, max_x, max_y)
+                        && let Some(child_blob) = self.nodes.get(&cell.child_node)
+                    {
+                        self.search_node(
+                            child_blob,
+                            depth.saturating_sub(1),
+                            min_x,
+                            min_y,
+                            max_x,
+                            max_y,
+                            results,
+                        );
                     }
                 }
             }
@@ -467,14 +528,18 @@ impl GpkgRTreeReader {
     pub fn all_entries(&self) -> Vec<RTreeEntry> {
         let mut entries = Vec::new();
         if let Some(root_blob) = self.nodes.get(&1) {
-            self.collect_leaf_entries(root_blob, &mut entries);
+            self.collect_leaf_entries(root_blob, self.root_depth, &mut entries);
         }
         entries
     }
 
     /// Recursively collect all leaf entries from a subtree rooted at `blob`.
-    fn collect_leaf_entries(&self, blob: &[u8], out: &mut Vec<RTreeEntry>) {
-        let node = match decode_node(blob, self.max_node_id, &self.nodes) {
+    ///
+    /// `depth` is this node's distance from the leaf level (0 = leaf); see
+    /// [`Self::search_node`] for why decrementing it on every descent bounds
+    /// recursion even against a corrupt file.
+    fn collect_leaf_entries(&self, blob: &[u8], depth: u16, out: &mut Vec<RTreeEntry>) {
+        let node = match decode_node(blob, depth) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("Failed to decode R-tree node during full scan: {e}");
@@ -485,7 +550,7 @@ impl GpkgRTreeReader {
             RTreeNode::Interior(cells) => {
                 for cell in cells {
                     if let Some(child_blob) = self.nodes.get(&cell.child_node) {
-                        self.collect_leaf_entries(child_blob, out);
+                        self.collect_leaf_entries(child_blob, depth.saturating_sub(1), out);
                     }
                 }
             }
@@ -527,32 +592,178 @@ fn extract_blob(v: &CellValue, table: &str, node_id: i64) -> Result<Vec<u8>, Gpk
 /// Build a raw node BLOB for a **leaf** node from a slice of
 /// `(rowid, min_x, max_x, min_y, max_y)` entries.
 ///
-/// The node number embedded in the header is set to `node_number`.
+/// `node_number` is accepted for API/call-site compatibility (callers
+/// typically also use it as the key under which the returned blob is
+/// inserted into the node map) but, matching the real SQLite wire format,
+/// it is **not** embedded in the blob itself.
+///
+/// The header's first 2 bytes are written as `0` (tree depth 0), which is
+/// only meaningful when the returned blob is inserted as the **root** node
+/// (`nodeno == 1`) — see [`read_root_depth`]. A leaf node used anywhere else
+/// in the tree ignores this field entirely, matching real SQLite behaviour.
 ///
 /// This is a `#[doc(hidden)]` test-support function; integration tests access
 /// it as `oxigdal_gpkg::rtree::build_leaf_node_blob`.
 #[doc(hidden)]
 pub fn build_leaf_node_blob(node_number: i32, entries: &[(i64, f32, f32, f32, f32)]) -> Vec<u8> {
+    let _ = node_number; // not part of the wire format; kept for call-site compatibility
     let mut blob = Vec::with_capacity(NODE_HEADER_BYTES + entries.len() * CELL_BYTES);
-    blob.extend_from_slice(&node_number.to_be_bytes());
-    blob.extend_from_slice(&(entries.len() as i32).to_be_bytes());
-    for (rowid, min_x, max_x, min_y, max_y) in entries {
-        blob.extend_from_slice(&min_x.to_be_bytes());
-        blob.extend_from_slice(&max_x.to_be_bytes());
-        blob.extend_from_slice(&min_y.to_be_bytes());
-        blob.extend_from_slice(&max_y.to_be_bytes());
-        blob.extend_from_slice(&rowid.to_be_bytes());
-    }
+    blob.extend_from_slice(&0u16.to_be_bytes()); // depth 0 (only meaningful as root)
+    blob.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+    write_node_cells(&mut blob, entries);
     blob
 }
 
 /// Build a raw node BLOB for an **interior** node from a slice of
 /// `(child_node_id, min_x, max_x, min_y, max_y)` cells.
 ///
+/// `depth` is written into the header's first 2 bytes and is only consulted
+/// by [`decode_node`] when this blob is the **root** node (`nodeno == 1`);
+/// pass the tree's total height (number of edges from root to a leaf) when
+/// building a root, or any value when building a non-root interior node
+/// (real SQLite leaves that field unused for non-root nodes too).
+///
 /// `#[doc(hidden)]` test-support function.
 #[doc(hidden)]
-pub fn build_interior_node_blob(node_number: i32, cells: &[(i64, f32, f32, f32, f32)]) -> Vec<u8> {
-    // Interior cells share the same wire format as leaf cells; the
-    // interpretation of the 8-byte id field differs (child node vs rowid).
-    build_leaf_node_blob(node_number, cells)
+pub fn build_interior_node_blob(
+    node_number: i32,
+    depth: u16,
+    cells: &[(i64, f32, f32, f32, f32)],
+) -> Vec<u8> {
+    let _ = node_number; // not part of the wire format; kept for call-site compatibility
+    let mut blob = Vec::with_capacity(NODE_HEADER_BYTES + cells.len() * CELL_BYTES);
+    blob.extend_from_slice(&depth.to_be_bytes());
+    blob.extend_from_slice(&(cells.len() as u16).to_be_bytes());
+    write_node_cells(&mut blob, cells);
+    blob
+}
+
+/// Append `cells` (each `(id, min_x, max_x, min_y, max_y)`) to `blob` in the
+/// real SQLite wire-format cell layout (id first, then the four bounds).
+/// Shared by [`build_leaf_node_blob`] and [`build_interior_node_blob`], whose
+/// cell encoding is identical — only the caller's interpretation of `id`
+/// (rowid vs. child node) differs.
+fn write_node_cells(blob: &mut Vec<u8>, cells: &[(i64, f32, f32, f32, f32)]) {
+    for (id, min_x, max_x, min_y, max_y) in cells {
+        blob.extend_from_slice(&id.to_be_bytes());
+        blob.extend_from_slice(&min_x.to_be_bytes());
+        blob.extend_from_slice(&max_x.to_be_bytes());
+        blob.extend_from_slice(&min_y.to_be_bytes());
+        blob.extend_from_slice(&max_y.to_be_bytes());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression tests — real SQLite-generated wire format
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The leading 76 bytes of an `rt_node.data` BLOB captured with `sqlite3
+    /// 3.51.0` from a real R-tree shadow table:
+    ///
+    /// ```sql
+    /// CREATE VIRTUAL TABLE rt USING rtree(id, minx, maxx, miny, maxy);
+    /// INSERT INTO rt VALUES (1, 0.0, 1.0, 0.0, 1.0);
+    /// INSERT INTO rt VALUES (2, 2.0, 3.0, 2.0, 3.0);
+    /// INSERT INTO rt VALUES (3, 4.0, 5.0, 4.0, 5.0);
+    /// SELECT hex(data) FROM rt_node;
+    /// ```
+    ///
+    /// The real page is padded with trailing zero bytes to the fixed node
+    /// size; only the header + 3 cells (4 + 3×24 = 76 bytes) are meaningful
+    /// and reproduced here, since `decode_node` only reads `num_cells` cells
+    /// past the header and ignores anything after.
+    ///
+    /// This fixture exists specifically because the crate's own
+    /// `build_leaf_node_blob`/`build_interior_node_blob` test builders
+    /// previously encoded the *wrong* wire format (an 8-byte header with a
+    /// fabricated node-number field, and coords-then-id cell order), which
+    /// made the rest of the test suite blind to the mismatch against real
+    /// GeoPackage/SQLite files. See the module-level "Wire format" docs.
+    #[rustfmt::skip]
+    const REAL_SQLITE_RTREE_NODE_BLOB: [u8; 76] = [
+        0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x3F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x3F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+        0x40, 0x00, 0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+        0x40, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+        0x40, 0x80, 0x00, 0x00, 0x40, 0xA0, 0x00, 0x00, 0x40, 0x80, 0x00, 0x00,
+        0x40, 0xA0, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn parse_node_header_reads_real_sqlite_cell_count() {
+        // Real SQLite blobs use a 4-byte header: 2 reserved bytes then a
+        // big-endian u16 cell count — NOT an 8-byte header with a fabricated
+        // i32 node-number field.
+        let num_cells = parse_node_header(&REAL_SQLITE_RTREE_NODE_BLOB).expect("header must parse");
+        assert_eq!(num_cells, 3, "real fixture has exactly 3 inserted rows");
+        assert_eq!(NODE_HEADER_BYTES, 4);
+    }
+
+    #[test]
+    fn parse_raw_cell_reads_real_sqlite_id_first_layout() {
+        let cell_data = &REAL_SQLITE_RTREE_NODE_BLOB[NODE_HEADER_BYTES..];
+
+        let (min_x, max_x, min_y, max_y, id) =
+            parse_raw_cell(cell_data, 0).expect("cell 0 must parse");
+        assert_eq!(id, 1, "id field must be read FIRST, not last");
+        assert_eq!((min_x, max_x, min_y, max_y), (0.0, 1.0, 0.0, 1.0));
+
+        let (min_x, max_x, min_y, max_y, id) =
+            parse_raw_cell(cell_data, CELL_BYTES).expect("cell 1 must parse");
+        assert_eq!(id, 2);
+        assert_eq!((min_x, max_x, min_y, max_y), (2.0, 3.0, 2.0, 3.0));
+
+        let (min_x, max_x, min_y, max_y, id) =
+            parse_raw_cell(cell_data, 2 * CELL_BYTES).expect("cell 2 must parse");
+        assert_eq!(id, 3);
+        assert_eq!((min_x, max_x, min_y, max_y), (4.0, 5.0, 4.0, 5.0));
+    }
+
+    #[test]
+    fn gpkg_rtree_reader_decodes_real_sqlite_node_blob_correctly() {
+        let mut nodes = HashMap::new();
+        nodes.insert(1i64, REAL_SQLITE_RTREE_NODE_BLOB.to_vec());
+        let reader = GpkgRTreeReader::for_testing(nodes, 1);
+
+        assert_eq!(reader.len(), 1);
+
+        // A query window covering all three rows must return all three
+        // rowids (order-independent).
+        let mut results = reader.search(-10.0, -10.0, 10.0, 10.0);
+        results.sort_unstable();
+        assert_eq!(results, vec![1, 2, 3]);
+
+        // A tight window around row 2's bbox must return only row 2.
+        let results = reader.search(2.0, 2.0, 3.0, 3.0);
+        assert_eq!(results, vec![2]);
+
+        // A window disjoint from every bbox must return nothing.
+        let results = reader.search(100.0, 100.0, 200.0, 200.0);
+        assert!(results.is_empty());
+
+        // Full-scan API must also see all three entries with correct bboxes.
+        let mut entries = reader.all_entries();
+        entries.sort_by_key(|e| e.rowid);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].rowid, 1);
+        assert_eq!((entries[0].min_x, entries[0].max_x), (0.0, 1.0));
+        assert_eq!(entries[1].rowid, 2);
+        assert_eq!((entries[1].min_x, entries[1].max_x), (2.0, 3.0));
+        assert_eq!(entries[2].rowid, 3);
+        assert_eq!((entries[2].min_x, entries[2].max_x), (4.0, 5.0));
+    }
+
+    #[test]
+    fn parse_node_header_rejects_short_blob() {
+        let err = parse_node_header(&[0u8, 0u8, 0u8]).expect_err("3 bytes is too short");
+        match err {
+            GpkgError::InvalidFormat(msg) => assert!(msg.contains("only 3 bytes")),
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+    }
 }

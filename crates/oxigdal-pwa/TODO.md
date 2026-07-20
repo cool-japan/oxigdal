@@ -2,7 +2,7 @@
 
 > **Purpose:** Progressive Web App primitives — Service Worker registration, Cache API + IndexedDB persistence, Push notifications, Background Sync, Web App Manifest, geospatial tile caching.
 > **Status (2026-05-17):** 5,452 LoC · 52 #[test]/#[wasm_bindgen_test] attributes · 1 real-code soft stub.
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wait-for-active service worker with real `statechange` event subscription

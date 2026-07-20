@@ -652,10 +652,10 @@ impl Layer {
             before: None,
         });
         let (limit, offset) = pagination.normalize(100);
-        if let Some(ref f) = filter {
-            if let Some(ref bbox) = f.bbox {
-                bbox.validate()?;
-            }
+        if let Some(ref f) = filter
+            && let Some(ref bbox) = f.bbox
+        {
+            bbox.validate()?;
         }
         let features: Vec<Feature> = (0..limit)
             .map(|i| Feature {

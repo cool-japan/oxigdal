@@ -718,13 +718,13 @@ impl ArrayMetadataV3 {
             }));
         }
 
-        if let Some(names) = &self.dimension_names {
-            if names.len() != self.shape.len() {
-                return Err(ZarrError::Metadata(MetadataError::InvalidDimensionNames {
-                    expected: self.shape.len(),
-                    found: names.len(),
-                }));
-            }
+        if let Some(names) = &self.dimension_names
+            && names.len() != self.shape.len()
+        {
+            return Err(ZarrError::Metadata(MetadataError::InvalidDimensionNames {
+                expected: self.shape.len(),
+                found: names.len(),
+            }));
         }
 
         Ok(())
@@ -770,10 +770,10 @@ fn parse_dtype_size(dtype: &str) -> Result<usize> {
     };
 
     // Parse type and size
-    if let Some(size_str) = dtype.get(1..) {
-        if let Ok(size) = size_str.parse::<usize>() {
-            return Ok(size);
-        }
+    if let Some(size_str) = dtype.get(1..)
+        && let Ok(size) = size_str.parse::<usize>()
+    {
+        return Ok(size);
     }
 
     // Handle common types

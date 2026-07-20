@@ -405,7 +405,7 @@ pub mod util {
     /// Check if a pointer is aligned to the given boundary
     #[must_use]
     pub fn is_aligned<T>(ptr: *const T, align: usize) -> bool {
-        (ptr as usize) % align == 0
+        (ptr as usize).is_multiple_of(align)
     }
 
     /// Round up to the nearest multiple of alignment

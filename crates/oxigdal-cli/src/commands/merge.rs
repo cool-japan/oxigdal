@@ -122,15 +122,15 @@ pub fn execute(args: MergeArgs, format: OutputFormat) -> Result<()> {
                 first_data_type
             );
         }
-        if let Some(epsg) = args.epsg {
-            if info.epsg_code != Some(epsg) {
-                anyhow::bail!(
-                    "Input {} has EPSG:{:?}, but target is EPSG:{}",
-                    i,
-                    info.epsg_code,
-                    epsg
-                );
-            }
+        if let Some(epsg) = args.epsg
+            && info.epsg_code != Some(epsg)
+        {
+            anyhow::bail!(
+                "Input {} has EPSG:{:?}, but target is EPSG:{}",
+                i,
+                info.epsg_code,
+                epsg
+            );
         }
     }
 
@@ -341,10 +341,55 @@ fn merge_band(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::OutputFormat;
 
+    /// `execute` must reject a merge request with fewer than 2 inputs before
+    /// touching the filesystem, with the exact "at least 2 input files"
+    /// message from the check at the top of the function.
     #[test]
     fn test_merge_requires_multiple_inputs() {
-        // This is a structural test - validates module compiles correctly
-        let _placeholder = 1;
+        let args = MergeArgs {
+            output: std::env::temp_dir().join("oxigdal_cli_merge_test_single_input.tif"),
+            inputs: vec![PathBuf::from("only_one_input.tif")],
+            no_data: None,
+            output_no_data: None,
+            epsg: None,
+            overwrite: true,
+            progress: false,
+            creation_options: Vec::new(),
+        };
+
+        let result = execute(args, OutputFormat::Text);
+        let err = result.expect_err("merge with a single input must fail");
+        assert!(
+            err.to_string()
+                .contains("Merge requires at least 2 input files"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    /// Zero inputs must fail with the same "at least 2" message, not a
+    /// different error (e.g. an index-out-of-bounds panic from `all_info[0]`).
+    #[test]
+    fn test_merge_requires_multiple_inputs_zero() {
+        let args = MergeArgs {
+            output: std::env::temp_dir().join("oxigdal_cli_merge_test_zero_inputs.tif"),
+            inputs: Vec::new(),
+            no_data: None,
+            output_no_data: None,
+            epsg: None,
+            overwrite: true,
+            progress: false,
+            creation_options: Vec::new(),
+        };
+
+        let result = execute(args, OutputFormat::Text);
+        let err = result.expect_err("merge with zero inputs must fail");
+        assert!(
+            err.to_string()
+                .contains("Merge requires at least 2 input files"),
+            "unexpected error message: {err}"
+        );
     }
 }

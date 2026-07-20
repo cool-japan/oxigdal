@@ -246,42 +246,40 @@ fn validate_tiling<S: DataSource>(
         if let (Some(tw_entry), Some(th_entry)) = (
             ifd.get_entry(TiffTag::TileWidth),
             ifd.get_entry(TiffTag::TileLength),
+        ) && let (Ok(tw), Ok(th)) = (
+            tw_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
+            th_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
         ) {
-            if let (Ok(tw), Ok(th)) = (
-                tw_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
-                th_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
-            ) {
-                // Check power of 2
-                if !tw.is_power_of_two() || !th.is_power_of_two() {
-                    messages.push(ValidationMessage::warning(
-                        ValidationCategory::TileOrganization,
-                        format!("Tile dimensions {}x{} are not powers of 2", tw, th),
-                    ));
-                }
+            // Check power of 2
+            if !tw.is_power_of_two() || !th.is_power_of_two() {
+                messages.push(ValidationMessage::warning(
+                    ValidationCategory::TileOrganization,
+                    format!("Tile dimensions {}x{} are not powers of 2", tw, th),
+                ));
+            }
 
-                // Check if square
-                if tw != th {
-                    messages.push(ValidationMessage::info(
-                        ValidationCategory::TileOrganization,
-                        format!("Non-square tiles: {}x{} (square tiles recommended)", tw, th),
-                    ));
-                }
+            // Check if square
+            if tw != th {
+                messages.push(ValidationMessage::info(
+                    ValidationCategory::TileOrganization,
+                    format!("Non-square tiles: {}x{} (square tiles recommended)", tw, th),
+                ));
+            }
 
-                // Check optimal size
-                if tw < 256 || th < 256 {
-                    messages.push(ValidationMessage::warning(
-                        ValidationCategory::Performance,
-                        format!(
-                            "Small tile size {}x{} may cause excessive HTTP requests",
-                            tw, th
-                        ),
-                    ));
-                } else if tw > 1024 || th > 1024 {
-                    messages.push(ValidationMessage::warning(
-                        ValidationCategory::Performance,
-                        format!("Large tile size {}x{} may increase bandwidth waste", tw, th),
-                    ));
-                }
+            // Check optimal size
+            if tw < 256 || th < 256 {
+                messages.push(ValidationMessage::warning(
+                    ValidationCategory::Performance,
+                    format!(
+                        "Small tile size {}x{} may cause excessive HTTP requests",
+                        tw, th
+                    ),
+                ));
+            } else if tw > 1024 || th > 1024 {
+                messages.push(ValidationMessage::warning(
+                    ValidationCategory::Performance,
+                    format!("Large tile size {}x{} may increase bandwidth waste", tw, th),
+                ));
             }
         }
     }
@@ -304,8 +302,8 @@ fn validate_overviews<S: DataSource>(
     }
 
     // Check overview downsampling factors
-    if let Some(base_ifd) = tiff.ifds.first() {
-        if let (Some(base_width), Some(base_height)) = (
+    if let Some(base_ifd) = tiff.ifds.first()
+        && let (Some(base_width), Some(base_height)) = (
             base_ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
                 e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                     .ok()
@@ -314,34 +312,34 @@ fn validate_overviews<S: DataSource>(
                 e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                     .ok()
             }),
-        ) {
-            for (idx, ifd) in tiff.ifds.iter().skip(1).enumerate() {
-                if let (Some(ov_width), Some(ov_height)) = (
-                    ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
-                        e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
-                            .ok()
-                    }),
-                    ifd.get_entry(TiffTag::ImageLength).and_then(|e| {
-                        e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
-                            .ok()
-                    }),
-                ) {
-                    let width_factor = base_width as f64 / ov_width as f64;
-                    let height_factor = base_height as f64 / ov_height as f64;
+        )
+    {
+        for (idx, ifd) in tiff.ifds.iter().skip(1).enumerate() {
+            if let (Some(ov_width), Some(ov_height)) = (
+                ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
+                    e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                        .ok()
+                }),
+                ifd.get_entry(TiffTag::ImageLength).and_then(|e| {
+                    e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+                        .ok()
+                }),
+            ) {
+                let width_factor = base_width as f64 / ov_width as f64;
+                let height_factor = base_height as f64 / ov_height as f64;
 
-                    // Check if power of 2
-                    if (width_factor.log2().fract().abs() > 0.01)
-                        || (height_factor.log2().fract().abs() > 0.01)
-                    {
-                        messages.push(ValidationMessage::info(
-                            ValidationCategory::Overviews,
-                            format!(
-                                "Overview {} has non-power-of-2 downsampling factor ({:.1}x)",
-                                idx + 1,
-                                width_factor
-                            ),
-                        ));
-                    }
+                // Check if power of 2
+                if (width_factor.log2().fract().abs() > 0.01)
+                    || (height_factor.log2().fract().abs() > 0.01)
+                {
+                    messages.push(ValidationMessage::info(
+                        ValidationCategory::Overviews,
+                        format!(
+                            "Overview {} has non-power-of-2 downsampling factor ({:.1}x)",
+                            idx + 1,
+                            width_factor
+                        ),
+                    ));
                 }
             }
         }
@@ -354,51 +352,44 @@ fn validate_compression<S: DataSource>(
     source: &S,
     messages: &mut Vec<ValidationMessage>,
 ) {
-    if let Some(ifd) = tiff.ifds.first() {
-        if let Some(comp_entry) = ifd.get_entry(TiffTag::Compression) {
-            if let Ok(comp_value) =
-                comp_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
-            {
-                if let Some(compression) = Compression::from_u16(comp_value as u16) {
-                    match compression {
-                        Compression::None => {
-                            messages.push(ValidationMessage::warning(
-                                ValidationCategory::Compression,
-                                "No compression used - file size could be significantly reduced"
-                                    .to_string(),
-                            ));
-                        }
-                        Compression::Jpeg => {
-                            messages.push(ValidationMessage::info(
-                                ValidationCategory::Compression,
-                                "JPEG compression (lossy) - acceptable for photographic data"
-                                    .to_string(),
-                            ));
-                        }
-                        Compression::Deflate | Compression::AdobeDeflate => {
-                            messages.push(ValidationMessage::info(
-                                ValidationCategory::Compression,
-                                "DEFLATE compression - good general-purpose choice".to_string(),
-                            ));
-                        }
-                        Compression::Lzw => {
-                            messages.push(ValidationMessage::info(
-                                ValidationCategory::Compression,
-                                "LZW compression - widely compatible but may not be optimal"
-                                    .to_string(),
-                            ));
-                        }
-                        Compression::Zstd => {
-                            messages.push(ValidationMessage::info(
-                                ValidationCategory::Compression,
-                                "ZSTD compression - excellent ratio but limited support"
-                                    .to_string(),
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
+    if let Some(ifd) = tiff.ifds.first()
+        && let Some(comp_entry) = ifd.get_entry(TiffTag::Compression)
+        && let Ok(comp_value) =
+            comp_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
+        && let Some(compression) = Compression::from_u16(comp_value as u16)
+    {
+        match compression {
+            Compression::None => {
+                messages.push(ValidationMessage::warning(
+                    ValidationCategory::Compression,
+                    "No compression used - file size could be significantly reduced".to_string(),
+                ));
             }
+            Compression::Jpeg => {
+                messages.push(ValidationMessage::info(
+                    ValidationCategory::Compression,
+                    "JPEG compression (lossy) - acceptable for photographic data".to_string(),
+                ));
+            }
+            Compression::Deflate | Compression::AdobeDeflate => {
+                messages.push(ValidationMessage::info(
+                    ValidationCategory::Compression,
+                    "DEFLATE compression - good general-purpose choice".to_string(),
+                ));
+            }
+            Compression::Lzw => {
+                messages.push(ValidationMessage::info(
+                    ValidationCategory::Compression,
+                    "LZW compression - widely compatible but may not be optimal".to_string(),
+                ));
+            }
+            Compression::Zstd => {
+                messages.push(ValidationMessage::info(
+                    ValidationCategory::Compression,
+                    "ZSTD compression - excellent ratio but limited support".to_string(),
+                ));
+            }
+            _ => {}
         }
     }
 }
@@ -433,27 +424,25 @@ fn validate_tile_ordering<S: DataSource>(
     source: &S,
     messages: &mut Vec<ValidationMessage>,
 ) -> Result<()> {
-    if let Some(ifd) = tiff.ifds.first() {
-        if let Some(offsets_entry) = ifd.get_entry(TiffTag::TileOffsets) {
-            let offsets =
-                offsets_entry.get_u64_vec(source, tiff.byte_order(), tiff.header.variant)?;
+    if let Some(ifd) = tiff.ifds.first()
+        && let Some(offsets_entry) = ifd.get_entry(TiffTag::TileOffsets)
+    {
+        let offsets = offsets_entry.get_u64_vec(source, tiff.byte_order(), tiff.header.variant)?;
 
-            // Check if tiles are in sequential order
-            let mut is_sequential = true;
-            for i in 1..offsets.len() {
-                if offsets[i] < offsets[i - 1] {
-                    is_sequential = false;
-                    break;
-                }
+        // Check if tiles are in sequential order
+        let mut is_sequential = true;
+        for i in 1..offsets.len() {
+            if offsets[i] < offsets[i - 1] {
+                is_sequential = false;
+                break;
             }
+        }
 
-            if !is_sequential {
-                messages.push(ValidationMessage::warning(
-                    ValidationCategory::TileOrganization,
-                    "Tiles are not in sequential order - may reduce streaming efficiency"
-                        .to_string(),
-                ));
-            }
+        if !is_sequential {
+            messages.push(ValidationMessage::warning(
+                ValidationCategory::TileOrganization,
+                "Tiles are not in sequential order - may reduce streaming efficiency".to_string(),
+            ));
         }
     }
 
@@ -468,8 +457,8 @@ fn calculate_performance_metrics<S: DataSource>(
     let requests_per_tile = 1; // Ideal case: 1 request per tile
     let mut bytes_per_tile = 0u64;
 
-    if let Some(ifd) = tiff.ifds.first() {
-        if let (Some(tw), Some(th), Some(bps), Some(spp)) = (
+    if let Some(ifd) = tiff.ifds.first()
+        && let (Some(tw), Some(th), Some(bps), Some(spp)) = (
             ifd.get_entry(TiffTag::TileWidth).and_then(|e| {
                 e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                     .ok()
@@ -486,9 +475,9 @@ fn calculate_performance_metrics<S: DataSource>(
                 e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                     .ok()
             }),
-        ) {
-            bytes_per_tile = tw * th * spp * (bps / 8);
-        }
+        )
+    {
+        bytes_per_tile = tw * th * spp * (bps / 8);
     }
 
     let overhead_percentage = 5.0; // Typical overhead
@@ -532,8 +521,8 @@ fn validate_http_efficiency<S: DataSource>(
     }
 
     // Check if file is small enough to benefit from COG
-    if let Some(ifd) = tiff.ifds.first() {
-        if let (Some(w), Some(h)) = (
+    if let Some(ifd) = tiff.ifds.first()
+        && let (Some(w), Some(h)) = (
             ifd.get_entry(TiffTag::ImageWidth).and_then(|e| {
                 e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                     .ok()
@@ -542,15 +531,15 @@ fn validate_http_efficiency<S: DataSource>(
                 e.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant)
                     .ok()
             }),
-        ) {
-            let total_pixels = w * h;
-            if total_pixels < 1_000_000 {
-                // Less than 1MP
-                messages.push(ValidationMessage::info(
-                    ValidationCategory::Performance,
-                    "Small image - COG overhead may not be beneficial".to_string(),
-                ));
-            }
+        )
+    {
+        let total_pixels = w * h;
+        if total_pixels < 1_000_000 {
+            // Less than 1MP
+            messages.push(ValidationMessage::info(
+                ValidationCategory::Performance,
+                "Small image - COG overhead may not be beneficial".to_string(),
+            ));
         }
     }
 }

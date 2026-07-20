@@ -3,6 +3,9 @@
 //! This module provides the [`GeoTransform`] type which defines the relationship
 //! between pixel coordinates and geographic/projected coordinates.
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use core::fmt;
 
 use serde::{Deserialize, Serialize};

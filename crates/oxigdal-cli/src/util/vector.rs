@@ -586,14 +586,20 @@ pub fn convert_vector(
         (VectorFormat::Shapefile, VectorFormat::Shapefile) => {
             convert_shapefile_to_shapefile(input, output, filter)
         }
-        (VectorFormat::GeoJson, VectorFormat::FlatGeobuf)
-        | (VectorFormat::Shapefile, VectorFormat::FlatGeobuf)
-        | (VectorFormat::FlatGeobuf, _) => {
-            anyhow::bail!(
-                "FlatGeobuf vector conversion is not yet implemented (input: {}, output: {})",
-                input.display(),
-                output.display()
-            )
+        (VectorFormat::GeoJson, VectorFormat::FlatGeobuf) => {
+            convert_geojson_to_fgb(input, output, filter)
+        }
+        (VectorFormat::Shapefile, VectorFormat::FlatGeobuf) => {
+            convert_shapefile_to_fgb(input, output, filter)
+        }
+        (VectorFormat::FlatGeobuf, VectorFormat::GeoJson) => {
+            convert_fgb_to_geojson(input, output, filter)
+        }
+        (VectorFormat::FlatGeobuf, VectorFormat::Shapefile) => {
+            convert_fgb_to_shapefile(input, output, filter)
+        }
+        (VectorFormat::FlatGeobuf, VectorFormat::FlatGeobuf) => {
+            convert_fgb_to_fgb(input, output, filter)
         }
     }
 }
@@ -804,4 +810,465 @@ fn convert_shapefile_to_shapefile(
         .context("Failed to write Shapefile")?;
 
     Ok(count)
+}
+
+// ─── GeoJSON → FlatGeobuf ─────────────────────────────────────────────────────
+
+fn convert_geojson_to_fgb(
+    input: &Path,
+    output: &Path,
+    filter: Option<&AttributeFilter>,
+) -> Result<usize> {
+    use oxigdal_flatgeobuf::{FlatGeobufWriterBuilder, GeometryType};
+    use oxigdal_geojson::GeoJsonReader;
+
+    let file =
+        File::open(input).with_context(|| format!("Failed to open input: {}", input.display()))?;
+    let buf_reader = BufReader::new(file);
+    let mut reader = GeoJsonReader::new(buf_reader);
+
+    let fc = reader
+        .read_feature_collection()
+        .context("Failed to read GeoJSON feature collection")?;
+
+    // Apply attribute filter
+    let features: Vec<_> = fc
+        .features
+        .into_iter()
+        .filter(|f| match filter {
+            None => true,
+            Some(filt) => {
+                let props = f
+                    .properties
+                    .as_ref()
+                    .map_or(serde_json::Map::new(), |p| p.clone());
+                filt.matches_json(&props)
+            }
+        })
+        .collect();
+
+    let count = features.len();
+
+    // Convert to core features, collecting schema info
+    let core_features: Vec<oxigdal_core::vector::Feature> = features
+        .iter()
+        .map(geojson_driver_feature_to_core)
+        .collect::<Result<Vec<_>>>()?;
+
+    // Infer geometry type from first feature with geometry
+    let fgb_geom_type = core_features
+        .iter()
+        .find_map(|f| f.geometry.as_ref())
+        .map(core_geom_to_fgb_geometry_type)
+        .unwrap_or(GeometryType::Unknown);
+
+    // Collect column definitions from properties of all features
+    let columns = infer_fgb_columns(&core_features);
+
+    // Build the writer with index enabled
+    let mut builder = FlatGeobufWriterBuilder::new(fgb_geom_type).with_index();
+    for col in &columns {
+        builder = builder.with_column(col.clone());
+    }
+
+    let out_file = File::create(output)
+        .with_context(|| format!("Failed to create output: {}", output.display()))?;
+    let buf_writer = BufWriter::new(out_file);
+    let mut writer = builder
+        .build(buf_writer)
+        .context("Failed to create FlatGeobuf writer")?;
+
+    for feature in &core_features {
+        writer
+            .add_feature(feature)
+            .context("Failed to add feature to FlatGeobuf writer")?;
+    }
+
+    writer
+        .finish()
+        .context("Failed to finalise FlatGeobuf file")?;
+
+    Ok(count)
+}
+
+// ─── Shapefile → FlatGeobuf ───────────────────────────────────────────────────
+
+fn convert_shapefile_to_fgb(
+    input: &Path,
+    output: &Path,
+    filter: Option<&AttributeFilter>,
+) -> Result<usize> {
+    use oxigdal_flatgeobuf::{FlatGeobufWriterBuilder, GeometryType};
+    use oxigdal_shapefile::ShapefileReader;
+
+    let base_path = input.with_extension("");
+    let reader = ShapefileReader::open(&base_path)
+        .with_context(|| format!("Failed to open Shapefile: {}", input.display()))?;
+
+    let sf_features = reader
+        .read_features()
+        .context("Failed to read Shapefile features")?;
+
+    let filtered: Vec<_> = sf_features
+        .into_iter()
+        .filter(|f| match filter {
+            None => true,
+            Some(filt) => filt.matches_field_map(&f.attributes),
+        })
+        .collect();
+
+    let count = filtered.len();
+
+    // Convert ShapefileFeatures to core Features
+    let core_features: Vec<oxigdal_core::vector::Feature> = filtered
+        .iter()
+        .map(shapefile_feature_to_core)
+        .collect::<Result<Vec<_>>>()?;
+
+    let fgb_geom_type = core_features
+        .iter()
+        .find_map(|f| f.geometry.as_ref())
+        .map(core_geom_to_fgb_geometry_type)
+        .unwrap_or(GeometryType::Unknown);
+
+    let columns = infer_fgb_columns(&core_features);
+
+    let mut builder = FlatGeobufWriterBuilder::new(fgb_geom_type).with_index();
+    for col in &columns {
+        builder = builder.with_column(col.clone());
+    }
+
+    let out_file = File::create(output)
+        .with_context(|| format!("Failed to create output: {}", output.display()))?;
+    let buf_writer = BufWriter::new(out_file);
+    let mut writer = builder
+        .build(buf_writer)
+        .context("Failed to create FlatGeobuf writer")?;
+
+    for feature in &core_features {
+        writer
+            .add_feature(feature)
+            .context("Failed to add feature to FlatGeobuf writer")?;
+    }
+
+    writer
+        .finish()
+        .context("Failed to finalise FlatGeobuf file")?;
+
+    Ok(count)
+}
+
+// ─── FlatGeobuf → GeoJSON ─────────────────────────────────────────────────────
+
+fn convert_fgb_to_geojson(
+    input: &Path,
+    output: &Path,
+    filter: Option<&AttributeFilter>,
+) -> Result<usize> {
+    use oxigdal_flatgeobuf::FlatGeobufReader;
+    use oxigdal_geojson::{Feature as GjFeature, FeatureCollection, GeoJsonWriter};
+
+    let file =
+        File::open(input).with_context(|| format!("Failed to open input: {}", input.display()))?;
+    let mut reader = FlatGeobufReader::new(file)
+        .with_context(|| format!("Failed to parse FlatGeobuf header: {}", input.display()))?;
+
+    let mut gj_features: Vec<GjFeature> = Vec::new();
+
+    let iter = reader
+        .features()
+        .context("Failed to get FlatGeobuf feature iterator")?;
+
+    for result in iter {
+        let core_feat = result.context("Failed to read FlatGeobuf feature")?;
+
+        // Apply attribute filter using the core feature's properties
+        if let Some(filt) = filter
+            && !filt.matches_field_map(&core_feat.properties)
+        {
+            continue;
+        }
+
+        let gj_feat = core_feature_to_geojson_driver_feature(&core_feat)?;
+        gj_features.push(gj_feat);
+    }
+
+    let count = gj_features.len();
+
+    let out_fc = FeatureCollection::new(gj_features);
+
+    let out_file = File::create(output)
+        .with_context(|| format!("Failed to create output: {}", output.display()))?;
+    let buf_writer = BufWriter::new(out_file);
+    let mut writer = GeoJsonWriter::pretty(buf_writer);
+
+    writer
+        .write_feature_collection(&out_fc)
+        .context("Failed to write GeoJSON")?;
+
+    Ok(count)
+}
+
+// ─── FlatGeobuf → Shapefile ───────────────────────────────────────────────────
+
+fn convert_fgb_to_shapefile(
+    input: &Path,
+    output: &Path,
+    filter: Option<&AttributeFilter>,
+) -> Result<usize> {
+    use oxigdal_flatgeobuf::FlatGeobufReader;
+    use oxigdal_shapefile::{ShapefileWriter, reader::ShapefileFeature};
+
+    let file =
+        File::open(input).with_context(|| format!("Failed to open input: {}", input.display()))?;
+    let mut reader = FlatGeobufReader::new(file)
+        .with_context(|| format!("Failed to parse FlatGeobuf header: {}", input.display()))?;
+
+    let mut core_features: Vec<oxigdal_core::vector::Feature> = Vec::new();
+
+    let iter = reader
+        .features()
+        .context("Failed to get FlatGeobuf feature iterator")?;
+
+    for result in iter {
+        let core_feat = result.context("Failed to read FlatGeobuf feature")?;
+        if let Some(filt) = filter
+            && !filt.matches_field_map(&core_feat.properties)
+        {
+            continue;
+        }
+        core_features.push(core_feat);
+    }
+
+    if core_features.is_empty() {
+        anyhow::bail!("No features remain after filtering; cannot write empty Shapefile");
+    }
+
+    let count = core_features.len();
+
+    // Convert to ShapefileFeature list for schema inference
+    let sf_features: Vec<ShapefileFeature> = core_features
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let attrs = f.properties.clone();
+            ShapefileFeature::new((i + 1) as i32, f.geometry.clone(), attrs)
+        })
+        .collect();
+
+    let (shape_type, field_descriptors) = infer_shapefile_schema_from_shapefiles(&sf_features)?;
+
+    let base_out = output.with_extension("");
+    let mut writer = ShapefileWriter::new(&base_out, shape_type, field_descriptors)
+        .context("Failed to create Shapefile writer")?;
+
+    writer
+        .write_features(&sf_features)
+        .context("Failed to write Shapefile")?;
+
+    Ok(count)
+}
+
+// ─── FlatGeobuf → FlatGeobuf (identity copy) ─────────────────────────────────
+
+fn convert_fgb_to_fgb(
+    input: &Path,
+    output: &Path,
+    filter: Option<&AttributeFilter>,
+) -> Result<usize> {
+    use oxigdal_flatgeobuf::{FlatGeobufReader, FlatGeobufWriterBuilder};
+
+    let file =
+        File::open(input).with_context(|| format!("Failed to open input: {}", input.display()))?;
+    let mut reader = FlatGeobufReader::new(file)
+        .with_context(|| format!("Failed to parse FlatGeobuf header: {}", input.display()))?;
+
+    let source_header = reader.header().clone();
+
+    let mut core_features: Vec<oxigdal_core::vector::Feature> = Vec::new();
+
+    let iter = reader
+        .features()
+        .context("Failed to get FlatGeobuf feature iterator")?;
+
+    for result in iter {
+        let core_feat = result.context("Failed to read FlatGeobuf feature")?;
+        if let Some(filt) = filter
+            && !filt.matches_field_map(&core_feat.properties)
+        {
+            continue;
+        }
+        core_features.push(core_feat);
+    }
+
+    let count = core_features.len();
+
+    let mut builder = FlatGeobufWriterBuilder::new(source_header.geometry_type).with_index();
+    for col in &source_header.columns {
+        builder = builder.with_column(col.clone());
+    }
+
+    let out_file = File::create(output)
+        .with_context(|| format!("Failed to create output: {}", output.display()))?;
+    let buf_writer = BufWriter::new(out_file);
+    let mut writer = builder
+        .build(buf_writer)
+        .context("Failed to create FlatGeobuf writer")?;
+
+    for feature in &core_features {
+        writer
+            .add_feature(feature)
+            .context("Failed to add feature to FlatGeobuf writer")?;
+    }
+
+    writer
+        .finish()
+        .context("Failed to finalise FlatGeobuf file")?;
+
+    Ok(count)
+}
+
+// ─── FlatGeobuf schema / geometry helpers ────────────────────────────────────
+
+/// Map a core `Geometry` variant to the corresponding FlatGeobuf `GeometryType`.
+fn core_geom_to_fgb_geometry_type(
+    geom: &oxigdal_core::vector::Geometry,
+) -> oxigdal_flatgeobuf::GeometryType {
+    use oxigdal_core::vector::Geometry as CoreGeom;
+    use oxigdal_flatgeobuf::GeometryType as FgbGT;
+    match geom {
+        CoreGeom::Point(_) => FgbGT::Point,
+        CoreGeom::LineString(_) => FgbGT::LineString,
+        CoreGeom::Polygon(_) => FgbGT::Polygon,
+        CoreGeom::MultiPoint(_) => FgbGT::MultiPoint,
+        CoreGeom::MultiLineString(_) => FgbGT::MultiLineString,
+        CoreGeom::MultiPolygon(_) => FgbGT::MultiPolygon,
+        CoreGeom::GeometryCollection(_) => FgbGT::GeometryCollection,
+    }
+}
+
+/// Infer FlatGeobuf column definitions from a slice of core features.
+///
+/// Scans all features' property maps and emits one `Column` per unique key.
+/// All properties are stored as `ColumnType::String` because the FGB format
+/// requires all values to be stored consistently across features.
+fn infer_fgb_columns(
+    features: &[oxigdal_core::vector::Feature],
+) -> Vec<oxigdal_flatgeobuf::Column> {
+    use oxigdal_core::vector::FieldValue;
+    use oxigdal_flatgeobuf::{Column, ColumnType};
+
+    // Collect unique column names (preserving first-seen insertion order)
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ordered: Vec<String> = Vec::new();
+
+    for feat in features {
+        for key in feat.properties.keys() {
+            if seen.insert(key.clone()) {
+                ordered.push(key.clone());
+            }
+        }
+    }
+
+    // Choose column types based on the first non-null value for each key
+    let mut col_types: std::collections::HashMap<String, ColumnType> =
+        std::collections::HashMap::new();
+
+    for feat in features {
+        for (key, val) in &feat.properties {
+            if col_types.contains_key(key) {
+                continue;
+            }
+            let ct = match val {
+                FieldValue::Null => continue,
+                FieldValue::Bool(_) => ColumnType::Bool,
+                FieldValue::Integer(_) => ColumnType::Long,
+                FieldValue::UInteger(_) => ColumnType::ULong,
+                FieldValue::Float(_) => ColumnType::Double,
+                FieldValue::String(_) | FieldValue::Array(_) | FieldValue::Object(_) => {
+                    ColumnType::String
+                }
+                FieldValue::Date(_) => ColumnType::DateTime,
+                FieldValue::Blob(_) => ColumnType::Binary,
+            };
+            col_types.insert(key.clone(), ct);
+        }
+    }
+
+    ordered
+        .into_iter()
+        .map(|name| {
+            let ct = col_types.get(&name).copied().unwrap_or(ColumnType::String);
+            Column::new(name, ct)
+        })
+        .collect()
+}
+
+/// Convert a GeoJSON driver `Feature` (from `oxigdal_geojson`) to a core `Feature`.
+fn geojson_driver_feature_to_core(
+    f: &oxigdal_geojson::Feature,
+) -> Result<oxigdal_core::vector::Feature> {
+    use oxigdal_core::vector::{Feature as CoreFeature, FieldValue};
+
+    let geometry = match &f.geometry {
+        Some(gj_geom) => Some(geojson_geom_to_core(gj_geom)?),
+        None => None,
+    };
+
+    let mut core_feat = match geometry {
+        Some(g) => CoreFeature::new(g),
+        None => CoreFeature::new_attribute_only(),
+    };
+
+    if let Some(props) = &f.properties {
+        for (k, v) in props {
+            core_feat.set_property(k.clone(), FieldValue::from_json(v));
+        }
+    }
+
+    Ok(core_feat)
+}
+
+/// Convert a core `Feature` (from `oxigdal_core`) to a GeoJSON driver `Feature`.
+fn core_feature_to_geojson_driver_feature(
+    core_feat: &oxigdal_core::vector::Feature,
+) -> Result<oxigdal_geojson::Feature> {
+    use oxigdal_geojson::Feature as GjFeature;
+
+    let geometry = match &core_feat.geometry {
+        Some(g) => Some(core_geom_to_geojson(g)?),
+        None => None,
+    };
+
+    let properties: oxigdal_geojson::types::Properties = core_feat
+        .properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_json_value()))
+        .collect();
+
+    let props_opt = if properties.is_empty() {
+        None
+    } else {
+        Some(properties)
+    };
+
+    Ok(GjFeature::new(geometry, props_opt))
+}
+
+/// Convert a `ShapefileFeature` to a core `Feature` for FGB writing.
+fn shapefile_feature_to_core(
+    sf: &oxigdal_shapefile::reader::ShapefileFeature,
+) -> Result<oxigdal_core::vector::Feature> {
+    use oxigdal_core::vector::Feature as CoreFeature;
+
+    let mut core_feat = match &sf.geometry {
+        Some(g) => CoreFeature::new(g.clone()),
+        None => CoreFeature::new_attribute_only(),
+    };
+
+    for (k, v) in &sf.attributes {
+        core_feat.set_property(k.clone(), v.clone());
+    }
+
+    Ok(core_feat)
 }

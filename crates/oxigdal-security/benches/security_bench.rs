@@ -18,7 +18,8 @@ fn encryption_benchmark(c: &mut Criterion) {
 
     for size in sizes {
         let data = vec![0u8; size];
-        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm);
+        let key = AtRestEncryptor::generate_key(EncryptionAlgorithm::Aes256Gcm)
+            .expect("Failed to generate key");
         let encryptor =
             AtRestEncryptor::new(EncryptionAlgorithm::Aes256Gcm, key, "bench-key".to_string())
                 .expect("Failed to create encryptor");

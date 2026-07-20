@@ -5,7 +5,7 @@
 //! binary SQLite files, following the same zero-dependency pattern used in
 //! `metadata_test.rs` and `extensions_test.rs`.
 
-#![allow(clippy::unwrap_used, missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use oxigdal_gpkg::btree::encode_sqlite_varint;
 use oxigdal_gpkg::{GeoPackage, GpkgRelation, MappingRow, RelationType};

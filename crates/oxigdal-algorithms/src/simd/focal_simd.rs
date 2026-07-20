@@ -66,7 +66,7 @@ pub fn focal_sum_horizontal_simd(
         });
     }
 
-    if window_width == 0 || window_width % 2 == 0 {
+    if window_width == 0 || window_width.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_width",
             message: "Window width must be odd and greater than zero".to_string(),
@@ -153,7 +153,7 @@ pub fn focal_sum_vertical_simd(
         });
     }
 
-    if window_height == 0 || window_height % 2 == 0 {
+    if window_height == 0 || window_height.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_height",
             message: "Window height must be odd and greater than zero".to_string(),
@@ -312,7 +312,7 @@ pub fn focal_min_max_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),
@@ -409,7 +409,7 @@ pub fn focal_variance_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),
@@ -691,7 +691,7 @@ pub fn focal_range_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),
@@ -783,7 +783,7 @@ pub fn focal_median_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),
@@ -873,7 +873,7 @@ pub fn focal_variety_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),
@@ -961,7 +961,7 @@ pub fn focal_majority_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),
@@ -1069,7 +1069,7 @@ pub fn focal_sum_simd(
         });
     }
 
-    if window_size == 0 || window_size % 2 == 0 {
+    if window_size == 0 || window_size.is_multiple_of(2) {
         return Err(AlgorithmError::InvalidParameter {
             parameter: "window_size",
             message: "Window size must be odd and greater than zero".to_string(),

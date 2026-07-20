@@ -1,15 +1,18 @@
-//! HDF5 file reader with Pure Rust support for basic features.
+//! HDF5 file reader backed by the real Pure-Rust [`oxih5`] crate.
 //!
-//! This module provides HDF5 file reading capabilities. The default implementation
-//! uses Pure Rust for basic HDF5 reading, following the COOLJAPAN Pure Rust policy.
+//! [`Hdf5Reader::open`] opens a genuine HDF5 file, walks its group/dataset tree
+//! via `oxih5`, and exposes real attributes, real datatypes, real shapes, and
+//! real dataset values. The old custom `OXIGDAL_HDF5_METADATA_V1` JSON sidecar
+//! reader has been retired — this reader never fabricates zero-filled data.
 
-use crate::dataset::Dataset;
+use crate::attribute::{Attribute, Attributes};
+use crate::convert;
+use crate::dataset::{Dataset, DatasetProperties};
 use crate::datatype::{Datatype, TypeConverter};
 use crate::error::{Hdf5Error, Result};
 use crate::group::{Group, PathUtils};
 use crate::superblock_v2::{read_superblock_v2, validate_superblock_checksum};
 use byteorder::{LittleEndian, ReadBytesExt};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -17,18 +20,6 @@ use std::path::Path;
 
 /// HDF5 file signature
 const HDF5_SIGNATURE: &[u8] = b"\x89HDF\r\n\x1a\n";
-
-/// Metadata marker for Pure Rust implementation
-const METADATA_MARKER: &[u8] = b"OXIGDAL_HDF5_METADATA_V1\n";
-
-/// File metadata structure for Pure Rust implementation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileMetadata {
-    /// Groups (path -> Group)
-    groups: HashMap<String, Group>,
-    /// Datasets (path -> Dataset)
-    datasets: HashMap<String, Dataset>,
-}
 
 /// HDF5 superblock version
 #[derive(Debug, Clone, Copy)]
@@ -80,37 +71,27 @@ impl Superblock {
             _ => return Err(Hdf5Error::UnsupportedSuperblockVersion(version_num)),
         };
 
-        // For now, we only support version 0 and 1 in Pure Rust mode
         match version {
             SuperblockVersion::V0 | SuperblockVersion::V1 => {
-                // Read free-space storage version
+                // Free-space storage version
                 let _free_space_version = reader.read_u8()?;
-
-                // Read root group symbol table version
+                // Root group symbol table version
                 let _root_group_version = reader.read_u8()?;
-
                 // Reserved
                 let _reserved1 = reader.read_u8()?;
-
-                // Read shared header message format version
+                // Shared header message format version
                 let _shared_header_version = reader.read_u8()?;
-
-                // Read size of offsets
+                // Size of offsets
                 let size_of_offsets = reader.read_u8()?;
-
-                // Read size of lengths
+                // Size of lengths
                 let size_of_lengths = reader.read_u8()?;
-
                 // Reserved
                 let _reserved2 = reader.read_u8()?;
-
-                // Read group leaf node K
+                // Group leaf node K
                 let _group_leaf_node_k = reader.read_u16::<LittleEndian>()?;
-
-                // Read group internal node K
+                // Group internal node K
                 let _group_internal_node_k = reader.read_u16::<LittleEndian>()?;
-
-                // Read file consistency flags
+                // File consistency flags
                 let _file_consistency_flags = reader.read_u32::<LittleEndian>()?;
 
                 // For version 1, read additional fields
@@ -119,19 +100,15 @@ impl Superblock {
                     let _reserved3 = reader.read_u16::<LittleEndian>()?;
                 }
 
-                // Read base address
+                // Base address
                 let base_address = Self::read_offset(reader, size_of_offsets)?;
-
-                // Read address of file free space info
+                // Address of file free space info
                 let _free_space_address = Self::read_offset(reader, size_of_offsets)?;
-
-                // Read end of file address
+                // End of file address
                 let _end_of_file_address = Self::read_offset(reader, size_of_offsets)?;
-
-                // Read driver information block address
+                // Driver information block address
                 let _driver_info_address = Self::read_offset(reader, size_of_offsets)?;
-
-                // Read root group symbol table entry
+                // Root group symbol table entry
                 let root_group_address = Self::read_offset(reader, size_of_offsets)?;
 
                 Ok(Self {
@@ -143,9 +120,9 @@ impl Superblock {
                 })
             }
             SuperblockVersion::V2 | SuperblockVersion::V3 => {
-                // Build a byte accumulator that already contains the bytes
-                // read so far (signature + version) so that checksum
-                // validation can cover the full superblock prefix.
+                // Build a byte accumulator that already contains the bytes read
+                // so far (signature + version) so that checksum validation can
+                // cover the full superblock prefix.
                 let mut header_bytes: Vec<u8> = Vec::with_capacity(64);
                 header_bytes.extend_from_slice(HDF5_SIGNATURE);
                 header_bytes.push(version_num);
@@ -183,27 +160,31 @@ impl Superblock {
     }
 }
 
-/// HDF5 file reader
+/// HDF5 file reader (real HDF5, backed by `oxih5`).
 pub struct Hdf5Reader {
-    /// File handle
+    /// File handle (kept open for `file_size`).
     file: File,
     /// Superblock
     superblock: Superblock,
-    /// Groups cache (path -> Group)
+    /// Groups cache (path -> Group), populated from the real file.
     groups: HashMap<String, Group>,
-    /// Datasets cache (path -> Dataset)
+    /// Datasets cache (path -> Dataset), populated from the real file.
     datasets: HashMap<String, Dataset>,
 }
 
 impl Hdf5Reader {
-    /// Open an HDF5 file for reading
+    /// Open an HDF5 file for reading.
+    ///
+    /// The superblock is parsed to determine the format version, then the
+    /// group/dataset tree, attributes, and dataset values are read through the
+    /// real Pure-Rust `oxih5` reader.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         let mut file = File::open(path)?;
 
-        // Read superblock
+        // Parse the superblock (validates the signature and records the version).
         let superblock = Superblock::read(&mut file)?;
 
-        // Initialize reader
         let mut reader = Self {
             file,
             superblock,
@@ -211,70 +192,64 @@ impl Hdf5Reader {
             datasets: HashMap::new(),
         };
 
-        // Read root group
-        reader.read_root_group()?;
+        reader.populate(path);
 
         Ok(reader)
     }
 
-    /// Read the root group and metadata
-    fn read_root_group(&mut self) -> Result<()> {
-        // Seek past the superblock to find metadata marker
-        // The superblock is variable length, so we search for the marker
-        self.file.seek(SeekFrom::Start(0))?;
+    /// Populate the group/dataset caches from the real file via `oxih5`.
+    ///
+    /// Best-effort: if `oxih5` cannot parse the body (e.g. an as-yet-unsupported
+    /// v2/v3 superblock) the reader is still usable with an empty root group,
+    /// matching the historical lenient-open behaviour — but no data is faked.
+    fn populate(&mut self, path: &Path) {
+        // Always have a root group so the reader is usable even when the body
+        // cannot be parsed.
+        self.groups
+            .entry("/".to_string())
+            .or_insert_with(Group::root);
 
-        // Read file into buffer to search for marker
-        let mut buffer = Vec::new();
-        self.file.read_to_end(&mut buffer)?;
+        let h5 = match oxih5::open(path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
 
-        // Find metadata marker
-        if let Some(pos) = Self::find_subsequence(&buffer, METADATA_MARKER) {
-            let metadata_start = pos + METADATA_MARKER.len();
-
-            // Read metadata length
-            if metadata_start + 8 <= buffer.len() {
-                let metadata_len = u64::from_le_bytes([
-                    buffer[metadata_start],
-                    buffer[metadata_start + 1],
-                    buffer[metadata_start + 2],
-                    buffer[metadata_start + 3],
-                    buffer[metadata_start + 4],
-                    buffer[metadata_start + 5],
-                    buffer[metadata_start + 6],
-                    buffer[metadata_start + 7],
-                ]) as usize;
-
-                let metadata_content_start = metadata_start + 8;
-                let metadata_content_end = metadata_content_start + metadata_len;
-
-                if metadata_content_end <= buffer.len() {
-                    // Parse metadata
-                    let metadata_bytes = &buffer[metadata_content_start..metadata_content_end];
-                    let metadata: FileMetadata =
-                        serde_json::from_slice(metadata_bytes).map_err(|e| {
-                            Hdf5Error::invalid_format(format!("Failed to parse metadata: {}", e))
-                        })?;
-
-                    // Load groups and datasets
-                    self.groups = metadata.groups;
-                    self.datasets = metadata.datasets;
-
-                    return Ok(());
-                }
+        // Root-group attributes.
+        if let Ok(root_group) = h5.root() {
+            let attrs = read_group_attributes(&root_group);
+            if let Some(root) = self.groups.get_mut("/") {
+                *root.attributes_mut() = attrs;
             }
         }
 
-        // Fallback: create empty root group if no metadata found
-        let root = Group::root();
-        self.groups.insert("/".to_string(), root);
-        Ok(())
-    }
+        // Enumerate the entire tree (groups + datasets) by full path.
+        let mut group_paths: Vec<String> = Vec::new();
+        let mut dataset_paths: Vec<String> = Vec::new();
+        let _ = h5.walk(&mut |p, is_group| {
+            if is_group {
+                group_paths.push(p.to_string());
+            } else {
+                dataset_paths.push(p.to_string());
+            }
+        });
 
-    /// Find subsequence in buffer
-    fn find_subsequence(buffer: &[u8], pattern: &[u8]) -> Option<usize> {
-        buffer
-            .windows(pattern.len())
-            .position(|window| window == pattern)
+        for gp in group_paths {
+            if self.groups.contains_key(&gp) {
+                continue;
+            }
+            if let Ok(g) = h5.group(&gp) {
+                let name = gp.rsplit('/').next().unwrap_or(gp.as_str()).to_string();
+                let mut grp = Group::new(name, gp.clone());
+                *grp.attributes_mut() = read_group_attributes(&g);
+                self.groups.insert(gp, grp);
+            }
+        }
+
+        for dp in dataset_paths {
+            if let Some(ds) = build_dataset(&h5, &dp) {
+                self.datasets.insert(dp, ds);
+            }
+        }
     }
 
     /// Get the root group
@@ -340,14 +315,21 @@ impl Hdf5Reader {
         self.datasets.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Read dataset data as bytes
+    /// Read a dataset's decoded element bytes (little-endian, as stored).
+    ///
+    /// Returns the real dataset values read from the file. Datatypes that are
+    /// not decoded to a plain byte buffer (e.g. variable-length or compound
+    /// types) return a typed error rather than fabricated zeros.
     pub fn read_dataset_raw(&mut self, path: &str) -> Result<Vec<u8>> {
         let dataset = self.dataset(path)?;
-        let size = dataset.size_in_bytes();
-
-        // For now, return empty data
-        // In a full implementation, this would read the actual data from the file
-        Ok(vec![0u8; size])
+        match dataset.data() {
+            Some(data) => Ok(data.to_vec()),
+            None => Err(Hdf5Error::feature_not_available(format!(
+                "raw data for dataset '{}' (datatype {} is not decoded to a byte buffer)",
+                path,
+                dataset.datatype().name()
+            ))),
+        }
     }
 
     /// Read dataset data as i32 array
@@ -410,16 +392,60 @@ impl Hdf5Reader {
         Ok(result)
     }
 
-    /// Read a slice of dataset data
+    /// Decode a single raw (still-filtered) chunk of a dataset into unfiltered
+    /// element bytes.
+    ///
+    /// This applies the dataset's filter pipeline in reverse (back-to-front, as
+    /// libhdf5 does). When the dataset carries no filter pipeline the chunk
+    /// bytes are returned unchanged. A filter whose identifier has no decoder
+    /// produces a typed error (via
+    /// [`crate::filters::FilterPipeline::apply_reverse`]) rather than garbage.
+    ///
+    /// The dataset must use a chunked layout (its properties must supply chunk
+    /// dimensions); a contiguous/compact dataset yields a [`Hdf5Error::Layout`]
+    /// error.
+    pub fn decode_chunk(&self, path: &str, raw_chunk: &[u8]) -> Result<Vec<u8>> {
+        let dataset = self.dataset(path)?;
+        let datatype = dataset.datatype().clone();
+        let chunk_dims = dataset
+            .properties()
+            .chunk_dims()
+            .ok_or_else(|| {
+                Hdf5Error::Layout(format!(
+                    "dataset '{}' is not chunked; decode_chunk requires a chunked layout",
+                    path
+                ))
+            })?
+            .to_vec();
+
+        match dataset.properties().filter_pipeline() {
+            Some(pipeline) if !pipeline.is_empty() => {
+                pipeline.apply_reverse(raw_chunk, &datatype, &chunk_dims)
+            }
+            _ => Ok(raw_chunk.to_vec()),
+        }
+    }
+
+    /// Read a sub-region (hyperslab) of a dataset's real values.
+    ///
+    /// `start` and `count` give the per-dimension offset and extent. The slice
+    /// is gathered from the real (row-major) dataset bytes. Datatypes that are
+    /// not decoded to a byte buffer return a typed error.
     pub fn read_slice(&mut self, path: &str, start: &[usize], count: &[usize]) -> Result<Vec<u8>> {
         let dataset = self.dataset(path)?;
         dataset.validate_slice(start, count)?;
 
-        let size = dataset.slice_size_bytes(count);
+        let elem = dataset.datatype().size();
+        let dims = dataset.dims().to_vec();
 
-        // For now, return empty data
-        // In a full implementation, this would read the actual slice from the file
-        Ok(vec![0u8; size])
+        match dataset.data() {
+            Some(data) => Ok(gather_contiguous_slice(data, &dims, start, count, elem)),
+            None => Err(Hdf5Error::feature_not_available(format!(
+                "slicing dataset '{}' whose datatype {} is not decoded to a byte buffer",
+                path,
+                dataset.datatype().name()
+            ))),
+        }
     }
 
     /// Get file size
@@ -433,6 +459,107 @@ impl Hdf5Reader {
     pub fn superblock_version(&self) -> SuperblockVersion {
         self.superblock.version
     }
+}
+
+/// Read all mappable attributes from an `oxih5` group into an [`Attributes`].
+fn read_group_attributes(g: &oxih5::Group) -> Attributes {
+    let mut attrs = Attributes::new();
+    if let Ok(views) = g.attr_views() {
+        for v in &views {
+            if let Some(val) = convert::decode_attr(v) {
+                attrs.add(Attribute::new(v.name().to_string(), val));
+            }
+        }
+    }
+    attrs
+}
+
+/// Read a single dataset (shape, datatype, attributes, and — where the datatype
+/// is a plain byte buffer — its real values) from an `oxih5` file.
+fn build_dataset(h5: &oxih5::File, path: &str) -> Option<Dataset> {
+    let ohd = h5.dataset(path).ok()?;
+    let name = path.rsplit('/').next().unwrap_or(path).to_string();
+    let dtype = convert::map_dtype(&ohd.dtype);
+    let dims = ohd.shape.clone();
+
+    let mut ds = Dataset::new(
+        name,
+        path.to_string(),
+        dtype.clone(),
+        dims,
+        DatasetProperties::new(),
+    )
+    .ok()?;
+
+    if let Ok(views) = h5.attr_views(path) {
+        for v in &views {
+            if let Some(val) = convert::decode_attr(v) {
+                ds.attributes_mut()
+                    .add(Attribute::new(v.name().to_string(), val));
+            }
+        }
+    }
+
+    if convert::is_storable(&dtype) && ohd.data.len() == ds.size_in_bytes() {
+        let _ = ds.set_data(ohd.data);
+    }
+
+    Some(ds)
+}
+
+/// Gather a contiguous (row-major) hyperslab from `data`.
+fn gather_contiguous_slice(
+    data: &[u8],
+    dims: &[usize],
+    start: &[usize],
+    count: &[usize],
+    elem: usize,
+) -> Vec<u8> {
+    let out_elems: usize = count.iter().product();
+    let mut out = vec![0u8; out_elems * elem];
+    if out_elems == 0 || dims.is_empty() || elem == 0 {
+        return out;
+    }
+
+    let ndims = dims.len();
+    // Row-major strides.
+    let mut strides = vec![1usize; ndims];
+    for d in (0..ndims.saturating_sub(1)).rev() {
+        strides[d] = strides[d + 1] * dims[d + 1];
+    }
+
+    let mut coords = vec![0usize; ndims];
+    let mut dst = 0usize;
+    loop {
+        let mut src_flat = 0usize;
+        for d in 0..ndims {
+            src_flat += (start[d] + coords[d]) * strides[d];
+        }
+        let src_off = src_flat * elem;
+        let dst_off = dst * elem;
+        if src_off + elem <= data.len() && dst_off + elem <= out.len() {
+            out[dst_off..dst_off + elem].copy_from_slice(&data[src_off..src_off + elem]);
+        }
+        dst += 1;
+
+        // Odometer increment over `count`.
+        let mut carry = true;
+        for d in (0..ndims).rev() {
+            if carry {
+                coords[d] += 1;
+                if coords[d] >= count[d] {
+                    coords[d] = 0;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        if carry {
+            break;
+        }
+    }
+
+    out
 }
 
 /// Builder for Hdf5Reader with configuration options
@@ -455,7 +582,8 @@ impl Hdf5ReaderBuilder {
 
     /// Build the reader
     pub fn open<P: AsRef<Path>>(self, path: P) -> Result<Hdf5Reader> {
-        // For now, ignore builder options
+        // Cache options are accepted for API compatibility; `oxih5` manages its
+        // own chunk-index cache internally.
         Hdf5Reader::open(path)
     }
 }
@@ -469,6 +597,7 @@ impl Default for Hdf5ReaderBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writer::{Hdf5Version, Hdf5Writer};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -491,7 +620,81 @@ mod tests {
     #[test]
     fn test_builder() {
         let builder = Hdf5ReaderBuilder::new().cache_size(1024);
-        // Can't test without a valid HDF5 file
         assert!(builder.cache_size.is_some());
+    }
+
+    /// Round-trip through the REAL writer and reader: write an i32 dataset with
+    /// data, then read the genuine `.h5` back and assert the decoded values.
+    #[test]
+    fn test_real_roundtrip_i32_values() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigdal_hdf5_reader_roundtrip_i32.h5");
+
+        {
+            let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
+            writer
+                .create_dataset(
+                    "/counts",
+                    Datatype::Int32,
+                    vec![5],
+                    DatasetProperties::new(),
+                )
+                .expect("create dataset");
+            writer
+                .write_i32("/counts", &[10, 20, 30, 40, 50])
+                .expect("write i32");
+            writer.finalize().expect("finalize");
+        }
+
+        let mut reader = Hdf5Reader::open(&path).expect("open real file");
+        assert!(reader.is_dataset("/counts"));
+        {
+            let ds = reader.dataset("/counts").expect("dataset");
+            assert_eq!(ds.dims(), &[5]);
+            assert_eq!(ds.datatype(), &Datatype::Int32);
+        }
+        let values = reader.read_i32("/counts").expect("read i32");
+        assert_eq!(values, vec![10, 20, 30, 40, 50]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Read a genuine `.h5` produced directly by `oxih5::FileWriter`, asserting
+    /// real dataset values and a real dataset attribute survive the round-trip.
+    #[test]
+    fn test_read_real_oxih5_fixture() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigdal_hdf5_reader_oxih5_fixture.h5");
+
+        {
+            let mut w = oxih5::FileWriter::new();
+            w.write_dataset_f64("temperature", &[20.5, 21.0, 19.75], &[3])
+                .expect("write f64 dataset");
+            w.write_string_attr("temperature", "units", "celsius")
+                .expect("write string attr");
+            w.write_root_str_attr("title", "Real HDF5 Fixture");
+            w.build(&path).expect("build real hdf5");
+        }
+
+        let mut reader = Hdf5Reader::open(&path).expect("open real file");
+
+        // Real dataset values.
+        let values = reader.read_f64("/temperature").expect("read f64");
+        assert_eq!(values, vec![20.5, 21.0, 19.75]);
+
+        // Real dataset attribute.
+        let ds = reader.dataset("/temperature").expect("dataset");
+        let units = ds.attributes().get("units").expect("units attr");
+        assert_eq!(units.as_string().ok(), Some("celsius".to_string()));
+
+        // Real root attribute.
+        let root = reader.root().expect("root");
+        let title = root.attributes().get("title").expect("title attr");
+        assert_eq!(
+            title.as_string().ok(),
+            Some("Real HDF5 Fixture".to_string())
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

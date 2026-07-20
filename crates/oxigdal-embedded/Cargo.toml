@@ -35,7 +35,7 @@ static-pool = ["alloc"]
 minimal = []
 
 [dependencies]
-oxigdal-core = { workspace = true }
+oxigdal-core = { path = "../oxigdal-core", version = "0.1.7", default-features = false, features = ["alloc"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
 byteorder = { workspace = true }

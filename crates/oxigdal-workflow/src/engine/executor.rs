@@ -89,8 +89,8 @@ pub struct WorkflowExecutor<E: TaskExecutor> {
     task_executor: Arc<E>,
     /// State persistence.
     persistence: Option<StatePersistence>,
-    /// Semaphore for limiting concurrent tasks (reserved for future parallel execution).
-    _semaphore: Arc<Semaphore>,
+    /// Semaphore bounding the number of tasks executing concurrently within a level.
+    semaphore: Arc<Semaphore>,
     /// Checkpoint sequence counter.
     checkpoint_sequence: AtomicU64,
     /// Tasks completed since last checkpoint.
@@ -111,7 +111,7 @@ impl<E: TaskExecutor> WorkflowExecutor<E> {
             config,
             task_executor: Arc::new(task_executor),
             persistence,
-            _semaphore: semaphore,
+            semaphore,
             checkpoint_sequence: AtomicU64::new(0),
             tasks_since_checkpoint: AtomicU64::new(0),
         }
@@ -298,26 +298,52 @@ impl<E: TaskExecutor> WorkflowExecutor<E> {
             .unwrap_or_else(|arc| tokio::task::block_in_place(|| arc.blocking_read().clone())))
     }
 
-    /// Execute a level of tasks in parallel.
+    /// Execute a level of tasks concurrently.
+    ///
+    /// All tasks in a level are independent (they share no dependency edges), so
+    /// they are driven concurrently as a set of futures, each acquiring a
+    /// permit from the executor semaphore first so that at most
+    /// `max_concurrent_tasks` run at any instant. This turns the wall-clock cost
+    /// of a level from the sum of its task durations into roughly the slowest
+    /// task (subject to the concurrency cap), which matters for I/O-bound work.
+    ///
+    /// Futures borrow `&self`, `dag`, and `state`, so they are polled on the
+    /// current task rather than `tokio::spawn`ed — this avoids `'static`/`Send`
+    /// bounds on the caller-supplied `TaskExecutor` while still interleaving all
+    /// tasks at their `.await` points.
     async fn execute_level(
         &self,
         dag: &WorkflowDag,
         state: &Arc<RwLock<WorkflowState>>,
         level: &[String],
     ) -> Vec<(String, Result<()>)> {
-        let mut results = Vec::new();
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        let mut in_flight = FuturesUnordered::new();
 
         for task_id in level {
-            let result = self
-                .execute_task(
-                    task_id,
-                    dag,
-                    state,
-                    &*self.task_executor,
-                    self.config.retry_on_failure,
-                )
-                .await;
-            results.push((task_id.clone(), result));
+            let semaphore = Arc::clone(&self.semaphore);
+            in_flight.push(async move {
+                // Bound concurrency. `acquire_owned` only errors if the semaphore
+                // is closed, which never happens here; fall back to running
+                // without a permit rather than panicking.
+                let _permit = semaphore.acquire_owned().await.ok();
+                let result = self
+                    .execute_task(
+                        task_id,
+                        dag,
+                        state,
+                        &*self.task_executor,
+                        self.config.retry_on_failure,
+                    )
+                    .await;
+                (task_id.clone(), result)
+            });
+        }
+
+        let mut results = Vec::with_capacity(level.len());
+        while let Some(item) = in_flight.next().await {
+            results.push(item);
         }
 
         results
@@ -460,10 +486,10 @@ impl<E: TaskExecutor> WorkflowExecutor<E> {
         let mut inputs = std::collections::HashMap::new();
 
         for dep_id in dependencies {
-            if let Some(dep_state) = state_guard.get_task_state(&dep_id) {
-                if let Some(ref output) = dep_state.output {
-                    inputs.insert(dep_id.clone(), output.clone());
-                }
+            if let Some(dep_state) = state_guard.get_task_state(&dep_id)
+                && let Some(ref output) = dep_state.output
+            {
+                inputs.insert(dep_id.clone(), output.clone());
             }
         }
 
@@ -842,5 +868,121 @@ mod tests {
         assert!(result.is_ok());
         let state = result.expect("Expected workflow state");
         assert_eq!(state.status, WorkflowStatus::Completed);
+    }
+
+    /// Task executor that records the peak number of tasks running at once and
+    /// sleeps a fixed duration, used to observe real concurrency.
+    struct ConcurrencyProbe {
+        current: Arc<std::sync::atomic::AtomicUsize>,
+        max_seen: Arc<std::sync::atomic::AtomicUsize>,
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl TaskExecutor for ConcurrencyProbe {
+        async fn execute(
+            &self,
+            _task: &TaskNode,
+            _context: &ExecutionContext,
+        ) -> Result<TaskOutput> {
+            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_seen.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            self.current.fetch_sub(1, Ordering::SeqCst);
+            Ok(TaskOutput {
+                data: None,
+                logs: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_level_runs_concurrently() {
+        let n = 6usize;
+        let delay_ms = 150u64;
+
+        let mut dag = WorkflowDag::new();
+        for i in 0..n {
+            dag.add_task(create_test_task(&format!("t{i}"))).ok();
+        }
+
+        let current = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = ConcurrencyProbe {
+            current: Arc::clone(&current),
+            max_seen: Arc::clone(&max_seen),
+            delay_ms,
+        };
+
+        let config = ExecutorConfig {
+            enable_persistence: false,
+            enable_checkpointing: false,
+            max_concurrent_tasks: n,
+            retry_on_failure: false,
+            ..Default::default()
+        };
+        let executor = WorkflowExecutor::new(config, probe);
+
+        let start = std::time::Instant::now();
+        let state = executor
+            .execute("wf".to_string(), "exec".to_string(), dag)
+            .await
+            .expect("workflow should run");
+        let elapsed = start.elapsed();
+
+        assert_eq!(state.status, WorkflowStatus::Completed);
+        // Serial execution would take ~n * delay_ms; concurrent execution should
+        // finish in well under half that.
+        assert!(
+            elapsed < Duration::from_millis(delay_ms * n as u64 / 2),
+            "level did not run concurrently: elapsed {:?}",
+            elapsed
+        );
+        assert!(
+            max_seen.load(Ordering::SeqCst) >= 2,
+            "expected overlapping tasks, peak was {}",
+            max_seen.load(Ordering::SeqCst)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_level_respects_max_concurrent() {
+        let n = 6usize;
+
+        let mut dag = WorkflowDag::new();
+        for i in 0..n {
+            dag.add_task(create_test_task(&format!("t{i}"))).ok();
+        }
+
+        let current = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = ConcurrencyProbe {
+            current: Arc::clone(&current),
+            max_seen: Arc::clone(&max_seen),
+            delay_ms: 80,
+        };
+
+        let config = ExecutorConfig {
+            enable_persistence: false,
+            enable_checkpointing: false,
+            max_concurrent_tasks: 2,
+            retry_on_failure: false,
+            ..Default::default()
+        };
+        let executor = WorkflowExecutor::new(config, probe);
+
+        let state = executor
+            .execute("wf".to_string(), "exec".to_string(), dag)
+            .await
+            .expect("workflow should run");
+
+        assert_eq!(state.status, WorkflowStatus::Completed);
+        let peak = max_seen.load(Ordering::SeqCst);
+        assert!(peak >= 1, "at least one task should have run");
+        assert!(
+            peak <= 2,
+            "semaphore cap exceeded: {} tasks ran concurrently",
+            peak
+        );
     }
 }

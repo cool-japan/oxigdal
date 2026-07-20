@@ -58,13 +58,13 @@ describe('Async Operations', () => {
       }
     }
 
-    const hillshade = await oxigdal.hillshadeAsync(dem, 315, 45, 1.0);
+    const hillshade = await oxigdal.hillshadeAsync(dem, 315, 45, 1.0, 1.0);
     expect(hillshade.width).toBe(50);
 
-    const slope = await oxigdal.slopeAsync(dem, 1.0, false);
+    const slope = await oxigdal.slopeAsync(dem, 1.0, 1.0, false);
     expect(slope.width).toBe(50);
 
-    const aspect = await oxigdal.aspectAsync(dem);
+    const aspect = await oxigdal.aspectAsync(dem, 1.0);
     expect(aspect.width).toBe(50);
   });
 

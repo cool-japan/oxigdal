@@ -516,10 +516,10 @@ impl StatePersistence {
             .map_err(|e| WorkflowError::persistence(format!("Failed to read entry: {}", e)))?
         {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    execution_ids.push(stem.to_string());
-                }
+            if path.extension().and_then(|s| s.to_str()) == Some("json")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                execution_ids.push(stem.to_string());
             }
         }
 
@@ -628,12 +628,12 @@ impl StatePersistence {
             .map_err(|e| WorkflowError::persistence(format!("Failed to read entry: {}", e)))?
         {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if name.starts_with(&prefix) {
-                    fs::remove_file(&path).await.map_err(|e| {
-                        WorkflowError::persistence(format!("Failed to delete checkpoint: {}", e))
-                    })?;
-                }
+            if let Some(name) = path.file_name().and_then(|s| s.to_str())
+                && name.starts_with(&prefix)
+            {
+                fs::remove_file(&path).await.map_err(|e| {
+                    WorkflowError::persistence(format!("Failed to delete checkpoint: {}", e))
+                })?;
             }
         }
 
@@ -661,14 +661,12 @@ impl StatePersistence {
             .map_err(|e| WorkflowError::persistence(format!("Failed to read entry: {}", e)))?
         {
             let path = entry.path();
-            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                if name.starts_with(&prefix) {
-                    if let Some(seq_str) = name.strip_prefix(&prefix) {
-                        if let Ok(seq) = seq_str.parse::<u64>() {
-                            sequences.push(seq);
-                        }
-                    }
-                }
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str())
+                && name.starts_with(&prefix)
+                && let Some(seq_str) = name.strip_prefix(&prefix)
+                && let Ok(seq) = seq_str.parse::<u64>()
+            {
+                sequences.push(seq);
             }
         }
 

@@ -94,16 +94,16 @@ impl JpegCodec {
         })?;
 
         // Validate dimensions only as a warning (JPEG is self-describing).
-        if let Some(info) = decoder.info() {
-            if info.width as u32 != expected_width || info.height as u32 != expected_height {
-                tracing::warn!(
-                    "JPEG decoded dimensions {}x{} differ from expected {}x{}",
-                    info.width,
-                    info.height,
-                    expected_width,
-                    expected_height
-                );
-            }
+        if let Some(info) = decoder.info()
+            && (info.width as u32 != expected_width || info.height as u32 != expected_height)
+        {
+            tracing::warn!(
+                "JPEG decoded dimensions {}x{} differ from expected {}x{}",
+                info.width,
+                info.height,
+                expected_width,
+                expected_height
+            );
         }
 
         Ok(pixels)

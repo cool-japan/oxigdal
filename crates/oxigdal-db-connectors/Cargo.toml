@@ -91,3 +91,10 @@ harness = false
 
 [lints]
 workspace = true
+
+# NOTE: `mysql` (libz-sys), `mongodb` (ring) and `cassandra` (aws-lc-sys via
+# scylla's rustls-023 feature) all pull non-Pure-Rust C/asm crates. `sqlite`,
+# `postgres` and `clickhouse` stay on a pure-Rust dependency closure.
+[package.metadata.docs.rs]
+features = ["sqlite", "postgres", "clickhouse"]
+rustdoc-args = ["--cfg", "docsrs"]

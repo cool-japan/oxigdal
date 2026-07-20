@@ -2,7 +2,7 @@
 
 > **Purpose:** Remote sensing / satellite-sensor data processing for OxiGDAL — sensor definitions (Landsat / Sentinel / MODIS / ASTER), radiometric correction, spectral indices, pan-sharpening, and image classification. (**NOT** an IoT sensor ingestion crate — that role belongs to oxigdal-mqtt + oxigdal-streaming.)
 > **Status (2026-05-16):** 3,623 LoC · 128 tests · 4 real-code stubs
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Replace stub `MaximumLikelihood::classify` with a real Gaussian maximum-likelihood classifier
@@ -16,7 +16,7 @@
   - **Risk:** Numerical instability for low-band-count training sets — apply Tikhonov regularisation `Σ + λI` with λ=1e-6 default; document.
   - **Prerequisites:** None.
 
-- [ ] Replace `BroveyTransform::sharpen` formula `(p·m) / (m + ε)` with the true per-band Brovey ratio
+- [x] Replace `BroveyTransform::sharpen` formula `(p·m) / (m + ε)` with the true per-band Brovey ratio
   - **Verified gap:** `src/pan_sharpening/brovey.rs:26-32` — literal:
     `*out = if m.abs() > 1e-10 { (p * m) / (m + 1e-10) } else { 0.0 };`
   - **Goal:** Correct Brovey Transform per Pohl & van Genderen (1998) "Multisensor image fusion": `MS_sharp_i = MS_i · (Pan / I)` where `I = (MS_R + MS_G + MS_B) / 3`. Operating on a single band against the panchromatic without the sum-of-bands normaliser produces incorrect chromatic balance.
@@ -26,7 +26,7 @@
   - **Risk:** Trait change is breaking; coordinate with any callers via deprecated alias for one release.
   - **Prerequisites:** None.
 
-- [ ] Replace `IHSPanSharpening::sharpen` lerp-stub with real Intensity-Hue-Saturation substitution
+- [x] Replace `IHSPanSharpening::sharpen` lerp-stub with real Intensity-Hue-Saturation substitution
   - **Verified gap:** `src/pan_sharpening/ihs.rs:19-27` — literal:
     `// Simplified IHS: Replace intensity with panchromatic  let mut sharpened = Array2::zeros(ms.dim());  Zip::from(&mut sharpened).and(ms).and(pan).for_each(|out, &m, &p| { *out = m + (p - m) * 0.5; });`
   - **Goal:** True IHS pan-sharpening per Carper, Lillesand, Kiefer (1990): convert (R, G, B) → (I, H, S); replace I with histogram-matched Pan; convert back to (R, G, B).
@@ -36,7 +36,7 @@
   - **Risk:** Histogram matching is non-trivial — guard against zero-bin denominators in CDF inverse.
   - **Prerequisites:** Trait signature update from the Brovey item.
 
-- [ ] Replace `PCAPanSharpening::sharpen` 0.7/0.3 stub with real PCA-based sharpening
+- [x] Replace `PCAPanSharpening::sharpen` 0.7/0.3 stub with real PCA-based sharpening
   - **Verified gap:** `src/pan_sharpening/pca.rs:19-27` — literal:
     `// Simplified PCA: Weight by variance  let mut sharpened = Array2::zeros(ms.dim());  Zip::from(&mut sharpened).and(ms).and(pan).for_each(|out, &m, &p| { *out = m * 0.7 + p * 0.3; });`
   - **Goal:** PCA pan-sharpening per Chavez & Kwarteng (1989): project multi-band MS into PC space, replace PC1 with histogram-matched Pan, inverse-project.

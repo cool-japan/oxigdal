@@ -193,6 +193,121 @@ fn test_kmz_get_document() {
 }
 
 #[test]
+fn test_kml_polygon_holes_roundtrip() -> Result<()> {
+    // Regression test: writing then reading back a polygon with holes must
+    // preserve the inner rings, not silently drop them.
+    let outer = vec![
+        Coordinates::new(0.0, 0.0),
+        Coordinates::new(10.0, 0.0),
+        Coordinates::new(10.0, 10.0),
+        Coordinates::new(0.0, 10.0),
+        Coordinates::new(0.0, 0.0),
+    ];
+    let hole = vec![
+        Coordinates::new(2.0, 2.0),
+        Coordinates::new(4.0, 2.0),
+        Coordinates::new(4.0, 4.0),
+        Coordinates::new(2.0, 4.0),
+        Coordinates::new(2.0, 2.0),
+    ];
+
+    let mut doc = KmlDocument::new();
+    doc.add_placemark(Placemark::new().with_geometry(KmlGeometry::Polygon {
+        outer,
+        inner: vec![hole],
+    }));
+
+    let mut buf = Vec::new();
+    write_kml(&mut buf, &doc)?;
+
+    let read_back = read_kml(Cursor::new(buf))?;
+    assert_eq!(read_back.placemarks.len(), 1);
+    match &read_back.placemarks[0].geometry {
+        Some(KmlGeometry::Polygon { outer, inner }) => {
+            assert_eq!(outer.len(), 5);
+            assert_eq!(inner.len(), 1, "hole must survive write -> read roundtrip");
+            assert_eq!(inner[0].len(), 5);
+            assert!((inner[0][0].lon - 2.0).abs() < 1e-9);
+            assert!((inner[0][0].lat - 2.0).abs() < 1e-9);
+        }
+        other => panic!("expected Polygon geometry, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_kml_network_link_roundtrip() -> Result<()> {
+    // Regression test: visibility and refreshMode written out must be read
+    // back correctly, not hardcoded to true/onChange.
+    let mut doc = KmlDocument::new();
+    doc.add_network_link(NetworkLink {
+        name: Some("External".to_string()),
+        visibility: false,
+        refresh_mode: RefreshMode::OnInterval,
+        href: "http://example.com/data.kml".to_string(),
+    });
+
+    let mut buf = Vec::new();
+    write_kml(&mut buf, &doc)?;
+
+    let read_back = read_kml(Cursor::new(buf))?;
+    assert_eq!(read_back.network_links.len(), 1);
+    let link = &read_back.network_links[0];
+    assert_eq!(link.name, Some("External".to_string()));
+    assert!(!link.visibility);
+    assert_eq!(link.refresh_mode, RefreshMode::OnInterval);
+    assert_eq!(link.href, "http://example.com/data.kml");
+
+    Ok(())
+}
+
+#[test]
+fn test_kml_style_roundtrip() -> Result<()> {
+    // Regression test: Style content must survive write -> read, not come
+    // back as Style::default().
+    let mut doc = KmlDocument::new();
+    doc.add_style(
+        Style::new()
+            .with_id("myStyle")
+            .with_icon_style(
+                IconStyle::new()
+                    .with_color("ff0000ff")
+                    .with_scale(1.5)
+                    .with_href("http://example.com/icon.png"),
+            )
+            .with_line_style(LineStyle::new().with_color("ff00ff00").with_width(2.0))
+            .with_poly_style(
+                PolyStyle::new()
+                    .with_color("7fff0000")
+                    .with_fill(false)
+                    .with_outline(true),
+            ),
+    );
+
+    let mut buf = Vec::new();
+    write_kml(&mut buf, &doc)?;
+
+    let read_back = read_kml(Cursor::new(buf))?;
+    assert_eq!(read_back.styles.len(), 1);
+    let style = &read_back.styles[0];
+    assert_eq!(style.id, Some("myStyle".to_string()));
+    assert_eq!(
+        style.icon_style.as_ref().and_then(|i| i.color.clone()),
+        Some("ff0000ff".to_string())
+    );
+    assert_eq!(style.icon_style.as_ref().map(|i| i.scale), Some(1.5));
+    assert_eq!(
+        style.line_style.as_ref().and_then(|l| l.color.clone()),
+        Some("ff00ff00".to_string())
+    );
+    assert_eq!(style.poly_style.as_ref().map(|p| p.fill), Some(false));
+    assert_eq!(style.poly_style.as_ref().map(|p| p.outline), Some(true));
+
+    Ok(())
+}
+
+#[test]
 fn test_kmz_get_image() {
     let mut archive = KmzArchive::new();
     archive.add_image("icon.png", vec![1, 2, 3, 4]);

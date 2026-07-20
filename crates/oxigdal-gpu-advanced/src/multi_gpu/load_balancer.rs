@@ -461,10 +461,10 @@ impl WorkloadTracker {
         device_index: usize,
         workload_id: u64,
     ) -> Option<MigratableWorkload> {
-        if let Some(workloads) = self.pending_workloads.get_mut(device_index) {
-            if let Some(pos) = workloads.iter().position(|w| w.id == workload_id) {
-                return Some(workloads.remove(pos));
-            }
+        if let Some(workloads) = self.pending_workloads.get_mut(device_index)
+            && let Some(pos) = workloads.iter().position(|w| w.id == workload_id)
+        {
+            return Some(workloads.remove(pos));
         }
         None
     }
@@ -1152,13 +1152,13 @@ impl LoadBalancer {
             }
 
             // Preemptively migrate to prevent overload
-            if let Some(target) = self.find_migration_target(device_index)? {
-                if let Some(workload) = self.select_workload_for_migration(device_index) {
-                    let plan = self.create_migration_plan(workload, target)?;
-                    if plan.should_migrate() {
-                        let result = self.execute_migration(&plan)?;
-                        results.push(result);
-                    }
+            if let Some(target) = self.find_migration_target(device_index)?
+                && let Some(workload) = self.select_workload_for_migration(device_index)
+            {
+                let plan = self.create_migration_plan(workload, target)?;
+                if plan.should_migrate() {
+                    let result = self.execute_migration(&plan)?;
+                    results.push(result);
                 }
             }
         }

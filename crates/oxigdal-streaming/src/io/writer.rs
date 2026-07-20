@@ -144,17 +144,17 @@ impl ChunkedWriter {
         let total_chunks = self.current_index;
 
         // Validate against the preset (if any)
-        if let Some(expected) = self.preset_total_chunks {
-            if total_chunks != expected {
-                warn!(
-                    "Finalize mismatch: expected {} chunks, wrote {}",
-                    expected, total_chunks
-                );
-                return Err(StreamingError::IncompleteFinalize {
-                    expected,
-                    actual: total_chunks,
-                });
-            }
+        if let Some(expected) = self.preset_total_chunks
+            && total_chunks != expected
+        {
+            warn!(
+                "Finalize mismatch: expected {} chunks, wrote {}",
+                expected, total_chunks
+            );
+            return Err(StreamingError::IncompleteFinalize {
+                expected,
+                actual: total_chunks,
+            });
         }
 
         // Write a footer: a small sentinel chunk whose ChunkDescriptor carries
@@ -199,6 +199,7 @@ impl ChunkedWriter {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use std::env;

@@ -1,5 +1,8 @@
 //! Color table (palette) type for indexed-color raster support
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::compat::*;
 use serde::{Deserialize, Serialize};
 
 /// A single color entry in a palette

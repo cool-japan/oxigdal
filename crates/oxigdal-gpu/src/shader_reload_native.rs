@@ -144,10 +144,10 @@ impl FilesystemPoller {
     /// empty vector without touching the filesystem.  Otherwise it records the
     /// current instant and runs the full comparison.
     pub fn poll(&mut self) -> Vec<PolledChange> {
-        if let Some(last) = self.last_poll {
-            if last.elapsed() < self.poll_interval {
-                return Vec::new();
-            }
+        if let Some(last) = self.last_poll
+            && last.elapsed() < self.poll_interval
+        {
+            return Vec::new();
         }
         self.last_poll = Some(Instant::now());
         self.diff_against_disk()

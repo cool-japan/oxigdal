@@ -127,11 +127,10 @@ impl BatchPublisher {
                         }
                         None => {
                             info!("Batch publisher channel closed, flushing remaining messages");
-                            if !batch.is_empty() {
-                                if let Err(e) = Self::flush_batch(&publisher, &mut batch).await {
+                            if !batch.is_empty()
+                                && let Err(e) = Self::flush_batch(&publisher, &mut batch).await {
                                     error!("Error flushing final batch: {}", e);
                                 }
-                            }
                             break;
                         }
                     }

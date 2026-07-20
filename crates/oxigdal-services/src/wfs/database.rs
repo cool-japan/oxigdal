@@ -274,65 +274,7 @@ impl DatabaseFeatureCounter {
     ) -> ServiceResult<String> {
         let table = source.qualified_table_name();
         let mut sql = format!("SELECT COUNT(*) FROM {table}");
-
-        let mut conditions: Vec<String> = Vec::new();
-
-        // Add BBOX condition
-        if let Some(b) = bbox {
-            let geom_col = &source.geometry_column;
-            let srid = source.srid.unwrap_or(4326);
-
-            let bbox_condition = match source.database_type {
-                DatabaseType::PostGis => {
-                    format!(
-                        "ST_Intersects(\"{geom_col}\", ST_MakeEnvelope({}, {}, {}, {}, {srid}))",
-                        b.min_x, b.min_y, b.max_x, b.max_y
-                    )
-                }
-                DatabaseType::MySql => {
-                    format!(
-                        "MBRIntersects(`{geom_col}`, ST_GeomFromText('POLYGON(({} {}, {} {}, {} {}, {} {}, {} {}))', {srid}))",
-                        b.min_x,
-                        b.min_y,
-                        b.max_x,
-                        b.min_y,
-                        b.max_x,
-                        b.max_y,
-                        b.min_x,
-                        b.max_y,
-                        b.min_x,
-                        b.min_y
-                    )
-                }
-                DatabaseType::Sqlite => {
-                    format!(
-                        "Intersects(\"{geom_col}\", BuildMbr({}, {}, {}, {}, {srid}))",
-                        b.min_x, b.min_y, b.max_x, b.max_y
-                    )
-                }
-                DatabaseType::Generic => {
-                    // Generic SQL using envelope intersection
-                    format!(
-                        "(\"{geom_col}_minx\" <= {} AND \"{geom_col}_maxx\" >= {} AND \"{geom_col}_miny\" <= {} AND \"{geom_col}_maxy\" >= {})",
-                        b.max_x, b.min_x, b.max_y, b.min_y
-                    )
-                }
-            };
-            conditions.push(bbox_condition);
-        }
-
-        // Add CQL filter condition
-        if let Some(f) = filter {
-            let parsed = f.to_sql(&source.database_type)?;
-            conditions.push(parsed);
-        }
-
-        // Combine conditions
-        if !conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
-        }
-
+        sql.push_str(&build_where_clause(source, filter, bbox)?);
         Ok(sql)
     }
 
@@ -349,14 +291,14 @@ impl DatabaseFeatureCounter {
             .filter(|_| source.count_cache.is_some())
         {
             // Try to get estimated count first
-            if let Ok(estimate) = self.get_postgis_estimate(source).await {
-                if estimate > threshold {
-                    return Ok(CountResult {
-                        count: estimate,
-                        is_estimated: true,
-                        from_cache: false,
-                    });
-                }
+            if let Ok(estimate) = self.get_postgis_estimate(source).await
+                && estimate > threshold
+            {
+                return Ok(CountResult {
+                    count: estimate,
+                    is_estimated: true,
+                    from_cache: false,
+                });
             }
         }
 
@@ -413,26 +355,42 @@ impl DatabaseFeatureCounter {
         })
     }
 
-    /// Execute SQL and return count
-    async fn execute_sql_count(
-        &self,
-        _connection_string: &str,
-        _sql: &str,
-    ) -> ServiceResult<usize> {
-        // This is a placeholder for actual database execution
-        // In a real implementation, this would:
-        // 1. Get a connection from the pool
-        // 2. Execute the SQL query
-        // 3. Parse the count result
-        //
-        // For now, we return an error indicating the database is not connected
-        // This will be replaced with actual database calls when integrated
-        // with oxigdal-postgis or oxigdal-db-connectors
+    /// Execute a scalar `SELECT COUNT(*)`-style query and return the count.
+    ///
+    /// When the `postgis` feature is enabled a real PostgreSQL/PostGIS
+    /// connection pool is created from `connection_string`, the query is run,
+    /// and the single `BIGINT` result column is returned. Without the feature a
+    /// descriptive [`ServiceError::Internal`] is returned so callers get an
+    /// actionable message instead of a silent placeholder.
+    #[cfg_attr(not(feature = "postgis"), allow(clippy::unused_async))]
+    async fn execute_sql_count(&self, connection_string: &str, sql: &str) -> ServiceResult<usize> {
+        #[cfg(feature = "postgis")]
+        {
+            let pool = oxigdal_postgis::ConnectionPool::from_connection_string(connection_string)
+                .map_err(|e| {
+                ServiceError::Internal(format!("PostGIS connection setup failed: {e}"))
+            })?;
+            let client = pool
+                .get()
+                .await
+                .map_err(|e| ServiceError::Internal(format!("PostGIS pool error: {e}")))?;
+            let row = client
+                .query_one(sql, &[])
+                .await
+                .map_err(|e| ServiceError::Internal(format!("Count query failed: {e}")))?;
+            let count: i64 = row.get::<_, i64>(0);
+            Ok(count.max(0) as usize)
+        }
 
-        Err(ServiceError::Internal(
-            "Database connection not configured. Use oxigdal-postgis for PostGIS connections."
-                .to_string(),
-        ))
+        #[cfg(not(feature = "postgis"))]
+        {
+            let _ = (connection_string, sql);
+            Err(ServiceError::Internal(
+                "PostGIS support is not compiled in. Rebuild oxigdal-services with the \
+                 'postgis' feature to enable database-backed feature counting."
+                    .to_string(),
+            ))
+        }
     }
 
     /// Clear the count cache
@@ -465,6 +423,74 @@ impl DatabaseFeatureCounter {
 impl Default for DatabaseFeatureCounter {
     fn default() -> Self {
         Self::new(CountCacheConfig::default())
+    }
+}
+
+/// Build the spatial/attribute predicate list (without a leading `WHERE`).
+///
+/// Combines an optional BBOX filter (translated to the dialect-specific spatial
+/// predicate) with an optional CQL filter (translated to SQL). Returns the raw
+/// predicate strings so callers can join them as needed.
+pub(crate) fn build_spatial_conditions(
+    source: &DatabaseSource,
+    filter: Option<&CqlFilter>,
+    bbox: Option<&BboxFilter>,
+) -> ServiceResult<Vec<String>> {
+    let mut conditions: Vec<String> = Vec::new();
+
+    if let Some(b) = bbox {
+        let geom_col = &source.geometry_column;
+        let srid = source.srid.unwrap_or(4326);
+
+        let bbox_condition = match source.database_type {
+            DatabaseType::PostGis => format!(
+                "ST_Intersects(\"{geom_col}\", ST_MakeEnvelope({}, {}, {}, {}, {srid}))",
+                b.min_x, b.min_y, b.max_x, b.max_y
+            ),
+            DatabaseType::MySql => format!(
+                "MBRIntersects(`{geom_col}`, ST_GeomFromText('POLYGON(({} {}, {} {}, {} {}, {} {}, {} {}))', {srid}))",
+                b.min_x,
+                b.min_y,
+                b.max_x,
+                b.min_y,
+                b.max_x,
+                b.max_y,
+                b.min_x,
+                b.max_y,
+                b.min_x,
+                b.min_y
+            ),
+            DatabaseType::Sqlite => format!(
+                "Intersects(\"{geom_col}\", BuildMbr({}, {}, {}, {}, {srid}))",
+                b.min_x, b.min_y, b.max_x, b.max_y
+            ),
+            DatabaseType::Generic => format!(
+                "(\"{geom_col}_minx\" <= {} AND \"{geom_col}_maxx\" >= {} AND \"{geom_col}_miny\" <= {} AND \"{geom_col}_maxy\" >= {})",
+                b.max_x, b.min_x, b.max_y, b.min_y
+            ),
+        };
+        conditions.push(bbox_condition);
+    }
+
+    if let Some(f) = filter {
+        conditions.push(f.to_sql(&source.database_type)?);
+    }
+
+    Ok(conditions)
+}
+
+/// Build a `WHERE` clause (including the leading ` WHERE `) or an empty string
+/// when no conditions apply.
+pub(crate) fn build_where_clause(
+    source: &DatabaseSource,
+    filter: Option<&CqlFilter>,
+    bbox: Option<&BboxFilter>,
+) -> ServiceResult<String> {
+    let conditions = build_spatial_conditions(source, filter, bbox)?;
+    if conditions.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!(" WHERE {}", conditions.join(" AND ")))
     }
 }
 
@@ -586,11 +612,11 @@ impl CqlFilter {
                         current.clear();
                     }
                     let mut op = c.to_string();
-                    if let Some(&next_c) = chars.peek() {
-                        if next_c == '=' || (c == '<' && next_c == '>') {
-                            op.push(next_c);
-                            chars.next();
-                        }
+                    if let Some(&next_c) = chars.peek()
+                        && (next_c == '=' || (c == '<' && next_c == '>'))
+                    {
+                        op.push(next_c);
+                        chars.next();
                     }
                     tokens.push(CqlToken::Operator(op));
                 }
@@ -947,5 +973,35 @@ mod tests {
 
         let result = counter.get_count(&source, None, None).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_where_clause_empty() {
+        let source = DatabaseSource::new("postgresql://localhost/gis", "buildings");
+        let clause = build_where_clause(&source, None, None).expect("clause");
+        assert_eq!(clause, "");
+    }
+
+    #[test]
+    fn test_build_where_clause_bbox_postgis() {
+        let source = DatabaseSource::new("postgresql://localhost/gis", "buildings")
+            .with_geometry_column("geom")
+            .with_srid(4326);
+        let bbox = BboxFilter::new(-10.0, -20.0, 30.0, 40.0);
+        let clause = build_where_clause(&source, None, Some(&bbox)).expect("clause");
+        assert!(clause.starts_with(" WHERE "));
+        assert!(clause.contains("ST_Intersects(\"geom\""));
+        assert!(clause.contains("ST_MakeEnvelope(-10, -20, 30, 40, 4326)"));
+    }
+
+    #[test]
+    fn test_build_where_clause_bbox_and_cql() {
+        let source = DatabaseSource::new("postgresql://localhost/gis", "buildings");
+        let bbox = BboxFilter::new(0.0, 0.0, 1.0, 1.0);
+        let filter = CqlFilter::new("status = 'active'");
+        let clause = build_where_clause(&source, Some(&filter), Some(&bbox)).expect("clause");
+        assert!(clause.contains(" AND "));
+        assert!(clause.contains("\"status\""));
+        assert!(clause.contains("'active'"));
     }
 }

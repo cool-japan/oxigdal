@@ -597,7 +597,12 @@ impl CompressionManager {
         }
     }
 
-    /// Compress data.
+    /// Compress data with the given (or default) algorithm.
+    ///
+    /// Every algorithm uses a real pure-Rust codec from the OxiARC ecosystem, so
+    /// the bytes returned are genuinely framed and can be round-tripped through
+    /// [`CompressionManager::decompress`] on a peer. Statistics are only recorded
+    /// for the codec that actually ran, so `compression_ratio` reflects real work.
     pub fn compress(
         &self,
         data: &[u8],
@@ -610,10 +615,9 @@ impl CompressionManager {
             CompressionAlgorithm::None => data.to_vec(),
             CompressionAlgorithm::Zstd => oxiarc_zstd::compress_with_level(data, 3)
                 .map_err(|e| ClusterError::CompressionError(e.to_string()))?,
-            CompressionAlgorithm::Lz4 | CompressionAlgorithm::Snappy => {
-                // Simplified - in production use actual libraries
-                data.to_vec()
-            }
+            CompressionAlgorithm::Lz4 => oxiarc_lz4::compress(data)
+                .map_err(|e| ClusterError::CompressionError(e.to_string()))?,
+            CompressionAlgorithm::Snappy => oxiarc_snappy::compress(data),
         };
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -621,6 +625,39 @@ impl CompressionManager {
         self.update_stats(algo, data.len(), compressed.len(), elapsed);
 
         Ok(compressed)
+    }
+
+    /// Decompress data previously produced by [`CompressionManager::compress`].
+    ///
+    /// `max_output` bounds the size of the decompressed buffer as a guard against
+    /// decompression bombs; codecs whose frames are self-describing may return
+    /// less. The caller must supply the same [`CompressionAlgorithm`] the payload
+    /// was tagged with (algorithms are not auto-detected).
+    pub fn decompress(
+        &self,
+        data: &[u8],
+        algorithm: CompressionAlgorithm,
+        max_output: usize,
+    ) -> Result<Vec<u8>> {
+        let out = match algorithm {
+            CompressionAlgorithm::None => data.to_vec(),
+            CompressionAlgorithm::Zstd => oxiarc_zstd::decompress(data)
+                .map_err(|e| ClusterError::CompressionError(e.to_string()))?,
+            CompressionAlgorithm::Lz4 => oxiarc_lz4::decompress(data, max_output)
+                .map_err(|e| ClusterError::CompressionError(e.to_string()))?,
+            CompressionAlgorithm::Snappy => oxiarc_snappy::decompress(data)
+                .map_err(|e| ClusterError::CompressionError(e.to_string()))?,
+        };
+
+        if out.len() > max_output {
+            return Err(ClusterError::CompressionError(format!(
+                "decompressed size {} exceeds max_output {}",
+                out.len(),
+                max_output
+            )));
+        }
+
+        Ok(out)
     }
 
     fn update_stats(&self, algo: CompressionAlgorithm, before: usize, after: usize, time_ms: f64) {
@@ -736,5 +773,83 @@ mod tests {
 
         let new_window = controller.get_window_size(&worker1, &worker2);
         assert!(new_window > initial_window);
+    }
+
+    /// A payload that is highly compressible so every real codec shrinks it,
+    /// proving the byte stream is genuinely framed rather than passed through.
+    fn compressible_payload() -> Vec<u8> {
+        let mut data = Vec::new();
+        for i in 0..4096u32 {
+            data.extend_from_slice(format!("row-{}-value-{}\n", i % 32, i % 8).as_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn test_compression_roundtrip_all_algorithms() {
+        let data = compressible_payload();
+
+        for algo in [
+            CompressionAlgorithm::None,
+            CompressionAlgorithm::Zstd,
+            CompressionAlgorithm::Lz4,
+            CompressionAlgorithm::Snappy,
+        ] {
+            let manager = CompressionManager::new(algo);
+            let compressed = manager
+                .compress(&data, Some(algo))
+                .expect("compression should succeed");
+
+            // Real codecs must shrink a highly compressible payload; the passthrough
+            // `None` variant is the only one allowed to stay the same size.
+            if algo != CompressionAlgorithm::None {
+                assert!(
+                    compressed.len() < data.len(),
+                    "{algo:?} did not actually compress: {} >= {}",
+                    compressed.len(),
+                    data.len()
+                );
+            }
+
+            let restored = manager
+                .decompress(&compressed, algo, data.len() * 2)
+                .expect("decompression should succeed");
+            assert_eq!(restored, data, "{algo:?} round-trip mismatch");
+        }
+    }
+
+    #[test]
+    fn test_compression_stats_reflect_real_work() {
+        let data = compressible_payload();
+
+        // Lz4 previously reported a fabricated 1.0 ratio via silent passthrough.
+        let manager = CompressionManager::new(CompressionAlgorithm::Lz4);
+        let _ = manager
+            .compress(&data, Some(CompressionAlgorithm::Lz4))
+            .expect("lz4 compression should succeed");
+
+        let stats = manager
+            .get_stats(CompressionAlgorithm::Lz4)
+            .expect("stats should be recorded");
+        assert!(
+            stats.compression_ratio < 1.0,
+            "lz4 ratio should reflect real compression, got {}",
+            stats.compression_ratio
+        );
+        assert!(stats.bytes_after < stats.bytes_before);
+    }
+
+    #[test]
+    fn test_decompress_rejects_oversized_output() {
+        let data = compressible_payload();
+        let manager = CompressionManager::new(CompressionAlgorithm::Snappy);
+        let compressed = manager
+            .compress(&data, Some(CompressionAlgorithm::Snappy))
+            .expect("snappy compression should succeed");
+
+        // A max_output smaller than the real payload must be rejected, not silently
+        // truncated.
+        let result = manager.decompress(&compressed, CompressionAlgorithm::Snappy, 8);
+        assert!(result.is_err());
     }
 }

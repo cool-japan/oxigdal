@@ -25,14 +25,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-qc = "0.1.5"
+oxigdal-qc = "0.1.7"
 ```
 
 ### With Optional Features
 
 ```toml
 [dependencies]
-oxigdal-qc = { version = "0.1.5", features = ["html"] }
+oxigdal-qc = { version = "0.1.7", features = ["html"] }
 ```
 
 **Available Features:**
@@ -157,7 +157,7 @@ ruleset.add_rule(rule);
 // Execute rules against data
 let engine = RulesEngine::new(ruleset);
 let mut data = HashMap::new();
-data.insert("max_value".to_string(), 950.0);
+data.insert("max_value".to_string(), QcValue::Number(950.0));
 
 let issues = engine.execute_all(&data)?;
 if issues.is_empty() {

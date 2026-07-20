@@ -304,10 +304,10 @@ impl Jp2Parser {
             if &b.box_type == target {
                 return Some(b);
             }
-            if !b.children.is_empty() {
-                if let Some(found) = Self::find_box_recursive(&b.children, target) {
-                    return Some(found);
-                }
+            if !b.children.is_empty()
+                && let Some(found) = Self::find_box_recursive(&b.children, target)
+            {
+                return Some(found);
             }
         }
         None

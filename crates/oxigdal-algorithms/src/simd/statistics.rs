@@ -6,8 +6,10 @@
 //! # Architecture Support
 //!
 //! - **aarch64**: NEON (128-bit) for parallel accumulation and comparison
-//! - **x86-64**: SSE2 (baseline), AVX2 (runtime detected) for wider operations
-//! - **Other**: Scalar fallback with auto-vectorization hints
+//! - **All other targets (including x86-64)**: Scalar fallback with
+//!   auto-vectorization hints; there is no hand-written SSE2/AVX2 path in
+//!   this module today, so x86-64 relies entirely on the compiler's
+//!   auto-vectorizer rather than explicit intrinsics.
 //!
 //! # Supported Operations
 //!

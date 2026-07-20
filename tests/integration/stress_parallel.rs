@@ -10,13 +10,19 @@
 //!
 //! Validates stability, performance, and resource management.
 
+#![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::useless_vec)]
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+// `Send + Sync` bounds are required so `Result` values can cross `thread::spawn`
+// boundaries in the parallel stress tests.
+type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 // ============================================================================
 // Parallel Raster Processing Tests
@@ -64,7 +70,12 @@ fn stress_parallel_raster_repeated_operations() -> Result<()> {
     for iteration in 0..100 {
         let result = parallel_raster_process(&data, width, height, 4)?;
 
-        assert_eq!(result.len(), data.len(), "Failed at iteration {}", iteration);
+        assert_eq!(
+            result.len(),
+            data.len(),
+            "Failed at iteration {}",
+            iteration
+        );
     }
 
     Ok(())
@@ -81,9 +92,7 @@ fn stress_parallel_raster_concurrent_jobs() -> Result<()> {
     for job_id in 0..10 {
         let data: Vec<f32> = vec![job_id as f32; width * height];
 
-        let handle = thread::spawn(move || {
-            parallel_raster_process(&data, width, height, 2)
-        });
+        let handle = thread::spawn(move || parallel_raster_process(&data, width, height, 2));
 
         handles.push(handle);
     }
@@ -91,7 +100,7 @@ fn stress_parallel_raster_concurrent_jobs() -> Result<()> {
     // Wait for all jobs to complete
     for handle in handles {
         let result = handle.join().map_err(|_| "Thread panicked")??;
-        assert!(result.len() > 0);
+        assert!(!result.is_empty());
     }
 
     Ok(())
@@ -113,9 +122,7 @@ fn stress_parallel_raster_memory_pressure() -> Result<()> {
     let mut handles = vec![];
 
     for data in datasets {
-        let handle = thread::spawn(move || {
-            parallel_raster_process(&data, width, height, 2)
-        });
+        let handle = thread::spawn(move || parallel_raster_process(&data, width, height, 2));
         handles.push(handle);
     }
 
@@ -289,7 +296,7 @@ fn stress_batch_processing_with_failures() -> Result<()> {
 
     // Should have approximately half successes
     let success_count = results.iter().filter(|r| r.is_ok()).count();
-    assert!(success_count >= 8 && success_count <= 12);
+    assert!((8..=12).contains(&success_count));
 
     Ok(())
 }
@@ -444,7 +451,12 @@ fn stress_distributed_worker_failure() -> Result<()> {
 // Helper Functions and Types
 // ============================================================================
 
-fn parallel_raster_process(data: &[f32], _width: usize, _height: usize, _num_threads: usize) -> Result<Vec<f32>> {
+fn parallel_raster_process(
+    data: &[f32],
+    _width: usize,
+    _height: usize,
+    _num_threads: usize,
+) -> Result<Vec<f32>> {
     // Simplified parallel processing
     Ok(data.iter().map(|&x| x * 2.0).collect())
 }
@@ -502,7 +514,10 @@ fn batch_process_files(paths: &[std::path::PathBuf], _num_threads: usize) -> Res
     Ok(results)
 }
 
-fn batch_process_files_tolerant(paths: &[std::path::PathBuf], _num_threads: usize) -> Result<Vec<Result<usize>>> {
+fn batch_process_files_tolerant(
+    paths: &[std::path::PathBuf],
+    _num_threads: usize,
+) -> Result<Vec<Result<usize>>> {
     let mut results = Vec::new();
 
     for (i, path) in paths.iter().enumerate() {

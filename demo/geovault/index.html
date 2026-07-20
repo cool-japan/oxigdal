@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Clean-room policy. The deployed site sends the same policy (plus
+         frame-ancestors, which is ignored in <meta>) as an HTTP header. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self'; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta name="referrer" content="no-referrer">
+    <title>GeoVault — Sovereign Analysis Workstation</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
+    <link rel="stylesheet" href="./geovault.css">
+</head>
+<body>
+    <div class="app">
+        <header class="app-header">
+            <div class="brand">
+                <span class="brand-name"><span class="brand-geo">GEO</span>VAULT</span>
+                <span class="brand-sub">Sovereign Analysis Workstation</span>
+            </div>
+            <div class="header-right">
+                <span id="version-badge" class="version-badge">wasm: loading…</span>
+                <span class="session-state">
+                    <span id="session-dot" class="state-dot"></span>
+                    <span id="session-state-text">starting…</span>
+                </span>
+                <button id="seal-btn" class="btn-seal" disabled>SEAL SESSION</button>
+            </div>
+        </header>
+
+        <div class="synthetic-banner">
+            <span>SYNTHETIC DATA — DEMONSTRATION</span>
+            <span class="banner-detail">Site K-7 is procedurally generated; no real location is depicted.</span>
+        </div>
+
+        <div class="app-body">
+            <!-- Left: analysis tools -->
+            <aside class="sidebar">
+                <section class="side-section">
+                    <h3 class="side-title">Dataset</h3>
+                    <div id="dataset-list"></div>
+                    <div id="drop-zone" class="drop-zone">
+                        <div>Drag &amp; drop a GeoTIFF here, or
+                            <label for="file-input">choose a file</label>
+                        </div>
+                        <input type="file" id="file-input" class="file-input-hidden"
+                               accept=".tif,.tiff">
+                        <p class="drop-note">Decoded entirely in this browser. Nothing is uploaded —
+                            the session ledger records a blake3 digest of every file you open.</p>
+                    </div>
+                    <div class="result-box hidden" id="dataset-info-box">
+                        <dl class="kv" id="dataset-info"></dl>
+                    </div>
+                </section>
+
+                <section class="side-section">
+                    <h3 class="side-title">Terrain</h3>
+                    <div class="btn-row">
+                        <button id="terrain-raw" class="btn tool-btn btn-active">Raw DEM</button>
+                        <button id="terrain-hillshade" class="btn tool-btn">Hillshade</button>
+                        <button id="terrain-multidir" class="btn tool-btn">Multi-dir</button>
+                        <button id="terrain-slope" class="btn tool-btn">Slope</button>
+                        <button id="terrain-relief" class="btn tool-btn">Color relief</button>
+                    </div>
+                    <div class="field">
+                        <label for="terrain-azimuth">Azimuth</label>
+                        <input type="range" id="terrain-azimuth" min="0" max="359" value="315" step="1">
+                        <span class="field-value" id="terrain-azimuth-value">315°</span>
+                    </div>
+                    <div class="field">
+                        <label for="terrain-altitude">Altitude</label>
+                        <input type="range" id="terrain-altitude" min="5" max="90" value="45" step="1">
+                        <span class="field-value" id="terrain-altitude-value">45°</span>
+                    </div>
+                    <div class="field">
+                        <label for="terrain-zfactor">Z factor</label>
+                        <input type="range" id="terrain-zfactor" min="0.5" max="5" value="1" step="0.1">
+                        <span class="field-value" id="terrain-zfactor-value">1.0</span>
+                    </div>
+                </section>
+
+                <section class="side-section">
+                    <h3 class="side-title">Anomaly workbench</h3>
+                    <div class="field">
+                        <label for="anomaly-method">Method</label>
+                        <select id="anomaly-method">
+                            <option value="zscore" selected>Z-score</option>
+                            <option value="iqr">IQR</option>
+                            <option value="modified_zscore">Modified Z</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="anomaly-threshold">Threshold</label>
+                        <input type="number" id="anomaly-threshold" value="3.0" step="0.1" min="0.1">
+                    </div>
+                    <div class="field">
+                        <label for="anomaly-nodata">NoData</label>
+                        <input type="number" id="anomaly-nodata" value="-9999">
+                    </div>
+                    <div class="btn-row">
+                        <button id="anomaly-run" class="btn tool-btn">Run detection</button>
+                        <button id="anomaly-clear" class="btn tool-btn">Clear</button>
+                    </div>
+                    <div class="result-box hidden" id="anomaly-result-box">
+                        <dl class="kv" id="anomaly-result"></dl>
+                    </div>
+                    <p class="side-hint">Verbatim ports of the oxigdal-analytics /
+                        oxigdal-qc kernels, running in WebAssembly on this machine.</p>
+                </section>
+
+                <section class="side-section">
+                    <h3 class="side-title">Measure</h3>
+                    <div class="btn-row">
+                        <button id="measure-distance" class="btn tool-btn">Distance</button>
+                        <button id="measure-area" class="btn tool-btn">Area</button>
+                        <button id="measure-clear" class="btn tool-btn">Clear</button>
+                    </div>
+                    <div class="result-box hidden" id="measure-result-box">
+                        <dl class="kv" id="measure-result"></dl>
+                    </div>
+                    <p class="side-hint">Click to add vertices; double-click to finish.
+                        Haversine distances, spherical polygon areas.</p>
+                </section>
+
+                <section class="side-section">
+                    <h3 class="side-title">Statistics</h3>
+                    <div class="btn-row">
+                        <button id="stats-run" class="btn tool-btn">Compute stats</button>
+                    </div>
+                    <div class="result-box hidden" id="stats-result-box">
+                        <dl class="kv" id="stats-result"></dl>
+                    </div>
+                    <canvas id="histogram-canvas" width="512" height="168" class="hidden"></canvas>
+                </section>
+            </aside>
+
+            <!-- Center: map -->
+            <main class="map-pane">
+                <div id="map"></div>
+                <div id="map-hint" class="map-hint">
+                    <div class="map-hint-title">No dataset loaded</div>
+                    <div>Load the Site K-7 sample or drop a GeoTIFF.<br>
+                        This workstation makes no external network requests.</div>
+                </div>
+            </main>
+
+            <!-- Right: session ledger -->
+            <aside class="ledger-pane">
+                <div class="ledger-head">
+                    <h3 class="side-title">Session Ledger</h3>
+                    <dl class="identity">
+                        <dt>session</dt><dd id="identity-session">—</dd>
+                        <dt>public key</dt><dd id="identity-pubkey">—</dd>
+                        <dt>head hash</dt><dd id="identity-head">—</dd>
+                    </dl>
+                </div>
+                <ol id="ledger-list" class="ledger-list" reversed></ol>
+                <div class="ledger-foot">
+                    Every operation is appended to a blake3 hash chain. Sealing signs the
+                    chain's Merkle root with this session's Ed25519 key — the download can be
+                    re-verified offline in the <a href="verify.html">verifier</a> or with
+                    <span class="mono">oxigdal-security</span>.
+                </div>
+            </aside>
+        </div>
+
+        <footer class="status-bar">
+            <span class="status-item">External requests:
+                <span id="status-external" class="status-value value-ok">0</span></span>
+            <span class="status-item">Blocked:
+                <span id="status-blocked" class="status-value">0</span></span>
+            <span class="status-item">Ingress:
+                <span id="status-ingress" class="status-value">0 B</span></span>
+            <span class="status-item">Egress:
+                <span id="status-egress" class="status-value value-ok">0 B</span></span>
+            <span class="status-item">CSP:
+                <span id="status-csp" class="status-value value-ok">enforced</span></span>
+            <span class="status-item"><span id="status-ops" class="status-value">0</span> ops</span>
+        </footer>
+    </div>
+
+    <!-- Seal / attestation modal -->
+    <div id="seal-modal" class="modal-backdrop hidden">
+        <div class="modal" role="dialog" aria-labelledby="seal-modal-title">
+            <h2 id="seal-modal-title" class="modal-title">SESSION SEALED</h2>
+            <p class="modal-subtitle">The ledger is now immutable. This attestation is the
+                signed, tamper-evident record of everything this session did.</p>
+
+            <div class="selfcheck" id="seal-selfcheck"></div>
+
+            <div class="attest-field">
+                <div class="attest-label"><span>Session ID</span>
+                    <button class="btn-copy" data-copy="attest-session">copy</button></div>
+                <div class="attest-value" id="attest-session">—</div>
+            </div>
+            <div class="attest-field">
+                <div class="attest-label"><span>Merkle root</span>
+                    <button class="btn-copy" data-copy="attest-root">copy</button></div>
+                <div class="attest-value" id="attest-root">—</div>
+            </div>
+            <div class="attest-field">
+                <div class="attest-label"><span>Ed25519 public key</span>
+                    <button class="btn-copy" data-copy="attest-pubkey">copy</button></div>
+                <div class="attest-value" id="attest-pubkey">—</div>
+            </div>
+            <div class="attest-field">
+                <div class="attest-label"><span>Signature</span>
+                    <button class="btn-copy" data-copy="attest-signature">copy</button></div>
+                <div class="attest-value" id="attest-signature">—</div>
+            </div>
+            <div class="attest-field">
+                <div class="attest-label"><span>Summary</span></div>
+                <div class="attest-value" id="attest-summary">—</div>
+            </div>
+
+            <p class="trust-model">This attestation is a tamper-evident record. It
+                cryptographically proves: (1) the operation log is complete and unaltered
+                since sealing, (2) it was sealed by the session key shown. It reports, on
+                the honor of the application code you can inspect: 0 bytes sent to any
+                external origin, under a browser-enforced Content-Security-Policy
+                forbidding external connections. It cannot prove that other software on
+                this machine sent nothing — no browser page can. Integrity of the record:
+                proven. No-egress: enforced and observed, not mathematically proven.</p>
+
+            <div class="modal-actions">
+                <button id="attest-download" class="btn btn-download">Download attestation.json</button>
+                <a href="verify.html" target="_blank" rel="noopener" class="btn">Open verifier</a>
+                <button id="seal-modal-close" class="btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="./vendor/leaflet/leaflet.js"></script>
+    <script type="module" src="./workstation.js"></script>
+</body>
+</html>

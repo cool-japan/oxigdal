@@ -1,6 +1,9 @@
 //! Integration tests for oxigdal-pubsub.
 
-use oxigdal_pubsub::{Message, PublisherConfig, SubscriberConfig};
+#[cfg(feature = "subscriber")]
+use oxigdal_pubsub::SubscriberConfig;
+#[cfg(feature = "publisher")]
+use oxigdal_pubsub::{Message, PublisherConfig};
 
 #[cfg(feature = "schema")]
 use oxigdal_pubsub::{Schema, SchemaRegistry};
@@ -8,6 +11,7 @@ use oxigdal_pubsub::{Schema, SchemaRegistry};
 #[cfg(feature = "monitoring")]
 use oxigdal_pubsub::MetricsCollector;
 
+#[cfg(feature = "publisher")]
 #[tokio::test]
 async fn test_publisher_config_validation() {
     let config = PublisherConfig::new("test-project", "test-topic");
@@ -15,6 +19,7 @@ async fn test_publisher_config_validation() {
     assert_eq!(config.topic_name, "test-topic");
 }
 
+#[cfg(feature = "subscriber")]
 #[tokio::test]
 async fn test_subscriber_config_validation() {
     let config = SubscriberConfig::new("test-project", "test-subscription");
@@ -22,6 +27,7 @@ async fn test_subscriber_config_validation() {
     assert_eq!(config.subscription_name, "test-subscription");
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_message_creation() {
     let message = Message::new(b"test data".to_vec())
@@ -34,6 +40,7 @@ fn test_message_creation() {
     assert_eq!(message.ordering_key, Some("order-key".to_string()));
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_message_size() {
     let small_message = Message::new(b"small".to_vec());
@@ -100,6 +107,7 @@ fn test_metrics_collector() {
     assert_eq!(pub_metrics.messages_published, 0);
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_publisher_config_builder() {
     let config = PublisherConfig::new("project", "topic")
@@ -116,6 +124,7 @@ fn test_publisher_config_builder() {
     assert!(config.enable_ordering);
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_subscriber_config_builder() {
     use oxigdal_pubsub::{FlowControlSettings, SubscriptionType};
@@ -160,6 +169,7 @@ fn test_error_handling() {
     assert!(error.to_string().contains("5000"));
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_retry_config() {
     use oxigdal_pubsub::RetryConfig;
@@ -215,6 +225,7 @@ fn test_version_info() {
     assert_eq!(crate_name(), "oxigdal-pubsub");
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_constants() {
     use oxigdal_pubsub::{
@@ -242,6 +253,7 @@ fn test_subscriber_constants() {
     assert_eq!(DEFAULT_HANDLER_CONCURRENCY, 10);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_topic_config() {
     use oxigdal_pubsub::TopicConfig;
@@ -257,6 +269,7 @@ fn test_topic_config() {
     assert!(config.enable_message_ordering);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_topic_builder() {
     use oxigdal_pubsub::TopicBuilder;
@@ -272,6 +285,7 @@ fn test_topic_builder() {
     assert_eq!(config.message_retention_duration, Some(7200));
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_subscription_create_config() {
     use oxigdal_pubsub::SubscriptionCreateConfig;
@@ -287,6 +301,7 @@ fn test_subscription_create_config() {
     assert_eq!(config.ack_deadline_seconds, 30);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_subscription_builder() {
     use oxigdal_pubsub::{ExpirationPolicy, RetryPolicy, SubscriptionBuilder};
@@ -304,6 +319,7 @@ fn test_subscription_builder() {
     assert!(config.enable_message_ordering);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_expiration_policy() {
     use oxigdal_pubsub::ExpirationPolicy;
@@ -315,6 +331,7 @@ fn test_expiration_policy() {
     assert_eq!(never_expire.ttl_seconds, i64::MAX);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_retry_policy_variants() {
     use oxigdal_pubsub::RetryPolicy;
@@ -332,6 +349,7 @@ fn test_retry_policy_variants() {
     assert_eq!(conservative.maximum_backoff_seconds, 3600);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_dead_letter_policy() {
     use oxigdal_pubsub::DeadLetterPolicy;
@@ -341,6 +359,7 @@ fn test_dead_letter_policy() {
     assert_eq!(policy.max_delivery_attempts, 5);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_topic_metadata_serialization() {
     use oxigdal_pubsub::TopicMetadata;
@@ -363,6 +382,7 @@ fn test_topic_metadata_serialization() {
     assert!(json.is_ok());
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_subscription_metadata_serialization() {
     use oxigdal_pubsub::SubscriptionMetadata;
@@ -388,6 +408,7 @@ fn test_subscription_metadata_serialization() {
     assert!(json.is_ok());
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_topic_stats() {
     use oxigdal_pubsub::TopicStats;
@@ -405,6 +426,7 @@ fn test_topic_stats() {
     assert_eq!(stats.bytes_published, 500000);
 }
 
+#[cfg(feature = "pubsub-client")]
 #[test]
 fn test_subscription_stats() {
     use oxigdal_pubsub::SubscriptionStats;
@@ -423,6 +445,7 @@ fn test_subscription_stats() {
     assert_eq!(stats.messages_pending, 50);
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_handler_result_variants() {
     use oxigdal_pubsub::HandlerResult;
@@ -448,6 +471,7 @@ fn test_handler_result_variants() {
     }
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_subscription_type() {
     use oxigdal_pubsub::SubscriptionType;
@@ -460,6 +484,7 @@ fn test_subscription_type() {
     assert_ne!(pull, push);
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_multiple_message_attributes() {
     use std::collections::HashMap;
@@ -475,6 +500,7 @@ fn test_multiple_message_attributes() {
     assert_eq!(message.attributes.get("key1"), Some(&"value1".to_string()));
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_message_with_ordering_key_chain() {
     let message = Message::new(b"test".to_vec())
@@ -486,6 +512,7 @@ fn test_message_with_ordering_key_chain() {
     assert_eq!(message.attributes.len(), 2);
 }
 
+#[cfg(feature = "publisher")]
 #[test]
 fn test_publisher_stats_serialization() {
     use oxigdal_pubsub::PublisherStats;
@@ -508,6 +535,7 @@ fn test_publisher_stats_serialization() {
     assert!(deserialized.is_ok());
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_subscriber_stats_serialization() {
     use oxigdal_pubsub::SubscriberStats;
@@ -591,6 +619,7 @@ fn test_metric_point_with_labels() {
     assert_eq!(point.labels.get("region"), Some(&"us-central1".to_string()));
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_flow_control_settings_default() {
     use oxigdal_pubsub::{
@@ -610,6 +639,7 @@ fn test_flow_control_settings_default() {
     assert_eq!(settings.max_messages_per_second, 0);
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_flow_control_settings_custom() {
     use oxigdal_pubsub::FlowControlSettings;
@@ -625,6 +655,7 @@ fn test_flow_control_settings_custom() {
     assert_eq!(settings.max_messages_per_second, 100);
 }
 
+#[cfg(feature = "subscriber")]
 #[test]
 fn test_dead_letter_config() {
     use oxigdal_pubsub::DeadLetterConfig;

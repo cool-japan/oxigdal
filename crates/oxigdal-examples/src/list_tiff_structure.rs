@@ -101,10 +101,10 @@ fn main() -> oxigdal_core::Result<()> {
             println!("    Compression: {} ({})", comp_name, comp);
         }
 
-        if let Some(bps) = bits_per_sample {
-            if let Some(spp) = samples_per_pixel {
-                println!("    Samples: {} @ {} bits/sample", spp, bps);
-            }
+        if let Some(bps) = bits_per_sample
+            && let Some(spp) = samples_per_pixel
+        {
+            println!("    Samples: {} @ {} bits/sample", spp, bps);
         }
 
         // Check for GeoTIFF tags

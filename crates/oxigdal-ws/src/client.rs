@@ -383,16 +383,15 @@ impl WebSocketClient {
                         timestamp,
                         ..
                     } = message
+                        && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&timestamp)
                     {
-                        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&timestamp) {
-                            let event_data = EventData::with_timestamp(
-                                event_type,
-                                payload,
-                                ts.with_timezone(&chrono::Utc),
-                            );
-                            if tx.send(event_data).is_err() {
-                                break;
-                            }
+                        let event_data = EventData::with_timestamp(
+                            event_type,
+                            payload,
+                            ts.with_timezone(&chrono::Utc),
+                        );
+                        if tx.send(event_data).is_err() {
+                            break;
                         }
                     }
                 }

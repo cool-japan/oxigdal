@@ -42,7 +42,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigdal-3d = "0.1.5"
+oxigdal-3d = "0.1.7"
 ```
 
 ### Feature Flags
@@ -51,7 +51,7 @@ Enable specific capabilities as needed:
 
 ```toml
 [dependencies]
-oxigdal-3d = { version = "0.1.5", features = ["async", "copc", "ept"] }
+oxigdal-3d = { version = "0.1.7", features = ["async", "copc", "ept"] }
 ```
 
 | Feature | Description |

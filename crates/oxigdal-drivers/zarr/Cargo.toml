@@ -14,7 +14,7 @@ keywords = ["zarr", "array", "multidimensional", "network-programming", "chunked
 categories = ["science", "parser-implementations", "encoding", "data-structures"]
 
 [features]
-default = ["std", "v2", "v3", "gzip", "zstd", "filesystem", "memory"]
+default = ["std", "v2", "v3", "gzip", "zstd", "lz4", "filesystem", "memory"]
 std = ["oxigdal-core/std", "thiserror/std", "serde/std"]
 alloc = []
 
@@ -95,3 +95,13 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+# NOTE: `s3` (aws-sdk-s3) and `http` (reqwest) both pull aws-lc-sys (C/asm)
+# via rustls's default crypto provider. All other features stay Pure Rust.
+[package.metadata.docs.rs]
+features = [
+    "std", "alloc", "v2", "v3", "filesystem", "memory",
+    "gzip", "zstd", "lz4", "shuffle", "delta", "scale-offset",
+    "async", "parallel", "cache",
+]
+rustdoc-args = ["--cfg", "docsrs"]

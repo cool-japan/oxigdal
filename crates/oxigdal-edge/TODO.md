@@ -2,7 +2,7 @@
 
 > **Purpose:** Edge-computing runtime — offline-first cache, edge-to-cloud sync (CRDT conflict resolution), local resource monitoring, adaptive compression for bandwidth-limited links.
 > **Status (2026-05-17):** 4,067 LoC · 75 #[test]/#[tokio::test] attributes · 2 real-code soft stubs (plus the sync layer is currently `MockSyncProtocol`-only).
-> **Roadmap:** v0.1.5 → v0.2.0 → v1.0.0
+> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Replace `MockSyncProtocol` with a real HTTP/2 transport

@@ -344,13 +344,12 @@ impl ReplicationManager {
                 break;
             }
 
-            if let Some(health) = self.inner.worker_health.get(&worker_id) {
-                if let Some(rack_id) = &health.rack_id {
-                    if !used_racks.contains(rack_id) {
-                        selected.push(worker_id);
-                        used_racks.insert(rack_id.clone());
-                    }
-                }
+            if let Some(health) = self.inner.worker_health.get(&worker_id)
+                && let Some(rack_id) = &health.rack_id
+                && !used_racks.contains(rack_id)
+            {
+                selected.push(worker_id);
+                used_racks.insert(rack_id.clone());
             }
         }
 
@@ -378,13 +377,12 @@ impl ReplicationManager {
                 break;
             }
 
-            if let Some(health) = self.inner.worker_health.get(&worker_id) {
-                if let Some(zone_id) = &health.zone_id {
-                    if !used_zones.contains(zone_id) {
-                        selected.push(worker_id);
-                        used_zones.insert(zone_id.clone());
-                    }
-                }
+            if let Some(health) = self.inner.worker_health.get(&worker_id)
+                && let Some(zone_id) = &health.zone_id
+                && !used_zones.contains(zone_id)
+            {
+                selected.push(worker_id);
+                used_zones.insert(zone_id.clone());
             }
         }
 

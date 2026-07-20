@@ -4,15 +4,16 @@
 
 [![Crates.io](https://img.shields.io/crates/v/oxigdal.svg)](https://crates.io/crates/oxigdal)
 [![Documentation](https://docs.rs/oxigdal/badge.svg)](https://docs.rs/oxigdal)
-[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/crates/l/oxigdal.svg)](LICENSE)
 
 Umbrella crate for OxiGDAL — open any supported geospatial format with a single
-`Dataset::open()` call, just like `GDALOpen()`.  Backed by **68 workspace crates**
-and ~500,000 SLoC of production Rust, it covers 11 format drivers, full CRS
+`Dataset::open()` call, just like `GDALOpen()`. Backed by **76 workspace crates**
+and ~747,000 SLoC of production Rust, it covers 17 format drivers, full CRS
 transformations, SIMD algorithms, cloud-native I/O, GPU acceleration, enterprise
-security, and bindings for Python, Node.js, WASM, iOS, and Android.  Released
-**v0.1.0** on 2026-02-22.
+security, and bindings for Python, Node.js, WASM, iOS, and Android. First released
+as v0.1.0 on 2026-02-22; now at **v0.1.7** (production-hardening validation
+complete 2026-07-20, not yet published to crates.io).
 
 ## Quick Start
 
@@ -67,7 +68,7 @@ fn main() -> oxigdal::Result<()> {
 
 ## Ecosystem Overview
 
-OxiGDAL is a workspace of **68 crates** organized across:
+OxiGDAL is a workspace of **76 crates** organized across:
 
 | Layer | Crates |
 |-------|--------|

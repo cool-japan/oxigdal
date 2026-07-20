@@ -94,20 +94,18 @@ pub fn validate_cog<S: DataSource>(tiff: &TiffFile, source: &S) -> CogValidation
         if let (Some(tw_entry), Some(th_entry)) = (
             ifd.get_entry(TiffTag::TileWidth),
             ifd.get_entry(TiffTag::TileLength),
+        ) && let (Ok(tw), Ok(th)) = (
+            tw_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
+            th_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
         ) {
-            if let (Ok(tw), Ok(th)) = (
-                tw_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
-                th_entry.get_u64_from_source(source, tiff.byte_order(), tiff.header.variant),
-            ) {
-                if !tw.is_power_of_two() {
-                    messages.push(format!("Tile width {} is not a power of 2", tw));
-                }
-                if !th.is_power_of_two() {
-                    messages.push(format!("Tile height {} is not a power of 2", th));
-                }
-                if tw != th {
-                    messages.push(format!("Non-square tiles: {}x{}", tw, th));
-                }
+            if !tw.is_power_of_two() {
+                messages.push(format!("Tile width {} is not a power of 2", tw));
+            }
+            if !th.is_power_of_two() {
+                messages.push(format!("Tile height {} is not a power of 2", th));
+            }
+            if tw != th {
+                messages.push(format!("Non-square tiles: {}x{}", tw, th));
             }
         }
     }
@@ -142,9 +140,9 @@ pub fn validate_cog<S: DataSource>(tiff: &TiffFile, source: &S) -> CogValidation
         }
     }
 
-    // Check 4: Tile data should come after IFDs (for streaming)
-    // This is a simplified check - a full check would verify all tile offsets
-    let tiles_ordered = true; // Placeholder
+    // Check 4: Tile/strip data must come after the IFD chain and the primary
+    // image's tiles must be stored in ascending order (streaming layout).
+    let tiles_ordered = check_tiles_ordered(tiff, source);
 
     CogValidation {
         is_valid,
@@ -152,6 +150,60 @@ pub fn validate_cog<S: DataSource>(tiff: &TiffFile, source: &S) -> CogValidation
         has_overviews,
         tiles_ordered,
     }
+}
+
+/// Pure predicate deciding whether image-data offsets describe a
+/// streaming-friendly (COG) layout.
+///
+/// Two conditions must hold:
+/// 1. every tile/strip offset lies strictly beyond the IFD chain
+///    (`max_ifd_offset`), so all pixel data is stored after the directories; and
+/// 2. the primary image's tile/strip offsets are non-decreasing, i.e. stored in
+///    on-disk scan order.
+///
+/// An empty offset set is treated as "ordered" — there is nothing to contradict
+/// the layout (the caller reports missing offsets separately).
+fn tiles_are_ordered(all_offsets: &[u64], primary_offsets: &[u64], max_ifd_offset: u64) -> bool {
+    if all_offsets.is_empty() {
+        return true;
+    }
+    if all_offsets.iter().any(|&off| off <= max_ifd_offset) {
+        return false;
+    }
+    primary_offsets.windows(2).all(|w| w[0] <= w[1])
+}
+
+/// Collects tile/strip offsets from every IFD and applies [`tiles_are_ordered`].
+fn check_tiles_ordered<S: DataSource>(tiff: &TiffFile, source: &S) -> bool {
+    let byte_order = tiff.byte_order();
+    let variant = tiff.header.variant;
+
+    // Highest byte offset occupied by an IFD in the chain that we can observe.
+    let mut max_ifd_offset = tiff.header.first_ifd_offset;
+    for ifd in &tiff.ifds {
+        max_ifd_offset = max_ifd_offset.max(ifd.next_ifd_offset);
+    }
+
+    let mut all_offsets: Vec<u64> = Vec::new();
+    let mut primary_offsets: Vec<u64> = Vec::new();
+
+    for (idx, ifd) in tiff.ifds.iter().enumerate() {
+        let Some(entry) = ifd
+            .get_entry(TiffTag::TileOffsets)
+            .or_else(|| ifd.get_entry(TiffTag::StripOffsets))
+        else {
+            continue;
+        };
+        let Ok(offsets) = entry.get_u64_vec(source, byte_order, variant) else {
+            continue;
+        };
+        if idx == 0 {
+            primary_offsets.clone_from(&offsets);
+        }
+        all_offsets.extend(offsets);
+    }
+
+    tiles_are_ordered(&all_offsets, &primary_offsets, max_ifd_offset)
 }
 
 /// A Cloud Optimized GeoTIFF reader
@@ -427,7 +479,8 @@ impl<S: DataSource> CogReader<S> {
             bytes_per_sample,
             samples_per_pixel,
             tile_width as usize,
-        );
+            self.tiff.byte_order(),
+        )?;
 
         Ok(decompressed)
     }
@@ -487,5 +540,35 @@ mod tests {
         assert_eq!(info.width, 512);
         assert_eq!(info.height, 512);
         assert_eq!(info.scale, 2.0);
+    }
+
+    #[test]
+    fn test_tiles_are_ordered_streaming_layout() {
+        // IFDs occupy up to offset 200; all tile data lies beyond and the
+        // primary tiles ascend => streaming-friendly.
+        let primary = [1000u64, 2000, 3000];
+        let all = [1000u64, 2000, 3000, 800_000];
+        assert!(tiles_are_ordered(&all, &primary, 200));
+    }
+
+    #[test]
+    fn test_tiles_are_ordered_data_before_ifds() {
+        // A tile offset at 150 sits inside/before the IFD chain (max 200).
+        let primary = [150u64, 2000];
+        let all = [150u64, 2000];
+        assert!(!tiles_are_ordered(&all, &primary, 200));
+    }
+
+    #[test]
+    fn test_tiles_are_ordered_primary_out_of_order() {
+        // All data is after the IFDs, but the primary tiles are not ascending.
+        let primary = [3000u64, 1000, 2000];
+        let all = [3000u64, 1000, 2000];
+        assert!(!tiles_are_ordered(&all, &primary, 200));
+    }
+
+    #[test]
+    fn test_tiles_are_ordered_empty_is_vacuously_true() {
+        assert!(tiles_are_ordered(&[], &[], 200));
     }
 }

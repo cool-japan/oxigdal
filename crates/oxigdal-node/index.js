@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { ResamplingMethod, resample, calculate, buffer, area, simplify, hillshade, slope, aspect, zonalStats, openRasterAsync, saveRasterAsync, readGeojsonAsync, writeGeojsonAsync, resampleAsync, hillshadeAsync, slopeAsync, aspectAsync, zonalStatsAsync, bufferAsync, areaAsync, simplifyAsync, batchProcessRasters, setProgressCallback, CancellationToken, processRasterParallel, RasterStream, BufferWrapper, createBuffer, bufferFromBytes, createError, getErrorCodes, Dataset, openRaster, createRaster, Feature, GeometryWrapper, FeatureCollection, readGeojson, writeGeojson, version, name, getInfo, getDataTypes, getResamplingMethods } = nativeBinding
+const { ResamplingMethod, resample, calculate, buffer, area, simplify, hillshade, slope, aspect, zonalStats, openRasterAsync, saveRasterAsync, readGeojsonAsync, writeGeojsonAsync, resampleAsync, hillshadeAsync, slopeAsync, aspectAsync, zonalStatsAsync, bufferAsync, areaAsync, simplifyAsync, batchProcessRasters, setProgressCallback, clearProgressCallback, CancellationToken, processRasterParallel, RasterStream, BufferWrapper, createBuffer, bufferFromBytes, createError, getErrorCodes, Dataset, openRaster, createRaster, Feature, GeometryWrapper, FeatureCollection, readGeojson, writeGeojson, version, name, getInfo, getDataTypes, getResamplingMethods } = nativeBinding
 
 module.exports.ResamplingMethod = ResamplingMethod
 module.exports.resample = resample
@@ -336,6 +336,7 @@ module.exports.areaAsync = areaAsync
 module.exports.simplifyAsync = simplifyAsync
 module.exports.batchProcessRasters = batchProcessRasters
 module.exports.setProgressCallback = setProgressCallback
+module.exports.clearProgressCallback = clearProgressCallback
 module.exports.CancellationToken = CancellationToken
 module.exports.processRasterParallel = processRasterParallel
 module.exports.RasterStream = RasterStream
