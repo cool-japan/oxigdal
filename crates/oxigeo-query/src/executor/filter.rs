@@ -156,6 +156,94 @@ impl Filter {
                 // dimension is 2-D for the current row-based interpreter.
                 crate::executor::spatial_funcs::evaluate_spatial_function(name, &arg_values, 2)
             }
+            Expr::Between {
+                expr: inner,
+                low,
+                high,
+                negated,
+            } => {
+                let val = self.evaluate_expr(inner, batch, row_idx)?;
+                let low_val = self.evaluate_expr(low, batch, row_idx)?;
+                let high_val = self.evaluate_expr(high, batch, row_idx)?;
+
+                // `val BETWEEN low AND high` == `val >= low AND val <= high`,
+                // reusing the existing three-valued comparison semantics (NULL
+                // operands yield NULL). `NOT BETWEEN` negates a definite result
+                // but leaves NULL as NULL.
+                let ge_low = self.evaluate_binary_op(&val, BinaryOperator::GtEq, &low_val)?;
+                let le_high = self.evaluate_binary_op(&val, BinaryOperator::LtEq, &high_val)?;
+                let in_range = match (ge_low, le_high) {
+                    (Value::Boolean(a), Value::Boolean(b)) => Value::Boolean(a && b),
+                    (Value::Null, _) | (_, Value::Null) => Value::Null,
+                    (a, b) => {
+                        return Err(QueryError::execution(format!(
+                            "BETWEEN bounds did not evaluate to comparable values: {:?}, {:?}",
+                            a, b
+                        )));
+                    }
+                };
+                Ok(match in_range {
+                    Value::Boolean(b) => Value::Boolean(if *negated { !b } else { b }),
+                    other => other, // NULL stays NULL
+                })
+            }
+            Expr::InList {
+                expr: inner,
+                list,
+                negated,
+            } => {
+                let val = self.evaluate_expr(inner, batch, row_idx)?;
+                if matches!(val, Value::Null) {
+                    return Ok(Value::Null);
+                }
+                let mut found = false;
+                for item in list {
+                    let item_val = self.evaluate_expr(item, batch, row_idx)?;
+                    if let Value::Boolean(true) =
+                        self.evaluate_binary_op(&val, BinaryOperator::Eq, &item_val)?
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                Ok(Value::Boolean(if *negated { !found } else { found }))
+            }
+            Expr::Case {
+                operand,
+                when_then,
+                else_result,
+            } => {
+                let operand_val = match operand {
+                    Some(op) => Some(self.evaluate_expr(op, batch, row_idx)?),
+                    None => None,
+                };
+                for (when_expr, then_expr) in when_then {
+                    let when_val = self.evaluate_expr(when_expr, batch, row_idx)?;
+                    let condition_met = match &operand_val {
+                        // Searched vs. simple CASE: with an operand, compare it
+                        // to each WHEN value; without, the WHEN must be boolean.
+                        Some(op_val) => matches!(
+                            self.evaluate_binary_op(op_val, BinaryOperator::Eq, &when_val)?,
+                            Value::Boolean(true)
+                        ),
+                        None => matches!(when_val, Value::Boolean(true)),
+                    };
+                    if condition_met {
+                        return self.evaluate_expr(then_expr, batch, row_idx);
+                    }
+                }
+                match else_result {
+                    Some(else_expr) => self.evaluate_expr(else_expr, batch, row_idx),
+                    None => Ok(Value::Null),
+                }
+            }
+            Expr::Cast {
+                expr: inner,
+                data_type,
+            } => {
+                let val = self.evaluate_expr(inner, batch, row_idx)?;
+                Self::cast_value(val, *data_type)
+            }
             _ => Err(QueryError::unsupported(
                 OxiGeoError::not_supported_builder("Unsupported expression type in filter")
                     .with_operation("filter_evaluation")
@@ -387,6 +475,104 @@ impl Filter {
                     .to_string(),
             )),
         }
+    }
+
+    /// Evaluate a SQL `CAST(expr AS type)`.
+    ///
+    /// Performs a real type conversion (not a pass-through). NULL casts to NULL.
+    /// Integer target types collapse to `Int32` (8/16/32-bit and their unsigned
+    /// variants) or `Int64` (64-bit); float targets to `Float32`/`Float64`;
+    /// `String` stringifies the value; `Boolean` uses numeric-nonzero / textual
+    /// truthiness. Unsupported target types or unparseable strings surface an
+    /// honest execution error rather than silently succeeding.
+    fn cast_value(val: Value, target: crate::parser::ast::DataType) -> Result<Value> {
+        use crate::parser::ast::DataType as Dt;
+
+        if matches!(val, Value::Null) {
+            return Ok(Value::Null);
+        }
+
+        // Helper: interpret the value as an i64 for integer/boolean targets.
+        let as_i64 = |v: &Value| -> Result<i64> {
+            match v {
+                Value::Boolean(b) => Ok(if *b { 1 } else { 0 }),
+                Value::Int32(i) => Ok(*i as i64),
+                Value::Int64(i) => Ok(*i),
+                Value::Float32(f) => Ok(*f as i64),
+                Value::Float64(f) => Ok(*f as i64),
+                Value::String(s) => s.trim().parse::<i64>().map_err(|_| {
+                    QueryError::execution(format!("cannot cast string {:?} to integer", s))
+                }),
+                Value::Geometry(_) => Err(QueryError::unsupported(
+                    "cannot cast a geometry to an integer",
+                )),
+                Value::Null => Ok(0),
+            }
+        };
+
+        let as_f64 = |v: &Value| -> Result<f64> {
+            match v {
+                Value::Boolean(b) => Ok(if *b { 1.0 } else { 0.0 }),
+                Value::Int32(i) => Ok(*i as f64),
+                Value::Int64(i) => Ok(*i as f64),
+                Value::Float32(f) => Ok(*f as f64),
+                Value::Float64(f) => Ok(*f),
+                Value::String(s) => s.trim().parse::<f64>().map_err(|_| {
+                    QueryError::execution(format!("cannot cast string {:?} to float", s))
+                }),
+                Value::Geometry(_) => {
+                    Err(QueryError::unsupported("cannot cast a geometry to a float"))
+                }
+                Value::Null => Ok(0.0),
+            }
+        };
+
+        match target {
+            Dt::Boolean => match &val {
+                Value::Boolean(b) => Ok(Value::Boolean(*b)),
+                Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+                    "true" | "t" | "1" | "yes" | "y" => Ok(Value::Boolean(true)),
+                    "false" | "f" | "0" | "no" | "n" => Ok(Value::Boolean(false)),
+                    _ => Err(QueryError::execution(format!(
+                        "cannot cast string {:?} to boolean",
+                        s
+                    ))),
+                },
+                _ => Ok(Value::Boolean(as_i64(&val)? != 0)),
+            },
+            Dt::Int8 | Dt::Int16 | Dt::Int32 | Dt::UInt8 | Dt::UInt16 | Dt::UInt32 => {
+                Ok(Value::Int32(as_i64(&val)? as i32))
+            }
+            Dt::Int64 | Dt::UInt64 => Ok(Value::Int64(as_i64(&val)?)),
+            Dt::Float32 => Ok(Value::Float32(as_f64(&val)? as f32)),
+            Dt::Float64 => Ok(Value::Float64(as_f64(&val)?)),
+            Dt::String => Ok(Value::String(Self::value_to_display_string(&val)?)),
+            Dt::Binary | Dt::Timestamp | Dt::Date | Dt::Geometry => {
+                Err(QueryError::unsupported(format!(
+                    "CAST to {:?} is not supported in filter expressions",
+                    target
+                )))
+            }
+        }
+    }
+
+    /// Render a scalar [`Value`] as its textual representation for `CAST … AS
+    /// String`.
+    fn value_to_display_string(val: &Value) -> Result<String> {
+        Ok(match val {
+            Value::Null => "NULL".to_string(),
+            Value::Boolean(b) => b.to_string(),
+            Value::Int32(i) => i.to_string(),
+            Value::Int64(i) => i.to_string(),
+            Value::Float32(f) => f.to_string(),
+            Value::Float64(f) => f.to_string(),
+            Value::String(s) => s.clone(),
+            Value::Geometry(_) => {
+                return Err(QueryError::unsupported(
+                    "cannot cast a geometry to a string in filter expressions",
+                ));
+            }
+        })
     }
 
     /// Evaluate a unary operation.
@@ -630,6 +816,131 @@ mod tests {
 
         // Sanity: the end-to-end predicate still executes without panicking.
         let _ = Filter::new(predicate).execute(&batch)?;
+        Ok(())
+    }
+
+    fn int_batch() -> Result<RecordBatch> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "v".to_string(),
+            crate::executor::scan::DataType::Int64,
+            false,
+        )]));
+        let columns = vec![ColumnData::Int64(vec![
+            Some(1),
+            Some(5),
+            Some(10),
+            Some(18),
+            Some(65),
+        ])];
+        RecordBatch::new(schema, columns, 5)
+    }
+
+    fn v_col() -> Expr {
+        Expr::Column {
+            table: None,
+            name: "v".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_where_between() -> Result<()> {
+        let batch = int_batch()?;
+        // WHERE v BETWEEN 5 AND 18 -> {5, 10, 18}
+        let predicate = Expr::Between {
+            expr: Box::new(v_col()),
+            low: Box::new(Expr::Literal(Literal::Integer(5))),
+            high: Box::new(Expr::Literal(Literal::Integer(18))),
+            negated: false,
+        };
+        assert_eq!(Filter::new(predicate).execute(&batch)?.num_rows, 3);
+
+        // WHERE v NOT BETWEEN 5 AND 18 -> {1, 65}
+        let predicate = Expr::Between {
+            expr: Box::new(v_col()),
+            low: Box::new(Expr::Literal(Literal::Integer(5))),
+            high: Box::new(Expr::Literal(Literal::Integer(18))),
+            negated: true,
+        };
+        assert_eq!(Filter::new(predicate).execute(&batch)?.num_rows, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_in_list() -> Result<()> {
+        let batch = int_batch()?;
+        // WHERE v IN (5, 65, 999) -> {5, 65}
+        let predicate = Expr::InList {
+            expr: Box::new(v_col()),
+            list: vec![
+                Expr::Literal(Literal::Integer(5)),
+                Expr::Literal(Literal::Integer(65)),
+                Expr::Literal(Literal::Integer(999)),
+            ],
+            negated: false,
+        };
+        assert_eq!(Filter::new(predicate).execute(&batch)?.num_rows, 2);
+
+        // WHERE v NOT IN (5, 65) -> {1, 10, 18}
+        let predicate = Expr::InList {
+            expr: Box::new(v_col()),
+            list: vec![
+                Expr::Literal(Literal::Integer(5)),
+                Expr::Literal(Literal::Integer(65)),
+            ],
+            negated: true,
+        };
+        assert_eq!(Filter::new(predicate).execute(&batch)?.num_rows, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_case() -> Result<()> {
+        let batch = int_batch()?;
+        // WHERE (CASE WHEN v >= 18 THEN true ELSE false END) -> {18, 65}
+        let predicate = Expr::Case {
+            operand: None,
+            when_then: vec![(
+                Expr::BinaryOp {
+                    left: Box::new(v_col()),
+                    op: BinaryOperator::GtEq,
+                    right: Box::new(Expr::Literal(Literal::Integer(18))),
+                },
+                Expr::Literal(Literal::Boolean(true)),
+            )],
+            else_result: Some(Box::new(Expr::Literal(Literal::Boolean(false)))),
+        };
+        assert_eq!(Filter::new(predicate).execute(&batch)?.num_rows, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_where_cast() -> Result<()> {
+        // Cast a string column to integer and compare.
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s".to_string(),
+            crate::executor::scan::DataType::String,
+            false,
+        )]));
+        let columns = vec![ColumnData::String(vec![
+            Some("1".to_string()),
+            Some("42".to_string()),
+            Some("100".to_string()),
+        ])];
+        let batch = RecordBatch::new(schema, columns, 3)?;
+
+        // WHERE CAST(s AS Int64) > 40 -> {42, 100}
+        let predicate = Expr::BinaryOp {
+            left: Box::new(Expr::Cast {
+                expr: Box::new(Expr::Column {
+                    table: None,
+                    name: "s".to_string(),
+                }),
+                data_type: crate::parser::ast::DataType::Int64,
+            }),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expr::Literal(Literal::Integer(40))),
+        };
+        assert_eq!(Filter::new(predicate).execute(&batch)?.num_rows, 2);
         Ok(())
     }
 }

@@ -80,6 +80,29 @@ pub fn decode_directory(data: &[u8]) -> Result<Vec<DirectoryEntry>, PmTilesError
 
     let (n_entries_u64, consumed) = decode_varint(data)?;
     pos += consumed;
+
+    // Guard against a malicious/corrupt entry count causing an immediate OOM
+    // abort before any of the `n` per-entry varints have actually been read
+    // and validated. Every entry contributes a minimum of 4 bytes (one
+    // 1-byte varint each for tile-id delta, run length, tile length and
+    // offset), so `n` can never legitimately exceed the number of remaining
+    // bytes divided by 4. We additionally cap at a fixed sane maximum so
+    // that a directory claiming to (barely) fit a huge `n` in a huge buffer
+    // still can't force a multi-gigabyte allocation up front.
+    const MAX_DIRECTORY_ENTRIES: usize = 50_000_000;
+    let remaining = data.len().saturating_sub(pos);
+    let max_possible_entries = remaining / 4;
+    if n_entries_u64 > max_possible_entries as u64 {
+        return Err(PmTilesError::InvalidFormat(format!(
+            "Directory claims {n_entries_u64} entries but only {remaining} bytes remain \
+             (each entry requires at least 4 bytes)"
+        )));
+    }
+    if n_entries_u64 > MAX_DIRECTORY_ENTRIES as u64 {
+        return Err(PmTilesError::InvalidFormat(format!(
+            "Directory entry count {n_entries_u64} exceeds maximum allowed {MAX_DIRECTORY_ENTRIES}"
+        )));
+    }
     let n = n_entries_u64 as usize;
 
     let mut tile_ids = Vec::with_capacity(n);
@@ -130,4 +153,69 @@ pub fn decode_directory(data: &[u8]) -> Result<Vec<DirectoryEntry>, PmTilesError
         .collect();
 
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// Regression test for a real defect: `decode_directory` used to derive
+    /// four separate `Vec::with_capacity(n)` allocations directly from an
+    /// unvalidated, attacker-controlled varint before reading (or validating)
+    /// any of the `n` per-entry varints. A 5-byte malformed input
+    /// (`ff ff ff ff 05`, matching the committed fuzz artifact
+    /// `fuzz/artifacts/fuzz_pmtiles_header/oom-4ebba2269e3f4f7e8473fcf48ca5425d66d0cb3a`)
+    /// decodes to an entry count in the billions, which previously caused an
+    /// immediate out-of-memory abort. It must now be rejected with a typed
+    /// error instead.
+    #[test]
+    fn decode_directory_rejects_oom_varint() {
+        let data = [0xff, 0xff, 0xff, 0xff, 0x05];
+        let result = decode_directory(&data);
+        assert!(
+            result.is_err(),
+            "malformed directory with huge entry count must be rejected, not allocated"
+        );
+    }
+
+    #[test]
+    fn decode_directory_rejects_count_exceeding_remaining_bytes() {
+        // Claims 1000 entries but supplies far fewer bytes than the minimum
+        // 4 bytes/entry required.
+        let mut data = vec![];
+        // varint for 1000 (0xE8 0x07)
+        data.push(0xE8);
+        data.push(0x07);
+        data.extend_from_slice(&[0u8; 10]);
+        let result = decode_directory(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_directory_accepts_valid_empty() {
+        let data: [u8; 0] = [];
+        let entries = decode_directory(&data).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn decode_directory_round_trip_single_entry() {
+        // n=1, tile_id delta=5, run_length=1, length=100, offset raw=1 (=> 0)
+        let data = [
+            0x01, // n_entries = 1
+            0x05, // tile id delta = 5
+            0x01, // run_length = 1
+            0x64, // length = 100
+            0x01, // offset raw = 1 -> absolute offset 0
+        ];
+        let entries = decode_directory(&data).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tile_id, 5);
+        assert_eq!(entries[0].run_length, 1);
+        assert_eq!(entries[0].length, 100);
+        assert_eq!(entries[0].offset, 0);
+        assert!(entries[0].is_tile());
+    }
 }

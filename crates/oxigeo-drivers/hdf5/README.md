@@ -11,13 +11,13 @@ A Pure Rust HDF5 driver for OxiGeo with minimal implementation by default and op
 - **Pure Rust HDF5 Support (Default)**: Read and write HDF5 1.0 files without external C dependencies
   - Multi-dimensional datasets and hierarchical groups
   - Fixed-length string support
-  - GZIP compression via Pure Rust `flate2`
+  - GZIP (deflate), shuffle, and Fletcher32 checksum filters via Pure Rust `oxiarc-archive`
   - Chunked and contiguous storage layouts
   - Metadata attributes
 
 - **HDF5 Datatype Support**: i8, u8, i16, u16, i32, u32, i64, u64, f32, f64
 - **Hierarchical Organization**: Full support for groups and nested structures
-- **Compression**: GZIP compression for efficient data storage
+- **Compression**: GZIP, shuffle, and Fletcher32 checksum filters for chunked datasets
 - **Async I/O**: Optional async support for non-blocking file operations
 - **No Unwrap Policy**: All error handling uses Result types with descriptive errors
 - **OxiGeo Integration**: Seamlessly integrates with OxiGeo core types
@@ -213,9 +213,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 This driver is **100% Pure Rust** by default with no C/Fortran dependencies. The implementation follows the HDF5 specification and provides:
 
-- Superblock Version 0 and 1 support (HDF5 1.0 and 1.2)
+- Superblock Version 0, 1, 2, and 3 support (covers both legacy HDF5 1.0/1.2 files and the V2/V3 layout used by HDF5 1.10+/NetCDF-4, including superblock-extension and checksum validation for V2/V3)
 - Basic data types with efficient serialization
-- GZIP compression via `flate2` (Pure Rust)
+- GZIP (deflate), shuffle, and Fletcher32 checksum filters via `oxiarc-archive` (Pure Rust)
 - Hierarchical group and dataset organization
 - Full attribute support
 
@@ -224,9 +224,9 @@ This driver is **100% Pure Rust** by default with no C/Fortran dependencies. The
 The Pure Rust mode has some intentional limitations for simplicity:
 
 - HDF5 2.0/3.0 features not supported (requires C bindings)
-- No compound or variable-length types
+- No compound or variable-length (VLen string / global-heap) types yet
 - No SZIP compression
-- No advanced filters beyond GZIP
+- Chunked-dataset reading exposes a per-chunk filter-reversal primitive (`decode_chunk`) rather than an automatic B-tree-driven read of an entire chunked dataset; hyperslab/sub-region reads (`read_slice`) work against already-decoded (contiguous) data and return a clear error for datasets not yet materialized
 - Suitable for scientific and geospatial data
 
 ### Full HDF5 Support (Optional C Bindings)

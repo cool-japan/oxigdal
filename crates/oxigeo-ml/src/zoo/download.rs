@@ -46,7 +46,7 @@ impl ModelDownloader {
     #[must_use]
     pub fn with_progress(show_progress: bool) -> Self {
         let client = Client::builder()
-            .user_agent("oxigeo-ml/0.2.0")
+            .user_agent(concat!("oxigeo-ml/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .unwrap_or_else(|_| Client::new());

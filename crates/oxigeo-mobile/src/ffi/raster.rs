@@ -22,9 +22,9 @@ pub struct DatasetHandle {
     /// Path to the dataset file
     path: String,
     /// Cached metadata
-    metadata: OxiGeoMetadata,
+    pub(crate) metadata: OxiGeoMetadata,
     /// Reader (if open for reading)
-    reader: Option<Mutex<GeoTiffReader<FileDataSource>>>,
+    pub(crate) reader: Option<Mutex<GeoTiffReader<FileDataSource>>>,
     /// Write buffer for datasets created for writing
     write_buffer: Option<Mutex<WriteBufferData>>,
 }

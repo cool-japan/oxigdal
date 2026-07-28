@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let publisher = Publisher::new(config).await?;
 
     // Publish a message
-    let message = Message::new(b"Hello, Pub/Sub!")
+    let message = Message::new(b"Hello, Pub/Sub!".to_vec())
         .with_attribute("source", "oxigeo")
         .with_attribute("timestamp", "2025-01-27")
         .with_ordering_key("geo-events-1");
@@ -373,6 +373,11 @@ cargo test -p oxigeo-pubsub --all-features
 # Run specific test
 cargo test -p oxigeo-pubsub test_publisher_config
 ```
+
+Test counts: 99 passing with `--all-features`; 13 with default features (`std` + `async`
+only) — most functionality (publisher, subscriber, pubsub-client, schema, avro,
+protobuf, monitoring, batching) sits behind non-default feature flags, so the
+default build exercises a small slice of the crate.
 
 ## Statistics
 

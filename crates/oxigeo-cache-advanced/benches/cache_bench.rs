@@ -104,6 +104,7 @@ fn bench_multi_tier_cache(c: &mut Criterion) {
                         enable_prefetch: false,
                         enable_distributed: false,
                         cache_dir: Some(temp_dir.clone()),
+                        eviction_policy: Default::default(),
                     };
 
                     let cache = MultiTierCache::new(config)
@@ -335,6 +336,7 @@ fn bench_cache_warming(c: &mut Criterion) {
                     enable_prefetch: false,
                     enable_distributed: false,
                     cache_dir: Some(temp_dir.clone()),
+                    eviction_policy: Default::default(),
                 };
 
                 let cache = Arc::new(

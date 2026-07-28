@@ -1,18 +1,13 @@
 # TODO: oxigeo-python
 
-> **Purpose:** PyO3 0.28 bindings exposing raster I/O, vector ops, and algorithms to Python with NumPy zero-copy where possible.
-> **Status (2026-05-17):** 13,458 LoC · 78 #[test] attributes · 1 real-code TODO (numpy complex dtype).
+> **Purpose:** PyO3 0.29 bindings exposing raster I/O, vector ops, and algorithms to Python with NumPy zero-copy where possible.
+> **Status (2026-07-28):** 11,074 LoC · 79 #[test] attributes · 1 real-code TODO (pyo3-asyncio, still commented out in Cargo.toml pending a maintained async bridge crate).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Native complex dtype (`complex64`/`complex128`) for `RasterArray::to_numpy`
-  - **Verified gap:** `src/numpy.rs:585-587` — `// For now, return as float array with interleaved real/imaginary` / `// TODO: Use proper complex dtype when pyo3 supports it` / `self.to_numpy_typed::<f64>(py)`
-  - **Goal:** Return a `numpy.complex64` / `numpy.complex128` array directly instead of a flattened `float64` with interleaved real/imag — required for SAR products, radar interferometry, and Fourier-domain rasters.
-  - **Design:** PyO3 0.28 has `numpy::Complex32` / `numpy::Complex64` as of `numpy` crate v0.27 (re-exported `num_complex::Complex<f32/f64>`). Use `PyArray2::<Complex64>::from_owned_array_bound` from a `ndarray::Array2<Complex64>` built from the existing interleaved buffer. Add a sniff step that detects `Complex32` / `Complex64` in the source `RasterDataType` enum (already exists in `oxigeo_core::types::RasterDataType::CFloat32`/`CFloat64`).
-  - **Files:** `crates/oxigeo-python/src/numpy.rs` (`to_numpy_complex`); `crates/oxigeo-python/src/array.rs` (dtype mapping); `crates/oxigeo-python/oxigeo.pyi` (declare `complex64`/`complex128` return types).
-  - **Tests:** (proposed) `test_to_numpy_complex64_roundtrip`, `test_to_numpy_complex128_dtype_matches`, `test_complex_array_real_imag_interleaved_matches_legacy`, `test_complex_array_arithmetic_in_python`.
-  - **Risk:** `numpy` crate complex types depend on `num-complex` version alignment in the workspace — verify Cargo.lock before bumping.
-  - **Prerequisites:** None — `RasterDataType` already has CFloat32/CFloat64.
+- [x] Native complex dtype (`complex64`/`complex128`) for `RasterArray::to_numpy`
+  - **Done (verified 2026-07-28):** `src/numpy.rs` now has a real `to_numpy_complex` path — doc comment "Converts complex data to a NumPy array with a native complex dtype" plus a typed error (`"to_numpy_complex called on non-complex dtype {:?}"`) for non-complex inputs, replacing the old flattened-`float64` interleaved fallback. `RasterDataType::CFloat32`/`CFloat64` are sniffed and dispatched to native `numpy.complex64`/`complex128` output.
+  - **Original goal (for reference):** Return a `numpy.complex64` / `numpy.complex128` array directly instead of a flattened `float64` with interleaved real/imag — required for SAR products, radar interferometry, and Fourier-domain rasters.
 
 - [ ] Promote `pyo3-asyncio` integration from TODO comment to real implementation
   - **Verified gap:** `crates/oxigeo-python/Cargo.toml:40-44` — `# TODO: Add async support when pyo3-asyncio 0.23 is released` / `# pyo3-asyncio = { version = "0.23", features = ["tokio-runtime"], optional = true }` / `# tokio = { workspace = true, optional = true }` / `# futures = { workspace = true, optional = true }` / `# async-trait = { workspace = true, optional = true }`
@@ -23,8 +18,9 @@
   - **Risk:** Tokio runtime inside maturin-built CPython extension can deadlock if the Python GIL holder calls back into Rust async — release the GIL with `py.allow_threads` around `block_on`.
   - **Prerequisites:** None — `pyo3-async-runtimes 0.28` is on crates.io.
 
-- [ ] HTTP range-request COG reader exposed as `oxigeo.open(url)` for s3://, https://
-  - **Verified gap:** Existing TODO line — `[ ] Add actual raster file I/O connecting to oxigeo-geotiff reader/writer` (partially done — `Dataset::open` works for local paths) and `[ ] Implement windowed reading API for processing rasters larger than memory`. No remote URL handling in `src/dataset.rs` today (verified — see `src/dataset.rs:1-80`).
+- [ ] Windowed reading for remote COGs so >RAM rasters don't require a full-body fetch
+  - **Partially done (verified 2026-07-28):** `Dataset::open_with_driver_options` (`src/dataset.rs:233-289`) now detects `s3://`, `gs://`/`gcs://`, `az://`/`azure://`, `http://`/`https://` via `crate::remote::classify_remote_url` and performs a **real fetch of the entire object body** through `oxigeo-cloud` (feature-gated `cloud`; without it, remote URLs raise a clear typed error instead of a misleading `FileNotFoundError`). `remote_bytes: Option<Vec<u8>>` is held in memory and read through `AnySource::Memory`. This closes the original "no remote URL handling" gap and the `oxigeo.open(url)` half of the goal below.
+  - **Remaining gap:** No windowed/streaming path — the whole object is fetched into memory before any read, so it still does not help with rasters larger than available RAM. `ds.read_window(Window(col_off, row_off, w, h))` over a lazily-fetched byte range does not exist.
   - **Goal:** `oxigeo.open("https://...")` and `oxigeo.open("s3://bucket/key")` return a Dataset backed by the same `AsyncDataSource` used by oxigeo-cloud, with windowed `ds.read_window(Window(col_off, row_off, w, h))` for >RAM rasters.
   - **Design:** Detect URL prefix in `Dataset::open` and dispatch to `oxigeo_cloud::HttpDataSource` (gated by the existing `cloud` feature in Cargo.toml). Provide a sync wrapper that runs a private `tokio::runtime::Runtime` inside the `Dataset` struct (one runtime per Python process, reused across calls). Windowed read API takes a Python `Window` namedtuple and returns a `ndarray::Array2` view.
   - **Files:** `crates/oxigeo-python/src/dataset.rs` (URL dispatch + windowed read); `crates/oxigeo-python/src/raster/operations.rs` (windowed plumbing); `crates/oxigeo-python/Cargo.toml` (enable `cloud` in default features once stable).
@@ -108,4 +104,4 @@
 - (no `[x]` entries in prior TODO.md — see MEMORY.md "pyo3 0.28 (recently migrated)" note)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

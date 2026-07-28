@@ -37,6 +37,9 @@ fn minimal_sharding_config(chunk_codecs: Vec<CodecMetadata>) -> ShardingConfig {
 }
 
 /// Round-trip a byte buffer through a CodecChain (encode then decode).
+// Only exercised by feature-gated tests below (gzip/zstd/lz4); unused when
+// those features are all disabled.
+#[allow(dead_code)]
 fn roundtrip(chain: &CodecChain, data: &[u8]) -> Vec<u8> {
     let encoded = chain.encode(data.to_vec()).expect("encode");
     chain.decode(encoded).expect("decode")

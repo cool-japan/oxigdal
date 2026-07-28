@@ -34,17 +34,14 @@ geospatial = ["dep:geo-types", "dep:geojson"]
 
 [dependencies]
 # Core dependencies
-oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
-futures = { workspace = true }
 async-trait = { workspace = true }
 
 # MQTT client (Pure Rust implementation - COOLJAPAN Policy)

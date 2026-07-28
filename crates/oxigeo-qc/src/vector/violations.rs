@@ -54,6 +54,15 @@ pub enum TopologyViolation {
         /// Estimated area of the gap (0.0 = unknown, full gap geometry too expensive).
         area: f64,
     },
+
+    /// Two distinct `LineString` features cross each other (as opposed to a
+    /// single geometry's self-intersection, which is [`Self::SelfIntersection`]).
+    Crossing {
+        /// First feature identifier.
+        feature_a: u64,
+        /// Second feature identifier.
+        feature_b: u64,
+    },
 }
 
 /// Configuration options for [`super::topology`] rule checking.
@@ -61,6 +70,17 @@ pub enum TopologyViolation {
 pub struct TopologyOptions {
     /// Tolerance used for ring-closure and gap checks.  Default: `1e-9`.
     pub tolerance: f64,
+    /// Enable R6 overlap detection (default `true`; set to `false` when the
+    /// caller's [`super::topology::TopologyConfig::topology_rules`] does not
+    /// include [`super::topology::TopologyRule::MustNotOverlap`], so a
+    /// caller who explicitly disabled overlap checking doesn't silently get
+    /// overlap violations anyway).
+    pub detect_overlaps: bool,
+    /// Enable R8 line-crossing detection between distinct `LineString`
+    /// features (default `true`; set to `false` when the caller's
+    /// [`super::topology::TopologyConfig::topology_rules`] does not include
+    /// [`super::topology::TopologyRule::MustNotCross`]).
+    pub detect_crossings: bool,
     /// Enable R5 gap detection (expensive — default `false`).
     pub detect_gaps: bool,
     /// Enable R7 dangling-endpoint detection (expensive — default `false`).
@@ -71,6 +91,8 @@ impl Default for TopologyOptions {
     fn default() -> Self {
         Self {
             tolerance: 1e-9,
+            detect_overlaps: true,
+            detect_crossings: true,
             detect_gaps: false,
             detect_dangles: false,
         }

@@ -10,7 +10,11 @@ use tracing::{debug, info};
 /// Transaction wrapper
 pub struct Transaction<'a> {
     tx: ManuallyDrop<PgTransaction<'a>>,
-    committed: bool,
+    /// `true` once the inner [`PgTransaction`] has been moved out of the
+    /// [`ManuallyDrop`] wrapper via [`ManuallyDrop::take`] (by `commit()` or
+    /// `rollback()`). This guards [`Drop`] against taking the value a second
+    /// time, which would be undefined behaviour (double free).
+    finished: bool,
 }
 
 impl<'a> Transaction<'a> {
@@ -18,7 +22,7 @@ impl<'a> Transaction<'a> {
     pub(crate) fn new(tx: PgTransaction<'a>) -> Self {
         Self {
             tx: ManuallyDrop::new(tx),
-            committed: false,
+            finished: false,
         }
     }
 
@@ -89,20 +93,30 @@ impl<'a> Transaction<'a> {
     /// Commits the transaction
     pub async fn commit(mut self) -> Result<()> {
         info!("Committing transaction");
+        // SAFETY: `finished` is `false` here (a `Transaction` is only ever
+        // consumed by `commit`/`rollback`, each of which takes ownership of
+        // `self` and runs exactly once), so the inner `PgTransaction` has not
+        // yet been taken. We set `finished` to `true` immediately after taking
+        // it — before the `.await` — so that if the commit fails and `self` is
+        // then dropped, `Drop` will not attempt to take it a second time.
         let tx = unsafe { ManuallyDrop::take(&mut self.tx) };
+        self.finished = true;
         tx.commit()
             .await
             .map_err(|e| TransactionError::CommitFailed {
                 message: e.to_string(),
             })?;
-        self.committed = true;
         Ok(())
     }
 
     /// Rolls back the transaction
     pub async fn rollback(mut self) -> Result<()> {
         info!("Rolling back transaction");
+        // SAFETY: identical reasoning to `commit` — the inner `PgTransaction`
+        // has not been taken yet, and `finished` is set before the `.await`
+        // so a failed rollback cannot cause a double-take in `Drop`.
         let tx = unsafe { ManuallyDrop::take(&mut self.tx) };
+        self.finished = true;
         tx.rollback().await.map_err(|e| {
             TransactionError::RollbackFailed {
                 message: e.to_string(),
@@ -114,8 +128,23 @@ impl<'a> Transaction<'a> {
 
 impl<'a> Drop for Transaction<'a> {
     fn drop(&mut self) {
-        if !self.committed {
-            debug!("Transaction dropped without commit - will auto-rollback");
+        if !self.finished {
+            // The transaction went out of scope without an explicit
+            // `commit()`/`rollback()` (e.g. an early `?` return or a panic).
+            // Take the inner `PgTransaction` and drop it so that
+            // `tokio_postgres`'s own `Drop` impl queues a best-effort
+            // `ROLLBACK` on the connection. Merely logging (as the previous
+            // implementation did) left the server-side transaction open and
+            // holding locks, because the `ManuallyDrop` wrapper suppressed the
+            // inner value's `Drop`.
+            debug!(
+                "Transaction dropped without explicit commit/rollback - issuing implicit ROLLBACK"
+            );
+            // SAFETY: `finished` is `false`, so the inner `PgTransaction` has
+            // not been taken; taking it exactly once here and dropping it is
+            // sound.
+            let tx = unsafe { ManuallyDrop::take(&mut self.tx) };
+            drop(tx);
         }
     }
 }

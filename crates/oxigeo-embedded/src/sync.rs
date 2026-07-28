@@ -2,8 +2,12 @@
 
 use crate::error::{EmbeddedError, Result};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use portable_atomic::AtomicI32;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+// `AtomicU64`/`AtomicI32` are routed through `portable-atomic` so they work on
+// 32-bit bare-metal targets (thumbv7em, riscv32imac, …) that lack native 64-bit
+// (and, on some cores, native word) atomics; `core::sync::atomic::AtomicU64`
+// simply does not exist there.
+use portable_atomic::{AtomicI32, AtomicU64};
 
 /// Atomic counter for statistics and monitoring
 pub struct AtomicCounter {

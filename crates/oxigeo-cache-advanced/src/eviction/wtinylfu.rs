@@ -233,6 +233,10 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> EvictionPolicy<K> for WTinyLf
         self.cms = CountMinSketch::new(self.capacity);
         self.stats = EvictionStats::default();
     }
+
+    fn policy_type(&self) -> EvictionPolicyType {
+        EvictionPolicyType::WTinyLfu
+    }
 }
 
 impl<K: Hash + Eq + Clone + Send + Sync + 'static> WTinyLfuEviction<K> {

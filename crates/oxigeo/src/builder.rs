@@ -513,6 +513,7 @@ impl DatasetCreateBuilder {
             data_type: None,
             geo_transform: None,
             bands: Vec::new(),
+            features: Vec::new(),
             finalized: false,
         })
     }
@@ -544,6 +545,12 @@ pub struct DatasetWriter {
     geo_transform: Option<GeoTransform>,
     /// Per-band byte buffers (band index 1-based, stored 0-based).
     bands: Vec<Vec<u8>>,
+    /// Accumulated vector features for GeoJSON output.
+    ///
+    /// Each entry is a complete GeoJSON `Feature` object.  Populated via
+    /// [`DatasetWriter::add_feature`] and serialized by [`DatasetWriter::finalize`]
+    /// for [`OutputFormat::GeoJson`].
+    features: Vec<serde_json::Value>,
     /// Whether `finalize()` has been called.
     finalized: bool,
 }
@@ -727,9 +734,68 @@ impl DatasetWriter {
         Ok(())
     }
 
+    // ── vector configuration ──────────────────────────────────────────────────
+
+    /// Add a vector feature to be written on [`finalize`](Self::finalize).
+    ///
+    /// Only valid for [`OutputFormat::GeoJson`] output.  `geometry` is a GeoJSON
+    /// geometry object (e.g. `{"type":"Point","coordinates":[139.7,35.7]}`) or
+    /// `serde_json::Value::Null` for an attribute-only feature.  `properties`
+    /// must be a JSON object (or `Null`, treated as `{}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`OxiGeoError::NotSupported`] — the writer's output format is not
+    ///   GeoJSON (raster formats have no feature concept).
+    /// - [`OxiGeoError::InvalidParameter`] — the writer is already finalized, or
+    ///   `properties` is neither an object nor null.
+    pub fn add_feature(
+        &mut self,
+        geometry: serde_json::Value,
+        properties: serde_json::Value,
+    ) -> Result<()> {
+        if self.finalized {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "finalized",
+                message: "cannot add features after finalize".to_string(),
+            });
+        }
+        if self.options.format != OutputFormat::GeoJson {
+            return Err(OxiGeoError::NotSupported {
+                operation: format!(
+                    "add_feature() is only supported for GeoJSON output, not '{}'",
+                    self.options.format
+                ),
+            });
+        }
+        let properties = match properties {
+            serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+            obj @ serde_json::Value::Object(_) => obj,
+            _ => {
+                return Err(OxiGeoError::InvalidParameter {
+                    parameter: "properties",
+                    message: "GeoJSON feature properties must be a JSON object or null".to_string(),
+                });
+            }
+        };
+        self.features.push(serde_json::json!({
+            "type": "Feature",
+            "geometry": geometry,
+            "properties": properties,
+        }));
+        Ok(())
+    }
+
+    /// Number of vector features queued for GeoJSON output.
+    pub fn feature_count(&self) -> usize {
+        self.features.len()
+    }
+
     /// Finalise the dataset, writing a real file in the requested format to disk.
     ///
-    /// - `GeoJson` writes a (currently empty) GeoJSON FeatureCollection.
+    /// - `GeoJson` writes a GeoJSON FeatureCollection containing every feature
+    ///   added via [`add_feature`](Self::add_feature) (an empty collection when
+    ///   none were added).
     /// - `GeoTiff` dispatches to the in-tree GeoTIFF driver ([`GeoTiffWriter`]),
     ///   producing a valid TIFF from the configured dimensions, data type,
     ///   compression, geo-transform, CRS, and per-band buffers. Requires the
@@ -759,15 +825,21 @@ impl DatasetWriter {
 
         match self.options.format {
             OutputFormat::GeoJson => {
-                // Write a minimal GeoJSON FeatureCollection
+                // Write a GeoJSON FeatureCollection carrying any features that
+                // were added via `add_feature`.
                 let precision = self.options.decimal_precision.unwrap_or(6);
-                let content = format!(
-                    "{{\"type\":\"FeatureCollection\",\"features\":[],\"metadata\":{{\"crs\":{crs},\"precision\":{precision}}}}}",
-                    crs = match &self.options.crs {
-                        Some(c) => format!("\"{c}\""),
-                        None => "null".to_string(),
+                let collection = serde_json::json!({
+                    "type": "FeatureCollection",
+                    "features": self.features,
+                    "metadata": {
+                        "crs": self.options.crs,
+                        "precision": precision,
                     },
-                );
+                });
+                let content =
+                    serde_json::to_string(&collection).map_err(|e| OxiGeoError::Internal {
+                        message: format!("failed to serialize GeoJSON FeatureCollection: {e}"),
+                    })?;
                 std::fs::write(&self.path, content.as_bytes())
                     .map_err(|e| OxiGeoError::io_error(e.to_string()))?;
             }
@@ -1256,6 +1328,47 @@ mod tests {
         assert!(content.contains("FeatureCollection"));
         assert!(content.contains("EPSG:4326"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_geojson_add_feature_writes_real_content() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("writer_add_feature_test.geojson");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
+            .create()
+            .expect("create");
+        w.add_feature(
+            serde_json::json!({"type":"Point","coordinates":[139.7,35.7]}),
+            serde_json::json!({"name":"Tokyo"}),
+        )
+        .expect("add feature");
+        assert_eq!(w.feature_count(), 1);
+        w.finalize().expect("finalize");
+
+        let content = std::fs::read_to_string(&path).expect("read");
+        // The written collection must carry the real feature, not an empty one.
+        let value: serde_json::Value = serde_json::from_str(&content).expect("parse");
+        let features = value
+            .get("features")
+            .and_then(|f| f.as_array())
+            .expect("features");
+        assert_eq!(features.len(), 1, "feature should be written");
+        assert_eq!(
+            features[0]["properties"]["name"],
+            serde_json::json!("Tokyo")
+        );
+        assert_eq!(features[0]["geometry"]["type"], serde_json::json!("Point"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_writer_add_feature_rejects_raster_format() {
+        let path = std::env::temp_dir().join("writer_add_feature_reject.tif");
+        let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create");
+        let err = w.add_feature(serde_json::Value::Null, serde_json::json!({}));
+        assert!(err.is_err(), "add_feature on raster output must error");
     }
 
     #[cfg(feature = "geotiff")]

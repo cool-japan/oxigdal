@@ -18,7 +18,9 @@ pub use types::*;
 #[cfg(feature = "proj-db")]
 pub use proj_db::{ProjDb, ProjDbEntry, default_proj_db_paths, populate_from_proj_db};
 
-#[cfg(test)]
+// These unit tests exercise std-only API (`Transformer`, `Crs::compound`,
+// `lookup_epsg`, …), so they are gated with the `std` feature.
+#[cfg(all(test, feature = "std"))]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;

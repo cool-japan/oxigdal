@@ -1,7 +1,7 @@
 //! Integration tests for oxigeo-qc.
 
 use oxigeo_core::buffer::RasterBuffer;
-use oxigeo_core::types::{BoundingBox, GeoTransform, RasterDataType};
+use oxigeo_core::types::{BoundingBox, GeoTransform, RasterDataType, SpatialReference};
 use oxigeo_core::vector::{
     Coordinate, Feature, FeatureCollection, Geometry, LineString, Point, Polygon,
 };
@@ -37,8 +37,9 @@ fn test_raster_accuracy() {
     let geotransform = GeoTransform::from_bounds(&bbox, 100, 100)
         .expect("geotransform should be created from valid bounds");
 
+    let crs = SpatialReference::from_epsg(4326);
     let checker = AccuracyChecker::new();
-    let result = checker.check_raster(&buffer, &geotransform, Some(&bbox));
+    let result = checker.check_raster(&buffer, &geotransform, Some(&bbox), Some(&crs));
 
     assert!(result.is_ok());
 }

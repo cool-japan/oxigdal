@@ -15,12 +15,10 @@ categories = ["embedded", "science", "network-programming"]
 
 [dependencies]
 # Core dependencies
-oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
-byteorder = { workspace = true }
 
 # Async runtime (minimal features)
 tokio = { workspace = true, features = ["rt", "sync", "time", "io-util"] }
@@ -39,9 +37,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 # Additional utilities
-num-traits = { workspace = true }
 ahash = { workspace = true }
-dashmap = { workspace = true }
 parking_lot = { workspace = true }
 blake3 = { workspace = true }
 lru = { workspace = true }
@@ -49,9 +45,11 @@ lru = { workspace = true }
 # Host CPU sampling for resource-based admission control
 sysinfo = { workspace = true }
 
-# Arrow ecosystem (minimal features)
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
+# Real HTTP/REST SyncProtocol backend (non-default `http-sync` feature only;
+# see the Pure Rust Policy note on `HttpSyncProtocol` in sync/protocol.rs --
+# reqwest's rustls backend pulls aws-lc-sys, same accepted trade-off as
+# oxigeo-cloud's optional `http`/`s3`/`azure-blob`/`gcs` features).
+reqwest = { workspace = true, optional = true, features = ["json", "query"] }
 
 # CRDT support for conflict resolution
 # SECURITY NOTE: sled 0.34.7 uses unmaintained dependencies:
@@ -75,6 +73,13 @@ std = []
 offline = ["std"]
 sync = ["std"]
 compression = ["std"]
+# Real HTTP/REST-backed `SyncProtocol` (`HttpSyncProtocol`). NOT part of
+# `default`/`all`: reqwest's rustls backend pulls aws-lc-sys (C + asm crypto),
+# so this intentionally steps outside the pure-Rust default closure.
+http-sync = ["sync", "dep:reqwest"]
+# Exposes `MockSyncProtocol` outside of `cfg(test)` (e.g. for downstream
+# integration tests). Never enable this in a production build.
+test-utils = []
 all = ["offline", "sync", "compression"]
 
 [[bench]]
@@ -84,6 +89,11 @@ harness = false
 [lints]
 workspace = true
 
+# `all-features = true` would also turn on `http-sync`, which pulls
+# `reqwest`'s rustls backend -> `aws-lc-sys` (C + assembly crypto) -- see the
+# Pure Rust Policy note on `http-sync` above. Excluding it here keeps the
+# docs.rs build on the same Pure-Rust closure as the default feature set
+# (mirrors the pattern in oxigeo-cloud-enhanced).
 [package.metadata.docs.rs]
-all-features = true
+features = ["std", "offline", "sync", "compression", "test-utils"]
 rustdoc-args = ["--cfg", "docsrs"]

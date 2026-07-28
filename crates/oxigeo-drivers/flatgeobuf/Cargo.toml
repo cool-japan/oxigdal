@@ -23,10 +23,6 @@ http = ["async", "dep:reqwest"]
 oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
 flatbuffers = { workspace = true }
 
 # Async

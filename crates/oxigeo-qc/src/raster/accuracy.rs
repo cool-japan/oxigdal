@@ -5,7 +5,7 @@
 
 use crate::error::{QcError, QcIssue, QcResult, Severity};
 use oxigeo_core::buffer::{BufferStatistics, RasterBuffer};
-use oxigeo_core::types::{BoundingBox, GeoTransform};
+use oxigeo_core::types::{BoundingBox, GeoTransform, SpatialReference};
 
 /// Result of raster accuracy analysis.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -266,6 +266,14 @@ impl AccuracyChecker {
 
     /// Checks accuracy of a raster with geotransform.
     ///
+    /// `crs`, if supplied by the caller (e.g. from a `Dataset` wrapper that
+    /// tracks the raster's coordinate reference system separately from
+    /// [`RasterBuffer`], which has no CRS field of its own), is used to
+    /// determine [`GeoreferencingAccuracy::has_coordinate_system`] honestly.
+    /// Passing `None` means "the caller could not supply CRS information",
+    /// which is reported as *not* having a coordinate system rather than
+    /// silently assuming one exists.
+    ///
     /// # Errors
     ///
     /// Returns an error if the analysis fails.
@@ -274,11 +282,12 @@ impl AccuracyChecker {
         buffer: &RasterBuffer,
         geotransform: &GeoTransform,
         _bbox: Option<&BoundingBox>,
+        crs: Option<&SpatialReference>,
     ) -> QcResult<AccuracyResult> {
         let mut issues = Vec::new();
 
         // Check georeferencing accuracy
-        let georef_accuracy = self.check_georeferencing(buffer, geotransform)?;
+        let georef_accuracy = self.check_georeferencing(buffer, geotransform, crs)?;
         if matches!(
             georef_accuracy.quality,
             GeoreferenceQuality::Poor | GeoreferenceQuality::None
@@ -368,10 +377,15 @@ impl AccuracyChecker {
     }
 
     /// Checks georeferencing accuracy.
+    ///
+    /// `crs` reflects whatever coordinate reference system the caller could
+    /// supply (see [`Self::check_raster`]'s docs); [`RasterBuffer`] itself
+    /// carries no CRS field, so this cannot be derived from `_buffer` alone.
     fn check_georeferencing(
         &self,
         _buffer: &RasterBuffer,
         geotransform: &GeoTransform,
+        crs: Option<&SpatialReference>,
     ) -> QcResult<GeoreferencingAccuracy> {
         let pixel_size_x = geotransform.pixel_width.abs();
         let pixel_size_y = geotransform.pixel_height.abs();
@@ -386,9 +400,19 @@ impl AccuracyChecker {
         let has_rotation =
             geotransform.row_rotation.abs() > 1e-10 || geotransform.col_rotation.abs() > 1e-10;
 
+        // A raster's pixel geometry can look perfectly sane while still
+        // carrying no coordinate system at all (or an unparseable one),
+        // which makes any coordinates it reports meaningless for absolute
+        // positioning. `crs` is `None` whenever the caller could not (or did
+        // not) supply CRS information -- this is reported honestly rather
+        // than assumed to be present.
+        let has_coordinate_system = crs.is_some();
+
         // Determine overall quality
         let quality = if !reasonable_pixel_size {
             GeoreferenceQuality::None
+        } else if !has_coordinate_system {
+            GeoreferenceQuality::Poor
         } else if has_rotation {
             GeoreferenceQuality::Fair
         } else if (pixel_size_x - pixel_size_y).abs() / pixel_size_x > 0.1 {
@@ -399,7 +423,7 @@ impl AccuracyChecker {
 
         Ok(GeoreferencingAccuracy {
             has_valid_geotransform: reasonable_pixel_size,
-            has_coordinate_system: true, // Would need CRS info
+            has_coordinate_system,
             pixel_size_x,
             pixel_size_y,
             reasonable_pixel_size,
@@ -691,11 +715,64 @@ mod tests {
             .expect("Failed to create test bounding box");
         let geotransform = GeoTransform::from_bounds(&bbox, 1000, 1000)
             .expect("Failed to create test geotransform from bounds");
+        let crs = SpatialReference::from_epsg(4326);
 
         let checker = AccuracyChecker::new();
-        let result = checker.check_raster(&buffer, &geotransform, Some(&bbox));
+        let result = checker.check_raster(&buffer, &geotransform, Some(&bbox), Some(&crs));
 
         assert!(result.is_ok());
+        let result = result.expect("checked is_ok above");
+        assert!(result.georef_accuracy.has_coordinate_system);
+    }
+
+    #[test]
+    fn test_missing_crs_is_reported_honestly_not_hardcoded_true() {
+        let buffer = RasterBuffer::zeros(1000, 1000, RasterDataType::Float32);
+        let bbox = BoundingBox::new(-180.0, -90.0, 180.0, 90.0)
+            .expect("Failed to create test bounding box");
+        let geotransform = GeoTransform::from_bounds(&bbox, 1000, 1000)
+            .expect("Failed to create test geotransform from bounds");
+
+        let checker = AccuracyChecker::new();
+        // No CRS supplied at all.
+        let result = checker
+            .check_raster(&buffer, &geotransform, Some(&bbox), None)
+            .expect("check_raster should succeed even without CRS info");
+
+        assert!(
+            !result.georef_accuracy.has_coordinate_system,
+            "has_coordinate_system must reflect the real absence of CRS info, not be hardcoded true"
+        );
+        assert_eq!(result.georef_accuracy.quality, GeoreferenceQuality::Poor);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.severity == Severity::Critical),
+            "missing CRS combined with otherwise-valid geotransform must surface as a critical \
+             georeferencing issue instead of a silently-green report"
+        );
+    }
+
+    #[test]
+    fn test_present_crs_allows_excellent_quality() {
+        let buffer = RasterBuffer::zeros(100, 100, RasterDataType::Float32);
+        let bbox =
+            BoundingBox::new(0.0, 0.0, 100.0, 100.0).expect("Failed to create test bounding box");
+        let geotransform = GeoTransform::from_bounds(&bbox, 100, 100)
+            .expect("Failed to create test geotransform from bounds");
+        let crs = SpatialReference::from_epsg(3857);
+
+        let checker = AccuracyChecker::new();
+        let result = checker
+            .check_raster(&buffer, &geotransform, Some(&bbox), Some(&crs))
+            .expect("check_raster should succeed");
+
+        assert!(result.georef_accuracy.has_coordinate_system);
+        assert_eq!(
+            result.georef_accuracy.quality,
+            GeoreferenceQuality::Excellent
+        );
     }
 
     #[test]

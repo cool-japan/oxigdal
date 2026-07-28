@@ -66,7 +66,6 @@ GPU_PACKAGES=(
 
 # Packages known to have external dependencies (likely to fail in CI/isolated environments)
 EXTERNAL_DEP_PACKAGES=(
-    "oxigeo-kafka"
     "oxigeo-redis"
     "oxigeo-s3"
     "oxigeo-azure"

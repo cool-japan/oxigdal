@@ -61,7 +61,9 @@ pub(crate) const NETCDF_MAGIC: [u8; 3] = [0x43, 0x44, 0x46];
 
 // ─── SQLite / GeoPackage ─────────────────────────────────────────────────────
 
-/// SQLite database file header prefix (6 bytes).
+/// SQLite database file header magic (the full 16-byte `"SQLite format 3\0"`
+/// string). The classic 6-byte `"SQLite"` prefix is extended here to the full
+/// header for stricter matching.
 /// Used for GeoPackage (.gpkg) and MBTiles (.mbtiles).
 pub(crate) const SQLITE_MAGIC: [u8; 16] = [
     0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,

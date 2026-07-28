@@ -2,6 +2,21 @@
 #
 # This file suppresses known advisories that are transitive dependencies
 # and cannot be fixed by the oxigeo project directly.
+#
+# Every entry below was re-verified against the current Cargo.lock by running
+# `cargo audit` with this ignore list temporarily removed (see the review that
+# pruned this file from 21 -> 15 entries): each remaining ID still matches an
+# installed version in the current lockfile. Six previously-ignored IDs were
+# removed because they no longer apply -- either the pinned crate was bumped
+# past the patched version, or the crate is no longer in the dependency graph
+# at all: RUSTSEC-2026-0044 / RUSTSEC-2026-0048 (`aws-lc-sys`, patched
+# >=0.39.0; we're on 0.43.0), RUSTSEC-2026-0178 (`tokio-postgres`, patched
+# >=0.7.18; we're exactly on 0.7.18), RUSTSEC-2026-0179 / RUSTSEC-2026-0180
+# (`postgres-protocol`, patched >=0.6.12; we're exactly on 0.6.12), and
+# RUSTSEC-2026-0173 (`proc-macro-error2`, unmaintained; the crate no longer
+# appears in Cargo.lock at all). If you re-add a dependency that reintroduces
+# any of these, re-add the corresponding ignore entry (or, preferably, avoid
+# the vulnerable version).
 
 [advisories]
 ignore = [
@@ -29,16 +44,10 @@ ignore = [
     # Transitive dependency via tonic/rumqttc. Cannot be fixed upstream by us.
     "RUSTSEC-2025-0134",
 
-    # RUSTSEC-2026-0044: `aws-lc-sys` - X.509 Name Constraints Bypass
-    # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
-    "RUSTSEC-2026-0044",
-
-    # RUSTSEC-2026-0048: `aws-lc-sys` - CRL Distribution Point Scope Check
-    # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
-    "RUSTSEC-2026-0048",
-
     # RUSTSEC-2026-0049: `rustls-webpki` - CRLs not authoritative for all name types
-    # Transitive dependency via the TLS stack. Cannot be fixed upstream by us.
+    # Transitive dependency via the TLS stack (rustls-webpki 0.102.8). Cannot be
+    # fixed upstream by us. No aws-lc-sys advisories remain ignored (0044/0048
+    # were pruned in this review -- our aws-lc-sys 0.43.0 already patches both).
     "RUSTSEC-2026-0049",
 
     # RUSTSEC-2023-0071: `rsa` - Marvin Attack timing side-channel
@@ -50,11 +59,13 @@ ignore = [
     "RUSTSEC-2026-0097",
 
     # RUSTSEC-2026-0098: `rustls-webpki` - name constraints for URI names not checked
-    # Transitive dependency via AWS SDK. Cannot be fixed upstream by us.
+    # Transitive dependency via AWS SDK (rustls-webpki 0.101.7 and 0.102.8, both
+    # still reachable). Cannot be fixed upstream by us.
     "RUSTSEC-2026-0098",
 
     # RUSTSEC-2026-0099: `rustls-webpki` - wildcard cert name constraints bypass
-    # Transitive dependency via AWS SDK. Cannot be fixed upstream by us.
+    # Transitive dependency via AWS SDK (rustls-webpki 0.101.7 and 0.102.8, both
+    # still reachable). Cannot be fixed upstream by us.
     "RUSTSEC-2026-0099",
 
     # RUSTSEC-2026-0104: `rustls-webpki` - Reachable panic in certificate revocation list parsing
@@ -62,39 +73,25 @@ ignore = [
     # Cannot be fixed upstream by us — same pattern as RUSTSEC-2025-0134.
     "RUSTSEC-2026-0104",
 
-    # RUSTSEC-2026-0173: `proc-macro-error2` - unmaintained
-    # Transitive dependency via mysql_async/mysql-common. Cannot be fixed upstream by us.
-    "RUSTSEC-2026-0173",
-
     # RUSTSEC-2026-0174: `http-types` - Authorization::value ASCII invariant violation
     # Transitive dependency via azure_core. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0174",
 
-    # RUSTSEC-2026-0178: `tokio-postgres` - Panic on DataRow with fewer columns
-    # Transitive dependency via oxigeo-postgis. Cannot be fixed upstream by us.
-    "RUSTSEC-2026-0178",
-
-    # RUSTSEC-2026-0179: `postgres-protocol` - Unbounded SCRAM iteration CPU DoS
-    # Transitive dependency via tokio-postgres/oxigeo-postgis. Cannot be fixed upstream by us.
-    "RUSTSEC-2026-0179",
-
-    # RUSTSEC-2026-0180: `postgres-protocol` - Panic decoding malformed hstore
-    # Transitive dependency via tokio-postgres/oxigeo-postgis. Cannot be fixed upstream by us.
-    "RUSTSEC-2026-0180",
-
     # RUSTSEC-2026-0195: `quick-xml` - unbounded namespace-declaration allocation DoS
     # (memory-exhaustion; not memory-unsafety/RCE). Transitive dependency via
-    # pprof/inferno (default dependency of oxigeo-dev-tools/oxigeo-bench) and via
-    # azure_core (non-default `azure`/`azure-blob` features of oxigeo-cloud/
-    # oxigeo-cloud-enhanced). No quick-xml >=0.41.0 is reachable within current
-    # semver constraints on either path. Cannot be fixed upstream by us.
+    # pprof/inferno — a default (non-optional) dependency of `oxigeo-dev-tools`
+    # only. (`oxigeo-bench` gated `pprof` behind its non-default `profiling`
+    # feature, so this is no longer reachable through oxigeo-bench's default
+    # build graph.) Also reachable via azure_core (non-default `azure`/
+    # `azure-blob` features of oxigeo-cloud/oxigeo-cloud-enhanced). No
+    # quick-xml >=0.41.0 is reachable within current semver constraints on
+    # either path. Cannot be fixed upstream by us.
     "RUSTSEC-2026-0195",
 
     # RUSTSEC-2026-0194: `quick-xml` - quadratic-runtime duplicate-attribute-name
-    # check DoS (CPU-exhaustion; not memory-unsafety/RCE). Transitive dependency via
-    # pprof/inferno (default dependency of oxigeo-dev-tools/oxigeo-bench) and via
-    # azure_core (non-default `azure`/`azure-blob` features of oxigeo-cloud/
-    # oxigeo-cloud-enhanced). No quick-xml >=0.41.0 is reachable within current
-    # semver constraints on either path. Cannot be fixed upstream by us.
+    # check DoS (CPU-exhaustion; not memory-unsafety/RCE). Same reachability as
+    # RUSTSEC-2026-0195 above (pprof/inferno via oxigeo-dev-tools's default
+    # deps; azure_core via oxigeo-cloud's non-default azure features). Cannot
+    # be fixed upstream by us.
     "RUSTSEC-2026-0194",
 ]

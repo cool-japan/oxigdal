@@ -1006,6 +1006,7 @@ impl TextureCompressor {
             mapped_at_creation: false,
         });
         encoder.copy_buffer_to_buffer(&output_buf, 0, &staging, 0, output_buf_size);
+        ctx.check_device_lost()?;
         ctx.queue().submit(Some(encoder.finish()));
 
         // Map before poll: poll drives both submit completion and map callback.

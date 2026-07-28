@@ -10,6 +10,18 @@ Deep learning training infrastructure and model architectures for geospatial mac
 - **Data Augmentation**: Geometric (flip, rotate, crop), color (brightness, contrast, gamma), noise, and geospatial-specific augmentations
 - **Evaluation Metrics**: Accuracy, precision, recall, F1-score, IoU, confusion matrix
 
+> **Training backend:** `UNet`/`ResNet` training runs on a real, trainable `scirs2-neural`
+> 0.6.1-backed module tree (`src/backend/neural_backend.rs`) with genuine end-to-end
+> backpropagation -- forward, backward, and optimizer steps all perform real math, not
+> placeholders. Two documented, non-fabricated approximations: BatchNorm is omitted
+> (upstream `Layer::forward` for it is an identity pass-through in scirs2-neural 0.6.1, so
+> convolutional blocks use Conv -> ReLU instead), and bottleneck ResNet-50/101/152 use basic
+> residual blocks following the requested variant's block schedule and channel widths.
+> Exporting a trained model's *architecture* to ONNX works today
+> (`backend::onnx_export::export_unet_bytes`/`export_resnet_bytes`); exporting a live
+> session's *trained weights* to ONNX is not yet wired and returns an explicit
+> `NotImplemented` error rather than a placeholder file.
+
 ## COOLJAPAN Compliance
 
 - ✅ Pure Rust implementation (PyTorch bindings are feature-gated)

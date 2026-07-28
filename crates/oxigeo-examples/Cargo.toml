@@ -54,15 +54,10 @@ oxigeo-proj = { workspace = true }
 oxigeo-stac = { workspace = true, features = ["std"] }
 oxigeo-geojson = { workspace = true }
 oxigeo-geoparquet = { workspace = true }
-oxigeo-zarr = { workspace = true }
-oxigeo-netcdf = { workspace = true }
-oxigeo-shapefile = { workspace = true }
 oxigeo-cloud = { workspace = true }
-oxigeo-analytics = { workspace = true }
 oxigeo-temporal = { workspace = true }
 oxigeo-sensors = { workspace = true }
 oxigeo-ml = { workspace = true }
-oxigeo-qc = { workspace = true }
 oxigeo-gpu = { workspace = true }
 oxigeo-mobile = { workspace = true }
 oxigeo-server = { workspace = true }
@@ -77,12 +72,10 @@ scirs2-core = { workspace = true, features = ["array"] }
 
 # Web services (tutorial 07)
 axum = { workspace = true }
-tower = { workspace = true }
 tower-http = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
-futures = { workspace = true }
 rayon = { workspace = true }
 
 # Serialization
@@ -97,6 +90,11 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
+
+# Real preview-thumbnail image encoding (wasm_integration_example): pure-Rust
+# PNG (`png`) and lossless WebP (via `image`'s `WebPEncoder`).
+png = { workspace = true }
+image = { workspace = true }
 
 [lints]
 workspace = true

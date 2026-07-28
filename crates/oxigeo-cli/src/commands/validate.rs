@@ -48,6 +48,9 @@ struct ValidationResult {
     cog_info: Option<CogInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     geojson_info: Option<GeoJsonInfo>,
+    /// Detailed, human-readable diagnostics surfaced by `--verbose`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    details: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -121,6 +124,7 @@ fn validate_geotiff(args: &ValidateArgs) -> Result<ValidationResult> {
                 errors,
                 cog_info: None,
                 geojson_info: None,
+                details: Vec::new(),
             });
         }
     };
@@ -137,6 +141,7 @@ fn validate_geotiff(args: &ValidateArgs) -> Result<ValidationResult> {
                 errors,
                 cog_info: None,
                 geojson_info: None,
+                details: Vec::new(),
             });
         }
     };
@@ -195,6 +200,31 @@ fn validate_geotiff(args: &ValidateArgs) -> Result<ValidationResult> {
             .push("Dimensions are not multiples of 16 (recommended for performance)".to_string());
     }
 
+    // Detailed diagnostics surfaced under --verbose.
+    let mut details = Vec::new();
+    if args.verbose {
+        details.push(format!("Dimensions: {width} x {height} pixels"));
+        details.push(format!("Bands: {bands}"));
+        details.push(format!(
+            "Geo-transform: {}",
+            if reader.geo_transform().is_some() {
+                "present"
+            } else {
+                "absent"
+            }
+        ));
+        details.push(match reader.epsg_code() {
+            Some(code) => format!("CRS: EPSG:{code}"),
+            None => "CRS: none".to_string(),
+        });
+        details.push(match reader.tile_size() {
+            Some((tw, th)) => format!("Tiling: {tw} x {th}"),
+            None => "Tiling: striped (untiled)".to_string(),
+        });
+        details.push(format!("Overviews: {}", reader.overview_count()));
+        details.push(format!("Compression: {:?}", reader.compression()));
+    }
+
     Ok(ValidationResult {
         file_path: args.input.display().to_string(),
         format: "GeoTIFF".to_string(),
@@ -203,6 +233,7 @@ fn validate_geotiff(args: &ValidateArgs) -> Result<ValidationResult> {
         errors,
         cog_info,
         geojson_info: None,
+        details,
     })
 }
 
@@ -223,6 +254,7 @@ fn validate_geojson(args: &ValidateArgs) -> Result<ValidationResult> {
                 errors,
                 cog_info: None,
                 geojson_info: None,
+                details: Vec::new(),
             });
         }
     };
@@ -242,6 +274,7 @@ fn validate_geojson(args: &ValidateArgs) -> Result<ValidationResult> {
                 errors,
                 cog_info: None,
                 geojson_info: None,
+                details: Vec::new(),
             });
         }
     };
@@ -285,8 +318,40 @@ fn validate_geojson(args: &ValidateArgs) -> Result<ValidationResult> {
         feature_count,
         has_crs,
         has_bbox,
-        geometry_types: geometry_types.into_iter().collect(),
+        geometry_types: geometry_types.iter().cloned().collect(),
     });
+
+    // Detailed diagnostics surfaced under --verbose: per-geometry-type counts.
+    let mut details = Vec::new();
+    if args.verbose {
+        details.push(format!("Feature count: {feature_count}"));
+        details.push(format!("Has CRS: {has_crs}"));
+        details.push(format!("Has bbox: {has_bbox}"));
+        let mut type_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let mut without_geometry = 0usize;
+        for feature in &feature_collection.features {
+            match feature.geometry.as_ref() {
+                Some(geom) => {
+                    // Group by the geometry variant name (before any inner data).
+                    let variant = format!("{geom:?}");
+                    let name = variant
+                        .split(['(', ' ', '{'])
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    *type_counts.entry(name).or_insert(0) += 1;
+                }
+                None => without_geometry += 1,
+            }
+        }
+        for (name, count) in &type_counts {
+            details.push(format!("  {name}: {count}"));
+        }
+        if without_geometry > 0 {
+            details.push(format!("  (no geometry): {without_geometry}"));
+        }
+    }
 
     Ok(ValidationResult {
         file_path: args.input.display().to_string(),
@@ -296,6 +361,7 @@ fn validate_geojson(args: &ValidateArgs) -> Result<ValidationResult> {
         errors,
         cog_info: None,
         geojson_info,
+        details,
     })
 }
 
@@ -377,6 +443,14 @@ fn print_validation_result(result: &ValidationResult) {
         println!();
     }
 
+    if !result.details.is_empty() {
+        println!("{}", style("Details").bold().cyan());
+        for detail in &result.details {
+            println!("  {detail}");
+        }
+        println!();
+    }
+
     if result.errors.is_empty() && result.warnings.is_empty() {
         println!("{} File is valid with no issues", style("✓").green().bold());
     }
@@ -396,6 +470,7 @@ mod tests {
             errors: vec![],
             cog_info: None,
             geojson_info: None,
+            details: Vec::new(),
         };
 
         assert!(result.valid);

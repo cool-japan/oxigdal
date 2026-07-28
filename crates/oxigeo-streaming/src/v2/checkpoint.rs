@@ -9,11 +9,17 @@
 //! - [`CheckpointId`]: unique identity of a checkpoint (stream + sequence number).
 //! - [`CheckpointState`]: serialisable snapshot of all operator states, source
 //!   offsets, watermark, and event count.
+//! - [`CheckpointStore`]: storage abstraction over a durable (or in-memory)
+//!   backend, so [`CheckpointManager`] can be parameterized over where
+//!   checkpoints live.
 //! - [`InMemoryCheckpointStore`]: bounded in-memory store (useful for testing
-//!   and for single-process use; production typically uses disk or object storage).
+//!   and for single-process use).
+//! - [`FileCheckpointStore`]: durable file-system-backed store that survives a
+//!   process restart — the scenario checkpointing exists to recover from.
 //! - [`CheckpointManager`]: drives periodic checkpointing and recovery.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::error::StreamingError;
@@ -232,6 +238,144 @@ impl CheckpointState {
     }
 }
 
+// ─── CheckpointStore ──────────────────────────────────────────────────────────
+
+/// Storage backend for stream checkpoints.
+///
+/// Implementations decide *where* checkpoint state lives. [`CheckpointManager`]
+/// is generic over this trait so the same driver can target an in-memory store
+/// ([`InMemoryCheckpointStore`]) for tests/single-process use or a durable
+/// backend ([`FileCheckpointStore`]) that survives a crash/restart.
+pub trait CheckpointStore {
+    /// Persist a checkpoint. Later checkpoints for the same stream supersede
+    /// earlier ones.
+    fn save(&mut self, state: CheckpointState) -> Result<(), StreamingError>;
+
+    /// Return the most recent checkpoint for `stream_id`, or `None` if the
+    /// stream has no checkpoints.
+    fn latest(&self, stream_id: &str) -> Result<Option<CheckpointState>, StreamingError>;
+}
+
+// ─── FileCheckpointStore ──────────────────────────────────────────────────────
+
+/// Durable, file-system-backed checkpoint store.
+///
+/// Each checkpoint is written to `root/{stream}/checkpoint-{sequence}.ckpt`
+/// using [`CheckpointState::serialize`] and an atomic temp-file + rename, so a
+/// checkpoint that has been acknowledged is guaranteed to survive a process
+/// crash or restart. Recovery scans the stream directory for the highest
+/// sequence number. Pure Rust, no external services.
+pub struct FileCheckpointStore {
+    root: PathBuf,
+    /// Maximum checkpoint files retained per stream (oldest pruned on save).
+    max_per_stream: usize,
+}
+
+impl FileCheckpointStore {
+    /// Create a store rooted at `root`, retaining at most `max_per_stream`
+    /// checkpoint files per stream. The root directory is created if missing.
+    pub fn new(root: impl Into<PathBuf>, max_per_stream: usize) -> Result<Self, StreamingError> {
+        if max_per_stream == 0 {
+            return Err(StreamingError::ConfigError(
+                "max_per_stream must be at least 1".into(),
+            ));
+        }
+        let root = root.into();
+        std::fs::create_dir_all(&root)?;
+        Ok(Self {
+            root,
+            max_per_stream,
+        })
+    }
+
+    /// Sanitize a stream id so it is safe as a single path component.
+    fn sanitize(stream_id: &str) -> String {
+        stream_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    fn stream_dir(&self, stream_id: &str) -> PathBuf {
+        self.root.join(Self::sanitize(stream_id))
+    }
+
+    fn checkpoint_file(&self, stream_id: &str, sequence: u64) -> PathBuf {
+        // Zero-pad so lexical order matches numeric order.
+        self.stream_dir(stream_id)
+            .join(format!("checkpoint-{sequence:020}.ckpt"))
+    }
+
+    /// Parse the sequence number out of a stored checkpoint file name.
+    fn parse_sequence(path: &Path) -> Option<u64> {
+        let name = path.file_name()?.to_str()?;
+        let rest = name.strip_prefix("checkpoint-")?;
+        let seq = rest.strip_suffix(".ckpt")?;
+        seq.parse::<u64>().ok()
+    }
+
+    /// All (sequence, path) pairs for a stream, sorted ascending by sequence.
+    fn entries(&self, stream_id: &str) -> Result<Vec<(u64, PathBuf)>, StreamingError> {
+        let dir = self.stream_dir(stream_id);
+        let mut out = Vec::new();
+        match std::fs::read_dir(&dir) {
+            Ok(rd) => {
+                for entry in rd {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if let Some(seq) = Self::parse_sequence(&path) {
+                        out.push((seq, path));
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        }
+        out.sort_by_key(|(seq, _)| *seq);
+        Ok(out)
+    }
+}
+
+impl CheckpointStore for FileCheckpointStore {
+    fn save(&mut self, state: CheckpointState) -> Result<(), StreamingError> {
+        let stream_id = state.id.stream_id.clone();
+        let dir = self.stream_dir(&stream_id);
+        std::fs::create_dir_all(&dir)?;
+
+        let final_path = self.checkpoint_file(&stream_id, state.id.sequence);
+        let tmp_path = final_path.with_extension("ckpt.tmp");
+        let bytes = state.serialize();
+        std::fs::write(&tmp_path, &bytes)?;
+        std::fs::rename(&tmp_path, &final_path)?;
+
+        // Prune oldest checkpoints beyond the retention bound.
+        let entries = self.entries(&stream_id)?;
+        if entries.len() > self.max_per_stream {
+            let excess = entries.len() - self.max_per_stream;
+            for (_, path) in entries.into_iter().take(excess) {
+                std::fs::remove_file(&path).ok();
+            }
+        }
+        Ok(())
+    }
+
+    fn latest(&self, stream_id: &str) -> Result<Option<CheckpointState>, StreamingError> {
+        let entries = self.entries(stream_id)?;
+        let Some((_, path)) = entries.into_iter().next_back() else {
+            return Ok(None);
+        };
+        let bytes = std::fs::read(&path)?;
+        let state = CheckpointState::deserialize(stream_id, &bytes)?;
+        Ok(Some(state))
+    }
+}
+
 // ─── InMemoryCheckpointStore ──────────────────────────────────────────────────
 
 /// A bounded in-memory checkpoint store.
@@ -299,6 +443,16 @@ impl InMemoryCheckpointStore {
     }
 }
 
+impl CheckpointStore for InMemoryCheckpointStore {
+    fn save(&mut self, state: CheckpointState) -> Result<(), StreamingError> {
+        InMemoryCheckpointStore::save(self, state)
+    }
+
+    fn latest(&self, stream_id: &str) -> Result<Option<CheckpointState>, StreamingError> {
+        Ok(InMemoryCheckpointStore::latest(self, stream_id).cloned())
+    }
+}
+
 // ─── CheckpointManager ────────────────────────────────────────────────────────
 
 /// Drives periodic checkpointing and provides recovery support.
@@ -306,17 +460,21 @@ impl InMemoryCheckpointStore {
 /// Call [`Self::on_event`] after processing each event.  When the cumulative sequence
 /// number reaches the next scheduled checkpoint, a new [`CheckpointState`] is
 /// automatically saved to the underlying store.
-pub struct CheckpointManager {
-    store: InMemoryCheckpointStore,
+pub struct CheckpointManager<S: CheckpointStore = InMemoryCheckpointStore> {
+    store: S,
     /// Checkpoint every `checkpoint_interval` events.
     checkpoint_interval: u64,
     next_checkpoint_at: u64,
     total_checkpoints: u64,
 }
 
-impl CheckpointManager {
+impl<S: CheckpointStore> CheckpointManager<S> {
     /// Create a manager with the given store and interval.
-    pub fn new(store: InMemoryCheckpointStore, checkpoint_interval: u64) -> Self {
+    ///
+    /// Use a durable store such as [`FileCheckpointStore`] for recovery that
+    /// survives a process restart, or [`InMemoryCheckpointStore`] for tests and
+    /// single-process, non-recoverable use.
+    pub fn new(store: S, checkpoint_interval: u64) -> Self {
         assert!(
             checkpoint_interval > 0,
             "checkpoint_interval must be positive"
@@ -353,8 +511,11 @@ impl CheckpointManager {
 
     /// Return the sequence number from which to resume, or `None` if no
     /// checkpoint exists for the stream.
-    pub fn recover(&self, stream_id: &str) -> Option<u64> {
-        self.store.latest(stream_id).map(|s| s.id.sequence)
+    ///
+    /// With a durable store this reads the last checkpoint persisted before a
+    /// crash, enabling minimal-replay recovery.
+    pub fn recover(&self, stream_id: &str) -> Result<Option<u64>, StreamingError> {
+        Ok(self.store.latest(stream_id)?.map(|s| s.id.sequence))
     }
 
     /// Total checkpoints taken since this manager was created.
@@ -363,7 +524,7 @@ impl CheckpointManager {
     }
 
     /// Read-only access to the underlying store (for inspection / testing).
-    pub fn store(&self) -> &InMemoryCheckpointStore {
+    pub fn store(&self) -> &S {
         &self.store
     }
 }
@@ -543,7 +704,10 @@ mod tests {
         let mut mgr = CheckpointManager::new(store, 50);
         mgr.on_event("s", 50, 0).expect("ok");
         mgr.on_event("s", 100, 0).expect("ok");
-        let seq = mgr.recover("s").expect("should recover");
+        let seq = mgr
+            .recover("s")
+            .expect("recover ok")
+            .expect("should recover");
         assert_eq!(seq, 100);
     }
 
@@ -551,7 +715,97 @@ mod tests {
     fn test_manager_recover_none_before_first_checkpoint() {
         let store = InMemoryCheckpointStore::new(5);
         let mgr = CheckpointManager::new(store, 100);
-        assert!(mgr.recover("s").is_none());
+        assert!(mgr.recover("s").expect("recover ok").is_none());
+    }
+
+    // ── FileCheckpointStore durability ────────────────────────────────────────
+
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "oxigeo_streaming_ckpt_{}_{}_{}",
+            tag,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[test]
+    fn test_file_store_save_and_latest_roundtrip() {
+        let dir = unique_dir("roundtrip");
+        let mut store = FileCheckpointStore::new(&dir, 5).expect("store");
+        assert!(store.latest("s").expect("latest").is_none());
+
+        let mut state = CheckpointState::new(CheckpointId::new("s", 42));
+        state.watermark_ns = 123_456_789;
+        state.event_count = 42;
+        state.set_operator_state("agg", vec![1, 2, 3]);
+        state.set_source_offset("src-0", 9_999);
+        store.save(state).expect("save");
+
+        let loaded = store.latest("s").expect("latest").expect("present");
+        assert_eq!(loaded.id.sequence, 42);
+        assert_eq!(loaded.watermark_ns, 123_456_789);
+        assert_eq!(loaded.event_count, 42);
+        assert_eq!(loaded.operator_states.get("agg"), Some(&vec![1, 2, 3]));
+        assert_eq!(loaded.source_offsets.get("src-0"), Some(&9_999));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_file_checkpoint_store_survives_restart() {
+        let dir = unique_dir("restart");
+        // First "process": drive events through a manager backed by the file store.
+        {
+            let store = FileCheckpointStore::new(&dir, 10).expect("store");
+            let mut mgr = CheckpointManager::new(store, 10);
+            for seq in 0u64..=25 {
+                mgr.on_event("stream-a", seq, seq * 1_000)
+                    .expect("on_event");
+            }
+            // Checkpoints fired at sequence 10 and 20.
+            assert_eq!(mgr.total_checkpoints(), 2);
+            // Manager (and its in-RAM counters) dropped here — simulating a crash.
+        }
+
+        // Second "process": a brand-new store + manager over the same directory
+        // must recover the last durably-written checkpoint.
+        let store = FileCheckpointStore::new(&dir, 10).expect("store");
+        let mgr = CheckpointManager::new(store, 10);
+        let resume = mgr
+            .recover("stream-a")
+            .expect("recover ok")
+            .expect("should recover a checkpoint that survived the restart");
+        assert_eq!(resume, 20);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_file_store_prunes_to_max_per_stream() {
+        let dir = unique_dir("prune");
+        let mut store = FileCheckpointStore::new(&dir, 3).expect("store");
+        for seq in [10u64, 20, 30, 40, 50] {
+            store
+                .save(CheckpointState::new(CheckpointId::new("s", seq)))
+                .expect("save");
+        }
+        // Only the 3 newest survive; latest is 50.
+        let entries = store.entries("s").expect("entries");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            store
+                .latest("s")
+                .expect("latest")
+                .expect("present")
+                .id
+                .sequence,
+            50
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

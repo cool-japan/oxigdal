@@ -232,7 +232,7 @@ pub use repair::{
 };
 
 // Re-export clipping operations
-pub use clipping::{ClipOperation, clip_multi, clip_polygons};
+pub use clipping::{ClipOperation, ClipResult, clip_multi, clip_polygons, clip_polygons_detailed};
 
 // Re-export power diagram (weighted Voronoi) operations
 pub use voronoi::{

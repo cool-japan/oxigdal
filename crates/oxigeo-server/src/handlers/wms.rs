@@ -610,7 +610,15 @@ pub async fn get_map(
 
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, format.mime_type())],
+        [
+            (header::CONTENT_TYPE, format.mime_type()),
+            // Rendered maps are cacheable by shared CDN/proxy caches; the request
+            // parameters fully determine the response.
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=86400, stale-while-revalidate=604800",
+            ),
+        ],
         image_data,
     )
         .into_response())

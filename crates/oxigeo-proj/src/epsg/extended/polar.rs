@@ -1,6 +1,7 @@
 //! Polar (Arctic and Antarctic) CRS registrations.
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::ToString;
 
 pub(super) fn register_polar_grids(db: &mut EpsgDatabase) {
     let polar_grids: &[(u32, &str, &str, &str, &str)] = &[

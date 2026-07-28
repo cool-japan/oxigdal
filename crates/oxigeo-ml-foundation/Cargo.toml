@@ -37,9 +37,6 @@ oxigeo-geotiff = { workspace = true }
 scirs2-core = { workspace = true, features = ["random"] }
 num-traits = { workspace = true }
 
-# Image processing
-image = { workspace = true }
-
 # Random number generation
 getrandom = { workspace = true }
 

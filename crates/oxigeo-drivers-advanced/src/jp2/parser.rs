@@ -43,6 +43,18 @@ pub enum BoxType {
     DisplayResolution,
     /// Bits Per Component box
     BitsPerComponent,
+    /// JPX (Part-2) Codestream Header box (`jpch`)
+    JpxCodestreamHeader,
+    /// JPX (Part-2) Compositing Layer Header box (`jplh`)
+    JpxCompositingLayerHeader,
+    /// JPX (Part-2) Association box (`asoc`)
+    JpxAssociation,
+    /// JPX (Part-2) Number List box (`nlst`)
+    JpxNumberList,
+    /// JPX (Part-2) Opacity box (`opct`)
+    JpxOpacity,
+    /// JPX (Part-2) Reader Requirements box (`creq`)
+    JpxReaderRequirements,
     /// Unknown box type
     Unknown(u32),
 }
@@ -69,6 +81,12 @@ impl BoxType {
             b"resc" => Self::CaptureResolution,
             b"resd" => Self::DisplayResolution,
             b"bpcc" => Self::BitsPerComponent,
+            b"jpch" => Self::JpxCodestreamHeader,
+            b"jplh" => Self::JpxCompositingLayerHeader,
+            b"asoc" => Self::JpxAssociation,
+            b"nlst" => Self::JpxNumberList,
+            b"opct" => Self::JpxOpacity,
+            b"creq" => Self::JpxReaderRequirements,
             _ => Self::Unknown(u32::from_be_bytes(bytes)),
         }
     }
@@ -94,8 +112,28 @@ impl BoxType {
             Self::CaptureResolution => *b"resc",
             Self::DisplayResolution => *b"resd",
             Self::BitsPerComponent => *b"bpcc",
+            Self::JpxCodestreamHeader => *b"jpch",
+            Self::JpxCompositingLayerHeader => *b"jplh",
+            Self::JpxAssociation => *b"asoc",
+            Self::JpxNumberList => *b"nlst",
+            Self::JpxOpacity => *b"opct",
+            Self::JpxReaderRequirements => *b"creq",
             Self::Unknown(val) => val.to_be_bytes(),
         }
+    }
+
+    /// Whether this box type is a JPEG2000 Part-2 (JPX) only structure that the
+    /// Part-1 decode path cannot interpret.
+    pub fn is_jpx_part2(&self) -> bool {
+        matches!(
+            self,
+            Self::JpxCodestreamHeader
+                | Self::JpxCompositingLayerHeader
+                | Self::JpxAssociation
+                | Self::JpxNumberList
+                | Self::JpxOpacity
+                | Self::JpxReaderRequirements
+        )
     }
 }
 
@@ -136,7 +174,12 @@ impl Jp2Box {
     pub fn is_container(&self) -> bool {
         matches!(
             self.box_type,
-            BoxType::Jp2Header | BoxType::Resolution | BoxType::UuidInfo
+            BoxType::Jp2Header
+                | BoxType::Resolution
+                | BoxType::UuidInfo
+                | BoxType::JpxCodestreamHeader
+                | BoxType::JpxCompositingLayerHeader
+                | BoxType::JpxAssociation
         )
     }
 }
@@ -194,9 +237,18 @@ impl<R: Read + Seek> Jp2Parser<R> {
         Ok(())
     }
 
-    /// Parse a single box.
+    /// Parse a single box at `self.position`.
+    ///
+    /// Container (superbox) types — `jp2h`, `res `, `uinf` and the JPX Part-2
+    /// grouping boxes — are recursed into: their child boxes are parsed within
+    /// the container's byte range and registered (flattened) in `self.boxes`, so
+    /// that [`Self::find_box`] can locate nested boxes such as `ihdr`/`colr` that
+    /// always live inside `jp2h` on a spec-conformant file. On return
+    /// `self.position` points just past the box that was parsed.
     fn parse_box(&mut self) -> Result<bool> {
         self.reader.seek(SeekFrom::Start(self.position))?;
+
+        let header_start = self.position;
 
         // Try to read box header
         let length = match self.reader.read_u32::<BigEndian>() {
@@ -209,27 +261,54 @@ impl<R: Read + Seek> Jp2Parser<R> {
         self.reader.read_exact(&mut box_type_bytes)?;
         let box_type = BoxType::from_bytes(box_type_bytes);
 
-        // Calculate actual box length
-        let header_size = if length == 1 {
-            // Extended length
+        // Resolve the box's payload offset/length and the offset of the next box.
+        let (data_offset, data_length, next_position) = if length == 1 {
+            // Extended (64-bit) length: 8-byte header + 8-byte XLBox.
             let xl = self.reader.read_u64::<BigEndian>()?;
-            self.position += 16;
-            xl - 16
+            let data_offset = header_start + 16;
+            let data_length = xl.saturating_sub(16);
+            (data_offset, data_length, data_offset + data_length)
         } else if length == 0 {
-            // Box extends to end of file
+            // Box extends to end of file.
             let file_size = self.reader.seek(SeekFrom::End(0))?;
-            self.reader.seek(SeekFrom::Start(self.position + 8))?;
-            file_size - self.position - 8
+            let data_offset = header_start + 8;
+            let data_length = file_size.saturating_sub(data_offset);
+            (data_offset, data_length, file_size)
         } else {
-            self.position += 8;
-            (length as u64) - 8
+            let data_offset = header_start + 8;
+            let data_length = (length as u64).saturating_sub(8);
+            (data_offset, data_length, data_offset + data_length)
         };
 
-        let jp2_box = Jp2Box::new(box_type, self.position, header_size);
+        let jp2_box = Jp2Box::new(box_type, data_offset, data_length);
+        let is_container = jp2_box.is_container();
         self.boxes.push(jp2_box);
 
-        self.position += header_size;
+        if is_container && data_length >= 8 {
+            self.parse_boxes_in_range(data_offset, data_offset + data_length)?;
+        }
+
+        self.position = next_position;
         Ok(true)
+    }
+
+    /// Parse the sequence of child boxes occupying `[start, end)`, recursing into
+    /// nested superboxes.
+    fn parse_boxes_in_range(&mut self, start: u64, end: u64) -> Result<()> {
+        let mut pos = start;
+        // A box header is at least 8 bytes (length + type).
+        while pos + 8 <= end {
+            self.position = pos;
+            if !self.parse_box()? {
+                break;
+            }
+            // Guard against non-progress / malformed lengths that would loop.
+            if self.position <= pos || self.position > end {
+                break;
+            }
+            pos = self.position;
+        }
+        Ok(())
     }
 
     /// Get all parsed boxes.

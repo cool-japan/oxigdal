@@ -71,9 +71,12 @@ pub fn memory_barrier() {
 pub fn cycle_count() -> Option<u64> {
     #[cfg(target_arch = "riscv32")]
     {
-        let low: u32;
-        let high1: u32;
-        let high2: u32;
+        // `mut` is required because the read is retried in a loop until the high
+        // word is stable, so each binding may be written by the asm more than
+        // once.
+        let mut low: u32;
+        let mut high1: u32;
+        let mut high2: u32;
 
         unsafe {
             // Read time CSR (handles 64-bit value on 32-bit platform)
@@ -130,39 +133,49 @@ pub mod atomic {
     pub unsafe fn compare_and_swap(ptr: *mut usize, old: usize, new: usize) -> Result<usize> {
         let result: usize;
 
+        // SAFETY: `ptr` is required by this function's contract to be valid and
+        // properly aligned; the LR/SC sequence performs an atomic CAS on it.
+        // Explicit `unsafe` block required under edition 2024
+        // (`unsafe_op_in_unsafe_fn`).
         #[cfg(target_arch = "riscv32")]
-        core::arch::asm!(
-            "lr.w {tmp}, ({ptr})",
-            "bne {tmp}, {old}, 1f",
-            "sc.w {result}, {new}, ({ptr})",
-            "j 2f",
-            "1:",
-            "li {result}, 1",
-            "2:",
-            ptr = in(reg) ptr,
-            old = in(reg) old,
-            new = in(reg) new,
-            tmp = out(reg) _,
-            result = out(reg) result,
-            options(nostack)
-        );
+        unsafe {
+            core::arch::asm!(
+                "lr.w {tmp}, ({ptr})",
+                "bne {tmp}, {old}, 1f",
+                "sc.w {result}, {new}, ({ptr})",
+                "j 2f",
+                "1:",
+                "li {result}, 1",
+                "2:",
+                ptr = in(reg) ptr,
+                old = in(reg) old,
+                new = in(reg) new,
+                tmp = out(reg) _,
+                result = out(reg) result,
+                options(nostack)
+            );
+        }
 
+        // SAFETY: see the riscv32 branch above; identical contract with the
+        // 64-bit LR/SC instructions.
         #[cfg(target_arch = "riscv64")]
-        core::arch::asm!(
-            "lr.d {tmp}, ({ptr})",
-            "bne {tmp}, {old}, 1f",
-            "sc.d {result}, {new}, ({ptr})",
-            "j 2f",
-            "1:",
-            "li {result}, 1",
-            "2:",
-            ptr = in(reg) ptr,
-            old = in(reg) old,
-            new = in(reg) new,
-            tmp = out(reg) _,
-            result = out(reg) result,
-            options(nostack)
-        );
+        unsafe {
+            core::arch::asm!(
+                "lr.d {tmp}, ({ptr})",
+                "bne {tmp}, {old}, 1f",
+                "sc.d {result}, {new}, ({ptr})",
+                "j 2f",
+                "1:",
+                "li {result}, 1",
+                "2:",
+                ptr = in(reg) ptr,
+                old = in(reg) old,
+                new = in(reg) new,
+                tmp = out(reg) _,
+                result = out(reg) result,
+                options(nostack)
+            );
+        }
 
         if result == 0 {
             Ok(new)
@@ -193,8 +206,12 @@ pub mod cache {
     /// Must be called after modifying executable code
     #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     pub unsafe fn flush_icache() -> Result<()> {
-        // FENCE.I instruction
-        core::arch::asm!("fence.i", options(nostack, nomem));
+        // SAFETY: `fence.i` has no operands and only orders instruction-fetch
+        // relative to prior stores; it is always sound to execute. Explicit
+        // `unsafe` block required under edition 2024.
+        unsafe {
+            core::arch::asm!("fence.i", options(nostack, nomem));
+        }
         Ok(())
     }
 

@@ -4,18 +4,33 @@
 //! - Scale up/down based on load metrics
 //! - Predictive scaling based on historical patterns
 //! - Cool-down periods to prevent thrashing
-//! - Cloud provider integration (AWS, Azure, GCP)
-//! - Cost optimization with spot instances
+//! - Provider integration through the [`CloudProvider`] trait, with a built-in
+//!   [`WorkerPoolProvider`] that actually adds/removes workers in a live
+//!   [`WorkerPool`]. Managed-cloud back-ends (AWS EC2, Azure VMSS, GCP MIG) are a
+//!   caller-supplied extension point: implement [`CloudProvider`] against the
+//!   respective SDK and pass it to [`Autoscaler::apply_decision`]. The core crate
+//!   ships no cloud SDK bindings (they are not Pure Rust), so the wiring — not a
+//!   specific vendor client — is what lives here.
+//! - Cost optimization with spot instances (accounted whenever the active
+//!   provider reports spot availability)
 //! - Custom scaling policies
+//!
+//! The end-to-end control loop is: [`Autoscaler::record_metrics`] →
+//! [`Autoscaler::evaluate`] (produces a [`ScaleDecision`]) →
+//! [`Autoscaler::apply_decision`] (actually invokes the provider). Previously
+//! `evaluate` produced a recommendation that nothing consumed; `apply_decision`
+//! closes that loop.
 
-use crate::error::Result;
-use crate::worker_pool::{WorkerId, WorkerPool};
+use crate::error::{ClusterError, Result};
+use crate::worker_pool::{
+    Worker, WorkerCapabilities, WorkerCapacity, WorkerId, WorkerPool, WorkerStatus, WorkerUsage,
+};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Autoscaling configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +350,101 @@ impl Autoscaler {
         Ok(())
     }
 
+    /// Apply a [`ScaleDecision`] against a concrete [`CloudProvider`], closing
+    /// the loop between recommendation and action.
+    ///
+    /// This is the glue that was previously missing: [`Autoscaler::evaluate`]
+    /// only ever returned a recommendation, and nothing invoked the provider.
+    /// `apply_decision` actually provisions or releases workers, records the
+    /// scaling event, updates the cool-down timestamps and statistics, and — when
+    /// cost optimization is enabled and the provider reports spot availability —
+    /// accrues the spot savings.
+    ///
+    /// Returns the number of workers actually added (positive) or removed
+    /// (reported via [`ScaleOutcome`]). A [`ScaleDecision::NoChange`] is a no-op.
+    pub fn apply_decision(
+        &self,
+        decision: &ScaleDecision,
+        provider: &dyn CloudProvider,
+        current_workers: usize,
+    ) -> Result<ScaleOutcome> {
+        match decision {
+            ScaleDecision::NoChange => Ok(ScaleOutcome::default()),
+            ScaleDecision::ScaleUp(count) => {
+                let count = *count;
+                if count == 0 {
+                    return Ok(ScaleOutcome::default());
+                }
+                let added = provider.add_workers(count)?;
+                let added_count = added.len();
+                if added_count == 0 {
+                    warn!("Provider added no workers for a scale-up of {}", count);
+                    return Ok(ScaleOutcome::default());
+                }
+
+                self.execute_scale_up(added_count, current_workers)?;
+                self.accrue_spot_savings(provider, &added);
+
+                info!(
+                    "Applied scale-up: provisioned {} worker(s) via provider",
+                    added_count
+                );
+                Ok(ScaleOutcome {
+                    added: added.clone(),
+                    removed: Vec::new(),
+                })
+            }
+            ScaleDecision::ScaleDown(count) => {
+                let count = *count;
+                if count == 0 {
+                    return Ok(ScaleOutcome::default());
+                }
+                let victims = provider.select_workers_to_remove(count)?;
+                if victims.is_empty() {
+                    warn!("Provider offered no workers to remove for a scale-down");
+                    return Ok(ScaleOutcome::default());
+                }
+                provider.remove_workers(victims.clone())?;
+                let removed_count = victims.len();
+
+                self.execute_scale_down(removed_count, current_workers)?;
+
+                info!(
+                    "Applied scale-down: released {} worker(s) via provider",
+                    removed_count
+                );
+                Ok(ScaleOutcome {
+                    added: Vec::new(),
+                    removed: victims,
+                })
+            }
+        }
+    }
+
+    /// Accrue spot-instance cost savings for newly-added workers, when enabled.
+    fn accrue_spot_savings(&self, provider: &dyn CloudProvider, added: &[WorkerId]) {
+        if !self.config.read().enable_cost_optimization {
+            return;
+        }
+        let spot = provider.is_spot_available().unwrap_or(false);
+        if !spot {
+            return;
+        }
+
+        // Spot instances are conventionally ~70% cheaper than on-demand; account
+        // the avoided on-demand fraction as realized savings per worker-hour.
+        const SPOT_DISCOUNT: f64 = 0.7;
+        let mut savings = 0.0;
+        for id in added {
+            if let Ok(cost) = provider.get_worker_cost(id) {
+                savings += cost * SPOT_DISCOUNT;
+            }
+        }
+        if savings > 0.0 {
+            self.stats.write().cost_savings += savings;
+        }
+    }
+
     fn update_predictor(&self, value: f64) {
         let mut predictor = self.predictor.write();
 
@@ -393,19 +503,210 @@ impl Autoscaler {
     }
 }
 
-/// Cloud provider interface for autoscaling.
+/// Outcome of applying a [`ScaleDecision`] through [`Autoscaler::apply_decision`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScaleOutcome {
+    /// Workers that were actually provisioned.
+    pub added: Vec<WorkerId>,
+    /// Workers that were actually released.
+    pub removed: Vec<WorkerId>,
+}
+
+impl ScaleOutcome {
+    /// Net change in worker count (positive = added, negative = removed).
+    pub fn net_change(&self) -> i64 {
+        self.added.len() as i64 - self.removed.len() as i64
+    }
+
+    /// Whether this outcome changed the cluster at all.
+    pub fn is_noop(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// Provider interface an [`Autoscaler`] drives to actually provision or release
+/// workers.
+///
+/// The core crate ships one real implementation, [`WorkerPoolProvider`], which
+/// backs a live [`WorkerPool`]. Managed-cloud back-ends (AWS/Azure/GCP) are
+/// implemented by callers against the vendor SDK — those SDKs are not Pure Rust
+/// and therefore do not live in this crate — and then passed to
+/// [`Autoscaler::apply_decision`].
 pub trait CloudProvider {
-    /// Add workers to the cluster.
+    /// Add `count` workers to the cluster, returning the ids actually created.
+    ///
+    /// Returning fewer ids than requested (e.g. because a capacity limit was hit)
+    /// is allowed and reported honestly to the caller.
     fn add_workers(&self, count: usize) -> Result<Vec<WorkerId>>;
 
-    /// Remove workers from the cluster.
+    /// Remove the given workers from the cluster.
     fn remove_workers(&self, worker_ids: Vec<WorkerId>) -> Result<()>;
 
-    /// Get cost per worker hour.
+    /// Get cost per worker hour for a specific worker.
     fn get_worker_cost(&self, worker_id: &WorkerId) -> Result<f64>;
 
-    /// Check if spot instance is available.
+    /// Check if spot/preemptible capacity is currently available.
     fn is_spot_available(&self) -> Result<bool>;
+
+    /// Choose up to `count` workers that are the best candidates for removal
+    /// during a scale-down.
+    ///
+    /// Default implementations that cannot enumerate their fleet return an empty
+    /// list, which [`Autoscaler::apply_decision`] treats as "nothing to remove".
+    /// [`WorkerPoolProvider`] overrides this to pick the least-loaded workers.
+    fn select_workers_to_remove(&self, _count: usize) -> Result<Vec<WorkerId>> {
+        Ok(Vec::new())
+    }
+
+    /// Human-readable provider name (used for logging/diagnostics).
+    fn provider_name(&self) -> &str {
+        "unnamed-provider"
+    }
+}
+
+/// A built-in [`CloudProvider`] that provisions and releases workers directly in
+/// an in-process [`WorkerPool`].
+///
+/// This is a fully functional provider — not a stub — suitable for single-host
+/// deployments, integration testing, and as the reference implementation that
+/// managed-cloud providers mirror. `add_workers` registers freshly-constructed
+/// [`Worker`]s into the pool (honoring its `max_workers` capacity), and
+/// `remove_workers` unregisters them.
+pub struct WorkerPoolProvider {
+    pool: Arc<WorkerPool>,
+    /// On-demand cost per worker-hour, reported by [`CloudProvider::get_worker_cost`].
+    cost_per_hour: f64,
+    /// Whether this provider advertises spot capacity.
+    spot_available: bool,
+    /// Per-worker cost overrides recorded at creation time.
+    costs: RwLock<HashMap<WorkerId, f64>>,
+    /// Address template used for provisioned workers (e.g. `"local://autoscaled"`).
+    address: String,
+}
+
+impl WorkerPoolProvider {
+    /// Create a new provider backed by the given worker pool.
+    pub fn new(pool: Arc<WorkerPool>) -> Self {
+        Self {
+            pool,
+            cost_per_hour: 1.0,
+            spot_available: false,
+            costs: RwLock::new(HashMap::new()),
+            address: "local://autoscaled".to_string(),
+        }
+    }
+
+    /// Set the on-demand cost per worker-hour.
+    pub fn with_cost_per_hour(mut self, cost: f64) -> Self {
+        self.cost_per_hour = cost;
+        self
+    }
+
+    /// Advertise spot/preemptible capacity availability.
+    pub fn with_spot_available(mut self, available: bool) -> Self {
+        self.spot_available = available;
+        self
+    }
+
+    /// Set the address assigned to provisioned workers.
+    pub fn with_address(mut self, address: impl Into<String>) -> Self {
+        self.address = address.into();
+        self
+    }
+
+    /// Build a fresh, idle worker to register into the pool.
+    fn build_worker(&self) -> Worker {
+        let now = Instant::now();
+        Worker {
+            id: WorkerId::new(),
+            name: format!("autoscaled-{}", WorkerId::new()),
+            address: self.address.clone(),
+            capabilities: WorkerCapabilities::default(),
+            capacity: WorkerCapacity::default(),
+            usage: WorkerUsage::default(),
+            status: WorkerStatus::Idle,
+            last_heartbeat: now,
+            registered_at: now,
+            last_health_check: None,
+            health_check_failures: 0,
+            tasks_completed: 0,
+            tasks_failed: 0,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            metadata: HashMap::new(),
+        }
+    }
+}
+
+impl CloudProvider for WorkerPoolProvider {
+    fn add_workers(&self, count: usize) -> Result<Vec<WorkerId>> {
+        let mut created = Vec::with_capacity(count);
+        for _ in 0..count {
+            let worker = self.build_worker();
+            match self.pool.register_worker(worker) {
+                Ok(id) => {
+                    self.costs.write().insert(id, self.cost_per_hour);
+                    created.push(id);
+                }
+                Err(ClusterError::CapacityExceeded(_)) => {
+                    // Pool is full — stop and report what we actually created.
+                    warn!(
+                        "WorkerPoolProvider hit pool capacity after adding {} of {} workers",
+                        created.len(),
+                        count
+                    );
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(created)
+    }
+
+    fn remove_workers(&self, worker_ids: Vec<WorkerId>) -> Result<()> {
+        let mut costs = self.costs.write();
+        for id in worker_ids {
+            self.pool.unregister_worker(id)?;
+            costs.remove(&id);
+        }
+        Ok(())
+    }
+
+    fn get_worker_cost(&self, worker_id: &WorkerId) -> Result<f64> {
+        Ok(self
+            .costs
+            .read()
+            .get(worker_id)
+            .copied()
+            .unwrap_or(self.cost_per_hour))
+    }
+
+    fn is_spot_available(&self) -> Result<bool> {
+        Ok(self.spot_available)
+    }
+
+    fn select_workers_to_remove(&self, count: usize) -> Result<Vec<WorkerId>> {
+        // Prefer the least-loaded workers (fewest active tasks) as removal
+        // candidates, so busy workers are retained.
+        let mut candidates: Vec<(WorkerId, u32)> = self
+            .pool
+            .get_all_workers()
+            .into_iter()
+            .map(|w| {
+                let guard = w.read();
+                (guard.id, guard.usage.active_tasks)
+            })
+            .collect();
+        candidates.sort_by_key(|(_, active)| *active);
+        Ok(candidates
+            .into_iter()
+            .take(count)
+            .map(|(id, _)| id)
+            .collect())
+    }
+
+    fn provider_name(&self) -> &str {
+        "worker-pool"
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +772,107 @@ mod tests {
         // Low utilization should trigger scale down
         let to_remove = autoscaler.calculate_workers_to_remove(0.3, 0.2, 5);
         assert!(to_remove > 0);
+    }
+
+    use crate::worker_pool::{WorkerPool, WorkerPoolConfig};
+
+    fn test_pool(max_workers: usize) -> Arc<WorkerPool> {
+        Arc::new(WorkerPool::new(WorkerPoolConfig {
+            max_workers,
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn test_worker_pool_provider_adds_and_removes_real_workers() {
+        let pool = test_pool(10);
+        let provider = WorkerPoolProvider::new(Arc::clone(&pool));
+
+        let ids = provider.add_workers(3).expect("add");
+        assert_eq!(ids.len(), 3);
+        assert_eq!(pool.get_worker_count(), 3);
+
+        provider
+            .remove_workers(vec![ids[0], ids[1]])
+            .expect("remove");
+        assert_eq!(pool.get_worker_count(), 1);
+    }
+
+    #[test]
+    fn test_worker_pool_provider_respects_capacity() {
+        let pool = test_pool(2);
+        let provider = WorkerPoolProvider::new(Arc::clone(&pool));
+
+        // Asking for 5 on a pool capped at 2 provisions exactly 2 and reports it.
+        let ids = provider.add_workers(5).expect("add");
+        assert_eq!(ids.len(), 2);
+        assert_eq!(pool.get_worker_count(), 2);
+    }
+
+    #[test]
+    fn test_apply_scale_up_provisions_via_provider() {
+        let pool = test_pool(10);
+        let provider = WorkerPoolProvider::new(Arc::clone(&pool))
+            .with_cost_per_hour(2.0)
+            .with_spot_available(true);
+
+        let config = AutoscaleConfig {
+            enable_cost_optimization: true,
+            ..Default::default()
+        };
+        let autoscaler = Autoscaler::new(config);
+
+        let outcome = autoscaler
+            .apply_decision(&ScaleDecision::ScaleUp(3), &provider, 0)
+            .expect("apply scale up");
+
+        assert_eq!(outcome.added.len(), 3);
+        assert_eq!(outcome.net_change(), 3);
+        // The workers really exist in the pool now.
+        assert_eq!(pool.get_worker_count(), 3);
+
+        let stats = autoscaler.get_stats();
+        assert_eq!(stats.total_scale_ups, 1);
+        assert_eq!(stats.total_workers_added, 3);
+        // Spot savings were accrued (3 workers * 2.0/hr * 0.7 discount).
+        assert!((stats.cost_savings - 3.0 * 2.0 * 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_apply_scale_down_releases_via_provider() {
+        let pool = test_pool(10);
+        let provider = WorkerPoolProvider::new(Arc::clone(&pool));
+
+        // Pre-provision 5 workers.
+        let _ = provider.add_workers(5).expect("seed");
+        assert_eq!(pool.get_worker_count(), 5);
+
+        let autoscaler = Autoscaler::new(AutoscaleConfig::default());
+        let outcome = autoscaler
+            .apply_decision(&ScaleDecision::ScaleDown(2), &provider, 5)
+            .expect("apply scale down");
+
+        assert_eq!(outcome.removed.len(), 2);
+        assert_eq!(outcome.net_change(), -2);
+        assert_eq!(pool.get_worker_count(), 3);
+
+        let stats = autoscaler.get_stats();
+        assert_eq!(stats.total_scale_downs, 1);
+        assert_eq!(stats.total_workers_removed, 2);
+    }
+
+    #[test]
+    fn test_apply_no_change_is_noop() {
+        let pool = test_pool(10);
+        let provider = WorkerPoolProvider::new(Arc::clone(&pool));
+        let autoscaler = Autoscaler::new(AutoscaleConfig::default());
+
+        let outcome = autoscaler
+            .apply_decision(&ScaleDecision::NoChange, &provider, 4)
+            .expect("noop");
+        assert!(outcome.is_noop());
+        assert_eq!(pool.get_worker_count(), 0);
+        assert_eq!(autoscaler.get_stats().total_scale_ups, 0);
     }
 
     #[test]

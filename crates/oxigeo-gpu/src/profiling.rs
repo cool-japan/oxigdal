@@ -314,6 +314,7 @@ impl GpuTimestampProfiler {
             });
         encoder.resolve_query_set(qs, 0..recorded_slots, resolve_buf, 0);
         encoder.copy_buffer_to_buffer(resolve_buf, 0, staging_buf, 0, recorded_bytes);
+        ctx.check_device_lost()?;
         ctx.queue().submit([encoder.finish()]);
 
         // 2. Map the staging buffer synchronously.

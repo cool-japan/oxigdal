@@ -2,7 +2,9 @@
 //!
 //! This module provides:
 //! - Failure detection (heartbeat, health checks)
-//! - Leader election (Raft-based)
+//! - Leader election (Raft-style term/vote state machine, see [`election`])
+//! - Log replication (Raft AppendEntries with consistency checks, see
+//!   [`log_replication`])
 //! - Replica promotion
 //! - Client traffic redirection
 //! - Graceful degradation
@@ -12,6 +14,7 @@
 pub mod client_redirect;
 pub mod detection;
 pub mod election;
+pub mod log_replication;
 pub mod promotion;
 pub mod transport;
 

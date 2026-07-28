@@ -1,6 +1,6 @@
 {
   "name": "@cooljapan/oxigeo-node",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Node.js bindings for OxiGeo - Pure Rust geospatial data abstraction library",
   "main": "index.js",
   "types": "index.d.ts",
@@ -74,13 +74,13 @@
     "oxigeo.*.node"
   ],
   "optionalDependencies": {
-    "@cooljapan/oxigeo-node-win32-x64-msvc": "0.2.0",
-    "@cooljapan/oxigeo-node-darwin-x64": "0.2.0",
-    "@cooljapan/oxigeo-node-linux-x64-gnu": "0.2.0",
-    "@cooljapan/oxigeo-node-darwin-arm64": "0.2.0",
-    "@cooljapan/oxigeo-node-linux-arm64-gnu": "0.2.0",
-    "@cooljapan/oxigeo-node-linux-x64-musl": "0.2.0",
-    "@cooljapan/oxigeo-node-linux-arm64-musl": "0.2.0",
-    "@cooljapan/oxigeo-node-win32-arm64-msvc": "0.2.0"
+    "@cooljapan/oxigeo-node-win32-x64-msvc": "0.2.1",
+    "@cooljapan/oxigeo-node-darwin-x64": "0.2.1",
+    "@cooljapan/oxigeo-node-linux-x64-gnu": "0.2.1",
+    "@cooljapan/oxigeo-node-darwin-arm64": "0.2.1",
+    "@cooljapan/oxigeo-node-linux-arm64-gnu": "0.2.1",
+    "@cooljapan/oxigeo-node-linux-x64-musl": "0.2.1",
+    "@cooljapan/oxigeo-node-linux-arm64-musl": "0.2.1",
+    "@cooljapan/oxigeo-node-win32-arm64-msvc": "0.2.1"
   }
 }

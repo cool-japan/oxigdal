@@ -9,9 +9,12 @@ A comprehensive quality control and validation suite for geospatial data in OxiG
 
 ## Features
 
-- **Raster Quality Control**: Completeness, consistency, and spatial accuracy checks for raster datasets
-- **Vector Quality Control**: Topology validation and attribute completeness checks for vector features
+- **Raster Quality Control**: Completeness, consistency, spatial accuracy, NoData consistency, CRS/extent, cloud-optimized GeoTIFF (COG) compliance, and per-sensor radiometric range checks
+- **Vector Quality Control**: Topology validation (Bentley-Ottmann self-intersection + STRtree-backed gap/overlap detection) and attribute completeness checks for vector features
 - **Metadata Validation**: ISO 19115 and STAC metadata standards compliance checking
+- **STAC Validation**: Item/Collection/Catalog schema validation (required fields, bbox/geometry consistency, datetime format, `eo:cloud_cover` range)
+- **GeoPackage Validation**: OGC GeoPackage 1.4 compliance checks (application ID, user version, required tables)
+- **Batch QC Mode**: Recursive directory scanning with per-extension dispatch and aggregated severity counts
 - **Rules Engine**: Flexible, configurable quality rules via TOML with custom validators
 - **Automatic Fixes**: Safe, strategy-based automatic repairs for common data quality issues
 - **Multi-Format Reporting**: HTML and JSON report generation with severity classification
@@ -25,14 +28,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-qc = "0.2.0"
+oxigeo-qc = "0.2.1"
 ```
 
 ### With Optional Features
 
 ```toml
 [dependencies]
-oxigeo-qc = { version = "0.2.0", features = ["html"] }
+oxigeo-qc = { version = "0.2.1", features = ["html"] }
 ```
 
 **Available Features:**
@@ -219,9 +222,12 @@ let html_report = report.to_html()?;
 
 | Module | Purpose |
 |--------|---------|
-| `raster` | Raster data quality control (completeness, consistency, accuracy) |
+| `raster` | Raster data quality control (completeness, consistency, accuracy, NoData, CRS/extent, COG compliance, radiometric range) |
 | `vector` | Vector data validation (topology, attributes) |
 | `metadata` | Metadata standards compliance checking |
+| `stac` | STAC Item/Collection/Catalog schema validation |
+| `gpkg` | OGC GeoPackage 1.4 compliance validation |
+| `batch` | Batch QC mode — recursive directory scan with per-extension dispatch |
 | `report` | Multi-format report generation (HTML, JSON) |
 | `rules` | Configurable validation rules engine |
 | `fix` | Automatic data quality issue remediation |
@@ -233,15 +239,24 @@ let html_report = report.to_html()?;
 - `CompletenessChecker` - Detects missing or invalid pixels
 - `ConsistencyChecker` - Validates data consistency (CRS, bounds, etc.)
 - `AccuracyChecker` - Checks spatial accuracy and georeferencing
+- `NoDataValidator` - Detects NoData inconsistencies across bands
+- `CrsAndExtentValidator` - Validates CRS parseability, axis order, and bounds plausibility
+- `CogComplianceChecker` - Validates Cloud-Optimized GeoTIFF structure (OGC COG 1.0 / GDAL-cogger strict mode)
+- `RadiometricValidator` - Checks per-band value ranges against sensor profiles (Landsat, Sentinel-2, MODIS, custom)
 
 **Vector Checks:**
-- `TopologyChecker` - Validates geometry validity and topological rules
+- `TopologyChecker` - Validates geometry validity and topological rules (self-intersection, ring orientation, gaps, overlaps)
 - `AttributionChecker` - Ensures required attributes are present
+
+**Catalog & Container Checks:**
+- `StacValidator` - Validates STAC Item/Collection/Catalog JSON against the spec
+- `GpkgValidator` - Validates GeoPackage 1.4 container structure
 
 **Metadata & Reporting:**
 - `MetadataChecker` - ISO 19115 and STAC compliance validation
 - `QualityReport` - Generates comprehensive QC reports
 - `RulesEngine` - Executes custom validation rules
+- `BatchRunner` - Runs QC checks recursively over a directory tree
 
 **Data Repair:**
 - `TopologyFixer` - Fixes common geometry issues

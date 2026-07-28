@@ -10,12 +10,41 @@ use crate::shx::{IndexEntry, ShxReader};
 use oxigeo_core::vector::{
     Coordinate, Feature, FieldValue, Geometry, LineString as CoreLineString,
     MultiLineString as CoreMultiLineString, MultiPoint as CoreMultiPoint, Point as CorePoint,
-    Polygon as CorePolygon,
 };
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+
+/// Splits a multi-part polygon shape into its individual rings, applying
+/// `make_coord(global_index, point)` to build each coordinate (so Z/M values,
+/// which are stored in one flat parallel array, can be indexed by the global
+/// vertex position). Out-of-range or inverted part offsets are skipped
+/// defensively rather than panicking.
+fn split_rings<F>(mp: &crate::shp::MultiPartShape, make_coord: F) -> Vec<Vec<Coordinate>>
+where
+    F: Fn(usize, &crate::shp::shapes::Point) -> Coordinate,
+{
+    let mut rings = Vec::with_capacity(mp.parts.len());
+    for i in 0..mp.parts.len() {
+        let start = mp.parts[i] as usize;
+        let end = if i + 1 < mp.parts.len() {
+            mp.parts[i + 1] as usize
+        } else {
+            mp.points.len()
+        };
+        if start >= end || end > mp.points.len() {
+            continue;
+        }
+        let ring: Vec<Coordinate> = mp.points[start..end]
+            .iter()
+            .enumerate()
+            .map(|(j, p)| make_coord(start + j, p))
+            .collect();
+        rings.push(ring);
+    }
+    rings
+}
 
 /// A complete Shapefile feature (geometry + attributes)
 #[derive(Debug, Clone)]
@@ -486,56 +515,11 @@ impl ShapefileReader {
                 if multi_part.parts.is_empty() {
                     return Ok(None);
                 }
-
-                // First part is exterior ring
-                let exterior_start = multi_part.parts[0] as usize;
-                let exterior_end = if multi_part.parts.len() > 1 {
-                    multi_part.parts[1] as usize
-                } else {
-                    multi_part.points.len()
-                };
-
-                let exterior_coords: Vec<Coordinate> = multi_part.points
-                    [exterior_start..exterior_end]
-                    .iter()
-                    .map(|p| Coordinate::new_2d(p.x, p.y))
-                    .collect();
-
-                if exterior_coords.len() < 4 {
-                    return Ok(None);
-                }
-
-                let exterior = CoreLineString::new(exterior_coords).map_err(|e| {
-                    ShapefileError::invalid_geometry(format!("Invalid exterior ring: {}", e))
-                })?;
-
-                // Remaining parts are interior rings (holes)
-                let mut interiors = Vec::new();
-                for i in 1..multi_part.parts.len() {
-                    let start_idx = multi_part.parts[i] as usize;
-                    let end_idx = if i + 1 < multi_part.parts.len() {
-                        multi_part.parts[i + 1] as usize
-                    } else {
-                        multi_part.points.len()
-                    };
-
-                    let interior_coords: Vec<Coordinate> = multi_part.points[start_idx..end_idx]
-                        .iter()
-                        .map(|p| Coordinate::new_2d(p.x, p.y))
-                        .collect();
-
-                    if interior_coords.len() >= 4
-                        && let Ok(interior) = CoreLineString::new(interior_coords)
-                    {
-                        interiors.push(interior);
-                    }
-                }
-
-                let polygon = CorePolygon::new(exterior, interiors).map_err(|e| {
-                    ShapefileError::invalid_geometry(format!("Invalid polygon: {}", e))
-                })?;
-
-                Ok(Some(Geometry::Polygon(polygon)))
+                // Rings are distinguished by winding direction, not part position
+                // (ESRI convention): group clockwise exteriors with the holes they
+                // contain and emit a MultiPolygon when several exteriors are present.
+                let rings = split_rings(multi_part, |_, p| Coordinate::new_2d(p.x, p.y));
+                crate::polygon_rings::assemble_polygons(rings)
             }
             Shape::MultiPoint(multi_part) => {
                 let points: Vec<CorePoint> = multi_part
@@ -672,55 +656,15 @@ impl ShapefileReader {
             return Ok(None);
         }
 
-        let make_coord = |i: usize, p: &crate::shp::shapes::Point| -> Coordinate {
+        let rings = split_rings(base, |i, p| {
             let z = z_values.get(i).copied().unwrap_or(0.0);
             if let Some(mv) = m_values {
                 Coordinate::new_3dm(p.x, p.y, z, mv.get(i).copied().unwrap_or(0.0))
             } else {
                 Coordinate::new_3d(p.x, p.y, z)
             }
-        };
-
-        let ext_start = base.parts[0] as usize;
-        let ext_end = if base.parts.len() > 1 {
-            base.parts[1] as usize
-        } else {
-            base.points.len()
-        };
-        let ext_coords: Vec<Coordinate> = base.points[ext_start..ext_end]
-            .iter()
-            .enumerate()
-            .map(|(j, p)| make_coord(ext_start + j, p))
-            .collect();
-        if ext_coords.len() < 4 {
-            return Ok(None);
-        }
-        let exterior = CoreLineString::new(ext_coords).map_err(|e| {
-            ShapefileError::invalid_geometry(format!("Invalid exterior Z ring: {}", e))
-        })?;
-
-        let mut interiors = Vec::new();
-        for i in 1..base.parts.len() {
-            let start = base.parts[i] as usize;
-            let end = if i + 1 < base.parts.len() {
-                base.parts[i + 1] as usize
-            } else {
-                base.points.len()
-            };
-            let coords: Vec<Coordinate> = base.points[start..end]
-                .iter()
-                .enumerate()
-                .map(|(j, p)| make_coord(start + j, p))
-                .collect();
-            if coords.len() >= 4
-                && let Ok(ring) = CoreLineString::new(coords)
-            {
-                interiors.push(ring);
-            }
-        }
-        let polygon = CorePolygon::new(exterior, interiors)
-            .map_err(|e| ShapefileError::invalid_geometry(format!("Invalid polygon Z: {}", e)))?;
-        Ok(Some(Geometry::Polygon(polygon)))
+        });
+        crate::polygon_rings::assemble_polygons(rings)
     }
 
     /// Converts a multi-part Z shape into a MultiPoint Geometry with Z coordinates.
@@ -817,50 +761,10 @@ impl ShapefileReader {
             return Ok(None);
         }
 
-        let make_coord = |i: usize, p: &crate::shp::shapes::Point| -> Coordinate {
+        let rings = split_rings(base, |i, p| {
             Coordinate::new_2dm(p.x, p.y, m_values.get(i).copied().unwrap_or(0.0))
-        };
-
-        let ext_start = base.parts[0] as usize;
-        let ext_end = if base.parts.len() > 1 {
-            base.parts[1] as usize
-        } else {
-            base.points.len()
-        };
-        let ext_coords: Vec<Coordinate> = base.points[ext_start..ext_end]
-            .iter()
-            .enumerate()
-            .map(|(j, p)| make_coord(ext_start + j, p))
-            .collect();
-        if ext_coords.len() < 4 {
-            return Ok(None);
-        }
-        let exterior = CoreLineString::new(ext_coords).map_err(|e| {
-            ShapefileError::invalid_geometry(format!("Invalid exterior M ring: {}", e))
-        })?;
-
-        let mut interiors = Vec::new();
-        for i in 1..base.parts.len() {
-            let start = base.parts[i] as usize;
-            let end = if i + 1 < base.parts.len() {
-                base.parts[i + 1] as usize
-            } else {
-                base.points.len()
-            };
-            let coords: Vec<Coordinate> = base.points[start..end]
-                .iter()
-                .enumerate()
-                .map(|(j, p)| make_coord(start + j, p))
-                .collect();
-            if coords.len() >= 4
-                && let Ok(ring) = CoreLineString::new(coords)
-            {
-                interiors.push(ring);
-            }
-        }
-        let polygon = CorePolygon::new(exterior, interiors)
-            .map_err(|e| ShapefileError::invalid_geometry(format!("Invalid polygon M: {}", e)))?;
-        Ok(Some(Geometry::Polygon(polygon)))
+        });
+        crate::polygon_rings::assemble_polygons(rings)
     }
 
     /// Converts a multi-part M shape into a MultiPoint with M.

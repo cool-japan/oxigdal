@@ -29,6 +29,8 @@
 
 use crate::area_of_use::AreaOfUse;
 use crate::transform::BoundingBox;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 /// A candidate coordinate operation that can be ranked for selection.
@@ -251,6 +253,8 @@ fn point_in_aou(aou: &AreaOfUse, lon: f64, lat: f64) -> bool {
 mod tests {
     use super::*;
     use crate::transform::BoundingBox;
+    use alloc::string::ToString;
+    use alloc::vec;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

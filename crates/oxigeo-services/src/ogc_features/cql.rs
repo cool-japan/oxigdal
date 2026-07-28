@@ -23,6 +23,30 @@ pub enum CqlExpr {
         /// Comparison value
         value: CqlValue,
     },
+    /// Inequality comparison (`<>` / `!=`)
+    Neq {
+        /// Property name
+        property: String,
+        /// Comparison value
+        value: CqlValue,
+    },
+    /// Membership test (`prop IN (v1, v2, ...)`)
+    In {
+        /// Property name
+        property: String,
+        /// Candidate values (matches if the property equals any of them)
+        values: Vec<CqlValue>,
+    },
+    /// NULL test (`prop IS NULL`)
+    IsNull {
+        /// Property name
+        property: String,
+    },
+    /// NOT NULL test (`prop IS NOT NULL`)
+    IsNotNull {
+        /// Property name
+        property: String,
+    },
     /// Less-than comparison
     Lt {
         /// Property name
@@ -170,6 +194,61 @@ impl CqlParser {
             return Ok(CqlExpr::Like { property, pattern });
         }
 
+        // IS NULL / IS NOT NULL
+        if let Some(is_idx) = upper.find(" IS ") {
+            let property = s[..is_idx].trim().to_string();
+            if property.is_empty() {
+                return Err(FeaturesError::CqlParseError(format!(
+                    "IS predicate missing property: {s}"
+                )));
+            }
+            let rest = s[is_idx + 4..].trim();
+            let rest_upper = rest.to_ascii_uppercase();
+            if rest_upper == "NULL" {
+                return Ok(CqlExpr::IsNull { property });
+            }
+            if rest_upper == "NOT NULL" {
+                return Ok(CqlExpr::IsNotNull { property });
+            }
+            return Err(FeaturesError::CqlParseError(format!(
+                "IS predicate expects NULL or NOT NULL, got: {rest}"
+            )));
+        }
+
+        // IN (v1, v2, ...)
+        if let Some(in_idx) = upper.find(" IN ") {
+            let property = s[..in_idx].trim().to_string();
+            if property.is_empty() {
+                return Err(FeaturesError::CqlParseError(format!(
+                    "IN predicate missing property: {s}"
+                )));
+            }
+            let rest = s[in_idx + 4..].trim();
+            let inner = rest
+                .strip_prefix('(')
+                .and_then(|r| r.strip_suffix(')'))
+                .ok_or_else(|| {
+                    FeaturesError::CqlParseError(format!(
+                        "IN predicate expects parenthesised list: {rest}"
+                    ))
+                })?;
+            if inner.trim().is_empty() {
+                return Err(FeaturesError::CqlParseError(
+                    "IN predicate value list is empty".to_string(),
+                ));
+            }
+            let values = Self::split_top_level_commas(inner)
+                .into_iter()
+                .map(|part| Self::parse_value(part.trim()))
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.is_empty() {
+                return Err(FeaturesError::CqlParseError(
+                    "IN predicate value list is empty".to_string(),
+                ));
+            }
+            return Ok(CqlExpr::In { property, values });
+        }
+
         // Comparison operators — longest first to avoid ambiguity
         for (op_str, builder) in &[
             (
@@ -177,7 +256,8 @@ impl CqlParser {
                 Self::build_gte as fn(&str, &str) -> Result<CqlExpr, FeaturesError>,
             ),
             ("<=", Self::build_lte),
-            ("!=", Self::build_neq_placeholder),
+            ("<>", Self::build_neq),
+            ("!=", Self::build_neq),
             (">", Self::build_gt),
             ("<", Self::build_lt),
             ("=", Self::build_eq),
@@ -244,10 +324,44 @@ impl CqlParser {
         })
     }
 
-    fn build_neq_placeholder(_property: &str, _value_str: &str) -> Result<CqlExpr, FeaturesError> {
-        Err(FeaturesError::CqlParseError(
-            "!= operator is not yet supported".to_string(),
-        ))
+    fn build_neq(property: &str, value_str: &str) -> Result<CqlExpr, FeaturesError> {
+        let value = Self::parse_value(value_str)?;
+        Ok(CqlExpr::Neq {
+            property: property.to_string(),
+            value,
+        })
+    }
+
+    /// Split a comma-separated list on top-level commas only, respecting
+    /// quotes and nested parentheses so that quoted values containing commas
+    /// are preserved intact.
+    fn split_top_level_commas(input: &str) -> Vec<&str> {
+        let bytes = input.as_bytes();
+        let mut parts = Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b'\'' | b'"' => {
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        i += 1;
+                    }
+                }
+                b',' if depth == 0 => {
+                    parts.push(&input[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        parts.push(&input[start..]);
+        parts
     }
 
     // ── value parsing helpers ────────────────────────────────────────────────
@@ -374,16 +488,28 @@ impl CqlParser {
     pub fn evaluate(expr: &CqlExpr, properties: &serde_json::Value) -> bool {
         match expr {
             CqlExpr::Eq { property, value } => {
+                Self::value_equals(value, &Self::get_prop(properties, property))
+            }
+
+            CqlExpr::Neq { property, value } => {
+                // NULL / missing properties are unknown, not "not equal": fail
+                // the predicate rather than treating a missing value as a match.
                 let prop = Self::get_prop(properties, property);
-                match (value, &prop) {
-                    (CqlValue::String(s), serde_json::Value::String(ps)) => s == ps,
-                    (CqlValue::Number(n), serde_json::Value::Number(pn)) => {
-                        pn.as_f64().is_some_and(|v| (v - n).abs() < f64::EPSILON)
-                    }
-                    (CqlValue::Bool(b), serde_json::Value::Bool(pb)) => b == pb,
-                    _ => false,
+                if prop.is_null() {
+                    false
+                } else {
+                    !Self::value_equals(value, &prop)
                 }
             }
+
+            CqlExpr::In { property, values } => {
+                let prop = Self::get_prop(properties, property);
+                values.iter().any(|v| Self::value_equals(v, &prop))
+            }
+
+            CqlExpr::IsNull { property } => Self::get_prop(properties, property).is_null(),
+
+            CqlExpr::IsNotNull { property } => !Self::get_prop(properties, property).is_null(),
 
             CqlExpr::Lt { property, value } => {
                 Self::numeric_prop(properties, property).is_some_and(|v| v < *value)
@@ -418,7 +544,39 @@ impl CqlParser {
         }
     }
 
+    /// Compare a parsed CQL literal against a JSON property value.
+    ///
+    /// Numeric equality uses a scale-relative tolerance so that values whose
+    /// magnitude is far above 1.0 (where one ULP already exceeds
+    /// [`f64::EPSILON`]) still compare equal when they are within a few ULPs,
+    /// while values that genuinely differ compare unequal.
+    fn value_equals(value: &CqlValue, prop: &serde_json::Value) -> bool {
+        match (value, prop) {
+            (CqlValue::String(s), serde_json::Value::String(ps)) => s == ps,
+            (CqlValue::Number(n), serde_json::Value::Number(pn)) => {
+                pn.as_f64().is_some_and(|v| Self::numbers_equal(v, *n))
+            }
+            (CqlValue::Bool(b), serde_json::Value::Bool(pb)) => b == pb,
+            _ => false,
+        }
+    }
+
+    /// Scale-relative floating point equality for CQL2 numeric comparison.
+    fn numbers_equal(a: f64, b: f64) -> bool {
+        if a == b {
+            return true;
+        }
+        if !a.is_finite() || !b.is_finite() {
+            return false;
+        }
+        let scale = a.abs().max(b.abs()).max(1.0);
+        (a - b).abs() <= f64::EPSILON * scale
+    }
+
     fn get_prop(properties: &serde_json::Value, key: &str) -> serde_json::Value {
+        // CQL2 permits double-quoted identifiers for property names; strip any
+        // surrounding quotes so `"my prop" = 1` resolves to the `my prop` field.
+        let key = key.trim().trim_matches('"').trim_matches('\'');
         match properties {
             serde_json::Value::Object(map) => {
                 map.get(key).cloned().unwrap_or(serde_json::Value::Null)
@@ -469,5 +627,103 @@ impl CqlParser {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn props(json: serde_json::Value) -> serde_json::Value {
+        json
+    }
+
+    fn matches_cql(filter: &str, properties: &serde_json::Value) -> bool {
+        let expr = CqlParser::parse(filter).expect("parse");
+        CqlParser::evaluate(&expr, properties)
+    }
+
+    #[test]
+    fn neq_operator_bang_equals() {
+        let p = props(serde_json::json!({ "status": "archived" }));
+        assert!(!matches_cql("status != 'archived'", &p));
+        assert!(matches_cql("status != 'active'", &p));
+    }
+
+    #[test]
+    fn neq_operator_angle_brackets() {
+        let p = props(serde_json::json!({ "status": "archived" }));
+        assert!(!matches_cql("status <> 'archived'", &p));
+        assert!(matches_cql("status <> 'active'", &p));
+    }
+
+    #[test]
+    fn neq_missing_property_is_false() {
+        // A missing property is unknown, not "not equal".
+        let p = props(serde_json::json!({ "other": 1 }));
+        assert!(!matches_cql("status <> 'archived'", &p));
+    }
+
+    #[test]
+    fn in_operator_strings() {
+        let p = props(serde_json::json!({ "kind": "road" }));
+        assert!(matches_cql("kind IN ('road', 'rail', 'path')", &p));
+        assert!(!matches_cql("kind IN ('rail', 'path')", &p));
+    }
+
+    #[test]
+    fn in_operator_numbers() {
+        let p = props(serde_json::json!({ "zone": 3 }));
+        assert!(matches_cql("zone IN (1, 2, 3)", &p));
+        assert!(!matches_cql("zone IN (4, 5)", &p));
+    }
+
+    #[test]
+    fn is_null_and_is_not_null() {
+        let present = props(serde_json::json!({ "name": "x" }));
+        let absent = props(serde_json::json!({ "other": 1 }));
+        assert!(matches_cql("name IS NOT NULL", &present));
+        assert!(!matches_cql("name IS NULL", &present));
+        assert!(matches_cql("name IS NULL", &absent));
+        assert!(!matches_cql("name IS NOT NULL", &absent));
+    }
+
+    #[test]
+    fn numeric_equality_large_magnitude_relative_epsilon() {
+        // 1e10 stored; the next representable f64 (one ULP away, ~1.9e-6) must
+        // still compare equal. The old fixed `f64::EPSILON` (~2.2e-16) tolerance
+        // would spuriously report this as not-equal.
+        let stored = 1e10_f64;
+        let close = f64::from_bits(stored.to_bits() + 1); // one ULP up
+        assert_ne!(stored, close, "sanity: values differ in the last bit");
+        let p = props(serde_json::json!({ "measure": close }));
+        let filter = format!("measure = {stored}");
+        assert!(
+            matches_cql(&filter, &p),
+            "near-equal large magnitude should match"
+        );
+
+        // A genuinely different value must not match.
+        let p2 = props(serde_json::json!({ "measure": stored + 1000.0 }));
+        assert!(!matches_cql(&filter, &p2));
+    }
+
+    #[test]
+    fn combined_and_with_neq() {
+        let p = props(serde_json::json!({ "status": "active", "pop": 500 }));
+        assert!(matches_cql("status <> 'archived' AND pop > 100", &p));
+        assert!(!matches_cql("status <> 'active' AND pop > 100", &p));
+    }
+
+    #[test]
+    fn in_with_empty_list_is_error() {
+        assert!(CqlParser::parse("kind IN ()").is_err());
+    }
+
+    #[test]
+    fn quoted_property_name_resolves() {
+        let p = props(serde_json::json!({ "my prop": 5 }));
+        assert!(matches_cql("\"my prop\" = 5", &p));
     }
 }

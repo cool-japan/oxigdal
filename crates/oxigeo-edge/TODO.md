@@ -1,55 +1,25 @@
 # TODO: oxigeo-edge
 
 > **Purpose:** Edge-computing runtime — offline-first cache, edge-to-cloud sync (CRDT conflict resolution), local resource monitoring, adaptive compression for bandwidth-limited links.
-> **Status (2026-05-17):** 4,067 LoC · 75 #[test]/#[tokio::test] attributes · 2 real-code soft stubs (plus the sync layer is currently `MockSyncProtocol`-only).
+> **Status (2026-07-28):** 3,535 LoC · 89 tests all-features / 86 default-features · real HTTP sync (`http-sync` feature), sysinfo CPU sampling, sled persistent cache, and CRDT merge all now implemented (see Recently completed); mesh/discovery remains unimplemented.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace `MockSyncProtocol` with a real HTTP/2 transport
-  - **Verified gap:** `src/sync/manager.rs:3` — `use super::protocol::{MockSyncProtocol, SyncProtocol};`; `src/sync/manager.rs:27` — `let protocol: Arc<dyn SyncProtocol> = Arc::new(MockSyncProtocol::new());`. The `SyncManager` constructor *always* wires the in-process mock — never an HTTP/gRPC client. `src/sync/protocol.rs:86` defines `MockSyncProtocol`; `src/sync/protocol.rs:166` carries `// Pull remote items (simplified)`.
-  - **Goal:** A real `HttpSyncProtocol` implementing `SyncProtocol` over reqwest/`hyper` with HTTP/2 multiplexing, server-side resumable uploads, and ETag-based idempotency keys. `SyncManager::new(config)` selects the protocol based on `config.endpoint`: `Some(url)` → HTTP, `None` → in-process mock for tests.
-  - **Design:** Add `reqwest = { workspace = true, default-features = false, features = ["http2", "rustls-tls", "stream"] }` (Pure Rust TLS via rustls). Wire endpoints:
-    - `POST /v1/sync/push` with `Content-Type: application/octet-stream` body of zstd-compressed `Vec<SyncItem>` (use `oxiarc-zstd` from workspace).
-    - `GET /v1/sync/pull?since=<rfc3339>` returning the same encoding.
-    - `POST /v1/sync/exchange` for the symmetric sync.
-    - Bearer-token auth via `Authorization: Bearer <token>` from `EdgeConfig::auth_token`.
-    - Idempotency: `Idempotency-Key: <uuid>` header on push, server returns 200/409.
-    - Resumable upload via `Range: bytes=<offset>-` on retry (server must support).
-  - **Files:** (new) `crates/oxigeo-edge/src/sync/http_protocol.rs`; `crates/oxigeo-edge/src/sync/manager.rs` (constructor dispatch); `crates/oxigeo-edge/src/sync/mod.rs` (re-export); `crates/oxigeo-edge/Cargo.toml` (add reqwest, uuid).
-  - **Tests:** (proposed) `test_http_sync_push_returns_200_on_success`, `test_http_sync_pull_returns_items_since_timestamp`, `test_http_sync_retries_on_503_with_backoff`, `test_http_sync_propagates_409_idempotent_conflict`, `test_http_sync_authorization_header_attached`, `test_sync_manager_with_endpoint_uses_http_protocol`, `test_sync_manager_without_endpoint_uses_mock_protocol`.
-  - **Risk:** Adding reqwest grows the binary by ~600 KB; gate behind a `sync-http` feature so embedded-edge users can opt out. Pure-Rust TLS via rustls satisfies COOLJAPAN policy.
-  - **Prerequisites:** None.
+- [x] Replace `MockSyncProtocol` with a real HTTP transport
+  - **Verified done:** `src/sync/protocol.rs:272` defines a real `pub struct HttpSyncProtocol` with a full `impl SyncProtocol for HttpSyncProtocol` (`:301`), config type `HttpSyncConfig` (`:205`), and is exercised in `src/sync/protocol.rs:436+` against "a minimal hand-rolled HTTP/1.1" test server. `manager.rs:28` documents it as the real alternative to `MockSyncProtocol`. Gated behind a non-default `http-sync = ["sync", "dep:reqwest"]` Cargo feature (`Cargo.toml:79`) — intentionally excluded from `default`/`all` because reqwest's rustls backend pulls `aws-lc-sys` (C+asm), the same accepted trade-off documented elsewhere in the workspace (e.g. `oxigeo-etl`'s `kafka` feature).
+  - **Delta from original design:** confirmed HTTP/1.1 request/response cycle in tests; HTTP/2 multiplexing, ETag idempotency keys, and `Range`-based resumable upload were not independently verified — re-check `protocol.rs` directly if those specific properties matter for a release claim.
 
-- [ ] Real CPU + memory + disk sampling (replace mock `0.0` in scheduler heartbeat)
-  - **Verified gap:** `src/runtime/scheduler.rs:88-89` — `// Collect CPU sample (simplified - in real implementation would use sysinfo)`; `src/runtime/scheduler.rs:103-107` — `/// Sample CPU usage (simplified)` / `fn sample_cpu() -> f64 {` / `// In a real implementation, this would use platform-specific APIs` / `// For now, return a mock value` / `0.0`. Every heartbeat records 0% CPU into `ResourceMetrics`, so adaptive throttling logic downstream is blind.
-  - **Goal:** Heartbeat samples real CPU% (rolling 1-second average), RSS memory bytes, free disk space on the cache dir, and active socket count. `ResourceManager` records these and `Scheduler` uses them to make admission-control decisions.
-  - **Design:** Use `sysinfo` (already a workspace dep used by oxigeo-mobile-enhanced). Hold a `Arc<RwLock<sysinfo::System>>` in `Scheduler` (mirror battery-monitor pattern). `sample_cpu` calls `sys.refresh_cpu_specifics(CpuRefreshKind::everything())` then averages `sys.cpus().iter().map(|c| c.cpu_usage())`. For memory: `sys.process(get_current_pid())?.memory()` for RSS, or `sys.used_memory()` for system-wide. For disk: `statvfs(cache_dir)` on Unix, `GetDiskFreeSpaceEx` on Windows (gate cfg). All sampling has a 200ms upper bound to keep heartbeat snappy.
-  - **Files:** `crates/oxigeo-edge/src/runtime/scheduler.rs` (replace `sample_cpu`, add memory/disk samplers); `crates/oxigeo-edge/src/resource.rs` (extend `ResourceMetrics`); `crates/oxigeo-edge/Cargo.toml` (add `sysinfo` direct dep).
-  - **Tests:** (proposed) `test_sample_cpu_returns_value_between_0_and_100`, `test_sample_memory_returns_positive_rss`, `test_sample_disk_free_returns_realistic_value`, `test_scheduler_heartbeat_records_three_metric_kinds`, `test_resource_manager_metrics_after_heartbeat_nonzero`.
-  - **Risk:** sysinfo on macOS calls some private APIs that may trigger TCC prompts in sandboxed contexts — document. For containers, `/proc/self/status` parsing is the standard fallback.
-  - **Prerequisites:** None.
+- [x] Real CPU sampling (replace mock `0.0` in scheduler heartbeat) — PARTIAL, memory/disk still mocked
+  - **Verified done:** `src/runtime/scheduler.rs:9` imports `sysinfo::{CpuRefreshKind, RefreshKind, System}`; `sample_cpu` now samples real host CPU utilization via `sysinfo` with a `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`-respecting two-sample pattern (tests sleep for that interval between samples, `:278,316`), replacing the old `fn sample_cpu() -> f64 { 0.0 }` stub referenced by its own removal comment at `:311`.
+  - **Gap remaining:** `rg "fn sample_memory|fn sample_disk" src/runtime/scheduler.rs` returns no matches — RSS memory and free-disk-space sampling from the original goal were **not** added; only the CPU third of the three-metric goal is done. Leave this partially open until memory/disk sampling lands.
 
-- [ ] Persistent SQLite (or sled) cache storage backend
-  - **Verified gap:** Existing TODO line — `[ ] Add persistent cache storage backend (SQLite or file-based)`. `src/cache.rs` (15.3K) wraps an in-process `lru::LruCache`; the `CacheConfig::persistent: bool` + `cache_dir: Option<PathBuf>` fields exist but are not honored (verified — no file I/O in cache.rs).
-  - **Goal:** When `CacheConfig { persistent: true, cache_dir: Some("/data/cache") }`, the cache survives process restarts. Items spill from in-memory LRU to disk; cold-cache reads pull from disk; eviction respects both memory and disk budgets.
-  - **Design:** Use `sled` (already in workspace, already in this crate's `Cargo.toml`). Schema: one tree per `CacheKey` namespace; value is a `bincode` (use **oxicode** per COOLJAPAN policy — never raw bincode) serialized `CacheEntry`. On `get()`, check in-memory LRU first; on miss, check sled; promote to LRU. On `put()`, write through to sled if persistent. Eviction: drop oldest sled entries when `du(sled_tree) > max_size_bytes`. Compress entries with `oxiarc-zstd` (already a dep) when `data.len() > 4 KB`.
-  - **Files:** `crates/oxigeo-edge/src/cache.rs` (sled backend); (new) `crates/oxigeo-edge/src/cache/persistent.rs`; `crates/oxigeo-edge/Cargo.toml` (`oxicode` for serialization — replacing any bincode usage if found).
-  - **Tests:** (proposed) `test_persistent_cache_roundtrip_survives_restart`, `test_persistent_cache_lru_promotes_on_disk_hit`, `test_persistent_cache_evicts_oldest_when_disk_quota_exceeded`, `test_persistent_cache_zstd_compresses_above_threshold`, `test_persistent_cache_concurrent_writes_safe`.
-  - **Risk:** sled has known unmaintained deps (RUSTSEC-2025-0057 fxhash, RUSTSEC-2024-0384 instant) per workspace audit — already accepted in MEMORY.md's allowlist. Consider migrating to `redb` for v0.2.0 (no transitive RUSTSEC items).
-  - **Prerequisites:** None.
+- [x] Persistent SQLite (or sled) cache storage backend
+  - **Verified done:** `src/cache.rs:150` holds `persistent_storage: Option<sled::Db>`; when `config.persistent` is set, `sled::open(cache_dir)` is called (`:172-174`) and both `get`/`put`/remove paths check/write through to the sled tree (`:209-210, 271, 298-299, 322`). This matches the TODO's own suggested design (sled, already a workspace+crate dep) rather than a from-scratch SQLite backend.
+  - **Not independently re-verified:** zstd-above-4KB compression on entries, and whether values are oxicode- vs some-other-encoding-serialized — re-check `cache.rs` directly if those specific sub-claims matter.
 
-- [ ] Real CRDT merge for concurrent edit conflict resolution
-  - **Verified gap:** Existing TODO line — `[ ] Implement real conflict resolution with CRDT merge for concurrent edits`. `src/conflict.rs` (14.7K) declares `CrdtMap`, `CrdtSet`, `VectorClock` — verify operational-vs-state CRDT semantics are correct under concurrent edits.
-  - **Goal:** OR-Set (Observed-Remove Set) for set values, LWW-Element-Set (Last-Writer-Wins) for map values keyed by vector clock, RGA (Replicated Growable Array) for sequence types. Merge is commutative, associative, idempotent — verified by property-based tests with `proptest` (already a dev-dep).
-  - **Design:** Reference: Shapiro et al. "Conflict-free Replicated Data Types" (INRIA 2011). Implement:
-    - **OR-Set**: each add carries a unique tag (UUID); remove only removes observed tags; merge unions tagged-adds, intersects tagged-removes. Concurrent add+remove → add wins.
-    - **LWW-Map**: each value carries a Lamport timestamp + node ID; merge keeps the latest timestamp, breaks ties on node ID.
-    - **VectorClock**: dotted-version-vector for causality tracking; `happens_before(a, b)` strict partial order.
-    - **Merge protocol**: at sync time, exchange compact deltas (not full state) by sending operations since the peer's last seen vector clock.
-  - **Files:** `crates/oxigeo-edge/src/conflict.rs` (validate / extend); (new) `crates/oxigeo-edge/src/conflict/or_set.rs`, `crates/oxigeo-edge/src/conflict/lww_map.rs`, `crates/oxigeo-edge/src/conflict/rga.rs`.
-  - **Tests:** (proposed via proptest) `proptest_or_set_add_remove_commutative`, `proptest_lww_map_merge_idempotent`, `proptest_vector_clock_strict_partial_order`, `test_rga_concurrent_inserts_at_same_position_deterministic`, `test_crdt_merge_three_way_associative`.
-  - **Risk:** RGA is complex; consider deferring sequence CRDT to v0.2.0.
-  - **Prerequisites:** None.
+- [x] Real CRDT merge for concurrent edit conflict resolution — PARTIAL (different primitives than originally sketched)
+  - **Verified done:** `src/conflict.rs` implements real, non-trivial CRDTs, each with its own `merge()`: `VectorClock::merge` (`:38`), `LwwRegister<T>::merge` (`:140`), `GSet<T>::merge` (`:201`, grow-only set), `TwoPhaseSet<T>::merge` (`:271`, 2P-Set), and `CrdtMap<K, V>::merge` (`:350`, backed by per-key `LwwRegister`). This is genuine conflict-resolution logic, not a pass-through.
+  - **Delta from original design:** the TODO proposed OR-Set (tag-based, supports re-add after remove) + a Lamport-timestamp LWW-Map + RGA for sequences. What's actually implemented is `GSet`/`TwoPhaseSet` (2P-Set cannot re-add after remove — strictly weaker than OR-Set) + `LwwRegister`-per-key `CrdtMap` (no explicit node-ID tie-break documented) + no RGA/sequence CRDT at all. Commutativity/associativity/idempotence are not verified by `proptest` (no `proptest_` prefixed tests found in `conflict.rs`) — only example-based unit tests. If OR-Set re-add semantics or property-based merge guarantees are required, treat this as still open.
 
 - [ ] Edge node discovery + mesh networking (mDNS + UDP gossip)
   - **Verified gap:** Existing TODO line — `[ ] Implement edge node discovery and mesh networking between nearby nodes`. No discovery code in `src/` today (verified).
@@ -119,4 +89,4 @@
 - (no `[x]` entries in prior TODO.md — see README.md for the offline-first architecture; `.edge_minimal/` and `.oxigeo_cache/` directories indicate prior test runs)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28 (status line refreshed: 75→89/86 tests, LoC 4,067→3,535, date bumped; all four High Priority items re-verified against source and flipped to done — CPU sampling and CRDT merge marked PARTIAL since memory/disk sampling and OR-Set/RGA/property-based-merge guarantees are still missing; mesh/discovery re-checked and confirmed still absent — left open)*

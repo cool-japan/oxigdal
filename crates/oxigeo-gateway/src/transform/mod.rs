@@ -4,6 +4,7 @@
 //! including format conversion, header manipulation, and content negotiation.
 
 pub mod adapters;
+pub mod jsonpath;
 pub mod request;
 pub mod response;
 
@@ -276,11 +277,14 @@ impl TransformEngine {
         }
     }
 
-    /// Applies JSON path transformation.
-    fn apply_json_path(&self, body: &[u8], _path: &str) -> Result<Vec<u8>> {
-        // Simplified implementation
-        // In a real implementation, use a JSONPath library
-        Ok(body.to_vec())
+    /// Applies a JSONPath extraction to the body.
+    ///
+    /// Parses `path` and evaluates it against the JSON body, returning the matched value(s)
+    /// as JSON. A malformed expression or (for a deterministic path) a no-match is a hard
+    /// error, so a misconfigured rule is surfaced instead of silently passing the original
+    /// body through unchanged.
+    fn apply_json_path(&self, body: &[u8], path: &str) -> Result<Vec<u8>> {
+        jsonpath::JsonPath::parse(path)?.apply_to_bytes(body)
     }
 
     /// Applies template transformation.

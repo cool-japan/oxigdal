@@ -244,6 +244,7 @@ impl ReductionKernel {
             compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
         Ok(())
     }
@@ -444,6 +445,7 @@ fn histogram(@builtin(global_invocation_id) global_id: vec3<u32>) {
             compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         // Read histogram result
@@ -557,8 +559,9 @@ mod tests {
         assert_eq!(params.max_value, 255.0);
     }
 
+    // No `#[ignore]`: the body self-gates on `GpuContext::new()`, so it no-ops
+    // without a GPU and runs its real assertions on GPU-equipped runners.
     #[tokio::test]
-    #[ignore]
     async fn test_reduction_kernel() {
         if let Ok(context) = GpuContext::new().await
             && let Ok(kernel) = ReductionKernel::new(&context, ReductionOp::Sum)

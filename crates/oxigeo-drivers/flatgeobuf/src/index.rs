@@ -318,17 +318,38 @@ impl PackedRTree {
         self.level_sizes[..level].iter().sum()
     }
 
-    /// Reads the index from a reader
-    pub fn read<R: Read>(reader: &mut R, num_features: u64) -> Result<Self> {
+    /// Reads the index from a reader.
+    ///
+    /// `node_size` is the branching factor declared by the file's header
+    /// (`Header::index_node_size`). It must be threaded through so that files
+    /// produced with a non-default node size are laid out identically by the
+    /// reader; a value below 2 (which cannot describe a valid tree) falls back to
+    /// [`Self::DEFAULT_NODE_SIZE`].
+    pub fn read<R: Read>(reader: &mut R, num_features: u64, node_size: u16) -> Result<Self> {
         if num_features == 0 {
             return Ok(Self::new(Self::DEFAULT_NODE_SIZE));
         }
 
-        // Calculate total number of nodes
-        let node_size = Self::DEFAULT_NODE_SIZE;
+        // A fan-out below 2 makes the level count never converge; treat it as the
+        // reference default rather than looping forever or dividing by an
+        // ill-defined branching factor.
+        let node_size = if node_size < 2 {
+            Self::DEFAULT_NODE_SIZE
+        } else {
+            node_size as usize
+        };
+
         let num_nodes = Self::calculate_node_count(num_features as usize, node_size);
 
-        let mut nodes = Vec::with_capacity(num_nodes);
+        // Do NOT speculatively reserve `num_nodes` slots. `num_features` comes
+        // straight from the (untrusted) FlatBuffers header and can claim a count
+        // that maps to a multi-terabyte allocation from a file only a few bytes
+        // long (cf. fuzz artifact oom-990fa5d6...). Reserve a bounded amount and
+        // let the vector grow as nodes are actually decoded; a truncated or
+        // corrupt file then fails fast at EOF inside `Node::read` instead of
+        // triggering a speculative OOM.
+        const INITIAL_CAPACITY_CAP: usize = 1 << 12;
+        let mut nodes = Vec::with_capacity(num_nodes.min(INITIAL_CAPACITY_CAP));
         for _ in 0..num_nodes {
             nodes.push(Node::read(reader)?);
         }
@@ -353,13 +374,20 @@ impl PackedRTree {
 
     /// Calculates the total number of nodes in the tree
     pub(crate) fn calculate_node_count(num_features: usize, node_size: usize) -> usize {
+        // Guard against a degenerate fan-out (< 2 never converges) and use
+        // saturating arithmetic so a hostile `num_features` near `usize::MAX`
+        // yields a saturated bound instead of overflow-panicking; the caller
+        // reads nodes incrementally and hits EOF long before that many exist.
+        if node_size < 2 {
+            return num_features;
+        }
         let mut count = num_features;
-        let mut total = 0;
+        let mut total: usize = 0;
         while count > 1 {
-            total += count;
+            total = total.saturating_add(count);
             count = count.div_ceil(node_size);
         }
-        total + count
+        total.saturating_add(count)
     }
 
     /// Calculates the size of each level
@@ -626,5 +654,84 @@ mod tests {
             "search must return exactly the intersecting leaves"
         );
         assert!(expected_hits > 0, "test window should hit some features");
+    }
+
+    /// Regression (fuzz OOM): a truncated index buffer whose declared feature
+    /// count maps to an astronomically large node count must fail fast at EOF
+    /// rather than speculatively reserving terabytes of `Node`s.
+    #[test]
+    fn test_read_rejects_oversized_feature_count_without_oom() {
+        use std::io::Cursor;
+        let tiny = [0u8; 8];
+        let mut cursor = Cursor::new(&tiny[..]);
+        let result = PackedRTree::read(&mut cursor, u64::MAX / 2, 16);
+        assert!(
+            result.is_err(),
+            "an oversized feature count over a truncated buffer must error, not OOM"
+        );
+    }
+
+    /// `calculate_node_count` must not overflow-panic on a hostile feature count
+    /// near `usize::MAX`.
+    #[test]
+    fn test_calculate_node_count_saturates() {
+        let n = PackedRTree::calculate_node_count(usize::MAX, 16);
+        assert!(n > 0, "saturating count must be well-defined");
+    }
+
+    /// A degenerate declared node size (< 2) must not hang: `read` falls back to
+    /// the default fan-out.
+    #[test]
+    fn test_read_degenerate_node_size_falls_back() {
+        use std::io::Cursor;
+        let tiny = [0u8; 4];
+        let mut cursor = Cursor::new(&tiny[..]);
+        // node_size 1 would make the level count never converge if used verbatim.
+        let result = PackedRTree::read(&mut cursor, 8, 1);
+        assert!(
+            result.is_err(),
+            "truncated buffer still errors, but must not hang"
+        );
+    }
+
+    /// The declared (non-default) node size must actually be honored end-to-end:
+    /// a tree built and serialized with `node_size = 4` reads back with the same
+    /// layout only when 4 is threaded in; reading it as the default 16 yields a
+    /// different layout, proving the value is no longer hardcoded.
+    #[test]
+    fn test_read_honors_non_default_node_size() {
+        use std::io::Cursor;
+        let n = 20usize;
+        let boxes: Vec<BoundingBox> = (0..n)
+            .map(|i| {
+                let c = i as f64;
+                BoundingBox::new(c, c, c + 0.5, c + 0.5)
+            })
+            .collect();
+        let node_size = 4u16;
+        let tree = PackedRTree::build(boxes, node_size as usize).expect("build");
+
+        let mut buf = Vec::new();
+        tree.write(&mut buf).expect("write");
+
+        let mut cur = Cursor::new(&buf);
+        let read_ok = PackedRTree::read(&mut cur, n as u64, node_size).expect("read ok");
+        assert_eq!(read_ok.node_size, node_size as usize);
+        assert_eq!(read_ok.nodes.len(), tree.nodes.len());
+        assert_eq!(read_ok.level_sizes, tree.level_sizes);
+        assert_eq!(
+            read_ok.nodes.len(),
+            read_ok.level_sizes.iter().sum::<usize>()
+        );
+
+        let mut cur2 = Cursor::new(&buf);
+        if let Ok(read_wrong) =
+            PackedRTree::read(&mut cur2, n as u64, PackedRTree::DEFAULT_NODE_SIZE as u16)
+        {
+            assert_ne!(
+                read_wrong.level_sizes, tree.level_sizes,
+                "reading with the wrong node size must not reproduce the layout"
+            );
+        }
     }
 }

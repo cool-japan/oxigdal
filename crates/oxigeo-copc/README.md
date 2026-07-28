@@ -31,7 +31,7 @@ let results = octree.query_bbox(&query_box);
 
 ## Status
 
-- 139 tests passing, 0 failures
+- 303 tests passing, 0 failures
 
 ## License
 

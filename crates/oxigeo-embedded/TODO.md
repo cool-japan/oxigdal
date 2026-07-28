@@ -1,7 +1,7 @@
 # TODO: oxigeo-embedded
 
 > **Purpose:** `no_std`-compatible geospatial primitives for ARM Cortex-M, RISC-V, ESP32 — static memory pools, embedded-hal abstractions, fixed-point math, low-power & realtime helpers.
-> **Status (2026-05-17):** 5,214 LoC · 68 #[test] attributes · 2 real-code soft stubs.
+> **Status (2026-07-28):** 2,962 LoC · 76 tests all-features / 52 default-features · 1 real-code soft stub remaining (power-mode transition policy; realtime scheduler dispatch closed — see Recently completed).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -14,14 +14,9 @@
   - **Risk:** State table grows with new modes; encode in a single const so additions are statically checked.
   - **Prerequisites:** None.
 
-- [ ] Realtime scheduler task execution (currently "Task would be executed here")
-  - **Verified gap:** `src/realtime.rs:330-332` — `// Task would be executed here` / `// For now, just mark as executed` / `let end_us = self.scheduler.elapsed_us();`. The scheduler `schedule()` loop iterates ready tasks and records timing stats but never dispatches the closure — every task reports zero exec_us.
-  - **Goal:** Real cooperative dispatch of task closures with deadline tracking, missed-deadline statistics, and bounded execution-time enforcement.
-  - **Design:** Tasks carry a `task_fn: fn(&mut Context<'_>) -> Result<()>` (fn pointer to keep no_std, no Box<dyn Fn>). The `schedule()` loop, after `task.is_ready(current_us)`, invokes `task.task_fn(&mut ctx)` between the `start_us`/`end_us` timestamps. Bound execution to `task.budget_us` via cooperative yielding (caller checks `ctx.deadline_reached()`). Missed deadlines → record into `TaskStats { missed_deadlines, max_exec_us, last_exec_us }`. Provide an `IsrEntry` variant for tasks dispatched from an ISR (no-allocation, no-blocking).
-  - **Files:** `crates/oxigeo-embedded/src/realtime.rs` (dispatch logic); (new) `crates/oxigeo-embedded/src/realtime/context.rs` (Context type).
-  - **Tests:** (proposed) `test_realtime_task_fn_called_when_ready`, `test_realtime_missed_deadline_recorded`, `test_realtime_budget_overrun_does_not_block_other_tasks`, `test_realtime_isr_entry_no_alloc`.
-  - **Risk:** fn-pointer-only tasks restrict captured state; document the `Context` pattern that scratch state lives in a `&'static AtomicX` or in the task struct.
-  - **Prerequisites:** None.
+- [x] Realtime scheduler task execution (formerly "Task would be executed here")
+  - **Verified done:** `src/realtime.rs::schedule(&mut self)` now actually invokes the task's runner — `if let Some(run) = self.tasks[i].run { run(); }` between real `start_us`/`end_us` timestamps — with the doc comment confirming: "the attached runner (see `PeriodicTask::with_runner`) is invoked and its wall-clock duration is measured against the task budget." Missed-deadline detection (`exec_us > budget_us`) feeds `self.stats[i].record_execution(exec_us, missed)`. A second entry point, `schedule_with<F: FnMut(usize)>`, was also added for stateful/closure-capturing dispatch that a bare `fn()` pointer can't support.
+  - **Delta from original design:** dispatch uses a stored `Option<fn()>` runner field (`PeriodicTask::with_runner`) plus the alternative `schedule_with` closure-callback path, rather than the sketched `task_fn: fn(&mut Context<'_>) -> Result<()>` + dedicated `Context` type / `IsrEntry` variant. No dedicated `realtime/context.rs` was added.
 
 - [ ] Verify compilation across embedded target triples in CI (thumbv7em-none-eabihf, riscv32imc-unknown-none-elf, xtensa-esp32-none-elf)
   - **Verified gap:** Existing TODO line — `[ ] Verify compilation on actual embedded targets (thumbv7em, riscv32imc, xtensa)`. The crate's `default = ["alloc"]` features compile on host, but `no_std + no_alloc + arm + low-power + realtime` likely hasn't been recently exercised. cfg conditions are declared in `build.rs` already.
@@ -109,4 +104,4 @@
 - (no `[x]` entries in prior TODO.md — see README.md for the no_std architecture and `examples/` for ARM Cortex-M usage)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28 (status line refreshed: 68→76/52 tests, LoC 5,214→2,962, date bumped; realtime scheduler dispatch confirmed real and flipped to done. Power-mode transition policy re-checked — `is_transition_allowed` still unconditionally returns `true`; the design shifted to delegate real hardware legality to a BSP-supplied `PowerController::set_power_mode`, but no state-table/`PowerError::TransitionForbidden` exists, so left open. Target-triple CI script, fixed-point arithmetic module, and stack-usage annotations all re-checked and confirmed still absent — left open)*

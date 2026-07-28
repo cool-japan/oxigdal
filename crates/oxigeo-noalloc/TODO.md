@@ -1,8 +1,8 @@
 # TODO: oxigeo-noalloc
 
 > **Purpose:** `no_std`, `no_alloc` fixed-size geometry primitives for OxiGeo — for embedded, RISC-V, and Redox OS environments.
-> **Status (2026-05-16):** 2,310 Rust LoC · 136 tests · 0 real stubs
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 2,310 Rust LoC · 136 tests · 0 real stubs
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
@@ -92,4 +92,4 @@
 - [x] Implement geohash neighbour computation (completed 2026-04-19, part of N1)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

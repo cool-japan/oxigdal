@@ -33,6 +33,9 @@ pub struct DataRepresentationSection {
     pub complex_packing: Option<ComplexPackingParams>,
     /// Spatial-differencing parameters (present for DRT 5.3 only).
     pub spatial_diff: Option<SpatialDiffParams>,
+    /// IEEE floating-point precision code (present for DRT 5.4): 1 = 32-bit,
+    /// 2 = 64-bit, 3 = 128-bit (WMO Code Table 5.7).
+    pub ieee_precision: Option<u8>,
 }
 
 impl DataRepresentationSection {
@@ -44,10 +47,16 @@ impl DataRepresentationSection {
         let template_number = cursor.read_u16::<BigEndian>()?;
 
         match template_number {
-            0 | 40 => {
-                // Template 5.0: Simple packing (5.40 is JPEG2000 but its
-                // common header is laid out identically; the actual JPEG2000
-                // payload decode remains out of scope).
+            0 | 40 | 41 | 42 => {
+                // Template 5.0: Simple packing.
+                //
+                // Templates 5.40 (JPEG2000), 5.41 (PNG) and 5.42 (CCSDS AEC)
+                // share the same common header (R, E, D, bits_per_value); the
+                // codestream/compressed payload in Section 7 is decoded by the
+                // dispatch in `grib2::decoder`, NOT by the simple-packing
+                // bit-unpacker. `template_number` is preserved so the decoder
+                // can route each template to the correct codec (or a typed
+                // error) instead of silently mis-unpacking the payload.
                 let reference_value = cursor.read_f32::<BigEndian>()?;
                 let binary_scale_factor = read_i16_sign_magnitude(&mut cursor)?;
                 let decimal_scale_factor = read_i16_sign_magnitude(&mut cursor)?;
@@ -62,6 +71,7 @@ impl DataRepresentationSection {
                     bits_per_value,
                     complex_packing: None,
                     spatial_diff: None,
+                    ieee_precision: None,
                 })
             }
             2 => {
@@ -76,6 +86,7 @@ impl DataRepresentationSection {
                     bits_per_value: complex.bits_per_value,
                     complex_packing: Some(complex),
                     spatial_diff: None,
+                    ieee_precision: None,
                 })
             }
             3 => {
@@ -91,6 +102,29 @@ impl DataRepresentationSection {
                     bits_per_value: complex.bits_per_value,
                     complex_packing: Some(complex),
                     spatial_diff: Some(spatial),
+                    ieee_precision: None,
+                })
+            }
+            4 => {
+                // Template 5.4: IEEE floating-point data. Octet 12 carries the
+                // precision code (WMO Code Table 5.7). Section 7 holds raw
+                // big-endian IEEE values, so there is no R/E/D scaling.
+                let precision = cursor.read_u8()?;
+                if precision != 1 && precision != 2 && precision != 3 {
+                    return Err(GribError::InvalidDataRepresentation(format!(
+                        "DRT 5.4: unsupported IEEE precision code {precision} (expected 1, 2 or 3)"
+                    )));
+                }
+                Ok(Self {
+                    num_data_points,
+                    template_number,
+                    reference_value: 0.0,
+                    binary_scale_factor: 0,
+                    decimal_scale_factor: 0,
+                    bits_per_value: 0,
+                    complex_packing: None,
+                    spatial_diff: None,
+                    ieee_precision: Some(precision),
                 })
             }
             _ => Err(GribError::UnsupportedDataTemplate(template_number)),

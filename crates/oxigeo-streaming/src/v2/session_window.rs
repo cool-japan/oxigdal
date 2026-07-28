@@ -88,6 +88,15 @@ pub struct SessionWindowConfig {
     pub min_events: usize,
     /// If set, force-close a session whose span exceeds this duration.
     pub max_session_duration: Option<Duration>,
+    /// Bounded out-of-order tolerance.
+    ///
+    /// The processor assumes events arrive in non-decreasing timestamp order.
+    /// An event whose timestamp is earlier than the previously processed event
+    /// by **more than** `allowed_lateness` is rejected by [`SessionWindowProcessor::process`]
+    /// with [`StreamingError::InvalidState`], rather than being silently
+    /// mis-assigned to the wrong session. Defaults to [`Duration::ZERO`], which
+    /// rejects any strictly out-of-order event.
+    pub allowed_lateness: Duration,
 }
 
 impl Default for SessionWindowConfig {
@@ -96,6 +105,7 @@ impl Default for SessionWindowConfig {
             gap_duration: Duration::from_secs(30),
             min_events: 1,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         }
     }
 }
@@ -140,8 +150,29 @@ impl<T: Clone> SessionWindowProcessor<T> {
     /// - There is no open session, **or**
     /// - The gap since the previous event exceeds `gap_duration`, **or**
     /// - The current session has exceeded `max_session_duration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamingError::InvalidState`] when `event` arrives earlier than
+    /// the previously processed event by more than `config.allowed_lateness`
+    /// (the out-of-order precondition is enforced rather than silently assumed).
     pub fn process(&mut self, event: StreamEvent<T>) -> Result<(), StreamingError> {
         let event_time = event.timestamp;
+
+        // Enforce the non-decreasing-order precondition with bounded lateness.
+        // An event that arrives earlier than the last processed event by more
+        // than `allowed_lateness` cannot be assigned to a session correctly, so
+        // reject it explicitly instead of silently mis-processing it.
+        if let Some(last) = self.last_event_time
+            && let Ok(behind) = last.duration_since(event_time)
+            && behind > self.config.allowed_lateness
+        {
+            return Err(StreamingError::InvalidState(format!(
+                "out-of-order event (sequence {}): timestamp is {:?} behind the last processed \
+                 event, exceeding allowed_lateness {:?}",
+                event.sequence, behind, self.config.allowed_lateness
+            )));
+        }
 
         // Check whether we should close the current session.
         let gap_exceeded = self.last_event_time.map(|last| {
@@ -242,6 +273,7 @@ mod tests {
             gap_duration: Duration::from_secs(60),
             min_events: 1,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         proc.process(event(0, 0)).expect("process ok");
@@ -259,6 +291,7 @@ mod tests {
             gap_duration: Duration::from_secs(30),
             min_events: 1,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         proc.process(event(0, 0)).expect("process ok");
@@ -275,6 +308,7 @@ mod tests {
             gap_duration: Duration::from_secs(5),
             min_events: 3,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         proc.process(event(0, 0)).expect("process ok");
@@ -291,6 +325,7 @@ mod tests {
             gap_duration: Duration::from_secs(100),
             min_events: 1,
             max_session_duration: Some(Duration::from_secs(50)),
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         proc.process(event(0, 0)).expect("process ok");
@@ -320,6 +355,7 @@ mod tests {
             gap_duration: Duration::from_secs(10),
             min_events: 1,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         // Session 1
@@ -343,6 +379,7 @@ mod tests {
             gap_duration: Duration::from_secs(5),
             min_events: 1,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         proc.process(event(0, 0)).expect("ok");
@@ -377,6 +414,7 @@ mod tests {
             gap_duration: Duration::from_secs(60),
             min_events: 1,
             max_session_duration: None,
+            allowed_lateness: Duration::ZERO,
         };
         let mut proc = SessionWindowProcessor::new(cfg);
         for i in 0..10u64 {
@@ -386,6 +424,45 @@ mod tests {
         let sessions = proc.drain_sessions();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].event_count(), 10);
+    }
+
+    #[test]
+    fn test_out_of_order_event_rejected() {
+        let cfg = SessionWindowConfig::default(); // allowed_lateness = 0
+        let mut proc = SessionWindowProcessor::new(cfg);
+        proc.process(event(100, 0)).expect("in-order ok");
+        // An event 5 s earlier than the last processed event must be rejected.
+        let err = proc
+            .process(event(95, 1))
+            .expect_err("out-of-order should error");
+        assert!(matches!(err, StreamingError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_out_of_order_within_allowed_lateness_accepted() {
+        let cfg = SessionWindowConfig {
+            gap_duration: Duration::from_secs(60),
+            allowed_lateness: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let mut proc = SessionWindowProcessor::new(cfg);
+        proc.process(event(100, 0)).expect("ok");
+        // 5 s late ≤ 10 s allowed_lateness → accepted.
+        proc.process(event(95, 1)).expect("within lateness ok");
+        // 20 s late > 10 s → rejected.
+        let err = proc
+            .process(event(80, 2))
+            .expect_err("beyond lateness should error");
+        assert!(matches!(err, StreamingError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_equal_timestamps_accepted() {
+        // Non-decreasing includes equal timestamps.
+        let cfg = SessionWindowConfig::default();
+        let mut proc = SessionWindowProcessor::new(cfg);
+        proc.process(event(100, 0)).expect("ok");
+        proc.process(event(100, 1)).expect("equal ts ok");
     }
 
     #[test]

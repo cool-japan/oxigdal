@@ -44,12 +44,38 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
+/// A leader-to-follower heartbeat (empty Raft `AppendEntries`).
+///
+/// Sent periodically by the elected leader to assert its authority. Receiving a
+/// heartbeat for a term that is at least as new as the follower's own resets the
+/// follower's election timer (see
+/// [`ClusterCoordinator::handle_heartbeat`](crate::coordinator::ClusterCoordinator::handle_heartbeat)),
+/// which is exactly what stops followers from perpetually re-running elections.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeartbeatRequest {
+    /// The leader's current term.
+    pub term: u64,
+    /// The node id of the leader sending the heartbeat.
+    pub leader_id: NodeId,
+}
+
+/// A follower's response to a [`HeartbeatRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeartbeatResponse {
+    /// The responder's current term, so a leader can detect a higher term and
+    /// step down.
+    pub term: u64,
+    /// Whether the follower accepted the heartbeat (i.e. the leader's term was
+    /// not stale).
+    pub success: bool,
+}
+
 /// Transport used by the coordinator to send consensus RPCs to peers.
 ///
 /// Implementations are responsible for actually reaching `peer` over the network
 /// (using `peer_address`) and returning the peer's real response. Returning an
-/// error models an unreachable peer — the caller treats that as "no vote", never
-/// as a granted vote.
+/// error models an unreachable peer — the caller treats that as "no vote"/"no
+/// acknowledgement", never as a granted vote or a delivered heartbeat.
 #[async_trait]
 pub trait NodeTransport: Send + Sync {
     /// Send a vote request to a single peer and await its response.
@@ -59,6 +85,24 @@ pub trait NodeTransport: Send + Sync {
         peer_address: &str,
         request: VoteRequest,
     ) -> Result<VoteResponse>;
+
+    /// Send a leader heartbeat to a single follower and await its response.
+    ///
+    /// The default implementation refuses to reach any peer, mirroring
+    /// [`UnconfiguredTransport`]: a coordinator without a real network layer must
+    /// not be able to pretend a heartbeat was delivered. Real transports override
+    /// this to actually deliver the [`HeartbeatRequest`] to the follower's
+    /// server-side [`ClusterCoordinator::handle_heartbeat`](crate::coordinator::ClusterCoordinator::handle_heartbeat).
+    async fn send_heartbeat(
+        &self,
+        peer: NodeId,
+        _peer_address: &str,
+        _request: HeartbeatRequest,
+    ) -> Result<HeartbeatResponse> {
+        Err(ClusterError::NetworkError(format!(
+            "no node transport configured; cannot heartbeat peer {peer}"
+        )))
+    }
 }
 
 /// The default transport installed when no real transport is configured.

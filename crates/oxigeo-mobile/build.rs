@@ -40,10 +40,20 @@ fn main() {
         {
             Ok(bindings) => {
                 if bindings.write_to_file(&header_path) {
-                    println!(
-                        "cargo:warning=Generated C header: {}",
-                        header_path.display()
-                    );
+                    // Informational only: do NOT use `cargo:warning=` for a
+                    // successful build step. `cargo:warning=` is reserved for
+                    // genuine problems (see the `cbindgen failed` / "Failed to
+                    // write header file" branches below) -- emitting it here
+                    // unconditionally would make every clean workspace build
+                    // print a spurious warning, violating the No-Warnings
+                    // policy. Verbose/CI logging can still be opted into via
+                    // an explicit env var.
+                    if env::var_os("OXIGEO_MOBILE_VERBOSE_BUILD").is_some() {
+                        println!(
+                            "cargo:warning=Generated C header: {}",
+                            header_path.display()
+                        );
+                    }
                 } else {
                     eprintln!("Warning: Failed to write header file");
                 }

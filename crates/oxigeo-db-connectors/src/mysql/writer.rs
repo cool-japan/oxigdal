@@ -2,10 +2,11 @@
 
 use crate::error::{Error, Result};
 use crate::mysql::{MySqlConnector, geometry_to_wkt};
+use crate::sql::quote_mysql_ident;
 use geo_types::Geometry;
 use mysql_async::prelude::*;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// MySQL spatial data writer.
 pub struct MySqlWriter {
@@ -39,19 +40,19 @@ impl MySqlWriter {
         properties: &HashMap<String, Value>,
     ) -> Result<i64> {
         let wkt = geometry_to_wkt(geometry)?;
-        let mut columns = vec![self.geometry_column.clone()];
+        let mut columns = vec![quote_mysql_ident(&self.geometry_column)?];
         let mut placeholders = vec!["ST_GeomFromText(?)".to_string()];
         let mut values: Vec<mysql_async::Value> = vec![wkt.into()];
 
         for (key, value) in properties {
-            columns.push(key.clone());
+            columns.push(quote_mysql_ident(key)?);
             placeholders.push("?".to_string());
             values.push(json_to_mysql_value(value)?);
         }
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
-            self.table_name,
+            quote_mysql_ident(&self.table_name)?,
             columns.join(", "),
             placeholders.join(", ")
         );
@@ -94,12 +95,17 @@ impl MySqlWriter {
             return Ok(Vec::new());
         }
 
-        // Get all unique property keys
-        let mut all_keys: Vec<String> = chunk[0].1.keys().cloned().collect();
-        all_keys.sort();
+        // Compute the *union* of property keys across every row in the chunk
+        // (sorted, deduplicated). Deriving the column set from only the first
+        // row would silently drop any field that appears exclusively in a later
+        // row; taking the union and binding `NULL` for absent keys preserves
+        // every row's data.
+        let all_keys = union_property_keys(chunk);
 
-        let mut columns = vec![self.geometry_column.clone()];
-        columns.extend(all_keys.clone());
+        let mut columns = vec![quote_mysql_ident(&self.geometry_column)?];
+        for key in &all_keys {
+            columns.push(quote_mysql_ident(key)?);
+        }
 
         let mut value_groups = Vec::new();
         let mut all_values = Vec::new();
@@ -120,7 +126,7 @@ impl MySqlWriter {
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES {}",
-            self.table_name,
+            quote_mysql_ident(&self.table_name)?,
             columns.join(", "),
             value_groups.join(", ")
         );
@@ -146,11 +152,14 @@ impl MySqlWriter {
         properties: &HashMap<String, Value>,
     ) -> Result<()> {
         let wkt = geometry_to_wkt(geometry)?;
-        let mut set_clauses = vec![format!("{} = ST_GeomFromText(?)", self.geometry_column)];
+        let mut set_clauses = vec![format!(
+            "{} = ST_GeomFromText(?)",
+            quote_mysql_ident(&self.geometry_column)?
+        )];
         let mut values: Vec<mysql_async::Value> = vec![wkt.into()];
 
         for (key, value) in properties {
-            set_clauses.push(format!("{} = ?", key));
+            set_clauses.push(format!("{} = ?", quote_mysql_ident(key)?));
             values.push(json_to_mysql_value(value)?);
         }
 
@@ -158,7 +167,7 @@ impl MySqlWriter {
 
         let sql = format!(
             "UPDATE {} SET {} WHERE id = ?",
-            self.table_name,
+            quote_mysql_ident(&self.table_name)?,
             set_clauses.join(", ")
         );
 
@@ -172,7 +181,10 @@ impl MySqlWriter {
 
     /// Delete a feature by ID.
     pub async fn delete(&self, id: i64) -> Result<()> {
-        let sql = format!("DELETE FROM {} WHERE id = ?", self.table_name);
+        let sql = format!(
+            "DELETE FROM {} WHERE id = ?",
+            quote_mysql_ident(&self.table_name)?
+        );
 
         let mut conn = self.connector.get_conn().await?;
         conn.exec_drop(&sql, (id,))
@@ -183,8 +195,18 @@ impl MySqlWriter {
     }
 
     /// Delete features matching a WHERE clause.
+    ///
+    /// # Security
+    ///
+    /// `where_clause` is a raw SQL fragment spliced verbatim after `WHERE`; it
+    /// is **not** injection-safe. Pass only trusted, developer-authored
+    /// fragments — never unsanitized user input.
     pub async fn delete_where(&self, where_clause: &str) -> Result<u64> {
-        let sql = format!("DELETE FROM {} WHERE {}", self.table_name, where_clause);
+        let sql = format!(
+            "DELETE FROM {} WHERE {}",
+            quote_mysql_ident(&self.table_name)?,
+            where_clause
+        );
 
         let mut conn = self.connector.get_conn().await?;
         conn.query_drop(&sql)
@@ -196,7 +218,7 @@ impl MySqlWriter {
 
     /// Truncate the table.
     pub async fn truncate(&self) -> Result<()> {
-        let sql = format!("TRUNCATE TABLE {}", self.table_name);
+        let sql = format!("TRUNCATE TABLE {}", quote_mysql_ident(&self.table_name)?);
 
         let mut conn = self.connector.get_conn().await?;
         conn.query_drop(&sql)
@@ -210,7 +232,9 @@ impl MySqlWriter {
     pub async fn create_spatial_index(&self, index_name: &str) -> Result<()> {
         let sql = format!(
             "CREATE SPATIAL INDEX {} ON {} ({})",
-            index_name, self.table_name, self.geometry_column
+            quote_mysql_ident(index_name)?,
+            quote_mysql_ident(&self.table_name)?,
+            quote_mysql_ident(&self.geometry_column)?
         );
 
         let mut conn = self.connector.get_conn().await?;
@@ -223,7 +247,11 @@ impl MySqlWriter {
 
     /// Drop spatial index.
     pub async fn drop_spatial_index(&self, index_name: &str) -> Result<()> {
-        let sql = format!("DROP INDEX {} ON {}", index_name, self.table_name);
+        let sql = format!(
+            "DROP INDEX {} ON {}",
+            quote_mysql_ident(index_name)?,
+            quote_mysql_ident(&self.table_name)?
+        );
 
         let mut conn = self.connector.get_conn().await?;
         conn.query_drop(&sql)
@@ -370,19 +398,19 @@ impl MySqlTransactionWriter {
         self.ensure_active()?;
 
         let wkt = geometry_to_wkt(geometry)?;
-        let mut columns = vec![self.geometry_column.clone()];
+        let mut columns = vec![quote_mysql_ident(&self.geometry_column)?];
         let mut placeholders = vec!["ST_GeomFromText(?)".to_string()];
         let mut values: Vec<mysql_async::Value> = vec![wkt.into()];
 
         for (key, value) in properties {
-            columns.push(key.clone());
+            columns.push(quote_mysql_ident(key)?);
             placeholders.push("?".to_string());
             values.push(json_to_mysql_value(value)?);
         }
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
-            self.table_name,
+            quote_mysql_ident(&self.table_name)?,
             columns.join(", "),
             placeholders.join(", ")
         );
@@ -447,16 +475,16 @@ impl MySqlTransactionWriter {
             return Ok(Vec::new());
         }
 
-        // Get all unique property keys from the first item
-        // We assume all items in the chunk have the same schema
-        let mut all_keys: Vec<String> = chunk
-            .first()
-            .map(|(_, props)| props.keys().cloned().collect())
-            .unwrap_or_default();
-        all_keys.sort();
+        // Compute the *union* of property keys across every row in the chunk
+        // (sorted, deduplicated), rather than deriving the column set from only
+        // the first row — otherwise a field present exclusively in a later row
+        // would be silently dropped. Absent keys are bound as `NULL`.
+        let all_keys = union_property_keys(chunk);
 
-        let mut columns = vec![self.geometry_column.clone()];
-        columns.extend(all_keys.clone());
+        let mut columns = vec![quote_mysql_ident(&self.geometry_column)?];
+        for key in &all_keys {
+            columns.push(quote_mysql_ident(key)?);
+        }
 
         let mut value_groups = Vec::new();
         let mut all_values = Vec::new();
@@ -477,7 +505,7 @@ impl MySqlTransactionWriter {
 
         let sql = format!(
             "INSERT INTO {} ({}) VALUES {}",
-            self.table_name,
+            quote_mysql_ident(&self.table_name)?,
             columns.join(", "),
             value_groups.join(", ")
         );
@@ -517,11 +545,14 @@ impl MySqlTransactionWriter {
         self.ensure_active()?;
 
         let wkt = geometry_to_wkt(geometry)?;
-        let mut set_clauses = vec![format!("{} = ST_GeomFromText(?)", self.geometry_column)];
+        let mut set_clauses = vec![format!(
+            "{} = ST_GeomFromText(?)",
+            quote_mysql_ident(&self.geometry_column)?
+        )];
         let mut values: Vec<mysql_async::Value> = vec![wkt.into()];
 
         for (key, value) in properties {
-            set_clauses.push(format!("{} = ?", key));
+            set_clauses.push(format!("{} = ?", quote_mysql_ident(key)?));
             values.push(json_to_mysql_value(value)?);
         }
 
@@ -529,7 +560,7 @@ impl MySqlTransactionWriter {
 
         let sql = format!(
             "UPDATE {} SET {} WHERE id = ?",
-            self.table_name,
+            quote_mysql_ident(&self.table_name)?,
             set_clauses.join(", ")
         );
 
@@ -553,7 +584,10 @@ impl MySqlTransactionWriter {
     pub async fn delete(&mut self, id: i64) -> Result<()> {
         self.ensure_active()?;
 
-        let sql = format!("DELETE FROM {} WHERE id = ?", self.table_name);
+        let sql = format!(
+            "DELETE FROM {} WHERE id = ?",
+            quote_mysql_ident(&self.table_name)?
+        );
 
         self.conn
             .exec_drop(&sql, (id,))
@@ -573,13 +607,23 @@ impl MySqlTransactionWriter {
     ///
     /// Returns the number of affected rows.
     ///
+    /// # Security
+    ///
+    /// `where_clause` is a raw SQL fragment spliced verbatim after `WHERE` and
+    /// is **not** injection-safe. Pass only trusted, developer-authored
+    /// fragments — never unsanitized user input.
+    ///
     /// # Errors
     ///
     /// Returns an error if the transaction is not active or the delete fails.
     pub async fn delete_where(&mut self, where_clause: &str) -> Result<u64> {
         self.ensure_active()?;
 
-        let sql = format!("DELETE FROM {} WHERE {}", self.table_name, where_clause);
+        let sql = format!(
+            "DELETE FROM {} WHERE {}",
+            quote_mysql_ident(&self.table_name)?,
+            where_clause
+        );
 
         self.conn
             .query_drop(&sql)
@@ -746,6 +790,23 @@ impl MySqlTransactionWriter {
 // returned to the pool or closed. For safety, prefer calling commit() or
 // rollback() explicitly.
 
+/// Compute the sorted, deduplicated union of every property key that appears in
+/// any row of `chunk`.
+///
+/// A multi-row `INSERT` must use one fixed column list for the whole chunk, so
+/// the column set has to be the union of all rows' keys; rows missing a given
+/// key bind `NULL` for it. Deriving the set from only the first row (as a
+/// previous implementation did) silently discarded fields that appeared solely
+/// in later rows.
+fn union_property_keys(chunk: &[(Geometry<f64>, HashMap<String, Value>)]) -> Vec<String> {
+    chunk
+        .iter()
+        .flat_map(|(_, props)| props.keys().cloned())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect()
+}
+
 /// Convert JSON value to MySQL value.
 fn json_to_mysql_value(value: &Value) -> Result<mysql_async::Value> {
     match value {
@@ -767,5 +828,57 @@ fn json_to_mysql_value(value: &Value) -> Result<mysql_async::Value> {
             let json_str = serde_json::to_string(value)?;
             Ok(mysql_async::Value::Bytes(json_str.as_bytes().to_vec()))
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use geo_types::point;
+    use serde_json::json;
+
+    fn feature(props: &[(&str, Value)]) -> (Geometry<f64>, HashMap<String, Value>) {
+        let map = props
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect();
+        (Geometry::Point(point!(x: 0.0, y: 0.0)), map)
+    }
+
+    #[test]
+    fn test_union_property_keys_covers_heterogeneous_rows() {
+        // Row 0 has {a}, row 1 has {b, c}. The union must include a, b and c —
+        // a first-row-only derivation would drop b and c.
+        let chunk = vec![
+            feature(&[("a", json!(1))]),
+            feature(&[("b", json!(2)), ("c", json!(3))]),
+        ];
+        let keys = union_property_keys(&chunk);
+        assert_eq!(
+            keys,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_union_property_keys_deduplicates_and_sorts() {
+        let chunk = vec![
+            feature(&[("z", json!(1)), ("a", json!(1))]),
+            feature(&[("a", json!(2)), ("m", json!(2))]),
+        ];
+        let keys = union_property_keys(&chunk);
+        assert_eq!(
+            keys,
+            vec!["a".to_string(), "m".to_string(), "z".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_property_key_is_quoted_not_injectable() {
+        // A hostile property key must be backtick-quoted, not spliced raw.
+        let quoted = quote_mysql_ident("x`, 1); DROP TABLE t; --").unwrap();
+        assert!(quoted.starts_with('`') && quoted.ends_with('`'));
+        assert!(quoted.contains("``"));
     }
 }

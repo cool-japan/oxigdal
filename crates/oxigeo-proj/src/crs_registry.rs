@@ -150,7 +150,20 @@ impl CrsDefinition {
         matches!(self.crs_type, CrsType::Projected)
     }
 
-    /// Returns the conventional axis order for this CRS.
+    /// Returns the CRS's authority-declared conventional axis order (e.g.
+    /// `NorthEast` = lat-then-lon for geographic CRS, per ISO 6709 / EPSG).
+    ///
+    /// # Informational only
+    ///
+    /// This value is **metadata**: it is *not* consulted by
+    /// [`crate::Transformer`] or [`crate::Coordinate`]. Those APIs always use
+    /// GIS/PROJ visualisation order — `x = longitude/easting`,
+    /// `y = latitude/northing` — for **every** CRS regardless of what this
+    /// method reports. Do not reorder your inputs based on `axis_order()`;
+    /// always construct coordinates as `Coordinate::new(lon, lat)` (or
+    /// [`Coordinate::from_lon_lat`](crate::Coordinate::from_lon_lat)). Use
+    /// `axis_order()` only when you need to *report* the authority axis order
+    /// (e.g. rendering a WKT `AXIS[...]` clause), never to drive the transform.
     pub fn axis_order(&self) -> AxisOrder {
         match self.crs_type {
             CrsType::Geographic2D | CrsType::Geographic3D => AxisOrder::NorthEast,
@@ -161,7 +174,24 @@ impl CrsDefinition {
     }
 }
 
-/// A registry of coordinate reference system definitions, indexed by EPSG code.
+/// A standalone, self-contained registry of coordinate reference system
+/// definitions indexed by EPSG code, carrying rich metadata (type, datum,
+/// unit, area-of-use, PROJ string, axis order).
+///
+/// # Not the source of truth for `Crs::from_epsg`
+///
+/// This registry is **independent** of the EPSG database that actually backs
+/// [`Crs::from_epsg`](crate::Crs::from_epsg) / [`lookup_epsg`](crate::lookup_epsg)
+/// (that is [`crate::epsg`]'s `EpsgDatabase`, populated by
+/// `initialize_builtin_codes`). `CrsRegistry` is a convenience container for
+/// callers who want to build and query their *own* metadata table (e.g. WKT
+/// generation, editors, catalogs) — it is never consulted by
+/// [`Transformer`](crate::Transformer). For the same EPSG code the two tables
+/// may encode the datum shift differently (e.g. an explicit `+towgs84=` string
+/// here vs. a named `+datum=` shortcut in `epsg/`), so **do not** mix values
+/// from this registry into a transform pipeline expecting them to match
+/// `Crs::from_epsg`; treat `CrsRegistry` as metadata, and `Crs::from_epsg` as
+/// the transform source of truth.
 #[cfg(feature = "std")]
 pub struct CrsRegistry {
     definitions: HashMap<i32, CrsDefinition>,

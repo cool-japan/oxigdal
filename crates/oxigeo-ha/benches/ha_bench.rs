@@ -111,11 +111,23 @@ fn recovery_time(c: &mut Criterion) {
     group.bench_function("pitr_recovery", |b| {
         b.iter(|| {
             rt.block_on(async {
+                use oxigeo_ha::error::HaResult;
+                use oxigeo_ha::recovery::wal::{WalApplier, WalEntry};
                 use oxigeo_ha::recovery::{RecoveryConfig, RecoveryTarget, pitr::PitrManager};
+                use std::sync::Arc;
+
+                struct NoopApplier;
+                #[async_trait::async_trait]
+                impl WalApplier for NoopApplier {
+                    async fn apply(&self, _entry: &WalEntry) -> HaResult<()> {
+                        Ok(())
+                    }
+                }
 
                 let config = RecoveryConfig::default();
                 let data_dir = std::env::temp_dir().join("oxigeo-ha-bench-pitr");
                 let manager = PitrManager::new(config, data_dir);
+                manager.set_applier(Arc::new(NoopApplier) as Arc<dyn WalApplier>);
 
                 let result = manager.recover(RecoveryTarget::Latest).await;
 

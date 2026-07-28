@@ -1,14 +1,13 @@
-//! SIMD-accelerated texture analysis using Gray-Level Co-occurrence Matrix (GLCM)
+//! Texture analysis using Gray-Level Co-occurrence Matrix (GLCM)
 //!
-//! This module provides high-performance implementations of GLCM computation and
-//! Haralick feature extraction using SIMD instructions.
+//! This module provides implementations of GLCM computation and Haralick feature
+//! extraction.
 //!
-//! # Performance
+//! # Implementation status
 //!
-//! Expected speedup over scalar implementations:
-//! - GLCM construction: 2-3x (SIMD histogram updates)
-//! - Haralick features: 2-4x (SIMD arithmetic and reductions)
-//! - Texture feature images: 2-3x (parallel window processing)
+//! GLCM construction is a scatter/accumulate operation; these routines are
+//! currently scalar and do NOT contain hand-written SIMD intrinsics. They are
+//! correct and unit-tested; vectorization is planned future work.
 //!
 //! # Supported Operations
 //!

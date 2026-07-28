@@ -143,6 +143,7 @@ async fn test_multi_tier_cache_get_from_l1() {
         enable_prefetch: false,
         enable_distributed: false,
         cache_dir: Some(temp_dir.clone()),
+        eviction_policy: Default::default(),
     };
 
     let cache = MultiTierCache::new(config)
@@ -182,6 +183,7 @@ async fn test_multi_tier_cache_promotion() {
         enable_prefetch: false,
         enable_distributed: false,
         cache_dir: Some(temp_dir.clone()),
+        eviction_policy: Default::default(),
     };
 
     let cache = MultiTierCache::new(config)
@@ -216,6 +218,7 @@ async fn test_multi_tier_cache_remove() {
         enable_prefetch: false,
         enable_distributed: false,
         cache_dir: Some(temp_dir.clone()),
+        eviction_policy: Default::default(),
     };
 
     let cache = MultiTierCache::new(config)
@@ -247,6 +250,7 @@ async fn test_multi_tier_cache_tier_stats() {
         enable_prefetch: false,
         enable_distributed: false,
         cache_dir: Some(temp_dir.clone()),
+        eviction_policy: Default::default(),
     };
 
     let cache = MultiTierCache::new(config)
@@ -295,6 +299,7 @@ async fn test_concurrent_access() {
         enable_prefetch: false,
         enable_distributed: false,
         cache_dir: Some(temp_dir.clone()),
+        eviction_policy: Default::default(),
     };
 
     let cache = Arc::new(

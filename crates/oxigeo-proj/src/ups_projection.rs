@@ -10,6 +10,7 @@
 //! ("Polar Stereographic"), equations 21-11 to 21-14.
 
 use crate::error::{Error, Result};
+use alloc::format;
 
 // ─── WGS-84 constants ────────────────────────────────────────────────────────
 
@@ -140,7 +141,7 @@ pub fn polar_stereographic_forward(
     let sin_phi = phi_abs.sin();
     let e_conformal = ((1.0 + e * sin_phi) / (1.0 - e * sin_phi)).powf(e / 2.0);
 
-    let t = (std::f64::consts::FRAC_PI_4 - phi_abs / 2.0).tan() * e_conformal;
+    let t = (core::f64::consts::FRAC_PI_4 - phi_abs / 2.0).tan() * e_conformal;
 
     let w = polar_stereo_w(e);
     let rho = 2.0 * a * k0 * t / w;
@@ -179,12 +180,12 @@ pub fn polar_stereographic_inverse(
     let w = polar_stereo_w(e);
     let t = rho * w / (2.0 * a * k0);
 
-    let mut phi = std::f64::consts::FRAC_PI_2 - 2.0 * t.atan();
+    let mut phi = core::f64::consts::FRAC_PI_2 - 2.0 * t.atan();
 
     for _ in 0..10 {
         let sin_phi = phi.sin();
         let factor = ((1.0 - e * sin_phi) / (1.0 + e * sin_phi)).powf(e / 2.0);
-        let phi_new = std::f64::consts::FRAC_PI_2 - 2.0 * (t * factor).atan();
+        let phi_new = core::f64::consts::FRAC_PI_2 - 2.0 * (t * factor).atan();
         let delta = (phi_new - phi).abs();
         phi = phi_new;
         if delta < 1e-12 {

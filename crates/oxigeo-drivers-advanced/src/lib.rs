@@ -9,7 +9,7 @@
 //! # Features
 //!
 //! - `jpeg2000` - JPEG2000 format support (enabled by default)
-//! - `geopackage` - GeoPackage format support (enabled by default)
+//! - `geopackage` - GeoPackage format support (optional)
 //! - `kml` - KML/KMZ format support (enabled by default)
 //! - `gml` - GML format support (enabled by default)
 //! - `async` - Async I/O support (optional)
@@ -33,9 +33,10 @@
 //! ## Reading GeoPackage
 //!
 //! ```no_run
+//! # #[cfg(feature = "geopackage")]
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use oxigeo_drivers_advanced::gpkg::GeoPackage;
 //!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpkg = GeoPackage::open("data.gpkg")?;
 //! let tables = gpkg.feature_tables()?;
 //! println!("Feature tables: {:?}", tables);

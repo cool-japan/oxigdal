@@ -1,8 +1,23 @@
-//! WebGPU compatibility layer for WASM targets.
+//! WebGPU compatibility helpers for WASM targets.
 //!
-//! On `wasm32` targets, `wgpu` uses the WebGPU API.
-//! This module provides compile-time shader registration and capability
-//! structs that describe conservative GPU limits for cross-platform code.
+//! On `wasm32` targets `wgpu` uses the browser's WebGPU API. This module
+//! provides two **host-agnostic building blocks** for that path:
+//!
+//! - [`ShaderRegistry`]: compile-time (`include_str!`) access to the built-in
+//!   WGSL shader sources, so they are available without a filesystem at runtime.
+//! - [`GpuCapabilities`]: descriptors of conservative GPU limits (e.g.
+//!   [`GpuCapabilities::webgpu_conservative`]) for writing limit-aware code.
+//!
+//! # Scope / what is NOT here (honesty)
+//!
+//! This module does **not** itself create a `wgpu::Instance`/adapter/device
+//! against `Backends::BROWSER_WEBGPU`, nor run a compute pass in a browser — the
+//! actual dispatch machinery lives in [`crate::context`]/[`crate::compute`] and
+//! runs identically on native and `wasm32` because `wgpu` abstracts the backend.
+//! End-to-end browser WebGPU execution has not been exercised by an automated
+//! test in this crate (it requires `wasm-bindgen-test` under a headless browser);
+//! treat the WebGPU path as *supported via `wgpu` but not CI-verified here*. The
+//! registry and capability structs below are fully tested pure-Rust logic.
 
 /// Shader source registry for all built-in compute shaders.
 ///

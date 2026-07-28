@@ -31,6 +31,7 @@ crc32fast.workspace = true
 oxiarc-lz4.workspace = true
 oxiarc-archive = { workspace = true }
 oxiarc-zstd = { workspace = true }
+oxiarc-deflate = { workspace = true }  # Pure Rust DEFLATE/GZIP (replacement for flate2)
 
 [dev-dependencies]
 tokio-test.workspace = true
@@ -43,6 +44,9 @@ harness = false
 
 [lib]
 path = "src/lib.rs"
+
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

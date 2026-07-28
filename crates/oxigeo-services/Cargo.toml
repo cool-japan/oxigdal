@@ -25,9 +25,7 @@ remote = ["dep:reqwest"]
 # Internal dependencies
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-algorithms = { workspace = true, default-features = true }
-oxigeo-proj.workspace = true
 oxigeo-geotiff.workspace = true
-oxigeo-geojson.workspace = true
 
 # Optional database backend (PostGIS) — enabled via the `postgis` feature
 oxigeo-postgis = { workspace = true, optional = true }
@@ -40,14 +38,11 @@ reqwest = { workspace = true, optional = true }
 # Web framework
 axum.workspace = true
 tower.workspace = true
-tower-http.workspace = true
-hyper.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 
 # Async runtime
 tokio.workspace = true
-futures.workspace = true
 async-trait.workspace = true
 
 # Serialization
@@ -56,36 +51,26 @@ serde_json.workspace = true
 
 # Error handling
 thiserror.workspace = true
-anyhow.workspace = true
 
 # XML processing
 quick-xml.workspace = true
 
 # GeoJSON and geometry
 geojson.workspace = true
-geo-types.workspace = true
-geo.workspace = true
 
 # Logging
-tracing.workspace = true
 tracing-subscriber.workspace = true
 
 # Utilities
 bytes.workspace = true
-num-traits.workspace = true
 chrono.workspace = true
-url.workspace = true
 uuid.workspace = true
 
 # Caching and concurrency
-lru.workspace = true
 dashmap.workspace = true
 
 # Image encoding (WCS GetCoverage PNG/JPEG output) — pure-Rust codecs only
 image.workspace = true
-
-# Compression
-oxiarc-archive = { workspace = true }
 
 [dev-dependencies]
 # Testing
@@ -99,6 +84,13 @@ workspace = true
 name = "oxigeo_services"
 path = "src/lib.rs"
 
+# `all-features = true` would also turn on `remote`, which pulls `reqwest`'s
+# rustls backend -> `aws-lc-sys` (C + assembly crypto), same trade-off as
+# oxigeo-cloud's optional `http`/`s3`/`azure-blob`/`gcs` features. `postgis`
+# stays in: it only adds `oxigeo-postgis`/`tokio-postgres`/`deadpool-postgres`,
+# all Pure Rust (see the docs.rs note on oxigeo-postgis). Excluding `remote`
+# keeps the docs.rs build on the same Pure-Rust closure as the default feature
+# set (mirrors the pattern in oxigeo-cloud-enhanced).
 [package.metadata.docs.rs]
-all-features = true
+features = ["postgis"]
 rustdoc-args = ["--cfg", "docsrs"]

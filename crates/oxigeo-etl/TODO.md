@@ -1,44 +1,27 @@
 # TODO: oxigeo-etl
 
 > **Purpose:** Streaming ETL framework for continuous geospatial data processing (source → transform → sink).
-> **Status (2026-05-16):** 6,675 LoC · 70 tests · 3 real-code stubs (Kafka source, CRS-transform map, NDVI map)
+> **Status (2026-07-28):** 5,237 LoC · 92 tests all-features / 91 default-features · 0 real-code stubs remaining (the last one, the Kafka source, was retired rather than finished — see below; CRS-transform map and NDVI map both closed — see Recently completed)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Wire Kafka source to a real consumer with proper Arc-lifecycle
-  - **Verified gap:** `src/source.rs:411-416` — `Err(SourceError::InvalidConfig("Kafka source requires proper consumer lifecycle management. Use a custom source with Arc-wrapped consumer for production use.".to_string()).into())`
-  - **Goal:** `KafkaSource::stream()` returns a real `BoxStream<StreamItem>` backed by `StreamConsumer` from `rdkafka`, with offset commit on item-consumed and consumer-group rebalance handling.
-  - **Design:** Spawn a `tokio::task` owning the `StreamConsumer` (cannot move into stream's `unfold` because of pin lifetimes); use a `tokio::sync::mpsc::channel(buffer_size)` as the bridge. On `M::Owned`/`M::Borrowed` extract payload bytes → send. Commit offsets after the sink writes the item (requires checkpoint hook — see streaming-pipeline acknowledgement model). `KafkaSourceConfig.auto_offset_reset` already at `src/source.rs:372-373` wired into `ClientConfig`.
-  - **Files:** `src/source.rs:404-422` (rewrite `Source::stream` impl), `src/source.rs` (extend `KafkaSourceConfig` with `enable_auto_commit: bool`).
-  - **Tests:** *(proposed)* `test_kafka_source_consumes_messages` (gated `#[ignore]` for embedded broker), `test_kafka_source_respects_offset_reset`, `test_kafka_source_handles_consumer_error`. Feature-gated `kafka`.
-  - **Risk:** rdkafka's `StreamConsumer` requires librdkafka C deps (Pure Rust policy: `kafka` is already an opt-in feature gate; document non-default).
-  - **Prerequisites:** None — `rdkafka = 0.39` already in `Cargo.toml`.
+- [x] ~~Wire Kafka source to a real consumer with proper Arc-lifecycle~~ — **cancelled: the
+  `kafka` feature was removed in 0.2.1 when `oxigeo-kafka` was retired as a project.**
+  `KafkaSource`/`KafkaSourceConfig` and `KafkaSink`/`KafkaSinkConfig` are deleted from
+  `src/source.rs` / `src/sink.rs`, along with the `Kafka` variants of
+  `SourceError`/`SinkError` and the optional `rdkafka` dependency. `rdkafka-sys` was the
+  workspace's only mandatory C-toolchain dependency (cmake → librdkafka), against the
+  Pure Rust Policy. This item is closed as won't-do, not as done. See the workspace
+  CHANGELOG.md `[0.2.1]` → Removed.
 
-- [ ] Implement actual CRS transformation in `MapTransform::transform_crs`
-  - **Verified gap:** `src/operators/map.rs:192-196` — `tracing::warn!("CRS transformation not yet implemented: {} -> {}", source_epsg, target_epsg);` followed by `Ok(item)` (pass-through).
-  - **Goal:** Decode `StreamItem` bytes as GeoJSON geometry, reproject coordinates via `oxigeo-proj`, re-encode bytes. Optional struct-pipeline mode that accepts Arrow geometry binary.
-  - **Design:** Detect input format from first byte: `{` → GeoJSON, `\x01`/`\x00` LE/BE → WKB. Build `oxigeo_proj::Transformer::from_epsg(source, target)`, walk coords (Point/LineString/Polygon/Multi*), apply transform, re-serialize. Cache transformer instance per call (closures own one).
-  - **Files:** `src/operators/map.rs:184-201` (replace body), add `oxigeo-proj = { workspace = true }` to `Cargo.toml`.
-  - **Tests:** *(proposed)* `test_transform_crs_point_geojson`, `test_transform_crs_polygon_wkb`, `test_transform_crs_unsupported_format_errors`, `test_transform_crs_4326_to_3857_at_equator`.
-  - **Risk:** Workspace already has `oxigeo-proj` (379 tests, see MEMORY.md). Adding it pulls proj-sys transitively (feature-gated in oxigeo-proj as `system-proj`); ensure default-features=false to stay Pure Rust.
-  - **Prerequisites:** None.
+- [x] Implement actual CRS transformation in `MapTransform::transform_crs`
+  - **Verified done:** `src/operators/map.rs::transform_crs` now decodes the item as `serde_json::Value`, builds a real `oxigeo_proj::Transformer::from_epsg(source_epsg, target_epsg)`, and applies it. Per the in-source comment, the transformer build is offloaded onto `tokio::task::spawn_blocking` specifically because `oxigeo-proj`'s bundled-PROJ-database open calls `block_on` internally and panics if invoked directly on an async worker thread — this matches a documented workspace gotcha (see project memory: "oxiproj-db `open_bundled()` does `block_on` internally — panics inside any tokio runtime"). No more pass-through/warn-only stub.
 
-- [ ] Implement actual NDVI calculation in `MapTransform::calculate_ndvi`
-  - **Verified gap:** `src/operators/map.rs:208-210` — `tracing::warn!("NDVI calculation not yet implemented");` followed by `Ok(item)` (pass-through).
-  - **Goal:** Compute `(NIR - RED) / (NIR + RED)` over Arrow-encoded raster bands; emit single-band NDVI raster bytes.
-  - **Design:** Accept config `NdviConfig { red_band: usize, nir_band: usize, nodata: Option<f64> }`. Parse Arrow IPC stream from `StreamItem`, slice band columns, vectorize the formula with SIMD-friendly tight loop, propagate NaN through nodata. Output: Arrow IPC of single Float32 column tagged `"ndvi"`.
-  - **Files:** `src/operators/map.rs:204-213` (replace body), add `arrow` workspace dep if absent.
-  - **Tests:** *(proposed)* `test_ndvi_vegetation_positive`, `test_ndvi_water_negative`, `test_ndvi_nodata_propagates`, `test_ndvi_division_by_zero_handled`.
-  - **Risk:** Calling convention — current signature has no config. May need a new `calculate_ndvi_with_config(red, nir)` API; keep zero-arg `calculate_ndvi()` as alias to band-0/band-1 defaults.
-  - **Prerequisites:** None.
+- [x] Implement actual NDVI calculation in `MapTransform::calculate_ndvi`
+  - **Verified done:** `src/operators/map.rs::calculate_ndvi` decodes the item, extracts `red`/`nir` bands via `extract_band`, validates equal length, and computes the real `(NIR-RED)/(NIR+RED)` vector — no more warn-and-pass-through.
 
-- [ ] Add pipeline checkpoint persistence to disk for crash recovery
-  - **Goal:** `Pipeline::run()` periodically flushes `(pipeline_id, last_committed_offset, item_count)` to `checkpoint_dir/<pipeline_id>.json`; on startup, `load_checkpoint` (already defined in `src/pipeline.rs:227`) restores state.
-  - **Design:** `StateManager::save_checkpoint(id, &state)` writes JSON via `tokio::fs::write` with `<id>.tmp` rename for atomicity. State struct: `{pipeline_id, items_processed, last_source_offset: Option<String>, timestamp}`. Pipeline driver calls every N items (configurable in `PipelineConfig`).
-  - **Files:** `src/pipeline.rs:217-235` (extend run loop with periodic save), `src/stream.rs` (`StateManager` exists; add `save_checkpoint`/`load_checkpoint` impls).
-  - **Tests:** *(proposed)* `test_checkpoint_saved_periodically`, `test_checkpoint_atomic_rename`, `test_checkpoint_resume_from_last_offset`, `test_checkpoint_missing_returns_empty_state`.
-  - **Risk:** Concurrent writes if user instantiates multiple `Pipeline`s with same `id` — document or use file-lock (advisory `fcntl`).
-  - **Prerequisites:** None — `StateManager` skeleton at `src/stream.rs`.
+- [x] Add pipeline checkpoint persistence to disk for crash recovery
+  - **Verified done:** `src/stream.rs::StateManager` has real `save_checkpoint(&self, pipeline_id)` (`:161`) and `load_checkpoint(&self, pipeline_id)` (`:187`) methods (plus convenience wrappers at `:299,308,315`), and `src/pipeline.rs`'s run loop calls `load_checkpoint` on startup (`:239`) and `save_checkpoint` both periodically during the run (`:322`) and on completion (`:343`).
 
 ## Medium Priority
 - [ ] Replace per-row PostGIS INSERT with `COPY ... FROM STDIN` bulk load
@@ -95,9 +78,8 @@
 - [x] CustomSource and CustomSink wrappers for user-defined async factories — `src/source.rs:424-459`, `src/sink.rs:476-509`
 - [x] Pipeline builder with checkpoint_dir/buffer_size/with_checkpointing fluent API — `src/pipeline.rs:92-102`
 - [x] BufferedStream + ParallelProcessor + StateManager + StreamConfig — `src/stream.rs` (486 LoC)
-- [x] Kafka sink producer with compression config — `src/sink.rs:290-358` (real, feature `kafka`)
 - [x] S3Sink via aws-sdk-s3 (single-part put per item) — `src/sink.rs:188-262`
 - [x] PostGisSink with deadpool-postgres pool + batch buffer — `src/sink.rs:387-474`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: 70→92/91 tests, LoC 6,675→5,237, date bumped; CRS transform, NDVI calculation, and checkpoint persistence all re-verified against source and flipped to done; the Kafka source/sink were **removed outright in 0.2.1** together with the retired `oxigeo-kafka` crate and the `kafka` feature — the long-open "requires proper consumer lifecycle management" stub is closed as won't-do)*

@@ -145,56 +145,37 @@ impl CfMetadata {
     }
 
     /// Convert to attributes.
+    ///
+    /// Every attribute name here is a hardcoded non-empty literal, so
+    /// `Attribute::new` (which only errors on an empty name) cannot actually
+    /// fail today — but this never `.expect()`s or `.unwrap()`s on that fact:
+    /// each attribute is added only `if let Ok(..)`, matching the workspace's
+    /// no-unwrap/no-expect production-code policy so a future refactor that
+    /// parameterizes the name can never reintroduce a panic path here.
+    #[must_use]
     pub fn to_attributes(&self) -> Attributes {
         let mut attrs = Attributes::new();
 
         if let Some(ref conventions) = self.conventions {
-            let _ = attrs.add(
-                Attribute::new("Conventions", AttributeValue::text(conventions.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "Conventions", conventions);
         }
-
         if let Some(ref title) = self.title {
-            let _ = attrs.add(
-                Attribute::new("title", AttributeValue::text(title.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "title", title);
         }
-
         if let Some(ref institution) = self.institution {
-            let _ = attrs.add(
-                Attribute::new("institution", AttributeValue::text(institution.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "institution", institution);
         }
-
         if let Some(ref source) = self.source {
-            let _ = attrs.add(
-                Attribute::new("source", AttributeValue::text(source.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "source", source);
         }
-
         if let Some(ref history) = self.history {
-            let _ = attrs.add(
-                Attribute::new("history", AttributeValue::text(history.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "history", history);
         }
-
         if let Some(ref references) = self.references {
-            let _ = attrs.add(
-                Attribute::new("references", AttributeValue::text(references.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "references", references);
         }
-
         if let Some(ref comment) = self.comment {
-            let _ = attrs.add(
-                Attribute::new("comment", AttributeValue::text(comment.clone()))
-                    .expect("Valid attribute"),
-            );
+            add_text_attribute(&mut attrs, "comment", comment);
         }
 
         attrs
@@ -212,6 +193,17 @@ impl CfMetadata {
         self.conventions
             .as_ref()
             .is_some_and(|c| c.starts_with("CF-"))
+    }
+}
+
+/// Add a text attribute named `name` with value `value` to `attrs`, silently
+/// skipping it if construction fails (only possible for an empty `name`,
+/// which never happens for the hardcoded literals [`CfMetadata::to_attributes`]
+/// passes) — never `.expect()`/`.unwrap()`s, per the no-unwrap production-code
+/// policy.
+fn add_text_attribute(attrs: &mut Attributes, name: &str, value: &str) {
+    if let Ok(a) = Attribute::new(name, AttributeValue::text(value)) {
+        let _ = attrs.add(a);
     }
 }
 
@@ -404,6 +396,67 @@ mod tests {
         assert_eq!(attrs.len(), 2);
         assert!(attrs.contains("Conventions"));
         assert!(attrs.contains("title"));
+    }
+
+    /// `to_attributes()` must round-trip every optional CF field (not just a
+    /// couple) into its named attribute, without panicking — regression test
+    /// for the panic-free rewrite of the `.expect()`-based implementation.
+    #[test]
+    fn test_cf_metadata_to_attributes_all_fields() {
+        let mut cf = CfMetadata::new();
+        cf.conventions = Some("CF-1.8".to_string());
+        cf.title = Some("Test Dataset".to_string());
+        cf.institution = Some("COOLJAPAN".to_string());
+        cf.source = Some("simulation".to_string());
+        cf.history = Some("created today".to_string());
+        cf.references = Some("doi:10.0/example".to_string());
+        cf.comment = Some("a comment".to_string());
+
+        let attrs = cf.to_attributes();
+        assert_eq!(attrs.len(), 7);
+        assert_eq!(
+            attrs
+                .get("Conventions")
+                .and_then(|a| a.value().as_text().ok()),
+            Some("CF-1.8")
+        );
+        assert_eq!(
+            attrs.get("title").and_then(|a| a.value().as_text().ok()),
+            Some("Test Dataset")
+        );
+        assert_eq!(
+            attrs
+                .get("institution")
+                .and_then(|a| a.value().as_text().ok()),
+            Some("COOLJAPAN")
+        );
+        assert_eq!(
+            attrs.get("source").and_then(|a| a.value().as_text().ok()),
+            Some("simulation")
+        );
+        assert_eq!(
+            attrs.get("history").and_then(|a| a.value().as_text().ok()),
+            Some("created today")
+        );
+        assert_eq!(
+            attrs
+                .get("references")
+                .and_then(|a| a.value().as_text().ok()),
+            Some("doi:10.0/example")
+        );
+        assert_eq!(
+            attrs.get("comment").and_then(|a| a.value().as_text().ok()),
+            Some("a comment")
+        );
+    }
+
+    /// With no optional fields set, `to_attributes()` must produce an empty
+    /// (not panicking, not fabricated) attribute set.
+    #[test]
+    fn test_cf_metadata_to_attributes_empty_when_unset() {
+        let cf = CfMetadata::new();
+        let attrs = cf.to_attributes();
+        assert_eq!(attrs.len(), 0);
     }
 
     #[test]

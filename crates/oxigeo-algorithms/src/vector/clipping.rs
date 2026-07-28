@@ -46,6 +46,23 @@ pub enum ClipOperation {
     SymmetricDifference,
 }
 
+/// Result of a polygon clip, carrying an explicit accuracy signal.
+///
+/// The exact clipper is a Weiler-Atherton tracer. When it cannot trace a valid
+/// boundary for a near-degenerate or concave input it falls back to a
+/// centroid-angle vertex reconstruction, which is only exact for star-shaped
+/// (convex-ish) vertex sets and may otherwise return an approximate
+/// (convex-hull-like) shape. `approximate` is `true` exactly when that degraded
+/// path was taken, so callers doing production clipping can detect and handle
+/// possibly-inaccurate geometry instead of relying solely on a log line.
+#[derive(Debug, Clone)]
+pub struct ClipResult {
+    /// The resulting polygons (possibly empty).
+    pub polygons: Vec<Polygon>,
+    /// `true` if any polygon came from the approximate fallback reconstruction.
+    pub approximate: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Internal vertex representation
 // ---------------------------------------------------------------------------
@@ -124,22 +141,48 @@ impl ClipPolygon {
 /// Returns [`AlgorithmError`] when either polygon has fewer than 4 exterior
 /// coordinates or when an internal invariant is violated.
 pub fn clip_polygons(subject: &Polygon, clip: &Polygon, op: ClipOperation) -> Result<Vec<Polygon>> {
+    clip_polygons_detailed(subject, clip, op).map(|r| r.polygons)
+}
+
+/// Clip two polygons, returning a [`ClipResult`] that also reports whether the
+/// approximate centroid-angle fallback reconstruction was used.
+///
+/// Prefer this over [`clip_polygons`] in production pipelines where a possibly
+/// geometrically-inaccurate result (for concave, near-degenerate inputs) must be
+/// detected rather than silently accepted. When `ClipResult::approximate` is
+/// `true`, the returned polygons may deviate from the exact boolean result.
+///
+/// # Errors
+///
+/// Returns [`AlgorithmError`] when either polygon has fewer than 4 exterior
+/// coordinates or when an internal invariant is violated.
+pub fn clip_polygons_detailed(
+    subject: &Polygon,
+    clip: &Polygon,
+    op: ClipOperation,
+) -> Result<ClipResult> {
     validate_polygon(subject, "subject")?;
     validate_polygon(clip, "clip")?;
 
     // Symmetric difference = (A-B) union (B-A)
     if op == ClipOperation::SymmetricDifference {
-        let a_minus_b = clip_polygons(subject, clip, ClipOperation::Difference)?;
-        let b_minus_a = clip_polygons(clip, subject, ClipOperation::Difference)?;
-        let mut result = a_minus_b;
-        result.extend(b_minus_a);
-        return Ok(result);
+        let a_minus_b = clip_polygons_detailed(subject, clip, ClipOperation::Difference)?;
+        let b_minus_a = clip_polygons_detailed(clip, subject, ClipOperation::Difference)?;
+        let mut polygons = a_minus_b.polygons;
+        polygons.extend(b_minus_a.polygons);
+        return Ok(ClipResult {
+            polygons,
+            approximate: a_minus_b.approximate || b_minus_a.approximate,
+        });
     }
 
     // Bounding-box quick rejection
     if let (Some(sb), Some(cb)) = (subject.bounds(), clip.bounds()) {
         if sb.2 < cb.0 || cb.2 < sb.0 || sb.3 < cb.1 || cb.3 < sb.1 {
-            return Ok(disjoint_result(subject, clip, op));
+            return Ok(ClipResult {
+                polygons: disjoint_result(subject, clip, op),
+                approximate: false,
+            });
         }
     }
 
@@ -150,17 +193,28 @@ pub fn clip_polygons(subject: &Polygon, clip: &Polygon, op: ClipOperation) -> Re
     let has_hole_crossings = check_hole_crossings(subject, clip);
 
     if ixs.is_empty() && !has_hole_crossings {
-        return handle_no_intersections(subject, clip, op);
+        // Exact fast path (containment / identity / disjoint handling).
+        return Ok(ClipResult {
+            polygons: handle_no_intersections(subject, clip, op)?,
+            approximate: false,
+        });
     }
 
     if ixs.is_empty() && has_hole_crossings {
         // Hole boundaries cross but exteriors don't -- one is contained in the other.
-        // Handle with containment + hole transfer logic.
-        return handle_hole_crossing_containment(subject, clip, op);
+        // Handle with containment + hole transfer logic (exact).
+        return Ok(ClipResult {
+            polygons: handle_hole_crossing_containment(subject, clip, op)?,
+            approximate: false,
+        });
     }
 
     // Build vertex lists, insert intersections, label entry/exit, trace
-    weiler_atherton_clip(subject, clip, op, &ixs)
+    let (polygons, approximate) = weiler_atherton_clip(subject, clip, op, &ixs)?;
+    Ok(ClipResult {
+        polygons,
+        approximate,
+    })
 }
 
 /// Clip subject against a set of clip polygons in sequence.
@@ -541,12 +595,15 @@ fn segment_intersect(
 // Weiler-Atherton core (Phases 2-3)
 // ---------------------------------------------------------------------------
 
+///
+/// Returns the result polygons together with an `approximate` flag that is
+/// `true` when the geometry came from the centroid-angle fallback path.
 fn weiler_atherton_clip(
     subject: &Polygon,
     clip: &Polygon,
     op: ClipOperation,
     ixs: &[SegmentIx],
-) -> Result<Vec<Polygon>> {
+) -> Result<(Vec<Polygon>, bool)> {
     // Build vertex lists
     let mut subj_list = ClipPolygon::from_ring(&subject.exterior.coords);
     let mut clip_list = ClipPolygon::from_ring(&clip.exterior.coords);
@@ -569,12 +626,12 @@ fn weiler_atherton_clip(
     }
 
     // Phase 4: Build output polygons, handling holes
-    let result = build_output_polygons(&rings, subject, clip, op)?;
+    let (result, approx_build) = build_output_polygons(&rings, subject, clip, op)?;
 
     // Phase 5: Validate result area against geometric constraints
-    let result = validate_result_area(result, subject, clip, op)?;
+    let (result, approx_validate) = validate_result_area(result, subject, clip, op)?;
 
-    Ok(result)
+    Ok((result, approx_build || approx_validate))
 }
 
 /// Insert intersection vertices into both subject and clip vertex lists,
@@ -856,7 +913,7 @@ fn build_output_polygons(
     subject: &Polygon,
     clip: &Polygon,
     op: ClipOperation,
-) -> Result<Vec<Polygon>> {
+) -> Result<(Vec<Polygon>, bool)> {
     // Separate exterior (CCW / positive area) from hole (CW / negative area) rings
     let mut exteriors: Vec<Vec<Coordinate>> = Vec::new();
     let mut holes: Vec<Vec<Coordinate>> = Vec::new();
@@ -920,7 +977,8 @@ fn build_output_polygons(
         return fallback_vertex_clip(subject, clip, op);
     }
 
-    Ok(result)
+    // Exact result assembled directly from traced rings.
+    Ok((result, false))
 }
 
 // ---------------------------------------------------------------------------
@@ -935,7 +993,7 @@ fn validate_result_area(
     subject: &Polygon,
     clip: &Polygon,
     op: ClipOperation,
-) -> Result<Vec<Polygon>> {
+) -> Result<(Vec<Polygon>, bool)> {
     let total_area: f64 = result
         .iter()
         .map(|p| signed_ring_area(&p.exterior.coords).abs())
@@ -951,7 +1009,7 @@ fn validate_result_area(
     };
 
     if valid {
-        Ok(result)
+        Ok((result, false))
     } else {
         // WA tracing produced geometrically invalid result; fall back
         fallback_vertex_clip(subject, clip, op)
@@ -962,11 +1020,16 @@ fn validate_result_area(
 // Fallback: vertex-subset clipping (for near-degenerate / hard cases)
 // ---------------------------------------------------------------------------
 
+///
+/// Returns `(polygons, approximate)`. `approximate` is `true` only when the
+/// centroid-angle reconstruction was actually used to build a polygon; the exact
+/// early-out branches (degenerate vertex counts, area-sanity rejections that
+/// return the subject or empty) report `false`.
 fn fallback_vertex_clip(
     subject: &Polygon,
     clip: &Polygon,
     op: ClipOperation,
-) -> Result<Vec<Polygon>> {
+) -> Result<(Vec<Polygon>, bool)> {
     let subj_coords = &subject.exterior.coords;
     let clip_coords = &clip.exterior.coords;
 
@@ -1023,15 +1086,15 @@ fn fallback_vertex_clip(
         }
         ClipOperation::SymmetricDifference => {
             // Handled at top level
-            return Ok(vec![]);
+            return Ok((vec![], false));
         }
     }
 
     if result_coords.len() < 3 {
         return match op {
-            ClipOperation::Difference => Ok(vec![subject.clone()]),
-            ClipOperation::Union => Ok(vec![subject.clone()]),
-            _ => Ok(vec![]),
+            ClipOperation::Difference => Ok((vec![subject.clone()], false)),
+            ClipOperation::Union => Ok((vec![subject.clone()], false)),
+            _ => Ok((vec![], false)),
         };
     }
 
@@ -1052,9 +1115,9 @@ fn fallback_vertex_clip(
 
     if result_coords.len() < 4 {
         return match op {
-            ClipOperation::Difference => Ok(vec![subject.clone()]),
-            ClipOperation::Union => Ok(vec![subject.clone()]),
-            _ => Ok(vec![]),
+            ClipOperation::Difference => Ok((vec![subject.clone()], false)),
+            ClipOperation::Union => Ok((vec![subject.clone()], false)),
+            _ => Ok((vec![], false)),
         };
     }
 
@@ -1068,13 +1131,13 @@ fn fallback_vertex_clip(
         ClipOperation::Difference => {
             if candidate_area > subj_area + EPSILON {
                 // Fallback produced an invalid result -- return subject instead
-                return Ok(vec![subject.clone()]);
+                return Ok((vec![subject.clone()], false));
             }
         }
         ClipOperation::Intersection => {
             let max_valid = subj_area.min(clip_area);
             if candidate_area > max_valid + EPSILON {
-                return Ok(vec![]);
+                return Ok((vec![], false));
             }
         }
         _ => {}
@@ -1089,7 +1152,8 @@ fn fallback_vertex_clip(
 
     let ext = LineString::new(result_coords).map_err(AlgorithmError::Core)?;
     let poly = Polygon::new(ext, interiors).map_err(AlgorithmError::Core)?;
-    Ok(vec![poly])
+    // This polygon came from the approximate centroid-angle reconstruction.
+    Ok((vec![poly], true))
 }
 
 fn push_unique(coords: &mut Vec<Coordinate>, c: Coordinate) {
@@ -1350,6 +1414,42 @@ mod tests {
             result.is_empty(),
             "disjoint squares should have empty intersection"
         );
+    }
+
+    #[test]
+    fn test_detailed_reports_exact_for_convex_overlap() {
+        // A clean convex overlap goes through the exact Weiler-Atherton path, so
+        // the detailed API must report `approximate == false` and agree with the
+        // plain API.
+        let a = make_square(0.0, 0.0, 1.0).expect("make a");
+        let b = make_square(0.5, 0.5, 1.0).expect("make b");
+
+        let detailed =
+            clip_polygons_detailed(&a, &b, ClipOperation::Intersection).expect("detailed clip");
+        assert!(
+            !detailed.approximate,
+            "convex square overlap must be an exact result, not the fallback"
+        );
+
+        let plain = clip_polygons(&a, &b, ClipOperation::Intersection).expect("plain clip");
+        assert_eq!(
+            detailed.polygons.len(),
+            plain.len(),
+            "detailed and plain APIs must return the same polygons"
+        );
+        // Overlap area is 0.5 x 0.5 = 0.25.
+        let area: f64 = detailed.polygons.iter().map(poly_area).sum();
+        assert!((area - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_detailed_disjoint_is_exact() {
+        let a = make_square(0.0, 0.0, 1.0).expect("make a");
+        let b = make_square(5.0, 5.0, 1.0).expect("make b");
+        let detailed =
+            clip_polygons_detailed(&a, &b, ClipOperation::Intersection).expect("detailed clip");
+        assert!(!detailed.approximate);
+        assert!(detailed.polygons.is_empty());
     }
 
     #[test]

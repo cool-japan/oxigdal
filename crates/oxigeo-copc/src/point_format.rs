@@ -13,13 +13,27 @@ use crate::point::{Point3D, WaveformPacket};
 /// `parse_extended_base`.
 ///
 /// Tuple order: `(return_number, number_of_returns, classification,
-/// scan_angle_rank, user_data, point_source_id, gps_time, rgb_offset)`.
+/// scan_angle_rank, user_data, point_source_id, gps_time, rgb_offset,
+/// nir_offset)`.
 ///
 /// `scan_angle_rank` is carried as `f32` degrees for both legacy (formats
 /// 0-5, whole-degree resolution) and extended (formats 6-10, 0.006°
 /// resolution, full ±180° range) base records -- see
 /// [`crate::point::Point3D::scan_angle_rank`].
-type BaseFields = (u8, u8, u8, f32, u8, u16, Option<f64>, Option<usize>);
+///
+/// `nir_offset` is `Some` only for formats 8 and 10 (the only formats
+/// carrying a near-infrared channel per ASPRS LAS 1.4 R15 Tables 10 and 11).
+type BaseFields = (
+    u8,
+    u8,
+    u8,
+    f32,
+    u8,
+    u16,
+    Option<f64>,
+    Option<usize>,
+    Option<usize>,
+);
 
 /// Minimum record sizes per point data format ID.
 ///
@@ -104,6 +118,7 @@ pub fn deserialize_point(
         point_source_id,
         gps_time,
         rgb_offset,
+        nir_offset,
     ) = if is_extended_format(format_id) {
         parse_extended_base(record, format_id)?
     } else {
@@ -122,6 +137,17 @@ pub fn deserialize_point(
         }
     } else {
         (None, None, None)
+    };
+
+    // Parse optional NIR (near-infrared) field for formats 8 and 10.
+    let nir = if let Some(nir_off) = nir_offset {
+        if record.len() >= nir_off + 2 {
+            Some(u16::from_le_bytes([record[nir_off], record[nir_off + 1]]))
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
     // Parse waveform packet for formats 9 and 10.
@@ -148,6 +174,7 @@ pub fn deserialize_point(
         red,
         green,
         blue,
+        nir,
         waveform,
     })
 }
@@ -208,13 +235,14 @@ fn parse_legacy_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcErr
         point_source_id,
         gps_time,
         rgb_offset,
+        None, // legacy formats (0-5) never carry a NIR channel
     ))
 }
 
 /// Parse fields from extended base record (formats 6-10, 30-byte base).
 ///
 /// Returns `(return_number, number_of_returns, classification, scan_angle_rank,
-///           user_data, point_source_id, gps_time, rgb_offset)`.
+///           user_data, point_source_id, gps_time, rgb_offset, nir_offset)`.
 fn parse_extended_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcError> {
     // Byte 14: bits 0-3 = return_number, bits 4-7 = number_of_returns
     let packed = record[14];
@@ -241,10 +269,14 @@ fn parse_extended_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcE
     // Bytes 22-29: GPS time (f64 LE) -- always present in formats 6+
     let gps_time = read_f64_le(record, 22)?;
 
-    // RGB offset depends on format
-    let rgb_offset = match format_id {
-        6 | 9 => None,          // No RGB
-        7 | 8 | 10 => Some(30), // RGB at byte 30 (NIR at 36 for format 8/10, Point3D has no NIR field)
+    // RGB and NIR offsets depend on format. NIR immediately follows the
+    // 6-byte RGB triplet (byte 36 for format 8, byte 44 for format 10) and is
+    // only present in formats 8 and 10 (ASPRS LAS 1.4 R15 Tables 10, 11) --
+    // format 7 has RGB but no NIR.
+    let (rgb_offset, nir_offset) = match format_id {
+        6 | 9 => (None, None),          // No RGB, no NIR
+        7 => (Some(30), None),          // RGB at byte 30, no NIR
+        8 | 10 => (Some(30), Some(36)), // RGB at byte 30, NIR at byte 36
         _ => {
             return Err(CopcError::InvalidFormat(format!(
                 "Unsupported extended format: {format_id}"
@@ -261,6 +293,7 @@ fn parse_extended_base(record: &[u8], format_id: u8) -> Result<BaseFields, CopcE
         point_source_id,
         Some(gps_time),
         rgb_offset,
+        nir_offset,
     ))
 }
 
@@ -473,6 +506,24 @@ mod tests {
         let mut rec = make_format7_record(raw_x, raw_y, raw_z, gps_time, r, g, b);
         rec.resize(38, 0);
         rec[36..38].copy_from_slice(&1000u16.to_le_bytes()); // NIR
+        rec
+    }
+
+    /// Build a format-10 point record (67 bytes = 30 base + 6 RGB + 2 NIR +
+    /// 29 waveform packet). Waveform bytes are left zeroed; this helper only
+    /// exists to exercise NIR parsing alongside a present (but unchecked)
+    /// waveform packet.
+    fn make_format10_record(
+        raw_x: i32,
+        raw_y: i32,
+        raw_z: i32,
+        gps_time: f64,
+        r: u16,
+        g: u16,
+        b: u16,
+    ) -> Vec<u8> {
+        let mut rec = make_format8_record(raw_x, raw_y, raw_z, gps_time, r, g, b);
+        rec.resize(67, 0); // append 29 zeroed waveform-packet bytes
         rec
     }
 
@@ -700,7 +751,9 @@ mod tests {
     // ---- Format 8 ----
 
     #[test]
-    fn test_format8_gps_rgb_nir_ignored() {
+    fn test_format8_gps_rgb_nir_parsed() {
+        // Regression test for a real defect: NIR used to be silently dropped
+        // (no field on Point3D, no bytes read for it) for point formats 8/10.
         let rec = make_format8_record(0, 0, 0, 55.5, 11, 22, 33);
         let pt = deserialize_point(&rec, 8, [1.0; 3], [0.0; 3]).expect("format 8");
         let gps = pt.gps_time.expect("format 8 always has GPS");
@@ -708,7 +761,39 @@ mod tests {
         assert_eq!(pt.red, Some(11));
         assert_eq!(pt.green, Some(22));
         assert_eq!(pt.blue, Some(33));
-        // NIR is silently ignored (no field in Point3D)
+        assert_eq!(
+            pt.nir,
+            Some(1000),
+            "NIR at byte 36-37 must now be parsed into Point3D::nir"
+        );
+    }
+
+    #[test]
+    fn test_format7_has_rgb_but_no_nir() {
+        // Format 7 has RGB but no NIR channel at all (unlike 8/10); nir must
+        // stay None, not accidentally read RGB/waveform bytes as NIR.
+        let rec = make_format7_record(0, 0, 0, 12.0, 1, 2, 3);
+        let pt = deserialize_point(&rec, 7, [1.0; 3], [0.0; 3]).expect("format 7");
+        assert_eq!(pt.red, Some(1));
+        assert_eq!(pt.nir, None, "format 7 must never populate nir");
+    }
+
+    #[test]
+    fn test_format6_and_9_have_no_nir() {
+        let rec6 = make_format6_record(0, 0, 0, 12.0);
+        let pt6 = deserialize_point(&rec6, 6, [1.0; 3], [0.0; 3]).expect("format 6");
+        assert_eq!(pt6.nir, None);
+    }
+
+    #[test]
+    fn test_format10_nir_parsed_after_rgb() {
+        // Format 10 = extended base + RGB(6) + NIR(2) + waveform(29).
+        // NIR must be read from byte 36-37, not from the waveform region.
+        let rec = make_format10_record(0, 0, 0, 55.5, 11, 22, 33);
+        let pt = deserialize_point(&rec, 10, [1.0; 3], [0.0; 3]).expect("format 10");
+        assert_eq!(pt.red, Some(11));
+        assert_eq!(pt.nir, Some(1000), "format 10 NIR must be parsed");
+        assert!(pt.waveform.is_some(), "format 10 must still have waveform");
     }
 
     // ---- min_record_size ----

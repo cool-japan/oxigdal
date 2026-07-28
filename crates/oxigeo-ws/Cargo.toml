@@ -15,21 +15,21 @@ categories = ["web-programming::websocket", "science", "network-programming"]
 
 [dependencies]
 # Workspace dependencies
-oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "net", "time"] }
 futures = { workspace = true }
-async-trait = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 
 # WebSocket dependencies
 axum = { workspace = true, features = ["ws"] }
-tower = { workspace = true }
-tower-http = { workspace = true, features = ["cors", "compression-br", "compression-gzip", "compression-deflate", "trace"] }
+# NOTE: tower-http's `compression-*` features are intentionally NOT enabled.
+# They pull flate2 -> libz-sys (C) and `brotli`, both banned by the COOLJAPAN
+# Pure Rust Policy. WebSocket message compression already uses oxiarc-zstd.
+tower-http = { workspace = true, features = ["cors", "trace"] }
 tokio-tungstenite.workspace = true
 
 # Serialization

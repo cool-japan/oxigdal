@@ -68,10 +68,22 @@ impl BinaryDataSection {
         // Reference value (IEEE 754 32-bit float, big endian)
         let reference_value = reader.read_f32::<BigEndian>()?;
 
-        // Read packed data
+        // Read packed data. `packed_data_length` derives from the BDS section
+        // length header; read it incrementally via `take(..).read_to_end(..)`
+        // rather than preallocating `vec![0u8; packed_data_length]`, so a
+        // truncated section cannot force an oversized speculative allocation.
         let packed_data_length = length.saturating_sub(11);
-        let mut packed_data = vec![0u8; packed_data_length];
-        reader.read_exact(&mut packed_data)?;
+        let mut packed_data = Vec::new();
+        let got = reader
+            .by_ref()
+            .take(packed_data_length as u64)
+            .read_to_end(&mut packed_data)?;
+        if got != packed_data_length {
+            return Err(GribError::TruncatedMessage {
+                expected: packed_data_length,
+                actual: got,
+            });
+        }
 
         Ok(Self {
             reference_value,
@@ -135,6 +147,24 @@ mod tests {
 
         assert_eq!(bds.binary_scale, -3);
         assert_eq!(bds.scale_multiplier(), 0.125);
+    }
+
+    /// A BDS header that declares a huge section length but supplies no packed
+    /// data must fail fast with a truncation error instead of speculatively
+    /// allocating the multi-megabyte buffer the header claims.
+    #[test]
+    fn test_from_reader_rejects_truncated_oversized_section() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0xFF, 0xFF, 0xFF]); // section length = 16 MB
+        data.push(0x00); // flag: simple packing
+        data.extend_from_slice(&[0x00, 0x00]); // binary scale
+        data.extend_from_slice(&0.0f32.to_be_bytes()); // reference value
+        // ...and then nothing: the ~16 MB of packed data the header promises
+        // is absent.
+
+        let mut cursor = Cursor::new(data);
+        let result = BinaryDataSection::from_reader(&mut cursor);
+        assert!(matches!(result, Err(GribError::TruncatedMessage { .. })));
     }
 
     #[test]

@@ -18,11 +18,8 @@ categories = ["compression", "science", "encoding"]
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = { workspace = true }
 byteorder = { workspace = true }
 rayon = { workspace = true, optional = true }
-num-traits = { workspace = true }
-dashmap = { workspace = true }
 tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
@@ -36,7 +33,6 @@ oxiarc-brotli = { workspace = true }
 oxiarc-snappy = { workspace = true }
 
 # Additional dependencies
-bytemuck = { workspace = true }
 ahash = { workspace = true }
 
 [dev-dependencies]

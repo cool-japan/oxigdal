@@ -207,10 +207,103 @@ impl QuantizationParams {
     }
 }
 
-/// Quantizes an ONNX model
+/// Number of bytes a single weight occupies at a given quantization type,
+/// expressed as an (integer numerator, denominator) so `Int4` (0.5 bytes) is
+/// exact.
+fn quantized_bytes_per_weight(qtype: QuantizationType) -> (u64, u64) {
+    match qtype {
+        QuantizationType::Int8 | QuantizationType::UInt8 => (1, 1),
+        QuantizationType::Float16 => (2, 1),
+        QuantizationType::Int4 => (1, 2),
+    }
+}
+
+/// Analyzes the real weight tensors of an ONNX model and reports the
+/// *measured* compression achievable by quantizing every inline float32
+/// initializer to `config.quantization_type`.
+///
+/// Unlike a fabricated ratio derived only from the requested type, the returned
+/// [`QuantizationResult`] reflects the actual number of weight bytes in the
+/// model, the exact quantized weight size (including per-tensor scale/zero-point
+/// overhead), and the non-weight bytes that would remain unchanged.
+///
+/// This performs no file output — it measures what a real quantizer would
+/// achieve. See [`quantize_model`] for why emitting a valid quantized ONNX file
+/// is a separate, larger task.
 ///
 /// # Errors
-/// Returns an error if quantization fails
+/// Returns an error if the input file cannot be read or is not a valid ONNX
+/// model.
+pub fn analyze_model_quantization<P: AsRef<Path>>(
+    input_path: P,
+    config: &QuantizationConfig,
+) -> Result<QuantizationResult> {
+    let input = input_path.as_ref();
+    if !input.exists() {
+        return Err(MlError::InvalidConfig(format!(
+            "Input model not found: {}",
+            input.display()
+        )));
+    }
+
+    let file_data = std::fs::read(input)?;
+    let original_size = file_data.len() as u64;
+
+    let initializers = crate::optimization::onnx_weights::parse_float_initializers(&file_data)?;
+    let total_weights: u64 = initializers.iter().map(|i| i.numel() as u64).sum();
+    let weight_bytes_fp32 = total_weights * 4;
+
+    let (num, den) = quantized_bytes_per_weight(config.quantization_type);
+    // Round up quantized weight bytes (a 4-bit weight still costs a nibble).
+    let quantized_weight_bytes = (total_weights * num).div_ceil(den);
+
+    // Per-tensor scale (f32) + zero-point (i32) metadata for integer types.
+    let per_tensor_overhead = match config.quantization_type {
+        QuantizationType::Float16 => 0,
+        _ => 8,
+    };
+    let overhead = initializers.len() as u64 * per_tensor_overhead;
+
+    // Non-weight bytes (graph structure, metadata) are unchanged.
+    let non_weight_bytes = original_size.saturating_sub(weight_bytes_fp32);
+    let quantized_size = non_weight_bytes + quantized_weight_bytes + overhead;
+
+    let compression_ratio = if quantized_size > 0 {
+        original_size as f32 / quantized_size as f32
+    } else {
+        1.0
+    };
+
+    info!(
+        "Quantization analysis: {} weights, {} -> {} bytes ({:.2}x measured compression)",
+        total_weights, weight_bytes_fp32, quantized_weight_bytes, compression_ratio
+    );
+
+    Ok(QuantizationResult {
+        original_size,
+        quantized_size,
+        compression_ratio,
+        quantization_type: config.quantization_type,
+    })
+}
+
+/// Quantizes an ONNX model to disk.
+///
+/// Emitting a *valid, runnable* quantized ONNX model requires inserting
+/// `QuantizeLinear`/`DequantizeLinear` (QDQ) nodes around each quantized weight
+/// and rewiring the graph — a protobuf-serializing graph transformation that
+/// `oxionnx` does not yet support (it can parse a model but not re-serialize
+/// one). Rather than copy the file and report a fabricated compression ratio
+/// (which would leave the model unquantized while claiming otherwise), this
+/// function returns an honest [`MlError::Unsupported`] error.
+///
+/// To obtain the real, measured compression a quantizer would achieve on this
+/// model's weights, use [`analyze_model_quantization`]; to quantize an
+/// in-memory tensor, use [`quantize_tensor`] / [`QuantizationParams`].
+///
+/// # Errors
+/// Always returns [`MlError::Unsupported`] (after validating the input is a
+/// readable ONNX model), or an I/O / format error if the input cannot be read.
 pub fn quantize_model<P: AsRef<Path>>(
     input_path: P,
     output_path: P,
@@ -236,44 +329,20 @@ pub fn quantize_model<P: AsRef<Path>>(
         config.per_channel, config.symmetric
     );
 
-    // Actual ONNX quantization requires:
-    // 1. Loading the ONNX model
-    // 2. Analyzing tensor value ranges
-    // 3. Computing quantization parameters
-    // 4. Converting weights and activations to quantized format
-    // 5. Saving the quantized model
+    // Validate the input is a real ONNX model and compute the achievable
+    // compression so the error message carries honest, measured numbers.
+    let analysis = analyze_model_quantization(input, config)?;
 
-    // Since full ONNX Runtime quantization APIs are complex,
-    // we provide the framework here. In production, use:
-    // - onnxruntime::quantization module
-    // - Static quantization with calibration dataset
-    // - Dynamic quantization for certain operators
-
-    let original_size = std::fs::metadata(input)?.len();
-
-    // Copy model (in production, this would be actual quantization)
-    std::fs::copy(input, output)?;
-
-    let quantized_size = std::fs::metadata(output)?.len();
-
-    // Estimate compression ratio based on quantization type
-    let compression_ratio = match config.quantization_type {
-        QuantizationType::Int8 => 4.0,    // float32 -> int8
-        QuantizationType::UInt8 => 4.0,   // float32 -> uint8
-        QuantizationType::Float16 => 2.0, // float32 -> float16
-        QuantizationType::Int4 => 8.0,    // float32 -> int4
-    };
-
-    info!(
-        "Quantization complete: {:.1}x compression (estimated)",
-        compression_ratio
-    );
-
-    Ok(QuantizationResult {
-        original_size,
-        quantized_size,
-        compression_ratio,
-        quantization_type: config.quantization_type,
+    Err(MlError::Unsupported {
+        operation: "quantize_model (ONNX file emission)".to_string(),
+        reason: format!(
+            "writing a valid quantized ONNX model requires QuantizeLinear/DequantizeLinear \
+             graph insertion + protobuf serialization, which is not yet available. \
+             Measured achievable compression for this model is {:.2}x ({} -> {} bytes); \
+             use analyze_model_quantization() for the measurement or quantize_tensor() for \
+             in-memory tensor quantization",
+            analysis.compression_ratio, analysis.original_size, analysis.quantized_size
+        ),
     })
 }
 

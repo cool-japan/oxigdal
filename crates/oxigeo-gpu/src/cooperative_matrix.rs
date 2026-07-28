@@ -641,6 +641,7 @@ pub fn dispatch_cooperative_gemm(
         pass.dispatch_workgroups(wg_x, wg_y, 1);
     }
 
+    ctx.check_device_lost()?;
     queue.submit(std::iter::once(encoder.finish()));
 
     Ok(())

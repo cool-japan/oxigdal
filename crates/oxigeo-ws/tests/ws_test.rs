@@ -34,10 +34,9 @@ async fn test_subscription_manager() -> std::result::Result<(), Box<dyn std::err
     Ok(())
 }
 #[tokio::test]
-/// Ignored: Long-running async test (timeout >120s)
-#[ignore]
 async fn test_tile_subscriptions() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let manager = SubscriptionManager::new();
+    // client-1 covers the south-west quadrant; client-2 the north-east quadrant.
     let sub1 = Subscription::tiles(
         "client-1".to_string(),
         [-180.0, -90.0, 0.0, 0.0],
@@ -47,11 +46,23 @@ async fn test_tile_subscriptions() -> std::result::Result<(), Box<dyn std::error
     let sub2 = Subscription::tiles("client-2".to_string(), [0.0, 0.0, 180.0, 90.0], 5..10, None);
     manager.add(sub1)?;
     manager.add(sub2)?;
-    let matches = manager.find_tile_subscriptions(0, 0, 5);
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].client_id, "client-1");
-    let matches_all = manager.find_tile_subscriptions(128, 128, 8);
-    assert!(matches_all.len() <= 2);
+
+    // In the XYZ scheme tile row y=0 is the NORTH edge. Tile (8, 20) at zoom 5
+    // lies in the south-west quadrant (lon ~ -90..-79, lat ~ -46..-41), so only
+    // client-1 matches.
+    let sw = manager.find_tile_subscriptions(8, 20, 5);
+    assert_eq!(sw.len(), 1);
+    assert_eq!(sw[0].client_id, "client-1");
+
+    // Tile (24, 11) at zoom 5 lies in the north-east quadrant (lon ~ 90..101,
+    // lat ~ 41..49), so only client-2 matches.
+    let ne = manager.find_tile_subscriptions(24, 11, 5);
+    assert_eq!(ne.len(), 1);
+    assert_eq!(ne[0].client_id, "client-2");
+
+    // A tile whose zoom is outside both subscriptions' zoom ranges matches nothing.
+    let out_of_zoom = manager.find_tile_subscriptions(8, 20, 2);
+    assert_eq!(out_of_zoom.len(), 0);
     Ok(())
 }
 #[tokio::test]

@@ -7,11 +7,19 @@ operations.
 
 ## Features
 
-- **R-tree** (linear-split variant) -- point/window queries, approximate k-nearest neighbours, spatial joins
-- **Grid index** -- fast uniform-distribution spatial lookups
-- **Geometry operations** -- area, perimeter, centroid, convex hull, point-in-polygon, buffer, simplify, distance
-- **Polygon validation** -- ring closure, orientation, self-intersection checks
-- `no_std` compatible (with `alloc`)
+- **R-tree** (R*-tree split heuristic with forced reinsertion) -- point/window/top-k queries, priority-queue k-nearest neighbours, spatial joins (optionally parallel via `parallel`/rayon), bulk loading (STR), line-corridor search
+- **3D R-tree** (`RTree3D`) -- volumetric/point-cloud indexing with 3D k-NN and bulk load
+- **Hilbert R-tree** -- Hilbert-curve-ordered bulk-loaded index for disk-friendly locality
+- **Grid index** and **spatial hash grid** -- fast uniform-distribution and unbounded-extent spatial lookups
+- **Adaptive grid** -- loose-quadtree that subdivides hot cells automatically
+- **Streaming R-tree** -- online insertion with buffered rebalancing (no full rebuild per insert)
+- **Geometry operations** -- area, perimeter, centroid, convex hull, point-in-polygon, buffer, simplify (Douglas-Peucker and Visvalingam-Whyatt), distance
+- **Polygon boolean ops** -- union, intersection, difference, symmetric difference (Sutherland-Hodgman / Weiler-Atherton)
+- **Polygon / multipolygon validation** -- ring closure, orientation, self-intersection, shared-edge and interior-overlap checks
+- **Computational geometry** -- Voronoi diagrams, Delaunay triangulation, minimum bounding circle (Welzl), Bentley-Ottmann line-segment intersection sweep
+- **Spatial clustering** -- DBSCAN over an internal R-tree
+- **Geographic distance** -- haversine and Vincenty-inverse (WGS84) distance/nearest-k/within-radius queries
+- `no_std` support: the original R-tree/bbox/operations core is `no_std` + `alloc` compatible, but several modules added since (grid index, spatial hash, adaptive grid, 3D R-tree, Hilbert R-tree, Voronoi, DBSCAN, sweep-line, streaming R-tree, bounding circle) currently import `std::collections`/`std::cmp` directly and are **not** yet no_std-clean -- `cargo build -p oxigeo-index --no-default-features` currently fails. See TODO.md.
 
 ## Usage
 
@@ -32,7 +40,7 @@ assert_eq!(count, 2);
 
 ## Status
 
-- 153 tests passing, 0 failures
+- 460 tests passing, 0 failures (all-features; 446 with default features)
 
 ## License
 

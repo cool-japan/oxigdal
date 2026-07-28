@@ -1,4 +1,5 @@
 //! MongoDB connector tests.
+#![cfg(feature = "mongodb")]
 #![allow(clippy::panic)]
 
 use geo_types::{Geometry, point, polygon};

@@ -54,7 +54,6 @@ lz4 = ["parquet/lz4"]
 oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
@@ -69,7 +68,6 @@ parquet = { workspace = true, default-features = false, features = ["arrow"], op
 # Async support
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
 async-trait = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -55,6 +55,19 @@ pub enum MlError {
         /// The required feature flag
         flag: String,
     },
+
+    /// A requested operation is not yet supported.
+    ///
+    /// Returned instead of silently producing incorrect output (e.g. a copied
+    /// file presented as a transformed model) when a real implementation is not
+    /// yet available.
+    #[error("Unsupported operation: {operation} ({reason})")]
+    Unsupported {
+        /// The operation that was requested.
+        operation: String,
+        /// Why it cannot currently be performed.
+        reason: String,
+    },
 }
 
 /// Model-related errors

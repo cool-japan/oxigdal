@@ -9,9 +9,21 @@ use crate::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[cfg(feature = "async")]
 use reqwest::Client as HttpClient;
+
+/// Default request timeout applied to [`StacClient`]'s HTTP client when none
+/// is given explicitly (via [`StacClient::new_with_timeout`] /
+/// [`StacClient::with_timeout`]).
+///
+/// Without a client-level timeout, a slow or hung STAC server (or a network
+/// partition) would block the calling task/thread indefinitely with no way
+/// to cancel -- there was previously no `.timeout(...)` call anywhere on
+/// this client at all.
+#[cfg(feature = "async")]
+pub const DEFAULT_STAC_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Result of a successful STAC Transaction API HTTP operation.
 ///
@@ -45,7 +57,8 @@ pub struct StacClient {
 
 #[cfg(feature = "async")]
 impl StacClient {
-    /// Creates a new STAC API client.
+    /// Creates a new STAC API client with the default request timeout
+    /// ([`DEFAULT_STAC_CLIENT_TIMEOUT`], 30 seconds).
     ///
     /// # Arguments
     ///
@@ -55,13 +68,32 @@ impl StacClient {
     ///
     /// A new StacClient instance
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
+        Self::new_with_timeout(base_url, DEFAULT_STAC_CLIENT_TIMEOUT)
+    }
+
+    /// Creates a new STAC API client with an explicit request timeout.
+    ///
+    /// The timeout bounds every request this client makes (`search`, the
+    /// Transaction extension's `create_item`/`update_item`/`upsert_item`/
+    /// `delete_item`, and `with_conformance`) end-to-end: connect + send +
+    /// receive. Use this (or [`with_timeout`](Self::with_timeout)) whenever
+    /// the default 30s is not appropriate for your deployment (e.g. a slow
+    /// catalog behind a high-latency link, or a strict SLA that needs a
+    /// tighter bound).
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - Base URL of the STAC API
+    /// * `timeout` - Per-request timeout
+    pub fn new_with_timeout(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let base_url = base_url.into();
 
         // Validate URL
         url::Url::parse(&base_url)?;
 
         let client = HttpClient::builder()
-            .user_agent("oxigeo-stac/0.2.0")
+            .user_agent(concat!("oxigeo-stac/", env!("CARGO_PKG_VERSION")))
+            .timeout(timeout)
             .build()
             .map_err(|e| StacError::Http(e.to_string()))?;
 
@@ -70,6 +102,17 @@ impl StacClient {
             client,
             conformance_classes: std::sync::Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Returns an equivalent client with a different request timeout
+    /// (rebuilds the underlying HTTP client; any cached conformance classes
+    /// from [`with_conformance`](Self::with_conformance) are dropped, since
+    /// they logically belong to the connection/session being replaced).
+    ///
+    /// # Errors
+    /// Returns an error if the underlying HTTP client fails to build.
+    pub fn with_timeout(self, timeout: Duration) -> Result<Self> {
+        Self::new_with_timeout(self.base_url, timeout)
     }
 
     /// Creates a new search query builder.
@@ -752,5 +795,63 @@ mod tests {
 
         let json = serde_json::to_string(&params);
         assert!(json.is_ok());
+    }
+
+    #[test]
+    fn test_new_with_timeout_preserves_base_url_and_validates_it() {
+        let client = StacClient::new_with_timeout(
+            "https://earth-search.aws.element84.com/v1",
+            Duration::from_secs(5),
+        )
+        .expect("valid URL with an explicit timeout should succeed");
+        assert_eq!(client.base_url, "https://earth-search.aws.element84.com/v1");
+
+        let invalid = StacClient::new_with_timeout("not-a-url", Duration::from_secs(5));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn test_with_timeout_rebuilds_client_preserving_base_url() {
+        let client = StacClient::new("https://earth-search.aws.element84.com/v1")
+            .expect("client creation failed")
+            .with_timeout(Duration::from_secs(5))
+            .expect("rebuilding with a new timeout should succeed");
+        assert_eq!(client.base_url, "https://earth-search.aws.element84.com/v1");
+    }
+
+    /// Regression test for the missing client-level timeout: previously
+    /// `StacClient`'s `reqwest::Client` had no `.timeout(...)` at all, so a
+    /// server that accepts a connection and then never responds would hang
+    /// the request indefinitely.
+    #[tokio::test]
+    async fn test_request_times_out_when_server_never_responds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failed");
+        let addr = listener.local_addr().expect("local_addr failed");
+
+        // Accept the connection but never write anything back, simulating a
+        // hung/slow server that never sends a response.
+        let _server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.expect("accept failed");
+            std::future::pending::<()>().await
+        });
+
+        let client =
+            StacClient::new_with_timeout(format!("http://{addr}"), Duration::from_millis(300))
+                .expect("client creation failed");
+
+        let start = std::time::Instant::now();
+        let result = client.execute_search(&SearchParams::default()).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "a request to a server that never responds must time out, not succeed"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the request should have timed out around the configured 300ms, took {elapsed:?}"
+        );
     }
 }

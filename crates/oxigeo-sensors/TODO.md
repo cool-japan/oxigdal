@@ -1,7 +1,7 @@
 # TODO: oxigeo-sensors
 
 > **Purpose:** Remote sensing / satellite-sensor data processing for OxiGeo — sensor definitions (Landsat / Sentinel / MODIS / ASTER), radiometric correction, spectral indices, pan-sharpening, and image classification. (**NOT** an IoT sensor ingestion crate — that role belongs to oxigeo-mqtt + oxigeo-streaming.)
-> **Status (2026-05-16):** 3,623 LoC · 128 tests · 4 real-code stubs
+> **Status (2026-07-28):** 4,058 LoC · 101 tests · 0 real-code stubs (all 4 below resolved)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -109,4 +109,4 @@
 - *(none in this slice)*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

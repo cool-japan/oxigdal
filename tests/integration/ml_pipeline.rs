@@ -1,232 +1,81 @@
-//! End-to-end ML pipeline integration tests
+//! End-to-end ML pipeline integration tests.
 //!
-//! Tests complete ML workflows from data loading to inference.
+//! These tests describe complete ML workflows (image classification, object
+//! detection, semantic segmentation, feature extraction, time-series
+//! prediction, training, batch inference, model export/reload) that must run
+//! against the real `oxigeo-ml` inference stack.
+//!
+//! `oxigeo-ml` is NOT a dependency of this test target (`oxigeo-dev-tools`), so
+//! real inference cannot be exercised here. An earlier revision of this file
+//! faked every stage — `classify_patches` returned `vec![0; n]`, `detect_objects`
+//! returned one hardcoded box, `segment_image` returned a fixed 256x256 zero
+//! mask — and asserted only the shapes of those fabricated outputs, so the tests
+//! passed unconditionally while validating nothing.
+//!
+//! Rather than keep that false coverage, every pipeline test below is
+//! `#[ignore]`d and returns an honest typed error. Wire `oxigeo-ml` in as a
+//! dev-dependency of `oxigeo-dev-tools` and route these through the real
+//! `Model`/inference API to make them real (see the crate follow-up note).
 
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![allow(clippy::let_unit_value)]
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Test complete image classification pipeline
+/// Honest error: the ML crate needed to run this pipeline for real is not wired
+/// into this test target.
+fn ml_unavailable(stage: &str) -> Box<dyn std::error::Error> {
+    format!(
+        "{stage} requires the oxigeo-ml inference stack, which is not a \
+         dependency of oxigeo-dev-tools; this pipeline cannot be validated from \
+         this test target"
+    )
+    .into()
+}
+
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real classification inference"]
 fn test_image_classification_pipeline() -> Result<()> {
-    // Load raster data
-    let raster_data = load_test_raster(256, 256, 3)?;
-
-    // Preprocess
-    let normalized = normalize_data(&raster_data, 0.0, 1.0)?;
-
-    // Extract patches
-    let patches = extract_patches(&normalized, 32, 32)?;
-
-    // Run inference (placeholder)
-    let predictions = classify_patches(&patches)?;
-
-    assert_eq!(predictions.len(), patches.len());
-
-    Ok(())
+    Err(ml_unavailable("image classification"))
 }
 
-/// Test object detection pipeline
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real object-detection inference"]
 fn test_object_detection_pipeline() -> Result<()> {
-    // Load image
-    let image = load_test_raster(512, 512, 3)?;
-
-    // Run detection model
-    let detections = detect_objects(&image)?;
-
-    // Verify detections format
-    for detection in &detections {
-        assert!((0.0..=1.0).contains(&detection.confidence));
-    }
-
-    Ok(())
+    Err(ml_unavailable("object detection"))
 }
 
-/// Test semantic segmentation pipeline
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real segmentation inference"]
 fn test_semantic_segmentation_pipeline() -> Result<()> {
-    // Load multi-band raster
-    let raster = load_test_raster(256, 256, 4)?;
-
-    // Run segmentation
-    let segmentation_mask = segment_image(&raster)?;
-
-    // Verify mask dimensions
-    assert_eq!(segmentation_mask.len(), 256 * 256);
-
-    Ok(())
+    Err(ml_unavailable("semantic segmentation"))
 }
 
-/// Test feature extraction pipeline
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real feature extraction"]
 fn test_feature_extraction_pipeline() -> Result<()> {
-    // Load sample data
-    let data = load_test_raster(100, 100, 3)?;
-
-    // Extract features
-    let features = extract_features(&data)?;
-
-    // Verify features shape
-    assert!(!features.is_empty());
-
-    Ok(())
+    Err(ml_unavailable("feature extraction"))
 }
 
-/// Test time series prediction
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real time-series prediction"]
 fn test_time_series_prediction() -> Result<()> {
-    // Create time series data
-    let time_series = vec![
-        vec![1.0, 2.0, 3.0],
-        vec![2.0, 3.0, 4.0],
-        vec![3.0, 4.0, 5.0],
-    ];
-
-    // Predict next values
-    let predictions = predict_time_series(&time_series, 3)?;
-
-    assert_eq!(predictions.len(), 3);
-
-    Ok(())
+    Err(ml_unavailable("time-series prediction"))
 }
 
-/// Test model training pipeline
 #[test]
-#[ignore] // Requires significant compute
+#[ignore = "requires oxigeo-ml dev-dependency and significant compute for training"]
 fn test_model_training() -> Result<()> {
-    // Prepare training data
-    let train_features = vec![vec![1.0, 2.0]; 100];
-    let train_labels = vec![0; 50]
-        .into_iter()
-        .chain(vec![1; 50])
-        .collect::<Vec<_>>();
-
-    // Train model
-    let _model = train_classifier(&train_features, &train_labels, TrainingConfig::default())?;
-
-    Ok(())
+    Err(ml_unavailable("model training"))
 }
 
-/// Test batch inference
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real batch inference"]
 fn test_batch_inference() -> Result<()> {
-    // Create batch of images
-    let batch = vec![
-        load_test_raster(64, 64, 3)?,
-        load_test_raster(64, 64, 3)?,
-        load_test_raster(64, 64, 3)?,
-    ];
-
-    // Run batch inference
-    let results = batch_inference(&batch)?;
-
-    assert_eq!(results.len(), batch.len());
-
-    Ok(())
+    Err(ml_unavailable("batch inference"))
 }
 
-/// Test model export and reload
 #[test]
+#[ignore = "requires oxigeo-ml dev-dependency for real model export/reload"]
 fn test_model_export_reload() -> Result<()> {
-    use tempfile::NamedTempFile;
-
-    // Create and export model
-    let model_path = NamedTempFile::new()?;
-    export_model(model_path.path())?;
-
-    // Reload model
-    let _reloaded_model = load_model(model_path.path())?;
-
-    Ok(())
-}
-
-// Helper types and functions (placeholders)
-
-#[derive(Debug, Clone)]
-struct Detection {
-    bbox: (f32, f32, f32, f32),
-    class: String,
-    confidence: f32,
-}
-
-#[derive(Debug, Clone)]
-struct TrainingConfig {
-    epochs: usize,
-    batch_size: usize,
-    learning_rate: f64,
-}
-
-impl Default for TrainingConfig {
-    fn default() -> Self {
-        Self {
-            epochs: 10,
-            batch_size: 32,
-            learning_rate: 0.001,
-        }
-    }
-}
-
-fn load_test_raster(width: usize, height: usize, bands: usize) -> Result<Vec<f32>> {
-    Ok(vec![0.5; width * height * bands])
-}
-
-fn normalize_data(data: &[f32], min: f32, max: f32) -> Result<Vec<f32>> {
-    Ok(data.iter().map(|&v| (v - min) / (max - min)).collect())
-}
-
-fn extract_patches(
-    data: &[f32],
-    _patch_width: usize,
-    _patch_height: usize,
-) -> Result<Vec<Vec<f32>>> {
-    Ok(vec![data.to_vec(); 10])
-}
-
-fn classify_patches(patches: &[Vec<f32>]) -> Result<Vec<usize>> {
-    Ok(vec![0; patches.len()])
-}
-
-fn detect_objects(_image: &[f32]) -> Result<Vec<Detection>> {
-    Ok(vec![Detection {
-        bbox: (10.0, 10.0, 50.0, 50.0),
-        class: "object".to_string(),
-        confidence: 0.95,
-    }])
-}
-
-fn segment_image(_raster: &[f32]) -> Result<Vec<u8>> {
-    Ok(vec![0; 256 * 256])
-}
-
-fn extract_features(_data: &[f32]) -> Result<Vec<f64>> {
-    Ok(vec![0.0; 128])
-}
-
-fn predict_time_series(_series: &[Vec<f64>], steps: usize) -> Result<Vec<f64>> {
-    Ok(vec![0.0; steps])
-}
-
-fn train_classifier(
-    _features: &[Vec<f64>],
-    _labels: &[usize],
-    _config: TrainingConfig,
-) -> Result<()> {
-    Ok(())
-}
-
-fn batch_inference(_batch: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
-    Ok(vec![vec![0.0; 10]; 3])
-}
-
-fn export_model(_path: &std::path::Path) -> Result<()> {
-    std::fs::write(_path, b"model data")?;
-    Ok(())
-}
-
-fn load_model(_path: &std::path::Path) -> Result<()> {
-    let _data = std::fs::read(_path)?;
-    Ok(())
+    Err(ml_unavailable("model export/reload"))
 }

@@ -236,14 +236,19 @@ impl Pipeline {
         // Load checkpoint if enabled
         if self.config.stream.checkpointing {
             info!("Loading checkpoint for pipeline '{}'", self.config.id);
-            state_manager
-                .load_checkpoint(&self.config.id)
-                .await
-                .map_err(|e| {
-                    warn!("Failed to load checkpoint: {}", e);
-                    e
-                })
-                .ok();
+            if let Err(e) = state_manager.load_checkpoint(&self.config.id).await {
+                warn!("Failed to load checkpoint: {}", e);
+                stats.record_checkpoint_failure();
+                if !self.config.error_recovery {
+                    return Err(e);
+                }
+                // With error_recovery enabled, a failed checkpoint load is
+                // treated like any other recoverable error: it is counted
+                // (both in `checkpoint_failures` and via the log above) but
+                // does not abort the run -- the pipeline proceeds as if
+                // resuming from scratch rather than silently pretending the
+                // checkpoint succeeded.
+            }
         }
 
         // Create stream from source
@@ -314,14 +319,18 @@ impl Pipeline {
                     && items_processed.is_multiple_of(self.config.stream.checkpoint_interval)
                 {
                     debug!("Creating checkpoint at {} items", items_processed);
-                    state_manager
-                        .save_checkpoint(&self.config.id)
-                        .await
-                        .map_err(|e| {
-                            warn!("Failed to save checkpoint: {}", e);
-                            e
-                        })
-                        .ok();
+                    if let Err(e) = state_manager.save_checkpoint(&self.config.id).await {
+                        warn!("Failed to save checkpoint: {}", e);
+                        stats.record_checkpoint_failure();
+                        if !self.config.error_recovery {
+                            return Err(e);
+                        }
+                        // With error_recovery enabled, a failed periodic
+                        // checkpoint save is counted (both in
+                        // `checkpoint_failures` and via the log above) but
+                        // does not abort the run; the final checkpoint below
+                        // still gets a chance to succeed.
+                    }
                 }
             }
         }
@@ -335,11 +344,12 @@ impl Pipeline {
         }
 
         info!(
-            "Pipeline '{}' completed: {} items processed, {} filtered, {} errors",
+            "Pipeline '{}' completed: {} items processed, {} filtered, {} errors, {} checkpoint failures",
             self.config.id,
             items_processed,
             items_filtered,
-            stats.errors()
+            stats.errors(),
+            stats.checkpoint_failures()
         );
 
         Ok(stats)
@@ -403,6 +413,7 @@ impl Pipeline {
 pub struct PipelineStats {
     items_processed: Arc<std::sync::atomic::AtomicUsize>,
     errors: Arc<std::sync::atomic::AtomicUsize>,
+    checkpoint_failures: Arc<std::sync::atomic::AtomicUsize>,
     start_time: std::time::Instant,
 }
 
@@ -411,6 +422,7 @@ impl PipelineStats {
         Self {
             items_processed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             errors: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            checkpoint_failures: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             start_time: std::time::Instant::now(),
         }
     }
@@ -425,6 +437,18 @@ impl PipelineStats {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Record that a checkpoint load or save attempt failed.
+    ///
+    /// Unlike a transient item-level error, a failing checkpoint means
+    /// crash-resume fault tolerance -- the entire reason checkpointing was
+    /// enabled -- is degraded or broken for this run. This counter lets an
+    /// operator/monitoring system detect that condition instead of it being
+    /// silently swallowed behind a log line.
+    fn record_checkpoint_failure(&self) {
+        self.checkpoint_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Get number of items processed
     pub fn items_processed(&self) -> usize {
         self.items_processed
@@ -434,6 +458,16 @@ impl PipelineStats {
     /// Get number of errors
     pub fn errors(&self) -> usize {
         self.errors.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get number of checkpoint load/save failures.
+    ///
+    /// A non-zero value means checkpointing was enabled but at least one
+    /// load or save attempt failed -- crash/restart resume for this pipeline
+    /// run may not reflect the latest processed state.
+    pub fn checkpoint_failures(&self) -> usize {
+        self.checkpoint_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get elapsed time
@@ -504,6 +538,108 @@ mod tests {
     async fn test_pipeline_validation() {
         let result = Pipeline::builder().build();
         assert!(result.is_err()); // No source or sink
+    }
+
+    /// Builds a pipeline reading 3 lines from a temp file, writing to another temp
+    /// file, with checkpointing enabled (one attempt per item) but pointed at a
+    /// checkpoint "directory" that is actually a regular file -- so
+    /// `save_checkpoint`'s `create_dir_all` genuinely fails on every attempt,
+    /// simulating a permanently broken checkpoint backend (disk full, permission
+    /// denied, corrupt mount, ...) rather than a missing-checkpoint no-op.
+    ///
+    /// Because the final checkpoint at the end of `run_ref` is unconditional and
+    /// always propagates its error (by design -- see the comment there), `run()`
+    /// against a *permanently* broken backend always ends in `Err`, regardless of
+    /// `error_recovery`. What `error_recovery` controls is whether a mid-run
+    /// (periodic) checkpoint failure aborts processing immediately or is merely
+    /// recorded so the run can continue to completion before that final,
+    /// unconditional checkpoint attempt fails.
+    fn build_pipeline_with_broken_checkpoint_dir(
+        error_recovery: bool,
+    ) -> (Pipeline, NamedTempFile, NamedTempFile, NamedTempFile) {
+        let mut temp_input = NamedTempFile::new().expect("Failed to create temp input");
+        write!(temp_input, "line1\nline2\nline3\n").expect("Failed to write");
+        let input_path = temp_input.path().to_path_buf();
+
+        let temp_output = NamedTempFile::new().expect("Failed to create temp output");
+        let output_path = temp_output.path().to_path_buf();
+
+        // A plain file, not a directory: `tokio::fs::create_dir_all` on this path
+        // must fail on every platform since a path component already exists and
+        // is not a directory.
+        let blocker = NamedTempFile::new().expect("Failed to create blocker file");
+        let bad_checkpoint_dir = blocker.path().to_path_buf();
+
+        let mut builder = Pipeline::builder()
+            .source(Box::new(FileSource::new(input_path).line_based(true)))
+            .sink(Box::new(FileSink::new(output_path)))
+            .stream_config(StreamConfig {
+                checkpointing: true,
+                checkpoint_interval: 1,
+                ..StreamConfig::default()
+            })
+            .checkpoint_dir(bad_checkpoint_dir);
+
+        if error_recovery {
+            builder = builder.with_error_recovery(3);
+        }
+
+        let pipeline = builder.build().expect("Failed to build pipeline");
+
+        // Keep the temp files alive for the duration of the test (their Drop
+        // would delete the paths the pipeline is about to use).
+        (pipeline, temp_input, temp_output, blocker)
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_save_failure_aborts_immediately_without_error_recovery() {
+        let (pipeline, _input, temp_output, _blocker) =
+            build_pipeline_with_broken_checkpoint_dir(false);
+        let output_path = temp_output.path().to_path_buf();
+
+        let result = pipeline.run().await;
+        assert!(
+            result.is_err(),
+            "a checkpoint failure without error_recovery must be surfaced as a pipeline error, \
+             not silently swallowed while the pipeline reports success"
+        );
+
+        // Processing must have stopped at the very first checkpoint failure:
+        // only the first line reached the sink before `run_ref` returned Err.
+        let output = std::fs::read_to_string(&output_path).unwrap_or_default();
+        assert!(output.contains("line1"));
+        assert!(
+            !output.contains("line2"),
+            "processing should have aborted before the second item on the first checkpoint \
+             failure, but found: {:?}",
+            output
+        );
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_save_failure_does_not_abort_processing_with_error_recovery() {
+        let (pipeline, _input, temp_output, _blocker) =
+            build_pipeline_with_broken_checkpoint_dir(true);
+        let output_path = temp_output.path().to_path_buf();
+
+        // The run ultimately still errors (the final, unconditional checkpoint
+        // hits the same permanently-broken backend), but that is a distinct
+        // concern from whether *periodic* checkpoint failures wrongly abort
+        // mid-run processing; see the helper's doc comment.
+        let result = pipeline.run().await;
+        assert!(result.is_err());
+
+        // Crucially, with error_recovery enabled, each periodic checkpoint
+        // failure must have been recorded and processing must have continued
+        // (not aborted like the non-recovery case above) -- all three items
+        // reached the sink despite every single checkpoint attempt failing.
+        let output = std::fs::read_to_string(&output_path).unwrap_or_default();
+        assert!(
+            output.contains("line1") && output.contains("line2") && output.contains("line3"),
+            "a checkpoint failure with error_recovery enabled must not silently abort \
+             processing of subsequent items, but output was: {:?}",
+            output
+        );
     }
 
     #[tokio::test]

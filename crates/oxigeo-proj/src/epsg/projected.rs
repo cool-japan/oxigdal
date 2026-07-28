@@ -1,8 +1,6 @@
 //! Non-UTM projected CRS definitions for the EPSG database.
 
-#[cfg(not(feature = "std"))]
 use alloc::format;
-#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
 
 use super::types::{CrsType, EpsgDatabase, EpsgDefinition};
@@ -70,21 +68,28 @@ fn register_national_grids(db: &mut EpsgDatabase) {
         datum: "OSGB36".to_string(),
     });
 
-    // German DHDN Gauss-Kruger zones
+    // German DHDN 3-degree Gauss-Kruger zones 1–5 (EPSG:31465–31469).
+    //
+    // The false easting follows the official German "Rechtswert" convention
+    // `x_0 = zone × 1_000_000 + 500_000` (the zone number is prepended to the
+    // 500 km-offset ordinate), i.e. 1.5M (z1), 2.5M (z2), 3.5M (z3), 4.5M (z4),
+    // 5.5M (z5) — matching the EPSG registry.
     let dhdn_zones = [
-        (31466u32, 2u32, 6000000.0_f64, "Germany — 6°E to 8°E"),
-        (31467, 3, 9000000.0, "Germany — 8°E to 10°E"),
-        (31468, 4, 12000000.0, "Germany — 10°E to 12°E"),
-        (31469, 5, 15000000.0, "Germany — 12°E to 14°E"),
+        (31465u32, 1u32, "Germany — 2°E to 4°E (west)"),
+        (31466, 2, "Germany — 6°E to 8°E"),
+        (31467, 3, "Germany — 8°E to 10°E"),
+        (31468, 4, "Germany — 10°E to 12°E"),
+        (31469, 5, "Germany — 12°E to 14°E"),
     ];
-    for (code, zone, fe, aou) in dhdn_zones {
+    for (code, zone, aou) in dhdn_zones {
         let lon_0 = zone as f64 * 3.0;
+        let fe = zone as u64 * 1_000_000 + 500_000;
         db.add_definition(EpsgDefinition {
             code,
             name: format!("DHDN / 3-degree Gauss-Kruger zone {}", zone),
             proj_string: format!(
                 "+proj=tmerc +lat_0=0 +lon_0={} +k=1 +x_0={} +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,2.455,6.7 +units=m +no_defs",
-                lon_0, fe as u64
+                lon_0, fe
             ),
             wkt: None,
             crs_type: CrsType::Projected,

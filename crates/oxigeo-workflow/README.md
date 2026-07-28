@@ -32,16 +32,16 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-workflow = "0.2.0"
+oxigeo-workflow = "0.2.1"
 
-# For integrations (HTTP, Kafka)
-oxigeo-workflow = { version = "0.2.0", features = ["integrations"] }
+# For integrations (HTTP, Airflow, Prefect, Temporal)
+oxigeo-workflow = { version = "0.2.1", features = ["integrations"] }
 
 # For HTTP server support
-oxigeo-workflow = { version = "0.2.0", features = ["server"] }
+oxigeo-workflow = { version = "0.2.1", features = ["server"] }
 
 # For all features
-oxigeo-workflow = { version = "0.2.0", features = ["full"] }
+oxigeo-workflow = { version = "0.2.1", features = ["full"] }
 ```
 
 ## Quick Start
@@ -331,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `conditional` | Conditional branching and dynamic execution |
 | `templates` | Workflow templates and reusable patterns |
 | `versioning` | Version management and backward compatibility |
-| `integrations` | External system adapters (Airflow, Prefect, Kafka) |
+| `integrations` | External system adapters (Airflow, Prefect, Temporal) |
 | `error` | Error types and result handling |
 
 ### Key Types

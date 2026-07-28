@@ -15,7 +15,6 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use oxigeo_bench::profiler::{CpuProfiler, CpuProfilerConfig};
 //! use oxigeo_bench::scenarios::{ScenarioBuilder, ScenarioRunner};
 //! use oxigeo_bench::report::{BenchmarkReport, ReportFormat};
 //!
@@ -50,9 +49,15 @@
 //!
 //! # Profiling
 //!
-//! The [`profiler`] module provides CPU and memory profiling utilities:
+//! The `profiler` module provides memory-usage profiling utilities
+//! ([`profiler::MemoryProfiler`], [`profiler::SystemMonitor`]) unconditionally.
+//! CPU/flamegraph profiling (`profiler::CpuProfiler`, `profiler::profile_cpu`)
+//! additionally requires the non-default `profiling` feature, since it
+//! pulls in `pprof` -> `backtrace` -> `miniz_oxide` (kept out of the default
+//! build graph by the Pure Rust Policy):
 //!
-//! ```rust,no_run
+//! ```rust,ignore
+//! // Requires: cargo build --features profiling
 //! use oxigeo_bench::profiler::{profile_cpu, CpuProfilerConfig};
 //!
 //! let config = CpuProfilerConfig {
@@ -81,6 +86,8 @@ pub use error::{BenchError, Result};
 // Core modules
 pub mod comparison;
 pub mod error;
+#[cfg(feature = "ml")]
+pub mod ml_fixtures;
 pub mod profiler;
 pub mod regression;
 pub mod report;
@@ -99,9 +106,10 @@ pub mod prelude {
 
     pub use crate::comparison::{Comparison, ComparisonSuite, Implementation};
     pub use crate::error::{BenchError, Result};
+    #[cfg(feature = "profiling")]
+    pub use crate::profiler::{CpuProfiler, CpuProfilerConfig, profile_cpu};
     pub use crate::profiler::{
-        CpuProfiler, CpuProfilerConfig, MemoryProfiler, MemoryProfilerConfig, SystemMonitor,
-        profile_cpu, profile_memory,
+        MemoryProfiler, MemoryProfilerConfig, SystemMonitor, profile_memory,
     };
     pub use crate::regression::{
         Baseline, BaselineStore, RegressionConfig, RegressionDetector, RegressionReport,

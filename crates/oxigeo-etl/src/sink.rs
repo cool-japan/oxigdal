@@ -1,7 +1,7 @@
 //! Data sink implementations for ETL pipelines
 //!
 //! This module provides various data sink implementations including file sinks,
-//! S3/Azure/GCS sinks, PostGIS sinks, Kafka sinks, and custom sinks.
+//! S3/Azure/GCS sinks, PostGIS sinks, and custom sinks.
 
 use crate::error::{Result, SinkError};
 use crate::stream::StreamItem;
@@ -258,103 +258,6 @@ impl Sink for S3Sink {
 
     fn name(&self) -> &str {
         "S3Sink"
-    }
-}
-
-/// Kafka sink configuration
-#[cfg(feature = "kafka")]
-#[derive(Debug, Clone)]
-pub struct KafkaSinkConfig {
-    /// Bootstrap servers
-    pub brokers: String,
-    /// Topic to produce to
-    pub topic: String,
-    /// Compression type
-    pub compression: String,
-    /// Batch size
-    pub batch_size: usize,
-}
-
-#[cfg(feature = "kafka")]
-impl Default for KafkaSinkConfig {
-    fn default() -> Self {
-        Self {
-            brokers: String::new(),
-            topic: String::new(),
-            compression: "none".to_string(),
-            batch_size: 1000,
-        }
-    }
-}
-
-/// Kafka sink for producing messages
-#[cfg(feature = "kafka")]
-pub struct KafkaSink {
-    config: KafkaSinkConfig,
-    producer: rdkafka::producer::FutureProducer,
-}
-
-#[cfg(feature = "kafka")]
-impl KafkaSink {
-    /// Create a new Kafka sink
-    pub fn new(brokers: String, topic: String) -> Result<Self> {
-        use rdkafka::config::ClientConfig;
-        use rdkafka::producer::FutureProducer;
-
-        let producer: FutureProducer = ClientConfig::new()
-            .set("bootstrap.servers", &brokers)
-            .set("compression.type", "none")
-            .create()
-            .map_err(|e| SinkError::Kafka(e.to_string()))?;
-
-        Ok(Self {
-            config: KafkaSinkConfig {
-                brokers,
-                topic,
-                ..Default::default()
-            },
-            producer,
-        })
-    }
-
-    /// Set compression type
-    pub fn compression(mut self, compression: String) -> Self {
-        self.config.compression = compression;
-        self
-    }
-}
-
-#[cfg(feature = "kafka")]
-#[async_trait]
-impl Sink for KafkaSink {
-    async fn write(&self, item: StreamItem) -> Result<()> {
-        use rdkafka::producer::FutureRecord;
-        use std::time::Duration;
-
-        let record: FutureRecord<'_, str, Vec<u8>> =
-            FutureRecord::to(&self.config.topic).payload(&item);
-
-        self.producer
-            .send(record, Duration::from_secs(0))
-            .await
-            .map_err(|(e, _)| SinkError::Kafka(e.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn flush(&self) -> Result<()> {
-        use rdkafka::producer::Producer;
-        use std::time::Duration;
-
-        self.producer
-            .flush(Duration::from_secs(10))
-            .map_err(|e| SinkError::Kafka(e.to_string()))?;
-
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "KafkaSink"
     }
 }
 

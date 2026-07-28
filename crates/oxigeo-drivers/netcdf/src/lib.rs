@@ -11,8 +11,14 @@
 //! `libhdf5`, and no FFI — the default build is 100% Pure Rust.
 //!
 //! - Reading honours the NetCDF-4 conventions: dimension scales, coordinate
-//!   variables, `DIMENSION_LIST` axis linkage, and user attributes (`units`,
-//!   `_FillValue`, `scale_factor`, `add_offset`, …).
+//!   variables, `DIMENSION_LIST` axis linkage, sub-groups (flattened into
+//!   `"<group>/<var>"` names, recursively), and user attributes (`units`,
+//!   `_FillValue`, `scale_factor`, `add_offset`, …) — surfaced via
+//!   [`Variable::attributes`]. `read_f32`/`read_f64`/`read_i32` are raw,
+//!   unprocessed reads; `_FillValue`/`scale_factor`/`add_offset` are applied
+//!   only through the explicit opt-in [`NetCdfReader::read_f64_cf`] /
+//!   [`NetCdfReader::read_f32_cf`] (CF §8.1 packed-data unpacking + §2.5.1
+//!   fill-value masking to `NaN`).
 //! - Writing produces real HDF5/NetCDF-4 files via the Pure-Rust backend.
 //! - Optional NetCDF-3 classic support is available behind the `netcdf3`
 //!   feature (the `netcdf3` crate, also Pure Rust).
@@ -222,20 +228,37 @@ pub mod error;
 pub mod metadata;
 #[cfg(feature = "netcdf3")]
 pub(crate) mod nc3_compat;
+/// A **dead, unused, hand-rolled** HDF5/NetCDF-4 parser/writer, kept for
+/// backward source compatibility only.
+///
+/// This module is a completely separate implementation from the crate's real
+/// NetCDF-4 backend ([`reader::NetCdfReader`] / [`writer::NetCdfWriter`],
+/// backed by the Pure-Rust [`oxinetcdf`] crate atop `oxih5`) — nothing in
+/// `reader`/`writer` calls into it. Its `Nc4Reader::open` unconditionally
+/// returns [`error::NetCdfError::NetCdf4NotAvailable`] (root-group object
+/// header parsing was never finished), so it can never successfully read a
+/// file. **Do not use `Nc4Reader`/`Nc4Writer` for real work** — use
+/// [`reader::NetCdfReader`] / [`writer::NetCdfWriter`] instead, which are
+/// real, tested, and exercised by this crate's own round-trip tests.
+///
+/// These types are intentionally **not** re-exported at the crate root
+/// (unlike `reader`/`writer`'s types) so that a normal `use oxigeo_netcdf::*`
+/// import surface can't accidentally reach for the non-functional
+/// `Nc4Reader`/`Nc4Writer` instead of the real backend. Reach them explicitly
+/// via `oxigeo_netcdf::netcdf4::{Nc4Reader, Nc4Writer, ...}` if you must.
 pub mod netcdf4;
 pub mod reader;
 pub mod variable;
 pub mod writer;
 
-// Re-export commonly used types
+// Re-export commonly used types.
+//
+// `netcdf4`'s types (`Nc4Reader`/`Nc4Writer`/...) are deliberately NOT
+// re-exported here — see the `netcdf4` module doc for why.
 pub use attribute::{Attribute, AttributeValue, Attributes};
 pub use dimension::{Dimension, DimensionSize, Dimensions};
 pub use error::{NetCdfError, Result};
 pub use metadata::{CfMetadata, NetCdfMetadata, NetCdfVersion};
-pub use netcdf4::{
-    ChunkInfo, CompressionFilter, Hdf5ByteOrder, Hdf5DatatypeClass, Hdf5MessageType,
-    Hdf5Superblock, Hdf5SuperblockVersion, Nc4Group, Nc4Reader, Nc4VariableInfo, Nc4Writer,
-};
 pub use reader::NetCdfReader;
 pub use variable::{DataType, Variable, Variables};
 pub use writer::NetCdfWriter;

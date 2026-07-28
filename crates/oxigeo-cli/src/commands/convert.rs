@@ -147,6 +147,21 @@ pub fn execute(args: ConvertArgs, format: OutputFormat) -> Result<()> {
         anyhow::bail!("Input file not found: {}", args.input.display());
     }
 
+    // `--compression-level` cannot currently be honoured: the Pure-Rust GeoTIFF
+    // writer selects a fixed per-codec level and exposes no level knob. Rather
+    // than silently ignore the flag (producing output at a level the user did
+    // not request), reject it with a clear message.
+    if let Some(level) = args.compression_level {
+        if !(1..=9).contains(&level) {
+            anyhow::bail!("--compression-level must be between 1 and 9, got {level}");
+        }
+        anyhow::bail!(
+            "--compression-level is not supported yet: the Pure-Rust GeoTIFF writer \
+             uses a fixed level per codec and does not expose a level setting. \
+             Re-run without --compression-level."
+        );
+    }
+
     if args.output.exists() && !args.overwrite {
         anyhow::bail!(
             "Output file already exists: {}. Use --overwrite to replace.",

@@ -2,16 +2,21 @@
 
 use crate::error::{Error, Result};
 use crate::protocol::{MessageFormat, ProtocolCodec, ProtocolConfig};
+use crate::server::auth::{AuthConfig, AuthPrincipal, token_from_authorization, token_from_query};
 use crate::server::connection::Connection;
 use crate::server::heartbeat::{HeartbeatConfig, HeartbeatMonitor};
 use crate::server::manager::ConnectionManager;
 use crate::server::pool::{ConnectionPool, PoolConfig};
 use crate::server::{DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MESSAGE_SIZE};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    ErrorResponse, Request, Response as HandshakeResponse,
+};
+use tokio_tungstenite::tungstenite::http;
 
 /// Server configuration
 #[derive(Debug, Clone)]
@@ -28,6 +33,8 @@ pub struct ServerConfig {
     pub heartbeat: HeartbeatConfig,
     /// Pool configuration
     pub pool: PoolConfig,
+    /// Connection authentication configuration
+    pub auth: AuthConfig,
 }
 
 impl Default for ServerConfig {
@@ -39,6 +46,7 @@ impl Default for ServerConfig {
             protocol: ProtocolConfig::default(),
             heartbeat: HeartbeatConfig::default(),
             pool: PoolConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -135,13 +143,57 @@ impl Server {
     }
 
     /// Handle a new connection
+    // The auth callback must return `Result<HandshakeResponse, ErrorResponse>` as
+    // dictated by tungstenite's `Callback` trait; `ErrorResponse` is a large
+    // `http::Response`, so the large-Err lint is unavoidable and intentional here.
+    #[allow(clippy::result_large_err)]
     async fn handle_connection(&self, stream: TcpStream, addr: SocketAddr) -> Result<()> {
         tracing::info!("New connection from {}", addr);
 
-        // Perform WebSocket handshake
-        let ws_stream = accept_async(stream)
-            .await
-            .map_err(|e| Error::WebSocket(format!("Handshake failed: {}", e)))?;
+        // Perform WebSocket handshake, authenticating the upgrade request. The
+        // callback validates the bearer token from the Authorization header (or
+        // ?token= query) and rejects unauthorized handshakes with 401 before the
+        // connection is ever added to the manager.
+        let auth = self.config.auth.clone();
+        let principal_slot: Arc<Mutex<Option<AuthPrincipal>>> = Arc::new(Mutex::new(None));
+        let slot = principal_slot.clone();
+
+        let ws_stream = accept_hdr_async(stream, move |req: &Request, resp: HandshakeResponse| {
+            let header_token = req
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(token_from_authorization)
+                .map(str::to_string);
+            let token = header_token.or_else(|| req.uri().query().and_then(token_from_query));
+
+            match auth.authenticate(token.as_deref()) {
+                Ok(principal) => {
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(principal);
+                    }
+                    Ok(resp)
+                }
+                Err(e) => {
+                    tracing::warn!("Rejecting WebSocket handshake: {}", e);
+                    let body = Some(e.to_string());
+                    let err = http::Response::builder()
+                        .status(http::StatusCode::UNAUTHORIZED)
+                        .body(body.clone())
+                        .unwrap_or_else(|_| ErrorResponse::new(body));
+                    Err(err)
+                }
+            }
+        })
+        .await
+        .map_err(|e| Error::WebSocket(format!("Handshake failed: {}", e)))?;
+
+        // Resolve the authenticated principal (anonymous in open mode).
+        let principal = principal_slot
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_else(AuthPrincipal::anonymous);
 
         // Create protocol codec
         let codec = ProtocolCodec::new(self.config.protocol.clone());
@@ -149,6 +201,17 @@ impl Server {
         // Create connection
         let (connection, rx) = Connection::new(ws_stream, addr, codec);
         let connection = Arc::new(connection);
+
+        // Record the authenticated identity/role in the connection metadata so
+        // downstream message handling can perform real authorization checks
+        // instead of trusting an unenforced free-form tag.
+        connection
+            .update_metadata(|meta| {
+                meta.user_id = Some(principal.subject.clone());
+                meta.tags
+                    .insert("role".to_string(), principal.role.as_str().to_string());
+            })
+            .await;
 
         // Add to manager
         self.manager.add(connection.clone())?;
@@ -334,6 +397,24 @@ impl ServerBuilder {
     /// Set pool config
     pub fn pool_config(mut self, config: PoolConfig) -> Self {
         self.config.pool = config;
+        self
+    }
+
+    /// Set the connection authentication configuration.
+    pub fn auth(mut self, auth: AuthConfig) -> Self {
+        self.config.auth = auth;
+        self
+    }
+
+    /// Register an accepted bearer token and its principal, enabling
+    /// authenticated mode.
+    pub fn add_token(
+        mut self,
+        token: impl Into<String>,
+        subject: impl Into<String>,
+        role: crate::server::auth::Role,
+    ) -> Self {
+        self.config.auth.add_token(token, subject, role);
         self
     }
 

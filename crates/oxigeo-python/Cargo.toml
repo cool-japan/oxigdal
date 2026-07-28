@@ -26,11 +26,11 @@ doc = false  # Exclude from rustdoc to avoid collision with main oxigeo crates
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-algorithms = { workspace = true, default-features = true }
 oxigeo-geotiff.workspace = true
-oxigeo-geojson.workspace = true
 oxigeo-shapefile = { workspace = true, optional = true }
 oxigeo-zarr = { workspace = true, optional = true }
 oxigeo-proj.workspace = true
 oxigeo-cloud = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt"] }
 
 # PyO3 for Python bindings
 # Note: Using 0.24.x for stability. 0.28+ requires significant API migrations.
@@ -43,23 +43,11 @@ numpy.workspace = true
 # futures = { workspace = true, optional = true }
 # async-trait = { workspace = true, optional = true }
 
-# Error handling
-thiserror.workspace = true
-
 # Serialization
-serde.workspace = true
 serde_json.workspace = true
 
-# Numeric types
-num-traits.workspace = true
-
 # Utilities
-bytes.workspace = true
 bytemuck.workspace = true
-regex.workspace = true
-
-# Algorithms and image processing
-scirs2-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -79,5 +67,16 @@ geojson = []
 shapefile = ["oxigeo-shapefile"]
 zarr = ["oxigeo-zarr"]
 algorithms = []
-cloud = ["oxigeo-cloud"]
+cloud = [
+    "dep:oxigeo-cloud",
+    "dep:tokio",
+    "oxigeo-cloud/async",
+    "oxigeo-cloud/s3",
+    "oxigeo-cloud/http",
+    "oxigeo-cloud/azure-blob",
+    "oxigeo-cloud/gcs",
+]
 # async = ["pyo3-asyncio", "tokio", "futures"]  # TODO: Enable when pyo3-asyncio is updated
+
+[lints]
+workspace = true

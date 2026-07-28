@@ -195,10 +195,56 @@ impl IOSPlatform {
         self.version.is_at_least(13, 0)
     }
 
-    /// Check if low power mode is likely enabled
+    /// Check whether iOS Low Power Mode is currently enabled.
+    ///
+    /// On an actual iOS target this queries the real, live value of
+    /// `NSProcessInfo.processInfo.isLowPowerModeEnabled` through the
+    /// Objective-C runtime (`objc` crate's `msg_send!`), consistent with the
+    /// real `sysctl`-based detection this module already performs in
+    /// [`current`](Self::current).
+    ///
+    /// On non-iOS builds (desktop development/CI, where there is no iOS
+    /// power state to query) this returns the documented best-effort default
+    /// `Ok(false)` -- callers on such hosts should not rely on this
+    /// reflecting real device state, matching the same honesty convention
+    /// used by `current()`.
     pub fn is_low_power_mode(&self) -> Result<bool> {
-        // In a real implementation, this would check iOS power state
-        Ok(false)
+        #[cfg(target_os = "ios")]
+        {
+            Ok(objc_is_low_power_mode_enabled())
+        }
+
+        #[cfg(not(target_os = "ios"))]
+        {
+            Ok(false)
+        }
+    }
+}
+
+/// Query `NSProcessInfo.processInfo.isLowPowerModeEnabled` via the
+/// Objective-C runtime.
+///
+/// Uses the `objc` crate's `msg_send!` (a raw Objective-C runtime binding,
+/// not a C library FFI wrapper), consistent with the Pure-Rust ABI-bindings
+/// approach already used for `sysctlbyname` in this file.
+#[cfg(target_os = "ios")]
+#[allow(unsafe_code)]
+fn objc_is_low_power_mode_enabled() -> bool {
+    use objc::runtime::{BOOL, Object};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    // SAFETY: `NSProcessInfo.processInfo` is a well-known Foundation
+    // singleton available in every iOS process; `isLowPowerModeEnabled` is a
+    // read-only `BOOL` property with no side effects, so this call cannot
+    // invalidate any Rust-side invariant.
+    unsafe {
+        let process_info_class = class!(NSProcessInfo);
+        let process_info: *mut Object = msg_send![process_info_class, processInfo];
+        if process_info.is_null() {
+            return false;
+        }
+        let enabled: BOOL = msg_send![process_info, isLowPowerModeEnabled];
+        enabled != 0
     }
 }
 
@@ -315,5 +361,16 @@ mod tests {
             assert_eq!(platform.version(), IOSVersion::IOS_17);
             assert_eq!(platform.device(), IOSDevice::IPhone);
         }
+    }
+
+    /// On non-iOS hosts, `is_low_power_mode` must return the documented
+    /// best-effort `false` default rather than erroring or panicking. (On a
+    /// real iOS target it instead reflects the live `NSProcessInfo` value --
+    /// not asserted here since this host has no iOS power state.)
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn test_is_low_power_mode_default_on_non_ios_host() {
+        let platform = IOSPlatform::current().expect("Failed to get platform");
+        assert!(!platform.is_low_power_mode().expect("must not error"));
     }
 }

@@ -60,6 +60,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::unwrap_used)]
 
+pub mod auth;
 pub mod client;
 pub mod error;
 pub mod protocol;
@@ -78,6 +79,7 @@ pub mod handlers {
 }
 
 // Re-export commonly used types
+pub use auth::{AuthConfig, AuthPrincipal, Role};
 pub use client::{ClientConfig, WebSocketClient};
 pub use error::{Error, Result};
 pub use protocol::{

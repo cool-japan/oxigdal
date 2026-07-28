@@ -1,5 +1,6 @@
 //! Expression evaluation for join conditions
 
+use super::builder::ColumnBuilder;
 use super::{Join, JoinContext, JoinValue};
 use crate::error::{QueryError, Result};
 use crate::executor::scan::{ColumnData, RecordBatch};
@@ -464,101 +465,83 @@ impl Join {
         }
     }
 
-    /// Append a joined row.
+    /// Initialise one typed [`ColumnBuilder`] per output column.
+    ///
+    /// Output columns are the left input's columns followed by the right
+    /// input's columns, each builder taking the native variant of its source
+    /// column so the finished result preserves the declared types.
+    pub(super) fn init_builders(
+        &self,
+        left: &RecordBatch,
+        right: &RecordBatch,
+    ) -> Vec<ColumnBuilder> {
+        let mut builders = Vec::with_capacity(left.columns.len() + right.columns.len());
+        for col in &left.columns {
+            builders.push(ColumnBuilder::for_column(col));
+        }
+        for col in &right.columns {
+            builders.push(ColumnBuilder::for_column(col));
+        }
+        builders
+    }
+
+    /// Finish all builders into typed columns.
+    pub(super) fn finish_builders(&self, builders: Vec<ColumnBuilder>) -> Vec<ColumnData> {
+        builders.into_iter().map(ColumnBuilder::finish).collect()
+    }
+
+    /// Append a joined row, preserving each column's native type.
     pub(super) fn append_row(
         &self,
-        result_columns: &mut [Vec<Option<String>>],
+        builders: &mut [ColumnBuilder],
         left: &RecordBatch,
         right: &RecordBatch,
         left_row: usize,
         right_row: usize,
     ) -> Result<()> {
-        let mut col_idx = 0;
-
-        // Append left columns
-        for left_col_idx in 0..left.columns.len() {
-            let value = self.get_value_as_string(&left.columns[left_col_idx], left_row);
-            result_columns[col_idx].push(value);
-            col_idx += 1;
+        let left_len = left.columns.len();
+        for (i, col) in left.columns.iter().enumerate() {
+            builders[i].push_from(col, left_row)?;
         }
-
-        // Append right columns
-        for right_col_idx in 0..right.columns.len() {
-            let value = self.get_value_as_string(&right.columns[right_col_idx], right_row);
-            result_columns[col_idx].push(value);
-            col_idx += 1;
+        for (i, col) in right.columns.iter().enumerate() {
+            builders[left_len + i].push_from(col, right_row)?;
         }
-
         Ok(())
     }
 
-    /// Append left row with nulls for right side.
+    /// Append left row with nulls for the right side.
     pub(super) fn append_left_with_nulls(
         &self,
-        result_columns: &mut [Vec<Option<String>>],
+        builders: &mut [ColumnBuilder],
         left: &RecordBatch,
         right: &RecordBatch,
         left_row: usize,
     ) -> Result<()> {
-        let mut col_idx = 0;
-
-        // Append left columns
-        for left_col_idx in 0..left.columns.len() {
-            let value = self.get_value_as_string(&left.columns[left_col_idx], left_row);
-            result_columns[col_idx].push(value);
-            col_idx += 1;
+        let left_len = left.columns.len();
+        for (i, col) in left.columns.iter().enumerate() {
+            builders[i].push_from(col, left_row)?;
         }
-
-        // Append nulls for right columns
-        for _ in 0..right.columns.len() {
-            result_columns[col_idx].push(None);
-            col_idx += 1;
+        for builder in builders.iter_mut().skip(left_len).take(right.columns.len()) {
+            builder.push_null();
         }
-
         Ok(())
     }
 
-    /// Append nulls for left side with right row.
+    /// Append nulls for the left side with a right row.
     pub(super) fn append_right_with_nulls(
         &self,
-        result_columns: &mut [Vec<Option<String>>],
+        builders: &mut [ColumnBuilder],
         left: &RecordBatch,
         right: &RecordBatch,
         right_row: usize,
     ) -> Result<()> {
-        let mut col_idx = 0;
-
-        // Append nulls for left columns
-        for _ in 0..left.columns.len() {
-            result_columns[col_idx].push(None);
-            col_idx += 1;
+        let left_len = left.columns.len();
+        for builder in builders.iter_mut().take(left_len) {
+            builder.push_null();
         }
-
-        // Append right columns
-        for right_col_idx in 0..right.columns.len() {
-            let value = self.get_value_as_string(&right.columns[right_col_idx], right_row);
-            result_columns[col_idx].push(value);
-            col_idx += 1;
+        for (i, col) in right.columns.iter().enumerate() {
+            builders[left_len + i].push_from(col, right_row)?;
         }
-
         Ok(())
-    }
-
-    /// Get value as string.
-    pub(super) fn get_value_as_string(&self, column: &ColumnData, row: usize) -> Option<String> {
-        match column {
-            ColumnData::Boolean(data) => data.get(row).and_then(|v| v.map(|b| b.to_string())),
-            ColumnData::Int32(data) => data.get(row).and_then(|v| v.map(|i| i.to_string())),
-            ColumnData::Int64(data) => data.get(row).and_then(|v| v.map(|i| i.to_string())),
-            ColumnData::Float32(data) => data.get(row).and_then(|v| v.map(|f| f.to_string())),
-            ColumnData::Float64(data) => data.get(row).and_then(|v| v.map(|f| f.to_string())),
-            ColumnData::String(data) => data.get(row).and_then(|v| v.clone()),
-            ColumnData::Binary(_) => None,
-        }
-    }
-
-    /// Convert intermediate columns to ColumnData.
-    pub(super) fn convert_columns(&self, columns: Vec<Vec<Option<String>>>) -> Vec<ColumnData> {
-        columns.into_iter().map(ColumnData::String).collect()
     }
 }

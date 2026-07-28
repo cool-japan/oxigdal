@@ -83,7 +83,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-mobile-enhanced = "0.2.0"
+oxigeo-mobile-enhanced = "0.2.1"
 ```
 
 ### Feature Flags

@@ -20,6 +20,7 @@ use aws_sdk_s3::{
 use crate::auth::Credentials;
 use crate::error::{CloudError, Result, S3Error};
 use crate::retry::{RetryConfig, RetryExecutor};
+use oxigeo_core::io::ByteRange;
 
 use super::CloudStorageBackend;
 
@@ -427,6 +428,51 @@ impl CloudStorageBackend for S3Backend {
                 Ok(data.into_bytes())
             })
             .await
+    }
+
+    async fn get_range(&self, key: &str, range: ByteRange) -> Result<Bytes> {
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let mut executor = RetryExecutor::new(self.retry_config.clone());
+        // S3 byte ranges are inclusive on both ends: "bytes=start-end".
+        let last_byte = range.end.saturating_sub(1);
+        let range_header = format!("bytes={}-{}", range.start, last_byte);
+
+        executor
+            .execute(|| async {
+                let client = self.create_client().await?;
+                let full_key = self.full_key(key);
+
+                let response = client
+                    .get_object()
+                    .bucket(&self.bucket)
+                    .key(&full_key)
+                    .range(&range_header)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        CloudError::S3(S3Error::Sdk {
+                            message: format!(
+                                "Failed to get byte range '{range_header}' of object '{full_key}': {e}"
+                            ),
+                        })
+                    })?;
+
+                let data = response.body.collect().await.map_err(|e| {
+                    CloudError::S3(S3Error::Sdk {
+                        message: format!("Failed to read ranged object body: {e}"),
+                    })
+                })?;
+
+                Ok(data.into_bytes())
+            })
+            .await
+    }
+
+    fn supports_native_range_reads(&self) -> bool {
+        true
     }
 
     async fn put(&self, key: &str, data: &[u8]) -> Result<()> {

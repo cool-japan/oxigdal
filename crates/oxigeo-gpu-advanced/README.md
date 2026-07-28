@@ -152,7 +152,7 @@ Benchmarked on NVIDIA RTX 4090:
 
 - Rust 1.89+
 - GPU with compute shader support (Vulkan 1.1+, Metal 2+, or DX12)
-- WGPU 28+
+- WGPU 30+
 
 ## COOLJAPAN Compliance
 

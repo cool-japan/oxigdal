@@ -122,6 +122,51 @@ impl Store for MemoryStore {
         })
     }
 
+    fn size(&self, key: &StoreKey) -> Result<u64> {
+        let data = self.data.read().map_err(|e| {
+            ZarrError::Storage(StorageError::Cache {
+                message: format!("Lock poisoned: {e}"),
+            })
+        })?;
+        data.get(key.as_str())
+            .map(|v| v.len() as u64)
+            .ok_or_else(|| {
+                ZarrError::Storage(StorageError::KeyNotFound {
+                    key: key.to_string(),
+                })
+            })
+    }
+
+    fn get_range(&self, key: &StoreKey, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let data = self.data.read().map_err(|e| {
+            ZarrError::Storage(StorageError::Cache {
+                message: format!("Lock poisoned: {e}"),
+            })
+        })?;
+        let value = data.get(key.as_str()).ok_or_else(|| {
+            ZarrError::Storage(StorageError::KeyNotFound {
+                key: key.to_string(),
+            })
+        })?;
+        let start = usize::try_from(offset).map_err(|_| ZarrError::OutOfBounds {
+            message: format!("range offset {offset} does not fit in usize"),
+        })?;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| ZarrError::OutOfBounds {
+                message: format!("range end overflow: offset {start} + length {length}"),
+            })?;
+        if end > value.len() {
+            return Err(ZarrError::OutOfBounds {
+                message: format!(
+                    "requested range [{start}, {end}) exceeds object size {} for key {key}",
+                    value.len()
+                ),
+            });
+        }
+        Ok(value[start..end].to_vec())
+    }
+
     fn set(&mut self, key: &StoreKey, value: &[u8]) -> Result<()> {
         if self.readonly {
             return Err(ZarrError::Storage(StorageError::ReadOnly));

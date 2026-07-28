@@ -15,21 +15,17 @@ categories = ["science", "encoding", "parser-implementations"]
 
 [dependencies]
 # Core
-oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = { workspace = true }
 byteorder = { workspace = true }
 tracing = { workspace = true }
-chrono = { workspace = true }
 
 # XML parsing (for KML/GML)
 quick-xml = { workspace = true }
 
 # ZIP support (for KMZ) / Compression
 oxiarc-archive = { workspace = true }
-oxiarc-zstd = { workspace = true }
 oxiarc-core = { workspace = true }
 
 # SQLite (for GeoPackage) — optional: only included when the `geopackage` feature is enabled
@@ -39,10 +35,6 @@ oxisql-core = { workspace = true, optional = true }
 # Full pure-Rust JPEG2000 codec (for the `jpeg2000` feature)
 oxigeo-jpeg2000 = { workspace = true, optional = true }
 
-# Geometry
-geo-types = { workspace = true }
-geo = { workspace = true }
-
 # Base64 encoding
 base64 = { workspace = true }
 
@@ -51,9 +43,6 @@ rstar = { workspace = true }
 
 # Async support (optional)
 tokio = { workspace = true, optional = true }
-
-# Numeric traits
-num-traits = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

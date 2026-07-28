@@ -22,8 +22,6 @@ async = ["oxigeo-core/async", "dep:tokio"]
 oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
-serde = { workspace = true }
 tracing = { workspace = true }
 num-traits = { workspace = true }
 

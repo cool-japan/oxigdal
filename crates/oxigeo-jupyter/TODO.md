@@ -1,11 +1,11 @@
 # TODO: oxigeo-jupyter
 
 > **Purpose:** Jupyter integration — magic commands, rich display, interactive widgets, plotters visualization. Cargo deps include `evcxr`.
-> **Status (2026-05-17):** 3,120 LoC · 104 #[test] attributes (per MEMORY) · multiple scaffolding stubs in magic execute path (no `TODO/FIXME/stub` literals — stubs hide behind `(example)` placeholders).
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 3,107 Rust LoC (tokei, `src/`) · 119 tests (all-features and default-features), 0 failed · `(example)` magic-command placeholders and the path-only `%load_raster` fixed this release; evcxr/real-kernel wiring, widget comm messages, and rich raster PNG display remain open (see below).
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace `(example)` placeholder responses in magic-command execution with real OxiGeo calls
+- [x] Replace `(example)` placeholder responses in magic-command execution with real OxiGeo calls
   - **Verified gap:** `src/magic.rs:262` — `format!("CRS for '{}': EPSG:4326 (example)", dataset),`; `src/magic.rs:274` — `format!("Bounds for '{}': [0.0, 0.0, 1.0, 1.0] (example)", dataset),`; `src/magic.rs:288-289` — `format!("Statistics for '{}'{}: min=0.0, max=1.0, mean=0.5 (example)", dataset, band_str)`. Magic commands `%crs`, `%bounds`, `%stats` accept a dataset name, look it up in the namespace, then return constant strings tagged `(example)` instead of actual data.
   - **Goal:** `%crs raster` returns the dataset's real CRS via `oxigeo-proj`; `%bounds raster` returns true `(minx, miny, maxx, maxy)` from the dataset's GeoTransform + dimensions; `%stats raster [band]` returns real `min/max/mean/stddev/median` computed by `oxigeo_algorithms::statistics`.
   - **Design:** Change `Value::Path(PathBuf)` (the current namespace entry from `%load_raster`) to `Value::Dataset(Arc<oxigeo_core::Dataset>)`. In `%load_raster`, open the file via `oxigeo_geotiff::GeoTiffReader::open` and store the opened dataset rather than just the path. For `%crs`: pull `Crs` from `Dataset::crs()`. For `%bounds`: compute `[geotransform.x_at(0,0), .y_at(0,h), .x_at(w,0), .y_at(0,0)]`. For `%stats`: call `oxigeo_algorithms::statistics::band_statistics(dataset, band, BandStatsOptions::default())`. Mirror the rasterio API where reasonable.
@@ -13,6 +13,7 @@
   - **Tests:** (proposed) `test_crs_magic_returns_real_epsg_for_geotiff_with_known_crs`, `test_bounds_magic_returns_real_bbox_within_tolerance`, `test_stats_magic_returns_real_min_max_for_known_raster`, `test_load_raster_opens_dataset_into_namespace`, `test_crs_magic_returns_err_for_missing_dataset`.
   - **Risk:** Changing `Value` enum is a public-API change; bump minor; existing `Value::Path` callers must migrate.
   - **Prerequisites:** None — oxigeo-geotiff, oxigeo-proj, oxigeo-algorithms::statistics are workspace deps.
+  - **Done:** verified fixed as of 2026-07-28 (root `CHANGELOG.md` [0.2.1]: "`oxigeo-jupyter`: `%crs`/`%bounds`/`%stats` now read a real parsed GeoTIFF dataset instead of returning hard-coded `"(example)"` literals"). `src/magic.rs` no longer contains the `(example)` literals — two regression tests (`src/magic.rs:840,913`) assert `!text.contains("(example)")`. The namespace value is `Value::Raster(Box<RasterHandle { path, metadata }>)` (`src/kernel.rs`) rather than the `Value::Dataset(Arc<Dataset>)` originally sketched here, but it carries the same real, parsed GeoTIFF metadata that `%crs`/`%bounds`/`%stats` read from.
 
 - [ ] Wire `evcxr` integration so the kernel is actually a Jupyter kernel
   - **Verified gap:** `Cargo.toml:25` — `evcxr.workspace = true`, but `rg evcxr crates/oxigeo-jupyter/src` returns zero usages. The current `OxiGeoKernel::execute` (in `src/kernel.rs:128`) parses `let name = value` lines manually and stores results in a HashMap — this is not the Jupyter messaging protocol (v5.4 ZMQ multipart) and cannot be launched as a real `jupyter console --kernel oxigeo` kernel.
@@ -41,7 +42,7 @@
   - **Risk:** Encoding large rasters to PNG is slow; gate behind a max-pixel-count and prompt user to thumbnail.
   - **Prerequisites:** None.
 
-- [ ] `%load_raster` actually opens a real Dataset (not just stores the path)
+- [x] `%load_raster` actually opens a real Dataset (not just stores the path)
   - **Verified gap:** `src/magic.rs:213-219` — `Self::LoadRaster { path, name } => { let var_name = name.as_deref().unwrap_or("raster"); namespace.insert(var_name.to_string(), Value::Path(path.into())); output.insert("text/plain".to_string(), format!("Loaded raster from '{}' into '{}'", path, var_name)); }`. The "load" is misleading — only the path is stored, no I/O happens.
   - **Goal:** `%load_raster /path/to/file.tif as elev` actually opens the file, validates it's a readable GeoTIFF, stores an `Arc<Dataset>` in the namespace, and reports `Loaded 1024x1024 Float32 raster from '...' into 'elev' (took 12.3 ms)`. Returns a structured error if the file is missing, corrupt, or has an unsupported format.
   - **Design:** Couples to Item 1 (real magic commands). Open the file via `oxigeo::open` dispatcher (multi-format) so it works for GeoTIFF/GeoParquet/GeoPackage. Time the open. Report shape + dtype. On error, return `JupyterError::Magic` with the underlying `OxiGeoError` chain.
@@ -49,6 +50,7 @@
   - **Tests:** (proposed) `test_load_raster_opens_real_geotiff`, `test_load_raster_reports_dimensions_in_output`, `test_load_raster_nonexistent_returns_err`, `test_load_raster_corrupt_file_returns_err`, `test_load_raster_overwrites_existing_var`.
   - **Risk:** Adding the umbrella `oxigeo-oxigeo` dep creates a tighter coupling — verify no cycle.
   - **Prerequisites:** Item 1 (Value::Dataset variant).
+  - **Done:** verified fixed as of 2026-07-28. `Self::LoadRaster` (`src/magic.rs:~218`) now calls `FileDataSource::open(path)` then `GeoTiffReader::open(source)`, reads real `metadata` (width/height/band_count/data_type/CRS presence), and reports it in the summary string; on failure it returns `JupyterError::Magic` wrapping the real open/parse error instead of always succeeding. Not GeoTIFF-only-dispatcher-agnostic as originally scoped (still GeoTIFF-specific, no umbrella `oxigeo-oxigeo` multi-format dispatch to GeoParquet/GeoPackage), but the core "misleading load that does no I/O" dishonesty is resolved.
 
 ## Medium Priority
 - [ ] Inline histogram + statistics tile rendered alongside `display(raster)`
@@ -109,4 +111,4 @@
 - (no `[x]` entries in prior TODO.md — see README.md for the kernel + widget overview; main TODO.md tracks the 33→60+ tests planned for v0.2.0 — current 104 #[test] count is above target already)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

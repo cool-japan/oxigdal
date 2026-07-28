@@ -598,24 +598,42 @@ impl NtV2Grid {
         })
     }
 
-    /// Apply the NTv2 grid shift to a geographic point.
+    /// Apply the NTv2 grid shift to a geographic point (forward direction).
     ///
-    /// The algorithm:
-    /// 1. Converts degrees to arc-seconds.
-    /// 2. Selects the most specific sub-grid covering the point (deepest
-    ///    child preferred over its parent, per the NTv2 specification).
-    /// 3. Performs bilinear interpolation over the four surrounding nodes.
-    /// 4. Returns `(lon_deg + Δlon/3600, lat_deg + Δlat/3600)`.
+    /// # Longitude convention (important)
+    ///
+    /// NTv2 `.gsb` files store their grid extents (`E_LON`/`W_LON`) and their
+    /// per-node longitude shifts in the **positive-west** convention mandated
+    /// by NRCan Guidance Note 7-2 §4.4.4: western longitudes are *positive*.
+    /// A real western-hemisphere grid (e.g. NAD27→NAD83, roughly −141°…−52° in
+    /// the usual positive-east convention) is therefore stored with `E_LON`
+    /// and `W_LON` as large *positive* arc-second values (≈187 200…507 600).
+    ///
+    /// This method takes and returns longitude in the **standard positive-east
+    /// decimal-degree** convention (e.g. Vancouver = −123.0). It converts to
+    /// the file's positive-west convention internally (`λ_west = −λ_east`),
+    /// interpolates the shift, and converts the result back — exactly matching
+    /// PROJ's `nad_cvt`/`nad_intr` behaviour. Latitude uses the same
+    /// positive-north convention as the file and needs no conversion.
+    ///
+    /// # Algorithm
+    /// 1. Convert `(lon_deg, lat_deg)` to positive-west arc-seconds.
+    /// 2. Select the most specific sub-grid covering the point (deepest child
+    ///    preferred over its parent, per the NTv2 specification).
+    /// 3. Bilinearly interpolate the shift over the four surrounding nodes.
+    /// 4. Apply the shift (positive-west) and convert longitude back to
+    ///    positive-east.
     ///
     /// # Parameters
-    /// * `lon_deg` — source longitude in decimal degrees
-    /// * `lat_deg` — source latitude in decimal degrees
+    /// * `lon_deg` — source longitude in decimal degrees (positive **east**)
+    /// * `lat_deg` — source latitude in decimal degrees (positive north)
     ///
     /// # Errors
     ///
     /// Returns [`Error::Ntv2OutOfGrid`] when no sub-grid covers the point.
     pub fn transform(&self, lon_deg: f64, lat_deg: f64) -> Result<(f64, f64)> {
-        let lon_sec = lon_deg * 3600.0;
+        // Convert positive-east input to the file's positive-west convention.
+        let lon_sec = -lon_deg * 3600.0;
         let lat_sec = lat_deg * 3600.0;
 
         // Find the index of the deepest sub-grid containing the point.
@@ -629,10 +647,46 @@ impl NtV2Grid {
         let sg = &self.sub_grids[sg_idx];
         let (lat_shift_sec, lon_shift_sec) = bilinear_interpolate(sg, lon_sec, lat_sec)?;
 
+        // `lon_shift_sec` is a positive-west shift; converting the shifted
+        // positive-west longitude back to positive-east negates it, i.e.
+        // λ_east_out = −(λ_west + Δλ_west) = λ_east − Δλ_west.
         Ok((
-            lon_deg + f64::from(lon_shift_sec) / 3600.0,
+            lon_deg - f64::from(lon_shift_sec) / 3600.0,
             lat_deg + f64::from(lat_shift_sec) / 3600.0,
         ))
+    }
+
+    /// Apply the inverse NTv2 grid shift (target → source datum).
+    ///
+    /// The forward NTv2 shift is not analytically invertible, so — like PROJ —
+    /// this recovers the source coordinate by fixed-point iteration: it seeks
+    /// the input `p` whose forward shift lands on `(lon_deg, lat_deg)`.
+    /// Convergence is typically reached in 2–4 iterations because the shift
+    /// field is smooth and small (a few arc-seconds).
+    ///
+    /// Longitude follows the same positive-east convention as
+    /// [`transform`](Self::transform).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Ntv2OutOfGrid`] if the iterate leaves grid coverage, or
+    /// [`Error::ConvergenceError`] if the iteration does not converge.
+    pub fn inverse_transform(&self, lon_deg: f64, lat_deg: f64) -> Result<(f64, f64)> {
+        // Initial guess: the target coordinate itself (shift is small).
+        let mut lon = lon_deg;
+        let mut lat = lat_deg;
+        for _ in 0..20 {
+            let (fwd_lon, fwd_lat) = self.transform(lon, lat)?;
+            let d_lon = fwd_lon - lon_deg;
+            let d_lat = fwd_lat - lat_deg;
+            lon -= d_lon;
+            lat -= d_lat;
+            // 1e-11 degrees ≈ 1 micrometre — well below NTv2 grid precision.
+            if d_lon.abs() < 1e-11 && d_lat.abs() < 1e-11 {
+                return Ok((lon, lat));
+            }
+        }
+        Err(Error::convergence_error(20))
     }
 
     /// Recursively find the index of the most-specific sub-grid (deepest
@@ -1072,6 +1126,134 @@ mod tests {
         buf
     }
 
+    /// Build a **realistically-signed western-hemisphere** NTv2 grid (3×3)
+    /// covering roughly Vancouver, BC, using the positive-west convention that
+    /// every real downloaded `.gsb` file uses.
+    ///
+    /// - Latitude:  49°00'…49°02'N  (S_LAT=176400", N_LAT=176520", inc=60")
+    /// - Longitude: 123°00'…123°02'W stored positive-west
+    ///   (E_LON=442800", W_LON=442920", inc=60") — note `W_LON > E_LON`.
+    ///
+    /// Every node carries a uniform lat shift of +3.0" and a positive-west lon
+    /// shift of +4.0" so the expected output is unambiguous.
+    fn build_western_hemisphere_gsb() -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        fn push_key(buf: &mut Vec<u8>, key: &str) {
+            let mut bytes = [b' '; 8];
+            let src = key.as_bytes();
+            let len = src.len().min(8);
+            bytes[..len].copy_from_slice(&src[..len]);
+            buf.extend_from_slice(&bytes);
+        }
+        fn push_pad4(buf: &mut Vec<u8>) {
+            buf.extend_from_slice(&[0u8; 4]);
+        }
+
+        let orec: &[(&str, &[u8])] = &[
+            ("NUM_OREC", &[11u8, 0, 0, 0, 0, 0, 0, 0]),
+            ("NUM_SREC", &[11u8, 0, 0, 0, 0, 0, 0, 0]),
+            ("NUM_FILE", &[1u8, 0, 0, 0, 0, 0, 0, 0]),
+            ("GS_TYPE", b"SECONDS "),
+            ("VERSION", b"NTv2.0  "),
+            ("SYSTEM_F", b"NAD27   "),
+            ("SYSTEM_T", b"NAD83   "),
+            ("MAJOR_F", &[0u8; 8]),
+            ("MINOR_F", &[0u8; 8]),
+            ("MAJOR_T", &[0u8; 8]),
+            ("MINOR_T", &[0u8; 8]),
+        ];
+        for (key, val) in orec.iter() {
+            push_key(&mut buf, key);
+            buf.extend_from_slice(val);
+        }
+
+        push_key(&mut buf, "SUB_NAME");
+        buf.extend_from_slice(b"BC      ");
+        push_key(&mut buf, "PARENT");
+        buf.extend_from_slice(b"NONE    ");
+        push_key(&mut buf, "CREATED");
+        buf.extend_from_slice(b"20240101");
+        push_key(&mut buf, "UPDATED");
+        buf.extend_from_slice(b"20240101");
+        push_key(&mut buf, "S_LAT");
+        buf.write_f64::<LittleEndian>(176_400.0).expect("f64"); // 49°N
+        push_key(&mut buf, "N_LAT");
+        buf.write_f64::<LittleEndian>(176_520.0).expect("f64"); // 49°02'N
+        push_key(&mut buf, "E_LON");
+        buf.write_f64::<LittleEndian>(442_800.0).expect("f64"); // 123°00'W (pos-west)
+        push_key(&mut buf, "W_LON");
+        buf.write_f64::<LittleEndian>(442_920.0).expect("f64"); // 123°02'W (pos-west)
+        push_key(&mut buf, "LAT_INC");
+        buf.write_f64::<LittleEndian>(60.0).expect("f64");
+        push_key(&mut buf, "LON_INC");
+        buf.write_f64::<LittleEndian>(60.0).expect("f64");
+        push_key(&mut buf, "GS_COUNT");
+        buf.write_u32::<LittleEndian>(9).expect("u32");
+        push_pad4(&mut buf);
+
+        for _ in 0..9 {
+            buf.write_f32::<LittleEndian>(3.0).expect("f32"); // lat_shift
+            buf.write_f32::<LittleEndian>(4.0).expect("f32"); // lon_shift (pos-west)
+            buf.write_f32::<LittleEndian>(0.01).expect("f32"); // lat_accuracy
+            buf.write_f32::<LittleEndian>(0.01).expect("f32"); // lon_accuracy
+        }
+        buf
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test: a realistically-signed western-hemisphere grid transforms a
+    // standard positive-east longitude (regression for the positive-west bug).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_ntv2_western_hemisphere_positive_west_convention() {
+        let data = build_western_hemisphere_gsb();
+        let grid = NtV2Grid::from_bytes(&data).expect("parse western-hemisphere gsb");
+
+        // Vancouver, standard positive-east convention. Before the fix this
+        // produced lon_sec = −442800", never inside [442800, 442920], so the
+        // call errored with Ntv2OutOfGrid.
+        let (lon_out, lat_out) = grid
+            .transform(-123.0, 49.0)
+            .expect("standard positive-east lon must transform");
+
+        // +3.0" latitude shift; +4.0" positive-west lon shift → −4.0" east.
+        let expected_lat = 49.0 + 3.0 / 3600.0;
+        let expected_lon = -123.0 - 4.0 / 3600.0;
+        assert!(
+            (lat_out - expected_lat).abs() < 1e-7,
+            "lat_out={lat_out} expected={expected_lat}"
+        );
+        assert!(
+            (lon_out - expected_lon).abs() < 1e-7,
+            "lon_out={lon_out} expected={expected_lon}"
+        );
+
+        // A positive longitude (eastern hemisphere) must NOT fall inside a
+        // western-hemisphere grid — proves the sign handling is real.
+        assert!(
+            grid.transform(123.0, 49.0).is_err(),
+            "positive-east 123° must be outside a western-hemisphere grid"
+        );
+    }
+
+    #[test]
+    fn test_ntv2_inverse_roundtrip_western_hemisphere() {
+        let data = build_western_hemisphere_gsb();
+        let grid = NtV2Grid::from_bytes(&data).expect("parse");
+
+        let (lon_f, lat_f) = grid.transform(-123.01, 49.01).expect("forward");
+        let (lon_b, lat_b) = grid.inverse_transform(lon_f, lat_f).expect("inverse");
+        assert!(
+            (lon_b - (-123.01)).abs() < 1e-9,
+            "inverse lon: {lon_b} vs −123.01"
+        );
+        assert!(
+            (lat_b - 49.01).abs() < 1e-9,
+            "inverse lat: {lat_b} vs 49.01"
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Test: LE endianness detection and header parsing
     // ─────────────────────────────────────────────────────────────────────────
@@ -1107,17 +1289,18 @@ mod tests {
         let data = build_synthetic_gsb(true);
         let grid = NtV2Grid::from_bytes(&data).expect("parse");
 
-        // The grid covers:
+        // The grid stores (positive-west convention):
         //   lat: 216000" to 216120" (60°00' to 60°02'), inc=60"
-        //   lon: 36000" to 36120" (10°00' to 10°02'), inc=60"
+        //   lon: 36000" to 36120" (10°00'W to 10°02'W), inc=60"
         //
-        // Node (row=0, col=0) shift = (row+col+1) = 1.0"
-        // lat_deg = 216000 / 3600 = 60.0, lon_deg = 36000 / 3600 = 10.0
-        let (lon_out, lat_out) = grid.transform(10.0, 60.0).expect("transform node 0,0");
+        // Node (row=0, col=0) shift = (row+col+1) = 1.0" (lat), −1.0" (lon).
+        // The E_LON=36000" corner is 10°W, i.e. positive-east −10.0°.
+        let (lon_out, lat_out) = grid.transform(-10.0, 60.0).expect("transform node 0,0");
 
-        // Expected: lat shifted by +1.0", lon shifted by -1.0"
+        // Expected: lat shifted by +1.0"; the −1.0" positive-west lon shift
+        // becomes +1.0" once converted back to positive-east.
         let expected_lat = 60.0 + 1.0 / 3600.0;
-        let expected_lon = 10.0 + (-1.0) / 3600.0;
+        let expected_lon = -10.0 - (-1.0) / 3600.0;
 
         assert!(
             (lat_out - expected_lat).abs() < 1e-5,
@@ -1154,14 +1337,15 @@ mod tests {
 
         // Centre of cell (0,0)→(1,1):
         // lat = 216000" + 30" = 216030" → 216030/3600 = 60.008333...°
-        // lon = 36000" + 30"  = 36030"  → 36030/3600  = 10.008333...°
+        // lon(positive-west) = 36000" + 30" = 36030" → −10.008333...° east.
         let centre_lat = 216_030.0 / 3600.0;
-        let centre_lon = 36_030.0 / 3600.0;
+        let centre_lon = -36_030.0 / 3600.0;
 
         let (lon_out, lat_out) = grid.transform(centre_lon, centre_lat).expect("centre");
 
         let expected_lat = centre_lat + 2.0 / 3600.0;
-        let expected_lon = centre_lon + (-2.0) / 3600.0;
+        // Uniform −2.0" positive-west shift → +2.0" in positive-east.
+        let expected_lon = centre_lon - (-2.0) / 3600.0;
 
         assert!(
             (lat_out - expected_lat).abs() < 1e-5,
@@ -1225,13 +1409,13 @@ mod tests {
         // A point inside the child's extent (which equals the parent's extent)
         // should use the child's shift (5.0") not the parent's (1.0")
         let lat_deg = 216_000.0_f64 / 3600.0; // south edge = 60°
-        let lon_deg = 36_000.0_f64 / 3600.0; // west edge = 10°
+        let lon_deg = -36_000.0_f64 / 3600.0; // E_LON corner = 10°W = −10.0° east
 
         let (lon_out, lat_out) = grid.transform(lon_deg, lat_deg).expect("nested transform");
 
-        // Child shift = 5.0" = 5/3600 degrees
+        // Child shift = 5.0" (lat) and +5.0" positive-west (lon → −5.0" east).
         let expected_lat = lat_deg + 5.0 / 3600.0;
-        let expected_lon = lon_deg + 5.0 / 3600.0;
+        let expected_lon = lon_deg - 5.0 / 3600.0;
 
         assert!(
             (lat_out - expected_lat).abs() < 1e-5,
@@ -1278,14 +1462,15 @@ mod tests {
         let data = build_synthetic_gsb(true);
         let grid = NtV2Grid::from_bytes(&data).expect("parse");
 
-        // Node (row=2, col=2): shift = 2+2+1 = 5.0"
+        // Node (row=2, col=2): shift = 2+2+1 = 5.0" (lat), −5.0" (lon).
         let lat_deg = 216_120.0 / 3600.0; // N_LAT = 60°02'
-        let lon_deg = 36_120.0 / 3600.0; // W_LON = 10°02'
+        let lon_deg = -36_120.0 / 3600.0; // W_LON = 10°02'W = −10.0333° east
 
         let (lon_out, lat_out) = grid.transform(lon_deg, lat_deg).expect("top-right node");
 
         let expected_lat = lat_deg + 5.0 / 3600.0;
-        let expected_lon = lon_deg + (-5.0) / 3600.0;
+        // −5.0" positive-west lon shift → +5.0" positive-east.
+        let expected_lon = lon_deg - (-5.0) / 3600.0;
 
         assert!(
             (lat_out - expected_lat).abs() < 1e-4,

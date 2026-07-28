@@ -936,7 +936,6 @@ mod tests {
         assert_eq!(data, decompressed);
     }
     #[test]
-    #[ignore]
     fn test_compression_benchmark() {
         let data = vec![1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5];
         let results = CompressionBenchmark::benchmark_all(&data);
@@ -946,7 +945,6 @@ mod tests {
         assert!(algorithms.contains(&CompressionAlgorithm::Rle));
     }
     #[test]
-    #[ignore]
     fn test_find_best_compression() {
         let data = vec![1, 1, 1, 1, 2, 2, 2, 2];
         let best = CompressionBenchmark::find_best(&data);

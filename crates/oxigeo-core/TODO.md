@@ -1,7 +1,7 @@
 # TODO: oxigeo-core
 
 > **Purpose:** Core abstractions for OxiGeo — Pure Rust GDAL reimplementation with zero-copy buffers and cloud-native support
-> **Status (2026-05-16):** 13,527 Rust LoC · 341 tests · 0 real-code stubs
+> **Status (2026-07-28):** 13,685 Rust LoC · 334 tests (all-features; 322 default-features) · 0 real-code stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
@@ -49,7 +49,8 @@
   - **Tests:** `test_fill_value_cfloat32_writes_real_zero_imag`, `test_fill_value_cfloat64_writes_real_zero_imag`.
   - **Prerequisites:** None.
   - **Risk:** Minor. Endianness uses `to_ne_bytes` per existing convention.
-- [ ] Add `no_std` + `alloc` support for `RasterBuffer` (currently std-only internals)
+- [x] Add `no_std` + `alloc` support for `RasterBuffer` (currently std-only internals)
+  - **Verified done:** `src/lib.rs:40` — `#![cfg_attr(not(feature = "std"), no_std)]`; `Cargo.toml` has a real `alloc = ["dep:libm"]` feature distinct from `std`; `src/buffer/mod.rs` gates the std-only paths behind `#[cfg(feature = "std")]` with `#[cfg(not(feature = "std"))]` alloc-only counterparts.
 - [x] Implement `SpatialReference` type wrapping CRS info for core-level reprojection awareness
 
 ## Medium Priority
@@ -85,7 +86,8 @@
     - `crates/oxigeo-core/src/buffer/mod.rs` — re-export.
   - **Tests:** `test_arena_tile_iterator_yields_arena_tiles`, `test_arena_pool_checkout_return_reuse`, `test_arena_tile_iterator_drops_with_arena`.
   - **Risk:** Lifetimes. Arena slice lifetimes must outlive the iterator; tests catch at compile time.
-- [ ] Add hugepage and NUMA-aware allocation policies for HPC workloads
+- [x] Add hugepage and NUMA-aware allocation policies for HPC workloads
+  - **Verified done:** `src/memory/numa.rs` (567 LoC — `NumaNode`, `NumaPolicy`, `NumaConfig`, `NumaStats`, `NumaAllocator`, `is_numa_available`, `get_numa_node_count`, `get_current_node`) and `src/memory/hugepages.rs` (472 LoC — huge-page allocation tracking, `is_huge_pages_available`) both exist with real (non-placeholder) bodies, std-gated.
 - [x] `Display` and `Debug` formatting for all public types (planned 2026-04-18)
   - **Goal:** Every `pub` type in `oxigeo-core` has `Debug` and (where it makes sense) `Display`. User-facing types get `Display`.
   - **Design:**
@@ -121,4 +123,4 @@
 - **Blocked by:** None (foundation crate); pure Rust foundation libs only (`scirs2-core`, `oxiarc-*`, `oxicode`)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: 341→334 tests, date bumped; flipped no_std/alloc RasterBuffer and hugepage/NUMA items to done after source verification; serde-metadata and buffer-vs-slice-bench items re-checked and left open — `RasterMetadata` itself still lacks `#[derive(Serialize)]` and no dedicated buffer-vs-raw-slice bench exists)*

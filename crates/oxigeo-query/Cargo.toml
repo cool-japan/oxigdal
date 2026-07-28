@@ -19,7 +19,6 @@ thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 bytes.workspace = true
-byteorder.workspace = true
 
 # Async
 # NOTE: tokio is intentionally NOT a normal dependency. No production code in
@@ -27,7 +26,6 @@ byteorder.workspace = true
 # tests), and tokio's `full` feature does not build on
 # wasm32-unknown-unknown. Keeping it as a dev-dependency lets native tests run
 # while leaving the compiled dependency graph wasm32-consumable.
-futures.workspace = true
 async-trait.workspace = true
 
 # Query parsing
@@ -40,24 +38,17 @@ parking_lot.workspace = true
 # It requires OS threads and is not viable on wasm32-unknown-unknown, so it is
 # gated behind the default-on `parallel` feature.
 rayon = { workspace = true, optional = true }
-crossbeam.workspace = true
-crossbeam-channel.workspace = true
 
 # Internal dependencies
 oxigeo-core = { workspace = true, default-features = true }
 
 # Utilities
-chrono.workspace = true
 blake3.workspace = true
 
 # Data structures
-rstar.workspace = true
 geo-types.workspace = true
 geo.workspace = true
 wkt = { workspace = true }
-
-# Logging
-tracing.workspace = true
 
 [features]
 default = ["parallel"]

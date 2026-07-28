@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pure-Rust spatial index (R-tree) for OxiGeo vector data"
 keywords = ["geospatial", "spatial-index", "rtree", "vector"]
 categories = ["science", "data-structures"]
@@ -19,6 +20,9 @@ delaunator.workspace = true
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
+
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

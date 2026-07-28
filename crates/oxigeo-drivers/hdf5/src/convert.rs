@@ -94,6 +94,28 @@ pub(crate) fn is_storable(dtype: &Datatype) -> bool {
     dtype.is_integer() || dtype.is_float() || matches!(dtype, Datatype::FixedString { .. })
 }
 
+/// `true` when the real on-disk numeric datatype message declares
+/// big-endian byte order.
+///
+/// Oxigeo's own [`Datatype`] enum (unlike `oxih5`'s [`Dtype`]) carries no
+/// byte-order flag — every consumer of a stored dataset's raw bytes
+/// (`Hdf5Reader::read_f32`/`read_f64`/`read_i32`/`read_slice`) assumes
+/// little-endian. This lets the reader normalize big-endian source bytes to
+/// little-endian once, at read time, rather than silently misreading every
+/// element of a big-endian-authored file.
+pub(crate) fn is_big_endian(dtype: &Dtype) -> bool {
+    matches!(
+        dtype,
+        Dtype::Int {
+            order: ByteOrder::Big,
+            ..
+        } | Dtype::Float {
+            order: ByteOrder::Big,
+            ..
+        }
+    )
+}
+
 /// Decode an `oxih5` attribute view into an oxigeo [`AttributeValue`].
 ///
 /// Returns `None` for attribute datatypes with no oxigeo representation
@@ -101,6 +123,15 @@ pub(crate) fn is_storable(dtype: &Datatype) -> bool {
 /// them without failing the whole read.
 pub(crate) fn decode_attr(view: &AttrView<'_>) -> Option<AttributeValue> {
     let scalar = view.is_scalar();
+    // Trust the attribute's DECLARED element count (its dataspace), not the raw
+    // byte length. Some HDF5 writers pad scalar or small attributes with
+    // trailing zero bytes up to an 8-byte floor; decoding the whole buffer by
+    // dtype-sized chunks would then surface phantom extra elements. The
+    // dataspace shape yields the true count (`Scalar` → `[]` → 1, `Null` →
+    // `[0]` → 0, `Simple` → product of dims), so the real payload is
+    // `count * dtype_size` bytes and any trailing padding is ignored.
+    let count =
+        usize::try_from(view.attr.shape().iter().copied().product::<u64>()).unwrap_or(usize::MAX);
     match view.dtype() {
         Dtype::String { .. } => {
             let strings = view.as_strings().ok()?;
@@ -112,21 +143,40 @@ pub(crate) fn decode_attr(view: &AttrView<'_>) -> Option<AttributeValue> {
                 Some(AttributeValue::StringArray(strings))
             }
         }
-        Dtype::Float { size, order } => decode_floats(&view.attr.data, *size, *order, scalar),
+        Dtype::Float { size, order } => {
+            decode_floats(&view.attr.data, *size, *order, scalar, count)
+        }
         Dtype::Int {
             size,
             signed,
             order,
-        } => decode_ints(&view.attr.data, *size, *signed, *order, scalar),
+        } => decode_ints(&view.attr.data, *size, *signed, *order, scalar, count),
         Dtype::Enum { base, .. } => match base.as_ref() {
             Dtype::Int {
                 size,
                 signed,
                 order,
-            } => decode_ints(&view.attr.data, *size, *signed, *order, scalar),
+            } => decode_ints(&view.attr.data, *size, *signed, *order, scalar, count),
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Drop trailing writer padding from an attribute's raw byte buffer.
+///
+/// Returns the prefix of `data` holding exactly `count` elements of `size`
+/// bytes each. When `data` is longer than that declared payload (the writer
+/// appended zero padding), the excess is dropped. When `data` is already the
+/// right length — or is *shorter* than expected — it is returned verbatim, so
+/// genuine multi-element arrays are never truncated and short/degenerate
+/// buffers keep their existing lenient decoding.
+fn trim_padding(data: &[u8], count: usize, size: usize) -> &[u8] {
+    let expected = count.saturating_mul(size);
+    if expected > 0 && data.len() > expected {
+        &data[..expected]
+    } else {
+        data
     }
 }
 
@@ -135,7 +185,9 @@ fn decode_floats(
     size: usize,
     order: ByteOrder,
     scalar: bool,
+    count: usize,
 ) -> Option<AttributeValue> {
+    let data = trim_padding(data, count, size);
     match size {
         4 => {
             let vals: Vec<f32> = data
@@ -182,7 +234,9 @@ fn decode_ints(
     signed: bool,
     order: ByteOrder,
     scalar: bool,
+    count: usize,
 ) -> Option<AttributeValue> {
+    let data = trim_padding(data, count, size);
     macro_rules! decode {
         ($ty:ty, $n:expr, $scalar_variant:ident, $array_variant:ident) => {{
             let vals: Vec<$ty> = data
@@ -280,5 +334,96 @@ pub(crate) fn map_oxih5_err(e: OxiH5Error) -> Hdf5Error {
         OxiH5Error::Format(s) => Hdf5Error::InvalidFormat(s),
         OxiH5Error::UnsupportedFilter(s) => Hdf5Error::UnsupportedCompressionFilter(s),
         OxiH5Error::Corrupted(s) => Hdf5Error::InvalidFormat(format!("corrupted: {s}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_big_endian_true_for_big_endian_int_and_float() {
+        assert!(is_big_endian(&Dtype::Int {
+            size: 4,
+            signed: true,
+            order: ByteOrder::Big,
+        }));
+        assert!(is_big_endian(&Dtype::Float {
+            size: 8,
+            order: ByteOrder::Big,
+        }));
+    }
+
+    #[test]
+    fn test_is_big_endian_false_for_little_endian_and_non_numeric() {
+        assert!(!is_big_endian(&Dtype::Int {
+            size: 4,
+            signed: true,
+            order: ByteOrder::Little,
+        }));
+        assert!(!is_big_endian(&Dtype::Float {
+            size: 8,
+            order: ByteOrder::Little,
+        }));
+        // Non-numeric datatypes carry no byte order at all — never
+        // classified as big-endian.
+        assert!(!is_big_endian(&Dtype::Opaque {
+            size: 4,
+            tag: "test".to_string(),
+        }));
+    }
+
+    /// Regression for the oxih5 0.2.1 FileWriter padding quirk: a scalar i32
+    /// attribute whose 4-byte payload is written with trailing zero padding up
+    /// to an 8-byte floor must decode to exactly one value (the declared count
+    /// is 1, so the phantom trailing zero is dropped before decoding).
+    #[test]
+    fn test_decode_ints_scalar_i32_ignores_padding() {
+        let padded = [0xF1, 0xD8, 0xFF, 0xFF, 0, 0, 0, 0];
+        assert_eq!(
+            decode_ints(&padded, 4, true, ByteOrder::Little, true, 1),
+            Some(AttributeValue::Int32(-9999))
+        );
+    }
+
+    /// A genuine multi-element i32 array (declared count 3, 12 bytes, no
+    /// padding) must decode to all three values — the guard must never
+    /// truncate legitimate arrays.
+    #[test]
+    fn test_decode_ints_multi_element_not_truncated() {
+        let mut data = Vec::new();
+        for v in [1i32, 2, 3] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            decode_ints(&data, 4, true, ByteOrder::Little, false, 3),
+            Some(AttributeValue::Int32Array(vec![1, 2, 3]))
+        );
+    }
+
+    /// A small non-scalar array whose payload (< 8 bytes) was padded up to the
+    /// 8-byte floor must still decode to its *declared* element count, not the
+    /// phantom count implied by the padded buffer. Here a 2-element i16 array
+    /// (4 real bytes + 4 padding) must yield exactly two values.
+    #[test]
+    fn test_decode_ints_small_padded_array_uses_declared_count() {
+        // 7i16 = [07 00], -3i16 = [FD FF], then 4 bytes of writer padding.
+        let padded = [0x07, 0x00, 0xFD, 0xFF, 0, 0, 0, 0];
+        assert_eq!(
+            decode_ints(&padded, 2, true, ByteOrder::Little, false, 2),
+            Some(AttributeValue::Int16Array(vec![7, -3]))
+        );
+    }
+
+    /// The same padding guard applies to floating-point scalars: a scalar f32
+    /// attribute padded to 8 bytes must decode to exactly one value.
+    #[test]
+    fn test_decode_floats_scalar_f32_ignores_padding() {
+        let mut data = 1.5f32.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(
+            decode_floats(&data, 4, ByteOrder::Little, true, 1),
+            Some(AttributeValue::Float32(1.5))
+        );
     }
 }

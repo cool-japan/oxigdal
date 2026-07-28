@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn test_nad83_state_planes_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // California zone 1
@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn test_nad83_2011_state_planes() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         assert!(db.contains(6355));
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn test_european_grids_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // SWEREF99 TM
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn test_asian_pacific_grids_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // CGCS2000 zone 13
@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn test_south_american_grids_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // SIRGAS 2000 zones
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn test_african_grids_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // South Africa Lo-series
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn test_polar_grids_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // Arctic NSIDC
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn test_vertical_crs_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // NAVD88
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn test_additional_geographic_registered() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // ITRF2014
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_extended_crs_count() {
         let mut db = EpsgDatabase {
-            definitions: std::collections::HashMap::new(),
+            definitions: Default::default(),
         };
         register_extended_crs(&mut db);
         // Should have added 300+ new definitions

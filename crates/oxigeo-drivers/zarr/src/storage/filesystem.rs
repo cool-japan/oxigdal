@@ -7,7 +7,7 @@ use super::{Store, StoreKey, StoreMetadata};
 use crate::error::{Result, StorageError, ZarrError};
 use std::collections::HashSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Filesystem-based store
@@ -201,6 +201,63 @@ impl Store for FilesystemStore {
             ZarrError::Io(oxigeo_core::error::IoError::Read {
                 message: format!("Failed to read {}: {}", path.display(), e),
             })
+        })?;
+
+        Ok(buffer)
+    }
+
+    fn size(&self, key: &StoreKey) -> Result<u64> {
+        let path = self.key_to_path(key);
+        match fs::metadata(&path) {
+            Ok(meta) => Ok(meta.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(ZarrError::Storage(StorageError::KeyNotFound {
+                    key: key.to_string(),
+                }))
+            }
+            Err(e) => Err(ZarrError::Io(oxigeo_core::error::IoError::Read {
+                message: format!("Failed to stat {}: {}", path.display(), e),
+            })),
+        }
+    }
+
+    fn get_range(&self, key: &StoreKey, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let path = self.key_to_path(key);
+
+        if !path.exists() {
+            return Err(ZarrError::Storage(StorageError::KeyNotFound {
+                key: key.to_string(),
+            }));
+        }
+
+        let mut file = fs::File::open(&path).map_err(|e| {
+            ZarrError::Io(oxigeo_core::error::IoError::Read {
+                message: format!("Failed to open {}: {}", path.display(), e),
+            })
+        })?;
+
+        // True ranged read: seek to the offset and read only `length` bytes,
+        // never loading the whole (potentially huge) shard object.
+        file.seek(SeekFrom::Start(offset)).map_err(|e| {
+            ZarrError::Io(oxigeo_core::error::IoError::Read {
+                message: format!("Failed to seek {} to {offset}: {e}", path.display()),
+            })
+        })?;
+
+        let mut buffer = vec![0u8; length];
+        file.read_exact(&mut buffer).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                ZarrError::OutOfBounds {
+                    message: format!(
+                        "requested range [{offset}, {offset}+{length}) exceeds file size for {}",
+                        path.display()
+                    ),
+                }
+            } else {
+                ZarrError::Io(oxigeo_core::error::IoError::Read {
+                    message: format!("Failed to read range from {}: {}", path.display(), e),
+                })
+            }
         })?;
 
         Ok(buffer)

@@ -6,23 +6,21 @@ Database connectors for OxiGeo with support for multiple database systems.
 
 The crate supports multiple database backends, each feature-gated for flexibility:
 
-- **MySQL/MariaDB** (`mysql` feature) - Spatial extensions with WKT/WKB support
-- **SQLite/SpatiaLite** (`sqlite` feature) - Embedded spatial database (⚠️ C dependency)
-- **MongoDB** (`mongodb` feature) - Native GeoJSON support with geospatial queries
+- **MySQL/MariaDB** (`mysql` feature) - Spatial extensions with WKT/WKB support (⚠️ pulls `libz-sys`, a C dependency)
+- **SQLite** (`sqlite` feature) - Embedded spatial database via the pure-Rust `oxisql-sqlite-compat` (limbo engine) — no SpatiaLite C extension support
+- **MongoDB** (`mongodb` feature) - Native GeoJSON support with geospatial queries (⚠️ pulls `ring`, hand-written assembly)
 - **ClickHouse** (`clickhouse` feature) - Massive-scale spatial analytics
 - **TimescaleDB** (`postgres` feature) - Time-series geospatial data
-- **Cassandra/ScyllaDB** (`cassandra` feature) - Distributed spatial data storage
+- **Cassandra/ScyllaDB** (`cassandra` feature) - Distributed spatial data storage (⚠️ pulls `aws-lc-sys` via Scylla's rustls, C/asm)
 
 ### Default Features
 
-By default, the following features are enabled:
+By default, the following features are enabled — all on a 100% Pure Rust dependency closure:
 - `postgres` (TimescaleDB)
-- `mysql`
-- `mongodb`
+- `sqlite` (pure-Rust `oxisql-sqlite-compat` limbo engine)
 - `clickhouse`
-- `cassandra`
 
-**Note:** SQLite is **NOT** included in default features due to its C dependency (libsqlite3-sys), in compliance with the COOLJAPAN Pure Rust Policy.
+**Note:** `mysql`, `mongodb`, and `cassandra` are **NOT** included in default features because each pulls a non-Pure-Rust C/asm dependency (`libz-sys`, `ring`, and `aws-lc-sys` respectively), in compliance with the COOLJAPAN Pure Rust Policy. SQLite used to carry this warning in older releases (`libsqlite3-sys`/rusqlite); the crate has since migrated to the pure-Rust `oxisql-sqlite-compat` engine, so SQLite is Pure Rust and on by default.
 
 ## Database Support
 
@@ -45,9 +43,9 @@ connector.create_spatial_table(
 ).await?;
 ```
 
-### SQLite/SpatiaLite
+### SQLite
 
-⚠️ **Note:** SQLite support requires enabling the `sqlite` feature flag.
+The `sqlite` feature is on by default (see [Default Features](#default-features)); disable default features and re-enable it explicitly only if you're trimming down to a custom backend set.
 
 ```toml
 [dependencies]
@@ -69,9 +67,7 @@ connector.create_spatial_table(
 )?;
 ```
 
-**Why is SQLite feature-gated?**
-
-SQLite has a C dependency (`libsqlite3-sys`) which violates the COOLJAPAN Pure Rust Policy. By feature-gating it, users who need 100% Pure Rust can use the crate without any C dependencies by disabling default features and only enabling the Pure Rust database backends they need.
+**Note on SpatiaLite:** this backend is pure-Rust `oxisql-sqlite-compat` (the limbo engine), which cannot load the SpatiaLite C shared-library extension. `SqliteConnector::has_spatialite()` always returns `false`, and `SqliteConfig::spatialite` is a no-op kept only for source compatibility. Spatial tables/queries use a pure-Rust WKT/WKB fallback instead of SpatiaLite's native geometry functions.
 
 ### MongoDB
 
@@ -178,25 +174,26 @@ let mut tracker = HealthTracker::new(config);
 
 ## COOLJAPAN Compliance
 
-- ✅ Pure Rust by default (C dependencies are feature-gated)
-  - Default features use 100% Pure Rust
-  - SQLite (C dependency) is behind the `sqlite` feature flag
+- ✅ Pure Rust by default (C/asm dependencies are feature-gated, non-default)
+  - Default features (`postgres`, `sqlite`, `clickhouse`) use 100% Pure Rust
+  - SQLite uses the pure-Rust `oxisql-sqlite-compat` engine — no C dependency
+  - `mysql` (libz-sys), `mongodb` (ring), `cassandra` (aws-lc-sys via Scylla) each pull a C/asm dependency and are opt-in only
 - ✅ No unwrap() calls
 - ✅ Files < 2000 lines
 - ✅ Workspace dependencies
 
 ### Feature Configuration Examples
 
-**Pure Rust only (no C dependencies):**
+**Pure Rust only (default set):**
 ```toml
 [dependencies]
-oxigeo-db-connectors = { version = "0.2", default-features = false, features = ["postgres", "mysql"] }
+oxigeo-db-connectors = { version = "0.2", default-features = false, features = ["postgres", "sqlite", "clickhouse"] }
 ```
 
-**With SQLite (includes C dependency):**
+**With MySQL (includes a C dependency, libz-sys):**
 ```toml
 [dependencies]
-oxigeo-db-connectors = { version = "0.2", features = ["sqlite"] }
+oxigeo-db-connectors = { version = "0.2", features = ["mysql"] }
 ```
 
 ## License

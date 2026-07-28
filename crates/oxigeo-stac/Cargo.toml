@@ -31,7 +31,6 @@ reqwest = ["async"]
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-oxigeo-core = { workspace = true, default-features = true }
 
 # Async HTTP client for STAC API
 reqwest = { workspace = true, optional = true, features = ["json"] }

@@ -4,8 +4,10 @@
 //! monitors progress, and aggregates results.
 
 use crate::error::{DistributedError, Result};
+use crate::flight::FlightClient;
 use crate::task::{PartitionId, Task, TaskId, TaskOperation, TaskResult, TaskScheduler};
 use crate::worker::WorkerStatus;
+use arrow::record_batch::RecordBatch;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -281,6 +283,87 @@ impl Coordinator {
 
         info!("Assigned task {} to worker {}", task.id, worker_id);
         Ok(())
+    }
+
+    /// Dispatch a task to a remote worker over Arrow Flight and drive it to
+    /// completion.
+    ///
+    /// This is the end-to-end glue between the three formerly-disconnected
+    /// components: it records the assignment in local bookkeeping, opens a
+    /// [`FlightClient`] to the worker's registered address, ships the serialized
+    /// task plus its `input` partition through the `execute_task` action, and
+    /// feeds the real [`TaskResult`] returned by the worker back into
+    /// [`Coordinator::complete_task`]. The result is a genuine multi-process
+    /// pipeline rather than three independently-correct pieces that never talk.
+    pub async fn dispatch_task_to_worker(
+        &self,
+        task: Task,
+        worker_id: &str,
+        input: Arc<RecordBatch>,
+    ) -> Result<TaskResult> {
+        // Resolve the worker's network address from local bookkeeping.
+        let address = {
+            let workers = self
+                .workers
+                .read()
+                .map_err(|_| DistributedError::coordinator("Failed to acquire workers lock"))?;
+            workers
+                .get(worker_id)
+                .map(|w| w.address.clone())
+                .ok_or_else(|| {
+                    DistributedError::coordinator(format!("Worker {worker_id} not found"))
+                })?
+        };
+
+        // Record the assignment (scheduler + worker counters) before shipping.
+        self.assign_task(task.clone(), worker_id.to_string())?;
+
+        // Connect and dispatch over Flight.
+        let dispatch = async {
+            let mut client = FlightClient::new(address).await?;
+            let (response, output) = client.execute_task(&task, Some(input.as_ref())).await?;
+            Ok::<_, DistributedError>((response, output))
+        }
+        .await;
+
+        let result = match dispatch {
+            Ok((response, output)) => {
+                if response.success {
+                    match output {
+                        Some(batch) => TaskResult::success(
+                            task.id,
+                            Arc::new(batch),
+                            response.execution_time_ms,
+                        ),
+                        None => TaskResult::failure(
+                            task.id,
+                            "worker reported success but returned no output batch".to_string(),
+                            response.execution_time_ms,
+                        ),
+                    }
+                } else {
+                    TaskResult::failure(
+                        task.id,
+                        response
+                            .error
+                            .unwrap_or_else(|| "worker reported failure".to_string()),
+                        response.execution_time_ms,
+                    )
+                }
+            }
+            // A transport/connection failure is itself a task failure so the
+            // scheduler can retry or give up — never a silent success.
+            Err(e) => {
+                warn!(
+                    "Dispatch of task {} to {} failed: {}",
+                    task.id, worker_id, e
+                );
+                TaskResult::failure(task.id, e.to_string(), 0)
+            }
+        };
+
+        self.complete_task(task.id, result.clone())?;
+        Ok(result)
     }
 
     /// Record task completion.

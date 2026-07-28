@@ -15,7 +15,7 @@
 //!   weighting from the enclosing triangle's three vertices.
 //! - [`interpolate_natural_neighbor`]: query a height at `(x, y)` using
 //!   barycentric (natural-neighbor-style) interpolation within the enclosing
-//!   triangle. Full Sibson area-stealing is a documented v0.2.0 enhancement.
+//!   triangle. Full Sibson area-stealing remains a documented future enhancement.
 //! - [`rasterize_tin`]: rasterise the TIN over a regular grid, producing a
 //!   row-major `Vec<f32>` with `NaN` outside the convex hull.
 //!

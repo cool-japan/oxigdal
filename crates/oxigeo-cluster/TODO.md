@@ -1,15 +1,15 @@
 # TODO: oxigeo-cluster
 
 > **Purpose:** Distributed orchestration for OxiGeo — task graph, work-stealing scheduler, worker pool, Raft-based coordinator, distributed cache (coherency), replication, fault tolerance (circuit breaker, bulkhead, health checks), autoscaler, workflow engine, monitoring, security/RBAC.
-> **Status (2026-05-16):** 11,394 LoC · 90 tests · 5 surfaced "simulated / simplified" sites (Raft `request_votes` in-process, scheduler/advanced worker selection, scheduler/advanced batch-fit, coordinator log update, network compression simplified) — overall: skeleton with most network paths conceptual.
+> **Status (2026-07-28):** 11,394 LoC · 146 tests · Raft `request_votes` no longer fabricates votes in-process (see below); scheduler/advanced worker selection and batch-fit are still "simplified" placeholders — overall: real network paths (gRPC) still not shipped anywhere in the crate.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Real network transport for inter-node communication (gRPC over tonic)
-  - **Verified gap:** `Cargo.toml:62` — `# Note: Raft-based consensus is planned for a future release`; `src/coordinator.rs:421-422` — `// In a real implementation, this would send vote requests to other nodes / // For now, simulate by checking cluster size`. Per project memory the cluster crate has "scheduler, work-stealing, autoscaler" as roadmap items.
-  - **Goal:** A working tonic-gRPC transport between coordinator and workers, plus worker-to-worker for cache + work-steal. Proto schema for `RequestVote`, `AppendEntries`, `Heartbeat`, `StealRequest`, `CacheGet`/`CachePut`.
-  - **Design:** New `src/network/proto/cluster.proto` compiled via `tonic-build` in `build.rs`; `ClusterCoordinatorServer` implements the trait; clients are stored in a `DashMap<NodeId, Channel>` reused via tonic's connection pooling. TLS via `rustls` (matches workspace TLS stack — note RUSTSEC advisories listed in MEMORY.md are accepted).
-  - **Files:** `crates/oxigeo-cluster/proto/cluster.proto` (new), `build.rs` (new), `src/network/transport.rs` (new), `src/coordinator.rs:419-433` (replace stub `request_votes`).
+  - **Updated 2026-07-28 — the fabricated-quorum dishonesty is fixed, real network transport is still not shipped:** `src/coordinator.rs` no longer contains the "simulate by checking cluster size" logic. `src/transport.rs` (new, 128 LoC) now defines `VoteRequest`/`VoteResponse`/`HeartbeatRequest`/`HeartbeatResponse` and a `NodeTransport` trait (`request_vote`, `send_heartbeat`); `ClusterCoordinator::request_votes` (coordinator.rs:485) calls through this trait per peer with a timeout and only counts votes a reachable peer actually granted. The only shipped implementation is `UnconfiguredTransport`, which *always* returns a `NetworkError` — "safe by construction" so a coordinator without a real network layer can never assemble a quorum out of thin air (a single-node cluster still self-elects; a multi-node cluster with no transport correctly fails to elect anyone instead of silently splitting). `Cargo.toml:51` still notes "Raft-based consensus is planned for a future release" — accurate: no `tonic` gRPC client ships in this crate yet (`tonic` only appears in `src/monitoring/mod.rs`, unrelated to consensus transport).
+  - **Goal:** A working tonic-gRPC `NodeTransport` implementation between coordinator and workers, plus worker-to-worker for cache + work-steal. Proto schema for `RequestVote`, `AppendEntries`/`Heartbeat`, `StealRequest`, `CacheGet`/`CachePut`.
+  - **Design:** New `src/network/proto/cluster.proto` compiled via `tonic-build` in `build.rs`; a `TonicNodeTransport: NodeTransport` with clients stored in a `DashMap<NodeId, Channel>` reused via tonic's connection pooling. TLS via `rustls` (matches workspace TLS stack — note RUSTSEC advisories listed in MEMORY.md are accepted).
+  - **Files:** `crates/oxigeo-cluster/proto/cluster.proto` (new), `build.rs` (new), `src/network/transport.rs` (new, implements the existing `NodeTransport` trait from `src/transport.rs`).
   - **Tests:** (proposed) `test_transport_three_node_request_vote_majority`, `test_transport_heartbeat_keeps_session_alive`, `test_transport_partition_triggers_election`, `test_transport_tls_handshake_succeeds`, `test_transport_back_pressure_when_queue_full`.
   - **Risk:** `build.rs` invocation order under workspace builds — verify nextest still discovers tests; or generate code committed under `src/network/generated.rs` (no build script).
   - **Prerequisites:** None — `tonic`, `prost`, `arrow-flight` already in `Cargo.toml`.
@@ -109,4 +109,4 @@
 *(No `[x]` entries on previous TODO.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

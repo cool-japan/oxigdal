@@ -5,6 +5,7 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use oxigeo_algorithms::raster::RasterCalculator;
 use oxigeo_algorithms::raster::compute_zonal_stats as compute_zonal;
 use oxigeo_algorithms::raster::{HillshadeParams, hillshade as compute_hillshade};
 use oxigeo_algorithms::raster::{
@@ -333,28 +334,43 @@ impl GeometryWrapper {
     }
 }
 
-/// Simple expression evaluator for raster calculator
+/// Evaluates a raster-calculator expression across the supplied bands.
+///
+/// The full map-algebra expression language from `oxigeo-algorithms`
+/// ([`RasterCalculator`]) is supported: arithmetic (`+ - * / ^`), math
+/// functions (`sqrt`, `log`, `exp`, `sin`, `min`, `max`, ...), comparisons,
+/// logical `and`/`or`, and `if/then/else`. Bands are referenced positionally as
+/// `B1`, `B2`, ... (1-indexed), matching the Python `oxigeo.calc()` binding, so
+/// an NDVI is written `"(B1 - B2) / (B1 + B2)"`.
+///
+/// For backward compatibility, a bare single uppercase letter (`"A"`..`"Z"`)
+/// is still treated as a direct 0-indexed band pass-through (`A` == first band).
 #[allow(dead_code)]
 fn evaluate_expression(expr: &str, bands: Vec<&BufferWrapper>) -> Result<RasterBuffer> {
-    // For now, use the RasterCalculator from oxigeo-algorithms
-    // Simple single-band pass-through
-    if expr.len() == 1 && expr.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-        let band_idx = (expr.as_bytes()[0] - b'A') as usize;
+    // Legacy single-letter pass-through (A = band 0, B = band 1, ...). This is
+    // kept for API stability; the general path below uses B1/B2 references.
+    let trimmed = expr.trim();
+    if trimmed.len() == 1
+        && trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+    {
+        let band_idx = (trimmed.as_bytes()[0] - b'A') as usize;
         if band_idx >= bands.len() {
             return Err(NodeError {
                 code: "INVALID_EXPRESSION".to_string(),
-                message: format!("Band {} not found", expr),
+                message: format!("Band {} not found", trimmed),
             }
             .into());
         }
-        Ok(bands[band_idx].inner().clone())
-    } else {
-        Err(NodeError {
-            code: "NOT_IMPLEMENTED".to_string(),
-            message: "Complex expressions not yet supported".to_string(),
-        }
-        .into())
+        return Ok(bands[band_idx].inner().clone());
     }
+
+    // General case: delegate to the shared raster calculator, which owns its
+    // input buffers, so materialize owned clones of each band.
+    let owned: Vec<RasterBuffer> = bands.iter().map(|b| b.inner().clone()).collect();
+    RasterCalculator::evaluate(trimmed, &owned).to_napi()
 }
 
 #[cfg(test)]
@@ -484,5 +500,72 @@ mod tests {
         let dem = ramp_dem();
         let result = aspect(&dem, 30.0);
         assert!(result.is_ok(), "aspect should accept a valid pixel_size");
+    }
+
+    /// Builds a constant-valued float32 band.
+    fn const_band(width: u32, height: u32, value: f64) -> BufferWrapper {
+        let mut buf = RasterBuffer::zeros(width as u64, height as u64, RasterDataType::Float32);
+        for y in 0..height as u64 {
+            for x in 0..width as u64 {
+                buf.set_pixel(x, y, value).expect("set pixel");
+            }
+        }
+        BufferWrapper::from_raster_buffer(buf)
+    }
+
+    #[test]
+    fn calculate_supports_band_algebra_ndvi() {
+        let nir = const_band(4, 4, 100.0);
+        let red = const_band(4, 4, 50.0);
+        let result = calculate("(B1 - B2) / (B1 + B2)".to_string(), vec![&nir, &red])
+            .expect("NDVI expression should evaluate");
+        let expected = (100.0 - 50.0) / (100.0 + 50.0);
+        let value = result.get_pixel(0, 0).expect("read pixel");
+        assert!(
+            (value - expected).abs() < 1e-3,
+            "NDVI expected {expected}, got {value}"
+        );
+    }
+
+    #[test]
+    fn calculate_supports_math_functions() {
+        let band = const_band(3, 3, 16.0);
+        let result = calculate("sqrt(B1)".to_string(), vec![&band]).expect("sqrt should evaluate");
+        let value = result.get_pixel(1, 1).expect("read pixel");
+        assert!(
+            (value - 4.0).abs() < 1e-3,
+            "sqrt(16) should be 4, got {value}"
+        );
+    }
+
+    #[test]
+    fn calculate_supports_conditionals() {
+        let mut buf = RasterBuffer::zeros(3, 1, RasterDataType::Float32);
+        buf.set_pixel(0, 0, 10.0).expect("set");
+        buf.set_pixel(1, 0, 30.0).expect("set");
+        buf.set_pixel(2, 0, 50.0).expect("set");
+        let band = BufferWrapper::from_raster_buffer(buf);
+
+        let result = calculate("if B1 > 20 then 1 else 0".to_string(), vec![&band])
+            .expect("conditional should evaluate");
+        assert_eq!(result.get_pixel(0, 0).expect("read"), 0.0);
+        assert_eq!(result.get_pixel(1, 0).expect("read"), 1.0);
+        assert_eq!(result.get_pixel(2, 0).expect("read"), 1.0);
+    }
+
+    #[test]
+    fn calculate_legacy_single_letter_passthrough_still_works() {
+        let a = const_band(2, 2, 7.0);
+        let b = const_band(2, 2, 9.0);
+        let result = calculate("B".to_string(), vec![&a, &b]).expect("single-letter passthrough");
+        // "B" selects the second band (index 1).
+        assert_eq!(result.get_pixel(0, 0).expect("read"), 9.0);
+    }
+
+    #[test]
+    fn calculate_reports_invalid_expression() {
+        let band = const_band(2, 2, 1.0);
+        assert!(calculate("B1 +".to_string(), vec![&band]).is_err());
+        assert!(calculate("undefined_fn(B1)".to_string(), vec![&band]).is_err());
     }
 }

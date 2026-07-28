@@ -19,12 +19,10 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
-byteorder = { workspace = true }
 chrono = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
-futures = { workspace = true }
 async-trait = { workspace = true }
 
 # Compression
@@ -33,25 +31,13 @@ oxiarc-zstd = { workspace = true }
 oxiarc-snappy = { workspace = true }
 
 # Caching
-lru = { workspace = true }
 dashmap = { workspace = true }
 
 # Utilities
-num-traits = { workspace = true }
-tracing = { workspace = true }
-rayon = { workspace = true }
-tempfile = { workspace = true }
 fastrand = { workspace = true }
 
 # ML & analytics — ndarray accessed via scirs2-core re-export (SciRS2 Policy)
 scirs2-core = { workspace = true }
-
-# Networking for distributed cache
-tonic = { workspace = true }
-prost = { workspace = true }
-
-# Internal dependencies
-oxigeo-core = { workspace = true, default-features = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

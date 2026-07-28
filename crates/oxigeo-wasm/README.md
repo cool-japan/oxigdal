@@ -305,7 +305,7 @@ Requires WebAssembly, ES6 modules, and Fetch API.
 
 Licensed under Apache-2.0.
 
-Copyright © 2025 COOLJAPAN OU (Team Kitasan)
+Copyright © 2026 COOLJAPAN OU (Team Kitasan)
 
 ## See Also
 

@@ -3,9 +3,7 @@
 use crate::error::{Error, Result};
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap as HashMap;
-#[cfg(not(feature = "std"))]
 use alloc::string::String;
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "std")]
@@ -49,8 +47,10 @@ pub enum CrsType {
     Engineering,
 }
 
-// Include build-generated EPSG registrations (std feature only — no_std builds skip this).
-#[cfg(feature = "std")]
+// Include build-generated EPSG registrations. `build.rs` always emits this file
+// (an empty `register_generated_epsg` when the snapshot is absent), and the
+// generated body only needs `String` plus `Map::entry`, both of which `alloc`
+// provides — so the snapshot is available in `no_std` builds too.
 include!(concat!(env!("OUT_DIR"), "/generated_epsg.rs"));
 
 /// EPSG database containing common coordinate reference systems.
@@ -116,7 +116,6 @@ impl EpsgDatabase {
         super::utm::register_utm_zones(self);
         super::projected::register_projected_crs(self);
         super::extended::register_extended_crs(self);
-        #[cfg(feature = "std")]
         register_generated_epsg(self);
     }
 }

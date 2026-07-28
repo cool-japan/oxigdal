@@ -4,6 +4,9 @@
 //! for coordinate reference systems identified by EPSG codes. It enables
 //! validation of coordinates against the defined bounds of their CRS.
 
+use alloc::format;
+use alloc::string::String;
+
 /// Geographic bounds defining the valid area of use for a CRS.
 /// All values in decimal degrees (WGS84).
 #[derive(Debug, Clone, Copy, PartialEq)]

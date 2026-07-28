@@ -1,4 +1,5 @@
 //! MySQL connector tests.
+#![cfg(feature = "mysql")]
 #![allow(clippy::panic)]
 
 use geo_types::{Geometry, point};

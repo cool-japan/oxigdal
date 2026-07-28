@@ -41,10 +41,22 @@
 use crate::battery::{BatteryMonitor, ProcessingMode};
 use crate::error::{MobileError, Result};
 use futures::Future;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// A type-erased, boxed unit of work submitted to the scheduler.
+///
+/// Boxing erases the caller's concrete `F`/`Fut` types so the scheduler can
+/// store heterogeneous tasks in a single map and execute them on a plain
+/// worker thread via [`futures::executor::block_on`] -- this requires no
+/// async runtime (`tokio`) to be linked, so it works regardless of whether
+/// the optional `background-tasks` feature (which pulls in `tokio`) is
+/// enabled.
+type BoxedTask = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
 /// Task priority levels
 ///
@@ -157,21 +169,164 @@ impl TaskInfo {
 pub type TaskId = u64;
 
 /// Background task scheduler
+///
+/// Submitted work is genuinely executed: [`schedule_task`](Self::schedule_task)
+/// boxes the caller's future and stores it in a `pending` map keyed by
+/// [`TaskId`]; a dedicated background poller thread (spawned in [`new`](Self::new)
+/// and stopped in [`Drop`]) together with the immediate dispatch attempt made
+/// by `schedule_task` itself pulls futures out of that map and drives them to
+/// completion on a plain OS worker thread via [`futures::executor::block_on`]
+/// -- no async runtime is required, so this works whether or not the optional
+/// `background-tasks` (`tokio`) feature is enabled. [`TaskInfo::status`]
+/// transitions `Queued -> Running -> Completed`/`Failed` as execution
+/// actually happens.
 pub struct BackgroundScheduler {
     tasks: Arc<RwLock<HashMap<TaskId, TaskInfo>>>,
+    /// Boxed futures for tasks that are `Queued` but have not yet been
+    /// dispatched to a worker thread. A task's future is removed from this
+    /// map the moment it starts running (or is cancelled).
+    pending: Arc<Mutex<HashMap<TaskId, BoxedTask>>>,
     next_id: Arc<RwLock<TaskId>>,
     battery_monitor: BatteryMonitor,
     max_concurrent_tasks: usize,
+    /// Signals the background poller thread (see [`new`](Self::new)) to stop.
+    shutdown: Arc<AtomicBool>,
+}
+
+/// Attempts to dispatch as many `Queued` tasks (that still have a stored
+/// future in `pending`) as the concurrency limit and battery-aware
+/// processing mode currently allow. Each dispatched task is moved to
+/// `Running` and driven to completion on its own OS thread. Returns the
+/// number of tasks dispatched by this call.
+///
+/// This is a free function (rather than a `&self` method) so it can be
+/// shared between `schedule_task`'s immediate-dispatch attempt and the
+/// scheduler's background poller thread without requiring `BatteryMonitor`
+/// (or all of `BackgroundScheduler`) to be `Sync`: each caller supplies its
+/// own `BatteryMonitor` reference.
+fn dispatch_ready_tasks(
+    tasks: &Arc<RwLock<HashMap<TaskId, TaskInfo>>>,
+    pending: &Arc<Mutex<HashMap<TaskId, BoxedTask>>>,
+    max_concurrent_tasks: usize,
+    battery_monitor: &BatteryMonitor,
+) -> usize {
+    let mode = battery_monitor.recommended_processing_mode();
+    let mut dispatched = 0usize;
+
+    loop {
+        let running_count = tasks
+            .read()
+            .values()
+            .filter(|t| t.status == TaskStatus::Running)
+            .count();
+        if running_count >= max_concurrent_tasks {
+            break;
+        }
+
+        // Pick the highest-priority queued task that is both runnable under
+        // the current battery mode and still has a future waiting to run.
+        let next_id = {
+            let pending_guard = pending.lock();
+            let tasks_guard = tasks.read();
+            tasks_guard
+                .values()
+                .filter(|info| {
+                    info.status == TaskStatus::Queued && pending_guard.contains_key(&info.id)
+                })
+                .filter(|info| match mode {
+                    ProcessingMode::PowerSaver => info.priority.can_run_in_power_saver(),
+                    ProcessingMode::Balanced => !matches!(info.priority, TaskPriority::Idle),
+                    ProcessingMode::HighPerformance => true,
+                })
+                .max_by_key(|info| info.priority)
+                .map(|info| info.id)
+        };
+
+        let Some(task_id) = next_id else {
+            break;
+        };
+
+        let future = {
+            let mut pending_guard = pending.lock();
+            match pending_guard.remove(&task_id) {
+                Some(f) => f,
+                // Raced with another dispatch call; nothing left to run.
+                None => break,
+            }
+        };
+
+        {
+            let mut tasks_guard = tasks.write();
+            if let Some(info) = tasks_guard.get_mut(&task_id) {
+                info.status = TaskStatus::Running;
+                info.started_at = Some(Instant::now());
+            }
+        }
+
+        let tasks_for_thread = Arc::clone(tasks);
+        std::thread::spawn(move || {
+            let result = futures::executor::block_on(future);
+            let mut tasks_guard = tasks_for_thread.write();
+            if let Some(info) = tasks_guard.get_mut(&task_id) {
+                // The task may have been cancelled/suspended concurrently;
+                // only a still-`Running` task transitions to a terminal state
+                // here.
+                if info.status == TaskStatus::Running {
+                    info.completed_at = Some(Instant::now());
+                    info.progress = 1.0;
+                    match result {
+                        Ok(()) => info.status = TaskStatus::Completed,
+                        Err(e) => {
+                            info.status = TaskStatus::Failed;
+                            info.error = Some(e.to_string());
+                        }
+                    }
+                }
+            }
+        });
+
+        dispatched += 1;
+    }
+
+    dispatched
 }
 
 impl BackgroundScheduler {
-    /// Create a new background scheduler
+    /// Create a new background scheduler.
+    ///
+    /// Spawns a background poller thread that periodically retries
+    /// dispatching queued tasks (e.g. once a running task frees a concurrency
+    /// slot, or the battery-aware processing mode improves). The thread is
+    /// stopped when this scheduler is dropped.
     pub fn new() -> Self {
+        let tasks: Arc<RwLock<HashMap<TaskId, TaskInfo>>> = Arc::new(RwLock::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<TaskId, BoxedTask>>> = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let max_concurrent_tasks = 3;
+
+        {
+            let tasks = Arc::clone(&tasks);
+            let pending = Arc::clone(&pending);
+            let shutdown = Arc::clone(&shutdown);
+            std::thread::spawn(move || {
+                // The poller uses its own `BatteryMonitor` instance so this
+                // thread never shares mutable battery-monitor state with the
+                // scheduler's own monitor.
+                let poll_monitor = BatteryMonitor::new().ok().unwrap_or_default();
+                while !shutdown.load(Ordering::Relaxed) {
+                    dispatch_ready_tasks(&tasks, &pending, max_concurrent_tasks, &poll_monitor);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            });
+        }
+
         Self {
-            tasks: Arc::new(RwLock::new(HashMap::new())),
+            tasks,
+            pending,
             next_id: Arc::new(RwLock::new(0)),
             battery_monitor: BatteryMonitor::new().ok().unwrap_or_default(),
-            max_concurrent_tasks: 3,
+            max_concurrent_tasks,
+            shutdown,
         }
     }
 
@@ -183,12 +338,20 @@ impl BackgroundScheduler {
         current
     }
 
-    /// Schedule a background task
+    /// Schedule a background task.
+    ///
+    /// The submitted `task_fn` is invoked to produce a future, which is boxed
+    /// and stored until it can actually run. If a concurrency slot is
+    /// immediately available (and the current battery-aware processing mode
+    /// permits this task's priority), it starts executing on a dedicated
+    /// worker thread right away; otherwise it remains queued and the
+    /// scheduler's background poller thread (see [`new`](Self::new)) will
+    /// start it as soon as capacity frees up.
     pub async fn schedule_task<F, Fut>(
         &self,
         name: &str,
         priority: TaskPriority,
-        _task_fn: F,
+        task_fn: F,
     ) -> Result<TaskId>
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -210,36 +373,18 @@ impl BackgroundScheduler {
 
         self.tasks.write().insert(task_id, info);
 
-        // Check if we should execute immediately
-        if self.can_execute_task(priority) {
-            // In a real implementation, we would spawn the task
-            // For now, just mark as queued
-        }
+        let future: BoxedTask = Box::pin(task_fn());
+        self.pending.lock().insert(task_id, future);
+
+        // Attempt to run it right away if capacity/battery policy allow.
+        dispatch_ready_tasks(
+            &self.tasks,
+            &self.pending,
+            self.max_concurrent_tasks,
+            &self.battery_monitor,
+        );
 
         Ok(task_id)
-    }
-
-    /// Check if a task can be executed given current conditions
-    fn can_execute_task(&self, priority: TaskPriority) -> bool {
-        // Check concurrent task limit
-        let running_count = self
-            .tasks
-            .read()
-            .values()
-            .filter(|t| t.status == TaskStatus::Running)
-            .count();
-
-        if running_count >= self.max_concurrent_tasks {
-            return false;
-        }
-
-        let mode = self.battery_monitor.recommended_processing_mode();
-
-        match mode {
-            ProcessingMode::PowerSaver => priority.can_run_in_power_saver(),
-            ProcessingMode::Balanced => !matches!(priority, TaskPriority::Idle),
-            ProcessingMode::HighPerformance => true,
-        }
     }
 
     /// Get task status
@@ -260,13 +405,25 @@ impl BackgroundScheduler {
             .ok_or_else(|| MobileError::BackgroundTaskError(format!("Task {} not found", task_id)))
     }
 
-    /// Cancel a task
+    /// Cancel a task.
+    ///
+    /// If the task's future has not yet started running, it is dropped
+    /// immediately (removed from the pending queue) and will never execute.
+    /// A task that is already `Running` on a worker thread is marked
+    /// `Cancelled` here, but -- since the underlying [`Future`] has no
+    /// cooperative cancellation hook -- the in-flight work still runs to
+    /// completion on its thread; its result is simply discarded (the
+    /// dispatcher only promotes a task to `Completed`/`Failed` while it is
+    /// still `Running`, so the `Cancelled` status set here is preserved).
     pub fn cancel_task(&self, task_id: TaskId) -> Result<()> {
         let mut tasks = self.tasks.write();
         if let Some(info) = tasks.get_mut(&task_id) {
             if info.is_active() {
                 info.status = TaskStatus::Cancelled;
                 info.completed_at = Some(Instant::now());
+                drop(tasks);
+                // Drop the future for a not-yet-started task so it never runs.
+                self.pending.lock().remove(&task_id);
                 Ok(())
             } else {
                 Err(MobileError::BackgroundTaskError(
@@ -298,7 +455,17 @@ impl BackgroundScheduler {
         Ok(suspended)
     }
 
-    /// Resume suspended tasks
+    /// Resume suspended tasks.
+    ///
+    /// Note: this restores bookkeeping status (`Suspended` -> `Queued`) for
+    /// tasks whose future had not yet started when they were suspended, and
+    /// the background poller will dispatch them once resumed. A task that
+    /// was suspended *after* its future had already started running on a
+    /// worker thread (see [`cancel_task`](Self::cancel_task) for the same
+    /// caveat about in-flight work) has no future left to re-dispatch, since
+    /// genuine pause/resume of an already-running [`Future`] would require
+    /// cooperative cancellation support that the submitted task closure does
+    /// not provide.
     pub fn resume_suspended_tasks(&self) -> Result<Vec<TaskId>> {
         let mut tasks = self.tasks.write();
         let mut resumed = Vec::new();
@@ -308,6 +475,16 @@ impl BackgroundScheduler {
                 info.status = TaskStatus::Queued;
                 resumed.push(*id);
             }
+        }
+        drop(tasks);
+
+        if !resumed.is_empty() {
+            dispatch_ready_tasks(
+                &self.tasks,
+                &self.pending,
+                self.max_concurrent_tasks,
+                &self.battery_monitor,
+            );
         }
 
         Ok(resumed)
@@ -385,6 +562,14 @@ impl BackgroundScheduler {
 impl Default for BackgroundScheduler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for BackgroundScheduler {
+    fn drop(&mut self) {
+        // Signal the background poller thread (spawned in `new`) to stop;
+        // it observes this within one poll interval and exits on its own.
+        self.shutdown.store(true, Ordering::Relaxed);
     }
 }
 
@@ -487,14 +672,150 @@ mod tests {
             .await
             .expect("Failed to schedule task");
 
-        let status = scheduler
-            .task_status(task_id)
-            .expect("Failed to get status");
-        assert_eq!(status, TaskStatus::Queued);
+        // Normal priority with an empty scheduler dispatches immediately, so
+        // by the time `schedule_task` returns the task has already been
+        // moved out of `Queued` (into `Running`, and typically `Completed`
+        // almost immediately after since the body is trivial).
+        wait_for_finished(&scheduler, task_id);
 
         let info = scheduler.task_info(task_id).expect("Failed to get info");
         assert_eq!(info.name, "test_task");
         assert_eq!(info.priority, TaskPriority::Normal);
+        assert_eq!(info.status, TaskStatus::Completed);
+    }
+
+    /// Polls `task_status` until the task leaves `Queued`/`Running`, or a
+    /// generous timeout elapses. Used to deterministically wait for the
+    /// scheduler's worker/poller threads without a fixed sleep.
+    fn wait_for_finished(scheduler: &BackgroundScheduler, task_id: TaskId) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match scheduler.task_status(task_id) {
+                Ok(TaskStatus::Queued | TaskStatus::Running) => {
+                    if Instant::now() >= deadline {
+                        panic!("task {} did not finish executing in time", task_id);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// Verifies the critical fix: `schedule_task` actually executes the
+    /// submitted closure (a real side effect is observed), rather than only
+    /// recording bookkeeping and silently dropping the work.
+    #[tokio::test]
+    async fn test_schedule_task_actually_executes_closure() {
+        let scheduler = BackgroundScheduler::new();
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_for_task = Arc::clone(&executed);
+
+        let task_id = scheduler
+            .schedule_task("side_effect_task", TaskPriority::Normal, move || {
+                let executed = Arc::clone(&executed_for_task);
+                async move {
+                    executed.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .await
+            .expect("Failed to schedule task");
+
+        wait_for_finished(&scheduler, task_id);
+
+        assert!(
+            executed.load(Ordering::SeqCst),
+            "schedule_task must actually run the submitted closure, not just record it as queued"
+        );
+
+        let info = scheduler.task_info(task_id).expect("Failed to get info");
+        assert_eq!(info.status, TaskStatus::Completed);
+        assert!(info.started_at.is_some());
+        assert!(info.completed_at.is_some());
+    }
+
+    /// A task whose closure returns `Err` must surface as `Failed` with the
+    /// error message recorded, never silently reported as success.
+    #[tokio::test]
+    async fn test_schedule_task_propagates_failure() {
+        let scheduler = BackgroundScheduler::new();
+
+        let task_id = scheduler
+            .schedule_task("failing_task", TaskPriority::Normal, || async {
+                Err(MobileError::BackgroundTaskError("boom".to_string()))
+            })
+            .await
+            .expect("Failed to schedule task");
+
+        wait_for_finished(&scheduler, task_id);
+
+        let info = scheduler.task_info(task_id).expect("Failed to get info");
+        assert_eq!(info.status, TaskStatus::Failed);
+        assert!(info.error.is_some_and(|e| e.contains("boom")));
+    }
+
+    /// `Idle` priority tasks must queue (not fabricate immediate success)
+    /// once the concurrency limit is saturated by long-running tasks, and
+    /// must actually run once a slot frees up (background poller behavior).
+    #[tokio::test]
+    async fn test_schedule_task_queues_when_saturated_then_runs() {
+        let scheduler = BackgroundScheduler::new();
+
+        // Saturate all 3 concurrency slots with slow tasks.
+        let release = Arc::new(AtomicBool::new(false));
+        for i in 0..3 {
+            let release = Arc::clone(&release);
+            scheduler
+                .schedule_task(&format!("blocker_{i}"), TaskPriority::Critical, move || {
+                    let release = Arc::clone(&release);
+                    async move {
+                        while !release.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Ok(())
+                    }
+                })
+                .await
+                .expect("Failed to schedule blocker");
+        }
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_for_task = Arc::clone(&executed);
+        let queued_id = scheduler
+            .schedule_task("queued_task", TaskPriority::Normal, move || {
+                let executed = Arc::clone(&executed_for_task);
+                async move {
+                    executed.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .await
+            .expect("Failed to schedule queued task");
+
+        // While all slots are saturated, the new task must remain queued
+        // rather than fabricating a false "ran" status.
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            scheduler.task_status(queued_id).expect("status must exist"),
+            TaskStatus::Queued
+        );
+        assert!(!executed.load(Ordering::SeqCst));
+
+        // Free up the blockers; the poller thread must then actually run
+        // the queued task.
+        release.store(true, Ordering::SeqCst);
+        wait_for_finished(&scheduler, queued_id);
+
+        assert!(
+            executed.load(Ordering::SeqCst),
+            "queued task must eventually run once capacity frees up"
+        );
+        assert_eq!(
+            scheduler.task_status(queued_id).expect("status must exist"),
+            TaskStatus::Completed
+        );
     }
 
     #[test]

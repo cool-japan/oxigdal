@@ -1,14 +1,13 @@
-//! SIMD-accelerated hydrology analysis operations
+//! Hydrology analysis operations
 //!
-//! This module provides high-performance implementations of hydrological
-//! analysis algorithms using SIMD instructions.
+//! This module provides implementations of hydrological analysis algorithms.
 //!
-//! # Performance
+//! # Implementation status
 //!
-//! Expected speedup over scalar implementations:
-//! - D8 flow direction: 2-3x (SIMD neighbor comparisons)
-//! - Flow accumulation (initialization): 3-4x (SIMD buffer operations)
-//! - Sink detection: 2-3x (SIMD comparisons)
+//! These routines are currently scalar (flow routing and accumulation are
+//! inherently sequential/graph-based). They do NOT yet contain hand-written SIMD
+//! intrinsics — vectorization of the pointwise passes is planned future work.
+//! The functions are correct and unit-tested.
 //!
 //! # Supported Operations
 //!

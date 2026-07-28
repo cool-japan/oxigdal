@@ -21,9 +21,17 @@ pub enum AlertHistoryEventType {
     /// Alert was acknowledged.
     Acknowledged,
     /// Notification was sent.
-    NotificationSent { channel: String },
+    NotificationSent {
+        /// Name of the notification channel the alert was delivered to.
+        channel: String,
+    },
     /// Notification failed.
-    NotificationFailed { channel: String, error: String },
+    NotificationFailed {
+        /// Name of the notification channel that failed to deliver the alert.
+        channel: String,
+        /// Human-readable description of the delivery failure.
+        error: String,
+    },
     /// Labels were updated.
     LabelsUpdated,
 }

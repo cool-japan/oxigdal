@@ -1,16 +1,15 @@
 # TODO: oxigeo-cloud-enhanced
 
 > **Purpose:** Deep cloud platform integrations for AWS, Azure, and GCP (analytics/Athena/Glue/ML/Cost beyond basic storage).
-> **Status (2026-07-17):** GCP IAM/Monitoring/BigQuery-cost, Azure Data Lake, and Azure Managed Identity management surfaces now make real API calls (see "Recently completed"). `bigquery.rs` module removed (dead code behind a permanently-disabled feature; see below).
+> **Status (2026-07-28):** GCP IAM/Monitoring/BigQuery-cost, Azure Data Lake, and Azure Managed Identity management surfaces now make real API calls (see "Recently completed"). `bigquery.rs` module removed (dead code behind a permanently-disabled feature; see below). AWS CloudWatch metric push (`put_metric`/`put_metrics`) is real; Azure Monitor `send_metric` and the GCP billing Budgets/Recommender endpoints still explicitly return `NotImplemented` (tested, not silent).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
-- [ ] CloudWatch + Azure Monitor metric **push** wiring (GCP side done — see "Recently completed")
-  - **Verified gap:** `src/aws/cloudwatch.rs`, `src/azure/monitor.rs` modules exist but need verified-end-to-end coverage for the metric push paths.
-  - **Goal:** `MetricsClient::put_datum(namespace, metric, value, dimensions)` working on all three providers; one consistent API.
-  - **Design:** AWS SDK `cloudwatch::Client::put_metric_data` (already in `Cargo.toml`). Azure Monitor → `azure_core` + `https://management.azure.com/.../microsoft.insights/metrics`.
-  - **Files:** `src/aws/cloudwatch.rs`, `src/azure/monitor.rs`.
-  - **Tests:** (proposed) `test_cw_put_metric_data`, `test_azure_monitor_metric_post`.
+- [ ] Azure Monitor metric **push** wiring (AWS CloudWatch side done — see below)
+  - **Updated 2026-07-28 — AWS done, Azure still open:** `src/aws/cloudwatch.rs` — `CloudWatchClient::put_metric`/`put_metrics` build real `MetricDatum`s and call `AwsCloudWatchClient::put_metric_data().send()`, real end-to-end. `src/azure/monitor.rs` — `send_metric()` is explicitly `Err(CloudEnhancedError::NotImplemented(...))` because custom-metric ingestion needs the region-scoped Azure Monitor ingestion REST API, not the ARM control-plane surface this module otherwise covers; confirmed by its own test `test_send_metric_is_not_implemented`. `query_metrics`/`create_metric_alert`/`delete_metric_alert` in the same file are real ARM calls.
+  - **Goal:** Wire `send_metric` to the real Azure Monitor custom-metrics ingestion endpoint.
+  - **Files:** `src/azure/monitor.rs`.
+  - **Tests:** (proposed) `test_azure_monitor_metric_post`.
   - **Risk:** Azure Monitor metric ingestion auth is region-scoped.
   - **Prerequisites:** None.
 
@@ -75,4 +74,4 @@
 - [x] docs.rs now builds with `features = ["aws", "azure", "gcp"]` (`Cargo.toml`) so the feature-gated modules (most of this crate's API surface) appear in published documentation; previously only the empty default-feature surface was documented.
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

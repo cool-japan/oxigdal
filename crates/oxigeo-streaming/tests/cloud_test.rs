@@ -305,14 +305,14 @@ fn coalescer_overlapping_ranges_merged() {
 #[test]
 fn coalescer_slice_response_start() {
     let data = vec![0u8; 200];
-    let slice = CloudRangeCoalescer::slice_response(&data, 100, &(100..150));
+    let slice = CloudRangeCoalescer::slice_response(&data, 100, &(100..150)).expect("in bounds");
     assert_eq!(slice.len(), 50);
 }
 
 #[test]
 fn coalescer_slice_response_middle() {
     let data: Vec<u8> = (0..100).collect();
-    let slice = CloudRangeCoalescer::slice_response(&data, 1000, &(1010..1020));
+    let slice = CloudRangeCoalescer::slice_response(&data, 1000, &(1010..1020)).expect("in bounds");
     assert_eq!(slice.len(), 10);
     // bytes at offset 10..20 in data
     assert_eq!(slice, &data[10..20]);
@@ -321,9 +321,32 @@ fn coalescer_slice_response_middle() {
 #[test]
 fn coalescer_slice_response_full_range() {
     let data = vec![42u8; 512];
-    let slice = CloudRangeCoalescer::slice_response(&data, 0, &(0..512));
+    let slice = CloudRangeCoalescer::slice_response(&data, 0, &(0..512)).expect("in bounds");
     assert_eq!(slice.len(), 512);
     assert!(slice.iter().all(|&b| b == 42));
+}
+
+#[test]
+fn coalescer_slice_response_truncated_returns_error() {
+    // A truncated/short buffer: window claims to start at 100 but only holds 50
+    // bytes, so a request for [100, 200) exceeds it.
+    let data = vec![0u8; 50];
+    let err = CloudRangeCoalescer::slice_response(&data, 100, &(100..200));
+    assert!(
+        err.is_err(),
+        "out-of-window slice must be an error, not a panic"
+    );
+}
+
+#[test]
+fn coalescer_slice_response_before_window_returns_error() {
+    // sub_range starts before the coalesced window start.
+    let data = vec![0u8; 200];
+    let err = CloudRangeCoalescer::slice_response(&data, 100, &(50..150));
+    assert!(
+        err.is_err(),
+        "start before window must error, not underflow-panic"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

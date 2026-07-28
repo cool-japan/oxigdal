@@ -8,9 +8,125 @@ use crate::codecs::CodecChain;
 use crate::codecs::dispatch::build_codec_from_metadata;
 use crate::error::{Result, ShardError, ZarrError};
 use crate::metadata::v3::ShardingConfig;
+use crate::storage::{Store, StoreKey};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
 use std::io::Cursor;
+
+/// Computes the on-disk (encoded) byte length of a shard index whose raw form
+/// is `raw_index_len` bytes, after being run through `index_codec`.
+///
+/// The shard format has no stored index-length field, so the reader must be
+/// able to derive it. This works for any *length-deterministic* index codec
+/// (identity `bytes`/`endian`, or `crc32c` which appends a fixed 4-byte
+/// checksum). A compressive index codec (`gzip`/`zstd`/`blosc`) has a
+/// content-dependent length that cannot be recovered from the raw length, so
+/// it is rejected with a typed [`ShardError::InvalidShardData`] rather than
+/// silently mis-slicing the index.
+///
+/// # Errors
+/// Returns [`ShardError::InvalidShardData`] if the index codec's encoded
+/// length is not determined by its input length.
+pub fn shard_index_encoded_len(index_codec: &CodecChain, raw_index_len: usize) -> Result<usize> {
+    index_codec
+        .deterministic_encoded_len(raw_index_len)
+        .ok_or_else(|| {
+            ZarrError::Shard(ShardError::InvalidShardData {
+                reason: "shard index codec is not length-deterministic (e.g. a compressive \
+                         codec); the fixed-size index cannot be located without a stored \
+                         length. Use an identity or crc32c index codec."
+                    .to_string(),
+            })
+        })
+}
+
+/// Reads a single inner chunk from a shard using storage *byte-range* reads,
+/// without downloading the whole shard object.
+///
+/// This is the ZEP-0002 cloud-efficiency path: it range-reads only the
+/// fixed-size shard index, resolves the requested inner chunk's
+/// `[offset, size)`, then range-reads only that slice. Reading one 4 KiB inner
+/// chunk out of a 1 GiB shard therefore transfers a few KiB, not 1 GiB.
+///
+/// Returns `Ok(None)` when the inner chunk's index slot is the "missing"
+/// sentinel.
+///
+/// # Errors
+/// Propagates storage and codec errors; returns [`ShardError`] for malformed
+/// shards.
+pub fn read_inner_chunk_ranged<S: Store + ?Sized>(
+    store: &S,
+    shard_key: &StoreKey,
+    inner_coords: &[usize],
+    chunks_per_shard: &[usize],
+    chunk_codec: &CodecChain,
+    index_codec: &CodecChain,
+    index_location: IndexLocation,
+) -> Result<Option<Vec<u8>>> {
+    let n_inner_chunks: usize = chunks_per_shard.iter().product();
+    let raw_index_len = n_inner_chunks * 16;
+    let index_byte_len = shard_index_encoded_len(index_codec, raw_index_len)?;
+
+    let total = store.size(shard_key)?;
+    let total = usize::try_from(total).map_err(|_| {
+        ZarrError::Shard(ShardError::InvalidShardData {
+            reason: format!("shard size {total} does not fit in usize"),
+        })
+    })?;
+
+    if total < index_byte_len {
+        return Err(ZarrError::Shard(ShardError::InvalidShardData {
+            reason: format!("shard too small for index (need {index_byte_len}, shard is {total})"),
+        }));
+    }
+
+    let index_offset = match index_location {
+        IndexLocation::Start => 0u64,
+        IndexLocation::End => (total - index_byte_len) as u64,
+    };
+
+    let encoded_index = store.get_range(shard_key, index_offset, index_byte_len)?;
+    let decoded_index = index_codec.decode(encoded_index)?;
+    let index = ShardIndex::decode(&decoded_index, chunks_per_shard.to_vec())?;
+
+    let entry = index.get(inner_coords)?;
+    if entry.is_missing() {
+        return Ok(None);
+    }
+
+    let offset = usize::try_from(entry.offset).map_err(|_| {
+        ZarrError::Shard(ShardError::InvalidChunkRange {
+            offset: usize::MAX,
+            size: usize::try_from(entry.size).unwrap_or(usize::MAX),
+            shard_size: total,
+        })
+    })?;
+    let size = usize::try_from(entry.size).map_err(|_| {
+        ZarrError::Shard(ShardError::InvalidChunkRange {
+            offset,
+            size: usize::MAX,
+            shard_size: total,
+        })
+    })?;
+    let end = offset
+        .checked_add(size)
+        .ok_or(ZarrError::Shard(ShardError::InvalidChunkRange {
+            offset,
+            size,
+            shard_size: total,
+        }))?;
+    if end > total {
+        return Err(ZarrError::Shard(ShardError::InvalidChunkRange {
+            offset,
+            size,
+            shard_size: total,
+        }));
+    }
+
+    let encoded_chunk = store.get_range(shard_key, offset as u64, size)?;
+    let decoded_chunk = chunk_codec.decode(encoded_chunk)?;
+    Ok(Some(decoded_chunk))
+}
 
 /// Shard index entry
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,11 +371,18 @@ impl ShardReader {
         index_codec: CodecChain,
         index_location: IndexLocation,
     ) -> Result<Self> {
-        // Per ZEP-0002: the index occupies exactly n_inner_chunks * 16 bytes.
-        // There is no trailing/leading size field — the size is determined purely
-        // by the product of chunks_per_shard dimensions.
+        // Per ZEP-0002 the *raw* index is exactly n_inner_chunks * 16 bytes
+        // (an [offset, size] u64 pair per inner chunk). The *encoded* index --
+        // what is actually stored in the shard -- is that raw index run
+        // through `index_codec`, so its on-disk length depends on the index
+        // codec: identity leaves it at n*16, `crc32c` grows it by 4, and a
+        // compressive index codec changes it unpredictably. Deriving the
+        // encoded length from the codec (rather than assuming n*16) is what
+        // lets checksummed (`crc32c`) shards -- the spec-standard
+        // configuration -- be read correctly.
         let n_inner_chunks: usize = chunks_per_shard.iter().product();
-        let index_byte_len = n_inner_chunks * 16;
+        let raw_index_len = n_inner_chunks * 16;
+        let index_byte_len = shard_index_encoded_len(&index_codec, raw_index_len)?;
 
         // Extract and decode index
         let index_data: &[u8] = match index_location {
@@ -901,6 +1024,110 @@ mod tests {
             reader.read_chunk(&[1]).expect("read 1"),
             Some(vec![30u8, 40])
         );
+    }
+
+    #[test]
+    fn test_shard_roundtrip_with_crc32c_index_codec() {
+        // A crc32c index codec appends a 4-byte checksum, so the encoded index
+        // is n*16 + 4 bytes -- not n*16. The reader must derive the correct
+        // length from the codec (idx7) instead of hardcoding n*16, or it would
+        // mis-slice the index and fail/return corrupt data.
+        use crate::codecs::crc32c::Crc32cCodec;
+
+        let index_codec = || CodecChain::new(vec![Box::new(Crc32cCodec::new()) as _]);
+
+        let mut writer = ShardWriter::new(
+            vec![2],
+            CodecChain::empty(),
+            index_codec(),
+            IndexLocation::End,
+        );
+        writer
+            .write_chunk(vec![0], vec![1u8, 2, 3, 4])
+            .expect("write 0");
+        writer
+            .write_chunk(vec![1], vec![5u8, 6, 7, 8])
+            .expect("write 1");
+        let shard_bytes = writer.finalize().expect("finalize");
+
+        // 2 chunks (8 bytes) + index (2*16 + 4 crc = 36 bytes) = 44 bytes.
+        assert_eq!(shard_bytes.len(), 8 + 36);
+
+        let reader = ShardReader::new(
+            shard_bytes,
+            vec![2],
+            CodecChain::empty(),
+            index_codec(),
+            IndexLocation::End,
+        )
+        .expect("create reader");
+
+        assert_eq!(
+            reader.read_chunk(&[0]).expect("read 0"),
+            Some(vec![1u8, 2, 3, 4])
+        );
+        assert_eq!(
+            reader.read_chunk(&[1]).expect("read 1"),
+            Some(vec![5u8, 6, 7, 8])
+        );
+    }
+
+    #[test]
+    fn test_shard_index_encoded_len_rejects_compressive_index_codec() {
+        // A compressive index codec has content-dependent length and cannot be
+        // sliced; the helper must reject it with a typed error rather than
+        // guessing a length.
+        #[cfg(feature = "gzip")]
+        {
+            use crate::codecs::gzip::GzipCodec;
+            let chain = CodecChain::new(vec![Box::new(GzipCodec::new(6).expect("gzip")) as _]);
+            let result = shard_index_encoded_len(&chain, 32);
+            assert!(matches!(
+                result,
+                Err(ZarrError::Shard(ShardError::InvalidShardData { .. }))
+            ));
+        }
+
+        // Identity index codec: length is exactly the raw length.
+        assert_eq!(
+            shard_index_encoded_len(&CodecChain::empty(), 32).expect("identity"),
+            32
+        );
+    }
+
+    #[test]
+    fn test_read_inner_chunk_ranged_matches_full_read() {
+        // The byte-range read path must return the same inner chunk as the
+        // whole-shard path.
+        use crate::storage::Store;
+        use crate::storage::memory::MemoryStore;
+
+        let mut writer = ShardWriter::new(
+            vec![2],
+            CodecChain::empty(),
+            CodecChain::empty(),
+            IndexLocation::End,
+        );
+        writer.write_chunk(vec![0], vec![9u8, 8]).expect("w0");
+        writer.write_chunk(vec![1], vec![7u8, 6]).expect("w1");
+        let shard_bytes = writer.finalize().expect("finalize");
+
+        let mut store = MemoryStore::new();
+        store
+            .set(&StoreKey::new("shard".to_string()), &shard_bytes)
+            .expect("set");
+
+        let got = read_inner_chunk_ranged(
+            &store,
+            &StoreKey::new("shard".to_string()),
+            &[1],
+            &[2],
+            &CodecChain::empty(),
+            &CodecChain::empty(),
+            IndexLocation::End,
+        )
+        .expect("ranged read");
+        assert_eq!(got, Some(vec![7u8, 6]));
     }
 
     #[test]

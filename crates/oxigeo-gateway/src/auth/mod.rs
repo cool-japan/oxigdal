@@ -6,6 +6,9 @@
 pub mod api_key;
 pub mod jwt;
 pub mod mfa;
+/// OAuth2/OIDC authenticator. Only available with the non-default `oauth2` feature, which
+/// pulls a `ring`-backed HTTP client; the default build stays 100% Pure Rust without it.
+#[cfg(feature = "oauth2")]
 pub mod oauth2;
 pub mod rbac;
 pub mod session;
@@ -184,6 +187,7 @@ pub trait Authenticator: Send + Sync {
 pub struct MultiAuthenticator {
     api_key: Option<Arc<api_key::ApiKeyAuthenticator>>,
     jwt: Option<Arc<jwt::JwtAuthenticator>>,
+    #[cfg(feature = "oauth2")]
     oauth2: Option<Arc<oauth2::OAuth2Authenticator>>,
     session: Option<Arc<session::SessionAuthenticator>>,
 }
@@ -209,6 +213,7 @@ impl MultiAuthenticator {
             None
         };
 
+        #[cfg(feature = "oauth2")]
         let oauth2 = if config.enable_oauth2 {
             let client_id = config.oauth2_client_id.as_ref().ok_or_else(|| {
                 GatewayError::ConfigError("OAuth2 client ID not configured".to_string())
@@ -234,6 +239,16 @@ impl MultiAuthenticator {
             None
         };
 
+        // When the crate is built without the `oauth2` feature, requesting OAuth2 is a
+        // configuration error rather than a silently-ignored no-op.
+        #[cfg(not(feature = "oauth2"))]
+        if config.enable_oauth2 {
+            return Err(GatewayError::ConfigError(
+                "OAuth2 authentication requires the `oauth2` crate feature to be enabled"
+                    .to_string(),
+            ));
+        }
+
         let session = if config.enable_session {
             Some(Arc::new(session::SessionAuthenticator::new(
                 config.session_timeout,
@@ -245,6 +260,7 @@ impl MultiAuthenticator {
         Ok(Self {
             api_key,
             jwt,
+            #[cfg(feature = "oauth2")]
             oauth2,
             session,
         })
@@ -261,7 +277,8 @@ impl MultiAuthenticator {
                 return Ok(context);
             }
 
-            // Try OAuth2
+            // Try OAuth2 (only compiled in with the `oauth2` feature).
+            #[cfg(feature = "oauth2")]
             if let Some(oauth2) = &self.oauth2
                 && let Ok(context) = oauth2.authenticate(token).await
             {

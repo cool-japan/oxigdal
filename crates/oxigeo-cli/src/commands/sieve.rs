@@ -110,13 +110,21 @@ pub fn execute(args: SieveArgs, format: OutputFormat) -> Result<()> {
     // Apply sieve filter
     let pb = progress::create_spinner("Applying sieve filter");
 
+    // When --no-mask is set, ignore the NoData value entirely so every pixel
+    // (including NoData) participates in polygon detection.
+    let no_data = if args.no_mask {
+        None
+    } else {
+        raster_info.no_data_value
+    };
+
     let (sieved_data, polygons_removed) = apply_sieve_filter(
         &input_data,
         width,
         height,
         args.threshold,
         args.eight_connectedness,
-        raster_info.no_data_value,
+        no_data,
     )
     .context("Failed to apply sieve filter")?;
 
@@ -275,13 +283,44 @@ fn raster_buffer_to_f64(buffer: &RasterBuffer) -> Result<Vec<f64>> {
 
     let mut values = Vec::with_capacity(pixel_count);
 
+    use oxigeo_core::types::RasterDataType;
     match data_type {
-        oxigeo_core::types::RasterDataType::UInt8 => {
+        RasterDataType::UInt8 => {
             for &byte in data {
                 values.push(byte as f64);
             }
         }
-        oxigeo_core::types::RasterDataType::Float64 => {
+        RasterDataType::Int8 => {
+            for &byte in data {
+                values.push(byte as i8 as f64);
+            }
+        }
+        RasterDataType::UInt16 => {
+            for chunk in data.chunks_exact(2) {
+                values.push(u16::from_ne_bytes([chunk[0], chunk[1]]) as f64);
+            }
+        }
+        RasterDataType::Int16 => {
+            for chunk in data.chunks_exact(2) {
+                values.push(i16::from_ne_bytes([chunk[0], chunk[1]]) as f64);
+            }
+        }
+        RasterDataType::UInt32 => {
+            for chunk in data.chunks_exact(4) {
+                values.push(u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64);
+            }
+        }
+        RasterDataType::Int32 => {
+            for chunk in data.chunks_exact(4) {
+                values.push(i32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64);
+            }
+        }
+        RasterDataType::Float32 => {
+            for chunk in data.chunks_exact(4) {
+                values.push(f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64);
+            }
+        }
+        RasterDataType::Float64 => {
             for chunk in data.chunks_exact(8) {
                 let value = f64::from_ne_bytes([
                     chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
@@ -305,13 +344,48 @@ fn f64_to_raster_buffer(
 ) -> Result<RasterBuffer> {
     let mut data = Vec::new();
 
+    use oxigeo_core::types::RasterDataType;
     match data_type {
-        oxigeo_core::types::RasterDataType::UInt8 => {
+        RasterDataType::UInt8 => {
             for &val in values {
-                data.push(val as u8);
+                data.push(val.round().clamp(0.0, u8::MAX as f64) as u8);
             }
         }
-        oxigeo_core::types::RasterDataType::Float64 => {
+        RasterDataType::Int8 => {
+            for &val in values {
+                data.push((val.round().clamp(i8::MIN as f64, i8::MAX as f64) as i8) as u8);
+            }
+        }
+        RasterDataType::UInt16 => {
+            for &val in values {
+                let v = val.round().clamp(0.0, u16::MAX as f64) as u16;
+                data.extend_from_slice(&v.to_ne_bytes());
+            }
+        }
+        RasterDataType::Int16 => {
+            for &val in values {
+                let v = val.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+                data.extend_from_slice(&v.to_ne_bytes());
+            }
+        }
+        RasterDataType::UInt32 => {
+            for &val in values {
+                let v = val.round().clamp(0.0, u32::MAX as f64) as u32;
+                data.extend_from_slice(&v.to_ne_bytes());
+            }
+        }
+        RasterDataType::Int32 => {
+            for &val in values {
+                let v = val.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+                data.extend_from_slice(&v.to_ne_bytes());
+            }
+        }
+        RasterDataType::Float32 => {
+            for &val in values {
+                data.extend_from_slice(&(val as f32).to_ne_bytes());
+            }
+        }
+        RasterDataType::Float64 => {
             for &val in values {
                 data.extend_from_slice(&val.to_ne_bytes());
             }

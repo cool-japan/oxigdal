@@ -383,20 +383,33 @@ impl ConflictResolver {
         CrdtSet::new()
     }
 
-    /// Resolve conflict between two values using Last-Write-Wins
+    /// Resolve conflict between two values using Last-Write-Wins.
+    ///
+    /// `remote_node_id` must be the actual node id that produced `remote`
+    /// (e.g. the id under which `remote_clock` was incremented). It is used
+    /// as the deterministic tie-breaker when `local_clock` and
+    /// `remote_clock` are causally concurrent, matching the same
+    /// `node_id`-comparison rule used by [`LwwRegister::merge`] so that
+    /// every replica resolving the same conflict converges on the same
+    /// value regardless of which side is "local" from its perspective.
     pub fn resolve_lww<T: Clone>(
         &self,
         local: &T,
         local_clock: &VectorClock,
         remote: &T,
         remote_clock: &VectorClock,
+        remote_node_id: &str,
     ) -> T {
         match local_clock.compare(remote_clock) {
             ClockOrdering::Before => remote.clone(),
             ClockOrdering::After | ClockOrdering::Equal => local.clone(),
             ClockOrdering::Concurrent => {
-                // Tie-break deterministically
-                if self.node_id.as_str() < "remote" {
+                // Tie-break deterministically by comparing the two nodes'
+                // actual ids (symmetric: both sides agree on the winner
+                // regardless of which one considers itself "local"),
+                // mirroring `LwwRegister::merge`'s `self.node_id <
+                // other.node_id` rule above.
+                if self.node_id.as_str() < remote_node_id {
                     remote.clone()
                 } else {
                     local.clone()
@@ -565,5 +578,72 @@ mod tests {
 
         let set: CrdtSet<i32> = resolver.create_set();
         assert!(set.is_empty());
+    }
+
+    /// Regression test for the `resolve_lww` tie-break bug: two real nodes
+    /// resolving the same *concurrent* conflict, each from its own point of
+    /// view, must converge on the identical value. Previously the
+    /// tie-break compared `self.node_id` against the literal string
+    /// `"remote"` instead of the actual peer's id, so nodes "aaa" and "zzz"
+    /// disagreed about the winner.
+    #[test]
+    fn test_resolve_lww_concurrent_tie_break_converges_symmetrically() {
+        let mut clock_aaa = VectorClock::new();
+        clock_aaa.increment("aaa");
+
+        let mut clock_zzz = VectorClock::new();
+        clock_zzz.increment("zzz");
+
+        // Sanity: these two clocks are genuinely concurrent (neither
+        // happens-before the other).
+        assert_eq!(clock_aaa.compare(&clock_zzz), ClockOrdering::Concurrent);
+
+        let value_aaa = "value-from-aaa";
+        let value_zzz = "value-from-zzz";
+
+        // Node "aaa" resolves the conflict treating its own value as local
+        // and "zzz"'s value as remote.
+        let resolver_aaa = ConflictResolver::new("aaa".to_string());
+        let winner_from_aaa_perspective =
+            resolver_aaa.resolve_lww(&value_aaa, &clock_aaa, &value_zzz, &clock_zzz, "zzz");
+
+        // Node "zzz" resolves the *same* conflict treating its own value as
+        // local and "aaa"'s value as remote.
+        let resolver_zzz = ConflictResolver::new("zzz".to_string());
+        let winner_from_zzz_perspective =
+            resolver_zzz.resolve_lww(&value_zzz, &clock_zzz, &value_aaa, &clock_aaa, "aaa");
+
+        // Both replicas must converge on the same final value.
+        assert_eq!(
+            winner_from_aaa_perspective, winner_from_zzz_perspective,
+            "concurrent LWW tie-break must be symmetric across replicas"
+        );
+        // "aaa" < "zzz" lexicographically, so per the documented rule the
+        // node with the smaller id yields (adopts the other's value): both
+        // perspectives should resolve to the "zzz" value.
+        assert_eq!(winner_from_aaa_perspective, value_zzz);
+    }
+
+    #[test]
+    fn test_resolve_lww_non_concurrent_uses_causal_order() {
+        let resolver = ConflictResolver::new("node1".to_string());
+
+        let mut older = VectorClock::new();
+        older.increment("node1");
+
+        let mut newer = older.clone();
+        newer.increment("node1");
+
+        // local is causally before remote -> remote wins outright.
+        assert_eq!(
+            resolver.resolve_lww(&"old", &older, &"new", &newer, "node1"),
+            "new"
+        );
+
+        // local is causally after remote -> local wins outright.
+        assert_eq!(
+            resolver.resolve_lww(&"new", &newer, &"old", &older, "node1"),
+            "new"
+        );
     }
 }

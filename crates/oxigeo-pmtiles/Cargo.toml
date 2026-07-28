@@ -32,7 +32,6 @@ cloud-storage = ["dep:url", "dep:reqwest", "dep:tokio"]
 
 [dependencies]
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # Pure-Rust compression/decompression (feature-gated): powers

@@ -101,7 +101,7 @@ Each module provides:
 - **Pure Rust**: No C/C++ dependencies
 - **No unwrap()**: All error paths handled properly
 - **Workspace**: Uses workspace dependencies
-- **Files < 2000 lines**: Modular organization (largest file: 504 LOC)
+- **Files < 2000 lines**: Modular organization (largest file: `mvt.rs`, ~1,574 LOC)
 
 ## Performance
 

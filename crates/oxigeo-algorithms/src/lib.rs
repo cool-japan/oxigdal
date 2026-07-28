@@ -270,6 +270,7 @@ pub use vector::{
     Circle,
     // Clipping operations
     ClipOperation,
+    ClipResult,
     // Map generalization operators (ICA taxonomy: collapse, exaggerate, displace)
     CollapseOptions,
     ContainsPredicate,
@@ -335,6 +336,7 @@ pub use vector::{
 
     clip_multi,
     clip_polygons,
+    clip_polygons_detailed,
     // Difference operations
     clip_to_box,
     // Advanced modules

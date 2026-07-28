@@ -220,14 +220,18 @@ impl RasterTile {
 
 // ─── TileStream ───────────────────────────────────────────────────────────────
 
-/// Iterator over raster tile coordinates at a fixed zoom level.
+/// Iterator over raster tile **coordinates** at a fixed zoom level.
 ///
 /// Tiles are yielded in row-major order: all columns for row 0, then row 1,
 /// etc. (top-left to bottom-right).
 ///
-/// The `data` field of each [`RasterTile`] is populated with empty bytes by
-/// default.  Real raster data is filled in by the driver crate when the tiles
-/// are actually read from disk.
+/// This is a coordinate stream: the `data` field of each yielded
+/// [`RasterTile`] is intentionally empty (`has_data() == false`).  It exists to
+/// enumerate the tile grid; to obtain the actual pixels for a tile, read the
+/// corresponding pixel window from the dataset with
+/// [`crate::Dataset::read_window`].  (Populating `data` directly from a slippy /
+/// XYZ tile requires reprojecting the dataset to Web Mercator and resampling,
+/// which is a separate, heavier operation.)
 ///
 /// Obtained via [`StreamingExt::tiles`].
 pub struct TileStream {
@@ -506,24 +510,25 @@ fn stream_flatgeobuf_features(info: &crate::DatasetInfo) -> Result<FeatureStream
             message: e.to_string(),
         })?;
 
-        let features = iter
-            .filter_map(|result| {
-                result
-                    .map_err(|e| OxiGeoError::Internal {
-                        message: e.to_string(),
-                    })
-                    .ok()
-            })
-            .map(|f| {
-                let geometry = f.geometry.map(|g| g.to_wkb());
-                let properties: HashMap<String, JsonValue> = f
-                    .properties
-                    .into_iter()
-                    .map(|(k, v)| (k, v.to_json_value()))
-                    .collect();
-                StreamingFeature::new(geometry, properties)
-            })
-            .collect::<Vec<_>>();
+        // Propagate the first per-feature decode error instead of silently
+        // dropping corrupt/truncated records — a caller must not receive a
+        // FeatureStream with fewer features than the file declares and no
+        // indication that anything went wrong.
+        let mut features = Vec::new();
+        for result in iter {
+            let f = result.map_err(|e| {
+                OxiGeoError::Io(IoError::Read {
+                    message: format!("failed to decode FlatGeobuf feature in '{path}': {e}"),
+                })
+            })?;
+            let geometry = f.geometry.map(|g| g.to_wkb());
+            let properties: HashMap<String, JsonValue> = f
+                .properties
+                .into_iter()
+                .map(|(k, v)| (k, v.to_json_value()))
+                .collect();
+            features.push(StreamingFeature::new(geometry, properties));
+        }
 
         Ok(FeatureStream::from_vec(features))
     }
@@ -630,10 +635,11 @@ pub trait StreamingExt {
     /// dataset.
     fn features(&self) -> Result<FeatureStream>;
 
-    /// Return an iterator over tile coordinates at the given `zoom` level.
+    /// Return an iterator over tile **coordinates** at the given `zoom` level.
     ///
-    /// The data field of each returned [`RasterTile`] will be empty — actual
-    /// pixel data is filled in by the driver crate.
+    /// The `data` field of each returned [`RasterTile`] is empty by design — the
+    /// stream enumerates the tile grid.  To read the pixels for a tile, use
+    /// [`crate::Dataset::read_window`] with the tile's pixel window.
     ///
     /// # Errors
     ///

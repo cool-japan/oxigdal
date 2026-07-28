@@ -5,7 +5,7 @@
 
 #[cfg(feature = "schema")]
 use crate::error::{PubSubError, Result};
-#[cfg(feature = "schema")]
+#[cfg(feature = "avro")]
 use bytes::Bytes;
 #[cfg(feature = "schema")]
 use serde::{Deserialize, Serialize};
@@ -183,11 +183,32 @@ impl ProtobufSchema {
         }
     }
 
-    /// Validates that data conforms to the Protobuf schema.
-    pub fn validate(&self, _data: &[u8]) -> Result<()> {
-        // Basic validation - in a real implementation, this would use
-        // the descriptor to validate the message structure
-        Ok(())
+    /// Validates that `data` conforms to the Protobuf schema.
+    ///
+    /// Performs real structural validation of the protobuf wire format against
+    /// this message's descriptor:
+    ///
+    /// * every tag is parsed (field number + wire type) and every field value
+    ///   is fully read, so truncated buffers, malformed varints, and
+    ///   overrunning length-delimited fields are rejected;
+    /// * for every field number declared in the descriptor, the encoded wire
+    ///   type must match the declared field type (a packed wire type is also
+    ///   accepted for repeated scalar fields);
+    /// * unknown field numbers are permitted (protobuf forward-compatibility)
+    ///   but their wire structure is still validated.
+    ///
+    /// Deep recursion into sub-message fields is intentionally not performed:
+    /// resolving a field's message type requires the full descriptor pool
+    /// (`FileDescriptorSet`), which a single [`prost_types::DescriptorProto`]
+    /// does not carry. The length-delimited bytes of a sub-message are still
+    /// validated for readability.
+    pub fn validate(&self, data: &[u8]) -> Result<()> {
+        validate_protobuf_wire(data, &self.descriptor).map_err(|message| {
+            PubSubError::SchemaValidationError {
+                message: format!("{}: {}", self.name, message),
+                schema_id: Some(self.name.clone()),
+            }
+        })
     }
 
     /// Gets the schema name.
@@ -199,6 +220,153 @@ impl ProtobufSchema {
     pub fn descriptor(&self) -> &prost_types::DescriptorProto {
         &self.descriptor
     }
+}
+
+/// Returns the protobuf wire type expected for a declared field type.
+#[cfg(feature = "protobuf")]
+fn expected_wire_type(ty: prost_types::field_descriptor_proto::Type) -> u8 {
+    use prost_types::field_descriptor_proto::Type;
+    match ty {
+        Type::Double | Type::Fixed64 | Type::Sfixed64 => 1,
+        Type::Float | Type::Fixed32 | Type::Sfixed32 => 5,
+        Type::Int64
+        | Type::Uint64
+        | Type::Int32
+        | Type::Uint32
+        | Type::Bool
+        | Type::Enum
+        | Type::Sint32
+        | Type::Sint64 => 0,
+        Type::String | Type::Message | Type::Bytes => 2,
+        Type::Group => 3,
+    }
+}
+
+/// Whether a scalar field type may appear packed (length-delimited) when repeated.
+#[cfg(feature = "protobuf")]
+fn is_packable(ty: prost_types::field_descriptor_proto::Type) -> bool {
+    matches!(expected_wire_type(ty), 0 | 1 | 5)
+}
+
+/// Reads a base-128 varint, advancing `pos`. Rejects truncated / overlong varints.
+#[cfg(feature = "protobuf")]
+fn read_varint(buf: &[u8], pos: &mut usize) -> core::result::Result<u64, String> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    for _ in 0..10 {
+        let byte = *buf
+            .get(*pos)
+            .ok_or_else(|| "truncated varint".to_string())?;
+        *pos += 1;
+        if shift < 64 {
+            result |= u64::from(byte & 0x7f) << shift;
+        } else if byte & 0x7f != 0 {
+            return Err("varint overflows 64 bits".to_string());
+        }
+        if byte & 0x80 == 0 {
+            return Ok(result);
+        }
+        shift += 7;
+    }
+    Err("varint exceeds 10 bytes".to_string())
+}
+
+/// Advances `pos` by `n`, verifying the buffer holds that many more bytes.
+#[cfg(feature = "protobuf")]
+fn advance(buf: &[u8], pos: &mut usize, n: usize) -> core::result::Result<(), String> {
+    let new_pos = pos
+        .checked_add(n)
+        .ok_or_else(|| "length overflow".to_string())?;
+    if new_pos > buf.len() {
+        return Err("field value extends past end of buffer".to_string());
+    }
+    *pos = new_pos;
+    Ok(())
+}
+
+/// Consumes a single field value of the given wire type (validating readability).
+#[cfg(feature = "protobuf")]
+fn skip_field(
+    buf: &[u8],
+    pos: &mut usize,
+    wire_type: u8,
+    field_number: i32,
+) -> core::result::Result<(), String> {
+    match wire_type {
+        0 => {
+            read_varint(buf, pos)?;
+        }
+        1 => advance(buf, pos, 8)?,
+        5 => advance(buf, pos, 4)?,
+        2 => {
+            let len = read_varint(buf, pos)?;
+            advance(buf, pos, len as usize)?;
+        }
+        3 => skip_group(buf, pos, field_number)?,
+        4 => return Err("unexpected end-group marker".to_string()),
+        other => return Err(format!("invalid wire type {other}")),
+    }
+    Ok(())
+}
+
+/// Skips a legacy group, matching the closing end-group tag for `group_field`.
+#[cfg(feature = "protobuf")]
+fn skip_group(buf: &[u8], pos: &mut usize, group_field: i32) -> core::result::Result<(), String> {
+    loop {
+        let tag = read_varint(buf, pos)?;
+        let field_number = (tag >> 3) as i32;
+        let wire_type = (tag & 7) as u8;
+        if wire_type == 4 {
+            if field_number == group_field {
+                return Ok(());
+            }
+            return Err("mismatched end-group marker".to_string());
+        }
+        skip_field(buf, pos, wire_type, field_number)?;
+    }
+}
+
+/// Validates a protobuf message's wire structure against a descriptor.
+#[cfg(feature = "protobuf")]
+fn validate_protobuf_wire(
+    data: &[u8],
+    descriptor: &prost_types::DescriptorProto,
+) -> core::result::Result<(), String> {
+    use prost_types::field_descriptor_proto::Label;
+    use std::collections::HashMap;
+
+    let mut declared: HashMap<i32, (prost_types::field_descriptor_proto::Type, Label)> =
+        HashMap::new();
+    for field in &descriptor.field {
+        declared.insert(field.number(), (field.r#type(), field.label()));
+    }
+
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let tag = read_varint(data, &mut pos)?;
+        let field_number = (tag >> 3) as i32;
+        let wire_type = (tag & 7) as u8;
+
+        if field_number == 0 {
+            return Err("invalid field number 0".to_string());
+        }
+
+        if let Some((ty, label)) = declared.get(&field_number) {
+            let expected = expected_wire_type(*ty);
+            let is_repeated = matches!(label, Label::Repeated);
+            let matches =
+                wire_type == expected || (is_repeated && wire_type == 2 && is_packable(*ty));
+            if !matches {
+                return Err(format!(
+                    "field {field_number}: wire type {wire_type} does not match declared type {ty:?} (expected wire type {expected})"
+                ));
+            }
+        }
+
+        skip_field(data, &mut pos, wire_type, field_number)?;
+    }
+
+    Ok(())
 }
 
 /// Schema registry for managing schemas.
@@ -461,6 +629,80 @@ mod tests {
 
         let json_encoding = SchemaEncoding::Json;
         assert_ne!(json_encoding, encoding);
+    }
+
+    #[cfg(feature = "protobuf")]
+    fn sample_protobuf_schema() -> ProtobufSchema {
+        use prost_types::field_descriptor_proto::{Label, Type};
+
+        let descriptor = prost_types::DescriptorProto {
+            name: Some("TestMsg".to_string()),
+            field: vec![
+                prost_types::FieldDescriptorProto {
+                    name: Some("s".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::String as i32),
+                    ..Default::default()
+                },
+                prost_types::FieldDescriptorProto {
+                    name: Some("n".to_string()),
+                    number: Some(2),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Int32 as i32),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        ProtobufSchema::from_descriptor("TestMsg", descriptor)
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn test_protobuf_validate_accepts_valid_message() {
+        let schema = sample_protobuf_schema();
+        // field 1 (string "abc"): tag 0x0A, len 3, "abc"
+        // field 2 (int32 42):     tag 0x10, varint 0x2A
+        let data = [0x0A, 0x03, b'a', b'b', b'c', 0x10, 0x2A];
+        assert!(schema.validate(&data).is_ok());
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn test_protobuf_validate_accepts_unknown_field() {
+        let schema = sample_protobuf_schema();
+        // Unknown field 9 (varint): tag 0x48, value 1 -> allowed (forward-compat).
+        let data = [0x48, 0x01];
+        assert!(schema.validate(&data).is_ok());
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn test_protobuf_validate_rejects_wire_type_mismatch() {
+        let schema = sample_protobuf_schema();
+        // field 2 declared int32 (varint) but encoded length-delimited (tag 0x12).
+        let data = [0x12, 0x01, 0x05];
+        let err = schema.validate(&data);
+        assert!(err.is_err(), "wire-type mismatch must be rejected");
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn test_protobuf_validate_rejects_truncated_length_delimited() {
+        let schema = sample_protobuf_schema();
+        // field 1 claims 5 bytes but only 1 is present.
+        let data = [0x0A, 0x05, b'a'];
+        assert!(schema.validate(&data).is_err());
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn test_protobuf_validate_rejects_truncated_varint() {
+        let schema = sample_protobuf_schema();
+        // field 2 tag then a varint with the continuation bit set but no more bytes.
+        let data = [0x10, 0x80];
+        assert!(schema.validate(&data).is_err());
     }
 }
 

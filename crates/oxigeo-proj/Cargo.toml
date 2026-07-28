@@ -15,7 +15,6 @@ categories = ["science", "algorithms"]
 
 # Architecture: OxiProj (pure Rust, always active) is the default engine.
 # proj4rs is retained as an optional fallback via the `proj4rs-compat` feature for backward-compat error conversion.
-# proj-sys: Optional C bindings to system PROJ library (feature-gated, not in default closure).
 [features]
 default = ["std"]
 # NOTE: `oxiproj/epsg` is intentionally NOT enabled here. It transitively pulls
@@ -26,7 +25,6 @@ default = ["std"]
 # pure-Rust `oxiproj::Crs::from_proj` + `oxiproj::Transformer::new` (no authority DB).
 # The oxiproj-native EPSG/DB path is available opt-in via the `proj-db` feature below.
 std = ["thiserror/std", "serde/std", "dep:serde_json", "dep:once_cell", "oxiproj/projjson"]
-proj-sys = ["dep:proj"]  # Optional C bindings to PROJ library
 # `proj-db` enables oxigeo-proj's own pure-Rust oxisql PROJ.db reader (~7500 EPSG codes)
 # and, since it is a native-only opt-in, also the oxiproj-native EPSG registry
 # (`oxiproj/epsg` → oxiproj-db). Keep `oxiproj/epsg` here (not in `std`) so the default
@@ -38,7 +36,6 @@ proj4rs-compat = ["dep:proj4rs"]
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
-num-traits = { workspace = true }
 byteorder = { workspace = true }
 
 # std-only dependencies
@@ -50,10 +47,6 @@ proj4rs = { workspace = true, optional = true }
 
 # OxiProj — Pure-Rust cartographic library (COOLJAPAN)
 oxiproj = { workspace = true }
-oxiproj-core = { workspace = true }
-
-# Optional C bindings to PROJ library
-proj = { workspace = true, optional = true }
 
 # Optional SQLite reader for system PROJ.db
 oxisql-sqlite-compat = { workspace = true, optional = true }
@@ -65,6 +58,82 @@ proptest = { workspace = true }
 oxisql-core = { workspace = true }
 oxisql-sqlite-compat = { workspace = true }
 
+# Integration tests that exercise std-only API surface (`Transformer`, `Pipeline`,
+# `crs_registry`, `geocentric`, `grid_shift`, `lookup_epsg`, …). The library itself
+# builds on `--no-default-features` (no_std + alloc); these targets are simply skipped
+# there instead of failing to compile. Tests not listed here run in both configurations.
+[[test]]
+name = "area_of_use_check_test"
+required-features = ["std"]
+
+[[test]]
+name = "cache_test"
+required-features = ["std"]
+
+[[test]]
+name = "crs_identify_test"
+required-features = ["std"]
+
+[[test]]
+name = "crs_registry_test"
+required-features = ["std"]
+
+[[test]]
+name = "engcrs_test"
+required-features = ["std"]
+
+[[test]]
+name = "geocentric_test"
+required-features = ["std"]
+
+[[test]]
+name = "geoid_formats_test"
+required-features = ["std"]
+
+[[test]]
+name = "geoid_test"
+required-features = ["std"]
+
+[[test]]
+name = "itrf_epoch_test"
+required-features = ["std"]
+
+[[test]]
+name = "pipeline_3d_test"
+required-features = ["std"]
+
+[[test]]
+name = "pipeline_grammar_test"
+required-features = ["std"]
+
+[[test]]
+name = "pipeline_gridshift"
+required-features = ["std"]
+
+[[test]]
+name = "pipeline_test"
+required-features = ["std"]
+
+[[test]]
+name = "projection_tests"
+required-features = ["std"]
+
+[[test]]
+name = "proptest_proj"
+required-features = ["std"]
+
+[[test]]
+name = "simd_batch_test"
+required-features = ["std"]
+
+[[test]]
+name = "transform_test"
+required-features = ["std"]
+
+[[test]]
+name = "transformer_grid_thread"
+required-features = ["std"]
+
 [build-dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -72,10 +141,9 @@ serde_json = { workspace = true }
 [lints]
 workspace = true
 
-# NOTE: `proj-sys` pulls the `proj` crate's C bindings to the system libproj
-# library (and transitively libsqlite3-sys) — not Pure Rust and not available
-# on docs.rs. `proj-db` uses the pure-Rust oxisql-sqlite-compat (Limbo) engine
-# instead and stays in the curated set along with `proj4rs-compat`.
+# NOTE: `proj-db` uses the pure-Rust oxisql-sqlite-compat (Limbo) engine to read
+# a system PROJ.db, so it builds on docs.rs and stays in the curated feature set
+# along with `proj4rs-compat`.
 [package.metadata.docs.rs]
 features = ["std", "proj-db", "proj4rs-compat"]
 rustdoc-args = ["--cfg", "docsrs"]

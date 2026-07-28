@@ -1,15 +1,17 @@
 //! WebSocket server implementation.
 
+use crate::auth::{AuthConfig, AuthPrincipal, Role, token_from_authorization, token_from_query};
 use crate::error::{Error, Result};
 use crate::protocol::{Compression, Message, MessageFormat};
 use crate::subscription::{Subscription, SubscriptionManager};
 use axum::{
     Router,
     extract::{
-        State,
+        RawQuery, State,
         ws::{WebSocket, WebSocketUpgrade},
     },
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use dashmap::DashMap;
@@ -36,6 +38,8 @@ pub struct ServerConfig {
     pub default_compression: Compression,
     /// Enable CORS
     pub enable_cors: bool,
+    /// Connection authentication configuration
+    pub auth: AuthConfig,
 }
 
 impl Default for ServerConfig {
@@ -47,6 +51,7 @@ impl Default for ServerConfig {
             default_format: MessageFormat::MessagePack,
             default_compression: Compression::Zstd,
             enable_cors: true,
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -61,6 +66,10 @@ struct ClientState {
     format: MessageFormat,
     /// Compression preference
     compression: Compression,
+    /// Authenticated principal identifier
+    subject: String,
+    /// Authenticated access level (drives per-operation authorization)
+    role: Role,
 }
 
 impl ClientState {
@@ -263,6 +272,24 @@ impl ServerBuilder {
         self
     }
 
+    /// Set the connection authentication configuration.
+    pub fn auth(mut self, auth: AuthConfig) -> Self {
+        self.config.auth = auth;
+        self
+    }
+
+    /// Register an accepted bearer token and its principal, enabling
+    /// authenticated mode.
+    pub fn add_token(
+        mut self,
+        token: impl Into<String>,
+        subject: impl Into<String>,
+        role: Role,
+    ) -> Self {
+        self.config.auth.add_token(token, subject, role);
+        self
+    }
+
     /// Build the server.
     pub fn build(self) -> WebSocketServer {
         WebSocketServer::with_config(self.config)
@@ -281,14 +308,51 @@ async fn health_handler() -> &'static str {
 }
 
 /// WebSocket upgrade handler.
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+///
+/// Enforces the connection cap and authenticates the request **before** the
+/// WebSocket upgrade completes. Rejected requests never reach [`handle_socket`].
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    // Enforce the maximum connection count.
+    if state.clients.len() >= state.config.max_connections {
+        warn!(
+            "Rejecting WebSocket connection: max_connections ({}) reached",
+            state.config.max_connections
+        );
+        return (StatusCode::SERVICE_UNAVAILABLE, "Server at capacity").into_response();
+    }
+
+    // Extract a bearer token from the Authorization header or ?token= query.
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(token_from_authorization)
+        .map(str::to_string)
+        .or_else(|| query.as_deref().and_then(token_from_query));
+
+    // Authenticate before upgrading the connection.
+    let principal = match state.config.auth.authenticate(token.as_deref()) {
+        Ok(principal) => principal,
+        Err(e) => {
+            warn!("WebSocket authentication failed: {}", e);
+            return (StatusCode::UNAUTHORIZED, e.to_string()).into_response();
+        }
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, principal))
 }
 
 /// Handle WebSocket connection.
-async fn handle_socket(socket: WebSocket, state: AppState) {
+async fn handle_socket(socket: WebSocket, state: AppState, principal: AuthPrincipal) {
     let client_id = Uuid::new_v4().to_string();
-    info!("New WebSocket connection: {}", client_id);
+    info!(
+        "New WebSocket connection: {} (subject={}, role={:?})",
+        client_id, principal.subject, principal.role
+    );
 
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -303,6 +367,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         tx: tx.clone(),
         format,
         compression,
+        subject: principal.subject.clone(),
+        role: principal.role,
     };
     state.clients.insert(client_id.clone(), client_state);
 
@@ -377,6 +443,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 }
 
+/// Look up the authenticated principal for a currently-connected client.
+///
+/// Falls back to the least-privileged role if the client is unknown (which
+/// should not happen for an active connection).
+fn client_principal(state: &AppState, client_id: &str) -> AuthPrincipal {
+    state
+        .clients
+        .get(client_id)
+        .map(|c| AuthPrincipal::new(c.subject.clone(), c.role))
+        .unwrap_or_else(|| AuthPrincipal::new(client_id, Role::ReadOnly))
+}
+
 /// Handle a received message.
 async fn handle_message(
     message: Message,
@@ -422,6 +500,19 @@ async fn handle_message(
         } => {
             debug!("Subscribe tiles from {}: {}", client_id, subscription_id);
 
+            if let Err(e) = client_principal(state, client_id).authorize(Role::Subscriber) {
+                warn!("Denying tile subscription for {}: {}", client_id, e);
+                state.send_to_client(
+                    client_id,
+                    Message::Ack {
+                        request_id: subscription_id,
+                        success: false,
+                        message: Some(e.to_string()),
+                    },
+                )?;
+                return Ok(());
+            }
+
             let sub = Subscription::tiles(client_id.to_string(), bbox, zoom_range, None);
             state.subscriptions.add(sub)?;
 
@@ -442,6 +533,19 @@ async fn handle_message(
         } => {
             debug!("Subscribe features from {}: {}", client_id, subscription_id);
 
+            if let Err(e) = client_principal(state, client_id).authorize(Role::Subscriber) {
+                warn!("Denying feature subscription for {}: {}", client_id, e);
+                state.send_to_client(
+                    client_id,
+                    Message::Ack {
+                        request_id: subscription_id,
+                        success: false,
+                        message: Some(e.to_string()),
+                    },
+                )?;
+                return Ok(());
+            }
+
             let sub = Subscription::features(client_id.to_string(), layer, None);
             state.subscriptions.add(sub)?;
 
@@ -460,6 +564,19 @@ async fn handle_message(
             event_types,
         } => {
             debug!("Subscribe events from {}: {}", client_id, subscription_id);
+
+            if let Err(e) = client_principal(state, client_id).authorize(Role::Subscriber) {
+                warn!("Denying event subscription for {}: {}", client_id, e);
+                state.send_to_client(
+                    client_id,
+                    Message::Ack {
+                        request_id: subscription_id,
+                        success: false,
+                        message: Some(e.to_string()),
+                    },
+                )?;
+                return Ok(());
+            }
 
             let event_types_set = event_types.into_iter().collect();
             let sub = Subscription::events(client_id.to_string(), event_types_set, None);
@@ -540,5 +657,41 @@ mod tests {
 
         assert_eq!(state.clients.len(), 0);
         assert_eq!(state.subscriptions.count(), 0);
+    }
+
+    #[test]
+    fn test_default_is_open_auth() {
+        // By default the server runs in open mode (no auth required).
+        let config = ServerConfig::default();
+        assert!(!config.auth.require_auth);
+        let principal = config
+            .auth
+            .authenticate(None)
+            .expect("open mode accepts anonymous");
+        assert_eq!(principal.role, Role::Admin);
+    }
+
+    #[test]
+    fn test_builder_add_token_enables_auth() {
+        let server = ServerBuilder::new()
+            .add_token("secret", "svc", Role::Subscriber)
+            .build();
+        assert!(server.state.config.auth.require_auth);
+        assert_eq!(server.state.config.auth.token_count(), 1);
+
+        // A valid token authenticates to the configured role...
+        let principal = server
+            .state
+            .config
+            .auth
+            .authenticate(Some("secret"))
+            .expect("valid token");
+        assert_eq!(principal.role, Role::Subscriber);
+        // ...and a ReadOnly principal cannot subscribe.
+        let read_only = AuthPrincipal::new("guest", Role::ReadOnly);
+        assert!(matches!(
+            read_only.authorize(Role::Subscriber),
+            Err(Error::Authorization(_))
+        ));
     }
 }

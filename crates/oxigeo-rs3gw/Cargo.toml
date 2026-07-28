@@ -46,9 +46,6 @@ bytes.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 async-trait = { workspace = true, optional = true }
 
-# Futures for async streams
-futures = { workspace = true }
-
 # LRU cache for tile caching
 moka = { workspace = true }
 

@@ -530,95 +530,161 @@ impl FeatureCollection {
 
 // Helper functions
 
+/// Serializes a single core coordinate to a GeoJSON position array,
+/// preserving the Z ordinate when present.
+fn coord_to_json(c: &CoreCoord) -> JsonValue {
+    let arr = if c.has_z() {
+        vec![c.x, c.y, c.z.unwrap_or(0.0)]
+    } else {
+        vec![c.x, c.y]
+    };
+    JsonValue::Array(arr.into_iter().map(JsonValue::from).collect())
+}
+
+/// Serializes a line/ring's coordinates to a GeoJSON array of positions.
+fn linestring_coords_to_json(ls: &LineString) -> JsonValue {
+    JsonValue::Array(ls.coords.iter().map(coord_to_json).collect())
+}
+
+/// Serializes a polygon's rings (exterior first, then holes) to a GeoJSON
+/// array of linear rings.
+fn polygon_coords_to_json(p: &Polygon) -> JsonValue {
+    let mut rings = Vec::with_capacity(1 + p.interiors.len());
+    rings.push(linestring_coords_to_json(&p.exterior));
+    for hole in &p.interiors {
+        rings.push(linestring_coords_to_json(hole));
+    }
+    JsonValue::Array(rings)
+}
+
+/// Builds a `{ "type": ty, "coordinates": coords }` GeoJSON object.
+fn typed_geometry(ty: &str, coords: JsonValue) -> JsonValue {
+    let mut obj = serde_json::Map::new();
+    obj.insert("type".to_string(), JsonValue::String(ty.to_string()));
+    obj.insert("coordinates".to_string(), coords);
+    JsonValue::Object(obj)
+}
+
 fn geometry_to_geojson(geom: &Geometry) -> Result<JsonValue> {
     match geom {
-        Geometry::Point(p) => {
-            let coord = p.coord;
-            let mut obj = serde_json::Map::new();
-            obj.insert("type".to_string(), JsonValue::String("Point".to_string()));
-            let coords = if coord.has_z() {
-                vec![coord.x, coord.y, coord.z.unwrap_or(0.0)]
-            } else {
-                vec![coord.x, coord.y]
-            };
-            obj.insert(
-                "coordinates".to_string(),
-                JsonValue::Array(coords.into_iter().map(JsonValue::from).collect()),
+        Geometry::Point(p) => Ok(typed_geometry("Point", coord_to_json(&p.coord))),
+        Geometry::LineString(ls) => Ok(typed_geometry("LineString", linestring_coords_to_json(ls))),
+        Geometry::Polygon(p) => Ok(typed_geometry("Polygon", polygon_coords_to_json(p))),
+        Geometry::MultiPoint(mp) => {
+            let coords = JsonValue::Array(
+                mp.points
+                    .iter()
+                    .map(|pt| coord_to_json(&pt.coord))
+                    .collect(),
             );
-            Ok(JsonValue::Object(obj))
+            Ok(typed_geometry("MultiPoint", coords))
         }
-        Geometry::LineString(ls) => {
+        Geometry::MultiLineString(mls) => {
+            let coords = JsonValue::Array(
+                mls.line_strings
+                    .iter()
+                    .map(linestring_coords_to_json)
+                    .collect(),
+            );
+            Ok(typed_geometry("MultiLineString", coords))
+        }
+        Geometry::MultiPolygon(mp) => {
+            let coords = JsonValue::Array(mp.polygons.iter().map(polygon_coords_to_json).collect());
+            Ok(typed_geometry("MultiPolygon", coords))
+        }
+        Geometry::GeometryCollection(gc) => {
+            let geometries: Result<Vec<JsonValue>> =
+                gc.geometries.iter().map(geometry_to_geojson).collect();
             let mut obj = serde_json::Map::new();
             obj.insert(
                 "type".to_string(),
-                JsonValue::String("LineString".to_string()),
+                JsonValue::String("GeometryCollection".to_string()),
             );
-            let coords: Vec<JsonValue> = ls
-                .coords
-                .iter()
-                .map(|c| {
-                    let arr = if c.has_z() {
-                        vec![c.x, c.y, c.z.unwrap_or(0.0)]
-                    } else {
-                        vec![c.x, c.y]
-                    };
-                    JsonValue::Array(arr.into_iter().map(JsonValue::from).collect())
-                })
-                .collect();
-            obj.insert("coordinates".to_string(), JsonValue::Array(coords));
+            obj.insert("geometries".to_string(), JsonValue::Array(geometries?));
             Ok(JsonValue::Object(obj))
         }
-        Geometry::Polygon(p) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("type".to_string(), JsonValue::String("Polygon".to_string()));
-
-            let mut rings = Vec::new();
-
-            // Exterior ring
-            let exterior_coords: Vec<JsonValue> = p
-                .exterior
-                .coords
-                .iter()
-                .map(|c| {
-                    let arr = if c.has_z() {
-                        vec![c.x, c.y, c.z.unwrap_or(0.0)]
-                    } else {
-                        vec![c.x, c.y]
-                    };
-                    JsonValue::Array(arr.into_iter().map(JsonValue::from).collect())
-                })
-                .collect();
-            rings.push(JsonValue::Array(exterior_coords));
-
-            // Interior rings (holes)
-            for hole in &p.interiors {
-                let hole_coords: Vec<JsonValue> = hole
-                    .coords
-                    .iter()
-                    .map(|c| {
-                        let arr = if c.has_z() {
-                            vec![c.x, c.y, c.z.unwrap_or(0.0)]
-                        } else {
-                            vec![c.x, c.y]
-                        };
-                        JsonValue::Array(arr.into_iter().map(JsonValue::from).collect())
-                    })
-                    .collect();
-                rings.push(JsonValue::Array(hole_coords));
-            }
-
-            obj.insert("coordinates".to_string(), JsonValue::Array(rings));
-            Ok(JsonValue::Object(obj))
-        }
-        _ => Err(NodeError {
-            code: "NOT_IMPLEMENTED".to_string(),
-            message: "GeoJSON conversion not implemented for this geometry type".to_string(),
-        }
-        .into()),
     }
 }
 
+/// Parses a single GeoJSON position array (`[x, y]` or `[x, y, z]`) into a
+/// core coordinate. Positions with more than three ordinates keep only x/y/z
+/// (the GeoJSON spec permits extra ordinates whose meaning is undefined).
+fn coord_from_json(value: &JsonValue) -> Result<CoreCoord> {
+    let arr = value.as_array().ok_or_else(|| NodeError {
+        code: "INVALID_GEOJSON".to_string(),
+        message: "Position must be an array of numbers".to_string(),
+    })?;
+
+    if arr.len() < 2 {
+        return Err(NodeError {
+            code: "INVALID_COORDINATES".to_string(),
+            message: "Position must have at least 2 ordinates".to_string(),
+        }
+        .into());
+    }
+
+    let x = arr[0].as_f64().ok_or_else(|| NodeError {
+        code: "INVALID_COORDINATES".to_string(),
+        message: "Invalid x coordinate".to_string(),
+    })?;
+
+    let y = arr[1].as_f64().ok_or_else(|| NodeError {
+        code: "INVALID_COORDINATES".to_string(),
+        message: "Invalid y coordinate".to_string(),
+    })?;
+
+    if arr.len() > 2 {
+        let z = arr[2].as_f64().ok_or_else(|| NodeError {
+            code: "INVALID_COORDINATES".to_string(),
+            message: "Invalid z coordinate".to_string(),
+        })?;
+        Ok(CoreCoord::new_3d(x, y, z))
+    } else {
+        Ok(CoreCoord::new_2d(x, y))
+    }
+}
+
+/// Parses a GeoJSON array of positions into a vector of core coordinates.
+fn coords_from_json(value: &JsonValue) -> Result<Vec<CoreCoord>> {
+    let arr = value.as_array().ok_or_else(|| NodeError {
+        code: "INVALID_GEOJSON".to_string(),
+        message: "Expected an array of positions".to_string(),
+    })?;
+    arr.iter().map(coord_from_json).collect()
+}
+
+/// Parses a GeoJSON linear-ring / line array into a core `LineString`.
+fn linestring_from_json(value: &JsonValue) -> Result<LineString> {
+    let coords = coords_from_json(value)?;
+    LineString::new(coords).to_napi()
+}
+
+/// Parses a GeoJSON polygon coordinate array (an array of linear rings, the
+/// first being the exterior and the rest holes) into a core `Polygon`.
+fn polygon_from_json(value: &JsonValue) -> Result<Polygon> {
+    let rings = value.as_array().ok_or_else(|| NodeError {
+        code: "INVALID_GEOJSON".to_string(),
+        message: "Polygon coordinates must be an array of rings".to_string(),
+    })?;
+
+    let mut ring_iter = rings.iter();
+    let exterior_json = ring_iter.next().ok_or_else(|| NodeError {
+        code: "INVALID_GEOJSON".to_string(),
+        message: "Polygon must have at least one (exterior) ring".to_string(),
+    })?;
+    let exterior = linestring_from_json(exterior_json)?;
+
+    let mut holes = Vec::new();
+    for hole_json in ring_iter {
+        holes.push(linestring_from_json(hole_json)?);
+    }
+
+    Polygon::new(exterior, holes).to_napi()
+}
+
 fn geometry_from_geojson(value: &JsonValue) -> Result<Geometry> {
+    use oxigeo_core::vector::{MultiLineString, MultiPoint, MultiPolygon};
+
     let obj = value.as_object().ok_or_else(|| NodeError {
         code: "INVALID_GEOJSON".to_string(),
         message: "Geometry must be an object".to_string(),
@@ -632,6 +698,22 @@ fn geometry_from_geojson(value: &JsonValue) -> Result<Geometry> {
             message: "Missing geometry 'type' field".to_string(),
         })?;
 
+    // GeometryCollection carries "geometries" rather than "coordinates"; every
+    // other type is coordinate-based, so only fetch "coordinates" for those.
+    if geom_type == "GeometryCollection" {
+        let geometries = obj
+            .get("geometries")
+            .and_then(|g| g.as_array())
+            .ok_or_else(|| NodeError {
+                code: "INVALID_GEOJSON".to_string(),
+                message: "GeometryCollection must have a 'geometries' array".to_string(),
+            })?;
+        let parsed: Result<Vec<Geometry>> = geometries.iter().map(geometry_from_geojson).collect();
+        return Ok(Geometry::GeometryCollection(
+            oxigeo_core::vector::GeometryCollection::new(parsed?),
+        ));
+    }
+
     let coords = obj.get("coordinates").ok_or_else(|| NodeError {
         code: "INVALID_GEOJSON".to_string(),
         message: "Missing 'coordinates' field".to_string(),
@@ -639,44 +721,38 @@ fn geometry_from_geojson(value: &JsonValue) -> Result<Geometry> {
 
     match geom_type {
         "Point" => {
-            let arr = coords.as_array().ok_or_else(|| NodeError {
-                code: "INVALID_GEOJSON".to_string(),
-                message: "Point coordinates must be an array".to_string(),
-            })?;
-
-            if arr.len() < 2 {
-                return Err(NodeError {
-                    code: "INVALID_COORDINATES".to_string(),
-                    message: "Point must have at least 2 coordinates".to_string(),
-                }
-                .into());
-            }
-
-            let x = arr[0].as_f64().ok_or_else(|| NodeError {
-                code: "INVALID_COORDINATES".to_string(),
-                message: "Invalid x coordinate".to_string(),
-            })?;
-
-            let y = arr[1].as_f64().ok_or_else(|| NodeError {
-                code: "INVALID_COORDINATES".to_string(),
-                message: "Invalid y coordinate".to_string(),
-            })?;
-
-            let coord = if arr.len() > 2 {
-                let z = arr[2].as_f64().ok_or_else(|| NodeError {
-                    code: "INVALID_COORDINATES".to_string(),
-                    message: "Invalid z coordinate".to_string(),
-                })?;
-                CoreCoord::new_3d(x, y, z)
-            } else {
-                CoreCoord::new_2d(x, y)
-            };
-
+            let coord = coord_from_json(coords)?;
             Ok(Geometry::Point(Point::from_coord(coord)))
         }
+        "LineString" => Ok(Geometry::LineString(linestring_from_json(coords)?)),
+        "Polygon" => Ok(Geometry::Polygon(polygon_from_json(coords)?)),
+        "MultiPoint" => {
+            let coords = coords_from_json(coords)?;
+            let points = coords.into_iter().map(Point::from_coord).collect();
+            Ok(Geometry::MultiPoint(MultiPoint::new(points)))
+        }
+        "MultiLineString" => {
+            let arr = coords.as_array().ok_or_else(|| NodeError {
+                code: "INVALID_GEOJSON".to_string(),
+                message: "MultiLineString coordinates must be an array".to_string(),
+            })?;
+            let line_strings: Result<Vec<LineString>> =
+                arr.iter().map(linestring_from_json).collect();
+            Ok(Geometry::MultiLineString(MultiLineString::new(
+                line_strings?,
+            )))
+        }
+        "MultiPolygon" => {
+            let arr = coords.as_array().ok_or_else(|| NodeError {
+                code: "INVALID_GEOJSON".to_string(),
+                message: "MultiPolygon coordinates must be an array".to_string(),
+            })?;
+            let polygons: Result<Vec<Polygon>> = arr.iter().map(polygon_from_json).collect();
+            Ok(Geometry::MultiPolygon(MultiPolygon::new(polygons?)))
+        }
         _ => Err(NodeError {
-            code: "NOT_IMPLEMENTED".to_string(),
-            message: format!("Geometry type '{}' not yet supported", geom_type),
+            code: "INVALID_GEOJSON".to_string(),
+            message: format!("Unknown geometry type '{}'", geom_type),
         }
         .into()),
     }
@@ -716,5 +792,162 @@ impl Clone for Feature {
             properties: self.properties.clone(),
             id: self.id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Parses a GeoJSON geometry string into a core `Geometry`.
+    fn parse(geojson: &str) -> Geometry {
+        let value: JsonValue = serde_json::from_str(geojson).expect("valid json");
+        geometry_from_geojson(&value).expect("geometry should parse")
+    }
+
+    #[test]
+    fn parses_linestring() {
+        let geom = parse(r#"{"type":"LineString","coordinates":[[0,0],[1,1],[2,3]]}"#);
+        match geom {
+            Geometry::LineString(ls) => {
+                assert_eq!(ls.coords.len(), 3);
+                assert_eq!(ls.coords[2].x, 2.0);
+                assert_eq!(ls.coords[2].y, 3.0);
+            }
+            other => panic!("expected LineString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_polygon_with_hole() {
+        let geom = parse(
+            r#"{"type":"Polygon","coordinates":[
+                [[0,0],[10,0],[10,10],[0,10],[0,0]],
+                [[2,2],[4,2],[4,4],[2,4],[2,2]]
+            ]}"#,
+        );
+        match geom {
+            Geometry::Polygon(p) => {
+                assert_eq!(p.exterior.coords.len(), 5);
+                assert_eq!(p.interiors.len(), 1);
+                assert_eq!(p.interiors[0].coords.len(), 5);
+            }
+            other => panic!("expected Polygon, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_multipoint() {
+        let geom = parse(r#"{"type":"MultiPoint","coordinates":[[0,0],[1,1]]}"#);
+        match geom {
+            Geometry::MultiPoint(mp) => assert_eq!(mp.points.len(), 2),
+            other => panic!("expected MultiPoint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_multilinestring() {
+        let geom = parse(
+            r#"{"type":"MultiLineString","coordinates":[[[0,0],[1,1]],[[2,2],[3,3],[4,4]]]}"#,
+        );
+        match geom {
+            Geometry::MultiLineString(mls) => {
+                assert_eq!(mls.line_strings.len(), 2);
+                assert_eq!(mls.line_strings[1].coords.len(), 3);
+            }
+            other => panic!("expected MultiLineString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_multipolygon() {
+        let geom = parse(
+            r#"{"type":"MultiPolygon","coordinates":[
+                [[[0,0],[1,0],[1,1],[0,0]]],
+                [[[5,5],[6,5],[6,6],[5,5]]]
+            ]}"#,
+        );
+        match geom {
+            Geometry::MultiPolygon(mp) => assert_eq!(mp.polygons.len(), 2),
+            other => panic!("expected MultiPolygon, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_geometry_collection() {
+        let geom = parse(
+            r#"{"type":"GeometryCollection","geometries":[
+                {"type":"Point","coordinates":[0,0]},
+                {"type":"LineString","coordinates":[[0,0],[1,1]]}
+            ]}"#,
+        );
+        match geom {
+            Geometry::GeometryCollection(gc) => {
+                assert_eq!(gc.geometries.len(), 2);
+                assert!(matches!(gc.geometries[0], Geometry::Point(_)));
+                assert!(matches!(gc.geometries[1], Geometry::LineString(_)));
+            }
+            other => panic!("expected GeometryCollection, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_3d_point() {
+        let geom = parse(r#"{"type":"Point","coordinates":[1,2,3]}"#);
+        match geom {
+            Geometry::Point(p) => {
+                assert!(p.coord.has_z());
+                assert_eq!(p.coord.z, Some(3.0));
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn roundtrips_all_geometry_types_through_geojson() {
+        let cases = [
+            r#"{"type":"Point","coordinates":[1.0,2.0]}"#,
+            r#"{"type":"LineString","coordinates":[[0.0,0.0],[1.0,1.0]]}"#,
+            r#"{"type":"Polygon","coordinates":[[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,0.0]]]}"#,
+            r#"{"type":"MultiPoint","coordinates":[[0.0,0.0],[1.0,1.0]]}"#,
+            r#"{"type":"MultiLineString","coordinates":[[[0.0,0.0],[1.0,1.0]]]}"#,
+            r#"{"type":"MultiPolygon","coordinates":[[[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,0.0]]]]}"#,
+        ];
+
+        for original in cases {
+            let geom = parse(original);
+            let json = geometry_to_geojson(&geom).expect("serialize");
+            let reparsed = geometry_from_geojson(&json).expect("reparse");
+            assert_eq!(
+                geom, reparsed,
+                "geometry did not survive a to/from GeoJSON round-trip: {original}"
+            );
+        }
+    }
+
+    #[test]
+    fn feature_collection_reads_polygon_features() {
+        // Regression: reading a practical polygon-based FeatureCollection used
+        // to throw NOT_IMPLEMENTED on the first non-Point feature.
+        let fc = FeatureCollection::from_geojson(
+            r#"{"type":"FeatureCollection","features":[
+                {"type":"Feature","properties":{"name":"parcel"},
+                 "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}
+            ]}"#
+            .to_string(),
+        )
+        .expect("feature collection should parse polygon geometry");
+        assert_eq!(fc.count(), 1);
+        let feature = fc.get_feature(0).expect("feature present");
+        let geom = feature.get_geometry().expect("geometry present");
+        assert_eq!(geom.geometry_type(), "Polygon");
+    }
+
+    #[test]
+    fn rejects_unknown_geometry_type() {
+        let value: JsonValue =
+            serde_json::from_str(r#"{"type":"Nonsense","coordinates":[]}"#).unwrap();
+        assert!(geometry_from_geojson(&value).is_err());
     }
 }

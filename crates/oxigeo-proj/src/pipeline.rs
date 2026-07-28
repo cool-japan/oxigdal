@@ -21,10 +21,16 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
+use crate::geoid::GeoidGrid;
+use crate::grid_shift::ntv2::NtV2Grid;
+use crate::pipeline_grid::{apply_hgridshift, apply_vgridshift, apply_vgridshift_2d};
 use crate::proj_string::ProjString;
 use crate::transform::{Coordinate, Coordinate3D};
+
+pub use crate::pipeline_grid::GridRegistry;
 
 /// Type alias for a single parsed pipeline step: `(params map, per-step-inverse flag)`.
 pub type ParsedStep = (HashMap<String, Option<String>>, bool);
@@ -74,7 +80,7 @@ impl Unit {
     pub fn to_radians_per_unit(self) -> f64 {
         match self {
             Self::Rad => 1.0,
-            Self::Deg => std::f64::consts::PI / 180.0,
+            Self::Deg => core::f64::consts::PI / 180.0,
             // Linear units: return 1.0 as sentinel
             Self::M | Self::Km | Self::Ft | Self::USFt => 1.0,
         }
@@ -364,13 +370,34 @@ impl PipelineStep {
     }
 
     /// Apply this step to a coordinate, respecting the `inverse` flag.
+    ///
+    /// Grid-shift steps ([`StepKind::Hgridshift`] / [`StepKind::Vgridshift`])
+    /// resolve their grid against an **empty** registry here, so they error
+    /// unless applied through [`Pipeline::transform`] on a pipeline that had
+    /// the grid registered via [`Pipeline::with_hgrid`] /
+    /// [`Pipeline::with_vgrid`]. Use
+    /// [`apply_with_grids`](Self::apply_with_grids) to supply a registry.
     pub fn apply(&self, coord: &Coordinate) -> Result<Coordinate> {
-        apply_step_kind(&self.kind, coord, self.inverse)
+        apply_step_kind(&self.kind, coord, self.inverse, &GridRegistry::default())
+    }
+
+    /// Apply this step to a coordinate using the supplied grid registry.
+    pub fn apply_with_grids(&self, coord: &Coordinate, grids: &GridRegistry) -> Result<Coordinate> {
+        apply_step_kind(&self.kind, coord, self.inverse, grids)
     }
 
     /// Apply this step to a coordinate with an additional inversion on top of `self.inverse`.
     pub fn apply_flipped(&self, coord: &Coordinate) -> Result<Coordinate> {
-        apply_step_kind(&self.kind, coord, !self.inverse)
+        apply_step_kind(&self.kind, coord, !self.inverse, &GridRegistry::default())
+    }
+
+    /// Like [`apply_flipped`](Self::apply_flipped) but with a grid registry.
+    pub fn apply_flipped_with_grids(
+        &self,
+        coord: &Coordinate,
+        grids: &GridRegistry,
+    ) -> Result<Coordinate> {
+        apply_step_kind(&self.kind, coord, !self.inverse, grids)
     }
 
     /// Apply this step to a 3-D coordinate, respecting the `inverse` flag.
@@ -381,13 +408,31 @@ impl PipelineStep {
     /// `(X, Y)` plane only and passes `Z` through unchanged — see
     /// `apply_step_kind_3d` for the exact scope.
     pub fn apply_3d(&self, coord: &Coordinate3D) -> Result<Coordinate3D> {
-        apply_step_kind_3d(&self.kind, coord, self.inverse)
+        apply_step_kind_3d(&self.kind, coord, self.inverse, &GridRegistry::default())
+    }
+
+    /// Apply this step to a 3-D coordinate using the supplied grid registry.
+    pub fn apply_3d_with_grids(
+        &self,
+        coord: &Coordinate3D,
+        grids: &GridRegistry,
+    ) -> Result<Coordinate3D> {
+        apply_step_kind_3d(&self.kind, coord, self.inverse, grids)
     }
 
     /// Apply this step to a 3-D coordinate with an additional inversion on
     /// top of `self.inverse`.
     pub fn apply_flipped_3d(&self, coord: &Coordinate3D) -> Result<Coordinate3D> {
-        apply_step_kind_3d(&self.kind, coord, !self.inverse)
+        apply_step_kind_3d(&self.kind, coord, !self.inverse, &GridRegistry::default())
+    }
+
+    /// Like [`apply_flipped_3d`](Self::apply_flipped_3d) but with a grid registry.
+    pub fn apply_flipped_3d_with_grids(
+        &self,
+        coord: &Coordinate3D,
+        grids: &GridRegistry,
+    ) -> Result<Coordinate3D> {
+        apply_step_kind_3d(&self.kind, coord, !self.inverse, grids)
     }
 }
 
@@ -424,6 +469,9 @@ pub struct Pipeline {
     /// If `true`, steps are executed in reverse order and each step's
     /// `inverse` flag is logically flipped.
     inverse: bool,
+    /// Grids available to `hgridshift` / `vgridshift` steps. Populated via
+    /// [`Pipeline::with_hgrid`] / [`Pipeline::with_vgrid`].
+    grids: GridRegistry,
 }
 
 impl Default for Pipeline {
@@ -438,7 +486,45 @@ impl Pipeline {
         Self {
             steps: Vec::new(),
             inverse: false,
+            grids: GridRegistry::default(),
         }
+    }
+
+    /// Registers a horizontal NTv2 grid so that `hgridshift` steps referencing
+    /// `name` become executable (builder method).
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use oxigeo_proj::{Pipeline, NtV2Grid};
+    /// # fn demo(gsb_bytes: &[u8]) -> oxigeo_proj::Result<()> {
+    /// let grid = Arc::new(NtV2Grid::from_bytes(gsb_bytes)?);
+    /// let pipeline = Pipeline::from_proj_string(
+    ///     "+proj=pipeline +step +proj=hgridshift +grids=BETA2007.gsb",
+    /// )?
+    /// .with_hgrid("BETA2007.gsb", grid);
+    /// # let _ = pipeline; Ok(()) }
+    /// ```
+    pub fn with_hgrid(mut self, name: impl Into<String>, grid: Arc<NtV2Grid>) -> Self {
+        self.grids.insert_hgrid(name, grid);
+        self
+    }
+
+    /// Registers a vertical (geoid-separation) grid so that `vgridshift` steps
+    /// referencing `name` become executable (builder method).
+    pub fn with_vgrid(mut self, name: impl Into<String>, grid: Arc<GeoidGrid>) -> Self {
+        self.grids.insert_vgrid(name, grid);
+        self
+    }
+
+    /// Replaces the pipeline's entire grid registry (builder method).
+    pub fn with_grids(mut self, grids: GridRegistry) -> Self {
+        self.grids = grids;
+        self
+    }
+
+    /// Returns a reference to this pipeline's grid registry.
+    pub fn grids(&self) -> &GridRegistry {
+        &self.grids
     }
 
     /// Appends a forward step to the pipeline (builder method).
@@ -497,7 +583,7 @@ impl Pipeline {
             // Reverse iteration, flip each step's direction
             for (idx, step) in self.steps.iter().enumerate().rev() {
                 current = step
-                    .apply_flipped(&current)
+                    .apply_flipped_with_grids(&current, &self.grids)
                     .map_err(|e| Error::PipelineStepError {
                         step: idx,
                         inner: format!("{}", e),
@@ -505,9 +591,11 @@ impl Pipeline {
             }
         } else {
             for (idx, step) in self.steps.iter().enumerate() {
-                current = step.apply(&current).map_err(|e| Error::PipelineStepError {
-                    step: idx,
-                    inner: format!("{}", e),
+                current = step.apply_with_grids(&current, &self.grids).map_err(|e| {
+                    Error::PipelineStepError {
+                        step: idx,
+                        inner: format!("{}", e),
+                    }
                 })?;
             }
         }
@@ -553,17 +641,17 @@ impl Pipeline {
 
         if self.inverse {
             for (idx, step) in self.steps.iter().enumerate().rev() {
-                current =
-                    step.apply_flipped_3d(&current)
-                        .map_err(|e| Error::PipelineStepError {
-                            step: idx,
-                            inner: format!("{}", e),
-                        })?;
+                current = step
+                    .apply_flipped_3d_with_grids(&current, &self.grids)
+                    .map_err(|e| Error::PipelineStepError {
+                        step: idx,
+                        inner: format!("{}", e),
+                    })?;
             }
         } else {
             for (idx, step) in self.steps.iter().enumerate() {
                 current = step
-                    .apply_3d(&current)
+                    .apply_3d_with_grids(&current, &self.grids)
                     .map_err(|e| Error::PipelineStepError {
                         step: idx,
                         inner: format!("{}", e),
@@ -644,7 +732,12 @@ fn detect_global_inv(s: &str) -> bool {
 }
 
 /// Apply a `StepKind` to a coordinate, either forward or inverse.
-fn apply_step_kind(kind: &StepKind, coord: &Coordinate, inverse: bool) -> Result<Coordinate> {
+fn apply_step_kind(
+    kind: &StepKind,
+    coord: &Coordinate,
+    inverse: bool,
+    grids: &GridRegistry,
+) -> Result<Coordinate> {
     match kind {
         StepKind::Passthrough => Ok(*coord),
 
@@ -658,17 +751,17 @@ fn apply_step_kind(kind: &StepKind, coord: &Coordinate, inverse: bool) -> Result
 
         StepKind::Cart { ellipsoid } => apply_cart(coord, ellipsoid, inverse),
 
-        StepKind::Vgridshift { grid_id, .. } => Err(Error::PipelineParseError(format!(
-            "vgridshift: grid '{}' not loaded",
-            grid_id
-        ))),
+        StepKind::Vgridshift { grid_id, .. } => {
+            // Vertical grid shift only affects the height (Z); a 2-D coordinate
+            // carries no height, so the horizontal position passes through —
+            // but the referenced grid must still be loaded (an unloaded grid is
+            // an error, not a silent no-op). The actual height correction
+            // happens in the 3-D path (`apply_step_kind_3d`).
+            apply_vgridshift_2d(coord, grid_id, grids)
+        }
 
-        StepKind::Hgridshift { grid_id, .. } => {
-            // Full implementation deferred — NTv2 grid parser available in grid_shift mod
-            Err(Error::PipelineParseError(format!(
-                "hgridshift: grid '{}' not loaded",
-                grid_id
-            )))
+        StepKind::Hgridshift { grid_id, direction } => {
+            apply_hgridshift(coord, grid_id, direction, inverse, grids)
         }
 
         StepKind::HelmertTemporal {
@@ -690,6 +783,7 @@ fn apply_step_kind_3d(
     kind: &StepKind,
     coord: &Coordinate3D,
     inverse: bool,
+    grids: &GridRegistry,
 ) -> Result<Coordinate3D> {
     match kind {
         StepKind::Cart { ellipsoid } => apply_cart_3d(coord, ellipsoid, inverse),
@@ -702,9 +796,16 @@ fn apply_step_kind_3d(
             epoch,
         } => apply_helmert_temporal_3d(coord, params, rates, *epoch, inverse),
 
+        // Vertical grid shift is genuinely height-aware: it modifies Z using
+        // the geoid separation at (lon, lat) and passes the horizontal
+        // position through unchanged.
+        StepKind::Vgridshift { grid_id, direction } => {
+            apply_vgridshift(coord, grid_id, direction, inverse, grids)
+        }
+
         _ => {
             let coord_2d = coord.to_2d();
-            let result_2d = apply_step_kind(kind, &coord_2d, inverse)?;
+            let result_2d = apply_step_kind(kind, &coord_2d, inverse, grids)?;
             Ok(Coordinate3D::new(result_2d.x, result_2d.y, coord.z))
         }
     }
@@ -860,7 +961,7 @@ fn apply_project(coord: &Coordinate, proj_string: &str, inverse: bool) -> Result
 /// vanish), yielding an exact closed-form inverse.
 fn apply_helmert(coord: &Coordinate, params: &HelmertParams, inverse: bool) -> Result<Coordinate> {
     // Arcseconds → radians: 1 arcsec = π / 648 000 rad.
-    let arc_sec_to_rad = std::f64::consts::PI / 648_000.0;
+    let arc_sec_to_rad = core::f64::consts::PI / 648_000.0;
 
     // Raw rotation parameters in radians.
     let drx_raw = params.rx * arc_sec_to_rad;
@@ -1061,7 +1162,7 @@ fn apply_helmert_3d(
     params: &HelmertParams,
     inverse: bool,
 ) -> Result<Coordinate3D> {
-    let arc_sec_to_rad = std::f64::consts::PI / 648_000.0;
+    let arc_sec_to_rad = core::f64::consts::PI / 648_000.0;
 
     let drx_raw = params.rx * arc_sec_to_rad;
     let dry_raw = params.ry * arc_sec_to_rad;
@@ -1789,7 +1890,7 @@ mod tests {
     #[test]
     fn test_unit_radians_per_unit() {
         assert!((Unit::Rad.to_radians_per_unit() - 1.0).abs() < 1e-15);
-        let deg_rad = std::f64::consts::PI / 180.0;
+        let deg_rad = core::f64::consts::PI / 180.0;
         assert!((Unit::Deg.to_radians_per_unit() - deg_rad).abs() < 1e-20);
     }
 
@@ -1868,4 +1969,8 @@ mod tests {
         let (_params, inv) = &steps[0];
         assert!(inv);
     }
+
+    // Grid-shift integration tests live in `tests/pipeline_gridshift.rs`
+    // (they exercise only the public `Pipeline::with_hgrid`/`with_vgrid` API)
+    // to keep this file under the 2000-line refactoring limit.
 }

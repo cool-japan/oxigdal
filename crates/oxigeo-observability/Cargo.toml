@@ -25,7 +25,6 @@ opentelemetry-otlp = { workspace = true, optional = true }
 # Tracing integration
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry.workspace = true
 
 # Metrics
 prometheus.workspace = true
@@ -46,9 +45,6 @@ chrono = { workspace = true }
 # HTTP client for exporters (optional: only needed for http-exporter feature)
 reqwest = { workspace = true, features = ["json"], optional = true }
 
-# Statistics for anomaly detection
-statrs.workspace = true
-
 # Parking lot for better synchronization
 parking_lot = { workspace = true }
 
@@ -63,6 +59,12 @@ fastrand = { workspace = true }
 
 # Hostname
 hostname = { workspace = true }
+
+# Regex matching for alert silence/label-match rules
+regex = { workspace = true }
+
+# Real disk-space health checks (Disks::new_with_refreshed_list)
+sysinfo = { workspace = true }
 
 [features]
 default = ["otlp"]

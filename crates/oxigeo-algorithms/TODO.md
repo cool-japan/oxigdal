@@ -1,7 +1,7 @@
 # TODO: oxigeo-algorithms
 
 > **Purpose:** High-performance SIMD-optimized raster and vector algorithms for OxiGeo — Pure Rust geospatial processing.
-> **Status (2026-05-16):** 63,448 Rust LoC · 1,478 tests · 3 real stubs
+> **Status (2026-07-28):** 63,448 Rust LoC · 1816 tests · 0 open items on this list (all High/Medium/Low priority entries below are `[x]`)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
@@ -127,4 +127,4 @@
   - **Tests:** 80 tests (12 union_find + 25 boundary + 43 polygonize): single pixel, uniform, checkerboard (4-conn=9 components, 8-conn=2), donut with hole (verifies interior ring), multi-component, NoData (NaN + custom), GeoTransform, 500x500 stress test, min_area filter, Douglas-Peucker simplify, 1xN/Nx1 grids, RasterBuffer integration.
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

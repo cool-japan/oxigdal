@@ -14,13 +14,18 @@ keywords = ["grib", "meteorology", "weather", "forecast", "gdal"]
 categories = ["science", "parser-implementations", "encoding"]
 
 [features]
-default = ["std", "grib1", "grib2"]
+default = ["std", "grib1", "grib2", "jpeg2000"]
 std = ["oxigeo-core/std", "thiserror/std", "serde/std"]
 alloc = []
 
 # GRIB format version support
 grib1 = []
 grib2 = []
+
+# DRT 5.40 JPEG2000-packed data decoding via the Pure-Rust oxigeo-jpeg2000
+# driver. Requires std (the codestream parser uses std::io). When disabled,
+# DRT 5.40 messages return a typed error instead of being decoded.
+jpeg2000 = ["std", "grib2", "dep:oxigeo-jpeg2000"]
 
 # Advanced features
 # Simple packing (always enabled)
@@ -32,20 +37,14 @@ async = ["oxigeo-core/async", "dep:tokio"]
 
 [dependencies]
 oxigeo-core = { workspace = true, default-features = true }
+oxigeo-jpeg2000 = { workspace = true, optional = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
-num-traits = { workspace = true }
 chrono = { workspace = true }
 
 # Async
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
-
-# Bit manipulation for packed data
-bytemuck = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

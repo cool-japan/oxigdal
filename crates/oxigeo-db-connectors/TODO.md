@@ -1,7 +1,7 @@
 # TODO: oxigeo-db-connectors
 
-> **Purpose:** Multi-backend spatial database connectors — MySQL/MariaDB, SQLite/SpatiaLite, MongoDB, ClickHouse, TimescaleDB, Cassandra/ScyllaDB — sharing a unified `DatabaseConnector` trait.
-> **Status (2026-05-16):** 5,697 LoC (src) · 43 tests (16 inline + 27 in tests/) · 0 real-code stubs; many partial-coverage modules
+> **Purpose:** Multi-backend spatial database connectors — MySQL/MariaDB, SQLite (pure-Rust, no SpatiaLite), MongoDB, ClickHouse, TimescaleDB, Cassandra/ScyllaDB — sharing a unified `DatabaseConnector` trait.
+> **Status (2026-07-28):** 4,522 LoC (src) · 53 tests all-features / 36 default-features · 0 real-code stubs; many partial-coverage modules
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -23,14 +23,10 @@
   - **Risk:** Some backends (Cassandra/Scylla) handle pooling internally and resist external wrapping; expose `stats_only` mode in those cases.
   - **Prerequisites:** None.
 
-- [ ] SpatiaLite extension auto-load with multiple search paths (currently silent failure).
-  - **Verified gap:** `src/sqlite/mod.rs:82-89` — when `config.spatialite == true`, the code calls `InitSpatialMetadata(1)` directly, but skips the `load_extension('mod_spatialite')` step that actually loads the SpatiaLite shared library. Comment at line 84-86 says "may fail if SpatiaLite is not installed / We ignore errors" — silently leaves the connector in plain-SQLite mode without surfacing the failure.
-  - **Goal:** Try `conn.load_extension("mod_spatialite", None)` (and platform-specific names: `libspatialite`, `mod_spatialite.dylib` on macOS, `mod_spatialite.dll` on Windows). On failure, return `Error::SpatialiteUnavailable(detail)` instead of silently continuing.
-  - **Design:** Build a `["mod_spatialite", "libspatialite", "spatialite"]` candidate list. Use rusqlite `LoadExtensionGuard` for safety (already feature-gated). After load, run `SELECT InitSpatialMetadata(1)` and confirm `geometry_columns` table exists. Add `SqliteConfig::spatialite_required: bool` — if true, hard-error on load failure.
-  - **Files:** `src/sqlite/mod.rs:53-95` (rewrite SpatiaLite branch).
-  - **Tests:** (proposed) `test_spatialite_loads_or_errors_with_required`, `test_spatialite_optional_falls_back_silently`, `test_spatialite_metadata_table_created`.
-  - **Risk:** SpatiaLite is a C dependency (forbidden by default features per COOLJAPAN policy); the `sqlite` feature gate is correct. Ensure CI matrix tests `--no-default-features` builds.
-  - **Prerequisites:** None.
+- [ ] ~~SpatiaLite extension auto-load with multiple search paths~~ — **SUPERSEDED, not applicable.**
+  - **What changed:** the `sqlite` backend was migrated off `rusqlite` entirely onto the pure-Rust `oxisql-sqlite-compat` (limbo engine) — verified via `Cargo.toml:25` (`sqlite = ["dep:oxisql-sqlite-compat", "dep:oxisql-core"]`, no `rusqlite` anywhere in the manifest) and `src/sqlite/mod.rs:1-4,21-22,124-138`, which now documents `spatialite: bool` as "no-op in pure-Rust mode — always false" and `has_spatialite()` as "Always returns `false` in pure-Rust mode (no SpatiaLite extension support)".
+  - **Why it's not just "done":** the original goal (dynamically load the `mod_spatialite` C shared-library extension via `rusqlite`'s `LoadExtensionGuard`) is architecturally impossible with a pure-Rust SQLite engine — there is no `load_extension` hook for a C `.so`/`.dylib`. The project instead accepted a permanent pure-Rust fallback: spatial tables/queries go through `create_spatial_table`'s own WKT/WKB-based SQL rather than SpatiaLite's native geometry functions.
+  - **If SpatiaLite compatibility is ever required:** it would need a from-scratch pure-Rust reimplementation of the SpatiaLite SQL function surface (`ST_*` UDFs) registered against `oxisql-sqlite-compat`, not extension loading. Not scoped here.
 
 - [ ] WKB/WKT geometry codec shared across non-PostGIS backends.
   - **Goal:** MySQL stores geometries in WKB; SpatiaLite uses its own internal blob; ClickHouse uses `Tuple(Float64, Float64)` for points; MongoDB uses GeoJSON. Provide a single `to_native(geom, backend) → BackendBlob` / `from_native(blob, backend) → Geometry` round-trip.
@@ -86,4 +82,4 @@
 *No prior `[x]` entries — slate was empty.*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: 43→53/36 tests, LoC 5,697→4,522, date bumped; SpatiaLite item marked superseded after confirming the crate migrated from rusqlite to pure-Rust `oxisql-sqlite-compat` — README's "SQLite has a C dependency" / "NOT in default features" claims were also stale and corrected: `sqlite` is pure-Rust and IS a default feature, while `mysql`/`mongodb`/`cassandra` are the non-default C/asm-pulling backends)*

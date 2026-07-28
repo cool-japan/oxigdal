@@ -748,8 +748,12 @@ impl DataCube {
             dims.bands,
         ];
 
-        // Create memory store
+        // Create memory store. `MemoryStore` is a cheap handle over a shared
+        // `Arc<RwLock<..>>` backing map, so cloning it yields a second handle
+        // onto the same storage. We keep one handle here to return to the
+        // caller and hand a clone to the writer; both observe the same data.
         let store = MemoryStore::new();
+        let result_store = store.clone();
 
         // Build temporal metadata attributes
         let mut attrs = serde_json::Map::new();
@@ -891,12 +895,10 @@ impl DataCube {
             dims.time, dims.y, dims.x, dims.bands
         );
 
-        // Get the store back from the writer internals
-        // Since ZarrV3Writer doesn't expose the store, we create a new one from the same Arc
-        // This is a limitation - we need to return the data somehow
-        // For now, return a new empty store as a placeholder
-        // In practice, the store should be returned from the writer
-        Ok(MemoryStore::new())
+        // `result_store` shares the same `Arc`-backed storage that the writer
+        // wrote every chunk and the array/group metadata into, so it now
+        // contains the full exported datacube.
+        Ok(result_store)
     }
 
     /// Load from Zarr v3 format
@@ -1443,6 +1445,53 @@ mod tests {
 
             // Clean up
             let _ = std::fs::remove_dir_all(&temp_dir);
+        }
+
+        #[test]
+        fn test_zarr_memory_roundtrip() {
+            // Regression test: `to_zarr_memory` must return a store that
+            // actually contains the exported data, not an empty placeholder.
+            let original = create_cube_with_varied_data();
+
+            let store = original
+                .to_zarr_memory()
+                .expect("Memory export should succeed");
+
+            // The returned store must be non-empty (the previous placeholder
+            // returned a brand-new empty MemoryStore).
+            assert!(
+                store.len().expect("store len") > 0,
+                "Exported memory store must contain data, not be empty"
+            );
+
+            let loaded = DataCube::from_zarr_memory(store).expect("Memory import should succeed");
+
+            assert_eq!(loaded.dimensions().time, original.dimensions().time);
+            assert_eq!(loaded.dimensions().y, original.dimensions().y);
+            assert_eq!(loaded.dimensions().x, original.dimensions().x);
+            assert_eq!(loaded.dimensions().bands, original.dimensions().bands);
+            assert_eq!(loaded.metadata().band_names, original.metadata().band_names);
+            assert_eq!(
+                loaded.metadata().time_coords,
+                original.metadata().time_coords
+            );
+            assert_eq!(loaded.metadata().crs, original.metadata().crs);
+
+            // Verify every data value round-trips exactly.
+            for t in 0..4 {
+                for y in 0..16 {
+                    for x in 0..16 {
+                        for b in 0..3 {
+                            let expected = (t * 1000 + y * 100 + x * 10 + b) as f64;
+                            let actual = loaded.data()[[t, y, x, b]];
+                            assert!(
+                                (expected - actual).abs() < 1e-10,
+                                "Data mismatch at [{t}, {y}, {x}, {b}]: expected {expected}, got {actual}"
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         #[test]

@@ -191,15 +191,34 @@ impl MergeEngine {
             }
             ConflictType::UpdateUpdate => match &conflict.base {
                 Some(base) => {
-                    let merged_data =
-                        self.merge_data(&base.data, &conflict.local.data, &conflict.remote.data)?;
+                    match self.merge_data(&base.data, &conflict.local.data, &conflict.remote.data) {
+                        Ok(merged_data) => {
+                            let mut result = conflict.local.clone();
+                            result.data = merged_data;
+                            result.version = conflict.local.version.next();
+                            result.updated_at = chrono::Utc::now();
 
-                    let mut result = conflict.local.clone();
-                    result.data = merged_data;
-                    result.version = conflict.local.version.next();
-                    result.updated_at = chrono::Utc::now();
-
-                    Ok(MergeOutcome::direct(result, MergeStrategy::ThreeWayMerge))
+                            Ok(MergeOutcome::direct(result, MergeStrategy::ThreeWayMerge))
+                        }
+                        // Both sides genuinely diverged from the common ancestor with no
+                        // clean, lossless reconciliation available (binary data, or text
+                        // changes that don't cleanly subsume one another). Rather than
+                        // fabricating a "successful" merge by embedding conflict markers
+                        // as literal data or arbitrarily picking the larger blob, defer to
+                        // the same explicit-fallback mechanism used for the missing-base
+                        // case, or surface the error for manual resolution.
+                        Err(merge_err) => match self.ancestor_fallback {
+                            Some(fallback) => {
+                                let record = self.apply_simple_strategy(fallback, conflict)?;
+                                Ok(MergeOutcome {
+                                    record,
+                                    used_fallback: true,
+                                    applied_strategy: fallback,
+                                })
+                            }
+                            None => Err(merge_err),
+                        },
+                    }
                 }
                 None => match self.ancestor_fallback {
                     Some(fallback) => {
@@ -239,12 +258,20 @@ impl MergeEngine {
         }
     }
 
-    /// Merge data using three-way merge algorithm
+    /// Merge data using a three-way merge algorithm.
+    ///
+    /// Returns `Ok` only for genuinely lossless reconciliations: one side is
+    /// unchanged from `base`, or both sides changed to the identical
+    /// result, or [`Self::try_line_merge`] finds a clean line-level
+    /// reconciliation. Any other case (binary data that diverged on both
+    /// sides, or text changes that don't cleanly subsume one another)
+    /// returns `Err(Error::Merge)` rather than fabricating a merged value
+    /// by embedding conflict markers as data or arbitrarily picking the
+    /// larger blob -- callers get a real signal that manual resolution (or
+    /// an explicit [`MergeEngine::with_ancestor_fallback`] strategy) is
+    /// required.
     fn merge_data(&self, base: &Bytes, local: &Bytes, remote: &Bytes) -> Result<Bytes> {
-        // Simple three-way merge implementation
-        // In production, this would be more sophisticated
-
-        // If one side is unchanged, use the other
+        // If one side is unchanged, use the other.
         if base == local {
             return Ok(remote.clone());
         }
@@ -252,59 +279,61 @@ impl MergeEngine {
             return Ok(local.clone());
         }
 
-        // If both changed to the same thing, no conflict
+        // If both changed to the same thing, no conflict.
         if local == remote {
             return Ok(local.clone());
         }
 
-        // Try line-based merge for text data
-        match self.try_line_merge(base, local, remote) {
-            Ok(merged) => Ok(merged),
-            Err(_) => {
-                // Fall back to choosing the larger version
-                if local.len() >= remote.len() {
-                    Ok(local.clone())
-                } else {
-                    Ok(remote.clone())
-                }
-            }
-        }
+        // Both sides changed, and differently. Only resolve this
+        // automatically if a clean line-based reconciliation exists;
+        // otherwise this is a genuine unresolved conflict.
+        self.try_line_merge(base, local, remote)
     }
 
-    /// Try to perform line-based merge
+    /// Try to perform a line-based merge.
+    ///
+    /// Succeeds only when the base/local/remote line sets show one side
+    /// unchanged relative to `base` (accounting for line-ending
+    /// normalization that a raw byte comparison in [`Self::merge_data`]
+    /// wouldn't catch). When both sides have genuinely diverged from the
+    /// base with no clean reconciliation, this returns
+    /// `Err(Error::Merge)` -- it never embeds `<<<<<<< LOCAL` / `=======` /
+    /// `>>>>>>> REMOTE` conflict markers into the returned data, since that
+    /// would silently corrupt the record's actual content while reporting
+    /// success.
     fn try_line_merge(&self, base: &Bytes, local: &Bytes, remote: &Bytes) -> Result<Bytes> {
-        // Convert to strings (if possible)
-        let base_str = std::str::from_utf8(base).map_err(|_| Error::merge("Not text data"))?;
-        let local_str = std::str::from_utf8(local).map_err(|_| Error::merge("Not text data"))?;
-        let remote_str = std::str::from_utf8(remote).map_err(|_| Error::merge("Not text data"))?;
+        // Convert to strings (if possible) -- binary/non-UTF8 data cannot be
+        // line-merged at all.
+        let base_str = std::str::from_utf8(base)
+            .map_err(|_| Error::merge("cannot line-merge non-UTF8 binary data"))?;
+        let local_str = std::str::from_utf8(local)
+            .map_err(|_| Error::merge("cannot line-merge non-UTF8 binary data"))?;
+        let remote_str = std::str::from_utf8(remote)
+            .map_err(|_| Error::merge("cannot line-merge non-UTF8 binary data"))?;
 
-        // Split into lines
+        // Split into lines.
         let base_lines: Vec<_> = base_str.lines().collect();
         let local_lines: Vec<_> = local_str.lines().collect();
         let remote_lines: Vec<_> = remote_str.lines().collect();
 
-        // Simple merge: if changes don't overlap, combine them
-        let mut result = Vec::new();
-
-        // This is a very simplified merge
-        // A real implementation would use diff3 or similar algorithm
         if base_lines == local_lines {
-            // Local unchanged, use remote
-            result.extend(remote_lines);
+            // Local unchanged (modulo line-ending normalization), use remote.
+            Ok(Bytes::from(remote_lines.join("\n")))
         } else if base_lines == remote_lines {
-            // Remote unchanged, use local
-            result.extend(local_lines);
+            // Remote unchanged (modulo line-ending normalization), use local.
+            Ok(Bytes::from(local_lines.join("\n")))
         } else {
-            // Both changed - potential conflict
-            // For now, just concatenate with a marker
-            result.push("<<<<<<< LOCAL");
-            result.extend(local_lines);
-            result.push("=======");
-            result.extend(remote_lines);
-            result.push(">>>>>>> REMOTE");
+            // Both sides changed, and differently: this is a genuine
+            // unresolved conflict. A real diff3-style reconciliation (that
+            // merges non-overlapping line ranges) is out of scope here;
+            // rather than guessing, surface an honest error so the caller
+            // can apply an explicit ancestor-fallback strategy or route the
+            // conflict to manual resolution.
+            Err(Error::merge(
+                "conflicting concurrent edits require manual resolution: both sides diverged \
+                 from the common ancestor and no clean line-based reconciliation exists",
+            ))
         }
-
-        Ok(Bytes::from(result.join("\n")))
     }
 
     /// Check if a conflict can be automatically resolved
@@ -317,11 +346,18 @@ impl MergeEngine {
                 .map(|m| m.can_resolve(conflict))
                 .unwrap_or(false),
             MergeStrategy::ThreeWayMerge => match conflict.conflict_type {
-                // Only UpdateUpdate genuinely needs a base (or a configured fallback);
-                // every other conflict type is resolved without one.
-                ConflictType::UpdateUpdate => {
-                    conflict.base.is_some() || self.ancestor_fallback.is_some()
-                }
+                // UpdateUpdate genuinely needs either a base that yields a clean
+                // automatic merge, or a configured ancestor-fallback strategy for
+                // when it doesn't (missing base, or a real unresolved conflict);
+                // every other conflict type is resolved without either.
+                ConflictType::UpdateUpdate => match &conflict.base {
+                    Some(base) => {
+                        self.merge_data(&base.data, &conflict.local.data, &conflict.remote.data)
+                            .is_ok()
+                            || self.ancestor_fallback.is_some()
+                    }
+                    None => self.ancestor_fallback.is_some(),
+                },
                 ConflictType::DeleteDelete
                 | ConflictType::DeleteUpdate
                 | ConflictType::UpdateDelete
@@ -589,5 +625,112 @@ mod tests {
 
         let result = engine.resolve(&conflict);
         assert!(result.is_err());
+    }
+
+    /// Regression test: when both sides of a text record diverge from the
+    /// common ancestor in genuinely conflicting ways (no clean line-based
+    /// reconciliation exists), ThreeWayMerge must return an explicit error
+    /// -- never fabricate a "successful" merge by embedding
+    /// `<<<<<<< LOCAL` / `=======` / `>>>>>>> REMOTE` conflict markers as
+    /// literal record data.
+    #[test]
+    fn test_three_way_merge_conflicting_text_edits_error_by_default() {
+        let base = create_record("test", "line1\nline2\nline3", 1);
+        let id = base.id;
+
+        let mut local = base.clone();
+        local.id = id;
+        local.version = Version::from_u64(2);
+        local.data = Bytes::from("line1\nCHANGED_BY_LOCAL\nline3");
+
+        let mut remote = base.clone();
+        remote.id = id;
+        remote.version = Version::from_u64(2);
+        remote.data = Bytes::from("line1\nCHANGED_BY_REMOTE\nline3");
+
+        let conflict = Conflict::new(local, remote, Some(base));
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge);
+        let result = engine.resolve(&conflict);
+
+        let err = result.expect_err(
+            "conflicting concurrent text edits must error, not embed conflict markers as data",
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("manual resolution"),
+            "error should explain that manual resolution is required: {message}"
+        );
+
+        assert!(!engine.can_auto_resolve(&conflict));
+    }
+
+    /// With an explicit ancestor fallback configured, a genuine (both-sides-
+    /// diverged) text conflict resolves via that strategy instead of
+    /// erroring, and the outcome reports `used_fallback`.
+    #[test]
+    fn test_three_way_merge_conflicting_text_edits_use_ancestor_fallback() {
+        let base = create_record("test", "line1\nline2\nline3", 1);
+        let id = base.id;
+
+        let mut local = base.clone();
+        local.id = id;
+        local.version = Version::from_u64(2);
+        local.data = Bytes::from("line1\nCHANGED_BY_LOCAL\nline3");
+        local.updated_at = chrono::Utc::now() - chrono::Duration::minutes(5);
+
+        let mut remote = base.clone();
+        remote.id = id;
+        remote.version = Version::from_u64(2);
+        remote.data = Bytes::from("line1\nCHANGED_BY_REMOTE\nline3");
+        remote.updated_at = chrono::Utc::now();
+
+        let conflict = Conflict::new(local, remote.clone(), Some(base));
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge)
+            .with_ancestor_fallback(MergeStrategy::LastWriteWins);
+
+        let outcome = engine
+            .resolve_detailed(&conflict)
+            .expect("fallback should resolve the conflict");
+
+        assert!(outcome.used_fallback);
+        assert_eq!(outcome.applied_strategy, MergeStrategy::LastWriteWins);
+        assert_eq!(outcome.record.data, remote.data);
+        assert!(engine.can_auto_resolve(&conflict));
+    }
+
+    /// Regression test: binary (non-UTF8) data that diverged on both sides
+    /// must also error rather than silently discarding one side's changes
+    /// via a "larger wins" heuristic reported as `ThreeWayMerge` success.
+    #[test]
+    fn test_three_way_merge_conflicting_binary_edits_error_by_default() {
+        let base_data = Bytes::from(vec![0xFFu8, 0x00, 0x01, 0x02]);
+        let mut base = create_record("test", "unused", 1);
+        base.data = base_data;
+        let id = base.id;
+
+        let mut local = base.clone();
+        local.id = id;
+        local.version = Version::from_u64(2);
+        local.data = Bytes::from(vec![0xFFu8, 0xAA, 0x01, 0x02]);
+
+        let mut remote = base.clone();
+        remote.id = id;
+        remote.version = Version::from_u64(2);
+        remote.data = Bytes::from(vec![0xFFu8, 0xBB, 0xBB, 0xBB, 0xBB, 0x02]);
+
+        let conflict = Conflict::new(local, remote, Some(base));
+        assert_eq!(conflict.conflict_type, ConflictType::UpdateUpdate);
+
+        let engine = MergeEngine::new(MergeStrategy::ThreeWayMerge);
+        let result = engine.resolve(&conflict);
+
+        assert!(
+            result.is_err(),
+            "diverging binary edits must error, not silently pick the larger blob"
+        );
     }
 }

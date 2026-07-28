@@ -160,7 +160,7 @@ client.on('tileUpdate', (tile) => {
 
 ## Statistics
 
-- **Total LOC**: ~5,300
+- **Total LOC**: ~7,500
 - **Test Coverage**: Comprehensive unit and integration tests
 - **Documentation**: Full API documentation with examples
 

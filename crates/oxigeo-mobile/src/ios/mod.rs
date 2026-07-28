@@ -91,12 +91,29 @@ pub unsafe extern "C" fn oxigeo_buffer_to_ios_rgba(
 
 /// Gets the iOS documents directory path.
 ///
+/// On an actual iOS target this queries the app's real sandbox path via
+/// `NSSearchPathForDirectoriesInDomains(.documentDirectory, ...)` (e.g.
+/// `/var/mobile/Containers/Data/Application/<UUID>/Documents`), not a
+/// hardcoded placeholder. On non-iOS builds (desktop dev/CI, where there is
+/// no app sandbox) this falls back to the relative placeholder `"/Documents"`
+/// -- callers on such hosts should not treat it as a real writable directory.
+///
 /// # Returns
 /// Path string (caller must free with oxigeo_string_free)
 #[unsafe(no_mangle)]
 pub extern "C" fn oxigeo_ios_get_documents_path() -> *mut std::os::raw::c_char {
-    // This would use iOS-specific APIs in a real implementation
-    // For now, return a placeholder
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(path) = ios_paths::first_search_path(ios_paths::NS_DOCUMENT_DIRECTORY) {
+            if let Ok(s) = std::ffi::CString::new(path) {
+                return s.into_raw();
+            }
+        }
+        // Real sandbox lookup failed (should not happen on genuine iOS);
+        // fall through to the documented placeholder rather than returning
+        // null, matching this function's infallible C ABI.
+    }
+
     match std::ffi::CString::new("/Documents") {
         Ok(s) => s.into_raw(),
         Err(_) => std::ptr::null_mut(),
@@ -105,13 +122,102 @@ pub extern "C" fn oxigeo_ios_get_documents_path() -> *mut std::os::raw::c_char {
 
 /// Gets the iOS cache directory path.
 ///
+/// On an actual iOS target this queries the app's real sandbox path via
+/// `NSSearchPathForDirectoriesInDomains(.cachesDirectory, ...)` (e.g.
+/// `/var/mobile/Containers/Data/Application/<UUID>/Library/Caches`), not a
+/// hardcoded placeholder. On non-iOS builds this falls back to the relative
+/// placeholder `"/Library/Caches"`.
+///
 /// # Returns
 /// Path string (caller must free with oxigeo_string_free)
 #[unsafe(no_mangle)]
 pub extern "C" fn oxigeo_ios_get_cache_path() -> *mut std::os::raw::c_char {
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(path) = ios_paths::first_search_path(ios_paths::NS_CACHES_DIRECTORY) {
+            if let Ok(s) = std::ffi::CString::new(path) {
+                return s.into_raw();
+            }
+        }
+    }
+
     match std::ffi::CString::new("/Library/Caches") {
         Ok(s) => s.into_raw(),
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Real iOS sandbox path lookup via `NSSearchPathForDirectoriesInDomains`.
+///
+/// Uses the `objc` crate's `msg_send!` for the Objective-C message send and a
+/// raw `extern "C"` binding for the C-linkage `NSSearchPathForDirectoriesInDomains`
+/// Foundation function -- both Pure-Rust ABI bindings (no C library wrapper
+/// crate involved); `Foundation` is already linked for `target_os = "ios"`
+/// builds by this crate's `build.rs`.
+#[cfg(target_os = "ios")]
+#[allow(unsafe_code)]
+mod ios_paths {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    use std::os::raw::{c_char, c_ulong};
+
+    /// `NSSearchPathDirectory.documentDirectory`.
+    pub(super) const NS_DOCUMENT_DIRECTORY: c_ulong = 9;
+    /// `NSSearchPathDirectory.cachesDirectory`.
+    pub(super) const NS_CACHES_DIRECTORY: c_ulong = 13;
+    /// `NSSearchPathDomainMask.userDomainMask`.
+    const NS_USER_DOMAIN_MASK: c_ulong = 1;
+
+    unsafe extern "C" {
+        /// Declared by `<Foundation/NSPathUtilities.h>`. Returns an
+        /// autoreleased `NSArray<NSString *> *` of matching directory paths.
+        fn NSSearchPathForDirectoriesInDomains(
+            directory: c_ulong,
+            domain_mask: c_ulong,
+            expand_tilde: objc::runtime::BOOL,
+        ) -> *mut Object;
+    }
+
+    /// Returns the first real sandbox path for `directory`, or `None` if the
+    /// lookup fails (should not happen on a genuine iOS process, but the
+    /// Objective-C runtime gives us no static guarantee).
+    ///
+    /// # Safety
+    /// All Objective-C calls here operate on Foundation singleton/autoreleased
+    /// objects for the duration of this function only; no pointer is retained
+    /// past its return, matching normal Cocoa autorelease-pool semantics for
+    /// the calling (typically main) thread.
+    pub(super) fn first_search_path(directory: c_ulong) -> Option<String> {
+        // SAFETY: `NSSearchPathForDirectoriesInDomains` is a documented,
+        // always-available Foundation C function; the returned `NSArray`
+        // pointer (if non-null) is a valid Objective-C object for the
+        // `count`/`objectAtIndex:`/`UTF8String` message sends below.
+        unsafe {
+            let array = NSSearchPathForDirectoriesInDomains(directory, NS_USER_DOMAIN_MASK, 1);
+            if array.is_null() {
+                return None;
+            }
+
+            let count: c_ulong = msg_send![array, count];
+            if count == 0 {
+                return None;
+            }
+
+            let first: *mut Object = msg_send![array, objectAtIndex: 0usize];
+            if first.is_null() {
+                return None;
+            }
+
+            let utf8: *const c_char = msg_send![first, UTF8String];
+            if utf8.is_null() {
+                return None;
+            }
+
+            std::ffi::CStr::from_ptr(utf8)
+                .to_str()
+                .ok()
+                .map(String::from)
+        }
     }
 }
 

@@ -278,3 +278,230 @@ fn test_writer_geometry_columns_populated() {
     };
     assert_eq!(geom_type, "POINT");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test: custom SRS registration and validation (regression for a real defect:
+// GeoPackageBuilder::new(3857) used to silently produce a file whose
+// gpkg_contents/gpkg_geometry_columns srs_id referenced no
+// gpkg_spatial_ref_sys row at all).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_writer_non_default_srs_id_without_registration_is_rejected() {
+    let err = GeoPackageBuilder::new(3857)
+        .add_feature_table("pts", "POINT", vec![(1, 1.0, 2.0)])
+        .build()
+        .expect_err("build must reject an unregistered non-default srs_id");
+
+    match err {
+        oxigeo_gpkg::GpkgError::UnknownSrsId(id) => assert_eq!(id, 3857),
+        other => panic!("expected UnknownSrsId, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_writer_custom_srs_registered_and_written() {
+    use oxigeo_gpkg::CustomSrs;
+
+    let mut builder = GeoPackageBuilder::new(3857);
+    builder
+        .add_custom_srs(CustomSrs::epsg(
+            3857,
+            "WGS 84 / Pseudo-Mercator",
+            "PROJCS[\"WGS 84 / Pseudo-Mercator\"]",
+        ))
+        .expect("add_custom_srs");
+    builder.add_feature_table_mut("pts", "POINT", vec![(1, 100.0, 200.0)]);
+
+    let bytes = builder.build().expect("build with registered custom SRS");
+    let gpkg = GeoPackage::from_bytes(bytes).expect("parse");
+
+    let rows = gpkg
+        .scan_table_by_name("gpkg_spatial_ref_sys")
+        .expect("scan")
+        .expect("gpkg_spatial_ref_sys not found");
+
+    // 3 mandatory rows + 1 custom row.
+    assert_eq!(rows.len(), 4, "expected 3 default + 1 custom SRS row");
+
+    let srs_ids: Vec<i64> = rows
+        .iter()
+        .filter_map(|(_rowid, cols)| match &cols[1] {
+            oxigeo_gpkg::CellValue::Integer(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    assert!(srs_ids.contains(&3857), "custom srs_id 3857 missing");
+}
+
+#[test]
+fn test_writer_add_custom_srs_rejects_mandatory_id_collision() {
+    use oxigeo_gpkg::CustomSrs;
+
+    let mut builder = GeoPackageBuilder::new(4326);
+    match builder.add_custom_srs(CustomSrs::epsg(4326, "dup", "def")) {
+        Err(oxigeo_gpkg::GpkgError::DuplicateSrsId(id)) => assert_eq!(id, 4326),
+        Err(other) => panic!("expected DuplicateSrsId, got {other:?}"),
+        Ok(_) => panic!("must reject collision with mandatory srs_id 4326"),
+    }
+}
+
+#[test]
+fn test_writer_add_custom_srs_rejects_duplicate_custom_id() {
+    use oxigeo_gpkg::CustomSrs;
+
+    let mut builder = GeoPackageBuilder::new(3857);
+    builder
+        .add_custom_srs(CustomSrs::epsg(3857, "first", "def1"))
+        .expect("first registration succeeds");
+
+    match builder.add_custom_srs(CustomSrs::epsg(3857, "second", "def2")) {
+        Err(oxigeo_gpkg::GpkgError::DuplicateSrsId(id)) => assert_eq!(id, 3857),
+        Err(other) => panic!("expected DuplicateSrsId, got {other:?}"),
+        Ok(_) => panic!("must reject duplicate custom srs_id"),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test: sqlite_master catalog overflow is a real, propagated error — not a
+// silently-dropped row (regression for a real defect: `emit_master_page` used
+// to only check via `debug_assert!`, which compiles out in release builds).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_writer_sqlite_master_overflow_returns_error_not_silent_success() {
+    let mut builder = GeoPackageBuilder::new(4326);
+    // Each feature table contributes one sqlite_master row whose DDL embeds
+    // the table name twice (CREATE TABLE {name} ... ) plus fixed boilerplate.
+    // Enough short-named tables will overflow the single 4096-byte page 1
+    // that also holds the 3 mandatory system-table rows.
+    for i in 0..200 {
+        builder.add_feature_table_mut(format!("t{i}"), "POINT", vec![(1, 0.0, 0.0)]);
+    }
+
+    let result = builder.build();
+    assert!(
+        result.is_err(),
+        "200 feature tables must overflow sqlite_master's single leaf page and \
+         return an error rather than silently dropping catalog rows"
+    );
+    match result {
+        Err(oxigeo_gpkg::GpkgError::RowOverflowsPage { .. }) => {}
+        other => panic!("expected RowOverflowsPage, got {other:?}"),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test: R-tree spatial index writer (regression for a real defect: the
+// writer never emitted an R-tree, even though a reader existed to consume
+// one). Full round trip: build with add_rtree_index -> parse the resulting
+// bytes -> GpkgRTreeReader::open -> bbox query returns the right rowids.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_writer_rtree_index_end_to_end_round_trip() {
+    use oxigeo_gpkg::GpkgRTreeReader;
+
+    let mut builder = GeoPackageBuilder::new(4326);
+    builder.add_feature_table_mut(
+        "pts",
+        "POINT",
+        vec![(1, 0.0, 0.0), (2, 10.0, 10.0), (3, -5.0, -5.0)],
+    );
+    builder.add_rtree_index("pts").expect("add_rtree_index");
+
+    let bytes = builder.build().expect("build with rtree index");
+    let gpkg = GeoPackage::from_bytes(bytes).expect("parse");
+
+    // 1. The shadow tables and virtual table must appear in sqlite_master.
+    let master = gpkg.scan_sqlite_master().expect("scan sqlite_master");
+    let names: Vec<&str> = master.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"rtree_pts_geom"), "virtual table missing");
+    assert!(
+        names.contains(&"rtree_pts_geom_node"),
+        "_node table missing"
+    );
+    assert!(
+        names.contains(&"rtree_pts_geom_rowid"),
+        "_rowid table missing"
+    );
+    assert!(
+        names.contains(&"rtree_pts_geom_parent"),
+        "_parent table missing"
+    );
+    assert!(
+        names.contains(&"gpkg_extensions"),
+        "gpkg_extensions table missing"
+    );
+
+    // 2. gpkg_extensions must register the gpkg_rtree_index extension.
+    let ext_rows = gpkg
+        .scan_table_by_name("gpkg_extensions")
+        .expect("scan")
+        .expect("gpkg_extensions must exist");
+    assert_eq!(ext_rows.len(), 1);
+    let (_rowid, cols) = &ext_rows[0];
+    match &cols[2] {
+        oxigeo_gpkg::CellValue::Text(s) => assert_eq!(s, "gpkg_rtree_index"),
+        other => panic!("unexpected extension_name: {other:?}"),
+    }
+
+    // 3. The R-tree must actually be queryable and return the right rowids.
+    let reader = GpkgRTreeReader::open(&gpkg, "pts", "geom").expect("open rtree reader");
+    assert_eq!(reader.len(), 1, "single-node tree: exactly 1 node total");
+    assert_eq!(
+        reader.all_entries().len(),
+        3,
+        "all 3 points must be indexed as leaf entries"
+    );
+
+    let hits = reader.search(-1.0, -1.0, 1.0, 1.0);
+    assert_eq!(
+        hits,
+        vec![1],
+        "bbox around origin should only match rowid 1"
+    );
+
+    let hits_all = reader.search(-100.0, -100.0, 100.0, 100.0);
+    let mut sorted_hits = hits_all.clone();
+    sorted_hits.sort_unstable();
+    assert_eq!(
+        sorted_hits,
+        vec![1, 2, 3],
+        "a bbox covering everything must match all 3 rowids"
+    );
+}
+
+#[test]
+fn test_writer_rtree_index_rejects_unknown_table() {
+    let mut builder = GeoPackageBuilder::new(4326);
+    let err = builder
+        .add_rtree_index("ghost")
+        .err()
+        .expect("must reject rtree index for unregistered table");
+    match err {
+        oxigeo_gpkg::GpkgError::TableNotFound(name) => assert_eq!(name, "ghost"),
+        other => panic!("expected TableNotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_writer_without_rtree_index_has_no_extensions_table() {
+    // Default (opt-out) behavior must be unchanged: no rtree requested means
+    // no gpkg_extensions / rtree_* tables at all.
+    let bytes = GeoPackageBuilder::new(4326)
+        .add_feature_table("pts", "POINT", vec![(1, 0.0, 0.0)])
+        .build()
+        .expect("build");
+    let gpkg = GeoPackage::from_bytes(bytes).expect("parse");
+    let master = gpkg.scan_sqlite_master().expect("scan sqlite_master");
+    let names: Vec<&str> = master.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        !names.iter().any(|n| n.starts_with("rtree_")),
+        "no rtree_* tables expected without add_rtree_index, got: {names:?}"
+    );
+    assert!(
+        !names.contains(&"gpkg_extensions"),
+        "no gpkg_extensions table expected without any extension in use"
+    );
+}

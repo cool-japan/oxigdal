@@ -293,29 +293,44 @@ impl ShardManager {
             .count()
     }
 
-    /// Calculates the hash key for a partition key
-    pub fn calculate_hash_key(partition_key: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        partition_key.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        // Scale to 128-bit range (Kinesis uses MD5)
-        // This is a simplified version - production should use MD5
-        format!("{:032x}", hash as u128)
+    /// Calculates the 128-bit hash key for a partition key.
+    ///
+    /// Matches AWS Kinesis: the hash key is `MD5(partition_key)` interpreted as
+    /// a big-endian 128-bit unsigned integer.
+    pub fn calculate_hash_key_u128(partition_key: &str) -> u128 {
+        let digest = super::md5::compute(partition_key.as_bytes());
+        u128::from_be_bytes(digest)
     }
 
-    /// Finds the shard for a given partition key
+    /// Calculates the hash key for a partition key as a decimal string.
+    ///
+    /// The value is the big-endian 128-bit MD5 digest of the partition key
+    /// rendered in base 10, matching the format AWS reports for shard
+    /// `HashKeyRange` bounds.
+    pub fn calculate_hash_key(partition_key: &str) -> String {
+        Self::calculate_hash_key_u128(partition_key).to_string()
+    }
+
+    /// Finds the shard for a given partition key.
+    ///
+    /// Compares the MD5-derived 128-bit hash key numerically against each open
+    /// shard's `HashKeyRange`, exactly as AWS Kinesis routes records.
     pub fn find_shard_for_partition_key(&self, partition_key: &str) -> Option<ShardInfo> {
-        let hash_key = Self::calculate_hash_key(partition_key);
+        let hash_key = Self::calculate_hash_key_u128(partition_key);
 
         self.shards
             .read()
             .values()
             .filter(|s| s.is_open())
-            .find(|s| hash_key >= s.hash_key_range_start && hash_key <= s.hash_key_range_end)
+            .find(|s| {
+                match (
+                    s.hash_key_range_start.parse::<u128>(),
+                    s.hash_key_range_end.parse::<u128>(),
+                ) {
+                    (Ok(start), Ok(end)) => hash_key >= start && hash_key <= end,
+                    _ => false,
+                }
+            })
             .cloned()
     }
 }
@@ -390,6 +405,55 @@ mod tests {
 
         // Different partition keys should produce different hashes
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_calculate_hash_key_matches_md5() {
+        // AWS derives the hash key as MD5(partition_key) as a big-endian u128.
+        // MD5("hello") = 5d41402abc4b2a76b9719d911017c592.
+        let expected = u128::from_be_bytes([
+            0x5d, 0x41, 0x40, 0x2a, 0xbc, 0x4b, 0x2a, 0x76, 0xb9, 0x71, 0x9d, 0x91, 0x10, 0x17,
+            0xc5, 0x92,
+        ]);
+        assert_eq!(ShardManager::calculate_hash_key_u128("hello"), expected);
+        assert_eq!(
+            ShardManager::calculate_hash_key("hello"),
+            expected.to_string()
+        );
+
+        // Upper 64 bits must not be uniformly zero (the old SipHash bug).
+        assert_ne!(
+            ShardManager::calculate_hash_key_u128("hello") >> 64,
+            0,
+            "upper 64 bits should be populated by a real 128-bit MD5"
+        );
+    }
+
+    #[test]
+    fn test_find_shard_for_partition_key_numeric_range() {
+        let client_manager_full_range = ShardInfo {
+            shard_id: "shardId-000000000000".to_string(),
+            parent_shard_id: None,
+            adjacent_parent_shard_id: None,
+            hash_key_range_start: "0".to_string(),
+            hash_key_range_end: u128::MAX.to_string(),
+            sequence_number_range_start: "49590338271490256608559692538361571095921575989136588898"
+                .to_string(),
+            sequence_number_range_end: None,
+        };
+
+        // A single full-range shard must own every partition key.
+        let key = "partition-abc";
+        let hash = ShardManager::calculate_hash_key_u128(key);
+        let start = client_manager_full_range
+            .hash_key_range_start
+            .parse::<u128>()
+            .unwrap_or(u128::MAX);
+        let end = client_manager_full_range
+            .hash_key_range_end
+            .parse::<u128>()
+            .unwrap_or(0);
+        assert!(hash >= start && hash <= end);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "name": "oxigeo-cog-viewer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Advanced COG (Cloud Optimized GeoTIFF) viewer powered by OxiGeo WebAssembly",
   "main": "main.js",
   "type": "module",

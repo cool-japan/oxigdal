@@ -90,7 +90,7 @@
 //!     bytes_ingressed: 4096,
 //!     policy_json: r#"{"csp":"default-src 'self'"}"#.to_string(),
 //!     app_name: "geovault".to_string(),
-//!     app_version: "0.1.7".to_string(),
+//!     app_version: "0.2.1".to_string(),
 //! };
 //! let attestation = signer.seal(&log, &meta).expect("seal");
 //! let json = serde_json::to_string(&attestation).expect("json");

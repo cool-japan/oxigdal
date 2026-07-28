@@ -1,8 +1,9 @@
 //! Integration tests for GeoParquet row-level spatial + attribute filtering.
 //!
-//! Test fixtures are built directly with Arrow/Parquet primitives so that we
-//! can include attribute columns (the current high-level `GeoParquetWriter` API
-//! only supports the geometry column).
+//! Test fixtures here are built directly with Arrow/Parquet primitives to
+//! exercise the reader against externally-shaped files.  (The high-level
+//! `GeoParquetWriter` now also emits attribute columns via `add_field` /
+//! `add_row`; see the writer unit tests for that path.)
 #![allow(clippy::panic, clippy::expect_used)]
 
 use arrow_array::{Array, BinaryArray, Float64Array, Int64Array, RecordBatch, StringArray};

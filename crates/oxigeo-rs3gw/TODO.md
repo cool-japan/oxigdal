@@ -1,7 +1,7 @@
 # TODO: oxigeo-rs3gw
 
 > **Purpose:** rs3gw storage backend for OxiGeo - High-performance cloud storage access (Pure-Rust S3-compatible gateway wrapper; backends: Local/S3/MinIO/GCS/Azure; Zarr store; LRU/ML cache; encryption; dedup).
-> **Status (2026-05-16):** 3,415 Rust LoC · 39 tests · 0 literal-stub markers — gaps are feature parity with the underlying `rs3gw = 0.2.1` upgrade and missing modules advertised in doc.
+> **Status (2026-07-28):** 3,256 Rust LoC · 60 tests (all-features; 16 with default-features only) · 0 literal-stub markers — gaps are feature parity with the underlying `rs3gw = 0.2.1` upgrade and missing modules advertised in doc.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
@@ -32,14 +32,9 @@
   - **Risk:** Capabilities may drift if rs3gw adds features; keep table central.
   - **Prerequisites:** None.
 
-- [ ] Implement ML-cache prefetch path under `ml-cache` feature
-  - **Verified gap:** `Cargo.toml:24` exposes `ml-cache = []` feature; `src/features/caching.rs` defines `CogCacheConfig` and `CogAccessPattern::Sequential.recommended_config()` (cited in `lib.rs:125-134`) but no actual prefetch trigger / read-ahead worker exists.
-  - **Goal:** On hit at tile `(x, y)`, asynchronously prefetch the configured `prefetch_radius` neighbours into the LRU cache (`moka`) using a tokio task.
-  - **Design:** `PrefetchAgent { backend, cache, radius, in_flight: DashSet<TileKey> }`. On `get_tile(x, y)` → spawn `for (dx, dy) in radius_neighbors(x, y, r)`: if not in `in_flight` or cache → push fetch. Channel-backed cancellation.
-  - **Files:** `src/features/caching.rs` (~150 LoC).
-  - **Tests:** (proposed) `test_prefetch_radius_1_warms_8_neighbours`, `test_prefetch_dedup_in_flight`, `test_prefetch_cancel_on_drop`.
-  - **Risk:** Unbounded prefetch fan-out on streamed access; cap concurrent prefetches.
-  - **Prerequisites:** None.
+- [x] Implement ML-cache prefetch path under `ml-cache` feature
+  - **Done (verified 2026-07-28):** `src/datasource.rs` implements real background read-ahead: `maybe_spawn_prefetch(next_start, chunk_len, reads_so_far)` (called from the live read path) eagerly fetches the next `prefetch_radius` contiguous same-sized chunks once `ml_training_threshold` reads have been observed on that source, stashing them in the cache. `CogCacheConfig` (`src/features/caching.rs`) documents this explicitly as "real" prefetching. Honesty note carried in both files: despite the `ml_prefetch`/`ml_training_threshold` field names (kept for API compatibility), this is a **deterministic contiguous-access heuristic, not a trained/learned ML model** — no feature vector, no training step.
+  - **Original goal (for reference):** On hit at tile `(x, y)`, asynchronously prefetch the configured `prefetch_radius` neighbours into the cache.
 
 - [ ] Bench-coverage parity for the new 0.2.1 rs3gw cache path
   - **Verified gap:** `benches/datasource_benchmarks.rs` (per `Cargo.toml:72-74` `[[bench]]`) needs to be re-checked against rs3gw 0.2.1 — the `Update rs3gw dependency to version 0.2.1` commit may have changed cache hit-ratio assumptions.
@@ -102,4 +97,4 @@
 - (None — existing TODO.md had no `[x]` items.)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

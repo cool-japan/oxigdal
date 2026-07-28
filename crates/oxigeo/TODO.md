@@ -1,7 +1,8 @@
 # TODO: oxigeo (umbrella crate)
 
 > **Purpose:** Pure Rust geospatial data abstraction library — the Rust alternative to GDAL
-> **Status (2026-05-16):** 5,639 Rust LoC · 236 tests · 0 real-code stubs (all `stub/placeholder` mentions are benign doc/comment text)
+> **Status (2026-07-28):** 5,639 Rust LoC · 261 tests · 0 real-code stubs (all `stub/placeholder` mentions are benign doc/comment text)
+> **Recent fix (2026-07-28):** GitHub issue #12 — GeoTIFF georeferencing tag values (`ModelPixelScaleTag`, `ModelTiepointTag`, `GeoKeyDirectoryTag`) stored out-of-line beyond the initial header peek window were silently dropped; `open.rs` now falls back to a direct offset seek so metadata is no longer lost. Regression test: `test_issue_12_far_offset_georeferencing`.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
@@ -83,4 +84,4 @@
 - **Blocked by:** `oxigeo-core`, every driver crate (`oxigeo-geotiff`, `oxigeo-geojson`, `oxigeo-shapefile`, `oxigeo-geoparquet`, `oxigeo-gpkg`, `oxigeo-pmtiles`, `oxigeo-mbtiles`, `oxigeo-stac`, `oxigeo-flatgeobuf`, `oxigeo-jpeg2000`, `oxigeo-vrt`, `oxigeo-netcdf`, `oxigeo-hdf5`, `oxigeo-zarr`, `oxigeo-grib`, `oxigeo-terrain`, `oxigeo-copc`, `oxigeo-index`), advanced crates (`oxigeo-cloud`, `oxigeo-proj`, `oxigeo-algorithms`, `oxigeo-analytics`, `oxigeo-streaming`, `oxigeo-ml`, `oxigeo-gpu`, `oxigeo-server`, `oxigeo-temporal`, `oxigeo-services`)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

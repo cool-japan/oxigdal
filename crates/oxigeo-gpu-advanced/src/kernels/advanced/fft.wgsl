@@ -169,40 +169,76 @@ fn fft_normalize(
     data[i].imag = data[i].imag * scale;
 }
 
-// 2D FFT (row-wise pass)
-@compute @workgroup_size(16, 16, 1)
+// In-place iterative Cooley-Tukey FFT over a strided 1-D sequence embedded in
+// the `data` buffer: element k of the sequence lives at `data[base + k*stride]`.
+// `n` must be a power of two. This is the same radix-2 DIT algorithm as
+// `fft_cooley_tukey`, run to completion by a single invocation so that each row
+// / column of a 2-D transform is processed independently without barriers.
+fn fft_1d_strided(base: u32, stride: u32, n: u32, inverse: bool) {
+    // Number of bits needed to index the sequence.
+    var bits = 0u;
+    var t = n;
+    while (t > 1u) {
+        t = t >> 1u;
+        bits = bits + 1u;
+    }
+
+    // Bit-reversal permutation.
+    for (var i = 0u; i < n; i = i + 1u) {
+        let r = bit_reverse(i, bits);
+        if (i < r) {
+            let ia = base + i * stride;
+            let ib = base + r * stride;
+            let tmp = data[ia];
+            data[ia] = data[ib];
+            data[ib] = tmp;
+        }
+    }
+
+    // Butterfly stages: sub-transform length grows 2, 4, ..., n.
+    var len = 2u;
+    while (len <= n) {
+        let half = len >> 1u;
+        var start = 0u;
+        while (start < n) {
+            for (var k = 0u; k < half; k = k + 1u) {
+                let w = twiddle_factor(k, len, inverse);
+                let even_idx = base + (start + k) * stride;
+                let odd_idx = base + (start + k + half) * stride;
+                let tw = complex_mul(w, data[odd_idx]);
+                let u = data[even_idx];
+                data[even_idx] = complex_add(u, tw);
+                data[odd_idx] = complex_sub(u, tw);
+            }
+            start = start + len;
+        }
+        len = len << 1u;
+    }
+}
+
+// 2D FFT (row-wise pass): one invocation per row performs a complete 1-D FFT
+// along that row. Dispatch with `ceil(n / 64)` workgroups in x.
+@compute @workgroup_size(64, 1, 1)
 fn fft_2d_rows(
     @builtin(global_invocation_id) global_id: vec3<u32>,
 ) {
-    let row = global_id.y;
-    let col = global_id.x;
-
-    if (row >= params.n || col >= params.n) {
+    let row = global_id.x;
+    if (row >= params.n) {
         return;
     }
-
-    // Process each row independently
-    // This would need to be called multiple times for complete 2D FFT
-    let idx = row * params.n + col;
-
-    // Placeholder for row FFT processing
-    // In practice, this would call the 1D FFT algorithm
+    fft_1d_strided(row * params.n, 1u, params.n, params.inverse != 0u);
 }
 
-// 2D FFT (column-wise pass)
-@compute @workgroup_size(16, 16, 1)
+// 2D FFT (column-wise pass): one invocation per column performs a complete 1-D
+// FFT down that column (stride = n). Run after `fft_2d_rows` to complete a
+// separable 2-D transform. Dispatch with `ceil(n / 64)` workgroups in x.
+@compute @workgroup_size(64, 1, 1)
 fn fft_2d_cols(
     @builtin(global_invocation_id) global_id: vec3<u32>,
 ) {
-    let row = global_id.y;
     let col = global_id.x;
-
-    if (row >= params.n || col >= params.n) {
+    if (col >= params.n) {
         return;
     }
-
-    // Process each column independently
-    let idx = row * params.n + col;
-
-    // Placeholder for column FFT processing
+    fft_1d_strided(col, params.n, params.n, params.inverse != 0u);
 }

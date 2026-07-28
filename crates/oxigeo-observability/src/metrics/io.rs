@@ -4,6 +4,23 @@ use crate::error::Result;
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram, Meter};
 
+/// Bucket a file path into a small, bounded label value for metrics.
+///
+/// Returns the lowercased file extension (e.g. `"tif"`, `"parquet"`), or
+/// `"noext"` if the path has no extension, or `"unknown"` if the extension
+/// cannot be decoded as UTF-8. This keeps the resulting metric label
+/// cardinality bounded to the (small, finite) set of dataset formats this
+/// platform reads/writes, instead of one series per unique file path.
+fn file_type_bucket(path: &str) -> String {
+    match std::path::Path::new(path).extension() {
+        Some(ext) => match ext.to_str() {
+            Some(ext_str) => ext_str.to_ascii_lowercase(),
+            None => "unknown".to_string(),
+        },
+        None => "noext".to_string(),
+    }
+}
+
 /// Metrics for I/O operations.
 pub struct IoMetrics {
     // File I/O
@@ -178,9 +195,20 @@ impl IoMetrics {
     }
 
     /// Record file read operation.
+    ///
+    /// The raw `path` is deliberately **not** attached as a metric label: a
+    /// geospatial data platform opens many thousands of distinct dataset
+    /// files, and one time series per unique path is the canonical
+    /// Prometheus/OTel cardinality-explosion anti-pattern. Instead, `path` is
+    /// bucketed into a small, bounded `file_type` label (its lowercased
+    /// extension, or `"noext"`/`"unknown"`), and the full path is emitted as
+    /// a `tracing::trace!` event -- unbounded-cardinality identifiers belong
+    /// in traces/logs, not metric labels.
     pub fn record_file_read(&self, duration_ms: f64, bytes: u64, path: &str, success: bool) {
+        tracing::trace!(path = %path, bytes, success, duration_ms, "file read");
+
         let attrs = vec![
-            KeyValue::new("path", path.to_string()),
+            KeyValue::new("file_type", file_type_bucket(path)),
             KeyValue::new("success", success),
         ];
 
@@ -198,9 +226,14 @@ impl IoMetrics {
     }
 
     /// Record file write operation.
+    ///
+    /// See [`Self::record_file_read`] for why the raw path is not used as a
+    /// metric label.
     pub fn record_file_write(&self, duration_ms: f64, bytes: u64, path: &str, success: bool) {
+        tracing::trace!(path = %path, bytes, success, duration_ms, "file write");
+
         let attrs = vec![
-            KeyValue::new("path", path.to_string()),
+            KeyValue::new("file_type", file_type_bucket(path)),
             KeyValue::new("success", success),
         ];
 
@@ -274,5 +307,27 @@ mod tests {
         let meter = global::meter("test");
         let metrics = IoMetrics::new(meter);
         assert!(metrics.is_ok());
+    }
+
+    #[test]
+    fn test_file_type_bucket_is_bounded_not_per_path() {
+        // Many distinct paths with the same extension must collapse to the
+        // same bounded label -- this is the whole point of the fix.
+        assert_eq!(file_type_bucket("/data/a.tif"), "tif");
+        assert_eq!(file_type_bucket("/data/b/c/d.tif"), "tif");
+        assert_eq!(file_type_bucket("/other/unique/path/12345.tif"), "tif");
+        assert_eq!(file_type_bucket("/data/sample.PARQUET"), "parquet");
+        assert_eq!(file_type_bucket("/data/no_extension_file"), "noext");
+    }
+
+    #[test]
+    fn test_record_file_read_does_not_panic_and_updates_counters() {
+        let meter = global::meter("test");
+        let metrics = IoMetrics::new(meter).expect("metrics creation should succeed");
+        // Two distinct paths sharing an extension must not create separate
+        // per-path series; this just exercises the recording path end to end.
+        metrics.record_file_read(12.5, 4096, "/data/one.tif", true);
+        metrics.record_file_read(8.0, 2048, "/data/two.tif", true);
+        metrics.record_file_write(3.0, 512, "/data/out.tif", false);
     }
 }

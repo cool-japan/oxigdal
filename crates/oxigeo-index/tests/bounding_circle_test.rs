@@ -1,5 +1,7 @@
 //! Integration tests for `bounding_circle` — W5 of OxiGeo Slice 18.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::f64::consts::SQRT_2;
 
 use oxigeo_index::{

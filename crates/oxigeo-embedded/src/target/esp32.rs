@@ -197,9 +197,11 @@ pub fn cycle_count(variant: Esp32Variant) -> Option<u64> {
             // Use RISC-V cycle counter
             #[cfg(target_arch = "riscv32")]
             {
-                let low: u32;
-                let high1: u32;
-                let high2: u32;
+                // `mut` is required: the read is retried until the high word is
+                // stable, so each binding may be written by the asm repeatedly.
+                let mut low: u32;
+                let mut high1: u32;
+                let mut high2: u32;
 
                 unsafe {
                     loop {

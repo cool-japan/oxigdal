@@ -1,6 +1,12 @@
 //! LAS/LAZ point cloud format support
 //!
-//! Provides comprehensive LAS 1.4 format reading and writing with LAZ compression support.
+//! Provides LAS 1.x format reading and writing. Compressed LAZ files are
+//! supported through the pure-Rust [`laz`](https://crates.io/crates/laz) crate,
+//! enabled by the crate's default `las-laz` feature: [`LasReader::open`]
+//! transparently decompresses `.laz` input, and [`LasWriter::create`] writes
+//! LAZ output when the target path has a `.laz` extension. Building without the
+//! `las-laz` feature restricts both to uncompressed LAS and surfaces a typed
+//! error for compressed I/O rather than silently mishandling it.
 
 use crate::error::{Error, Result};
 use rstar::{AABB, RTree, RTreeObject};
@@ -578,9 +584,15 @@ impl LasReader {
 
     /// Read all points
     pub fn read_all(&mut self) -> Result<PointCloud> {
-        let mut points = Vec::new();
+        // las 0.10 replaced the per-point `Reader::points()` streaming
+        // iterator with a batch/buffer-oriented API: `read_all` decodes every
+        // remaining record into a `PointData` byte slab, and `PointData::points()`
+        // gives back the same row-oriented `Result<las::Point>` iterator the old
+        // code consumed directly from the reader.
+        let point_data = self.reader.read_all()?;
+        let mut points = Vec::with_capacity(point_data.len());
 
-        for result in self.reader.points() {
+        for result in point_data.points() {
             let las_point = result?;
             let point = Self::convert_point(&las_point)?;
             points.push(point);
@@ -591,12 +603,13 @@ impl LasReader {
 
     /// Read points with limit
     pub fn read_n(&mut self, n: usize) -> Result<Vec<Point>> {
-        let mut points = Vec::with_capacity(n);
+        // `read_points(n)` reads up to `n` remaining records (fewer if the
+        // file is exhausted), matching the old iterator-plus-`break` behavior
+        // without needing a manual counter.
+        let point_data = self.reader.read_points(n as u64)?;
+        let mut points = Vec::with_capacity(point_data.len());
 
-        for (i, result) in self.reader.points().enumerate() {
-            if i >= n {
-                break;
-            }
+        for result in point_data.points() {
             let las_point = result?;
             let point = Self::convert_point(&las_point)?;
             points.push(point);
@@ -660,6 +673,20 @@ impl LasWriter {
         // Set point format
         builder.point_format = las::point::Format::new(header.point_format as u8)
             .map_err(|e| Error::Las(e.to_string()))?;
+
+        // Enable LAZ compression when the target file uses a `.laz` extension.
+        // This is backed by the pure-Rust `laz` crate via the `las-laz` feature
+        // (on by default). Without that feature the underlying writer returns a
+        // typed error for compressed output rather than silently writing plain
+        // LAS.
+        if path
+            .as_ref()
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("laz"))
+        {
+            builder.point_format.is_compressed = true;
+        }
 
         // Set transforms
         builder.transforms = las::Vector {
@@ -868,5 +895,86 @@ mod tests {
 
         let within = index.within_radius(0.0, 0.0, 0.0, 2.0);
         assert!(!within.is_empty());
+    }
+
+    /// End-to-end proof that LAZ compression actually works: write a `.laz`
+    /// file (which must be genuinely LASzip-compressed on disk) and read it
+    /// back losslessly through `LasReader`. Before the `las-laz` feature was
+    /// wired to `las/laz`, `LasReader::open` returned `LaszipNotEnabled` for
+    /// any compressed input and `LasWriter` silently wrote plain LAS.
+    #[cfg(feature = "las-laz")]
+    #[test]
+    fn test_laz_roundtrip_compresses_and_decompresses() {
+        let path =
+            std::env::temp_dir().join(format!("oxigeo_laz_roundtrip_{}.laz", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let make = |x: f64, y: f64, z: f64, intensity: u16, class: Classification| {
+            let mut p = Point::new(x, y, z);
+            p.intensity = intensity;
+            p.classification = class;
+            p.return_number = 1;
+            p.number_of_returns = 1;
+            p.gps_time = Some(x * 10.0 + y);
+            p
+        };
+
+        let points = vec![
+            make(10.00, 20.00, 30.00, 100, Classification::Ground),
+            make(10.50, 20.25, 30.75, 250, Classification::Building),
+            make(11.00, 21.00, 31.00, 4095, Classification::HighVegetation),
+            make(11.75, 21.50, 31.25, 42, Classification::Water),
+        ];
+
+        let header = LasHeader {
+            version: "1.2".to_string(),
+            point_format: PointFormat::Format1,
+            point_count: points.len() as u64,
+            bounds: Bounds3d::new(10.0, 12.0, 20.0, 22.0, 30.0, 32.0),
+            scale: (0.001, 0.001, 0.001),
+            offset: (0.0, 0.0, 0.0),
+            system_identifier: "oxigeo-test".to_string(),
+            generating_software: "oxigeo-3d".to_string(),
+        };
+
+        {
+            let mut writer = LasWriter::create(&path, &header).expect("create LAZ writer");
+            writer.write_points(&points).expect("write points");
+            writer.close().expect("close writer");
+        }
+
+        // Prove the on-disk file is genuinely LAZ-compressed: the LASzip
+        // encoder writes a VLR whose user id is the literal "laszip encoded".
+        let raw = std::fs::read(&path).expect("read raw file");
+        let needle = b"laszip encoded";
+        let is_laz = raw.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            is_laz,
+            "written .laz must contain a LASzip VLR (real compression)"
+        );
+
+        // Read it back through LasReader and confirm the data round-trips.
+        let mut reader = LasReader::open(&path).expect("open LAZ");
+        assert_eq!(reader.header().point_count, points.len() as u64);
+
+        let cloud = reader.read_all().expect("decompress + read all points");
+        assert_eq!(cloud.points.len(), points.len());
+
+        for (orig, got) in points.iter().zip(cloud.points.iter()) {
+            // Coordinates are quantised by the 0.001 scale factor.
+            assert!(
+                (orig.x - got.x).abs() < 0.002,
+                "x mismatch: {orig:?} vs {got:?}"
+            );
+            assert!((orig.y - got.y).abs() < 0.002, "y mismatch");
+            assert!((orig.z - got.z).abs() < 0.002, "z mismatch");
+            assert_eq!(orig.intensity, got.intensity, "intensity must be lossless");
+            assert_eq!(
+                orig.classification, got.classification,
+                "classification must be lossless"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 }

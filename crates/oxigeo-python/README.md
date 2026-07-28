@@ -415,7 +415,7 @@ See the `examples/` directory for complete examples:
 
 - **Rust**: 1.70 or later
 - **Python**: 3.9 or later
-- **PyO3**: 0.24.x (automatically handled by Cargo)
+- **PyO3**: 0.29.x (automatically handled by Cargo)
 - **Maturin**: For building Python wheels
 
 ### Building from Source

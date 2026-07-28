@@ -81,18 +81,27 @@ impl GeometryCodec {
                 )))
             }
             GeometryType::Polygon => Ok(Geometry::Polygon(self.read_polygon(t)?)),
-            GeometryType::MultiPolygon => {
-                let parts = t.get_table_vector(fbs::GEOM_VT_PARTS)?;
-                let mut polygons = Vec::new();
-                if parts.is_empty() {
-                    // A single-polygon MultiPolygon may be stored flat.
-                    polygons.push(self.read_polygon(t)?);
-                } else {
-                    for part in &parts {
-                        polygons.push(self.read_polygon(part)?);
-                    }
-                }
-                Ok(Geometry::MultiPolygon(MultiPolygon::new(polygons)))
+            GeometryType::MultiPolygon => Ok(Geometry::MultiPolygon(self.read_multi_polygon(t)?)),
+            // `Triangle` and (linear) `Surface` are single polygonal rings in the
+            // FlatGeobuf encoding — identical on-disk layout to a `Polygon`, so we
+            // decode them losslessly into the core `Polygon` type (the core model
+            // carries no separate Triangle/Surface subtype, but the geometry is
+            // exact). This turns a hard interop failure into a real read.
+            GeometryType::Triangle | GeometryType::Surface => {
+                Ok(Geometry::Polygon(self.read_polygon(t)?))
+            }
+            // `PolyhedralSurface` and `Tin` are collections of polygonal faces
+            // (each face/triangle a ring), encoded like a `MultiPolygon` (nested
+            // `parts`, or a single flat face). Decode into the core `MultiPolygon`.
+            GeometryType::PolyhedralSurface | GeometryType::Tin => {
+                Ok(Geometry::MultiPolygon(self.read_multi_polygon(t)?))
+            }
+            // A (linear) `Curve` is a single coordinate sequence — a `LineString`.
+            GeometryType::Curve => {
+                let coords = self.read_coords(t)?;
+                Ok(Geometry::LineString(
+                    LineString::new(coords).map_err(FlatGeobufError::OxiGeo)?,
+                ))
             }
             GeometryType::GeometryCollection => {
                 let parts = t.get_table_vector(fbs::GEOM_VT_PARTS)?;
@@ -107,6 +116,22 @@ impl GeometryCodec {
             }
             other => Err(FlatGeobufError::UnsupportedGeometryType(other as u8)),
         }
+    }
+
+    /// Reads a `MultiPolygon` (or a `PolyhedralSurface`/`TIN`, which share its
+    /// encoding) from a `Geometry` table: a `parts` vector of polygon tables, or
+    /// a single flat polygon when `parts` is empty.
+    fn read_multi_polygon(&self, t: &FbTable<'_>) -> Result<MultiPolygon> {
+        let parts = t.get_table_vector(fbs::GEOM_VT_PARTS)?;
+        let mut polygons = Vec::new();
+        if parts.is_empty() {
+            polygons.push(self.read_polygon(t)?);
+        } else {
+            for part in &parts {
+                polygons.push(self.read_polygon(part)?);
+            }
+        }
+        Ok(MultiPolygon::new(polygons))
     }
 
     /// Reads a `Polygon` from a `Geometry` table (exterior + optional holes).
@@ -484,6 +509,88 @@ mod tests {
             assert!(matches!(gc.geometries[1], Geometry::LineString(_)));
         } else {
             panic!("expected geometry collection");
+        }
+    }
+
+    fn square(x: f64) -> Polygon {
+        Polygon::new(
+            LineString::new(vec![
+                Coordinate::new_2d(x, 0.0),
+                Coordinate::new_2d(x + 1.0, 0.0),
+                Coordinate::new_2d(x + 1.0, 1.0),
+                Coordinate::new_2d(x, 1.0),
+                Coordinate::new_2d(x, 0.0),
+            ])
+            .unwrap(),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    /// A `Triangle` (single polygonal ring on disk) must decode into a core
+    /// `Polygon` rather than erroring with `UnsupportedGeometryType`.
+    #[test]
+    fn test_triangle_decodes_to_polygon() {
+        let codec = GeometryCodec::new(false, false);
+        let tri = Polygon::new(
+            LineString::new(vec![
+                Coordinate::new_2d(0.0, 0.0),
+                Coordinate::new_2d(1.0, 0.0),
+                Coordinate::new_2d(0.0, 1.0),
+                Coordinate::new_2d(0.0, 0.0),
+            ])
+            .unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let g = Geometry::Polygon(tri);
+        let out = roundtrip(&codec, &g, GeometryType::Triangle);
+        match out {
+            Geometry::Polygon(p) => assert_eq!(p.exterior.coords.len(), 4),
+            other => panic!("expected Polygon from Triangle, got {other:?}"),
+        }
+    }
+
+    /// A `Surface` (linear) decodes to a core `Polygon`.
+    #[test]
+    fn test_surface_decodes_to_polygon() {
+        let codec = GeometryCodec::new(false, false);
+        let g = Geometry::Polygon(square(0.0));
+        assert!(matches!(
+            roundtrip(&codec, &g, GeometryType::Surface),
+            Geometry::Polygon(_)
+        ));
+    }
+
+    /// A `Curve` (linear) decodes to a core `LineString`.
+    #[test]
+    fn test_curve_decodes_to_linestring() {
+        let codec = GeometryCodec::new(false, false);
+        let ls = LineString::new(vec![
+            Coordinate::new_2d(0.0, 0.0),
+            Coordinate::new_2d(1.0, 1.0),
+            Coordinate::new_2d(2.0, 0.0),
+        ])
+        .unwrap();
+        let g = Geometry::LineString(ls);
+        match roundtrip(&codec, &g, GeometryType::Curve) {
+            Geometry::LineString(l) => assert_eq!(l.coords.len(), 3),
+            other => panic!("expected LineString from Curve, got {other:?}"),
+        }
+    }
+
+    /// `PolyhedralSurface` and `TIN` (collections of polygonal faces) decode to a
+    /// core `MultiPolygon`.
+    #[test]
+    fn test_polyhedral_surface_and_tin_decode_to_multipolygon() {
+        let codec = GeometryCodec::new(false, false);
+        let g = Geometry::MultiPolygon(MultiPolygon::new(vec![square(0.0), square(5.0)]));
+
+        for gt in [GeometryType::PolyhedralSurface, GeometryType::Tin] {
+            match roundtrip(&codec, &g, gt) {
+                Geometry::MultiPolygon(mp) => assert_eq!(mp.polygons.len(), 2),
+                other => panic!("expected MultiPolygon from {gt:?}, got {other:?}"),
+            }
         }
     }
 }

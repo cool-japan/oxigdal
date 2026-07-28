@@ -3,6 +3,8 @@
 //! Tests format detection, conversion matrix, feature-flag re-exports,
 //! conversion planning, and edge cases.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo::DatasetFormat;
 use oxigeo::convert::{
     ConversionPlan, ConversionStep, ConvertOptions, can_convert, detect_format,
@@ -98,12 +100,15 @@ fn detect_copc_laz_compound() {
 
 #[test]
 fn detect_laz_extension() {
-    assert_eq!(detect_format("scan.laz").ok(), Some(DatasetFormat::Copc));
+    // A plain `.laz` file is not COPC-structured (no octree-hierarchy VLR /
+    // chunked layout); only the compound `.copc.laz` extension is tagged
+    // `Copc`. See `DatasetFormat::Las` doc comment in `format.rs`.
+    assert_eq!(detect_format("scan.laz").ok(), Some(DatasetFormat::Las));
 }
 
 #[test]
 fn detect_las_extension() {
-    assert_eq!(detect_format("scan.las").ok(), Some(DatasetFormat::Copc));
+    assert_eq!(detect_format("scan.las").ok(), Some(DatasetFormat::Las));
 }
 
 #[test]

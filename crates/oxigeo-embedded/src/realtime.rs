@@ -4,7 +4,10 @@
 
 use crate::error::{EmbeddedError, Result};
 use crate::target;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
+// `portable-atomic` provides `AtomicU64` on 32-bit bare-metal targets
+// (thumbv7em, riscv32imac, …) where `core::sync::atomic::AtomicU64` is absent.
+use portable_atomic::AtomicU64;
 
 /// Real-time priority levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,20 +95,55 @@ impl RealtimeScheduler {
         }
     }
 
+    /// Read the raw monotonic tick counter, expressed in CPU cycles.
+    ///
+    /// On bare-metal targets this is the hardware cycle counter
+    /// ([`target::cycle_count`]). On hosted (`std`) builds — where no cycle
+    /// counter feature is enabled and `cycle_count()` returns `None` — a real
+    /// monotonic clock ([`target::host_now_us`]) is used instead, scaled by
+    /// `cycles_per_us` so that the same [`elapsed_us`](Self::elapsed_us)
+    /// conversion (`ticks / cycles_per_us`) yields wall-clock microseconds.
+    ///
+    /// Returns `None` only on a `no_std` build with no cycle-counter feature
+    /// (`arm`/`riscv`/`esp32`) enabled — i.e. a target with genuinely no time
+    /// source, where elapsed time cannot be measured.
+    #[inline]
+    fn raw_ticks(&self) -> Option<u64> {
+        #[cfg(feature = "std")]
+        {
+            // Prefer a hardware counter when a target feature exposes one,
+            // otherwise fall back to the host monotonic clock.
+            match target::cycle_count() {
+                Some(cycles) => Some(cycles),
+                None => Some(target::host_now_us().saturating_mul(self.cycles_per_us.max(1))),
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            target::cycle_count()
+        }
+    }
+
     /// Initialize the scheduler (record start time)
     pub fn init(&self) {
-        if let Some(cycles) = target::cycle_count() {
-            self.start_cycles.store(cycles, Ordering::Relaxed);
+        if let Some(ticks) = self.raw_ticks() {
+            self.start_cycles.store(ticks, Ordering::Relaxed);
         }
     }
 
     /// Get elapsed time in microseconds since init
+    ///
+    /// Returns `0` only when there is no time source at all (a `no_std` build
+    /// with none of the `arm`/`riscv`/`esp32` cycle-counter features enabled);
+    /// in that configuration hard-deadline enforcement cannot fire because
+    /// elapsed time is unmeasurable. Hosted (`std`) builds and real embedded
+    /// targets both return true elapsed microseconds.
     pub fn elapsed_us(&self) -> u64 {
-        match target::cycle_count() {
+        match self.raw_ticks() {
             Some(current) => {
                 let start = self.start_cycles.load(Ordering::Relaxed);
                 let elapsed_cycles = current.saturating_sub(start);
-                elapsed_cycles / self.cycles_per_us
+                elapsed_cycles / self.cycles_per_us.max(1)
             }
             None => 0,
         }
@@ -565,6 +603,87 @@ mod tests {
 
         assert_eq!(executed, 1);
         assert_eq!(counter, 1, "dispatch closure must run for the ready task");
+    }
+
+    /// Regression test for the previously-silent deadline no-op: on a hosted
+    /// (`std`) build the scheduler now uses a real monotonic clock, so a task
+    /// that runs past a hard deadline must be reported as `DeadlineMissed`
+    /// rather than always succeeding with a zero-elapsed measurement.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_execute_with_deadline_detects_hard_miss() {
+        let scheduler = RealtimeScheduler::new(1);
+        scheduler.init();
+
+        let deadline = Deadline::hard(500); // 500 microseconds
+        let result = scheduler.execute_with_deadline(deadline, || {
+            // Sleep well past the 500us hard deadline.
+            std::thread::sleep(core::time::Duration::from_millis(5));
+            42u32
+        });
+
+        match result {
+            Err(EmbeddedError::DeadlineMissed {
+                actual_us,
+                deadline_us,
+            }) => {
+                assert_eq!(deadline_us, 500);
+                assert!(
+                    actual_us > 500,
+                    "measured elapsed {actual_us}us should exceed the 500us deadline"
+                );
+            }
+            other => panic!("expected DeadlineMissed, got {other:?}"),
+        }
+    }
+
+    /// A fast task under a generous hard deadline must still succeed and return
+    /// its value on a hosted build (guards against the clock over-reporting).
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_execute_with_deadline_allows_fast_task() {
+        let scheduler = RealtimeScheduler::new(1);
+        scheduler.init();
+
+        let deadline = Deadline::hard(1_000_000); // 1 second
+        let value = scheduler
+            .execute_with_deadline(deadline, || 1u32 + 1)
+            .expect("fast task well under a 1s deadline must not miss");
+        assert_eq!(value, 2);
+    }
+
+    /// A soft deadline must never turn a slow task into an error, even when the
+    /// host clock reports the overrun.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_execute_with_soft_deadline_never_errors() {
+        let scheduler = RealtimeScheduler::new(1);
+        scheduler.init();
+
+        let deadline = Deadline::soft(1); // 1us soft deadline, trivially exceeded
+        let value = scheduler
+            .execute_with_deadline(deadline, || {
+                std::thread::sleep(core::time::Duration::from_millis(2));
+                7u32
+            })
+            .expect("soft deadlines never produce an error");
+        assert_eq!(value, 7);
+    }
+
+    /// The host clock must advance between two `elapsed_us` reads.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_elapsed_us_advances_on_host() {
+        let scheduler = RealtimeScheduler::new(1);
+        scheduler.init();
+
+        let first = scheduler.elapsed_us();
+        std::thread::sleep(core::time::Duration::from_millis(2));
+        let second = scheduler.elapsed_us();
+        assert!(
+            second > first,
+            "elapsed_us must advance on a hosted build (first={first}, second={second})"
+        );
     }
 
     #[test]

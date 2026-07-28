@@ -10,6 +10,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use oxigeo_streaming::error::StreamingError;
 use oxigeo_streaming::v2::backpressure::{BackpressureConsumer, BackpressureProducer, CreditPool};
 use oxigeo_streaming::v2::checkpoint::{
     CheckpointId, CheckpointManager, CheckpointState, InMemoryCheckpointStore,
@@ -197,6 +198,7 @@ fn sw_single_session_from_close_events() {
         gap_duration: Duration::from_secs(60),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     for i in 0u64..5 {
@@ -214,6 +216,7 @@ fn sw_gap_detection_closes_session() {
         gap_duration: Duration::from_secs(30),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     proc.process(stream_event(0, 0)).expect("ok");
@@ -230,6 +233,7 @@ fn sw_min_events_filter_drops_small_sessions() {
         gap_duration: Duration::from_secs(5),
         min_events: 5,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     proc.process(stream_event(0, 0)).expect("ok");
@@ -246,6 +250,7 @@ fn sw_max_session_duration_force_closes() {
         gap_duration: Duration::from_secs(1000),
         min_events: 1,
         max_session_duration: Some(Duration::from_secs(40)),
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     proc.process(stream_event(0, 0)).expect("ok");
@@ -274,6 +279,7 @@ fn sw_multiple_sessions_from_gapped_stream() {
         gap_duration: Duration::from_secs(10),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     // Session 1: t=0,5
@@ -297,6 +303,7 @@ fn sw_session_id_increments_monotonically() {
         gap_duration: Duration::from_secs(5),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     proc.process(stream_event(0, 0)).expect("ok");
@@ -331,6 +338,7 @@ fn sw_events_within_gap_stay_in_same_session() {
         gap_duration: Duration::from_secs(60),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     for i in 0u64..10 {
@@ -360,6 +368,7 @@ fn sw_min_events_one_passes_single_event_sessions() {
         gap_duration: Duration::from_secs(5),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     proc.process(stream_event(0, 0)).expect("ok");
@@ -384,6 +393,7 @@ fn sw_total_sessions_closed_tracks_count() {
         gap_duration: Duration::from_secs(5),
         min_events: 1,
         max_session_duration: None,
+        allowed_lateness: Duration::ZERO,
     };
     let mut proc = SessionWindowProcessor::new(cfg);
     proc.process(stream_event(0, 0)).expect("ok");
@@ -406,7 +416,12 @@ fn sw_drain_returns_empty_vec_when_called_twice() {
 
 #[test]
 fn sw_session_events_are_in_arrival_order() {
-    let cfg = SessionWindowConfig::default();
+    // Bounded out-of-order arrival is tolerated via allowed_lateness; events are
+    // still stored in arrival order (not sorted by timestamp).
+    let cfg = SessionWindowConfig {
+        allowed_lateness: Duration::from_secs(10),
+        ..Default::default()
+    };
     let mut proc = SessionWindowProcessor::new(cfg);
     for i in [5u64, 2, 8, 1] {
         proc.process(stream_event(i, i)).expect("ok");
@@ -416,6 +431,18 @@ fn sw_session_events_are_in_arrival_order() {
     // Events are stored in arrival order, not sorted by timestamp
     let seqs: Vec<u64> = sessions[0].events.iter().map(|e| e.sequence).collect();
     assert_eq!(seqs, vec![5, 2, 8, 1]);
+}
+
+#[test]
+fn sw_out_of_order_beyond_lateness_is_rejected() {
+    // Default config (allowed_lateness = 0) enforces the ordering precondition.
+    let cfg = SessionWindowConfig::default();
+    let mut proc = SessionWindowProcessor::new(cfg);
+    proc.process(stream_event(10, 0)).expect("in-order ok");
+    let err = proc
+        .process(stream_event(5, 1))
+        .expect_err("out-of-order event must be rejected, not silently mis-processed");
+    assert!(matches!(err, StreamingError::InvalidState(_)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -693,7 +720,7 @@ fn ck_manager_recover_returns_last_sequence() {
     let mut mgr = CheckpointManager::new(store, 50);
     mgr.on_event("s", 50, 0).expect("ok");
     mgr.on_event("s", 100, 0).expect("ok");
-    assert_eq!(mgr.recover("s"), Some(100));
+    assert_eq!(mgr.recover("s").expect("recover ok"), Some(100));
 }
 
 #[test]
@@ -755,7 +782,7 @@ fn ck_source_offsets_round_trip() {
 fn ck_recover_returns_none_before_first_checkpoint() {
     let store = InMemoryCheckpointStore::new(5);
     let mgr = CheckpointManager::new(store, 100);
-    assert!(mgr.recover("s").is_none());
+    assert!(mgr.recover("s").expect("recover ok").is_none());
 }
 
 #[test]
@@ -769,7 +796,10 @@ fn ck_watermark_preserved_in_checkpoint() {
     let store = InMemoryCheckpointStore::new(10);
     let mut mgr = CheckpointManager::new(store, 10);
     mgr.on_event("s", 10, 9_999_999).expect("ok");
-    let seq = mgr.recover("s").expect("should have checkpoint");
+    let seq = mgr
+        .recover("s")
+        .expect("recover ok")
+        .expect("should have checkpoint");
     assert_eq!(seq, 10);
     let latest = mgr.store().latest("s").expect("should exist");
     assert_eq!(latest.watermark_ns, 9_999_999);

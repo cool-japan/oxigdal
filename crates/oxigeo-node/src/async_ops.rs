@@ -8,8 +8,10 @@ use napi::threadsafe_function::{
 };
 use napi::tokio;
 use napi_derive::napi;
+use oxigeo_core::buffer::RasterBuffer;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::buffer::BufferWrapper;
 use crate::error::NodeError;
@@ -259,14 +261,29 @@ pub async fn simplify_async(
         })?
 }
 
-/// Batch processes multiple rasters asynchronously
+/// Batch processes multiple rasters asynchronously.
+///
+/// Each input raster is opened, has `operation` (one of the per-pixel
+/// transforms `identity`, `abs`, `negate`, `square`, `sqrt`) applied to every
+/// band, and is written to `output_dir/processed_<name>`. Files are processed
+/// concurrently on the blocking thread pool.
+///
+/// If a [`CancellationToken`] is supplied and cancelled, files not yet started
+/// are skipped and the call returns a `CANCELLED` error (already-written
+/// outputs are left in place).
 #[allow(dead_code)]
 #[napi]
 pub async fn batch_process_rasters(
     paths: Vec<String>,
     output_dir: String,
     operation: String,
+    token: Option<&CancellationToken>,
 ) -> Result<Vec<String>> {
+    // Validate the operation once, up front, so an unknown operation fails fast
+    // instead of after opening files.
+    let op = PixelOp::parse(&operation)?;
+    let cancel = token.map(CancellationToken::flag);
+
     let mut tasks = Vec::new();
 
     for path in paths {
@@ -278,25 +295,24 @@ pub async fn batch_process_rasters(
                 .and_then(|n| n.to_str())
                 .unwrap_or("output.tif")
         );
-        let op = operation.clone();
+        let task_cancel = cancel.clone();
 
-        let task = tokio::task::spawn_blocking(move || -> Result<String> {
+        let task = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+            // Skip files that have not started once cancellation is observed.
+            if task_cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::SeqCst))
+            {
+                return Ok(None);
+            }
+
             let dataset = Dataset::open(path)?;
-
-            // Apply operation based on string
-            let processed = match op.as_str() {
-                "identity" => dataset,
-                _ => {
-                    return Err(NodeError {
-                        code: "INVALID_OPERATION".to_string(),
-                        message: format!("Unknown operation: {}", op),
-                    }
-                    .into());
-                }
-            };
-
+            // Single-threaded per file (files are already processed
+            // concurrently); chunk_size 0 == whole-band.
+            let processed =
+                apply_operation_parallel(&dataset, op, 0, 1, task_cancel.clone(), false)?;
             processed.save(output_path.clone())?;
-            Ok(output_path)
+            Ok(Some(output_path))
         });
 
         tasks.push(task);
@@ -304,16 +320,29 @@ pub async fn batch_process_rasters(
 
     let total = tasks.len();
     let mut results = Vec::new();
+    let mut cancelled = false;
     for (completed, task) in tasks.into_iter().enumerate() {
         let result = task.await.map_err(|e| NodeError {
             code: "TASK_ERROR".to_string(),
             message: format!("Task execution failed: {}", e),
         })??;
-        results.push(result);
+
+        match result {
+            Some(path) => results.push(path),
+            None => cancelled = true,
+        }
 
         if total > 0 {
             report_progress((completed + 1) as f64 / total as f64);
         }
+    }
+
+    if cancelled {
+        return Err(NodeError {
+            code: "CANCELLED".to_string(),
+            message: "Batch processing was cancelled".to_string(),
+        }
+        .into());
     }
 
     Ok(results)
@@ -388,6 +417,15 @@ impl CancellationToken {
     }
 }
 
+impl CancellationToken {
+    /// Returns a shared handle to the underlying cancellation flag so that a
+    /// worker running on another thread (inside `spawn_blocking`) can poll it
+    /// between chunks/files and abort cooperatively (crate-internal).
+    pub(crate) fn flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.cancelled)
+    }
+}
+
 /// Parallel processing configuration
 #[allow(dead_code)]
 #[napi(object)]
@@ -410,32 +448,274 @@ impl Default for ParallelConfig {
     }
 }
 
-/// Processes a large raster in parallel chunks
+/// A pixel-wise (row-independent) operation that the parallel/batch raster
+/// processors can apply band-by-band.
+///
+/// Every variant is a pure function of a single pixel value, which is what
+/// makes the chunked, multi-threaded execution below correct: horizontal
+/// chunks never need neighbouring rows, so they can be computed fully
+/// independently and reassembled without seams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PixelOp {
+    /// Copy the input unchanged.
+    Identity,
+    /// Absolute value.
+    Abs,
+    /// Arithmetic negation.
+    Negate,
+    /// Square the value.
+    Square,
+    /// Square root (yields NaN for negative inputs, per IEEE-754).
+    Sqrt,
+}
+
+impl PixelOp {
+    /// Parses a JS-facing operation string into a [`PixelOp`], returning an
+    /// `INVALID_OPERATION` error for anything unsupported.
+    fn parse(operation: &str) -> Result<Self> {
+        match operation {
+            "identity" => Ok(Self::Identity),
+            "abs" => Ok(Self::Abs),
+            "negate" => Ok(Self::Negate),
+            "square" => Ok(Self::Square),
+            "sqrt" => Ok(Self::Sqrt),
+            _ => Err(NodeError {
+                code: "INVALID_OPERATION".to_string(),
+                message: format!(
+                    "Unknown operation '{}' (supported: identity, abs, negate, square, sqrt)",
+                    operation
+                ),
+            }
+            .into()),
+        }
+    }
+
+    /// Applies the operation to a single pixel value.
+    #[inline]
+    fn apply(self, value: f64) -> f64 {
+        match self {
+            Self::Identity => value,
+            Self::Abs => value.abs(),
+            Self::Negate => -value,
+            Self::Square => value * value,
+            Self::Sqrt => value.sqrt(),
+        }
+    }
+}
+
+/// A unit of work: the pixels of one band between two rows.
+struct Chunk {
+    band: usize,
+    y_start: u64,
+    y_end: u64,
+}
+
+/// Applies a per-pixel operation to every band of `dataset`, splitting each
+/// band into `chunk_size`-row chunks and processing them across `num_threads`
+/// worker threads.
+///
+/// - `chunk_size == 0` is treated as "one chunk per band" (whole band).
+/// - `num_threads == 0` uses [`std::thread::available_parallelism`].
+/// - If `cancel` is set at any point, the work aborts with a `CANCELLED` error
+///   rather than returning partial/fake data.
+/// - When `report` is true, a progress fraction is emitted after each chunk.
+fn apply_operation_parallel(
+    dataset: &Dataset,
+    op: PixelOp,
+    chunk_size: u32,
+    num_threads: u32,
+    cancel: Option<Arc<AtomicBool>>,
+    report: bool,
+) -> Result<Dataset> {
+    let bands = dataset.bands();
+
+    // Output starts as a copy of the input so per-band dtype/dims/nodata are
+    // preserved; the computed values overwrite the pixels below.
+    let mut output: Vec<RasterBuffer> = bands.to_vec();
+
+    // Build the chunk list up front so worker threads can steal indices from a
+    // shared atomic counter.
+    let rows_per_chunk = if chunk_size == 0 {
+        u64::MAX
+    } else {
+        u64::from(chunk_size)
+    };
+    let mut chunks: Vec<Chunk> = Vec::new();
+    for (band_index, band) in bands.iter().enumerate() {
+        let height = band.height();
+        let mut y = 0u64;
+        while y < height {
+            let y_end = y.saturating_add(rows_per_chunk).min(height);
+            chunks.push(Chunk {
+                band: band_index,
+                y_start: y,
+                y_end,
+            });
+            y = y_end;
+        }
+    }
+
+    let total_chunks = chunks.len();
+    if total_chunks == 0 {
+        return Ok(dataset.with_bands(output));
+    }
+
+    let requested_threads = if num_threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        num_threads as usize
+    };
+    let worker_count = requested_threads.clamp(1, total_chunks);
+
+    let next_index = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
+    let cancel_ref = cancel.as_ref();
+
+    // Each worker returns the chunks it computed as (chunk_index, values); a
+    // returned `Err` signals either observed cancellation or a pixel-access
+    // error. All reads are through shared `&` references (RasterBuffer is Sync),
+    // so no data races are possible.
+    #[allow(clippy::type_complexity)]
+    let worker_results: Vec<std::result::Result<Vec<(usize, Vec<f64>)>, WorkerError>> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..worker_count)
+                .map(|_| {
+                    scope.spawn(
+                        || -> std::result::Result<Vec<(usize, Vec<f64>)>, WorkerError> {
+                            let mut local = Vec::new();
+                            loop {
+                                if cancel_ref.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                                    return Err(WorkerError::Cancelled);
+                                }
+                                let idx = next_index.fetch_add(1, Ordering::SeqCst);
+                                if idx >= total_chunks {
+                                    break;
+                                }
+                                let chunk = &chunks[idx];
+                                let band = &bands[chunk.band];
+                                let width = band.width();
+                                let mut values = Vec::with_capacity(
+                                    (width * (chunk.y_end - chunk.y_start)) as usize,
+                                );
+                                for y in chunk.y_start..chunk.y_end {
+                                    for x in 0..width {
+                                        let raw = band
+                                            .get_pixel(x, y)
+                                            .map_err(|e| WorkerError::Pixel(e.to_string()))?;
+                                        values.push(op.apply(raw));
+                                    }
+                                }
+                                local.push((idx, values));
+
+                                if report {
+                                    let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                                    report_progress(done as f64 / total_chunks as f64);
+                                }
+                            }
+                            Ok(local)
+                        },
+                    )
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or(Err(WorkerError::Pixel(
+                        "worker thread panicked".to_string(),
+                    )))
+                })
+                .collect()
+        });
+
+    // Reassemble: fold every worker's chunks back into the output bands. Any
+    // error (cancellation or pixel access) aborts without producing data.
+    for result in worker_results {
+        let local = match result {
+            Ok(local) => local,
+            Err(WorkerError::Cancelled) => {
+                return Err(NodeError {
+                    code: "CANCELLED".to_string(),
+                    message: "Operation was cancelled".to_string(),
+                }
+                .into());
+            }
+            Err(WorkerError::Pixel(message)) => {
+                return Err(NodeError {
+                    code: "PROCESSING_ERROR".to_string(),
+                    message,
+                }
+                .into());
+            }
+        };
+
+        for (chunk_index, values) in local {
+            let chunk = &chunks[chunk_index];
+            let band = &mut output[chunk.band];
+            let width = band.width();
+            let mut cursor = 0usize;
+            for y in chunk.y_start..chunk.y_end {
+                for x in 0..width {
+                    band.set_pixel(x, y, values[cursor])
+                        .map_err(|e| NodeError {
+                            code: "PROCESSING_ERROR".to_string(),
+                            message: e.to_string(),
+                        })?;
+                    cursor += 1;
+                }
+            }
+        }
+    }
+
+    Ok(dataset.with_bands(output))
+}
+
+/// Internal error raised by a parallel worker thread.
+enum WorkerError {
+    /// The shared cancellation flag was observed to be set.
+    Cancelled,
+    /// A pixel read failed (carries the underlying error message).
+    Pixel(String),
+}
+
+/// Processes a large raster in parallel chunks.
+///
+/// Splits every band into `chunk_size`-row chunks and applies `operation`
+/// across `num_threads` worker threads (see [`ParallelConfig`]). Supported
+/// operations are the per-pixel transforms `identity`, `abs`, `negate`,
+/// `square`, and `sqrt`.
+///
+/// When a [`CancellationToken`] is supplied and cancelled while the work is in
+/// flight, the operation aborts with a `CANCELLED` error instead of returning a
+/// partially processed dataset.
 #[allow(dead_code)]
 #[napi]
 pub async fn process_raster_parallel(
     dataset: &Dataset,
     operation: String,
     config: Option<ParallelConfig>,
+    token: Option<&CancellationToken>,
 ) -> Result<Dataset> {
     let cfg = config.unwrap_or_default();
     let ds_clone = dataset.clone();
+    let op = PixelOp::parse(&operation)?;
+    let cancel = token.map(CancellationToken::flag);
 
     if cfg.report_progress {
         report_progress(0.0);
     }
 
     let result = tokio::task::spawn_blocking(move || -> Result<Dataset> {
-        // This is a simplified implementation
-        // In production, would process tiles in parallel
-        match operation.as_str() {
-            "identity" => Ok(ds_clone),
-            _ => Err(NodeError {
-                code: "INVALID_OPERATION".to_string(),
-                message: format!("Unknown operation: {}", operation),
-            }
-            .into()),
-        }
+        apply_operation_parallel(
+            &ds_clone,
+            op,
+            cfg.chunk_size,
+            cfg.num_threads,
+            cancel,
+            cfg.report_progress,
+        )
     })
     .await
     .map_err(|e| NodeError {
@@ -471,7 +751,18 @@ impl RasterStream {
     }
 
     /// Reads the next chunk
+    ///
+    /// # Safety
+    ///
+    /// `napi-rs` requires `async` methods taking `&mut self` to be declared
+    /// `unsafe`: the mutable borrow must stay valid across the `.await`
+    /// suspension point, which the JS event loop cannot enforce statically.
+    /// The generated N-API binding always awaits each call to completion
+    /// before the next one runs, so this holds under normal sequential use;
+    /// callers must not race a second call into the same `RasterStream`
+    /// (e.g. via `Promise.all`) against an in-flight `read_next_chunk`/`reset`.
     #[napi]
+    #[allow(unsafe_code)]
     pub async unsafe fn read_next_chunk(&mut self) -> Result<Option<BufferWrapper>> {
         if self.current_row >= self.dataset.height() {
             return Ok(None);
@@ -490,7 +781,7 @@ impl RasterStream {
 
     /// Resets the stream to the beginning
     #[napi]
-    pub unsafe fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.current_row = 0;
     }
 
@@ -542,5 +833,99 @@ mod tests {
         // panic (regression guard for the OnceLock initialization path).
         let guard = lock_progress_callback().expect("lock should succeed on first use");
         drop(guard);
+    }
+
+    /// Builds a two-band float32 dataset where band `b` holds `x + y + b*100`.
+    fn sample_dataset(width: u32, height: u32) -> Dataset {
+        let mut ds = Dataset::create(width, height, 2, "float32".to_string())
+            .expect("create dataset for test");
+        for band in 0..2u32 {
+            let mut buf = crate::buffer::BufferWrapper::new(width, height, "float32".to_string())
+                .expect("create band buffer");
+            for y in 0..height {
+                for x in 0..width {
+                    buf.set_pixel(x, y, (x + y + band * 100) as f64)
+                        .expect("set pixel");
+                }
+            }
+            ds.write_band(band, &buf).expect("write band");
+        }
+        ds
+    }
+
+    #[test]
+    fn pixel_op_parse_rejects_unknown() {
+        assert!(PixelOp::parse("identity").is_ok());
+        assert!(PixelOp::parse("sqrt").is_ok());
+        assert!(PixelOp::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn parallel_square_transforms_every_band_and_pixel() {
+        let ds = sample_dataset(10, 7);
+        // chunk_size 3 forces multiple chunks per band; 4 workers exercises the
+        // work-stealing path.
+        let result = apply_operation_parallel(&ds, PixelOp::Square, 3, 4, None, false)
+            .expect("square should succeed");
+
+        for band in 0..2u32 {
+            let out = result.read_band(band).expect("read band");
+            for y in 0..7u32 {
+                for x in 0..10u32 {
+                    let input = (x + y + band * 100) as f64;
+                    let expected = input * input;
+                    let actual = out.get_pixel(x, y).expect("get pixel");
+                    assert!(
+                        (actual - expected).abs() < 1e-3,
+                        "band {band} ({x},{y}): expected {expected}, got {actual}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_identity_is_a_faithful_copy() {
+        let ds = sample_dataset(5, 5);
+        let result = apply_operation_parallel(&ds, PixelOp::Identity, 0, 0, None, false)
+            .expect("identity should succeed");
+        for band in 0..2u32 {
+            let out = result.read_band(band).expect("read band");
+            for y in 0..5u32 {
+                for x in 0..5u32 {
+                    let expected = (x + y + band * 100) as f64;
+                    let actual = out.get_pixel(x, y).expect("get pixel");
+                    assert!((actual - expected).abs() < f64::EPSILON);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_operation_honors_prior_cancellation() {
+        let ds = sample_dataset(16, 16);
+        let flag = Arc::new(AtomicBool::new(true)); // already cancelled
+        let err = apply_operation_parallel(&ds, PixelOp::Abs, 2, 4, Some(flag), false);
+        match err {
+            Err(e) => assert!(
+                e.to_string().contains("CANCELLED"),
+                "expected CANCELLED error, got {e}"
+            ),
+            Ok(_) => panic!("expected cancellation to abort processing"),
+        }
+    }
+
+    #[test]
+    fn cancellation_token_flag_reflects_state() {
+        let token = CancellationToken::new();
+        let flag = token.flag();
+        assert!(!flag.load(Ordering::SeqCst));
+        token.cancel();
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "shared flag must observe cancellation through the token"
+        );
+        token.reset();
+        assert!(!flag.load(Ordering::SeqCst));
     }
 }

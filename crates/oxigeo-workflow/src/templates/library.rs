@@ -11,42 +11,82 @@ use std::sync::Arc;
 /// Workflow template library.
 pub struct WorkflowTemplateLibrary {
     templates: Arc<DashMap<String, WorkflowTemplate>>,
+    /// Diagnostic messages for any built-in template that failed to construct
+    /// or register during [`WorkflowTemplateLibrary::new`]. Empty in the
+    /// healthy case.
+    ///
+    /// `new()` stays infallible (built-in template registration failures are
+    /// not, by themselves, a reason to make every caller of `new()` handle a
+    /// `Result`), but silently discarding those failures made a regressed or
+    /// id-colliding built-in template vanish from the library with zero
+    /// diagnostic -- `get_template("satellite_processing")` would just
+    /// return `None`, indistinguishable from that template never having
+    /// existed. This field -- and [`WorkflowTemplateLibrary::builtin_registration_errors`]
+    /// -- lets operators/monitoring detect that condition at startup instead.
+    builtin_registration_errors: Vec<String>,
 }
 
 impl WorkflowTemplateLibrary {
     /// Create a new template library.
     pub fn new() -> Self {
-        let library = Self {
+        let mut library = Self {
             templates: Arc::new(DashMap::new()),
+            builtin_registration_errors: Vec::new(),
         };
 
         // Add built-in templates
-        library.register_builtin_templates();
+        library.builtin_registration_errors = library.register_builtin_templates();
 
         library
     }
 
-    /// Register all built-in templates.
-    fn register_builtin_templates(&self) {
-        // Satellite processing template
-        if let Ok(template) = Self::create_satellite_processing_template() {
-            let _ = self.add_template(template);
+    /// Diagnostic messages for any built-in template that failed to
+    /// construct or register during library initialization.
+    ///
+    /// Empty when every built-in template registered successfully (the
+    /// expected, healthy case). A non-empty result means at least one
+    /// built-in template is missing from this library -- each entry names
+    /// which template and why (constructor validation failure or an id
+    /// collision in [`WorkflowTemplateLibrary::add_template`]).
+    pub fn builtin_registration_errors(&self) -> &[String] {
+        &self.builtin_registration_errors
+    }
+
+    /// Register all built-in templates, returning a diagnostic message for
+    /// each one that failed to construct or register (also logged via
+    /// `tracing::error!` as it happens) instead of silently discarding the
+    /// failure.
+    fn register_builtin_templates(&self) -> Vec<String> {
+        type TemplateConstructor = fn() -> Result<WorkflowTemplate>;
+        let builtins: [(&str, TemplateConstructor); 4] = [
+            (
+                "satellite_processing",
+                Self::create_satellite_processing_template,
+            ),
+            ("change_detection", Self::create_change_detection_template),
+            ("batch_processing", Self::create_batch_processing_template),
+            ("terrain_analysis", Self::create_terrain_analysis_template),
+        ];
+
+        let mut errors = Vec::new();
+        for (name, constructor) in builtins {
+            match constructor() {
+                Ok(template) => {
+                    if let Err(e) = self.add_template(template) {
+                        let msg = format!("Failed to register built-in template '{}': {}", name, e);
+                        tracing::error!("{}", msg);
+                        errors.push(msg);
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("Failed to construct built-in template '{}': {}", name, e);
+                    tracing::error!("{}", msg);
+                    errors.push(msg);
+                }
+            }
         }
 
-        // Change detection template
-        if let Ok(template) = Self::create_change_detection_template() {
-            let _ = self.add_template(template);
-        }
-
-        // Batch processing template
-        if let Ok(template) = Self::create_batch_processing_template() {
-            let _ = self.add_template(template);
-        }
-
-        // Terrain analysis template
-        if let Ok(template) = Self::create_terrain_analysis_template() {
-            let _ = self.add_template(template);
-        }
+        errors
     }
 
     /// Add a template to the library.
@@ -431,5 +471,51 @@ mod tests {
         let count = library2.import_from_json(&json).expect("Failed to import");
 
         assert!(count > 0);
+    }
+
+    #[test]
+    fn test_healthy_library_has_no_builtin_registration_errors() {
+        let library = WorkflowTemplateLibrary::new();
+        assert!(
+            library.builtin_registration_errors().is_empty(),
+            "all four built-in templates should register cleanly, got: {:?}",
+            library.builtin_registration_errors()
+        );
+        // Sanity: all four built-ins are actually present, not just "no errors".
+        assert!(library.get_template("satellite-processing").is_some());
+        assert!(library.get_template("change-detection").is_some());
+        assert!(library.get_template("batch-processing").is_some());
+        assert!(library.get_template("terrain-analysis").is_some());
+    }
+
+    #[test]
+    fn test_builtin_registration_id_collision_is_surfaced_not_silently_dropped() {
+        let library = WorkflowTemplateLibrary::new();
+
+        // Registering the built-ins a second time must collide on every id
+        // (they are already present from `new()`); previously this collision
+        // was swallowed via `let _ = self.add_template(template);` with zero
+        // diagnostic. It must now be reported for each colliding template.
+        let errors = library.register_builtin_templates();
+
+        assert_eq!(
+            errors.len(),
+            4,
+            "expected all 4 built-ins to report a registration error on collision, got: {:?}",
+            errors
+        );
+        for expected_id in [
+            "satellite_processing",
+            "change_detection",
+            "batch_processing",
+            "terrain_analysis",
+        ] {
+            assert!(
+                errors.iter().any(|e| e.contains(expected_id)),
+                "expected an error message naming '{}', got: {:?}",
+                expected_id,
+                errors
+            );
+        }
     }
 }

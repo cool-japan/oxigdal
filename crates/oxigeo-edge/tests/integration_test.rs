@@ -1,11 +1,82 @@
 //! Integration tests for oxigeo-edge
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use oxigeo_edge::*;
 use oxigeo_edge::{resource, runtime, sync};
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A minimal, in-memory [`sync::SyncProtocol`] used only by these
+/// integration tests to demonstrate/verify that `SyncManager` actually
+/// routes operations through whatever protocol is injected via
+/// `SyncManager::new`, rather than any hardcoded internal implementation.
+struct TestSyncProtocol {
+    storage: parking_lot::RwLock<HashMap<String, sync::SyncItem>>,
+}
+
+impl TestSyncProtocol {
+    fn new() -> Self {
+        Self {
+            storage: parking_lot::RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl sync::SyncProtocol for TestSyncProtocol {
+    async fn push(&self, items: Vec<sync::SyncItem>) -> Result<sync::SyncMetadata> {
+        let mut storage = self.storage.write();
+        let mut metadata = sync::SyncMetadata::new(
+            "integration-test-sync".to_string(),
+            sync::SyncStrategy::Manual,
+        );
+        metadata.start();
+        for item in items {
+            storage.insert(item.id.clone(), item);
+        }
+        metadata.complete(storage.len(), 0);
+        Ok(metadata)
+    }
+
+    async fn pull(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<sync::SyncItem>> {
+        Ok(self.storage.read().values().cloned().collect())
+    }
+
+    async fn sync(&self, local_items: Vec<sync::SyncItem>) -> Result<sync::protocol::SyncResult> {
+        let mut metadata = sync::SyncMetadata::new(
+            "integration-test-sync".to_string(),
+            sync::SyncStrategy::Manual,
+        );
+        metadata.start();
+
+        let mut storage = self.storage.write();
+        let mut pushed = Vec::new();
+        for item in &local_items {
+            storage.insert(item.id.clone(), item.clone());
+            pushed.push(item.id.clone());
+        }
+
+        metadata.complete(pushed.len(), 0);
+
+        Ok(sync::protocol::SyncResult {
+            pushed,
+            pulled: Vec::new(),
+            metadata,
+            conflicts: Vec::new(),
+        })
+    }
+
+    async fn is_connected(&self) -> bool {
+        true
+    }
+}
 
 /// Generate a unique temporary directory path for a test.
 fn unique_test_dir(label: &str) -> std::path::PathBuf {
@@ -143,7 +214,8 @@ async fn test_sync_manager_integration() -> Result<()> {
     let cache_config = CacheConfig::minimal();
     let cache = std::sync::Arc::new(Cache::new(cache_config)?);
 
-    let manager = sync::SyncManager::new(sync::SyncStrategy::Manual, cache)?;
+    let protocol: Arc<dyn sync::SyncProtocol> = Arc::new(TestSyncProtocol::new());
+    let manager = sync::SyncManager::new(sync::SyncStrategy::Manual, cache, protocol)?;
 
     // Add items to sync queue
     let item1 = sync::SyncItem::new("item-1".to_string(), "key-1".to_string(), vec![1, 2, 3], 1);

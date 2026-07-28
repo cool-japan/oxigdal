@@ -18,7 +18,6 @@
 
 use core::f64::consts::PI;
 
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 // Arc-second to radian conversion constant

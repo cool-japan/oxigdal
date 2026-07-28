@@ -10,6 +10,11 @@ use crate::grid::{
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Read;
 
+/// Spherical Earth radius (metres) assumed for GRIB1 projected grids. GRIB1
+/// does not carry a shape-of-earth block, so the WMO default mean radius is
+/// used for the projection math.
+const GRIB1_EARTH_RADIUS_M: f64 = 6_371_229.0;
+
 /// GRIB1 Grid Definition Section
 #[derive(Debug, Clone)]
 pub struct GridDefinitionSection {
@@ -116,6 +121,7 @@ impl GridDefinitionSection {
             latin,
             di,
             dj,
+            earth_radius_m: GRIB1_EARTH_RADIUS_M,
             scan_mode,
         }))
     }
@@ -151,6 +157,7 @@ impl GridDefinitionSection {
             latin2,
             lat_south_pole,
             lon_south_pole,
+            earth_radius_m: GRIB1_EARTH_RADIUS_M,
             scan_mode,
         }))
     }
@@ -168,11 +175,10 @@ impl GridDefinitionSection {
         let projection_flag = reader.read_u8()?;
         let scan_flags = reader.read_u8()?;
 
-        let projection_center = if (projection_flag & 0b1000_0000) == 0 {
-            0 // North Pole
-        } else {
-            1 // South Pole
-        };
+        // Preserve the WMO projection-centre flag bit (0x80 = South Pole) so
+        // `PolarStereographicGrid::is_north_pole` decodes consistently for
+        // both GRIB1 and GRIB2.
+        let projection_center = projection_flag & 0b1000_0000;
 
         let scan_mode = ScanMode::from_flags(scan_flags);
 
@@ -184,7 +190,11 @@ impl GridDefinitionSection {
             lov,
             dx,
             dy,
+            // GRIB1 polar-stereographic grid lengths are specified at the
+            // standard 60° true-scale latitude.
+            lad: 60.0,
             projection_center,
+            earth_radius_m: GRIB1_EARTH_RADIUS_M,
             scan_mode,
         }))
     }

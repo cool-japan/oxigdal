@@ -1,7 +1,7 @@
 # TODO: oxigeo-3d
 
 > **Purpose:** 3-D geospatial — point clouds (LAS/LAZ, COPC, EPT), TINs, meshes (OBJ, glTF 2.0/GLB), 3D Tiles (Cesium), classification (ground/vegetation/building).
-> **Status (2026-05-16):** 4,585 LoC · 78 tests · 9 real stubs in `pointcloud/copc.rs` (VLR parse, hierarchy read, LAZ decompression, header parse), `pointcloud/ept.rs:279` (decompression dispatch), `classification.rs:300` ("simplified planarity"), `terrain/dem_to_mesh.rs:438` ("simplified mesh" test comment).
+> **Status (2026-07-28):** 4,585 LoC · 131 tests · 1 remaining real stub: `pointcloud/ept.rs` EPT `laszip`-tile decoding (explicit typed `Unsupported` error, tested — not a silent stub). COPC VLR parse, hierarchy read, header parse, and COPC-container LAZ decompression are all real (`oxigeo_copc::decompress_chunk`); planarity uses a real PCA eigensolver.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -19,22 +19,22 @@
   - **Done:** 2026-05-22 (Slice 26). New `src/pointcloud/copc_vlr.rs` (~326 LoC): `COPC_USER_ID = "copc"`, `COPC_INFO_RECORD_ID = 1`, `COPC_HIERARCHY_RECORD_ID = 1000`, `CopcInfoVlrPayload` (160-byte LE struct), `VoxelKey { level, x, y, z }` (16B), `HierarchyEntry { key, offset, byte_size, point_count }` (32B), `parse_copc_info(payload, payload.len() >= 160)`, `parse_hierarchy_page(bytes)` (N × 32B), `find_copc_info_vlr(header)` walking both VLRs + EVLRs via `las::Header::all_vlrs()`. `pointcloud/copc.rs:287-307` two function bodies replaced (signatures byte-for-byte unchanged): `read_copc_info` locates the VLR, parses the payload, and populates the existing `CopcInfo` struct; `read_hierarchy` seeks to `root_hier_offset`, reads `root_hier_size` bytes, parses entries, recurses into child pages on `byte_size < 0`, bound at MAX_DEPTH=32 with `Error::hierarchy_recursion_limit()` on overflow. `error.rs` +21 lines (3 helper constructors `missing_copc_vlr` / `malformed_copc_info` / `hierarchy_recursion_limit` reusing existing `Error::Copc(String)` variant — zero new enum variants). `pointcloud/mod.rs` +10 lines re-exports. Public API requires `--features copc` (existing crate feature).
   - **Tests:** 10 in `crates/oxigeo-3d/tests/copc_vlr_test.rs` (canonical 160-byte payload; wrong-length errors; LE round trip; find-VLR matching; find-VLR returns None; hierarchy single entry; hierarchy multiple entries decoded in order; voxel-key extraction; nested page walk via negative byte_size; missing-VLR typed error). Full crate suite 100/100 (90 pre-existing + 10 new).
 
-- [ ] LAZ decompression in Pure Rust (replace placeholder dispatch)
-  - **Verified gap:** `src/pointcloud/copc.rs:342-343` — `// Simplified: In real implementation, use LAZ decompression`; `:494-495` same comment; `src/pointcloud/ept.rs:279` — `// Simplified: In real implementation, handle laszip, binary, or zstandard`.
-  - **Goal:** Wire `laz = "0.12"` (already a workspace dep, Pure Rust) to decompress LAZ chunks read out of COPC/EPT containers into `Vec<Point>` of the active point-record format.
-  - **Design:** Per voxel/octant: read `byte_size` bytes; pass to `laz::LasZipDecompressor::new(reader, vlr)` constructed from the LAZ-vlr (user-id `laszip encoded`, record-id 22204) extracted alongside the COPC VLR; iterate `decompressor.decompress_one()` until `point_count` reached.
-  - **Files:** `crates/oxigeo-3d/src/pointcloud/copc.rs` (replace `read_voxel` decompression paths), `src/pointcloud/ept.rs` (replace the format dispatch).
-  - **Tests:** (proposed) `test_laz_decompress_format0_matches_las_baseline`, `test_laz_decompress_format6_extended`, `test_laz_chunk_table_iteration`, `test_laz_corrupted_chunk_errors`.
-  - **Risk:** `laz` crate version skew with `las` 0.x — pin the matching version per workspace.
-  - **Prerequisites:** Item 1.
+- [x] Pure-Rust LAZ path for the plain `LasReader`/`LasWriter` (no async/reqwest stack)
+  - **Verified gap:** the crate advertised LAZ read/write via the default `las-laz` feature, but `las-laz = []` was an empty no-op: `LasReader::open` called `las::Reader::new` with the `las` crate's own `laz` feature never enabled, so any compressed `.laz` returned `Error::LaszipNotEnabled`; `LasWriter` silently wrote uncompressed LAS regardless of extension. The only real LAZ decoder (`oxigeo-copc`) was reachable only through the `copc`/`ept` features, which pull `async → reqwest → rustls → aws-lc-sys` (C/asm).
+  - **Done:** 2026-07-21. `crates/oxigeo-3d/Cargo.toml` `las-laz = ["las/laz"]` — forwards to the `las` crate's `laz` feature, backed by the pure-Rust `laz` v0.12 crate (already resolved in the workspace; `las` 0.9.11 depends on `laz` 0.12.0). No root `Cargo.toml` change, no C/C++/Fortran dependency, stays in `default`. `LasWriter::create` now sets `builder.point_format.is_compressed = true` for `.laz` targets so writes are genuinely LASzip-compressed; module doc corrected. New test `test_laz_roundtrip_compresses_and_decompresses` writes a `.laz`, asserts the on-disk LASzip VLR (`laszip encoded`) is present (proving real compression), then reads it back losslessly through `LasReader`.
+  - **Note:** the COPC/EPT-container decompression path below is a separate concern (chunked LAZ inside COPC/EPT octree containers), still tracked as its own item.
 
-- [ ] Delaunay triangulation for TIN generation from point clouds
-  - **Goal:** 2.5-D TIN constructor `create_tin(points: &[Point]) -> Tin` using `delaunator` (already a workspace dep). Output: vertex list + triangle indices, with z preserved.
-  - **Design:** Project XY to `Vec<delaunator::Point>`, call `delaunator::triangulate`, then build `Tin { vertices: Vec<[f64;3]>, triangles: Vec<[u32;3]> }`. Optional `simplify(max_error)` post-pass via greedy edge collapse with quadric error metric (Garland & Heckbert 1997).
-  - **Files:** `crates/oxigeo-3d/src/terrain/tin.rs` (extend or new).
-  - **Tests:** (proposed) `test_tin_grid_points_produces_n_minus_2_triangles_per_row`, `test_tin_collinear_points_returns_empty_triangulation`, `test_tin_preserves_z_at_vertices`, `test_tin_export_to_obj_roundtrip_vertex_count`.
-  - **Risk:** Delaunator returns convex-hull triangulation; for non-convex terrain, downstream code must clip.
-  - **Prerequisites:** None.
+- [ ] LAZ decompression for EPT `laszip` standalone tiles (COPC side done)
+  - **Verified gap (updated 2026-07-28):** The `copc.rs` half of this item is DONE — `ChunkDecodeParams::is_laz` routes compressed chunks through the pure-Rust `oxigeo_copc::decompress_chunk` decompressor before deserialization (see doc comment at `copc.rs:79` and call site at `copc.rs:93`). The remaining gap is EPT: `src/pointcloud/ept.rs` explicitly returns `Error::Unsupported("EPT 'laszip' tiles require a standalone LAZ file reader that is not yet wired ...")` for the `laszip` data-type variant — an honest, tested error (`decode_laszip_tile_is_explicit_error`), not a silent stub, but the reader itself still doesn't exist. `binary` and `zstandard` EPT data types are both fully implemented (`parse_binary_points`, `oxiarc_zstd::decompress`).
+  - **Goal:** Wire a standalone LAZ file reader (`laz = "0.12"`, already a workspace dep, Pure Rust — or reuse `oxigeo_copc`'s decompressor) for EPT's `laszip` tile variant.
+  - **Files:** `crates/oxigeo-3d/src/pointcloud/ept.rs` (replace the `"laszip" => Err(...)` arm).
+  - **Tests:** (proposed) `test_ept_laszip_tile_decodes_matches_baseline`, `test_ept_laszip_chunk_table_iteration`.
+  - **Risk:** `laz` crate version skew with `las` 0.x — pin the matching version per workspace.
+  - **Prerequisites:** None (COPC prerequisite already satisfied).
+
+- [x] Delaunay triangulation for TIN generation from point clouds
+  - **Done (verified 2026-07-28):** `src/terrain/tin.rs` — `create_tin(points: &[CloudPoint]) -> Result<Tin>` and `create_tin_from_points(points: &[TinPoint]) -> Result<Tin>` both use `delaunator::{Point, triangulate}` (workspace dep), converting the triangulation result into `TinTriangle`s and validating the resulting `Tin`. 7 tests in `tin.rs`.
+  - **Risk (still applies):** Delaunator returns convex-hull triangulation; for non-convex terrain, downstream code must clip.
 
 - [x] Proper planarity in ground/feature classification
   - **Verified gap:** `src/classification.rs:300` — `// Simplified planarity: ratio of smallest to largest eigenvalue`.
@@ -55,21 +55,14 @@
   - **Risk:** Workspace `image` crate version drift; pin and document.
   - **Prerequisites:** Item 3 (TIN → Mesh path) for end-to-end.
 
-- [ ] 3D Tiles (Cesium) tileset.json with content hierarchy
-  - **Goal:** Generate `tileset.json` per Cesium 3D Tiles 1.1 spec (https://github.com/CesiumGS/3d-tiles, OGC standard 22-025r4) with a root tile referencing GLB content and refinement strategy `REPLACE`. Bounding volume: oriented bounding box.
-  - **Design:** `create_3d_tileset(meshes: &[Mesh], lods: &[u32]) -> Tileset` that writes `tileset.json` + per-LOD `.glb`. Compute geometric error from mesh extent; emit `content.uri`; recurse via `children[]` for LOD hierarchy.
-  - **Files:** `crates/oxigeo-3d/src/visualization/tileset.rs` (extend or new).
-  - **Tests:** (proposed) `test_tileset_json_schema_valid`, `test_tileset_geometric_error_monotonic_decreasing_per_lod`, `test_tileset_bounding_volume_box_alignment`, `test_tileset_external_content_uri_referenced_from_root`.
-  - **Risk:** Cesium 1.1 vs 1.0 minor differences — emit `asset.version = "1.1"` and document.
-  - **Prerequisites:** Item 5 (GLB export).
+- [x] 3D Tiles (Cesium) tileset.json with content hierarchy
+  - **Done (verified 2026-07-28):** `src/visualization/tiles3d.rs` — `create_3d_tileset(mesh: &Mesh, options: &TilesetOptions) -> Result<Tileset>` writes `tileset.json`. `Tile` carries `geometric_error`, `refine: Option<Refinement>` (default `Refinement::Replace`), and `children: Option<Vec<Tile>>` for hierarchy, with builder methods `with_refinement`/`with_children`. Covered by `test_tileset_json_roundtrip` and further round-trip tests.
 
 ## Medium Priority
-- [ ] DEM-to-mesh with configurable LOD levels (Stoter et al. 2020).
-  - **Files:** `src/terrain/dem_to_mesh.rs` (extend; previous TODO mentions "simplified mesh" at line 438).
-  - **Why deferred:** Lower priority than TIN path.
-- [ ] OBJ export with MTL material file.
-  - **Files:** `src/mesh/obj.rs` (extend `export_obj`).
-  - **Why deferred:** glTF/GLB is the modern path (Item 5).
+- [x] DEM-to-mesh with configurable LOD levels (Stoter et al. 2020).
+  - **Done (verified 2026-07-28):** `src/terrain/dem_to_mesh.rs` — `dem_to_lod_meshes(dem, options, num_levels)` generates a `Vec<Mesh>` across progressively halved simplification levels (`1 << level`) by calling `dem_to_mesh` per level. The "simplified mesh" text at the old line 438 was test-assertion wording (`test_dem_to_mesh_with_simplification`), not a stub marker.
+- [x] OBJ export with MTL material file.
+  - **Done (verified 2026-07-28):** `src/mesh/obj.rs` — `export_obj` writes `mtllib`/`usemtl` references and delegates to `write_mtl()` (private) when `mesh.material.texture.is_some()`, which emits a real `.mtl` file with `Ka`/`Kd`/`Ks` derived from `Material::base_color`/`metallic`.
 - [ ] Ground classification via cloth-simulation filter (Zhang et al. 2016 CSF, RemoteSens 8(6)).
   - **Files:** `src/classification.rs` (extend).
   - **Why deferred:** Adds significant code; current PCA heuristic (Item 4) is the first step.
@@ -104,4 +97,4 @@
 *(No `[x]` entries on previous TODO.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

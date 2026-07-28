@@ -10,7 +10,11 @@
 //! ## Features
 //!
 //! - **Edge Runtime**: Lightweight runtime optimized for resource-constrained devices
-//! - **Synchronization**: Edge-to-cloud sync protocols with conflict resolution
+//! - **Synchronization**: [`sync::SyncManager`] drives edge-to-cloud sync
+//!   against any caller-supplied [`SyncProtocol`]. A real, non-default
+//!   `http-sync`-gated [`sync::HttpSyncProtocol`] is provided for REST
+//!   backends; production code must inject its own protocol (there is no
+//!   hidden in-memory default) -- see [`sync::SyncManager::new`].
 //! - **CRDT-based Conflict Resolution**: Automatic conflict resolution for distributed nodes
 //! - **Edge Compression**: Optimized compression for bandwidth-limited environments
 //! - **Local Caching**: Offline-first caching strategy
@@ -50,6 +54,8 @@ pub use conflict::{ConflictResolver, CrdtMap, CrdtSet, VectorClock};
 pub use error::{EdgeError, Result};
 pub use resource::{ResourceConstraints, ResourceManager, ResourceMetrics};
 pub use runtime::{EdgeConfig, EdgeRuntime, RuntimeMode};
+#[cfg(feature = "http-sync")]
+pub use sync::{HttpSyncConfig, HttpSyncProtocol};
 pub use sync::{SyncManager, SyncProtocol, SyncStatus, SyncStrategy};
 
 /// Edge computing version

@@ -23,6 +23,7 @@ fn tmp_path(name: &str) -> std::path::PathBuf {
 fn make_entry(outputs: Vec<Vec<f32>>) -> CacheEntry {
     CacheEntry {
         outputs,
+        output_shapes: Vec::new(),
         created_at: SystemTime::now(),
         hit_count: 0,
         input_size_bytes: 16,

@@ -1,0 +1,98 @@
+# scripts/publish-order.txt
+#
+# Topological `cargo publish` order for every publishable OxiGeo workspace
+# crate: each crate appears strictly after every OTHER workspace crate it
+# depends on (via a normal or build-time dependency edge; dev-dependencies
+# are excluded, since `cargo publish` never needs those already registered).
+# Ties among crates with no ordering constraint between them are broken
+# alphabetically for a stable, readable diff.
+#
+# GENERATED FILE -- do not hand-edit. Regenerate with:
+#     python3 scripts/gen-publish-order.py
+#
+# The generator reads `cargo metadata --format-version 1` (the ground-truth
+# dependency graph, including default-features-only resolution -- the same
+# feature set `cargo publish` builds with) and topologically sorts workspace
+# members via Kahn's algorithm. It never runs `cargo publish` and never
+# touches crates.io.
+#
+# Crates with `publish = false` in their Cargo.toml (e.g. internal example/
+# benchmark-only crates) are intentionally excluded from this list.
+#
+# Generated: 2026-07-21 07:44:47 UTC
+# Workspace root: /Users/kitasan/work/oxigeo
+# Publishable crate count: 74
+#
+oxigeo-cache-advanced
+oxigeo-cluster
+oxigeo-compress
+oxigeo-copc
+oxigeo-core
+oxigeo-db-connectors
+oxigeo-edge
+oxigeo-gateway
+oxigeo-geojson-stream
+oxigeo-ha
+oxigeo-index
+oxigeo-mbtiles
+oxigeo-metadata
+oxigeo-mqtt
+oxigeo-noalloc
+oxigeo-observability
+oxigeo-offline
+oxigeo-pmtiles
+oxigeo-proj
+oxigeo-pwa
+oxigeo-security
+oxigeo-stac
+oxigeo-sync
+oxigeo-workflow
+oxigeo-ws
+oxigeo-3d
+oxigeo-algorithms
+oxigeo-analytics
+oxigeo-bench
+oxigeo-cloud
+oxigeo-distributed
+oxigeo-embedded
+oxigeo-etl
+oxigeo-flatgeobuf
+oxigeo-geojson
+oxigeo-geoparquet
+oxigeo-geotiff
+oxigeo-gpkg
+oxigeo-gpu
+oxigeo-hdf5
+oxigeo-jpeg2000
+oxigeo-kinesis
+oxigeo-ml
+oxigeo-mobile-enhanced
+oxigeo-netcdf
+oxigeo-postgis
+oxigeo-pubsub
+oxigeo-query
+oxigeo-rs3gw
+oxigeo-sensors
+oxigeo-shapefile
+oxigeo-terrain
+oxigeo-websocket
+oxigeo-zarr
+oxigeo
+oxigeo-cli
+oxigeo-cloud-enhanced
+oxigeo-dev-tools
+oxigeo-drivers-advanced
+oxigeo-gpu-advanced
+oxigeo-grib
+oxigeo-jupyter
+oxigeo-ml-foundation
+oxigeo-mobile
+oxigeo-node
+oxigeo-qc
+oxigeo-server
+oxigeo-services
+oxigeo-streaming
+oxigeo-temporal
+oxigeo-vrt
+oxigeo-wasm
+oxigeo-wasm-geoparquet

@@ -1,8 +1,8 @@
 # TODO: oxigeo-pmtiles
 
 > **Purpose:** Pure Rust PMTiles v3 reader/writer for OxiGeo — single-file tile archive with varint directory + Hilbert curve tile IDs
-> **Status (2026-05-16):** 1,579 Rust LoC · 300 tests · 0 real-code stubs (3 pending items are roadmap features: HTTP range reader, async reader, archive validation)
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** ~6,050 Rust LoC · 508 tests all-features / 397 default-features · 0 real-code stubs (2 pending items are roadmap features: Hilbert curve visualization utilities, oxigeo-services HTTP-serving integration)
+> **Roadmap:** v0.2.1 (current) → v1.0.0
 
 ## High Priority
 - [x] Implement tile data retrieval by (z, x, y) (completed 2026-04-19, part of P1)
@@ -77,7 +77,7 @@
 
 ## Cross-crate dependencies
 - **Blocks:** `oxigeo` (re-exported via `pmtiles` feature), `oxigeo-services` (HTTP tile serving from PMTiles), `oxigeo-cli` (potential `tile` subcommand consumer)
-- **Blocked by:** `oxigeo-core` (DataSource trait, Result/Error types); `oxiarc-*` (gzip/brotli/zstd compression — already wired via `compression` feature)
+- **Blocked by:** `oxiarc-*` (gzip/brotli/zstd compression — already wired via `compression` feature)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

@@ -11,7 +11,7 @@ OpenTelemetry-based observability, monitoring, and alerting for OxiGeo.
 - **Anomaly Detection**: Statistical (Z-score, IQR) and ML-based (Isolation Forest, Autoencoder) anomaly detection
 - **SLO/SLA Monitoring**: Service level objectives with error budget tracking and burn rate calculation
 - **Alert Management**: Rule-based alerting with routing, deduplication, and escalation policies
-- **Metric Exporters**: Support for Prometheus, StatsD, InfluxDB, and AWS CloudWatch
+- **Metric Exporters**: Prometheus push-gateway export with real HTTP delivery (behind the `http-exporter` feature); StatsD, InfluxDB, and AWS CloudWatch exporter types exist but do not yet transmit data (formatting/buffering only — no transport wired)
 
 ## Installation
 
@@ -19,7 +19,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-observability = "0.2.0"
+oxigeo-observability = "0.2.1"
 ```
 
 ## Quick Start

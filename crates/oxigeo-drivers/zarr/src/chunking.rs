@@ -1030,11 +1030,52 @@ impl DensityMap {
         self
     }
 
-    /// Adjusts chunk sizes based on density
-    fn adjust_chunk_sizes(&self, sizes: &[usize], _array_shape: &Shape) -> Vec<usize> {
-        // For now, just return the original sizes
-        // A more sophisticated implementation would adjust based on density
-        sizes.to_vec()
+    /// Adjusts chunk sizes based on data density.
+    ///
+    /// Sparse regions (low `density`) get *larger* chunks and dense regions
+    /// get smaller ones, following the documented behaviour. The array-wide
+    /// effective density is the volume-weighted average of every region's
+    /// density plus `default_density` over the unmapped remainder; the base
+    /// chunk sizes are then scaled by `1 / effective_density` (clamped) so a
+    /// mostly-sparse array yields proportionally larger chunks. The result is
+    /// still clamped to the configured min/max bounds by the caller.
+    fn adjust_chunk_sizes(&self, sizes: &[usize], array_shape: &Shape) -> Vec<usize> {
+        if self.regions.is_empty() {
+            return sizes.to_vec();
+        }
+
+        let total: usize = array_shape.as_slice().iter().product();
+        if total == 0 {
+            return sizes.to_vec();
+        }
+
+        let mut mapped_volume = 0usize;
+        let mut weighted_density = 0.0f64;
+        for region in &self.regions {
+            let vol = region.volume(array_shape);
+            mapped_volume = mapped_volume.saturating_add(vol);
+            weighted_density += region.density.clamp(0.0, 1.0) * vol as f64;
+        }
+        let mapped_volume = mapped_volume.min(total);
+        let unmapped_volume = total - mapped_volume;
+        weighted_density += self.default_density * unmapped_volume as f64;
+
+        let effective_density = (weighted_density / total as f64).clamp(0.0, 1.0);
+        // Sparser data -> larger chunks. Floor the density so the factor can
+        // not explode for near-empty arrays.
+        let factor = 1.0 / effective_density.max(0.05);
+
+        sizes
+            .iter()
+            .map(|&s| {
+                let scaled = (s as f64 * factor).round();
+                if scaled.is_finite() && scaled >= 1.0 {
+                    scaled as usize
+                } else {
+                    s.max(1)
+                }
+            })
+            .collect()
     }
 }
 
@@ -1049,6 +1090,32 @@ pub struct DensityRegion {
 
     /// Density value (0.0 = sparse, 1.0 = dense)
     pub density: f64,
+}
+
+impl DensityRegion {
+    /// Returns the element volume of this region, clamped to the array bounds.
+    ///
+    /// Dimensions are matched up to the shorter of the region rank and the
+    /// array rank; a malformed region (`end <= start` in any dimension)
+    /// contributes zero volume.
+    #[must_use]
+    pub fn volume(&self, array_shape: &Shape) -> usize {
+        let shape = array_shape.as_slice();
+        let ndim = self.start.len().min(self.end.len()).min(shape.len());
+        if ndim == 0 {
+            return 0;
+        }
+        let mut volume = 1usize;
+        for d in 0..ndim {
+            let start = self.start[d].min(shape[d]);
+            let end = self.end[d].min(shape[d]);
+            if end <= start {
+                return 0;
+            }
+            volume = volume.saturating_mul(end - start);
+        }
+        volume
+    }
 }
 
 // ============================================================================
@@ -1579,6 +1646,52 @@ mod tests {
 
         assert_eq!(density_map.regions.len(), 2);
         assert_eq!(density_map.default_density, 0.5);
+    }
+
+    #[test]
+    fn test_density_region_volume() {
+        let shape = Shape::new(vec![200, 200]).expect("valid shape");
+        let region = DensityRegion {
+            start: vec![0, 0],
+            end: vec![100, 50],
+            density: 0.2,
+        };
+        assert_eq!(region.volume(&shape), 100 * 50);
+
+        let bad = DensityRegion {
+            start: vec![100, 100],
+            end: vec![100, 50],
+            density: 0.2,
+        };
+        assert_eq!(bad.volume(&shape), 0);
+    }
+
+    #[test]
+    fn test_density_map_sparse_yields_larger_chunks() {
+        let shape = Shape::new(vec![400, 400]).expect("valid shape");
+        let base = vec![32usize, 32];
+
+        let sparse = DensityMap::new(0.1).with_region(DensityRegion {
+            start: vec![0, 0],
+            end: vec![400, 400],
+            density: 0.1,
+        });
+        let sparse_sizes = sparse.adjust_chunk_sizes(&base, &shape);
+        assert!(
+            sparse_sizes.iter().zip(&base).all(|(&a, &b)| a > b),
+            "sparse regions must enlarge chunks: {sparse_sizes:?} vs {base:?}"
+        );
+
+        let dense = DensityMap::new(1.0).with_region(DensityRegion {
+            start: vec![0, 0],
+            end: vec![400, 400],
+            density: 1.0,
+        });
+        let dense_sizes = dense.adjust_chunk_sizes(&base, &shape);
+        assert!(
+            dense_sizes.iter().zip(&sparse_sizes).all(|(&d, &s)| d <= s),
+            "dense chunks must not exceed sparse chunks"
+        );
     }
 
     #[test]

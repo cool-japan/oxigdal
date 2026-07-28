@@ -1,8 +1,22 @@
-//! Blosc2 codec implementation (Pure Rust)
+//! Pure-Rust shuffle + sub-compressor building block (NOT c-blosc2 compatible).
 //!
-//! This module provides a Pure Rust implementation of Blosc2 compression,
-//! which is a meta-compressor that uses blocking, shuffling, and various
-//! compression algorithms.
+//! This module provides a Pure Rust meta-compressor that applies a
+//! byte/bit shuffle followed by one of several sub-compressors (LZ4, LZ4HC,
+//! Zlib, Zstd). It is a convenience building block only.
+//!
+//! # Important: this is not the Blosc2 wire format
+//!
+//! The output is an ad-hoc `[size-prefix][sub-compressed bytes]` layout, not a
+//! c-blosc2 frame (no magic/version/typesize/nblocks header, no per-block
+//! splitting). It is therefore **not interoperable** with python-blosc2,
+//! c-blosc2 or numcodecs, and is deliberately **not** wired into the Zarr v3
+//! codec dispatcher: a `zarr.json` that declares `blosc2` is rejected as an
+//! unknown codec rather than being handled here.
+//!
+//! When a sub-compressor's cargo feature is disabled, the corresponding
+//! operation returns [`CodecError::CodecNotAvailable`] -- it never silently
+//! passes data through uncompressed while still reporting `id() == "blosc2"`,
+//! which would corrupt any consumer expecting compressed output.
 
 use crate::codecs::Codec;
 use crate::error::{CodecError, Result, ZarrError};
@@ -268,7 +282,10 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "lz4"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/lz4".to_string(),
+                    }))
                 }
             }
             BloscCompressor::Lz4hc => {
@@ -288,11 +305,13 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "lz4"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/lz4hc".to_string(),
+                    }))
                 }
             }
             BloscCompressor::Zlib => {
-                // Placeholder: use actual Zlib compression
                 #[cfg(feature = "gzip")]
                 {
                     use crate::codecs::gzip::GzipCodec;
@@ -301,11 +320,13 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "gzip"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/zlib".to_string(),
+                    }))
                 }
             }
             BloscCompressor::Zstd => {
-                // Placeholder: use actual Zstd compression
                 #[cfg(feature = "zstd")]
                 {
                     use crate::codecs::zstd_codec::ZstdCodec;
@@ -314,7 +335,10 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "zstd"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/zstd".to_string(),
+                    }))
                 }
             }
         }
@@ -341,11 +365,13 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "lz4"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/lz4".to_string(),
+                    }))
                 }
             }
             BloscCompressor::Zlib => {
-                // Placeholder: use actual Zlib decompression
                 #[cfg(feature = "gzip")]
                 {
                     use crate::codecs::gzip::GzipCodec;
@@ -354,11 +380,13 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "gzip"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/zlib".to_string(),
+                    }))
                 }
             }
             BloscCompressor::Zstd => {
-                // Placeholder: use actual Zstd decompression
                 #[cfg(feature = "zstd")]
                 {
                     use crate::codecs::zstd_codec::ZstdCodec;
@@ -367,7 +395,10 @@ impl Blosc2Codec {
                 }
                 #[cfg(not(feature = "zstd"))]
                 {
-                    Ok(data.to_vec())
+                    let _ = data;
+                    Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                        codec: "blosc2/zstd".to_string(),
+                    }))
                 }
             }
         }
@@ -467,6 +498,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "lz4")]
     #[test]
     fn test_blosc2_encode_decode_noshuffle() {
         let codec = Blosc2Codec::new("lz4", 3, 0, None, None).expect("create");
@@ -478,6 +510,7 @@ mod tests {
         assert_eq!(decoded, data);
     }
 
+    #[cfg(feature = "lz4")]
     #[test]
     fn test_blosc2_encode_decode_byteshuffle() {
         let codec = Blosc2Codec::new("lz4", 3, 1, Some(4), None).expect("create");

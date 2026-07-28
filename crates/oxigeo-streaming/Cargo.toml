@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 oxicode = { workspace = true }
 
+# Pure-Rust zlib for the optional disk-tile-cache compression (COOLJAPAN policy).
+oxiarc-deflate = { workspace = true, optional = true }
+
 # Raster driver (GeoTIFF) - optional, enables raster streaming
 oxigeo-geotiff = { workspace = true, optional = true }
 
@@ -86,6 +89,7 @@ std = [
     "dep:ahash",
     "dep:byteorder",
     "dep:num-traits",
+    "dep:oxiarc-deflate",
 ]
 
 # GeoTIFF / raster streaming support (requires oxigeo-geotiff).

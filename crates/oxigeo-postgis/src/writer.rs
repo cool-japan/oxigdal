@@ -19,6 +19,10 @@ pub struct PostGisWriter {
     geometry_column: String,
     srid: Option<i32>,
     create_table: bool,
+    overwrite: bool,
+    /// Runtime guard so the destructive overwrite (`TRUNCATE`) happens at most
+    /// once per writer, on the first write.
+    overwritten: bool,
     batch: Vec<Feature>,
     batch_size: usize,
 }
@@ -32,6 +36,8 @@ impl PostGisWriter {
             geometry_column: "geom".to_string(),
             srid: Some(4326),
             create_table: false,
+            overwrite: false,
+            overwritten: false,
             batch: Vec::new(),
             batch_size: 1000,
         }
@@ -55,10 +61,43 @@ impl PostGisWriter {
         self
     }
 
-    /// Sets the batch size for batch insertions
+    /// Sets the batch size for batch insertions.
+    ///
+    /// Once the in-memory batch reaches this many features, [`add`](Self::add)
+    /// automatically flushes it to the database. Note that [`add_to_batch`]
+    /// (the non-`async` accumulator) does **not** auto-flush — use [`add`](Self::add) if
+    /// you want bounded memory while streaming, or call [`flush`] yourself.
+    ///
+    /// [`add_to_batch`]: Self::add_to_batch
+    /// [`flush`]: Self::flush
     pub const fn batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
+    }
+
+    /// Controls whether existing rows are removed before the first write.
+    ///
+    /// When set to `true`, the writer issues a `TRUNCATE` on the target table
+    /// immediately before its first `insert`/`write_feature`/`flush`, replacing
+    /// any existing data. The truncate happens at most once per writer. When
+    /// `false` (the default) existing rows are preserved and new features are
+    /// appended.
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
+    }
+
+    /// Prepares the target for writing: creates the table if requested, then,
+    /// if `overwrite` is enabled, truncates it exactly once.
+    async fn prepare_target(&mut self) -> Result<()> {
+        if self.create_table {
+            self.ensure_table().await?;
+        }
+        if self.overwrite && !self.overwritten {
+            self.truncate().await?;
+            self.overwritten = true;
+        }
+        Ok(())
     }
 
     /// Creates the table if it doesn't exist
@@ -107,9 +146,7 @@ impl PostGisWriter {
 
     /// Inserts a single feature
     pub async fn insert(&mut self, feature: &Feature) -> Result<i64> {
-        if self.create_table {
-            self.ensure_table().await?;
-        }
+        self.prepare_target().await?;
 
         let client = self.pool.get().await?;
 
@@ -146,7 +183,36 @@ impl PostGisWriter {
         Ok(id)
     }
 
-    /// Adds a feature to the batch
+    /// Writes a single feature immediately, returning its generated `id`.
+    ///
+    /// This is a convenience alias for [`insert`](Self::insert) that takes the
+    /// feature by value, matching the ergonomics of a per-feature write loop.
+    pub async fn write_feature(&mut self, feature: Feature) -> Result<i64> {
+        self.insert(&feature).await
+    }
+
+    /// Adds a feature to the in-memory batch, flushing automatically once the
+    /// batch reaches [`batch_size`](Self::batch_size).
+    ///
+    /// Returns the number of features written to the database by the flush this
+    /// call triggered (`0` when the batch was merely accumulated). Prefer this
+    /// over [`add_to_batch`](Self::add_to_batch) when streaming a large number
+    /// of features, since it bounds memory usage to `batch_size` features.
+    pub async fn add(&mut self, feature: Feature) -> Result<usize> {
+        self.batch.push(feature);
+        if self.batch.len() >= self.batch_size {
+            self.flush().await
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Adds a feature to the batch without flushing.
+    ///
+    /// This accumulates features in memory unconditionally; the batch is only
+    /// sent to the database when [`flush`](Self::flush) is called. It does
+    /// **not** honour [`batch_size`](Self::batch_size) — for automatic,
+    /// memory-bounded flushing use [`add`](Self::add) instead.
     pub fn add_to_batch(&mut self, feature: Feature) {
         self.batch.push(feature);
     }
@@ -164,9 +230,7 @@ impl PostGisWriter {
             return Ok(0);
         }
 
-        if self.create_table {
-            self.ensure_table().await?;
-        }
+        self.prepare_target().await?;
 
         debug!("Flushing batch of {} features", self.batch.len());
 
@@ -389,6 +453,7 @@ impl PostGisWriter {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::connection::ConnectionConfig;
@@ -424,5 +489,29 @@ mod tests {
         assert_eq!(writer.srid, Some(3857));
         assert!(writer.create_table);
         assert_eq!(writer.batch_size, 500);
+    }
+
+    #[test]
+    fn test_writer_overwrite_flag() {
+        let pool = ConnectionPool::new(ConnectionConfig::default()).expect("pool creation failed");
+        let writer = PostGisWriter::new(pool, "t").overwrite(true);
+        assert!(writer.overwrite);
+        assert!(!writer.overwritten);
+    }
+
+    #[tokio::test]
+    async fn test_add_accumulates_below_batch_size() {
+        use oxigeo_core::vector::feature::Feature;
+        use oxigeo_core::vector::geometry::{Geometry, Point};
+
+        let pool = ConnectionPool::new(ConnectionConfig::default()).expect("pool creation failed");
+        let mut writer = PostGisWriter::new(pool, "t").batch_size(4);
+
+        // Below the batch size, `add` must accumulate without contacting the
+        // database (no flush), returning 0 written rows.
+        let feature = Feature::new(Geometry::Point(Point::new(0.0, 0.0)));
+        let written = writer.add(feature).await.expect("add should not flush yet");
+        assert_eq!(written, 0);
+        assert_eq!(writer.batch.len(), 1);
     }
 }

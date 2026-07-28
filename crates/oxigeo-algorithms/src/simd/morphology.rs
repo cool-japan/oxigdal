@@ -14,9 +14,16 @@
 //! - **Top Hat**: Difference between input and opening (bright features)
 //! - **Black Hat**: Difference between closing and input (dark features)
 //!
-//! # Performance
+//! # Architecture Support
 //!
-//! Expected speedup over scalar: 3-5x for morphological operations
+//! - **aarch64**: NEON intrinsics (`vld1q_u8`/`vminq_u8`/`vmaxq_u8`/`vqsubq_u8`)
+//!   process 16 pixels per instruction for the 3x3 min/max stencils (erosion and
+//!   dilation) and the saturating-subtract elementwise passes (gradient, top-hat,
+//!   black-hat). Border pixels and the row/column remainders use scalar code.
+//! - **All other targets**: scalar fallback with auto-vectorization-friendly loops.
+//!
+//! The NEON path is bit-for-bit identical to the scalar fallback (verified by the
+//! parity tests in this module).
 //!
 //! # Example
 //!
@@ -35,7 +42,111 @@
 //! }
 //! ```
 
+#![allow(unsafe_code)]
+
 use crate::error::{AlgorithmError, Result};
+
+/// NEON-accelerated kernels for aarch64.
+#[cfg(target_arch = "aarch64")]
+mod neon_impl {
+    use std::arch::aarch64::*;
+
+    /// 3x3 min (erosion) / max (dilation) stencil over the interior pixels.
+    ///
+    /// `MAX` selects the reduction: `false` computes the neighborhood minimum
+    /// (erosion), `true` the neighborhood maximum (dilation). 16 output pixels are
+    /// produced per NEON instruction group; the horizontal-edge remainder of each
+    /// row is finished with scalar code.
+    ///
+    /// # Safety
+    /// `input`/`output` must both have length `width * height`, and `width`,
+    /// `height` must both be >= 3 (validated by the public callers).
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn stencil_3x3<const MAX: bool>(
+        input: &[u8],
+        output: &mut [u8],
+        width: usize,
+        height: usize,
+    ) {
+        unsafe {
+            let in_ptr = input.as_ptr();
+            let out_ptr = output.as_mut_ptr();
+
+            for y in 1..(height - 1) {
+                let row_up = (y - 1) * width;
+                let row_mid = y * width;
+                let row_down = (y + 1) * width;
+
+                // Interior columns run from 1..width-1. A 16-wide store at column x
+                // reads columns x-1 .. x+16, so the last safe start is width-17.
+                let mut x = 1usize;
+                while x + 16 < width {
+                    let hmin_or_max = |row: usize| -> uint8x16_t {
+                        let base = row + x;
+                        let left = vld1q_u8(in_ptr.add(base - 1));
+                        let mid = vld1q_u8(in_ptr.add(base));
+                        let right = vld1q_u8(in_ptr.add(base + 1));
+                        if MAX {
+                            vmaxq_u8(vmaxq_u8(left, mid), right)
+                        } else {
+                            vminq_u8(vminq_u8(left, mid), right)
+                        }
+                    };
+
+                    let up = hmin_or_max(row_up);
+                    let midr = hmin_or_max(row_mid);
+                    let down = hmin_or_max(row_down);
+                    let result = if MAX {
+                        vmaxq_u8(vmaxq_u8(up, midr), down)
+                    } else {
+                        vminq_u8(vminq_u8(up, midr), down)
+                    };
+
+                    vst1q_u8(out_ptr.add(row_mid + x), result);
+                    x += 16;
+                }
+
+                // Scalar remainder for the columns the NEON stride did not cover.
+                while x < width - 1 {
+                    let mut acc = if MAX { 0u8 } else { 255u8 };
+                    for ky in 0..3 {
+                        let row = (y + ky - 1) * width;
+                        for kx in 0..3 {
+                            let v = *input.get_unchecked(row + x + kx - 1);
+                            acc = if MAX { acc.max(v) } else { acc.min(v) };
+                        }
+                    }
+                    *output.get_unchecked_mut(row_mid + x) = acc;
+                    x += 1;
+                }
+            }
+        }
+    }
+
+    /// Elementwise saturating subtract `a - b` (unsigned), 16 lanes per op.
+    ///
+    /// # Safety
+    /// `a`, `b`, and `out` must all have the same length.
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn saturating_sub(a: &[u8], b: &[u8], out: &mut [u8]) {
+        unsafe {
+            let len = a.len();
+            let chunks = len / 16;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
+            let o_ptr = out.as_mut_ptr();
+            for i in 0..chunks {
+                let off = i * 16;
+                let va = vld1q_u8(a_ptr.add(off));
+                let vb = vld1q_u8(b_ptr.add(off));
+                vst1q_u8(o_ptr.add(off), vqsubq_u8(va, vb));
+            }
+            for i in (chunks * 16)..len {
+                *o_ptr.add(i) = (*a_ptr.add(i)).saturating_sub(*b_ptr.add(i));
+            }
+        }
+    }
+}
 
 /// Structuring element shape
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,30 +184,46 @@ pub fn erode_3x3(input: &[u8], output: &mut [u8], width: usize, height: usize) -
         });
     }
 
-    // Process interior pixels
-    for y in 1..(height - 1) {
-        for x in 1..(width - 1) {
-            let mut min_val = 255u8;
-
-            // 3x3 neighborhood minimum
-            for ky in 0..3 {
-                for kx in 0..3 {
-                    let px = x + kx - 1;
-                    let py = y + ky - 1;
-                    let idx = py * width + px;
-                    min_val = min_val.min(input[idx]);
-                }
-            }
-
-            let out_idx = y * width + x;
-            output[out_idx] = min_val;
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: sizes validated above; width, height >= 3.
+        unsafe {
+            neon_impl::stencil_3x3::<false>(input, output, width, height);
         }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        stencil_3x3_scalar::<false>(input, output, width, height);
     }
 
     // Handle borders (copy from input)
     copy_borders(input, output, width, height);
 
     Ok(())
+}
+
+/// Scalar 3x3 min (`MAX=false`) / max (`MAX=true`) stencil over interior pixels.
+#[cfg(not(target_arch = "aarch64"))]
+fn stencil_3x3_scalar<const MAX: bool>(
+    input: &[u8],
+    output: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    for y in 1..(height - 1) {
+        for x in 1..(width - 1) {
+            let mut acc = if MAX { 0u8 } else { 255u8 };
+            for ky in 0..3 {
+                for kx in 0..3 {
+                    let px = x + kx - 1;
+                    let py = y + ky - 1;
+                    let v = input[py * width + px];
+                    acc = if MAX { acc.max(v) } else { acc.min(v) };
+                }
+            }
+            output[y * width + x] = acc;
+        }
+    }
 }
 
 /// Apply 3x3 dilation operation using SIMD
@@ -117,24 +244,16 @@ pub fn dilate_3x3(input: &[u8], output: &mut [u8], width: usize, height: usize) 
         });
     }
 
-    // Process interior pixels
-    for y in 1..(height - 1) {
-        for x in 1..(width - 1) {
-            let mut max_val = 0u8;
-
-            // 3x3 neighborhood maximum
-            for ky in 0..3 {
-                for kx in 0..3 {
-                    let px = x + kx - 1;
-                    let py = y + ky - 1;
-                    let idx = py * width + px;
-                    max_val = max_val.max(input[idx]);
-                }
-            }
-
-            let out_idx = y * width + x;
-            output[out_idx] = max_val;
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: sizes validated above; width, height >= 3.
+        unsafe {
+            neon_impl::stencil_3x3::<true>(input, output, width, height);
         }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        stencil_3x3_scalar::<true>(input, output, width, height);
     }
 
     // Handle borders
@@ -209,25 +328,28 @@ pub fn morphological_gradient_3x3(
     erode_3x3(input, &mut eroded, width, height)?;
 
     // Compute gradient (dilated - eroded)
-    const LANES: usize = 16;
-    let chunks = dilated.len() / LANES;
-
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            output[j] = dilated[j].saturating_sub(eroded[j]);
-        }
-    }
-
-    // Handle remainder
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..dilated.len() {
-        output[i] = dilated[i].saturating_sub(eroded[i]);
-    }
+    saturating_sub_dispatch(&dilated, &eroded, output);
 
     Ok(())
+}
+
+/// Elementwise unsigned saturating subtract `a - b`, dispatching to NEON on
+/// aarch64 and a scalar loop elsewhere.
+fn saturating_sub_dispatch(a: &[u8], b: &[u8], out: &mut [u8]) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: all three slices share the same length (callers pass buffers of
+        // identical `width * height` size).
+        unsafe {
+            neon_impl::saturating_sub(a, b, out);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..a.len() {
+            out[i] = a[i].saturating_sub(b[i]);
+        }
+    }
 }
 
 /// Compute top-hat transform (input - opening)
@@ -245,23 +367,7 @@ pub fn top_hat_3x3(input: &[u8], output: &mut [u8], width: usize, height: usize)
     opening_3x3(input, &mut opened, width, height)?;
 
     // Compute top-hat (input - opened)
-    const LANES: usize = 16;
-    let chunks = input.len() / LANES;
-
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            output[j] = input[j].saturating_sub(opened[j]);
-        }
-    }
-
-    // Handle remainder
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..input.len() {
-        output[i] = input[i].saturating_sub(opened[i]);
-    }
+    saturating_sub_dispatch(input, &opened, output);
 
     Ok(())
 }
@@ -281,23 +387,7 @@ pub fn black_hat_3x3(input: &[u8], output: &mut [u8], width: usize, height: usiz
     closing_3x3(input, &mut closed, width, height)?;
 
     // Compute black-hat (closed - input)
-    const LANES: usize = 16;
-    let chunks = input.len() / LANES;
-
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            output[j] = closed[j].saturating_sub(input[j]);
-        }
-    }
-
-    // Handle remainder
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..input.len() {
-        output[i] = closed[i].saturating_sub(input[i]);
-    }
+    saturating_sub_dispatch(&closed, input, output);
 
     Ok(())
 }
@@ -673,5 +763,135 @@ mod tests {
 
         let result = erode_3x3(&input, &mut output, width, height);
         assert!(result.is_err());
+    }
+
+    /// Deterministic pseudo-random image for parity testing.
+    fn make_image(width: usize, height: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        (0..width * height)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_erode_dilate_match_scalar_reference() {
+        // The NEON path (on aarch64) and the scalar path must produce identical
+        // results. We compare the public API against an independent scalar
+        // reference implementation of the 3x3 min/max stencil.
+        fn scalar_ref<const MAX: bool>(input: &[u8], width: usize, height: usize) -> Vec<u8> {
+            let mut out = input.to_vec();
+            for y in 1..(height - 1) {
+                for x in 1..(width - 1) {
+                    let mut acc = if MAX { 0u8 } else { 255u8 };
+                    for ky in 0..3 {
+                        for kx in 0..3 {
+                            let v = input[(y + ky - 1) * width + (x + kx - 1)];
+                            acc = if MAX { acc.max(v) } else { acc.min(v) };
+                        }
+                    }
+                    out[y * width + x] = acc;
+                }
+            }
+            out
+        }
+
+        // Widths chosen to exercise both the 16-wide NEON stride and the scalar
+        // horizontal remainder (e.g. 37 => one 16-lane block + tail).
+        for &(w, h) in &[(37usize, 19usize), (64, 8), (17, 17), (5, 5), (48, 12)] {
+            let input = make_image(w, h, 0x1234 ^ (w as u64) ^ ((h as u64) << 16));
+
+            let mut eroded = vec![0u8; w * h];
+            let mut dilated = vec![0u8; w * h];
+            erode_3x3(&input, &mut eroded, w, h).expect("erode ok");
+            dilate_3x3(&input, &mut dilated, w, h).expect("dilate ok");
+
+            let mut ref_erode = scalar_ref::<false>(&input, w, h);
+            let mut ref_dilate = scalar_ref::<true>(&input, w, h);
+            // Borders are copied from input by the public API.
+            copy_borders(&input, &mut ref_erode, w, h);
+            copy_borders(&input, &mut ref_dilate, w, h);
+
+            assert_eq!(eroded, ref_erode, "erosion mismatch at {w}x{h}");
+            assert_eq!(dilated, ref_dilate, "dilation mismatch at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn test_saturating_sub_dispatch_matches_scalar() {
+        for len in [0usize, 1, 15, 16, 17, 31, 33, 256, 257] {
+            let a = make_image(len, 1, 0xABCD);
+            let b = make_image(len, 1, 0x1357);
+            let mut out = vec![0u8; len];
+            saturating_sub_dispatch(&a, &b, &mut out);
+            for i in 0..len {
+                assert_eq!(out[i], a[i].saturating_sub(b[i]), "mismatch at index {i}");
+            }
+        }
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Property: erosion (neighborhood min) never exceeds dilation
+        /// (neighborhood max) at any pixel, for arbitrary images and shapes.
+        #[test]
+        fn prop_erode_le_dilate(
+            w in 3usize..40,
+            h in 3usize..40,
+            seed in any::<u64>(),
+        ) {
+            let input = make_image(w, h, seed);
+            let mut eroded = vec![0u8; w * h];
+            let mut dilated = vec![0u8; w * h];
+            erode_3x3(&input, &mut eroded, w, h).expect("erode");
+            dilate_3x3(&input, &mut dilated, w, h).expect("dilate");
+            for i in 0..w * h {
+                prop_assert!(eroded[i] <= dilated[i]);
+            }
+        }
+
+        /// Property: the erode/dilate public API (NEON on aarch64) is bit-for-bit
+        /// identical to an independent scalar reference for arbitrary inputs.
+        #[test]
+        fn prop_erode_dilate_parity(
+            w in 3usize..40,
+            h in 3usize..40,
+            seed in any::<u64>(),
+        ) {
+            fn scalar_ref<const MAX: bool>(input: &[u8], width: usize, height: usize) -> Vec<u8> {
+                let mut out = input.to_vec();
+                for y in 1..(height - 1) {
+                    for x in 1..(width - 1) {
+                        let mut acc = if MAX { 0u8 } else { 255u8 };
+                        for ky in 0..3 {
+                            for kx in 0..3 {
+                                let v = input[(y + ky - 1) * width + (x + kx - 1)];
+                                acc = if MAX { acc.max(v) } else { acc.min(v) };
+                            }
+                        }
+                        out[y * width + x] = acc;
+                    }
+                }
+                out
+            }
+
+            let input = make_image(w, h, seed);
+            let mut eroded = vec![0u8; w * h];
+            let mut dilated = vec![0u8; w * h];
+            erode_3x3(&input, &mut eroded, w, h).expect("erode");
+            dilate_3x3(&input, &mut dilated, w, h).expect("dilate");
+
+            let mut ref_e = scalar_ref::<false>(&input, w, h);
+            let mut ref_d = scalar_ref::<true>(&input, w, h);
+            copy_borders(&input, &mut ref_e, w, h);
+            copy_borders(&input, &mut ref_d, w, h);
+            prop_assert_eq!(eroded, ref_e);
+            prop_assert_eq!(dilated, ref_d);
+        }
     }
 }

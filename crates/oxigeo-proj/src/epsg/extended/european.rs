@@ -1,6 +1,7 @@
 //! European national grid CRS registrations.
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::ToString;
 
 pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
     let european_grids: &[(u32, &str, &str, &str, &str)] = &[

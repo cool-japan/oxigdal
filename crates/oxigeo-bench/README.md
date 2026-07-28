@@ -4,7 +4,7 @@ Comprehensive performance profiling and benchmarking suite for the OxiGeo geospa
 
 ## Features
 
-- **CPU Profiling**: Profile CPU usage with automatic flamegraph generation using `pprof`
+- **CPU Profiling**: Profile CPU usage with automatic flamegraph generation using `pprof` (requires the non-default `profiling` feature — see below)
 - **Memory Profiling**: Track memory usage over time and detect memory leaks
 - **System Monitoring**: Monitor system resources (CPU, memory, processes) during benchmarks
 - **Benchmark Scenarios**: Predefined scenarios for common geospatial operations
@@ -19,7 +19,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-bench = "0.2.0"
+oxigeo-bench = "0.2.1"
 ```
 
 ## Quick Start
@@ -50,6 +50,15 @@ report.generate("report.html", ReportFormat::Html)?;
 ```
 
 ### CPU Profiling
+
+CPU/flamegraph profiling pulls in `pprof` -> `backtrace` -> `miniz_oxide`, so it
+lives behind a non-default `profiling` feature to keep the default build
+graph Pure-Rust-clean (Pure Rust Policy):
+
+```toml
+[dependencies]
+oxigeo-bench = { version = "0.2", features = ["profiling"] }
+```
 
 ```rust
 use oxigeo_bench::profiler::{profile_cpu, CpuProfilerConfig};
@@ -134,7 +143,7 @@ if !report.has_regressions() {
 
 ```toml
 [dependencies]
-oxigeo-bench = { version = "0.2.0", features = ["raster", "vector"] }
+oxigeo-bench = { version = "0.2.1", features = ["raster", "vector"] }
 ```
 
 ## Benchmark Scenarios

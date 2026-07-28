@@ -6,10 +6,13 @@
 //!
 //! # Features
 //!
-//! - **Zarr Versions**: Full support for both Zarr v2 and v3 specifications
+//! - **Zarr Versions**: Zarr v2 and v3 arrays (chunk read/write, codec and
+//!   filter pipelines, v3 sharding)
 //! - **Storage Backends**: Filesystem, S3, HTTP, and in-memory storage
-//! - **Compression**: Blosc, Zstd, Gzip, LZ4 codecs
-//! - **Filters**: Shuffle, Delta, Scale-offset filters
+//!   (with byte-range reads used for cloud-efficient shard access)
+//! - **Compression**: Zstd, Gzip, LZ4 codecs (all Pure Rust via OxiARC),
+//!   plus the v3 `crc32c` checksum codec
+//! - **Filters** (opt-in cargo features): `shuffle`, `delta`, `scale-offset`
 //! - **Async I/O**: Async support for cloud storage backends
 //! - **Parallel**: Parallel chunk reading and writing
 //! - **Caching**: LRU caching for chunks
@@ -29,55 +32,49 @@
 //! - **Group**: Hierarchical organization of arrays
 //! - **Attributes**: Metadata attached to arrays/groups
 //!
-//! # Example - Reading Zarr Array
+//! # Example - Reading a Zarr v2 Array
 //!
-//! ```ignore
-//! use oxigeo_zarr::{ZarrReader, FilesystemStore};
-//! use oxigeo_zarr::metadata::v2::ArrayMetadataV2;
+//! ```no_run
+//! # #[cfg(all(feature = "v2", feature = "filesystem"))]
+//! # fn demo() -> oxigeo_zarr::Result<()> {
+//! use oxigeo_zarr::{ZarrReaderV2, FilesystemStore};
 //!
-//! // Open a Zarr v2 array
+//! // Open a Zarr v2 array stored under the "temperature" path.
 //! let store = FilesystemStore::open("data.zarr")?;
-//! let reader = ZarrReader::open_v2(store)?;
+//! let reader = ZarrReaderV2::open(store, "temperature")?;
 //!
 //! println!("Shape: {:?}", reader.shape());
 //! println!("Chunks: {:?}", reader.chunks());
-//! println!("Data type: {:?}", reader.dtype());
+//! println!("Data type: {}", reader.dtype());
 //!
-//! // Read a chunk
-//! let chunk_coords = vec![0, 0, 0];
-//! let chunk_data = reader.read_chunk(&chunk_coords)?;
-//!
-//! // Read a slice
-//! let slice = reader.read_slice(&[0..10, 0..20, 0..30])?;
+//! // Read one chunk (decoded element bytes in the array's stored order).
+//! let chunk_data = reader.read_chunk(&[0, 0])?;
+//! # let _ = chunk_data;
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! # Example - Writing Zarr Array
+//! # Example - Writing a Zarr v2 Array
 //!
-//! ```ignore
-//! use oxigeo_zarr::{ZarrWriter, FilesystemStore};
-//! use oxigeo_zarr::metadata::v2::{ArrayMetadataV2, DType};
-//! use oxigeo_zarr::codecs::Compressor;
+//! ```no_run
+//! # #[cfg(all(feature = "v2", feature = "filesystem", feature = "zstd"))]
+//! # fn demo() -> oxigeo_zarr::Result<()> {
+//! use oxigeo_zarr::{ZarrWriterV2, FilesystemStore};
+//! use oxigeo_zarr::codecs::CompressorConfig;
+//! use oxigeo_zarr::metadata::v2::ArrayMetadataV2;
 //!
-//! // Create a new Zarr v2 array
 //! let store = FilesystemStore::create("output.zarr")?;
-//! let metadata = ArrayMetadataV2 {
-//!     shape: vec![100, 200, 300],
-//!     chunks: vec![10, 20, 30],
-//!     dtype: DType::Float32,
-//!     compressor: Some(Compressor::Zstd { level: 3 }),
-//!     fill_value: 0.0,
-//!     order: 'C',
-//!     filters: None,
-//! };
+//! let metadata = ArrayMetadataV2::new(vec![100, 200], vec![10, 20], "<f4")
+//!     .with_compressor(CompressorConfig::Zstd { level: 3 });
 //!
-//! let mut writer = ZarrWriter::create_v2(store, metadata)?;
+//! let mut writer = ZarrWriterV2::create(store, "temperature", metadata)?;
 //!
-//! // Write a chunk
-//! let chunk_coords = vec![0, 0, 0];
-//! let chunk_data = vec![0.0f32; 10 * 20 * 30];
-//! writer.write_chunk(&chunk_coords, &chunk_data)?;
-//!
+//! // Write one 10x20 float32 chunk.
+//! let chunk_data = vec![0u8; 10 * 20 * 4];
+//! writer.write_chunk(&[0, 0], &chunk_data)?;
 //! writer.finalize()?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Storage Backends
@@ -159,13 +156,17 @@ pub use chunk::{ChunkCoord, ChunkGrid, ChunkIndex};
 pub use consolidation::{ConsolidatedMetadata, ConsolidatedStore, consolidate_metadata};
 pub use dimension::{Dimension, DimensionSeparator, Shape};
 pub use error::{Result, ZarrError};
+pub use reader::ZarrReader;
+#[cfg(feature = "v2")]
+pub use reader::ZarrReaderV2;
 #[cfg(feature = "v3")]
 pub use reader::v3::ZarrV3Reader;
-pub use reader::{ZarrReader, ZarrReaderV2};
 pub use storage::{Store, StoreKey};
+pub use writer::ZarrWriter;
+#[cfg(feature = "v2")]
+pub use writer::ZarrWriterV2;
 #[cfg(feature = "v3")]
 pub use writer::v3::ZarrV3Writer;
-pub use writer::{ZarrWriter, ZarrWriterV2};
 
 #[cfg(feature = "filesystem")]
 pub use storage::filesystem::FilesystemStore;

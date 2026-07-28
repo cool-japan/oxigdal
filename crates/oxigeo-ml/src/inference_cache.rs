@@ -22,6 +22,11 @@ use crate::error::MlError;
 pub struct CacheEntry {
     /// Raw output tensors from the inference run
     pub outputs: Vec<Vec<f32>>,
+    /// Shape of each output tensor in [`outputs`](Self::outputs), positionally
+    /// aligned. Empty when shapes were not recorded (a flat tensor cache).
+    /// Consumers that need to reconstruct structured outputs (e.g. a raster)
+    /// store the dimensions here.
+    pub output_shapes: Vec<Vec<usize>>,
     /// Wall-clock time when this entry was created
     pub created_at: SystemTime,
     /// Number of times this entry has been returned from `get`
@@ -264,6 +269,7 @@ mod tests {
     fn make_entry(outputs: Vec<Vec<f32>>) -> CacheEntry {
         CacheEntry {
             outputs,
+            output_shapes: Vec::new(),
             created_at: SystemTime::now(),
             hit_count: 0,
             input_size_bytes: 16,

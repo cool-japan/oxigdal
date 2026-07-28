@@ -7,6 +7,7 @@
 //! - System resource monitoring
 
 use crate::error::{BenchError, Result};
+#[cfg(feature = "profiling")]
 use pprof::ProfilerGuard;
 use std::collections::HashMap;
 use std::fs::File;
@@ -15,6 +16,12 @@ use std::time::{Duration, Instant};
 use sysinfo::System;
 
 /// CPU profiler configuration.
+///
+/// Building and running a [`CpuProfiler`] requires the non-default
+/// `profiling` feature (it pulls in `pprof` -> `backtrace` ->
+/// `miniz_oxide`, which the Pure Rust Policy keeps out of the default
+/// build graph). This config type itself carries no such dependency, so it
+/// stays available unconditionally.
 #[derive(Debug, Clone)]
 pub struct CpuProfilerConfig {
     /// Sampling frequency (samples per second).
@@ -39,12 +46,16 @@ impl Default for CpuProfilerConfig {
 }
 
 /// CPU profiler with flamegraph generation support.
+///
+/// Requires the non-default `profiling` feature; see [`CpuProfilerConfig`].
+#[cfg(feature = "profiling")]
 pub struct CpuProfiler {
     config: CpuProfilerConfig,
     guard: Option<ProfilerGuard<'static>>,
     start_time: Option<Instant>,
 }
 
+#[cfg(feature = "profiling")]
 impl CpuProfiler {
     /// Creates a new CPU profiler with the given configuration.
     pub fn new(config: CpuProfilerConfig) -> Self {
@@ -414,6 +425,9 @@ impl Default for SystemMonitor {
 }
 
 /// Profile a function with CPU profiling.
+///
+/// Requires the non-default `profiling` feature; see [`CpuProfilerConfig`].
+#[cfg(feature = "profiling")]
 pub fn profile_cpu<F, R>(func: F, config: CpuProfilerConfig) -> Result<(R, CpuProfilerReport)>
 where
     F: FnOnce() -> R,
@@ -487,6 +501,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "profiling")]
     fn test_profile_cpu() {
         let config = CpuProfilerConfig {
             generate_flamegraph: false,

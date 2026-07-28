@@ -35,7 +35,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-cluster = "0.2.0"
+oxigeo-cluster = "0.2.1"
 ```
 
 ## Quick Start
@@ -373,7 +373,7 @@ let cluster = ClusterBuilder::new()
 - **High Throughput**: Supports scheduling thousands of tasks per second
 - **Memory Efficient**: Distributed cache with configurable compression
 - **Network Optimized**: Topology-aware scheduling reduces inter-node traffic
-- **Scalable**: Tested up to 1000+ nodes in production clusters
+- **Scalable**: Architecture designed for large clusters (consistent-hash sharded cache, DAG-based scheduling); real inter-node network transport is still in development (see `TODO.md`)
 
 ### Benchmarks
 

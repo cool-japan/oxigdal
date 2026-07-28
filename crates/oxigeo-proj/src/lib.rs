@@ -9,67 +9,73 @@
 //! - Coordinate transformations between different CRS
 //! - Pure Rust implementation by default using OxiProj (COOLJAPAN cartographic engine)
 //! - proj4rs retained as optional fallback via the `proj4rs-compat` feature
-//! - Optional C bindings to PROJ library (feature-gated)
 //!
 //! # Features
 //!
 //! - `std` (default): Enable standard library support and OxiProj EPSG/ProjJSON features
-//! - `proj-sys`: Enable optional C bindings to PROJ library for full PROJ support
 //! - `proj-db`: Enable SQLite PROJ.db reader for ~7500 EPSG codes
 //!
 //! # Examples
 //!
-//! ## Transform coordinates from WGS84 to Web Mercator
-//!
-//! ```
-//! use oxigeo_proj::{Crs, Coordinate, Transformer};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create CRS from EPSG codes
-//! let wgs84 = Crs::from_epsg(4326)?;
-//! let web_mercator = Crs::from_epsg(3857)?;
-//!
-//! // Create transformer
-//! let transformer = Transformer::new(wgs84, web_mercator)?;
-//!
-//! // Transform a coordinate (London: 0°, 51.5°N)
-//! let london = Coordinate::from_lon_lat(0.0, 51.5);
-//! let transformed = transformer.transform(&london)?;
-//!
-//! println!("Transformed: {}", transformed);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Use convenience functions
-//!
-//! ```
-//! use oxigeo_proj::{Coordinate, transform_epsg};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let coord = Coordinate::from_lon_lat(-122.4194, 37.7749); // San Francisco
-//! let transformed = transform_epsg(&coord, 4326, 3857)?;
-//! println!("Transformed: {}", transformed);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Work with bounding boxes
-//!
-//! ```
-//! use oxigeo_proj::{BoundingBox, Coordinate, Transformer, Crs};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let bbox = BoundingBox::new(-10.0, -10.0, 10.0, 10.0)?;
-//!
-//! let transformer = Transformer::from_epsg(4326, 3857)?;
-//! let transformed_bbox = transformer.transform_bbox(&bbox)?;
-//!
-//! println!("Original: {:?}", bbox);
-//! println!("Transformed: {:?}", transformed_bbox);
-//! # Ok(())
-//! # }
-//! ```
+// The following three examples use `Transformer` / `transform_epsg`, which are
+// only compiled with the `std` feature, so the doc block itself is gated: on a
+// `no_std` build these APIs do not exist and the examples must not be documented
+// (nor compiled as doctests).
+#![cfg_attr(
+    feature = "std",
+    doc = r##"## Transform coordinates from WGS84 to Web Mercator
+
+```
+use oxigeo_proj::{Crs, Coordinate, Transformer};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Create CRS from EPSG codes
+let wgs84 = Crs::from_epsg(4326)?;
+let web_mercator = Crs::from_epsg(3857)?;
+
+// Create transformer
+let transformer = Transformer::new(wgs84, web_mercator)?;
+
+// Transform a coordinate (London: 0°, 51.5°N)
+let london = Coordinate::from_lon_lat(0.0, 51.5);
+let transformed = transformer.transform(&london)?;
+
+println!("Transformed: {}", transformed);
+# Ok(())
+# }
+```
+
+## Use convenience functions
+
+```
+use oxigeo_proj::{Coordinate, transform_epsg};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let coord = Coordinate::from_lon_lat(-122.4194, 37.7749); // San Francisco
+let transformed = transform_epsg(&coord, 4326, 3857)?;
+println!("Transformed: {}", transformed);
+# Ok(())
+# }
+```
+
+## Work with bounding boxes
+
+```
+use oxigeo_proj::{BoundingBox, Coordinate, Transformer, Crs};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let bbox = BoundingBox::new(-10.0, -10.0, 10.0, 10.0)?;
+
+let transformer = Transformer::from_epsg(4326, 3857)?;
+let transformed_bbox = transformer.transform_bbox(&bbox)?;
+
+println!("Original: {:?}", bbox);
+println!("Transformed: {:?}", transformed_bbox);
+# Ok(())
+# }
+```
+"##
+)]
 //!
 //! ## Use common CRS constants
 //!
@@ -102,13 +108,6 @@
 //! - Memory safety guarantees
 //! - Easy integration with Rust projects
 //!
-//! For applications requiring full PROJ library compatibility, enable the `proj-sys` feature:
-//!
-//! ```toml
-//! [dependencies]
-//! oxigeo-proj = { version = "0.2", features = ["proj-sys"] }
-//! ```
-//!
 //! # Accuracy and Limitations
 //!
 //! The pure Rust implementation using OxiProj provides accurate transformations for most
@@ -118,18 +117,22 @@
 //! - No dynamic datum grid shift support
 //! - Simplified datum transformations
 //!
-//! For high-accuracy geodetic applications, consider using the `proj-sys` feature.
+//! For higher-fidelity CRS coverage, enable the `proj-db` feature: it adds the pure-Rust
+//! oxisql PROJ.db reader (~7500 EPSG codes) on top of the embedded registry.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-// When no_std is active, bring in alloc for heap allocation (Vec, String, etc.)
-#[cfg(not(feature = "std"))]
+// `alloc` is linked unconditionally: it is always available, including when `std`
+// is present (`std` re-exports it), and `alloc::string::String` *is*
+// `std::string::String`. Linking it here lets every module write a plain
+// `use alloc::…;` instead of a `#[cfg(not(feature = "std"))]`-gated import that
+// silently rots whenever a module forgets one — which is exactly how the
+// `no_std` build previously broke.
 extern crate alloc;
-#[cfg(not(feature = "std"))]
+
 use alloc::format;
-#[cfg(not(feature = "std"))]
 use alloc::string::String;
 
 pub mod area_of_use;
@@ -154,6 +157,8 @@ pub mod grid_shift;
 pub mod operation_selection;
 #[cfg(feature = "std")]
 pub mod pipeline;
+#[cfg(feature = "std")]
+pub mod pipeline_grid;
 #[cfg(feature = "std")]
 pub mod proj_string;
 #[cfg(feature = "std")]
@@ -212,15 +217,15 @@ pub use operation_selection::{
 };
 #[cfg(feature = "std")]
 pub use pipeline::{
-    EllipsoidParams, HelmertConvention, HelmertParams, HelmertRateParams, ParsedStep, Pipeline,
-    PipelineStep, ShiftDirection, StepKind, Unit, parse_pipeline,
+    EllipsoidParams, GridRegistry, HelmertConvention, HelmertParams, HelmertRateParams, ParsedStep,
+    Pipeline, PipelineStep, ShiftDirection, StepKind, Unit, parse_pipeline,
 };
 #[cfg(feature = "std")]
 pub use transform::{
     AreaOfUseCheck, AreaOfUseWarning, AzimuthalEquidistant, CassineSoldner, EckertIV, EckertVI,
     EquidistantConic, GaussKruger, Gnomonic, LambertAzimuthalEqualArea, LambertConformalConic,
-    Mollweide, Robinson, Sinusoidal, Transformer, TransverseMercator, transform_coordinate,
-    transform_epsg,
+    Mollweide, Robinson, Sinusoidal, Transformer, TransverseMercator, VerticalDatumWarning,
+    transform_coordinate, transform_epsg,
 };
 pub use transform::{BoundingBox, Coordinate, Coordinate3D};
 pub use ups_projection::{
@@ -241,7 +246,9 @@ pub fn info() -> String {
     format!("{} v{}", NAME, VERSION)
 }
 
-#[cfg(test)]
+// These unit tests exercise std-only API (`Transformer`, `Crs::compound`,
+// `lookup_epsg`, …), so they are gated with the `std` feature.
+#[cfg(all(test, feature = "std"))]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;

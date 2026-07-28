@@ -1,7 +1,7 @@
 # TODO: oxigeo-terrain
 
 > **Purpose:** Advanced terrain analysis and DEM processing for OxiGeo — derivatives, hydrology, viewshed, geomorphometry
-> **Status (2026-05-16):** 4,847 Rust LoC · 103 unit tests (+ workspace integration) · 0 real-code stubs (clean tree after v0.1.5 hydrology/morphometry slice)
+> **Status (2026-07-28):** 12,116 Rust LoC · 187 tests · 0 real-code stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
@@ -132,4 +132,4 @@
 - **Blocked by:** `oxigeo-core` (RasterBuffer, GeoTransform, Result/Error types)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

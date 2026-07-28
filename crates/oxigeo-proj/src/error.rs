@@ -3,8 +3,7 @@
 //! This module provides comprehensive error handling for all projection-related operations,
 //! following the no-unwrap policy.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::String;
+use alloc::string::{String, ToString};
 
 /// Result type for projection operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -165,11 +164,6 @@ pub enum Error {
     #[cfg(feature = "std")]
     #[error("Proj4rs error: {0}")]
     Proj4rsError(String),
-
-    /// Error from PROJ C library (when using proj-sys feature)
-    #[cfg(feature = "proj-sys")]
-    #[error("PROJ library error: {0}")]
-    ProjSysError(String),
 
     /// Coordinate is outside the source CRS area of use
     #[error("Coordinate ({lon}, {lat}) is outside area of use for CRS '{crs}'")]
@@ -440,13 +434,6 @@ impl From<proj4rs::errors::Error> for Error {
     }
 }
 
-#[cfg(feature = "proj-sys")]
-impl From<proj::ProjError> for Error {
-    fn from(err: proj::ProjError) -> Self {
-        Self::ProjSysError(format!("{}", err))
-    }
-}
-
 // Implement conversion from oxiproj errors
 impl From<oxiproj::TransformError> for Error {
     fn from(e: oxiproj::TransformError) -> Self {
@@ -478,6 +465,7 @@ impl From<oxiproj::ProjError> for Error {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use alloc::format;
 
     #[test]
     fn test_error_creation() {

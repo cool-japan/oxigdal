@@ -1,6 +1,7 @@
 //! Vertical CRS registrations (NAVD88, EGM96, EGM2008, etc.).
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::{String, ToString};
 
 pub(super) fn register_vertical_crs(db: &mut EpsgDatabase) {
     let vertical_crs: &[(u32, &str, &str, &str)] = &[

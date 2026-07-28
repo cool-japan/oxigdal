@@ -53,10 +53,13 @@ impl HttpObjectStore {
     ///
     /// - [`CloudCredentials::Anonymous`] — no auth header added.
     /// - [`CloudCredentials::Bearer`] — `Authorization: Bearer <token>`.
-    /// - [`CloudCredentials::AccessKey`] — adds `X-Access-Key: <key_id>`.
-    ///   Full SigV4 signing is available through [`PresignedUrlGenerator`]; this
-    ///   path is intentionally lightweight and meant for environments that
-    ///   already have pre-authenticated URLs or rely on a signing proxy.
+    /// - [`CloudCredentials::AccessKey`] — returns
+    ///   [`CloudError::UnsupportedCredentials`]. Access-key credentials require a
+    ///   real SigV4 (S3) / GCS v4 request signature, which the direct-HTTP
+    ///   transport does not perform. Sending an unsigned request would be
+    ///   rejected by the provider as unauthenticated, so we fail fast (like the
+    ///   other unsigned variants) and direct callers to
+    ///   `PresignedUrlGenerator`, which does compute a real signature.
     /// - [`CloudCredentials::SasToken`] — appends the SAS token as a query
     ///   parameter `?{token}` via the `Authorization` header bypass path.
     ///   Actual SAS attachment is done at the URL level; here we skip it.
@@ -74,10 +77,17 @@ impl HttpObjectStore {
             }
 
             CloudCredentials::AccessKey { access_key_id, .. } => {
-                // Full SigV4/GCS v4 signing is available via PresignedUrlGenerator.
-                // For direct HTTP transport, we pass the key ID as an identification
-                // header. Signing is a follow-up integration task.
-                Ok(builder.header("X-Access-Key", access_key_id.as_str()))
+                // Real SigV4 (S3) / GCS v4 signing needs the request's region and
+                // service scope and a full canonical-request computation, which
+                // this direct-HTTP path does not have. Rather than silently
+                // sending an unsigned request that the provider will reject with
+                // 401/403, fail fast with a clear, actionable error — consistent
+                // with the other unsigned credential variants below.
+                Err(CloudError::UnsupportedCredentials(format!(
+                    "AccessKey credential '{access_key_id}' cannot be signed by the direct HTTP \
+                     transport (no SigV4/GCS-v4 signing). Generate a presigned URL via \
+                     PresignedUrlGenerator, or use Bearer/SasToken/Anonymous credentials."
+                )))
             }
 
             CloudCredentials::SasToken { .. } => {

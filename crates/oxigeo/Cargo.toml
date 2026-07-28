@@ -116,6 +116,9 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["arrow"] }
 
+[lints]
+workspace = true
+
 [package.metadata.docs.rs]
 # Build docs with all features so every feature-gated item is documented.
 features = ["full", "cloud", "proj", "algorithms", "analytics", "streaming",

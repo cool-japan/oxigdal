@@ -1,7 +1,14 @@
-//! SIMD-accelerated coordinate transformations
+//! Coordinate transformations
 //!
-//! This module provides high-performance coordinate projection and transformation operations
-//! using SIMD instructions. It supports common geospatial projections and transformations.
+//! This module provides coordinate projection and transformation operations. It
+//! supports common geospatial projections and transformations.
+//!
+//! # Implementation status
+//!
+//! These transforms are currently scalar loops written to be
+//! auto-vectorization friendly; they do NOT yet contain hand-written SIMD
+//! intrinsics. Hardware-vectorized kernels are planned future work. The
+//! functions are correct and covered by unit tests.
 //!
 //! # Supported Transformations
 //!
@@ -9,10 +16,6 @@
 //! - **Geographic to Projected**: Web Mercator, UTM-like transformations
 //! - **Coordinate System Conversions**: WGS84 ↔ Web Mercator, Lat/Lon ↔ XY
 //! - **Batch Processing**: Transform thousands of coordinates efficiently
-//!
-//! # Performance
-//!
-//! Expected speedup over scalar: 4-8x for coordinate transformations
 //!
 //! # Example
 //!

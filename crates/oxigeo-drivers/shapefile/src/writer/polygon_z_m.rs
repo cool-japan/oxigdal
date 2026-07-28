@@ -4,29 +4,22 @@
 //! based on the presence of Z/M coordinates on the coordinates.
 
 use crate::error::{Result, ShapefileError};
+use crate::polygon_rings::{normalize_multipolygon_rings, normalize_polygon_rings};
 use crate::shp::Shape;
 use crate::shp::shapes::{MultiPartShape, MultiPartShapeM, MultiPartShapeZ, Point};
-use oxigeo_core::vector::{MultiPolygon, Polygon};
+use oxigeo_core::vector::{Coordinate, MultiPolygon, Polygon};
 
-/// Converts a core `Polygon` geometry to the correct `Shape` variant.
-///
-/// - Has Z  → `Shape::PolygonZ`
-/// - Has M only → `Shape::PolygonM`
-/// - 2D → `Shape::Polygon`
-pub fn geometry_polygon_to_shape(polygon: &Polygon, has_z: bool, has_m: bool) -> Result<Shape> {
+/// Flattens winding-normalized rings (exterior clockwise, holes counter-clockwise
+/// per the ESRI spec) into the appropriate multi-part `Shape` variant. Z and M
+/// values are collected in exactly the same, possibly reversed, ring order so
+/// they stay aligned with their vertices.
+fn rings_to_shape(rings: &[Vec<Coordinate>], has_z: bool, has_m: bool) -> Result<Shape> {
     let mut all_points: Vec<Point> = Vec::new();
     let mut parts: Vec<i32> = Vec::new();
 
-    // Exterior ring
-    parts.push(all_points.len() as i32);
-    for coord in &polygon.exterior.coords {
-        all_points.push(Point::new(coord.x, coord.y));
-    }
-
-    // Interior rings (holes)
-    for interior in &polygon.interiors {
+    for ring in rings {
         parts.push(all_points.len() as i32);
-        for coord in &interior.coords {
+        for coord in ring {
             all_points.push(Point::new(coord.x, coord.y));
         }
     }
@@ -38,40 +31,16 @@ pub fn geometry_polygon_to_shape(polygon: &Polygon, has_z: bool, has_m: bool) ->
     }
 
     if has_z {
-        // Collect Z values in the same ring-flattened order
-        let z_values: Vec<f64> = polygon
-            .exterior
-            .coords
-            .iter()
-            .chain(polygon.interiors.iter().flat_map(|r| r.coords.iter()))
-            .map(|c| c.z.unwrap_or(0.0))
-            .collect();
-
+        let z_values: Vec<f64> = rings.iter().flatten().map(|c| c.z.unwrap_or(0.0)).collect();
         let m_values_opt: Option<Vec<f64>> = if has_m {
-            Some(
-                polygon
-                    .exterior
-                    .coords
-                    .iter()
-                    .chain(polygon.interiors.iter().flat_map(|r| r.coords.iter()))
-                    .map(|c| c.m.unwrap_or(0.0))
-                    .collect(),
-            )
+            Some(rings.iter().flatten().map(|c| c.m.unwrap_or(0.0)).collect())
         } else {
             None
         };
-
         let shape_z = MultiPartShapeZ::new(parts, all_points, z_values, m_values_opt)?;
         Ok(Shape::PolygonZ(shape_z))
     } else if has_m {
-        let m_values: Vec<f64> = polygon
-            .exterior
-            .coords
-            .iter()
-            .chain(polygon.interiors.iter().flat_map(|r| r.coords.iter()))
-            .map(|c| c.m.unwrap_or(0.0))
-            .collect();
-
+        let m_values: Vec<f64> = rings.iter().flatten().map(|c| c.m.unwrap_or(0.0)).collect();
         let shape_m = MultiPartShapeM::new(parts, all_points, m_values)?;
         Ok(Shape::PolygonM(shape_m))
     } else {
@@ -80,10 +49,26 @@ pub fn geometry_polygon_to_shape(polygon: &Polygon, has_z: bool, has_m: bool) ->
     }
 }
 
+/// Converts a core `Polygon` geometry to the correct `Shape` variant.
+///
+/// The polygon's rings are winding-normalized (exterior clockwise, holes
+/// counter-clockwise) so the resulting record is ESRI-spec conformant and reads
+/// back correctly with the winding-aware reader.
+///
+/// - Has Z  → `Shape::PolygonZ`
+/// - Has M only → `Shape::PolygonM`
+/// - 2D → `Shape::Polygon`
+pub fn geometry_polygon_to_shape(polygon: &Polygon, has_z: bool, has_m: bool) -> Result<Shape> {
+    let rings = normalize_polygon_rings(polygon);
+    rings_to_shape(&rings, has_z, has_m)
+}
+
 /// Converts a core `MultiPolygon` geometry to the correct `Shape` variant.
 ///
-/// All polygons in a MultiPolygon are flattened into a single multi-part
-/// shape (consistent with the Shapefile spec which uses multi-ring polygons).
+/// All polygons in a MultiPolygon are flattened into a single multi-part shape
+/// (the Shapefile spec uses one multi-ring `Polygon` record and distinguishes the
+/// rings by winding direction). Each polygon contributes its clockwise exterior
+/// ring followed by its counter-clockwise holes.
 ///
 /// - Has Z  → `Shape::PolygonZ`
 /// - Has M only → `Shape::PolygonM`
@@ -93,83 +78,8 @@ pub fn geometry_multipolygon_to_shape(
     has_z: bool,
     has_m: bool,
 ) -> Result<Shape> {
-    let mut all_points: Vec<Point> = Vec::new();
-    let mut parts: Vec<i32> = Vec::new();
-
-    for polygon in &multipolygon.polygons {
-        // Exterior ring
-        parts.push(all_points.len() as i32);
-        for coord in &polygon.exterior.coords {
-            all_points.push(Point::new(coord.x, coord.y));
-        }
-
-        // Interior rings
-        for interior in &polygon.interiors {
-            parts.push(all_points.len() as i32);
-            for coord in &interior.coords {
-                all_points.push(Point::new(coord.x, coord.y));
-            }
-        }
-    }
-
-    if all_points.is_empty() {
-        return Err(ShapefileError::invalid_geometry(
-            "MultiPolygon must have at least one point",
-        ));
-    }
-
-    if has_z {
-        let z_values: Vec<f64> = multipolygon
-            .polygons
-            .iter()
-            .flat_map(|poly| {
-                poly.exterior
-                    .coords
-                    .iter()
-                    .chain(poly.interiors.iter().flat_map(|r| r.coords.iter()))
-            })
-            .map(|c| c.z.unwrap_or(0.0))
-            .collect();
-
-        let m_values_opt: Option<Vec<f64>> = if has_m {
-            Some(
-                multipolygon
-                    .polygons
-                    .iter()
-                    .flat_map(|poly| {
-                        poly.exterior
-                            .coords
-                            .iter()
-                            .chain(poly.interiors.iter().flat_map(|r| r.coords.iter()))
-                    })
-                    .map(|c| c.m.unwrap_or(0.0))
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-        let shape_z = MultiPartShapeZ::new(parts, all_points, z_values, m_values_opt)?;
-        Ok(Shape::PolygonZ(shape_z))
-    } else if has_m {
-        let m_values: Vec<f64> = multipolygon
-            .polygons
-            .iter()
-            .flat_map(|poly| {
-                poly.exterior
-                    .coords
-                    .iter()
-                    .chain(poly.interiors.iter().flat_map(|r| r.coords.iter()))
-            })
-            .map(|c| c.m.unwrap_or(0.0))
-            .collect();
-
-        let shape_m = MultiPartShapeM::new(parts, all_points, m_values)?;
-        Ok(Shape::PolygonM(shape_m))
-    } else {
-        let shape = MultiPartShape::new(parts, all_points)?;
-        Ok(Shape::Polygon(shape))
-    }
+    let rings = normalize_multipolygon_rings(multipolygon);
+    rings_to_shape(&rings, has_z, has_m)
 }
 
 #[cfg(test)]
@@ -252,6 +162,81 @@ mod tests {
             assert_eq!(shape_type, 25, "PolygonM shape type must be 25");
         } else {
             panic!("Expected PolygonM, got {:?}", shape);
+        }
+    }
+
+    // Clockwise square (ESRI exterior winding) at the given origin.
+    fn cw_square(ox: f64, oy: f64, s: f64) -> LineString {
+        LineString::new(vec![
+            Coordinate::new_2d(ox, oy),
+            Coordinate::new_2d(ox, oy + s),
+            Coordinate::new_2d(ox + s, oy + s),
+            Coordinate::new_2d(ox + s, oy),
+            Coordinate::new_2d(ox, oy),
+        ])
+        .expect("valid ring")
+    }
+
+    #[test]
+    fn test_multipolygon_two_islands_round_trip() {
+        use crate::reader::ShapefileReader;
+        use oxigeo_core::vector::Geometry;
+
+        // Two disjoint "islands" (e.g. a country with an offshore island) — each
+        // its own clockwise exterior. This must NOT collapse into one polygon
+        // whose second island is a bogus hole.
+        let island_a = Polygon::new(cw_square(0.0, 0.0, 10.0), vec![]).expect("island A");
+        let island_b = Polygon::new(cw_square(100.0, 0.0, 10.0), vec![]).expect("island B");
+        let original = MultiPolygon::new(vec![island_a, island_b]);
+
+        let shape = geometry_multipolygon_to_shape(&original, false, false).expect("to shape");
+        // The writer flattens both islands into ONE multi-ring Polygon record.
+        assert!(matches!(shape, Shape::Polygon(_)));
+
+        let geometry = ShapefileReader::shape_to_geometry_pub(&shape)
+            .expect("read back")
+            .expect("some geometry");
+
+        match geometry {
+            Geometry::MultiPolygon(mp) => {
+                assert_eq!(mp.polygons.len(), 2, "both islands must survive");
+                for poly in &mp.polygons {
+                    assert!(
+                        poly.interiors.is_empty(),
+                        "no island should gain a spurious hole"
+                    );
+                }
+            }
+            other => panic!("expected MultiPolygon round-trip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_polygon_with_hole_round_trip() {
+        use crate::reader::ShapefileReader;
+        use oxigeo_core::vector::Geometry;
+
+        // One exterior with a real hole (counter-clockwise inner ring).
+        let hole = LineString::new(vec![
+            Coordinate::new_2d(2.0, 2.0),
+            Coordinate::new_2d(4.0, 2.0),
+            Coordinate::new_2d(4.0, 4.0),
+            Coordinate::new_2d(2.0, 4.0),
+            Coordinate::new_2d(2.0, 2.0),
+        ])
+        .expect("hole ring");
+        let original = Polygon::new(cw_square(0.0, 0.0, 10.0), vec![hole]).expect("polygon");
+
+        let shape = geometry_polygon_to_shape(&original, false, false).expect("to shape");
+        let geometry = ShapefileReader::shape_to_geometry_pub(&shape)
+            .expect("read back")
+            .expect("some geometry");
+
+        match geometry {
+            Geometry::Polygon(p) => {
+                assert_eq!(p.interiors.len(), 1, "the hole must be preserved");
+            }
+            other => panic!("expected single Polygon with a hole, got {other:?}"),
         }
     }
 }

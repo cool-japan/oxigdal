@@ -369,21 +369,55 @@ fn apply_stage_inverse(stage: PipelineStage, data: &[u8]) -> Result<Vec<u8>, Com
 /// true size without any wire-format change.
 const LZ4_SIZE_GUESS_MULTIPLIERS: &[usize] = &[4, 16, 64, 256, 1024, 4096, 16384];
 
+/// Absolute ceiling on the LZ4 output-size guess.
+///
+/// Once the fixed [`LZ4_SIZE_GUESS_MULTIPLIERS`] schedule is exhausted, the bound
+/// keeps doubling up to this cap so that a genuinely valid block compressing
+/// better than 16384:1 still decodes, while a malformed/hostile frame can never
+/// drive the retry loop (or the decoder's allocation) unboundedly. 4 GiB covers
+/// any realistic decompressed raster tile. Note that
+/// `oxiarc_lz4::decompress_block` only pre-allocates `min(bound, input.len()*4)`
+/// and grows on demand, so a large bound here does not itself allocate 4 GiB —
+/// it is purely the decoder's overflow ceiling.
+const LZ4_MAX_OUTPUT_GUESS: usize = 4 * 1024 * 1024 * 1024;
+
 /// Decompress a [`PipelineStage::Lz4`] payload, growing the output-size bound
-/// on each retry until decoding succeeds. See [`LZ4_SIZE_GUESS_MULTIPLIERS`].
+/// on each retry until decoding succeeds. The fixed
+/// [`LZ4_SIZE_GUESS_MULTIPLIERS`] schedule is tried first (cheap, common cases),
+/// then the bound is doubled up to [`LZ4_MAX_OUTPUT_GUESS`] so that blocks
+/// compressing better than the schedule's top multiplier still decode instead of
+/// failing on valid data.
 fn decompress_lz4_stage(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
     let codec = Lz4Codec::default();
     let mut last_err = None;
+    let mut best_guess = data.len().max(1);
+
     for &multiplier in LZ4_SIZE_GUESS_MULTIPLIERS {
-        let guess = data.len().saturating_mul(multiplier);
+        let guess = data.len().saturating_mul(multiplier).max(1);
+        best_guess = guess;
         match codec.decompress(data, Some(guess)) {
             Ok(output) => return Ok(output),
             Err(err) => last_err = Some(err),
         }
     }
+
+    // The fixed schedule undershot; keep doubling the bound until the data
+    // decodes or we hit the absolute safety cap. This converges because the
+    // decoder succeeds for any bound at least as large as the true output size.
+    loop {
+        if best_guess >= LZ4_MAX_OUTPUT_GUESS {
+            break;
+        }
+        best_guess = best_guess.saturating_mul(2).min(LZ4_MAX_OUTPUT_GUESS);
+        match codec.decompress(data, Some(best_guess)) {
+            Ok(output) => return Ok(output),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
     Err(last_err.unwrap_or_else(|| {
         CompressionError::InvalidMetadata(
             "lz4 pipeline stage decompression failed for an empty guess schedule".to_string(),
@@ -437,5 +471,28 @@ mod tests {
         let data: Vec<u8> = (0..32u8).collect();
         assert_eq!(byte_shuffle(&data, 1), data);
         assert_eq!(byte_unshuffle(&data, 1), data);
+    }
+
+    #[test]
+    fn lz4_stage_round_trips_extremely_compressible_payload() {
+        // A large near-constant buffer (the raster-band case the size-guess
+        // schedule targets) compresses to a tiny block. The inverse stage must
+        // recover it byte-for-byte no matter how high the compression ratio is,
+        // growing the output-size bound as needed instead of failing.
+        let original = vec![0u8; 8 * 1024 * 1024];
+        let compressed = Lz4Codec::default()
+            .compress(&original)
+            .expect("forward lz4 stage must compress");
+        // The block is far smaller than the payload — exactly when a fixed
+        // multiplier can undershoot.
+        assert!(compressed.len() * 64 < original.len());
+
+        let restored = decompress_lz4_stage(&compressed).expect("inverse lz4 stage must decode");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn lz4_stage_empty_input_is_empty() {
+        assert!(decompress_lz4_stage(&[]).expect("empty decodes").is_empty());
     }
 }

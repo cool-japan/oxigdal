@@ -1,7 +1,7 @@
 # TODO: oxigeo-security
 
 > **Purpose:** Enterprise security features — encryption, access control, audit, compliance, multi-tenancy.
-> **Status (2026-05-16):** 7,538 LoC · 99 tests · 2 narrative stubs in `scanning/`
+> **Status (2026-07-28):** 7,246 LoC · 158 tests · 1 narrative stub in `scanning/` (`vulnerability.rs`; `malware.rs` is now a real Pure-Rust scanner, see below)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -30,12 +30,13 @@
   - **Prerequisites:** None.
 
 - [ ] Replace stub scanners with real implementations
-  - **Verified gap:** `src/scanning/malware.rs:17` — `// Implementation would integrate with antivirus engines` (returns empty findings); `src/scanning/vulnerability.rs:17` — `// Implementation would integrate with vulnerability databases`.
-  - **Goal:** `MalwareScanner` runs ClamAV-style signature scan on file bytes (Pure Rust hash-based YARA-lite subset); `VulnerabilityScanner` queries OSV.dev API or local SBOM index, mapping CVE → finding.
-  - **Design:** Malware — load signature DB at construction (list of SHA-256 hashes + glob name patterns), scan in 64 KiB blocks. Vulnerability — accept `Vec<DependencyAdvisory>` from caller (decoupled from network); produce findings per matched (package, version, cve_id). Both return real `Finding` instances per existing struct.
-  - **Files:** `src/scanning/malware.rs` (replace body), `src/scanning/vulnerability.rs` (replace body), `src/scanning/signatures.rs` (new — signature DB loader).
-  - **Tests:** *(proposed)* `test_malware_known_hash_detected`, `test_malware_clean_file_no_findings`, `test_vulnerability_cve_matched`, `test_vulnerability_unaffected_version_skipped`.
-  - **Risk:** YARA-lite scope creep — keep to SHA-256 + glob; defer full YARA grammar to a `oxigeo-yara` crate.
+  - **Partially done (verified 2026-07-28):** `src/scanning/malware.rs` is now a real, dependency-free `MalwareScanner` combining four genuine detection strategies — EICAR/embedded-signature byte matching, SHA-256 hash blocklisting, executable magic-byte heuristics (ELF/PE/Mach-O/shebang), and Shannon-entropy packed/encrypted-payload detection — with 7 tests proving malicious and benign inputs produce different results (including a real-file `scan_file` path, not just in-memory bytes). This closes the `malware.rs` half of the original verified gap.
+  - **Remaining gap:** `src/scanning/vulnerability.rs:17` is still the literal stub — `VulnerabilityScanner::scan()` returns `Vec::new()` behind the comment `// Implementation would integrate with vulnerability databases`; no tests.
+  - **Goal (vulnerability.rs only):** `VulnerabilityScanner` queries OSV.dev API or local SBOM index, mapping CVE → finding.
+  - **Design:** Accept `Vec<DependencyAdvisory>` from caller (decoupled from network); produce findings per matched (package, version, cve_id). Return real `Finding` instances per existing struct.
+  - **Files:** `src/scanning/vulnerability.rs` (replace body).
+  - **Tests:** *(proposed)* `test_vulnerability_cve_matched`, `test_vulnerability_unaffected_version_skipped`.
+  - **Risk:** None identified beyond design above.
   - **Prerequisites:** None.
 
 ## Medium Priority
@@ -90,4 +91,4 @@
 - [x] Field-level string and JSON encryption (base64 envelope) — `FieldEncryptor` in `at_rest.rs`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

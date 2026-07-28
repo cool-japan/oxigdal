@@ -11,7 +11,7 @@ use geo_types::Geometry;
 use oxisql_core::Value;
 use oxisql_sqlite_compat::blocking::SqliteConnectionBlocking;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// SQLite connector configuration.
 #[derive(Debug, Clone)]
@@ -44,9 +44,18 @@ impl Default for SqliteConfig {
 }
 
 /// SQLite spatial database connector backed by the pure-Rust limbo engine.
+///
+/// The connector is [`Clone`] and every clone shares the same underlying
+/// connection (`Arc<SqliteConnectionBlocking>`). It also carries a shared
+/// `write_lock` used to make multi-statement write sequences (notably an
+/// `INSERT` followed by reading `last_insert_rowid()`) atomic with respect to
+/// other clones executing concurrently on the same connection.
 #[derive(Clone)]
 pub struct SqliteConnector {
     conn: Arc<SqliteConnectionBlocking>,
+    /// Serializes write sequences that must not interleave across threads
+    /// sharing this connection (e.g. `INSERT` + `last_insert_rowid()`).
+    write_lock: Arc<Mutex<()>>,
     #[allow(dead_code)]
     config: SqliteConfig,
 }
@@ -63,6 +72,7 @@ impl SqliteConnector {
 
         Ok(Self {
             conn: Arc::new(conn),
+            write_lock: Arc::new(Mutex::new(())),
             config,
         })
     }
@@ -278,6 +288,18 @@ impl SqliteConnector {
     pub fn blocking_conn(&self) -> &SqliteConnectionBlocking {
         &self.conn
     }
+
+    /// Acquire the connector's write lock, serializing a multi-statement write
+    /// sequence against other clones of this connector.
+    ///
+    /// A poisoned lock (a previous holder panicked) is recovered rather than
+    /// propagated, since the guarded data is a unit `()` with no invariants to
+    /// uphold.
+    pub(crate) fn lock_writes(&self) -> MutexGuard<'_, ()> {
+        self.write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// Convert geo-types Geometry to WKB bytes.
@@ -348,9 +370,36 @@ pub fn geometry_to_wkb(geom: &Geometry<f64>) -> Result<Vec<u8>> {
     Ok(wkb)
 }
 
+/// Read a `u32` from `cursor` honouring the WKB byte-order flag (`true` =
+/// big-endian / XDR, `false` = little-endian / NDR).
+fn read_wkb_u32(cursor: &mut std::io::Cursor<&[u8]>, big_endian: bool) -> Result<u32> {
+    use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+    let value = if big_endian {
+        cursor.read_u32::<BigEndian>()
+    } else {
+        cursor.read_u32::<LittleEndian>()
+    };
+    value.map_err(|e| Error::GeometryParsing(e.to_string()))
+}
+
+/// Read an `f64` from `cursor` honouring the WKB byte-order flag.
+fn read_wkb_f64(cursor: &mut std::io::Cursor<&[u8]>, big_endian: bool) -> Result<f64> {
+    use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+    let value = if big_endian {
+        cursor.read_f64::<BigEndian>()
+    } else {
+        cursor.read_f64::<LittleEndian>()
+    };
+    value.map_err(|e| Error::GeometryParsing(e.to_string()))
+}
+
 /// Convert WKB bytes to geo-types Geometry (simplified).
+///
+/// Honours the leading byte-order marker: `0x00` selects big-endian (XDR) and
+/// `0x01` selects little-endian (NDR) for every subsequent multi-byte field,
+/// per the WKB specification. Any other marker value is rejected.
 pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
-    use byteorder::{LittleEndian, ReadBytesExt};
+    use byteorder::ReadBytesExt;
     use geo_types::{Coord, LineString, Polygon, point};
     use std::io::Cursor;
 
@@ -360,74 +409,57 @@ pub fn wkb_to_geometry(wkb: &[u8]) -> Result<Geometry<f64>> {
 
     let mut cursor = Cursor::new(wkb);
 
-    let _byte_order = cursor
+    let byte_order = cursor
         .read_u8()
         .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+    let big_endian = match byte_order {
+        0 => true,
+        1 => false,
+        other => {
+            return Err(Error::GeometryParsing(format!(
+                "Invalid WKB byte-order marker: {other} (expected 0x00 or 0x01)"
+            )));
+        }
+    };
 
-    let geom_type = cursor
-        .read_u32::<LittleEndian>()
-        .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+    let geom_type = read_wkb_u32(&mut cursor, big_endian)?;
 
     match geom_type {
         1 => {
-            let x = cursor
-                .read_f64::<LittleEndian>()
-                .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-            let y = cursor
-                .read_f64::<LittleEndian>()
-                .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+            let x = read_wkb_f64(&mut cursor, big_endian)?;
+            let y = read_wkb_f64(&mut cursor, big_endian)?;
             Ok(Geometry::Point(point!(x: x, y: y)))
         }
         2 => {
-            let num_points = cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+            let num_points = read_wkb_u32(&mut cursor, big_endian)?;
             let mut coords = Vec::with_capacity(num_points as usize);
             for _ in 0..num_points {
-                let x = cursor
-                    .read_f64::<LittleEndian>()
-                    .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-                let y = cursor
-                    .read_f64::<LittleEndian>()
-                    .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+                let x = read_wkb_f64(&mut cursor, big_endian)?;
+                let y = read_wkb_f64(&mut cursor, big_endian)?;
                 coords.push(Coord { x, y });
             }
             Ok(Geometry::LineString(LineString::from(coords)))
         }
         3 => {
-            let num_rings = cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+            let num_rings = read_wkb_u32(&mut cursor, big_endian)?;
             if num_rings == 0 {
                 return Err(Error::GeometryParsing("Polygon has no rings".to_string()));
             }
-            let num_points = cursor
-                .read_u32::<LittleEndian>()
-                .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+            let num_points = read_wkb_u32(&mut cursor, big_endian)?;
             let mut exterior_coords = Vec::with_capacity(num_points as usize);
             for _ in 0..num_points {
-                let x = cursor
-                    .read_f64::<LittleEndian>()
-                    .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-                let y = cursor
-                    .read_f64::<LittleEndian>()
-                    .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+                let x = read_wkb_f64(&mut cursor, big_endian)?;
+                let y = read_wkb_f64(&mut cursor, big_endian)?;
                 exterior_coords.push(Coord { x, y });
             }
             let exterior = LineString::from(exterior_coords);
             let mut interiors = Vec::new();
             for _ in 1..num_rings {
-                let ring_points = cursor
-                    .read_u32::<LittleEndian>()
-                    .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+                let ring_points = read_wkb_u32(&mut cursor, big_endian)?;
                 let mut interior_coords = Vec::with_capacity(ring_points as usize);
                 for _ in 0..ring_points {
-                    let x = cursor
-                        .read_f64::<LittleEndian>()
-                        .map_err(|e| Error::GeometryParsing(e.to_string()))?;
-                    let y = cursor
-                        .read_f64::<LittleEndian>()
-                        .map_err(|e| Error::GeometryParsing(e.to_string()))?;
+                    let x = read_wkb_f64(&mut cursor, big_endian)?;
+                    let y = read_wkb_f64(&mut cursor, big_endian)?;
                     interior_coords.push(Coord { x, y });
                 }
                 interiors.push(LineString::from(interior_coords));
@@ -467,5 +499,49 @@ mod tests {
             }
             _ => panic!("Expected Point geometry"),
         }
+    }
+
+    #[test]
+    fn test_wkb_big_endian_point_is_decoded_correctly() {
+        // Hand-build a big-endian (XDR, marker 0x00) WKB Point(1.0, 2.0). The
+        // decoder must honour the byte-order flag rather than assuming
+        // little-endian (which would previously yield garbage coordinates).
+        let mut wkb = vec![0x00];
+        wkb.extend_from_slice(&1u32.to_be_bytes()); // geometry type = Point
+        wkb.extend_from_slice(&1.0f64.to_be_bytes());
+        wkb.extend_from_slice(&2.0f64.to_be_bytes());
+
+        let geom = wkb_to_geometry(&wkb).expect("Failed to parse big-endian WKB");
+        match geom {
+            Geometry::Point(pt) => {
+                assert_eq!(pt.x(), 1.0);
+                assert_eq!(pt.y(), 2.0);
+            }
+            _ => panic!("Expected Point geometry"),
+        }
+    }
+
+    #[test]
+    fn test_wkb_invalid_byte_order_is_rejected() {
+        let wkb = vec![0x02, 0, 0, 0, 1];
+        assert!(wkb_to_geometry(&wkb).is_err());
+    }
+
+    #[test]
+    fn test_wkb_big_endian_matches_little_endian() {
+        // A big-endian and little-endian encoding of the same point must decode
+        // to identical coordinates.
+        let mut be = vec![0x00];
+        be.extend_from_slice(&1u32.to_be_bytes());
+        be.extend_from_slice(&3.5f64.to_be_bytes());
+        be.extend_from_slice(&(-7.25f64).to_be_bytes());
+
+        let le = geometry_to_wkb(&Geometry::Point(point!(x: 3.5, y: -7.25)))
+            .expect("Failed to encode little-endian");
+
+        assert_eq!(
+            wkb_to_geometry(&be).expect("be parse"),
+            wkb_to_geometry(&le).expect("le parse")
+        );
     }
 }

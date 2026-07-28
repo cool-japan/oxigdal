@@ -1,7 +1,22 @@
-//! DirectML support for Windows ML acceleration.
+//! DirectML operator-graph modeling and **simulation** layer.
 //!
-//! This module provides DirectML integration for hardware-accelerated machine
-//! learning operations on Windows platforms.
+//! # Scope and honesty
+//!
+//! This module is a **pure-Rust simulation** of a DirectML-style operator graph.
+//! It lets callers *model* an ML operator graph (nodes, edges, tensor
+//! descriptors, memory budgeting) and run real, host-side graph transformations
+//! such as operator fusion. It does **not** perform any real
+//! DirectML / Direct3D 12 work: a genuine DirectML backend requires COM / D3D12
+//! FFI bindings (C/C++), which fall outside OxiGeo's Pure-Rust default scope and
+//! would have to live behind a dedicated, non-default C-FFI feature.
+//!
+//! Consequently the numeric *execution* entry points here return an honest
+//! [`GpuError::UnsupportedOperation`] rather than silently pretending work was
+//! done. The graph-building, fusion, tensor-layout, and memory-accounting APIs
+//! are fully functional pure-Rust logic and can be used to prepare/validate a
+//! graph before handing it to a real backend elsewhere.
+//!
+//! This whole module is gated behind the non-default `directml` cargo feature.
 
 use crate::error::{GpuError, GpuResult};
 use std::collections::HashMap;
@@ -31,26 +46,27 @@ impl Default for DirectMLConfig {
     }
 }
 
-/// DirectML device manager.
+/// DirectML operator-graph model (simulation, not a real DirectML device).
 pub struct DirectMLDevice {
     config: DirectMLConfig,
     operators: HashMap<String, DirectMLOperator>,
 }
 
 impl DirectMLDevice {
-    /// Create a new DirectML device.
+    /// Create a new DirectML **simulation** context.
+    ///
+    /// This never talks to a real DirectML runtime; it always succeeds so the
+    /// pure-Rust graph-modeling APIs are usable on any platform.
     ///
     /// # Errors
     ///
-    /// Returns an error if DirectML is not available.
+    /// Currently infallible, but returns [`GpuResult`] for forward
+    /// compatibility with a future real backend.
     pub fn new(config: DirectMLConfig) -> GpuResult<Self> {
-        if !Self::is_available() {
-            return Err(GpuError::unsupported_operation(
-                "DirectML not available on this platform".to_string(),
-            ));
-        }
-
-        info!("Initializing DirectML device {}", config.device_index);
+        info!(
+            "Initializing DirectML simulation context (device index {})",
+            config.device_index
+        );
 
         Ok(Self {
             config,
@@ -58,12 +74,30 @@ impl DirectMLDevice {
         })
     }
 
-    /// Check if DirectML is available.
-    pub fn is_available() -> bool {
-        cfg!(target_os = "windows")
+    /// The configuration this simulation context was created with.
+    pub fn config(&self) -> &DirectMLConfig {
+        &self.config
     }
 
-    /// Create an operator.
+    /// Whether the DirectML **simulation** layer is available.
+    ///
+    /// This always returns `true` — it reports availability of the pure-Rust
+    /// graph-modeling layer, **not** the presence of a real DirectML/D3D12
+    /// runtime. Use [`is_hardware_accelerated`](Self::is_hardware_accelerated)
+    /// to check for genuine hardware acceleration (always `false` here).
+    pub fn is_available() -> bool {
+        true
+    }
+
+    /// Whether a real, hardware-accelerated DirectML backend is in use.
+    ///
+    /// Always `false`: this module is a pure-Rust simulation. A real backend
+    /// would require D3D12/COM FFI behind a dedicated non-default feature.
+    pub fn is_hardware_accelerated() -> bool {
+        false
+    }
+
+    /// Register (model) an operator in the graph.
     pub fn create_operator(&mut self, name: String, op_type: DirectMLOperatorType) -> u32 {
         let id = self.operators.len() as u32;
 
@@ -76,26 +110,31 @@ impl DirectMLDevice {
             },
         );
 
-        debug!("Created DirectML operator '{}' ({:?})", name, op_type);
+        debug!("Registered DirectML operator '{}' ({:?})", name, op_type);
 
         id
     }
 
-    /// Execute an operator.
+    /// Attempt to execute a modeled operator.
     ///
     /// # Errors
     ///
-    /// Returns an error if operator not found.
+    /// Returns [`GpuError::InvalidKernelParams`] if the operator name is not
+    /// registered, and otherwise [`GpuError::UnsupportedOperation`]: numeric
+    /// execution requires a real DirectML/D3D12 runtime (C FFI), which is
+    /// outside this pure-Rust module's scope. This is an honest typed error, not
+    /// a silent no-op that pretends work was performed.
     pub fn execute_operator(&self, name: &str) -> GpuResult<()> {
-        let _operator = self
-            .operators
-            .get(name)
-            .ok_or_else(|| GpuError::internal("Operator not found"))?;
+        let operator = self.operators.get(name).ok_or_else(|| {
+            GpuError::invalid_kernel_params(format!("operator '{name}' not found"))
+        })?;
 
-        // Placeholder for actual execution
-        debug!("Executing DirectML operator '{}'", name);
-
-        Ok(())
+        Err(GpuError::unsupported_operation(format!(
+            "DirectML numeric execution of operator '{}' ({:?}) requires a real \
+             DirectML/D3D12 runtime (C FFI), which is outside OxiGeo's Pure-Rust \
+             scope; this module only models and optimizes the operator graph",
+            operator.name, operator.op_type
+        )))
     }
 }
 
@@ -301,17 +340,40 @@ pub struct OperatorGraph {
 }
 
 impl OperatorGraph {
-    /// Execute the graph.
+    /// Attempt to execute the graph.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`GpuError::UnsupportedOperation`]: numeric graph
+    /// execution requires a real DirectML/D3D12 runtime (C FFI) that is outside
+    /// this pure-Rust module's scope. This is an honest typed error rather than
+    /// a no-op that falsely reports success.
     pub fn execute(&self) -> GpuResult<()> {
-        // Placeholder for actual execution
-        debug!("Executing operator graph with {} nodes", self.nodes.len());
-        Ok(())
+        Err(GpuError::unsupported_operation(format!(
+            "DirectML numeric execution of a {}-node graph requires a real \
+             DirectML/D3D12 runtime (C FFI), which is outside OxiGeo's Pure-Rust \
+             scope; use the graph-modeling and fusion APIs to prepare a graph for \
+             a real backend instead",
+            self.nodes.len()
+        )))
     }
 
-    /// Optimize the graph.
-    pub fn optimize(&mut self) {
-        // Placeholder for graph optimization
-        debug!("Optimizing operator graph");
+    /// Optimize the graph in place by fusing compatible adjacent operators.
+    ///
+    /// Returns the number of fusions applied. This is a real pure-Rust graph
+    /// transformation (see [`OperatorFusionOptimizer::fuse`]).
+    pub fn optimize(&mut self) -> usize {
+        OperatorFusionOptimizer::fuse(self)
+    }
+
+    /// Number of nodes currently in the graph.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Number of edges currently in the graph.
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
     }
 }
 
@@ -463,17 +525,55 @@ impl DirectMLExecutionEngine {
 pub struct OperatorFusionOptimizer;
 
 impl OperatorFusionOptimizer {
-    /// Fuse compatible operators in a graph.
-    pub fn fuse(_graph: &mut OperatorGraph) -> usize {
-        // Placeholder for operator fusion
-        // In a real implementation, this would:
-        // 1. Identify fusible operator sequences
-        // 2. Replace them with fused operators
-        // 3. Update graph edges
+    /// Fuse compatible adjacent operators in a graph, in place.
+    ///
+    /// Repeatedly finds a producer→consumer edge whose operator pair is fusible
+    /// ([`can_fuse`](Self::can_fuse)) and whose consumer has this producer as
+    /// its only input, then merges the consumer into the producer: the fusing
+    /// edge is dropped, the consumer's outgoing edges are re-sourced from the
+    /// producer, and the consumer node is removed. Returns the number of
+    /// fusions applied. Terminates because every fusion removes exactly one
+    /// node.
+    pub fn fuse(graph: &mut OperatorGraph) -> usize {
+        let mut fusions = 0usize;
 
-        debug!("Fusing operators in graph");
+        loop {
+            // Locate a fusible edge whose destination has a single producer.
+            let candidate = graph.edges.iter().enumerate().find_map(|(idx, edge)| {
+                let src = graph.nodes.iter().find(|n| n.id == edge.src_node)?;
+                let dst = graph.nodes.iter().find(|n| n.id == edge.dst_node)?;
+                if !Self::can_fuse(src.operator, dst.operator) {
+                    return None;
+                }
+                let incoming = graph.edges.iter().filter(|e| e.dst_node == dst.id).count();
+                if incoming != 1 {
+                    return None;
+                }
+                Some((idx, edge.src_node, edge.dst_node))
+            });
 
-        0 // Number of fusions performed
+            let (edge_idx, src_id, dst_id) = match candidate {
+                Some(c) => c,
+                None => break,
+            };
+
+            // Drop the fusing edge and re-source the consumer's outputs.
+            graph.edges.remove(edge_idx);
+            for edge in graph.edges.iter_mut() {
+                if edge.src_node == dst_id {
+                    edge.src_node = src_id;
+                }
+            }
+            // Guard against any accidental self-loops.
+            graph.edges.retain(|e| e.src_node != e.dst_node);
+            // Remove the fused-away consumer node.
+            graph.nodes.retain(|n| n.id != dst_id);
+
+            fusions += 1;
+        }
+
+        debug!("Fused {} operator pair(s) in graph", fusions);
+        fusions
     }
 
     /// Check if two operators can be fused.
@@ -492,48 +592,61 @@ impl OperatorFusionOptimizer {
     }
 }
 
-/// Wave operations for DirectML.
+/// Portable single-lane fallback definitions for wave/subgroup intrinsics.
 pub struct WaveOperations;
 
 impl WaveOperations {
-    /// Generate shader code for wave operations.
+    /// Generate WGSL for **portable single-lane** wave-intrinsic fallbacks.
+    ///
+    /// # Honesty
+    ///
+    /// WGSL has no portable cross-lane (subgroup/wave) operations without the
+    /// optional subgroups hardware feature, and DirectML's HLSL wave intrinsics
+    /// are not available here. The functions below are therefore the
+    /// mathematically-correct **single-lane** (wave size = 1) specializations:
+    /// with one active lane, the lane index is `0`, all lanes trivially agree,
+    /// and the *exclusive* prefix sum has no predecessors and is `0`. They are
+    /// correct fallbacks — not a pretend cross-lane reduction. A real
+    /// cross-lane implementation requires `wgpu::Features::SUBGROUP` and
+    /// subgroup builtins, which this simulation module does not emit.
     pub fn wave_intrinsics_shader() -> &'static str {
         r#"
-// DirectML wave intrinsics
-// These are similar to CUDA warp operations
+// Portable single-lane (wave size = 1) fallback definitions.
+// These are correct for one active lane; real cross-lane behavior needs
+// hardware subgroup intrinsics (wgpu Features::SUBGROUP), not emitted here.
 
 fn wave_get_lane_count() -> u32 {
-    // Typically 32 or 64 on modern GPUs
-    return 32u;
+    // Single-lane fallback: one active lane.
+    return 1u;
 }
 
 fn wave_get_lane_index() -> u32 {
-    // Lane index within the wave
+    // With a single lane, the only lane index is 0.
     return 0u;
 }
 
 fn wave_active_all_equal(value: f32) -> bool {
-    // Check if all active lanes have the same value
+    // One lane trivially agrees with itself.
     return true;
 }
 
 fn wave_active_any(condition: bool) -> bool {
-    // Check if any active lane meets the condition
+    // With one lane, "any" equals that lane's condition.
     return condition;
 }
 
 fn wave_active_all(condition: bool) -> bool {
-    // Check if all active lanes meet the condition
+    // With one lane, "all" equals that lane's condition.
     return condition;
 }
 
 fn wave_prefix_sum(value: f32) -> f32 {
-    // Exclusive prefix sum across the wave
-    return value;
+    // Exclusive prefix sum: no preceding lanes, so the result is 0.
+    return 0.0;
 }
 
 fn wave_read_lane_at(value: f32, lane_index: u32) -> f32 {
-    // Read value from a specific lane
+    // Only lane 0 exists; reading it yields this lane's own value.
     return value;
 }
 "#
@@ -605,5 +718,85 @@ mod tests {
             DirectMLOperatorType::Convolution,
             DirectMLOperatorType::Pooling
         ));
+    }
+
+    #[test]
+    fn test_real_fusion_merges_fusible_pair() {
+        // Conv -> Activation is fusible: fusion should merge the pair.
+        let mut builder = OperatorGraphBuilder::new();
+        let conv = builder.add_node(DirectMLOperatorType::Convolution);
+        let act = builder.add_node(DirectMLOperatorType::Activation);
+        builder.connect(conv, act, 0).expect("connect");
+        let mut graph = builder.build();
+
+        assert_eq!(graph.node_count(), 2);
+        let fused = OperatorFusionOptimizer::fuse(&mut graph);
+        assert_eq!(fused, 1, "one Conv+Activation fusion expected");
+        assert_eq!(graph.node_count(), 1, "consumer node must be removed");
+        assert_eq!(graph.edge_count(), 0, "fusing edge must be removed");
+    }
+
+    #[test]
+    fn test_real_fusion_chains_and_reconnects() {
+        // Conv -> Activation -> (Pooling). Conv+Activation fuse; the fused
+        // node's edge to Pooling must be preserved (re-sourced from Conv).
+        let mut builder = OperatorGraphBuilder::new();
+        let conv = builder.add_node(DirectMLOperatorType::Convolution);
+        let act = builder.add_node(DirectMLOperatorType::Activation);
+        let pool = builder.add_node(DirectMLOperatorType::Pooling);
+        builder.connect(conv, act, 0).expect("connect");
+        builder.connect(act, pool, 1).expect("connect");
+        let mut graph = builder.build();
+
+        let fused = OperatorFusionOptimizer::fuse(&mut graph);
+        assert_eq!(fused, 1);
+        assert_eq!(graph.node_count(), 2, "Conv(+Act) and Pooling remain");
+        // The surviving edge must now originate from the Conv node.
+        assert_eq!(graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_non_fusible_graph_unchanged() {
+        let mut builder = OperatorGraphBuilder::new();
+        let conv = builder.add_node(DirectMLOperatorType::Convolution);
+        let pool = builder.add_node(DirectMLOperatorType::Pooling);
+        builder.connect(conv, pool, 0).expect("connect");
+        let mut graph = builder.build();
+
+        let fused = OperatorFusionOptimizer::fuse(&mut graph);
+        assert_eq!(fused, 0, "Conv->Pooling is not fusible");
+        assert_eq!(graph.node_count(), 2);
+    }
+
+    #[test]
+    fn test_execute_operator_returns_honest_error() {
+        // Executing a modeled operator must return a typed error, never a silent
+        // Ok(()) that pretends the operator ran.
+        let mut device = DirectMLDevice::new(DirectMLConfig::default()).expect("sim context");
+        device.create_operator("conv1".to_string(), DirectMLOperatorType::Convolution);
+
+        // Unknown operator -> error.
+        assert!(device.execute_operator("does_not_exist").is_err());
+        // Known operator -> honest unsupported-operation error.
+        assert!(device.execute_operator("conv1").is_err());
+    }
+
+    #[test]
+    fn test_graph_execute_returns_honest_error() {
+        let builder = OperatorGraphBuilder::new();
+        let graph = builder.build();
+        assert!(
+            graph.execute().is_err(),
+            "numeric graph execution must return a typed error, not a fake Ok"
+        );
+    }
+
+    #[test]
+    fn test_is_not_hardware_accelerated() {
+        assert!(DirectMLDevice::is_available(), "simulation layer available");
+        assert!(
+            !DirectMLDevice::is_hardware_accelerated(),
+            "must not claim real hardware acceleration"
+        );
     }
 }

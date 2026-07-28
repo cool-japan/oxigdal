@@ -12,11 +12,17 @@
 /// space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bbox3D {
+    /// Minimum X coordinate.
     pub min_x: f64,
+    /// Minimum Y coordinate.
     pub min_y: f64,
+    /// Minimum Z coordinate.
     pub min_z: f64,
+    /// Maximum X coordinate.
     pub max_x: f64,
+    /// Maximum Y coordinate.
     pub max_y: f64,
+    /// Maximum Z coordinate.
     pub max_z: f64,
 }
 

@@ -5,7 +5,7 @@ A project template for building geospatial machine learning pipelines powered by
 ## What This Template Provides
 
 - OxiGeo core, algorithms, ML, and GeoTIFF driver dependencies
-- ONNX Runtime integration via [ort](https://docs.rs/ort) for model inference
+- Pure-Rust ONNX Runtime integration via [oxionnx](https://docs.rs/oxionnx) for model inference (no C++ ONNX Runtime / `ort` dependency)
 - Scientific computing with [SciRS2-Core](https://docs.rs/scirs2-core)
 - Async runtime (Tokio) for parallel data loading and processing
 - Structured error handling with `anyhow` and `thiserror`
@@ -35,8 +35,8 @@ async fn main() -> Result<()> {
     // 2. Preprocess and extract features
     // let features = extract_features(&dataset)?;
 
-    // 3. Run inference with ONNX model
-    // let session = ort::Session::builder()?.commit_from_file("model.onnx")?;
+    // 3. Run inference with ONNX model (pure-Rust oxionnx runtime)
+    // let session = oxionnx::SessionBuilder::new().commit_from_file("model.onnx")?;
     // let predictions = session.run(inputs)?;
 
     // 4. Export results as GeoTIFF

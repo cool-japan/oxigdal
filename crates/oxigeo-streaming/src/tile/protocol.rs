@@ -522,17 +522,52 @@ impl TileProtocol for XyzProtocol {
 
         #[cfg(not(feature = "tile-http"))]
         {
-            let _ = request; // suppress unused warning
-            Ok(TileResponse::new(
-                request.coord,
-                Bytes::new(),
-                request.format.mime_type().to_string(),
-            ))
+            // Without the `tile-http` feature there is no HTTP transport, so we
+            // cannot fetch a remote tile. Return an honest typed error instead of
+            // a fake empty-but-successful response.
+            let _ = request;
+            Err(StreamingError::FeatureNotEnabled("tile-http".to_string()))
         }
     }
 
     async fn has_tile(&self, coord: &TileCoordinate) -> Result<bool> {
-        Ok(coord.z >= self.min_zoom && coord.z <= self.max_zoom && coord.is_valid())
+        // A coordinate outside the declared zoom range or otherwise invalid can
+        // be rejected without any network access.
+        if coord.z < self.min_zoom || coord.z > self.max_zoom || !coord.is_valid() {
+            return Ok(false);
+        }
+
+        #[cfg(feature = "tile-http")]
+        {
+            // Real existence check: issue a request and interpret the status.
+            // Many tile CDNs do not implement HEAD, so we use a lightweight GET
+            // and only inspect the status code (the body is discarded).
+            let url = self.build_url(coord);
+            let response = self
+                .http_get_raw(&url)
+                .await
+                .map_err(StreamingError::Reqwest)?;
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Ok(false);
+            }
+            if status.is_success() {
+                return Ok(true);
+            }
+            Err(StreamingError::HttpError {
+                status: status.as_u16(),
+                url,
+            })
+        }
+
+        #[cfg(not(feature = "tile-http"))]
+        {
+            // The coordinate is in range, but without HTTP transport we cannot
+            // verify that the tile actually exists on the remote. Returning
+            // `Ok(true)` here would be a fabricated answer, so surface an honest
+            // typed error instead.
+            Err(StreamingError::FeatureNotEnabled("tile-http".to_string()))
+        }
     }
 
     async fn get_tile_metadata(&self, coord: &TileCoordinate) -> Result<TileMetadata> {
@@ -593,16 +628,11 @@ impl TileProtocol for XyzProtocol {
 
         #[cfg(not(feature = "tile-http"))]
         {
+            // No HTTP transport → we cannot obtain real metadata (size,
+            // last-modified, etag). Returning zeroed metadata would fabricate
+            // data, so return an honest typed error.
             let _ = coord;
-            Ok(TileMetadata {
-                coord: *coord,
-                size_bytes: 0,
-                format: TileFormat::Png,
-                created_at: None,
-                modified_at: None,
-                bbox: None,
-                metadata: std::collections::HashMap::new(),
-            })
+            Err(StreamingError::FeatureNotEnabled("tile-http".to_string()))
         }
     }
 
@@ -657,6 +687,137 @@ impl TileProtocol for TmsProtocol {
 
     fn tile_size(&self) -> (u32, u32) {
         self.inner.tile_size()
+    }
+}
+
+/// Local file-system tile protocol.
+///
+/// Reads tiles from disk laid out as `base_path/{z}/{x}/{y}.{ext}`, where the
+/// extension is derived from the requested [`TileFormat`]. This is a real,
+/// Pure-Rust protocol with no network dependency — usable directly or as the
+/// backing store for [`super::provider::TileSource::FileSystem`].
+pub struct FileSystemTileProtocol {
+    base_path: std::path::PathBuf,
+    format: TileFormat,
+    min_zoom: u8,
+    max_zoom: u8,
+    tile_size: (u32, u32),
+}
+
+impl FileSystemTileProtocol {
+    /// Create a new file-system tile protocol rooted at `base_path`.
+    ///
+    /// The default supported zoom range is `0..=31`; restrict it with
+    /// [`Self::with_zoom_levels`].
+    pub fn new(base_path: impl Into<std::path::PathBuf>, format: TileFormat) -> Self {
+        Self {
+            base_path: base_path.into(),
+            format,
+            min_zoom: 0,
+            max_zoom: 31,
+            tile_size: (256, 256),
+        }
+    }
+
+    /// Restrict the supported zoom range.
+    pub fn with_zoom_levels(mut self, min_zoom: u8, max_zoom: u8) -> Self {
+        self.min_zoom = min_zoom;
+        self.max_zoom = max_zoom;
+        self
+    }
+
+    /// Set the tile size in pixels.
+    pub fn with_tile_size(mut self, width: u32, height: u32) -> Self {
+        self.tile_size = (width, height);
+        self
+    }
+
+    /// On-disk path for a tile: `base_path/{z}/{x}/{y}.{ext}`.
+    pub fn tile_path(&self, coord: &TileCoordinate) -> std::path::PathBuf {
+        self.base_path.join(format!(
+            "{}/{}/{}.{}",
+            coord.z,
+            coord.x,
+            coord.y,
+            self.format.extension()
+        ))
+    }
+
+    fn check_zoom(&self, coord: &TileCoordinate) -> Result<()> {
+        if coord.z < self.min_zoom || coord.z > self.max_zoom {
+            return Err(StreamingError::InvalidOperation(format!(
+                "Zoom level {} out of range [{}, {}]",
+                coord.z, self.min_zoom, self.max_zoom
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl TileProtocol for FileSystemTileProtocol {
+    async fn get_tile(&self, request: &TileRequest) -> Result<TileResponse> {
+        self.check_zoom(&request.coord)?;
+        let path = self.tile_path(&request.coord);
+        match tokio::fs::read(&path).await {
+            Ok(data) => Ok(TileResponse::new(
+                request.coord,
+                Bytes::from(data),
+                self.format.mime_type().to_string(),
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(StreamingError::TileNotFound),
+            Err(e) => Err(StreamingError::Io(e)),
+        }
+    }
+
+    async fn has_tile(&self, coord: &TileCoordinate) -> Result<bool> {
+        if coord.z < self.min_zoom || coord.z > self.max_zoom || !coord.is_valid() {
+            return Ok(false);
+        }
+        let path = self.tile_path(coord);
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) => Ok(meta.is_file()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(StreamingError::Io(e)),
+        }
+    }
+
+    async fn get_tile_metadata(&self, coord: &TileCoordinate) -> Result<TileMetadata> {
+        self.check_zoom(coord)?;
+        let path = self.tile_path(coord);
+        let meta = match tokio::fs::metadata(&path).await {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StreamingError::TileNotFound);
+            }
+            Err(e) => return Err(StreamingError::Io(e)),
+        };
+
+        let modified_at = meta
+            .modified()
+            .ok()
+            .map(chrono::DateTime::<chrono::Utc>::from);
+
+        Ok(TileMetadata {
+            coord: *coord,
+            size_bytes: meta.len() as usize,
+            format: self.format,
+            created_at: meta
+                .created()
+                .ok()
+                .map(chrono::DateTime::<chrono::Utc>::from),
+            modified_at,
+            bbox: None,
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+
+    fn zoom_levels(&self) -> (u8, u8) {
+        (self.min_zoom, self.max_zoom)
+    }
+
+    fn tile_size(&self) -> (u32, u32) {
+        self.tile_size
     }
 }
 
@@ -734,5 +895,66 @@ mod tests {
         let coord = TileCoordinate::new(7, 63, 42);
         let url = proto.build_url_with_ext(&coord, "pbf");
         assert_eq!(url, "https://tiles.example.com/7/63/42.pbf");
+    }
+
+    #[test]
+    fn test_fs_tile_path_layout() {
+        let proto = FileSystemTileProtocol::new("/tiles", TileFormat::Jpeg);
+        let coord = TileCoordinate::new(5, 10, 15);
+        assert!(proto.tile_path(&coord).ends_with("5/10/15.jpg"));
+    }
+
+    #[tokio::test]
+    async fn test_fs_protocol_reads_real_tile() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let coord = TileCoordinate::new(3, 4, 5);
+        let tile_file = dir.path().join("3/4/5.png");
+        tokio::fs::create_dir_all(tile_file.parent().expect("parent"))
+            .await
+            .expect("mkdir");
+        tokio::fs::write(&tile_file, b"REAL_PNG_BYTES")
+            .await
+            .expect("write tile");
+
+        let proto = FileSystemTileProtocol::new(dir.path(), TileFormat::Png);
+        let request = TileRequest::new(coord, TileFormat::Png);
+        let resp = proto.get_tile(&request).await.expect("tile should read");
+        assert_eq!(&resp.data[..], b"REAL_PNG_BYTES");
+        assert_eq!(resp.content_type, "image/png");
+
+        assert!(proto.has_tile(&coord).await.expect("has_tile"));
+        let meta = proto.get_tile_metadata(&coord).await.expect("meta");
+        assert_eq!(meta.size_bytes, 14);
+    }
+
+    #[tokio::test]
+    async fn test_fs_protocol_missing_tile_is_not_found() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let proto = FileSystemTileProtocol::new(dir.path(), TileFormat::Png);
+        let coord = TileCoordinate::new(2, 1, 1);
+        let request = TileRequest::new(coord, TileFormat::Png);
+        let err = proto
+            .get_tile(&request)
+            .await
+            .expect_err("missing tile should error");
+        assert!(matches!(err, StreamingError::TileNotFound));
+        assert!(!proto.has_tile(&coord).await.expect("has_tile"));
+    }
+
+    #[cfg(not(feature = "tile-http"))]
+    #[tokio::test]
+    async fn test_xyz_without_http_feature_errors_honestly() {
+        let proto = XyzProtocol::new("https://example.com/{z}/{x}/{y}.png".to_string(), 0, 18);
+        let coord = TileCoordinate::new(5, 10, 15);
+        let request = TileRequest::new(coord, TileFormat::Png);
+        // No fake empty tile — an honest FeatureNotEnabled error instead.
+        let err = proto.get_tile(&request).await.expect_err("should error");
+        assert!(matches!(err, StreamingError::FeatureNotEnabled(_)));
+        // has_tile in range cannot be verified without HTTP → honest error.
+        let err = proto.has_tile(&coord).await.expect_err("should error");
+        assert!(matches!(err, StreamingError::FeatureNotEnabled(_)));
+        // Out-of-range is still answerable locally.
+        let oor = TileCoordinate::new(19, 0, 0);
+        assert!(!proto.has_tile(&oor).await.expect("out of range ok"));
     }
 }

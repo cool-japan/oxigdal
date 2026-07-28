@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::auth::Credentials;
 use crate::error::{CloudError, GcsError, Result};
 use crate::retry::{RetryConfig, RetryExecutor};
+use oxigeo_core::io::ByteRange;
 
 use super::CloudStorageBackend;
 
@@ -271,6 +272,70 @@ impl CloudStorageBackend for GcsBackend {
                 Ok(Bytes::from(data))
             })
             .await
+    }
+
+    async fn get_range(&self, key: &str, range: ByteRange) -> Result<Bytes> {
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let mut executor = RetryExecutor::new(self.retry_config.clone());
+        let offset = range.start;
+        let count = range.end - range.start;
+
+        executor
+            .execute(|| async {
+                let object_name = self.full_object_name(key);
+                tracing::debug!(
+                    "Getting GCS object range {}..{} of {}/{}",
+                    offset,
+                    offset + count,
+                    self.bucket,
+                    object_name
+                );
+
+                let client = self.create_storage_client().await?;
+                let bucket_path = self.bucket_resource_name();
+
+                let mut reader = client
+                    .read_object(&bucket_path, &object_name)
+                    .set_read_range(google_cloud_storage::model_ext::ReadRange::segment(
+                        offset, count,
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        let msg = format!("{e}");
+                        if Self::is_not_found(&msg) {
+                            CloudError::Gcs(GcsError::ObjectNotFound {
+                                object: format!("{}/{}", self.bucket, object_name),
+                            })
+                        } else {
+                            CloudError::Gcs(GcsError::Sdk {
+                                message: format!(
+                                    "Failed to read GCS object range '{}/{}': {e}",
+                                    self.bucket, object_name
+                                ),
+                            })
+                        }
+                    })?;
+
+                let mut data = Vec::new();
+                while let Some(chunk) = reader.next().await.transpose().map_err(|e| {
+                    CloudError::Gcs(GcsError::Sdk {
+                        message: format!("Failed to read ranged GCS object body: {e}"),
+                    })
+                })? {
+                    data.extend_from_slice(&chunk);
+                }
+
+                Ok(Bytes::from(data))
+            })
+            .await
+    }
+
+    fn supports_native_range_reads(&self) -> bool {
+        true
     }
 
     async fn put(&self, key: &str, data: &[u8]) -> Result<()> {

@@ -120,13 +120,15 @@ impl AlertRouter {
     async fn send_to_destination(&self, alert: &Alert, destination: &Destination) -> Result<()> {
         match destination {
             Destination::Webhook { url } => {
-                let _ = self.client.post(url).json(alert).send().await?;
+                let response = self.client.post(url).json(alert).send().await?;
+                Self::check_delivery_status(response, "Webhook", url).await?;
             }
             Destination::Slack { webhook_url } => {
                 let payload = serde_json::json!({
                     "text": format!("{}: {}", alert.name, alert.message),
                 });
-                let _ = self.client.post(webhook_url).json(&payload).send().await?;
+                let response = self.client.post(webhook_url).json(&payload).send().await?;
+                Self::check_delivery_status(response, "Slack", webhook_url).await?;
             }
             Destination::Email { addresses } => {
                 tracing::warn!(
@@ -150,16 +152,54 @@ impl AlertRouter {
                         "source": "oxigeo-observability",
                     }
                 });
-                let _ = self
+                let response = self
                     .client
                     .post("https://events.pagerduty.com/v2/enqueue")
                     .json(&payload)
                     .send()
                     .await?;
+                Self::check_delivery_status(
+                    response,
+                    "PagerDuty",
+                    "https://events.pagerduty.com/v2/enqueue",
+                )
+                .await?;
             }
         }
 
         Ok(())
+    }
+
+    /// Inspect an HTTP response from a delivery attempt and turn a
+    /// non-success status into a real error instead of letting a 4xx/5xx
+    /// response masquerade as successful delivery.
+    ///
+    /// `reqwest::Client::send()` only returns `Err` for transport-level
+    /// failures (DNS, connect, TLS); any HTTP response -- including 4xx/5xx
+    /// -- comes back as `Ok(Response)`. Without this check, a bad webhook
+    /// URL, an expired PagerDuty routing key, or a rate-limited Slack
+    /// webhook (429) would all look like a fully-delivered alert.
+    #[cfg(feature = "http-exporter")]
+    async fn check_delivery_status(
+        response: reqwest::Response,
+        destination_kind: &str,
+        destination_url: &str,
+    ) -> Result<()> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
+
+        Err(crate::error::ObservabilityError::AlertRoutingFailed(
+            format!(
+                "{destination_kind} delivery to '{destination_url}' failed with HTTP status {status}: {body}"
+            ),
+        ))
     }
 }
 
@@ -262,6 +302,74 @@ mod tests {
         assert!(
             received.contains("test_alert"),
             "request body should reference the alert name, was: {received}"
+        );
+    }
+
+    #[cfg(feature = "http-exporter")]
+    fn spawn_mock_failing_webhook(status_line: &'static str) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock webhook");
+        let addr = listener.local_addr().expect("mock webhook local addr");
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                // Best-effort single read to consume the incoming request
+                // before responding; the mock only needs to unblock the
+                // client's write, not parse the full body.
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let body = b"upstream rejected the alert";
+                let response = format!("{status_line}\r\nContent-Length: {}\r\n\r\n", body.len());
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        });
+
+        format!("http://{addr}/webhook")
+    }
+
+    #[cfg(feature = "http-exporter")]
+    #[tokio::test]
+    async fn test_route_reports_error_on_non_success_http_status_instead_of_ok() {
+        let url = spawn_mock_failing_webhook("HTTP/1.1 500 Internal Server Error");
+        let mut router = AlertRouter::new();
+        router.add_route(Route {
+            matcher: Box::new(|_alert| true),
+            destinations: vec![Destination::Webhook { url }],
+        });
+
+        let alert = sample_alert();
+        let result = router.route(&alert).await;
+        assert!(
+            result.is_err(),
+            "a 500 response from the webhook must not be reported as a successful delivery"
+        );
+        let err = result.expect_err("checked is_err above");
+        let message = err.to_string();
+        assert!(
+            message.contains("500"),
+            "error should mention the HTTP status, got: {message}"
+        );
+    }
+
+    #[cfg(feature = "http-exporter")]
+    #[tokio::test]
+    async fn test_route_reports_error_on_4xx_http_status() {
+        let url = spawn_mock_failing_webhook("HTTP/1.1 404 Not Found");
+        let mut router = AlertRouter::new();
+        router.add_route(Route {
+            matcher: Box::new(|_alert| true),
+            destinations: vec![Destination::Webhook { url }],
+        });
+
+        let alert = sample_alert();
+        let result = router.route(&alert).await;
+        assert!(
+            result.is_err(),
+            "a 404 response from the webhook must not be reported as a successful delivery"
         );
     }
 }

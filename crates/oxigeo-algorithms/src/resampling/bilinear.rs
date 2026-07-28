@@ -289,36 +289,13 @@ impl BilinearResampler {
     }
 }
 
-#[cfg(feature = "simd")]
-mod simd_impl {
-    //! SIMD-accelerated bilinear interpolation
-    //!
-    //! Uses vectorization to process multiple pixels simultaneously.
-
-    use super::*;
-
-    impl BilinearResampler {
-        /// SIMD-accelerated bilinear resampling
-        ///
-        /// This processes 4 or 8 pixels at once (depending on SIMD width)
-        /// using platform-specific vector instructions.
-        #[cfg(target_arch = "x86_64")]
-        pub fn resample_simd(
-            &self,
-            src: &RasterBuffer,
-            dst_width: u64,
-            dst_height: u64,
-        ) -> Result<RasterBuffer> {
-            // SIMD implementation would use:
-            // - AVX2 for processing 4 double values at once
-            // - Vectorized lerp operations
-            // - Gather instructions for non-contiguous loads
-            //
-            // For now, fall back to scalar
-            self.resample(src, dst_width, dst_height)
-        }
-    }
-}
+// NOTE: A previous `simd_impl` module exposed a `resample_simd` method whose
+// doc promised AVX2-vectorized interpolation but whose body silently delegated
+// to the scalar `resample`. It was dead (no call sites anywhere in the
+// workspace) and misleading, so it was removed. Genuine hardware-vectorized
+// resampling kernels (`bilinear_f32` etc. behind real AVX2/NEON intrinsics with
+// scalar-parity tests) live in `crate::simd::resampling`; use those when a
+// vectorized fast path is required.
 
 #[cfg(test)]
 mod tests {

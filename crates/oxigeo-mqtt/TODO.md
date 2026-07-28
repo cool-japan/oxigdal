@@ -1,8 +1,8 @@
 # TODO: oxigeo-mqtt
 
 > **Purpose:** MQTT 3.1.1 / 5.0 client for OxiGeo — IoT sensor ingestion, pub/sub, geospatial time-series.
-> **Status (2026-05-16):** 5,620 LoC · 132 tests · 1 real-code stub
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 5,620 LoC · 66 tests (all-features) / 65 tests (default-features) · 1 real-code stub
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Complete QoS 2 (exactly-once) handshake — currently PUBREC is logged but PUBREL is never issued
@@ -35,10 +35,11 @@
   - **Files:** `src/publisher/mod.rs`.
   - **Why deferred:** Bandwidth optimisation; default 0 (disabled) per MQTT 5.0.
 
-- [ ] Last Will and Testament (Will Message + Will Properties)
+- [ ] MQTT 5.0 Will Properties (delay interval, message expiry, content type, user properties)
   - **Goal:** Configure LWT for disconnect detection — required for IoT device fleets.
+  - **Verified 2026-07-28:** Basic Will Message is already implemented — `LastWill` (topic/payload/QoS/retain) plus `ConnectionOptions::with_last_will()` wire into `rumqttc::LastWill` inside `to_rumqttc()`. Only the MQTT 5.0 Will *Properties* extension remains unimplemented.
   - **Files:** `src/types.rs::ConnectionOptions`, `src/client/connection.rs`.
-  - **Why deferred:** Surface-area addition; needs property encoding from MQTT-5 work above.
+  - **Why deferred:** Needs property encoding from the MQTT-5 CONNECT Properties work above (High Priority item 2).
 
 - [ ] On-disk persistence for QoS 1/2 (sled backend already optional)
   - **Goal:** Replay `AwaitingPubAck` / `AwaitingPubComp` messages across crashes.
@@ -50,10 +51,10 @@
   - **Files:** `src/iot/geospatial.rs` (already 11.3 KB).
   - **Why deferred:** Convention not yet finalised across the stack.
 
-- [ ] Exponential reconnection backoff with jitter — verify `ReconnectStrategy` actually backs off
+- [x] Exponential reconnection backoff with jitter — verified `ReconnectStrategy` actually backs off
   - **Goal:** Avoid thundering-herd reconnects across a fleet.
   - **Files:** `src/client/reconnect.rs:9.4K`.
-  - **Why deferred:** Audit needed — current implementation may already be correct.
+  - **Verified 2026-07-28:** `ReconnectOptions::calculate_delay` implements fixed/exponential/linear backoff capped at `max_delay`, with ±25% jitter applied via `apply_jitter` whenever `enable_jitter` is set (default `true`).
 
 ## Low Priority / Future (one-liners)
 - [ ] MQTT-SN (Sensor Networks) v1.2 transport for UDP / 802.15.4 constrained devices
@@ -72,4 +73,4 @@
 - *(none in this slice)*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

@@ -1,7 +1,7 @@
 # TODO: oxigeo-analytics
 
 > **Purpose:** Pure-Rust geospatial analytics — time series (Mann-Kendall, anomaly), clustering (K-means, DBSCAN), hotspot (Getis-Ord Gi*, Moran's I, LISA), change detection (CVA, PCA, Otsu), interpolation (IDW, ordinary/universal kriging), advanced zonal statistics.
-> **Status (2026-05-16):** 4,007 LoC · 57 tests · 0 in-source stubs (clean tree; only one test-data comment marking `0.0` as a placeholder for "missing" in `timeseries/mod.rs:265`).
+> **Status (2026-07-28):** 4,007 LoC · 134 tests · 0 in-source stubs (clean tree; only one test-data comment marking `0.0` as a placeholder for "missing" in `timeseries/mod.rs:265`).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -101,4 +101,4 @@
 *(No `[x]` entries on previous TODO.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

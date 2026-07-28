@@ -72,10 +72,14 @@ pub struct WebSocketManager {
 impl WebSocketManager {
     /// Creates a new WebSocket manager.
     pub fn new() -> Self {
+        // Share one sender registry between the manager and its router so the router can
+        // deliver handler responses back to the originating connection.
+        let senders: Arc<DashMap<ConnectionId, mpsc::UnboundedSender<WsMessage>>> =
+            Arc::new(DashMap::new());
         Self {
             connections: Arc::new(DashMap::new()),
-            senders: Arc::new(DashMap::new()),
-            router: Arc::new(router::MessageRouter::new()),
+            senders: Arc::clone(&senders),
+            router: Arc::new(router::MessageRouter::with_senders(senders)),
         }
     }
 
@@ -87,6 +91,8 @@ impl WebSocketManager {
     ) -> Result<()> {
         let conn_id = conn.id.clone();
         self.connections.insert(conn_id.clone(), conn);
+        // The router shares this same `senders` map, so inserting here also makes the
+        // connection reachable for response delivery during routing.
         self.senders.insert(conn_id, sender);
         Ok(())
     }

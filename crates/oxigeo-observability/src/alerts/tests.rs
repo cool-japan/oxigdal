@@ -1,9 +1,11 @@
 //! Alert module tests
 
-use super::*;
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod alert_engine_tests {
+    use super::super::*;
+    use chrono::{Duration, Utc};
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     struct MockMetricProvider {
         metrics: HashMap<String, f64>,
@@ -57,8 +59,7 @@ mod tests {
 
     #[test]
     fn test_alert_instance_state_transitions() {
-        let rule = AlertRuleDefinition::new("test_rule")
-            .with_severity(AlertLevel::Warning);
+        let rule = AlertRuleDefinition::new("test_rule").with_severity(AlertLevel::Warning);
         let mut alert = AlertInstance::from_rule(&rule);
 
         assert_eq!(alert.state, AlertState::Inactive);
@@ -87,8 +88,7 @@ mod tests {
         )
         .with_matcher("env", "production");
 
-        let rule = AlertRuleDefinition::new("test_rule")
-            .with_label("env", "production");
+        let rule = AlertRuleDefinition::new("test_rule").with_label("env", "production");
         let alert = AlertInstance::from_rule(&rule);
 
         assert!(silence.matches(&alert));
@@ -98,8 +98,7 @@ mod tests {
     fn test_alert_grouper() {
         let grouper = AlertGrouper::with_keys(vec!["service".to_string()]);
 
-        let rule = AlertRuleDefinition::new("test_rule")
-            .with_label("service", "api");
+        let rule = AlertRuleDefinition::new("test_rule").with_label("service", "api");
         let alert = AlertInstance::from_rule(&rule);
 
         let group_id = grouper.add_alert(&alert);
@@ -131,11 +130,8 @@ mod tests {
 
         let evaluator = ConditionEvaluator::new(Arc::new(provider));
 
-        let condition = ConditionExpression::threshold(
-            "cpu_usage",
-            ThresholdOperator::GreaterThan,
-            90.0,
-        );
+        let condition =
+            ConditionExpression::threshold("cpu_usage", ThresholdOperator::GreaterThan, 90.0);
 
         assert!(evaluator.evaluate(&condition));
     }
@@ -179,5 +175,100 @@ mod tests {
         assert_eq!(rule.level, AlertLevel::Critical);
         assert_eq!(rule.pending_duration.as_secs(), 300);
         assert_eq!(rule.labels.get("team"), Some(&"platform".to_string()));
+    }
+
+    #[test]
+    fn test_label_match_without_context_never_matches() {
+        // evaluate() (no label context) must not fabricate a match for
+        // LabelMatch -- previously it unconditionally returned `true`
+        // regardless of any label, which meant a rule using LabelMatch
+        // fired even when nothing matched.
+        let provider = MockMetricProvider::new();
+        let evaluator = ConditionEvaluator::new(Arc::new(provider));
+
+        let condition = ConditionExpression::LabelMatch {
+            label: "env".to_string(),
+            pattern: "prod.*".to_string(),
+        };
+
+        assert!(!evaluator.evaluate(&condition));
+    }
+
+    #[test]
+    fn test_label_match_with_context_real_regex_match() {
+        let provider = MockMetricProvider::new();
+        let evaluator = ConditionEvaluator::new(Arc::new(provider));
+
+        let condition = ConditionExpression::LabelMatch {
+            label: "env".to_string(),
+            pattern: "^prod.*$".to_string(),
+        };
+
+        let mut matching_labels = HashMap::new();
+        matching_labels.insert("env".to_string(), "production".to_string());
+        assert!(evaluator.evaluate_with_labels(&condition, &matching_labels));
+
+        let mut non_matching_labels = HashMap::new();
+        non_matching_labels.insert("env".to_string(), "staging".to_string());
+        assert!(!evaluator.evaluate_with_labels(&condition, &non_matching_labels));
+
+        // Label present in context but under a different key -> no match.
+        let mut missing_label = HashMap::new();
+        missing_label.insert("region".to_string(), "us-east-1".to_string());
+        assert!(!evaluator.evaluate_with_labels(&condition, &missing_label));
+    }
+
+    #[test]
+    fn test_label_match_compound_with_threshold() {
+        let mut provider = MockMetricProvider::new();
+        provider.set_metric("cpu_usage", 95.0);
+        let evaluator = ConditionEvaluator::new(Arc::new(provider));
+
+        let condition = ConditionExpression::and(vec![
+            ConditionExpression::threshold("cpu_usage", ThresholdOperator::GreaterThan, 90.0),
+            ConditionExpression::LabelMatch {
+                label: "env".to_string(),
+                pattern: "production".to_string(),
+            },
+        ]);
+
+        let mut labels = HashMap::new();
+        labels.insert("env".to_string(), "production".to_string());
+        assert!(evaluator.evaluate_with_labels(&condition, &labels));
+
+        labels.insert("env".to_string(), "staging".to_string());
+        assert!(!evaluator.evaluate_with_labels(&condition, &labels));
+    }
+
+    #[test]
+    fn test_alert_engine_evaluate_all_passes_rule_labels_to_label_match() {
+        // End-to-end: AlertEngine::evaluate_all must thread the firing
+        // rule's own labels into LabelMatch evaluation.
+        let mut provider = MockMetricProvider::new();
+        provider.set_metric("cpu_usage", 95.0);
+
+        let engine = AlertEngine::new(Arc::new(provider));
+
+        let rule = AlertRuleDefinition::new("prod_only_cpu_alert")
+            .with_condition(ConditionExpression::and(vec![
+                ConditionExpression::threshold("cpu_usage", ThresholdOperator::GreaterThan, 90.0),
+                ConditionExpression::LabelMatch {
+                    label: "env".to_string(),
+                    pattern: "^production$".to_string(),
+                },
+            ]))
+            .with_label("env", "staging"); // does NOT match "production"
+
+        engine.add_rule(rule).expect("add_rule should succeed");
+
+        let alerts =
+            tokio_test::block_on(engine.evaluate_all()).expect("evaluate_all should not error");
+        assert!(
+            alerts
+                .iter()
+                .all(|a| a.state != AlertState::Firing && a.state != AlertState::Pending),
+            "a rule labeled env=staging must not fire a condition gated on env=production, got: \
+             {alerts:?}"
+        );
     }
 }

@@ -17,8 +17,8 @@ categories = ["science", "embedded", "api-bindings"]
 default = ["std"]
 std = []
 alloc = []
-ios = ["std", "sysinfo", "libc"]
-android = ["std", "sysinfo", "libc"]
+ios = ["std", "sysinfo", "objc"]
+android = ["std", "sysinfo"]
 battery-aware = ["std", "sysinfo"]
 network-optimization = ["std"]
 gesture-support = ["std"]
@@ -27,37 +27,35 @@ background-tasks = ["std", "tokio"]
 [dependencies]
 # Core dependencies
 thiserror = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
-byteorder = { workspace = true }
-chrono = { workspace = true }
 
 # Async runtime (optional for background tasks)
 tokio = { workspace = true, optional = true }
 futures = { workspace = true }
-async-trait = { workspace = true }
 
 # Oxigeo crates
 oxigeo-core = { workspace = true, default-features = true }
-oxigeo-mobile = { workspace = true }
 
 # System information for battery/performance/memory introspection
 sysinfo = { workspace = true, optional = true }
 
-# Platform syscall bindings for iOS (sysctl) / Android (system properties) introspection.
-# Pure-Rust ABI bindings (no C library is linked); only referenced under target_os cfg gates.
-libc = { workspace = true, optional = true }
+# Platform syscall bindings: iOS (sysctl) / Android (system properties) introspection,
+# and `statvfs` for real on-device free/total storage queries (see `storage::MobileStorage`).
+# Pure-Rust ABI bindings (no C library is linked); the iOS/Android-specific calls are
+# gated behind target_os cfgs, and the storage `statvfs` path is gated behind `cfg(unix)`.
+# Unconditional (not feature-gated) because `storage::MobileStorage::storage_info` needs a
+# real implementation regardless of which optional feature set is enabled.
+libc = { workspace = true }
 
-# Logging
-tracing = { workspace = true }
+# Objective-C runtime bindings (msg_send!) used to query real iOS device state
+# (e.g. `NSProcessInfo.isLowPowerModeEnabled`) that has no `sysctl` equivalent.
+# Only referenced under `#[cfg(target_os = "ios")]`; not linked/used on other platforms.
+objc = { workspace = true, optional = true }
 
 # Utilities
 lru = { workspace = true }
-dashmap = { workspace = true }
 parking_lot = { workspace = true }
-crossbeam = { workspace = true }
-num_cpus = { workspace = true }
 
 # Compression for network efficiency
 oxiarc-deflate = { workspace = true }

@@ -1,12 +1,13 @@
 # TODO: oxigeo-drivers/geoparquet
 
 > **Purpose:** GeoParquet driver for OxiGeo - Pure Rust GDAL reimplementation
-> **Status (2026-05-16):** 11,925 Rust LoC (incl. tests) - 181 tests - 0 source-code stubs (mature crate; 0.1.5 already shipped covering bbox + native encodings + statistics)
-> **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
+> **Status (2026-07-28):** 11,925 Rust LoC (incl. tests) - 234 tests (all-features) - 0 source-code stubs (mature crate; 0.1.5 already shipped covering bbox + native encodings + statistics)
+> **Roadmap:** v0.1.7 - v0.2.1 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
 - [ ] Implement column projection (read only selected columns)
+  - **Re-verified 2026-07-28:** Still open — `rg -n "fn with_columns|ProjectionMask" src/reader.rs` shows no user-exposed projection method.
   - **Verified gap:** `GeoParquetReader` (re-exported from `src/reader.rs` per `src/lib.rs:110`) has `with_bbox_filter` and `with_attribute_filter` (per MEMORY.md and audit of `src/reader.rs`), but no `with_columns(&[&str])` projection mask method. `rg -n "fn with_columns|projection|ProjectionMask" -g '*.rs' src/reader.rs` shows internal use of `ProjectionMask` only inside the bbox fast-path; not user-exposed.
   - **Goal:** `reader.with_columns(["population", "geometry"])` skips decoding all other columns at row-group level - significant speedup on wide tables.
   - **Design:** Build `parquet::arrow::ProjectionMask::columns(reader.metadata().schema(), names)`; pass to `ArrowReaderBuilder::with_projection`. Validate names exist in schema; error on unknown column. Geometry column must always be included (or explicitly opted out via `with_columns_no_geometry`).
@@ -16,6 +17,7 @@
   - **Prerequisites:** None.
 
 - [ ] Parallel row-group reading with rayon
+  - **Re-verified 2026-07-28:** Still open — no `rayon` in `Cargo.toml`.
   - **Verified gap:** `Cargo.toml` does not declare `rayon` dep. `rg -n "rayon|par_iter|parallel" -g '*.rs' src/` returns no matches. Current reader processes row groups sequentially via `ArrowReaderBuilder` iterator.
   - **Goal:** Reading a file with 100 row groups across 8 cores completes in ~1/8 wall time (modulo I/O).
   - **Design:** Survivor row-group indices from bbox/attribute pruning (already implemented per MEMORY.md and `src/reader.rs:235-252`) drive parallel decode. Use `rayon::iter::IntoParallelIterator` over the survivor list; each thread opens an independent `ArrowReaderBuilder` reading its row group only (Parquet allows this via `with_row_groups([i])`). Merge results into ordered `Vec<RecordBatch>`.
@@ -25,6 +27,7 @@
   - **Prerequisites:** None.
 
 - [ ] GeoParquet metadata validation against the GeoParquet 1.1 specification
+  - **Re-verified 2026-07-28:** Still open — no `src/validation.rs` file exists.
   - **Verified gap:** `src/metadata.rs` has a `validate()` (per `src/metadata.rs:178-186` referenced in MEMORY.md) but full spec validation is partial - `rg -n "fn validate" -g '*.rs' src/metadata.rs` shows validation of encoding type matrix only. No structural validation of required fields per GeoParquet 1.1 §2 (`version`, `primary_column`, `columns.{column_name}.encoding`, `columns.{column_name}.geometry_types`).
   - **Goal:** Open a `.parquet` claiming to be GeoParquet, return a structured `ValidationReport` listing missing required fields, type mismatches, and recommended-but-missing fields.
   - **Design:** Walk the `geo` key in Parquet file-level metadata. Required: `version` (string, semver), `primary_column` (string), `columns` (object). For each column: `encoding` (one of `wkb` / `point` / `linestring` / ...), `geometry_types` (array of WKT type strings), and recommended `crs`, `edges`, `orientation`, `bbox`, `epoch`. Per GeoParquet 1.1 spec at <https://geoparquet.org/releases/v1.1.0/>.
@@ -122,4 +125,4 @@
   - **Tests:** 6 tests covering PointZ, PointZM, flat collection, recursive collection, depth guard, MultiPolygonZM
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

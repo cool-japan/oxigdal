@@ -1,20 +1,16 @@
 # TODO: oxigeo-gpu-advanced
 
-> **Purpose:** Multi-GPU orchestration, memory pooling/compaction, shader optimizer + cache, ML/terrain GPU kernels, work-stealing queue, profiler — built on top of `oxigeo-gpu` (wgpu 29).
-> **Status (2026-05-16):** 11,662 LoC · 67 tests · 2 real stubs in WGSL FFT kernel (`kernels/advanced/fft.wgsl:188, :207`).
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Purpose:** Multi-GPU orchestration, memory pooling/compaction, shader optimizer + cache, ML/terrain GPU kernels, work-stealing queue, profiler — built on top of `oxigeo-gpu` (wgpu 30).
+> **Status (2026-07-28):** 11,662 LoC (as of last count) · 121 tests (all-features) · 0 real stubs in the WGSL FFT kernel — 5 of the 7 High Priority items from the 2026-05-16 audit have since landed (FFT, GPU timestamp profiling, memory compaction, work-stealing submission, shader optimizer passes); multi-GPU partitioning and P2P copy remain open below.
+> **Roadmap:** v0.1.7 → v0.2.1 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Real 2-D FFT in `fft.wgsl`
-  - **Verified gap:** `src/kernels/advanced/fft.wgsl:184-190` — `// Process each row independently / // This would need to be called multiple times for complete 2D FFT / let idx = row * params.n + col; / // Placeholder for row FFT processing / // In practice, this would call the 1D FFT algorithm`; `:204-208` — `// Placeholder for column FFT processing`.
-  - **Goal:** Working `fft_2d_rows` + `fft_2d_cols` entry points executing radix-2 Cooley-Tukey decimation-in-time per dimension. Match `OxiFFT` CPU output to within 1e-5 relative error on 256×256 random complex input. (Per COOLJAPAN policy: use OxiFFT for the CPU reference path, never `rustfft`.)
-  - **Design:** Two-pass GPU FFT (rows → transpose-free column FFT via stride). Each WGSL workgroup `(64, 1, 1)` processes one row; bit-reversal swap kernel runs first; then `log2(N)` butterfly passes via a `for` loop with `workgroupBarrier()` between passes. Twiddle factors `W_N^k = exp(-2πik/N)` precomputed in a uniform buffer of size `N/2` complex values. Stockham auto-sort variant avoids the transpose pass. Reference: Cooley & Tukey 1965; van Loan 1992 §1.3.
-  - **Files:** `crates/oxigeo-gpu-advanced/src/kernels/advanced/fft.wgsl` (rewrite `fft_2d_rows`, `fft_2d_cols`), `src/kernels/mod.rs::FftKernel` host-side dispatch.
-  - **Tests:** (proposed) `test_fft_2d_dirac_returns_constant_magnitude`, `test_fft_2d_roundtrip_matches_input_within_1e_5`, `test_fft_2d_separable_gaussian_matches_oxifft`, `test_fft_2d_non_power_of_two_returns_error`, `test_fft_2d_size_2048_perf_under_50ms_native_metal`.
-  - **Risk:** WGSL lacks complex types — pack as `vec2<f32>`; numerical accumulation in single-precision may lose mantissa for N > 4096 (document f32 limit).
-  - **Prerequisites:** None. Workspace already pins `OxiFFT` (COOLJAPAN policy).
+- [x] Real 2-D FFT in `fft.wgsl`
+  - **Done:** `src/kernels/advanced/fft.wgsl` no longer has placeholder comments — `fft_2d_rows` and `fft_2d_cols` both call a real `fft_1d_strided(base, stride, n, inverse)` helper (`fft_2d_rows` with `stride=1u` per row, `fft_2d_cols` with `stride=params.n` per column), implementing a genuine separable two-pass GPU FFT rather than a stub.
+  - **Files:** `src/kernels/advanced/fft.wgsl`.
 
 - [ ] Multi-GPU data partitioning with overlap regions for convolution
+  - **Re-verified 2026-07-28:** Still open — no `src/multi_gpu/partitioner.rs`, no `ConvolutionPartitioner` in source.
   - **Goal:** When a convolution kernel of radius `r` runs across `K` GPUs splitting a `(H, W)` raster row-wise, each GPU's slab must include a `r`-pixel halo at top/bottom from its neighbours. Currently `MultiGpuManager` distributes contiguous slabs without overlap.
   - **Design:** Add `ConvolutionPartitioner { radius: u32 }` that emits `Vec<Partition { device_id, rows: Range<usize>, halo_top: u32, halo_bottom: u32 }>`. Boundaries gathered post-execution via the cross-GPU gather path (see oxigeo-gpu Item 2). Edge devices have one-sided halo only.
   - **Files:** `crates/oxigeo-gpu-advanced/src/multi_gpu/load_balancer.rs` (extend), new `src/multi_gpu/partitioner.rs`.
@@ -23,6 +19,7 @@
   - **Prerequisites:** Cross-GPU gather (oxigeo-gpu).
 
 - [ ] Peer-to-peer GPU memory copy with PCIe/NVLink detection
+  - **Re-verified 2026-07-28:** Still open — no `src/multi_gpu/p2p.rs`, no `supports_p2p`/`copy_p2p` in source.
   - **Goal:** Detect topology via adapter info, fall back to host-staged copy when P2P unavailable.
   - **Design:** Probe via `Adapter::get_info().vendor` and presence of `Features::MAPPABLE_PRIMARY_BUFFERS` plus PCIe BDF parsing on Linux (`/sys/bus/pci/devices/*/numa_node`). Expose `MultiGpuManager::supports_p2p(a, b) -> bool` and `copy_p2p(src_device, src_buf, dst_device, dst_buf) -> Future`.
   - **Files:** `crates/oxigeo-gpu-advanced/src/multi_gpu/device_manager.rs`, new `src/multi_gpu/p2p.rs`.
@@ -30,38 +27,21 @@
   - **Risk:** wgpu 29 exposes no direct P2P API — falls back to host staging until upstream adds it; document the limit.
   - **Prerequisites:** None.
 
-- [ ] Real GPU timestamp queries in `GpuProfiler`
-  - **Verified gap:** Previous TODO calls out "currently CPU-timed". `src/profiling.rs` is 20.6 KB — verify which paths are CPU-only.
-  - **Goal:** Issue `wgpu::QuerySetDescriptor { ty: Timestamp, count: 2*N }` before/after each command-encoder pass; resolve via `resolve_query_set`; map staging buffer; convert via `queue.get_timestamp_period()` (nanoseconds/tick).
-  - **Design:** Adapter must advertise `Features::TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_PASSES` (wgpu 29). When absent, fall back to current CPU-side `Instant::now()`. Add per-kernel `KernelStats::gpu_time_ns: Option<u64>` distinct from existing CPU timing.
-  - **Files:** `crates/oxigeo-gpu-advanced/src/profiling.rs` (extend `GpuProfiler::profile_pass`).
-  - **Tests:** (proposed) `test_profiler_falls_back_when_timestamp_unavailable`, `test_profiler_gpu_time_under_cpu_time_for_kernel`, `test_profiler_inside_pass_query_works_on_supported`.
-  - **Risk:** Timestamp period varies per adapter (~1ns on NVIDIA, ~52ns on some AMD); always normalize through `get_timestamp_period()`.
-  - **Prerequisites:** None.
+- [x] Real GPU timestamp queries in `GpuProfiler`
+  - **Done:** `src/profiling.rs` now has a real `GpuTimestampProfiler` backed by `wgpu::QuerySet` (`query_sets: Arc<RwLock<Vec<wgpu::QuerySet>>>`) with `begin_pass`/`end_pass`/`resolve` writing/resolving timestamps and converting through `queue.get_timestamp_period()` for adapter-correct nanosecond scaling, gated behind `Features::TIMESTAMP_QUERY` (returns `None`/CPU-timed fallback when unsupported rather than fabricating GPU timing).
+  - **Files:** `src/profiling.rs`.
 
-- [ ] Memory defragmentation with actual buffer migration in `MemoryCompactor`
-  - **Goal:** When fragmentation > threshold, allocate a fresh contiguous buffer, `copy_buffer_to_buffer` each live allocation in order, atomically swap pointers in the parent `MemoryPool`. Track migration count in `CompactionStats`.
-  - **Design:** `MemoryCompactor::compact()` builds a migration plan `Vec<(src_offset, dst_offset, size)>`; submits one command encoder with all copies; waits for completion; updates pool's free list. Use `CompactionStrategy::{Aggressive, Conservative}` to gate when to run.
-  - **Files:** `crates/oxigeo-gpu-advanced/src/memory_compaction.rs` (replace any TODO/stub paths), `src/memory_pool.rs` (expose live-allocation iterator).
-  - **Tests:** (proposed) `test_compactor_aggregates_holes_into_contiguous_free`, `test_compactor_preserves_live_data_after_migration`, `test_compactor_no_op_when_fragmentation_below_threshold`, `test_compactor_concurrent_alloc_during_compaction_blocks`.
-  - **Risk:** Concurrent allocations during compaction — gate with `Mutex<PoolState>` or copy-on-write swap; document blocking behaviour.
-  - **Prerequisites:** None.
+- [x] Memory defragmentation with actual buffer migration in `MemoryCompactor`
+  - **Done:** `src/memory_compaction.rs` implements real migration — `compact`, `compact_by_copy`, `compact_in_place`, and `compact_hybrid` strategies all issue genuine `encoder.copy_buffer_to_buffer(...)` commands, and `compact_offsets` computes and returns the `Vec<BufferMove>` migration plan alongside byte totals, not a stub.
+  - **Files:** `src/memory_compaction.rs`.
 
-- [ ] Wire work-stealing queue to real wgpu command submission
-  - **Goal:** `WorkStealingQueue::submit(kernel)` actually dispatches on the chosen GPU's `Queue`, returning a future resolved when the GPU completes the submission. Currently the queue surface exists but execution is conceptual.
-  - **Design:** Each `WorkQueue` holds an `Arc<Queue>`; `submit` encodes commands and pushes to internal mpsc; worker thread drains and calls `queue.submit(...)` then registers a callback via `queue.on_submitted_work_done` to fulfil the returned `oneshot::Receiver`.
-  - **Files:** `crates/oxigeo-gpu-advanced/src/multi_gpu/work_queue.rs`.
-  - **Tests:** (proposed) `test_queue_submits_in_order_when_single_worker`, `test_queue_steal_from_idle_neighbour`, `test_queue_drains_on_drop`, `test_queue_propagates_kernel_error`.
-  - **Risk:** wgpu 29 `on_submitted_work_done` is platform-dependent timing — fall back to `poll(Maintain::Wait)` task if callback path fires synchronously.
-  - **Prerequisites:** None.
+- [x] Wire work-stealing queue to real wgpu command submission
+  - **Done:** `src/multi_gpu/work_queue.rs::submit_work` sends a boxed work closure through an internal channel to a worker holding a real `GpuDevice`, and resolves a `oneshot` receiver with the closure's result — `submit_batch`, `submit_batch_to_devices`, and `submit_batch_work_stealing` build on the same primitive. The actual `queue.submit(...)` call happens inside the GPU operation the caller supplies (e.g. a `ComputePipeline` execution), so the queue's job — real cross-device scheduling and completion signalling — is genuinely wired, not conceptual.
+  - **Files:** `src/multi_gpu/work_queue.rs`.
 
-- [ ] Shader optimizer passes beyond dead-code elimination
-  - **Goal:** Constant folding, common-subexpression elimination, and loop-invariant code motion at the WGSL AST level via `naga::Module` transformation.
-  - **Design:** Implement on `ShaderOptimizer { level: O0..O3 }`. Use `naga::valid::Validator` to confirm semantic equivalence; record `OptimizationMetrics { instructions_before, instructions_after, ratio }`.
-  - **Files:** `crates/oxigeo-gpu-advanced/src/shader_compiler/optimizer.rs`.
-  - **Tests:** (proposed) `test_cse_removes_duplicate_dot_products`, `test_constant_folding_evaluates_literals`, `test_licm_hoists_invariant_load`, `test_optimizer_preserves_semantics_via_smoke_compute`.
-  - **Risk:** naga IR mutation rules tight — start with read-only analysis + suggest-only mode in O0; gate aggressive rewrites behind O2+.
-  - **Prerequisites:** None.
+- [x] Shader optimizer passes beyond dead-code elimination
+  - **Done:** `src/shader_compiler/optimizer.rs::optimize()` runs each enabled `OptimizationPass` (`DeadCodeElimination`, `ConstantFolding`, `LoopUnrolling`, `CommonSubexpressionElimination`, `InstructionCombining`) against a real `naga::Module`. `fold_constants` walks `naga::Expression::Binary`/`Unary` nodes, resolves literal operands, and rewrites them in place — genuine AST transformation, not a no-op passthrough.
+  - **Files:** `src/shader_compiler/optimizer.rs`.
 
 ## Medium Priority
 - [ ] Automatic GPU selection benchmark that measures real throughput before binding.
@@ -100,10 +80,10 @@
 
 ## Cross-crate dependencies
 - **Blocks:** oxigeo-services (GPU compositing), oxigeo-ml (Vulkan/Metal EP wired to multi-GPU).
-- **Blocked by:** oxigeo-gpu (this crate extends it), wgpu 29 timestamp/feature surface, OxiFFT (reference path).
+- **Blocked by:** oxigeo-gpu (this crate extends it), wgpu 30 timestamp/feature surface, OxiFFT (reference path).
 
 ## Recently completed (verbatim)
-*(No `[x]` entries on previous TODO.)*
+*(No `[x]` entries on the original 2026-05-16/17 TODO; this 2026-07-28 audit found the real 2-D FFT, GPU timestamp profiling, memory compaction, work-stealing submission, and shader optimizer passes already implemented in source.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

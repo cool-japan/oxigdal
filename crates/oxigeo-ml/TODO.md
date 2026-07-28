@@ -1,8 +1,8 @@
 # TODO: oxigeo-ml
 
 > **Purpose:** Geospatial machine-learning runtime — ONNX inference via Pure-Rust `oxionnx`, segmentation/classification/detection, batch & tile inference, model zoo, monitoring.
-> **Status (2026-05-16):** 19,728 LoC · 359 tests (1 skipped per workspace memory) · 3 real stubs surfaced in src tree (WebGPU sync enumeration, TFLite quantization stamp, temporarily-disabled `coreml`/`tflite`/`temporal` features).
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 19,163 Rust LoC (tokei, `src/`) · 455 tests with `--all-features`, 442 with default features, 0 failed · re-verified: `coreml`/`tflite`/`temporal` features are still commented out of `Cargo.toml` (unchanged), WebGPU async enumeration and the TFLite fixed-scale stub are also still present as described below; separately, a real ONNX-protobuf weight walker, model-version registry with deterministic A/B routing, inference hot-reload, and content-addressed inference caching landed this release (not previously tracked here — see "Recently completed")
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Re-enable `coreml` feature against `objc2` 0.6
@@ -67,9 +67,10 @@
 - [ ] Active-learning loop with uncertainty sampling from segmentation outputs.
   - **Files:** `crates/oxigeo-ml/src/inference/active_learning.rs` (new).
   - **Why deferred:** Requires interactive labeling UX (out of scope for headless library).
-- [ ] Real model versioning with registry, semver, and rollback.
+- [x] Real model versioning with registry, semver, and rollback.
   - **Files:** `crates/oxigeo-ml/src/model_versioning.rs` (extend existing).
   - **Why deferred:** Existing module covers basic versioning; rollback semantics need design.
+  - **Done:** verified as of 2026-07-28 (root `CHANGELOG.md` [0.2.1] Added: "`oxigeo-ml`: ... adaptive batch sizing, and model versioning / deterministic A/B testing"). `src/model_versioning.rs` has a real `ModelVersion { major, minor, patch, tag }` (semver-shaped), a `ModelRegistry` with `register`/`get_latest`/`get_version`/`list_versions`/`list_models`/`unregister_version` (rollback via re-selecting or unregistering a version), and a request-id-keyed deterministic A/B router (`route(&self, request_id: u64) -> &str`). The `ModelVersion` `Ord` bug mentioned in the CHANGELOG's Fixed section was also corrected.
 - [ ] Geospatial-aware augmentations (north-up rotation, scale-aware crop, spectral band dropout) wired to `scirs2-core::random`.
   - **Files:** `crates/oxigeo-ml/src/augmentation/` (extend).
   - **Why deferred:** Generic augmentations exist; geospatial-specific is an enhancement.
@@ -109,6 +110,10 @@
 - [x] Add ONNX graph optimization passes (constant folding, operator fusion) (completed 2026-04-19)
   - **Done:** Created `optimization/graph_opt.rs` with `GraphOptConfig`, `OptimizationBenchmark`, `apply_graph_optimization()`, `benchmark_optimization()`. Wired `operator_fusion` field in `OptimizationPipeline` via `effective_graph_opt_config()` and `opt_level()`. `measure_speedup`/`benchmark_model` now accept `OptLevel` parameter.
   - **Tests added (12):** GraphOptConfig default/none/partial, apply_graph_optimization identity/none, operator_fusion changes node count (MatMul+Add fusion), pipeline with fusion flag, benchmark struct fields/no-improvement/zero-nodes, benchmark_optimization identity/matmul_add, config-to-OptLevel roundtrip, effective_graph_opt_config from fusion flag and explicit override
+- [x] Model pruning/quantization no longer corrupts ONNX files (0.2.1 production-hardening campaign, per root `CHANGELOG.md`)
+  - **Done:** a real ONNX protobuf walker (`src/optimization/onnx_weights.rs`) applies genuine tensor transforms for pruning/quantization instead of the previous corrupting path; the `ModelVersion` `Ord` bug (see model-versioning item above) was fixed in the same pass.
+- [x] ONNX model hot-reload, content-addressed inference caching, adaptive batch sizing (0.2.1, per root `CHANGELOG.md` Added section — not previously tracked as TODO items)
+  - **Done:** `src/hot_reload.rs` (file-watch + atomic model swap), `src/inference_cache.rs` (SHA-256-content-addressed inference cache with LRU eviction), and adaptive batch sizing landed this release alongside the model-versioning/A-B-testing work above.
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

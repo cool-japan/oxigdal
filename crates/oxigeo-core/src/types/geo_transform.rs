@@ -6,6 +6,8 @@
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
 use crate::compat::*;
+#[cfg(not(feature = "std"))]
+use crate::math::FloatExt;
 use core::fmt;
 
 use serde::{Deserialize, Serialize};

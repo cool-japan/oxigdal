@@ -67,13 +67,28 @@ impl SpatialQuery {
         self
     }
 
-    /// Sets specific columns to select
+    /// Sets specific columns to select.
+    ///
+    /// # Security
+    ///
+    /// Column expressions are spliced into the `SELECT` list **verbatim** with
+    /// no validation. Pass only trusted, developer-authored column names /
+    /// expressions — never unsanitized user input. To include an untrusted
+    /// column name, validate it first via [`ColumnName::new`].
     pub fn select(mut self, columns: &[&str]) -> Self {
         self.columns = columns.iter().map(|s| s.to_string()).collect();
         self
     }
 
-    /// Adds a WHERE condition
+    /// Adds a WHERE condition.
+    ///
+    /// # Security
+    ///
+    /// `condition` is a raw SQL fragment spliced verbatim into the `WHERE`
+    /// clause; it is **not** injection-safe. Pass only trusted fragments. For
+    /// user-driven spatial filtering use [`where_intersects`](Self::where_intersects),
+    /// [`where_bbox`](Self::where_bbox) and friends, which bind their operands
+    /// as query parameters.
     pub fn where_clause(mut self, condition: impl Into<String>) -> Self {
         self.where_clause = self.where_clause.and(condition);
         self
@@ -152,7 +167,12 @@ impl SpatialQuery {
         self
     }
 
-    /// Adds an ORDER BY clause
+    /// Adds an ORDER BY clause.
+    ///
+    /// # Security
+    ///
+    /// `column` is spliced verbatim into the `ORDER BY` clause and is **not**
+    /// validated or escaped. Pass only trusted column names/expressions.
     pub fn order_by(mut self, column: impl Into<String>, ascending: bool) -> Self {
         let direction = if ascending { "ASC" } else { "DESC" };
         self.order_by.push(format!("{} {direction}", column.into()));

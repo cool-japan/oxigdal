@@ -22,7 +22,7 @@ use serde::Deserialize;
 use std::io::Cursor;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// Configuration for source region to read from a dataset
 #[derive(Debug, Clone, Copy)]
@@ -787,7 +787,13 @@ async fn get_tile_impl(
         trace!("Cache hit for tile: {}", cache_key.to_string());
         return Ok((
             StatusCode::OK,
-            [(header::CONTENT_TYPE, format.mime_type())],
+            [
+                (header::CONTENT_TYPE, format.mime_type()),
+                (
+                    header::CACHE_CONTROL,
+                    "public, max-age=86400, stale-while-revalidate=604800",
+                ),
+            ],
             cached_tile,
         )
             .into_response());
@@ -819,12 +825,20 @@ async fn get_tile_impl(
     )
     .await?;
 
-    // Cache the tile
-    let _ = state.cache.put(cache_key, tile_data.clone());
+    // Cache the tile (a failure is non-fatal but must be visible in logs).
+    if let Err(e) = state.cache.put(cache_key, tile_data.clone()) {
+        warn!("Failed to cache rendered WMTS tile: {}", e);
+    }
 
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, format.mime_type())],
+        [
+            (header::CONTENT_TYPE, format.mime_type()),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=86400, stale-while-revalidate=604800",
+            ),
+        ],
         tile_data,
     )
         .into_response())

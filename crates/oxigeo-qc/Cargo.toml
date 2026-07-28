@@ -44,10 +44,6 @@ regex = { workspace = true }
 # HTML generation
 quick-xml = { workspace = true, optional = true }
 
-# Statistics and numerical operations
-num-traits = { workspace = true }
-approx = { workspace = true }
-
 [dev-dependencies]
 proptest = { workspace = true }
 tempfile = { workspace = true }

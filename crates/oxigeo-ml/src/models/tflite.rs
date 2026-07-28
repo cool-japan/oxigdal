@@ -1,51 +1,31 @@
-//! TensorFlow Lite model support
+//! TensorFlow Lite model support (currently **unavailable**).
 //!
-//! This module provides TensorFlow Lite model loading and inference integration
-//! for geospatial ML workflows.
+//! # Status
 //!
-//! # System Requirements
+//! TensorFlow Lite inference is **not available** in this crate. The only
+//! backing implementation would depend on the `tflitec` crate, which:
 //!
-//! To use TFLite support, enable the `tflite` feature flag:
+//! - links the TensorFlow Lite **C** library, violating the project's Pure Rust
+//!   policy unless strictly feature-gated, and
+//! - requires Bazel 6.5.0 to build from source (incompatible with the Bazel 8.x
+//!   found on modern systems).
 //!
-//! ```toml
-//! [dependencies]
-//! oxigeo-ml = { version = "0.2.0", features = ["tflite"] }
-//! ```
+//! Because of this, the `tflite` Cargo feature is **not declared** in this
+//! crate's manifest: there is no way to enable it, and every consumer gets the
+//! stub [`TfLiteModel`] whose constructors return
+//! [`MlError::FeatureNotAvailable`]. The configuration types
+//! ([`TfLiteConfig`], [`Delegate`], [`TensorInfo`], [`QuantizationParams`]) are
+//! kept so that callers can compile against the intended API and so a future
+//! pure-Rust backend (e.g. TenfloweRS) can slot in without breaking source
+//! compatibility.
 //!
-//! **Note:** The `tflitec` crate requires either:
-//! - Pre-built TensorFlow Lite C library (set `TFLITEC_PREBUILT_PATH` env var)
-//! - Bazel 6.5.0+ for building from source (may take 10-30 minutes on first build)
+//! **Do not expect working hardware delegates, quantized inference, or model
+//! loading from this module today.** Use the ONNX backend
+//! ([`crate::models::OnnxModel`]) for real inference.
 //!
-//! To use a pre-built TensorFlow Lite library:
-//! ```bash
-//! export TFLITEC_PREBUILT_PATH=/path/to/libtensorflowlite_c.{so,dylib,dll}
-//! cargo build --features tflite
-//! ```
-//!
-//! # Features
-//!
-//! - TFLite model loading and initialization
-//! - Hardware acceleration delegates (GPU, NNAPI, CoreML, XNNPACK)
-//! - Quantized model support (INT8, FP16)
-//! - Dynamic shape tensors
-//! - Multi-threading support
-//!
-//! # Example
-//!
-//! ```ignore
-//! use oxigeo_ml::models::TfLiteModel;
-//! use oxigeo_ml::models::tflite::{TfLiteConfig, Delegate};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let config = TfLiteConfig::builder()
-//!     .threads(4)
-//!     .delegate(Delegate::Gpu)
-//!     .build();
-//!
-//! let model = TfLiteModel::from_file("model.tflite", config)?;
-//! # Ok(())
-//! # }
-//! ```
+//! The full `tflitec`-backed implementation below is compiled only under
+//! `#[cfg(feature = "tflite")]` and is therefore dead until a sanctioned,
+//! feature-gated backend is restored.
 
 use crate::error::{InferenceError, MlError, ModelError, Result};
 use crate::models::{Model, ModelMetadata};
@@ -581,12 +561,26 @@ impl Model for TfLiteModel {
             );
         }
 
-        // Convert raster to tensor format (NHWC)
+        // A `RasterBuffer` is single-band, so it can only supply one channel.
+        // Reject multi-channel models rather than silently replicating the same
+        // band across every channel (which would fabricate the input tensor).
+        if channels != 1 {
+            return Err(InferenceError::InvalidBandCount {
+                expected: channels,
+                actual: 1,
+            }
+            .into());
+        }
+
+        // Convert raster to a genuine NHWC tensor. With a single channel, the
+        // channel dimension is innermost (fastest-varying) exactly as NHWC
+        // requires; the layout below generalizes correctly should a multi-band
+        // accessor be introduced (loop y, then x, then channel).
         let mut tensor_data = Vec::with_capacity(height * width * channels);
-        for _c in 0..channels {
-            for y in 0..height {
-                for x in 0..width {
-                    let value = input.get_pixel(x as u64, y as u64).unwrap_or(0.0);
+        for y in 0..height {
+            for x in 0..width {
+                let value = input.get_pixel(x as u64, y as u64).unwrap_or(0.0);
+                for _c in 0..channels {
                     tensor_data.push(value as f32);
                 }
             }

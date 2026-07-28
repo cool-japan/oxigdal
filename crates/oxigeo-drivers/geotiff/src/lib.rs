@@ -76,6 +76,52 @@ use oxigeo_core::types::{
     ColorInterpretation, GeoTransform, NoDataValue, RasterDataType, RasterMetadata,
 };
 
+/// Upper sanity bound (in bytes) on a single decoded raster band buffer.
+///
+/// Band dimensions come from untrusted IFD tags; this cap keeps a malformed or
+/// hostile header from driving [`GeoTiff::read_band`] into a multi-gigabyte
+/// allocation (OOM / denial of service). 4 GiB comfortably accommodates any
+/// realistic single-band read while bounding a hostile request to a survivable
+/// size.
+const MAX_BAND_BYTES: usize = 4 * 1024 * 1024 * 1024;
+
+/// Computes the size of a full raster band buffer from untrusted dimensions,
+/// rejecting values that overflow `usize` or exceed [`MAX_BAND_BYTES`].
+///
+/// Extracted so the memory-safety guard on [`GeoTiff::read_band`] can be unit
+/// tested without a crafted TIFF: a hostile `width`/`height`/sample count must
+/// yield a typed error rather than a wrapping (then out-of-bounds) or
+/// multi-gigabyte allocation.
+fn checked_band_bytes(
+    width: usize,
+    height: usize,
+    bytes_per_sample: usize,
+    samples_per_pixel: usize,
+) -> Result<usize> {
+    let band_bytes = width
+        .checked_mul(height)
+        .and_then(|v| v.checked_mul(bytes_per_sample))
+        .and_then(|v| v.checked_mul(samples_per_pixel))
+        .ok_or_else(|| {
+            OxiGeoError::Format(FormatError::InvalidHeader {
+                message: format!(
+                    "raster dimensions overflow usize: {width}x{height} x {bytes_per_sample} \
+                     bytes x {samples_per_pixel} samples"
+                ),
+            })
+        })?;
+    if band_bytes > MAX_BAND_BYTES {
+        return Err(OxiGeoError::Format(FormatError::InvalidHeader {
+            message: format!(
+                "raster band size ({band_bytes} bytes) exceeds the maximum supported \
+                 ({MAX_BAND_BYTES} bytes); refusing to allocate (possible malformed or \
+                 hostile header)"
+            ),
+        }));
+    }
+    Ok(band_bytes)
+}
+
 /// Generates WKT string from GeoKeys
 ///
 /// # Arguments
@@ -529,7 +575,14 @@ impl<S: DataSource> GeoTiffReader<S> {
         let bytes_per_sample = (info.bits_per_sample.first().copied().unwrap_or(8) / 8) as usize;
         let samples_per_pixel = info.samples_per_pixel as usize;
 
-        let mut result = vec![0u8; width * height * bytes_per_sample * samples_per_pixel];
+        // `width`, `height`, `bytes_per_sample` and `samples_per_pixel` all come
+        // from untrusted IFD tags. Guard their product against `usize` overflow
+        // and an unreasonable size before allocating the full band buffer, so a
+        // tiny malformed file cannot trigger a wrapping or multi-gigabyte
+        // allocation (OOM / denial of service).
+        let band_bytes = checked_band_bytes(width, height, bytes_per_sample, samples_per_pixel)?;
+
+        let mut result = vec![0u8; band_bytes];
 
         // Determine if this is tiled or striped layout
         let is_tiled = info.tile_width.is_some() && info.tile_height.is_some();
@@ -635,6 +688,36 @@ mod tests {
         assert!(!is_tiff(&[0x89, 0x50, 0x4E, 0x47])); // PNG
         assert!(!is_tiff(&[0xFF, 0xD8, 0xFF])); // JPEG
         assert!(!is_tiff(&[]));
+    }
+
+    #[test]
+    fn checked_band_bytes_accepts_reasonable_dimensions() {
+        // 4096 x 4096 x 2 bytes x 3 samples = 100 MiB — well within the cap.
+        let n = checked_band_bytes(4096, 4096, 2, 3);
+        assert!(matches!(n, Ok(v) if v == 4096 * 4096 * 2 * 3));
+        // A zero-area band is valid (empty buffer).
+        assert!(matches!(checked_band_bytes(0, 0, 4, 1), Ok(0)));
+    }
+
+    #[test]
+    fn checked_band_bytes_rejects_oversized_dimensions() {
+        // 65535 x 65535 x 8 bytes x 4 samples ~= 137 GB — far past the cap.
+        let err = checked_band_bytes(65535, 65535, 8, 4);
+        assert!(matches!(
+            err,
+            Err(OxiGeoError::Format(FormatError::InvalidHeader { .. }))
+        ));
+    }
+
+    #[test]
+    fn checked_band_bytes_rejects_multiplication_overflow() {
+        // Dimensions chosen so the product wraps `usize`; must be rejected, not
+        // silently truncated to a small (then out-of-bounds) allocation.
+        let err = checked_band_bytes(usize::MAX, 2, 1, 1);
+        assert!(matches!(
+            err,
+            Err(OxiGeoError::Format(FormatError::InvalidHeader { .. }))
+        ));
     }
 
     #[test]

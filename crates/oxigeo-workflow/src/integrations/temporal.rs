@@ -1,6 +1,8 @@
 //! Temporal.io integration.
 
-use crate::dag::{ResourceRequirements, RetryPolicy, TaskEdge, TaskNode, WorkflowDag};
+use crate::dag::{
+    ResourceRequirements, RetryPolicy, TaskEdge, TaskNode, WorkflowDag, create_execution_plan,
+};
 use crate::engine::WorkflowDefinition;
 use crate::error::{Result, WorkflowError};
 use regex::Regex;
@@ -22,7 +24,7 @@ impl TemporalIntegration {
         let mut go_code = String::new();
 
         let tasks = workflow.dag.tasks();
-        let has_command = tasks.iter().any(|task| Self::task_command(task).is_some());
+        let has_command = tasks.iter().any(|task| task.command().is_some());
 
         // Metadata header. This is not idiomatic hand-written Go, but it lets
         // `import_workflow` losslessly recover the original workflow id/name for any input
@@ -55,7 +57,7 @@ impl TemporalIntegration {
                 Self::escape_go_string(&task.id)
             ));
 
-            if let Some(command) = Self::task_command(task) {
+            if let Some(command) = task.command() {
                 go_code.push_str(&format!(
                     "    cmd := exec.Command(\"sh\", \"-c\", {})\n",
                     Self::go_string_literal(command)
@@ -82,21 +84,68 @@ impl TemporalIntegration {
             Self::to_camel_case(&workflow.id)
         ));
 
-        for (idx, _task) in tasks.iter().enumerate() {
+        // Map each task id back to its `Task{idx}Activity` function (idx assigned
+        // above, in `tasks()` insertion order) so the DAG's actual dependency
+        // structure can be honored below regardless of that insertion order.
+        let task_index: HashMap<&str, usize> = tasks
+            .iter()
+            .enumerate()
+            .map(|(idx, task)| (task.id.as_str(), idx))
+            .collect();
+
+        // Walk the DAG level-by-level (Kahn's algorithm layering via
+        // `create_execution_plan`), so tasks with no dependency relationship
+        // between them are started concurrently (all activity futures for a
+        // level are launched before any is awaited), while tasks connected by
+        // an actual dependency edge are still sequenced level-to-level. This
+        // mirrors `AirflowIntegration::export_workflow`'s edge-aware export
+        // instead of flattening the DAG into `tasks()` insertion order.
+        let execution_plan = create_execution_plan(&workflow.dag).map_err(|e| {
+            WorkflowError::integration(
+                "temporal",
+                format!(
+                    "Cannot export a workflow whose DAG is not a valid DAG: {}",
+                    e
+                ),
+            )
+        })?;
+
+        for (level_num, level) in execution_plan.iter().enumerate() {
+            go_code.push_str(&format!("    // Level {}\n", level_num));
             go_code.push_str("    ao := workflow.ActivityOptions{\n");
             go_code.push_str("        StartToCloseTimeout: 1 * time.Minute,\n");
             go_code.push_str("    }\n");
             go_code.push_str(&format!(
-                "    ctx{} := workflow.WithActivityOptions(ctx, ao)\n",
-                idx
+                "    level{}Ctx := workflow.WithActivityOptions(ctx, ao)\n",
+                level_num
             ));
-            go_code.push_str(&format!(
-                "    err{} := workflow.ExecuteActivity(ctx{}, Task{}Activity).Get(ctx{}, nil)\n",
-                idx, idx, idx, idx
-            ));
-            go_code.push_str(&format!("    if err{} != nil {{\n", idx));
-            go_code.push_str(&format!("        return err{}\n", idx));
-            go_code.push_str("    }\n\n");
+
+            // Launch every activity in this level before waiting on any of
+            // them: `ExecuteActivity` returns a future immediately, so tasks
+            // with no dependency edge between them genuinely execute in
+            // parallel rather than being serialized.
+            for (slot, task_id) in level.iter().enumerate() {
+                let idx = task_index.get(task_id.as_str()).ok_or_else(|| {
+                    WorkflowError::integration(
+                        "temporal",
+                        format!("Execution plan referenced unknown task id '{}'", task_id),
+                    )
+                })?;
+                go_code.push_str(&format!(
+                    "    level{}Future{} := workflow.ExecuteActivity(level{}Ctx, Task{}Activity)\n",
+                    level_num, slot, level_num, idx
+                ));
+            }
+
+            for slot in 0..level.len() {
+                go_code.push_str(&format!(
+                    "    if err := level{}Future{}.Get(level{}Ctx, nil); err != nil {{\n",
+                    level_num, slot, level_num
+                ));
+                go_code.push_str("        return err\n");
+                go_code.push_str("    }\n");
+            }
+            go_code.push('\n');
         }
 
         go_code.push_str("    return nil\n");
@@ -203,14 +252,6 @@ impl TemporalIntegration {
     /// Deterministic task id used when reconstructing a sequential DAG on import.
     fn sequential_task_id(position: usize) -> String {
         format!("task-{}", position)
-    }
-
-    /// Extracts the optional shell command associated with a task, if its `config` carries one.
-    ///
-    /// A task opts into command execution by setting `config = {"command": "<shell command>"}`
-    /// (or including a `"command"` string field alongside other config keys).
-    fn task_command(task: &TaskNode) -> Option<&str> {
-        task.config.get("command").and_then(|v| v.as_str())
     }
 
     /// Escapes a string for embedding inside a Go double-quoted string literal.
@@ -403,6 +444,101 @@ mod tests {
 
         assert_eq!(imported.id, original.id);
         assert_eq!(imported.dag.task_count(), original.dag.task_count());
+    }
+
+    #[test]
+    fn test_export_honors_dependency_edges_sequential_chain() {
+        // t1 -> t2 -> t3: a strict chain must be exported as three separate
+        // levels, one activity per level.
+        let mut dag = WorkflowDag::new();
+        dag.add_task(task_with_command("t1", None)).expect("add t1");
+        dag.add_task(task_with_command("t2", None)).expect("add t2");
+        dag.add_task(task_with_command("t3", None)).expect("add t3");
+        dag.add_dependency("t1", "t2", TaskEdge::default())
+            .expect("add dep t1->t2");
+        dag.add_dependency("t2", "t3", TaskEdge::default())
+            .expect("add dep t2->t3");
+
+        let workflow = WorkflowDefinition {
+            id: "chain".to_string(),
+            name: "Chain".to_string(),
+            description: None,
+            version: "1.0.0".to_string(),
+            dag,
+        };
+
+        let go_code =
+            TemporalIntegration::export_workflow(&workflow).expect("export_workflow failed");
+
+        // Three distinct levels, one task each: level0Future0, level1Future0, level2Future0.
+        assert!(go_code.contains("level0Future0"));
+        assert!(go_code.contains("level1Future0"));
+        assert!(go_code.contains("level2Future0"));
+        // No level has a second slot (no parallel branch exists in a pure chain).
+        assert!(!go_code.contains("level0Future1"));
+        assert!(!go_code.contains("level1Future1"));
+        assert!(!go_code.contains("level2Future1"));
+    }
+
+    #[test]
+    fn test_export_parallelizes_independent_branches_within_a_level() {
+        // t1 -> {t2, t3} -> t4: t2 and t3 have no dependency edge between them
+        // and must land in the same execution level, both launched (futures
+        // created) before either is awaited.
+        let mut dag = WorkflowDag::new();
+        dag.add_task(task_with_command("t1", None)).expect("add t1");
+        dag.add_task(task_with_command("t2", None)).expect("add t2");
+        dag.add_task(task_with_command("t3", None)).expect("add t3");
+        dag.add_task(task_with_command("t4", None)).expect("add t4");
+        dag.add_dependency("t1", "t2", TaskEdge::default())
+            .expect("add dep t1->t2");
+        dag.add_dependency("t1", "t3", TaskEdge::default())
+            .expect("add dep t1->t3");
+        dag.add_dependency("t2", "t4", TaskEdge::default())
+            .expect("add dep t2->t4");
+        dag.add_dependency("t3", "t4", TaskEdge::default())
+            .expect("add dep t3->t4");
+
+        let workflow = WorkflowDefinition {
+            id: "diamond".to_string(),
+            name: "Diamond".to_string(),
+            description: None,
+            version: "1.0.0".to_string(),
+            dag,
+        };
+
+        let go_code =
+            TemporalIntegration::export_workflow(&workflow).expect("export_workflow failed");
+
+        // Level 1 must contain both parallel branches (t2 and t3), i.e. two
+        // future slots, and both futures must be started before either is
+        // waited on.
+        assert!(go_code.contains("level1Future0"));
+        assert!(go_code.contains("level1Future1"));
+
+        let start0 = go_code
+            .find("level1Future0 := workflow.ExecuteActivity")
+            .expect("level1Future0 must be started");
+        let start1 = go_code
+            .find("level1Future1 := workflow.ExecuteActivity")
+            .expect("level1Future1 must be started");
+        let get0 = go_code
+            .find("level1Future0.Get(")
+            .expect("level1Future0 must be awaited");
+        let get1 = go_code
+            .find("level1Future1.Get(")
+            .expect("level1Future1 must be awaited");
+
+        // Both futures are launched (in whatever order) strictly before
+        // either is awaited -- this is what makes the two branches run
+        // concurrently rather than being serialized.
+        assert!(start0 < get0 && start0 < get1);
+        assert!(start1 < get0 && start1 < get1);
+
+        // Exactly 3 levels total (t1 alone, {t2,t3} together, t4 alone).
+        assert!(go_code.contains("level0Future0"));
+        assert!(go_code.contains("level2Future0"));
+        assert!(!go_code.contains("level3Future0"));
     }
 
     #[test]

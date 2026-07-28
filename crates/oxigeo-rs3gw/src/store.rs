@@ -20,7 +20,6 @@ use oxigeo_zarr::storage::{Store, StoreKey};
 /// # Features
 /// - Supports all rs3gw backends (Local, S3, MinIO, GCS, Azure)
 /// - Optional deduplication for reducing storage costs
-/// - Optional ML-based caching for predictive prefetching
 /// - Optional encryption at rest (enable the `encryption` feature and attach
 ///   an [`EncryptionConfig`](crate::features::EncryptionConfig) via
 ///   [`Rs3gwStore::with_encryption`]). When configured, every object written

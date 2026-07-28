@@ -20,7 +20,7 @@ pub mod cache;
 
 pub mod cloud;
 
-use crate::error::{Result, StorageError};
+use crate::error::{Result, StorageError, ZarrError};
 use serde::{Deserialize, Serialize};
 
 /// Storage key - identifies a value in the store
@@ -108,6 +108,53 @@ pub trait Store: Send + Sync {
     /// # Errors
     /// Returns `StorageError::KeyNotFound` if the key doesn't exist
     fn get(&self, key: &StoreKey) -> Result<Vec<u8>>;
+
+    /// Returns the size, in bytes, of the value stored at `key`.
+    ///
+    /// The default implementation fetches the whole object and reports its
+    /// length; backends with cheap metadata (filesystem `stat`, HTTP/S3
+    /// `HEAD`/`Content-Length`) override this to avoid transferring data.
+    ///
+    /// # Errors
+    /// Returns `StorageError::KeyNotFound` if the key doesn't exist.
+    fn size(&self, key: &StoreKey) -> Result<u64> {
+        Ok(self.get(key)?.len() as u64)
+    }
+
+    /// Reads the byte range `[offset, offset + length)` from the value at
+    /// `key`.
+    ///
+    /// This is the primitive that makes Zarr v3 sharding cloud-efficient: a
+    /// reader can fetch just a shard's fixed-size index and then just the one
+    /// inner chunk it needs, rather than downloading the whole (potentially
+    /// gigabyte-sized) shard object. The default implementation falls back to
+    /// a full `get` followed by a slice; backends that support true ranged
+    /// reads (filesystem seek, HTTP/S3 `Range` header) override it.
+    ///
+    /// # Errors
+    /// Returns `StorageError::KeyNotFound` if the key is absent, or
+    /// [`ZarrError::OutOfBounds`] if `offset + length` exceeds the object
+    /// size.
+    fn get_range(&self, key: &StoreKey, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let data = self.get(key)?;
+        let start = usize::try_from(offset).map_err(|_| ZarrError::OutOfBounds {
+            message: format!("range offset {offset} does not fit in usize"),
+        })?;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| ZarrError::OutOfBounds {
+                message: format!("range end overflow: offset {start} + length {length}"),
+            })?;
+        if end > data.len() {
+            return Err(ZarrError::OutOfBounds {
+                message: format!(
+                    "requested range [{start}, {end}) exceeds object size {} for key {key}",
+                    data.len()
+                ),
+            });
+        }
+        Ok(data[start..end].to_vec())
+    }
 
     /// Sets a value in the store
     ///

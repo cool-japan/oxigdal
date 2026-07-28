@@ -42,7 +42,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-3d = "0.2.0"
+oxigeo-3d = "0.2.1"
 ```
 
 ### Feature Flags
@@ -51,7 +51,7 @@ Enable specific capabilities as needed:
 
 ```toml
 [dependencies]
-oxigeo-3d = { version = "0.2.0", features = ["async", "copc", "ept"] }
+oxigeo-3d = { version = "0.2.1", features = ["async", "copc", "ept"] }
 ```
 
 | Feature | Description |

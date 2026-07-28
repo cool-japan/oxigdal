@@ -2,11 +2,16 @@
 //!
 //! This module provides writers for Zarr v2 and v3 arrays.
 
+#[cfg(feature = "v2")]
+pub mod v2;
+
 #[cfg(feature = "v3")]
 pub mod v3;
 
 use crate::error::Result;
-use crate::storage::Store;
+
+#[cfg(feature = "v2")]
+pub use v2::ZarrWriterV2;
 
 #[cfg(feature = "v3")]
 pub use v3::ZarrV3Writer;
@@ -24,17 +29,4 @@ pub trait ZarrWriter {
     /// # Errors
     /// Returns error if finalization fails
     fn finalize(&mut self) -> Result<()>;
-}
-
-/// Zarr v2 writer
-pub struct ZarrWriterV2<S: Store> {
-    _store: S,
-}
-
-impl<S: Store> ZarrWriterV2<S> {
-    /// Creates a new v2 writer
-    #[must_use]
-    pub fn new(store: S) -> Self {
-        Self { _store: store }
-    }
 }

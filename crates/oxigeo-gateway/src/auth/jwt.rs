@@ -2,9 +2,11 @@
 
 use super::{AuthContext, AuthMethod, Authenticator, Identity};
 use crate::error::{GatewayError, Result};
+use dashmap::DashMap;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// JWT claims structure.
 #[derive(Debug, Serialize, Deserialize)]
@@ -15,6 +17,15 @@ pub struct Claims {
     pub iat: i64,
     /// Expiration timestamp
     pub exp: i64,
+    /// Not-before timestamp (token is invalid before this instant, RFC 7519 §4.1.5)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<i64>,
+    /// Audience (RFC 7519 §4.1.3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
+    /// JWT ID, used as the handle for revocation (RFC 7519 §4.1.7)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
     /// User email
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
@@ -30,20 +41,84 @@ pub struct Claims {
 }
 
 /// JWT authenticator.
+///
+/// Supports symmetric (HS256) and asymmetric (RS256/ES256) signing, audience and not-before
+/// validation, and real token revocation via an in-memory blacklist keyed on the token's
+/// `jti` claim.
 pub struct JwtAuthenticator {
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
+    algorithm: Algorithm,
     expiration: i64,
+    /// Expected audience; when set, tokens must carry a matching `aud` claim.
+    audience: Option<String>,
+    /// Revoked token ids mapped to their expiry (unix seconds), so entries can be pruned
+    /// once the underlying token would have expired anyway.
+    revoked: Arc<DashMap<String, i64>>,
 }
 
 impl JwtAuthenticator {
-    /// Creates a new JWT authenticator.
+    /// Creates a new HS256 (symmetric) JWT authenticator.
     pub fn new(secret: &[u8], expiration: u64) -> Self {
         Self {
             encoding_key: EncodingKey::from_secret(secret),
             decoding_key: DecodingKey::from_secret(secret),
+            algorithm: Algorithm::HS256,
             expiration: expiration as i64,
+            audience: None,
+            revoked: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Creates an RS256 (asymmetric) JWT authenticator from PEM-encoded RSA keys.
+    ///
+    /// Enables key rotation and multi-issuer/JWKS deployments where the signing key must not
+    /// be shared with verifiers.
+    pub fn new_rs256(
+        private_key_pem: &[u8],
+        public_key_pem: &[u8],
+        expiration: u64,
+    ) -> Result<Self> {
+        let encoding_key = EncodingKey::from_rsa_pem(private_key_pem)
+            .map_err(|e| GatewayError::ConfigError(format!("invalid RSA private key: {e}")))?;
+        let decoding_key = DecodingKey::from_rsa_pem(public_key_pem)
+            .map_err(|e| GatewayError::ConfigError(format!("invalid RSA public key: {e}")))?;
+        Ok(Self {
+            encoding_key,
+            decoding_key,
+            algorithm: Algorithm::RS256,
+            expiration: expiration as i64,
+            audience: None,
+            revoked: Arc::new(DashMap::new()),
+        })
+    }
+
+    /// Creates an ES256 (asymmetric) JWT authenticator from PEM-encoded EC keys.
+    pub fn new_es256(
+        private_key_pem: &[u8],
+        public_key_pem: &[u8],
+        expiration: u64,
+    ) -> Result<Self> {
+        let encoding_key = EncodingKey::from_ec_pem(private_key_pem)
+            .map_err(|e| GatewayError::ConfigError(format!("invalid EC private key: {e}")))?;
+        let decoding_key = DecodingKey::from_ec_pem(public_key_pem)
+            .map_err(|e| GatewayError::ConfigError(format!("invalid EC public key: {e}")))?;
+        Ok(Self {
+            encoding_key,
+            decoding_key,
+            algorithm: Algorithm::ES256,
+            expiration: expiration as i64,
+            audience: None,
+            revoked: Arc::new(DashMap::new()),
+        })
+    }
+
+    /// Sets the expected audience. When set, [`Self::verify_token`] rejects tokens whose
+    /// `aud` claim does not match, and [`Self::create_token`] stamps this audience.
+    #[must_use]
+    pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
+        self.audience = Some(audience.into());
+        self
     }
 
     /// Creates a JWT token for the given identity.
@@ -54,6 +129,9 @@ impl JwtAuthenticator {
             sub: identity.user_id.clone(),
             iat: now,
             exp: now + self.expiration,
+            nbf: Some(now),
+            aud: self.audience.clone(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
             email: identity.email.clone(),
             roles: identity.roles.iter().cloned().collect(),
             permissions: identity.permissions.iter().cloned().collect(),
@@ -64,19 +142,66 @@ impl JwtAuthenticator {
                 .collect(),
         };
 
-        let token = encode(&Header::new(Algorithm::HS256), &claims, &self.encoding_key)?;
+        let token = encode(&Header::new(self.algorithm), &claims, &self.encoding_key)?;
 
         Ok(token)
     }
 
-    /// Verifies and decodes a JWT token.
+    /// Verifies and decodes a JWT token, enforcing expiry, not-before, audience (if
+    /// configured) and revocation.
     pub fn verify_token(&self, token: &str) -> Result<Claims> {
-        let mut validation = Validation::new(Algorithm::HS256);
+        let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = true;
+        validation.validate_nbf = true;
+
+        match &self.audience {
+            Some(aud) => validation.set_audience(&[aud]),
+            // jsonwebtoken validates `aud` by default; disable when we have no expectation so
+            // tokens without an audience are still accepted.
+            None => validation.validate_aud = false,
+        }
 
         let token_data = decode::<Claims>(token, &self.decoding_key, &validation)?;
 
+        // Reject revoked tokens (checked by jti). Prune expired revocation entries lazily.
+        if let Some(jti) = token_data.claims.jti.as_ref() {
+            self.prune_revoked();
+            if self.revoked.contains_key(jti) {
+                return Err(GatewayError::InvalidToken(
+                    "token has been revoked".to_string(),
+                ));
+            }
+        }
+
         Ok(token_data.claims)
+    }
+
+    /// Adds a token's `jti` to the revocation blacklist. Returns an error if the token has no
+    /// `jti` claim (older tokens minted before revocation support) since such a token cannot
+    /// be individually revoked.
+    pub fn revoke_token(&self, token: &str) -> Result<()> {
+        // Decode without rejecting on expiry so an about-to-expire token can still be revoked,
+        // but keep signature verification so we never blacklist attacker-supplied garbage.
+        let mut validation = Validation::new(self.algorithm);
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation.validate_aud = false;
+
+        let token_data = decode::<Claims>(token, &self.decoding_key, &validation)?;
+        let jti = token_data.claims.jti.ok_or_else(|| {
+            GatewayError::InvalidToken(
+                "token has no 'jti' claim and cannot be revoked individually".to_string(),
+            )
+        })?;
+
+        self.revoked.insert(jti, token_data.claims.exp);
+        Ok(())
+    }
+
+    /// Removes revocation entries whose token would already have expired.
+    fn prune_revoked(&self) {
+        let now = chrono::Utc::now().timestamp();
+        self.revoked.retain(|_, exp| *exp > now);
     }
 
     /// Refreshes a JWT token.
@@ -97,6 +222,9 @@ impl JwtAuthenticator {
             sub: claims.sub,
             iat: now,
             exp: now + self.expiration,
+            nbf: Some(now),
+            aud: self.audience.clone().or(claims.aud),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
             email: claims.email,
             roles: claims.roles,
             permissions: claims.permissions,
@@ -104,7 +232,7 @@ impl JwtAuthenticator {
         };
 
         let token = encode(
-            &Header::new(Algorithm::HS256),
+            &Header::new(self.algorithm),
             &new_claims,
             &self.encoding_key,
         )?;
@@ -167,12 +295,8 @@ impl Authenticator for JwtAuthenticator {
         self.refresh_token(token)
     }
 
-    async fn revoke(&self, _token: &str) -> Result<()> {
-        // JWT tokens are stateless and cannot be revoked without a blacklist
-        // This would require maintaining a revocation list
-        Err(GatewayError::InvalidRequest(
-            "JWT revocation requires a token blacklist".to_string(),
-        ))
+    async fn revoke(&self, token: &str) -> Result<()> {
+        self.revoke_token(token)
     }
 }
 
@@ -215,6 +339,9 @@ mod tests {
             sub: String::new(),
             iat: 0,
             exp: 0,
+            nbf: None,
+            aud: None,
+            jti: None,
             email: None,
             roles: Vec::new(),
             permissions: Vec::new(),
@@ -274,6 +401,50 @@ mod tests {
         // New token should be valid
         let claims = auth.verify_token(&new_token);
         assert!(claims.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_revocation_blocks_token() {
+        let auth = create_test_authenticator();
+        let identity = Identity::new("user123".to_string());
+        let token = auth.create_token(&identity).expect("create");
+
+        // Valid before revocation.
+        assert!(auth.verify_token(&token).is_ok());
+
+        // Revoke succeeds (real blacklist), and the token no longer verifies.
+        assert!(auth.revoke(&token).await.is_ok());
+        assert!(
+            auth.verify_token(&token).is_err(),
+            "a revoked token must no longer verify"
+        );
+        assert!(auth.authenticate(&token).await.is_err());
+    }
+
+    #[test]
+    fn test_audience_enforced() {
+        let auth =
+            JwtAuthenticator::new(b"secret_key_material_here", 3600).with_audience("api.oxigeo");
+        let identity = Identity::new("user123".to_string());
+        let token = auth.create_token(&identity).expect("create");
+
+        // Same audience verifies.
+        assert!(auth.verify_token(&token).is_ok());
+
+        // A verifier expecting a different audience rejects it.
+        let other =
+            JwtAuthenticator::new(b"secret_key_material_here", 3600).with_audience("other.service");
+        assert!(other.verify_token(&token).is_err());
+    }
+
+    #[test]
+    fn test_claims_carry_nbf_and_jti() {
+        let auth = create_test_authenticator();
+        let identity = Identity::new("user123".to_string());
+        let token = auth.create_token(&identity).expect("create");
+        let claims = auth.verify_token(&token).expect("verify");
+        assert!(claims.nbf.is_some(), "nbf must be stamped");
+        assert!(claims.jti.is_some(), "jti must be stamped for revocation");
     }
 
     #[tokio::test]

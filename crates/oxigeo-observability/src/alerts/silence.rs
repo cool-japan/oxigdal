@@ -73,7 +73,11 @@ impl SilenceRule {
 
     /// Add a regex matcher to the silence rule.
     #[must_use]
-    pub fn with_regex_matcher(mut self, name: impl Into<String>, pattern: impl Into<String>) -> Self {
+    pub fn with_regex_matcher(
+        mut self,
+        name: impl Into<String>,
+        pattern: impl Into<String>,
+    ) -> Self {
         self.matchers.push(SilenceMatcher {
             name: name.into(),
             value: pattern.into(),
@@ -115,7 +119,11 @@ impl SilenceRule {
                 None => false,
             };
 
-            let final_match = if matcher.is_negative { !matches } else { matches };
+            let final_match = if matcher.is_negative {
+                !matches
+            } else {
+                matches
+            };
             if !final_match {
                 return false;
             }
@@ -177,7 +185,9 @@ impl SilenceManager {
     /// Clean up expired silences.
     pub fn cleanup_expired(&self) {
         let now = Utc::now();
-        self.silences.write().retain(|_, s| s.ends_at > now || s.active);
+        self.silences
+            .write()
+            .retain(|_, s| s.ends_at > now || s.active);
     }
 }
 

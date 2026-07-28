@@ -1,8 +1,8 @@
 # TODO: oxigeo-drivers/hdf5
 
 > **Purpose:** HDF5 driver for OxiGeo - Pure Rust minimal HDF5 with optional full C-binding support
-> **Status (2026-05-16):** 11,850 Rust LoC (incl. tests) - 160 tests - 1 verified behavior gap (Superblock V2/V3 rejected)
-> **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
+> **Status (2026-07-28):** 11,850 Rust LoC (incl. tests, as of last count) - 233 tests (all-features) - Superblock V2/V3 (done 2026-05-31), GZIP/shuffle/Fletcher32 chunk filters, and a contiguous-data hyperslab API are now implemented; full B-tree-driven chunked reads and VLen string (global-heap) support remain open below
+> **Roadmap:** v0.1.7 - v0.2.1 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
@@ -17,6 +17,7 @@
   - **Prerequisites:** None - error path returns `feature_not_available`, replacement is purely additive.
 
 - [ ] Implement chunked dataset reading via B-tree traversal
+  - **Re-verified 2026-07-28 — partially evolved, core gap remains:** `Hdf5Reader::decode_chunk(path, raw_chunk)` now exists (`src/reader.rs`) and is a real per-chunk primitive — it looks up the dataset's chunk dimensions and filter pipeline from real metadata and runs `pipeline.apply_reverse(raw_chunk, &datatype, &chunk_dims)` (or passthrough with no filters) to unfilter a chunk the *caller* supplies. What's still missing is the automatic path: locating a chunk's file offset/size via B-tree v1 traversal and driving that from a high-level "read this whole chunked dataset" call — no `btree_v1.rs` and no caller of `decode_chunk` that walks the index exists yet.
   - **Verified gap:** `src/chunking.rs` (18.9K) defines `ChunkIndex` types but the path from `Hdf5Reader` to actual chunked-dataset values is incomplete. `rg -n "fn .*read.*chunk|btree.*search|btree.*v[12]" -g '*.rs' src/` shows scaffolding only. `src/dataset.rs:370` defines `Dataset::chunked()` for builder use; the reader-side decode is not wired.
   - **Goal:** Read a chunked HDF5 dataset (the predominant layout for any non-trivial dataset; contiguous layout is only for small flat arrays).
   - **Design:** Per HDF5 spec §IV.A.2.b (B-tree v1, Chunked Raw Data Nodes): each dataset with chunked layout has a B-tree whose internal nodes index chunks by `[chunk_dim_size + 1]`-tuple keys (filter mask in last slot). Traverse: at each node, binary-search keys to find child containing target chunk; recurse until leaf; leaf entry gives `[size_on_disk, filter_mask, file_offset]`. Read that many bytes from file, pipe through filter chain (gzip, shuffle, fletcher32) in reverse order specified in dataset's Filter Pipeline message.
@@ -25,16 +26,12 @@
   - **Risk:** B-tree v1 has subtle key comparison rules (lexicographic on chunk_offset tuple, with filter_mask ignored in comparison); validate against real fixtures.
   - **Prerequisites:** Superblock V2/V3 item above (most chunked HDF5 files are 1.10+ vintage).
 
-- [ ] Add GZIP decompression for chunked datasets via oxiarc-archive
-  - **Verified gap:** `Cargo.toml` already declares `oxiarc-archive = { workspace = true }`. `src/filters/mod.rs` lists filter modules (bitpack, nbit, scale_offset, szip) - no gzip / deflate filter module. `rg -n "gzip|deflate" -g '*.rs' src/filters/` shows no occurrence beyond szip/scale_offset comments.
-  - **Goal:** Reading a chunked dataset with HDF5 filter id 1 (deflate / gzip) produces correct decompressed values.
-  - **Design:** Per HDF5 spec §V.A (Filter Pipeline Message), filter id 1 = deflate (RFC 1951 raw deflate, not gzip-wrapped). Use `oxiarc-deflate` (already used by oxigeo-netcdf, see netcdf Cargo.toml) - if not in workspace, use `oxiarc-archive::gzip::decompress` and strip wrapper. Filter signature: `decompress(input: &[u8], cd_values: &[u32]) -> Vec<u8>`. The deflate filter has one client data value: compression level (input only - ignored on decompress).
-  - **Files:** (new) `src/filters/gzip.rs`, `src/filters/mod.rs` (register)
-  - **Tests:** (proposed) `test_gzip_filter_round_trip`, `test_gzip_filter_decompress_known_fixture`, `test_gzip_filter_pipeline_order`, `test_gzip_filter_handles_empty_chunk`
-  - **Risk:** HDF5 deflate is bare RFC1951, no zlib header/checksum; do not call zlib-wrapped APIs.
-  - **Prerequisites:** Chunked reading item above (filters apply during chunk decode).
+- [x] Add GZIP decompression for chunked datasets via oxiarc-archive
+  - **Done:** `src/filters/mod.rs` now implements `FilterId::Deflate` end-to-end: `apply_deflate_forward` calls `oxiarc_archive::gzip::compress(data, level)` and `apply_deflate_reverse` calls `oxiarc_archive::gzip::decompress(&mut reader)`, both dispatched from `Pipeline::apply_reverse`/forward via the `apply_filter_reverse`/`apply_filter_forward` match on `FilterId`. `standard_compression(level, element_size)` builds a shuffle+deflate pipeline by default. No `flate2` dependency — matches the COOLJAPAN Pure-Rust `oxiarc-*` policy.
+  - **Files:** `src/filters/mod.rs`.
 
 - [ ] Implement variable-length string reading (VLen string heap dereference)
+  - **Re-verified 2026-07-28:** Still open — no `src/global_heap.rs`, no `global_heap`/`GlobalHeap` symbol anywhere in `src/`.
   - **Verified gap:** `src/datatype.rs:139` declares `VarLen { base_type }` and `src/datatype.rs:161` declares `VarString { .. }`, both with stub size `16` bytes (heap reference). However the actual heap dereference path on read is not present. `rg -n "global_heap|heap_id|vlen_data" -g '*.rs' src/` returns no matches.
   - **Goal:** Reading a dataset with `H5T_STRING` + `H5T_STR_NULLTERM` + variable size returns the actual string contents per element.
   - **Design:** Per HDF5 spec §III.E (Global Heap): VLen values are 16-byte heap references `[length(4) || global_heap_address(o) || heap_index(4)]`. Read the global heap collection at the referenced address (variable-length blocks indexed by `heap_index`). For VarString, treat the heap-resolved bytes as UTF-8.
@@ -43,26 +40,19 @@
   - **Risk:** Global Heap collection layout requires careful offset arithmetic.
   - **Prerequisites:** Chunked reading not strictly required; VLen data can be in contiguous datasets too.
 
-- [ ] Implement hyperslab selection (partial / sub-region reading)
-  - **Verified gap:** `src/vds.rs` has `Hyperslab` type for VDS mappings (`src/vds.rs:29 Hyperslab::new`), but high-level `Hdf5Reader` API takes no slice arguments. `rg -n "fn read.*slice|fn read_subset|fn read_hyperslab" -g '*.rs' src/reader.rs` returns no public hyperslab method on the reader.
-  - **Goal:** Read e.g. `dataset[10..100, 50..200]` directly without materializing the whole dataset.
-  - **Design:** Compose the user-supplied `Hyperslab(start, count, stride, block)` with chunk-grid layout: determine intersecting chunks, decode each, copy intersecting region into destination buffer. Use existing `Hyperslab::intersects` (`src/vds.rs:126`).
-  - **Files:** `src/reader.rs` (new `read_hyperslab` API), `src/chunking.rs`
-  - **Tests:** (proposed) `test_hyperslab_within_single_chunk`, `test_hyperslab_spanning_two_chunks`, `test_hyperslab_with_stride`, `test_hyperslab_contiguous_layout`
-  - **Risk:** Stride > 1 within a chunk requires picking sparse elements; off-by-one prone.
-  - **Prerequisites:** Chunked reading first.
+- [x] Implement hyperslab selection (partial / sub-region reading)
+  - **Done (contiguous/decoded data; chunk-aware path still open):** The literal verified gap — "high-level `Hdf5Reader` API takes no slice arguments" — is resolved: `pub fn read_slice(&mut self, path: &str, start: &[usize], count: &[usize]) -> Result<Vec<u8>>` now exists on `Hdf5Reader` (`src/reader.rs`), validates the slice against dataset bounds, and gathers the sub-region via `gather_contiguous_slice`. Honest limitation: it only works when `dataset.data()` is already decoded to an in-memory byte buffer; for a dataset whose datatype/layout isn't decoded that way (in particular genuinely chunked datasets, pending the B-tree-traversal item above), it returns a clear `feature_not_available` error rather than wrong or partial data. Efficient chunk-aware hyperslab reads (touching only intersecting chunks, per the original design) remain future work.
+  - **Files:** `src/reader.rs`.
 
 ## Medium Priority (planned - design sketched)
 
-- [ ] Shuffle filter (filter id 2) for chunked data
-  - **Goal:** Byte-shuffle pre-processing before compression; near-universal in NetCDF-4 files.
-  - **Files:** (new) `src/filters/shuffle.rs`
-  - **Why deferred:** Pair with gzip filter; same scope.
+- [x] Shuffle filter (filter id 2) for chunked data
+  - **Done:** `apply_shuffle_forward`/`apply_shuffle_reverse` in `src/filters/mod.rs` implement the real byte-transpose algorithm (interleave/de-interleave by `element_size`), dispatched from the filter pipeline via `FilterId::Shuffle`. `Filter::shuffle(element_size)` is used by default in `Pipeline::standard_compression`.
+  - **Files:** `src/filters/mod.rs`.
 
-- [ ] Fletcher32 checksum (filter id 3) verification
-  - **Goal:** Validate data integrity in chunked datasets.
-  - **Files:** (new) `src/filters/fletcher32.rs`
-  - **Why deferred:** Part of filter pipeline expansion.
+- [x] Fletcher32 checksum (filter id 3) verification
+  - **Done:** `apply_fletcher32_forward`/`apply_fletcher32_reverse` in `src/filters/mod.rs` compute and append/verify a real Fletcher-32 checksum (`calculate_fletcher32`), returning `Hdf5Error::ChecksumMismatch { expected, actual }` on mismatch rather than silently accepting corrupt data. `Pipeline::with_checksum()` builds a Fletcher32-only pipeline.
+  - **Files:** `src/filters/mod.rs`.
 
 - [ ] Compound datatype reading (structs with named fields)
   - **Goal:** Read structured records; `src/datatype.rs:117` already declares `Compound { members: Vec<CompoundMember> }`.
@@ -121,7 +111,7 @@
 - **Blocked by:** None.
 
 ## Recently completed (kept verbatim from previous TODO.md)
-_(Previous TODO.md had no `[x]` entries.)_
+_(Previous TODO.md had no `[x]` entries as of 2026-05-16, aside from the Superblock V2/V3 item completed 2026-05-31. This 2026-07-28 audit additionally found GZIP/shuffle/Fletcher32 chunk filters and a contiguous-data `read_slice` hyperslab API already implemented in source.)_
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

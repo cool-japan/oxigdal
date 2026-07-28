@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// Cache errors
 #[derive(Debug, Error)]
@@ -30,6 +30,10 @@ pub enum CacheError {
     /// Cache is full
     #[error("Cache is full")]
     Full,
+
+    /// An internal lock was poisoned by a panic in another thread
+    #[error("Cache lock poisoned (a panic occurred while a lock was held)")]
+    Poisoned,
 }
 
 /// Result type for cache operations
@@ -175,6 +179,9 @@ pub struct CacheStats {
 
     /// Number of disk writes
     pub disk_writes: u64,
+
+    /// Number of cache-insertion failures (memory-promotion or disk-write errors)
+    pub put_failures: u64,
 }
 
 impl CacheStats {
@@ -282,8 +289,13 @@ impl TileCache {
         if self.config.disk_cache_dir.is_some()
             && let Some(data) = self.get_from_disk(key)
         {
-            // Promote to memory cache
-            let _ = self.put_in_memory(key.clone(), data.clone());
+            // Promote to memory cache. A failure here is non-fatal (the disk hit
+            // is still returned) but must not be silently swallowed, or a broken
+            // memory cache would degrade to perpetual disk-only reads unnoticed.
+            if let Err(e) = self.put_in_memory(key.clone(), data.clone()) {
+                warn!("Failed to promote disk-cache hit into memory cache: {}", e);
+                self.record_put_failure();
+            }
             self.record_hit();
             return Some(data);
         }
@@ -299,9 +311,15 @@ impl TileCache {
         // Store in memory cache
         self.put_in_memory(key.clone(), data.clone())?;
 
-        // Store in disk cache if enabled
-        if self.config.disk_cache_dir.is_some() {
-            let _ = self.put_on_disk(&key, &data);
+        // Store in disk cache if enabled. A disk write failure (e.g. disk full or
+        // permission denied) must not fail the overall put — the tile is already
+        // in memory — but it must be surfaced so operators can detect a broken
+        // disk cache instead of silent perpetual disk-cache misses.
+        if self.config.disk_cache_dir.is_some()
+            && let Err(e) = self.put_on_disk(&key, &data)
+        {
+            warn!("Failed to write tile to disk cache ({}): {}", key, e);
+            self.record_put_failure();
         }
 
         Ok(())
@@ -405,10 +423,19 @@ impl TileCache {
     }
 
     /// Clear all cached entries
+    ///
+    /// If an internal lock is poisoned (a prior panic occurred while it was
+    /// held), the poisoned guard is recovered via `into_inner()` so the clear
+    /// still takes effect, and the poisoning is surfaced via a warning rather
+    /// than silently leaving stale state behind.
     pub fn clear(&self) -> CacheResult<()> {
-        // Clear memory cache
-        if let Ok(mut cache) = self.memory_cache.lock() {
-            cache.clear();
+        // Clear memory cache, recovering from a poisoned lock.
+        match self.memory_cache.lock() {
+            Ok(mut cache) => cache.clear(),
+            Err(poison) => {
+                warn!("memory_cache lock poisoned during clear(); recovering and clearing");
+                poison.into_inner().clear();
+            }
         }
 
         self.update_memory_usage(|_| 0);
@@ -421,9 +448,13 @@ impl TileCache {
             std::fs::create_dir_all(dir)?;
         }
 
-        // Reset stats
-        if let Ok(mut stats) = self.stats.lock() {
-            *stats = CacheStats::default();
+        // Reset stats, recovering from a poisoned lock.
+        match self.stats.lock() {
+            Ok(mut stats) => *stats = CacheStats::default(),
+            Err(poison) => {
+                warn!("stats lock poisoned during clear(); recovering and resetting");
+                *poison.into_inner() = CacheStats::default();
+            }
         }
 
         debug!("Cache cleared");
@@ -431,13 +462,29 @@ impl TileCache {
     }
 
     /// Get cache statistics
+    ///
+    /// On lock poisoning, the last-known stats are recovered (they remain valid
+    /// after a panic) and a warning is emitted, instead of silently returning a
+    /// zeroed default that would hide the underlying fault from operators.
     pub fn stats(&self) -> CacheStats {
-        self.stats.lock().map(|s| s.clone()).unwrap_or_default()
+        match self.stats.lock() {
+            Ok(stats) => stats.clone(),
+            Err(poison) => {
+                warn!("stats lock poisoned; returning last-known stats");
+                poison.into_inner().clone()
+            }
+        }
     }
 
     /// Get current memory usage
     fn get_memory_usage(&self) -> usize {
-        self.memory_usage.lock().map(|u| *u).unwrap_or(0)
+        match self.memory_usage.lock() {
+            Ok(usage) => *usage,
+            Err(poison) => {
+                warn!("memory_usage lock poisoned; returning last-known usage");
+                *poison.into_inner()
+            }
+        }
     }
 
     /// Update memory usage
@@ -505,6 +552,15 @@ impl TileCache {
             && let Ok(mut stats) = self.stats.lock()
         {
             stats.disk_writes += 1;
+        }
+    }
+
+    /// Record a cache-insertion failure (memory promotion or disk write)
+    fn record_put_failure(&self) {
+        if self.config.enable_stats
+            && let Ok(mut stats) = self.stats.lock()
+        {
+            stats.put_failures += 1;
         }
     }
 }

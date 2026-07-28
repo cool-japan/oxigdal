@@ -4,7 +4,7 @@
 //! rasters from time series including median, mean, max NDVI, and quality-weighted composites.
 
 use crate::error::{Result, TemporalError};
-use crate::timeseries::TimeSeriesRaster;
+use crate::timeseries::{TemporalRasterEntry, TimeSeriesRaster};
 use scirs2_core::ndarray::Array3;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -95,6 +95,51 @@ impl CompositeResult {
     pub fn with_quality(mut self, quality: Array3<f64>) -> Self {
         self.quality = Some(quality);
         self
+    }
+}
+
+/// Returns `true` if an entry passes the configured cloud-cover filter.
+///
+/// Entries with no recorded cloud cover, or when no threshold is configured,
+/// always pass.
+fn entry_passes_cloud_filter(entry: &TemporalRasterEntry, config: &CompositingConfig) -> bool {
+    match (config.max_cloud_cover, entry.metadata.cloud_cover) {
+        (Some(max_cc), Some(cc)) => cc <= max_cc,
+        _ => true,
+    }
+}
+
+/// Returns `true` if `value` is a valid (non-NaN, non-nodata) sample under the
+/// configured `nodata` value.
+fn value_is_valid(value: f64, config: &CompositingConfig) -> bool {
+    if value.is_nan() {
+        return false;
+    }
+    match config.nodata {
+        Some(nodata) if !nodata.is_nan() => value != nodata,
+        _ => true,
+    }
+}
+
+/// Replaces any pixel that received zero valid observations (still holding the
+/// `±infinity` seed used by max/min reductions) with the configured `nodata`
+/// value, or `NaN` if none is configured, so downstream consumers never see a
+/// raw infinity sentinel.
+fn replace_empty_pixels(
+    composite: &mut Array3<f64>,
+    count: &Array3<usize>,
+    config: &CompositingConfig,
+) {
+    let fill = config.nodata.unwrap_or(f64::NAN);
+    let (h, w, b) = composite.dim();
+    for i in 0..h {
+        for j in 0..w {
+            for k in 0..b {
+                if count[[i, j, k]] == 0 {
+                    composite[[i, j, k]] = fill;
+                }
+            }
+        }
     }
 }
 
@@ -237,10 +282,7 @@ impl TemporalCompositor {
     }
 
     /// Maximum value composite
-    fn max_composite(
-        ts: &TimeSeriesRaster,
-        _config: &CompositingConfig,
-    ) -> Result<CompositeResult> {
+    fn max_composite(ts: &TimeSeriesRaster, config: &CompositingConfig) -> Result<CompositeResult> {
         if ts.is_empty() {
             return Err(TemporalError::insufficient_data("Empty time series"));
         }
@@ -256,9 +298,12 @@ impl TemporalCompositor {
             for j in 0..width {
                 for k in 0..n_bands {
                     for entry in ts.entries().values() {
+                        if !entry_passes_cloud_filter(entry, config) {
+                            continue;
+                        }
                         if let Some(data) = &entry.data {
                             let value = data[[i, j, k]];
-                            if !value.is_nan() {
+                            if value_is_valid(value, config) {
                                 if value > composite[[i, j, k]] {
                                     composite[[i, j, k]] = value;
                                 }
@@ -270,15 +315,17 @@ impl TemporalCompositor {
             }
         }
 
+        // Any pixel with no valid observations still holds NEG_INFINITY; map it
+        // back to the configured nodata (or NaN) so callers never see a raw
+        // -inf sentinel.
+        replace_empty_pixels(&mut composite, &count, config);
+
         info!("Created maximum value composite");
         Ok(CompositeResult::new(composite, count))
     }
 
     /// Minimum value composite
-    fn min_composite(
-        ts: &TimeSeriesRaster,
-        _config: &CompositingConfig,
-    ) -> Result<CompositeResult> {
+    fn min_composite(ts: &TimeSeriesRaster, config: &CompositingConfig) -> Result<CompositeResult> {
         if ts.is_empty() {
             return Err(TemporalError::insufficient_data("Empty time series"));
         }
@@ -294,9 +341,12 @@ impl TemporalCompositor {
             for j in 0..width {
                 for k in 0..n_bands {
                     for entry in ts.entries().values() {
+                        if !entry_passes_cloud_filter(entry, config) {
+                            continue;
+                        }
                         if let Some(data) = &entry.data {
                             let value = data[[i, j, k]];
-                            if !value.is_nan() {
+                            if value_is_valid(value, config) {
                                 if value < composite[[i, j, k]] {
                                     composite[[i, j, k]] = value;
                                 }
@@ -307,6 +357,11 @@ impl TemporalCompositor {
                 }
             }
         }
+
+        // Any pixel with no valid observations still holds INFINITY; map it back
+        // to the configured nodata (or NaN) so callers never see a raw +inf
+        // sentinel.
+        replace_empty_pixels(&mut composite, &count, config);
 
         info!("Created minimum value composite");
         Ok(CompositeResult::new(composite, count))
@@ -375,7 +430,7 @@ impl TemporalCompositor {
     /// Quality-weighted composite
     fn quality_weighted_composite(
         ts: &TimeSeriesRaster,
-        _config: &CompositingConfig,
+        config: &CompositingConfig,
     ) -> Result<CompositeResult> {
         if ts.is_empty() {
             return Err(TemporalError::insufficient_data("Empty time series"));
@@ -390,6 +445,10 @@ impl TemporalCompositor {
         let mut weight_sum: Array3<f64> = Array3::zeros((height, width, n_bands));
 
         for entry in ts.entries().values() {
+            if !entry_passes_cloud_filter(entry, config) {
+                continue;
+            }
+
             let weight = entry.metadata.quality_score.unwrap_or(1.0) as f64;
 
             if let Some(data) = &entry.data {
@@ -397,7 +456,7 @@ impl TemporalCompositor {
                     for j in 0..width {
                         for k in 0..n_bands {
                             let value = data[[i, j, k]];
-                            if !value.is_nan() {
+                            if value_is_valid(value, config) {
                                 composite[[i, j, k]] += value * weight;
                                 weight_sum[[i, j, k]] += weight;
                                 count[[i, j, k]] += 1;
@@ -418,6 +477,11 @@ impl TemporalCompositor {
                 }
             }
         }
+
+        // Pixels with no valid observations still hold the 0.0 accumulator seed,
+        // which is indistinguishable from a genuine zero measurement; map them
+        // to the configured nodata (or NaN) instead.
+        replace_empty_pixels(&mut composite, &count, config);
 
         info!("Created quality-weighted composite");
         Ok(CompositeResult::new(composite, count))
@@ -497,5 +561,167 @@ impl TemporalCompositor {
 
         info!("Created last valid value composite");
         Ok(CompositeResult::new(composite, count))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::timeseries::TemporalMetadata;
+    use chrono::{DateTime, NaiveDate, Utc};
+    use scirs2_core::ndarray::Array3;
+
+    fn ts_at(day: u32) -> DateTime<Utc> {
+        let date = NaiveDate::from_ymd_opt(2024, 1, day).expect("valid date");
+        let ndt = date.and_hms_opt(0, 0, 0).expect("valid time");
+        DateTime::from_naive_utc_and_offset(ndt, Utc)
+    }
+
+    fn meta(day: u32, cloud: Option<f32>, quality: Option<f32>) -> TemporalMetadata {
+        let date = NaiveDate::from_ymd_opt(2024, 1, day).expect("valid date");
+        let mut m = TemporalMetadata::new(ts_at(day), date);
+        if let Some(c) = cloud {
+            m = m.with_cloud_cover(c);
+        }
+        if let Some(q) = quality {
+            m = m.with_quality_score(q);
+        }
+        m
+    }
+
+    /// 1x1x1 raster holding a single value.
+    fn scalar_raster(v: f64) -> Array3<f64> {
+        Array3::from_elem((1, 1, 1), v)
+    }
+
+    #[test]
+    fn test_max_composite_respects_cloud_filter() {
+        let mut ts = TimeSeriesRaster::new();
+        // Cloudy scene has the highest value; it must be filtered out.
+        ts.add_raster(meta(1, Some(90.0), None), scalar_raster(100.0))
+            .unwrap();
+        ts.add_raster(meta(2, Some(5.0), None), scalar_raster(42.0))
+            .unwrap();
+
+        let config = CompositingConfig {
+            method: CompositingMethod::Maximum,
+            max_cloud_cover: Some(20.0),
+            nodata: None,
+            ..CompositingConfig::default()
+        };
+
+        let result = TemporalCompositor::composite(&ts, &config).unwrap();
+        // Only the clear scene (42.0) should have been considered.
+        assert_eq!(result.data[[0, 0, 0]], 42.0);
+        assert_eq!(result.count[[0, 0, 0]], 1);
+    }
+
+    #[test]
+    fn test_min_composite_respects_cloud_filter() {
+        let mut ts = TimeSeriesRaster::new();
+        ts.add_raster(meta(1, Some(90.0), None), scalar_raster(1.0))
+            .unwrap();
+        ts.add_raster(meta(2, Some(5.0), None), scalar_raster(42.0))
+            .unwrap();
+
+        let config = CompositingConfig {
+            method: CompositingMethod::Minimum,
+            max_cloud_cover: Some(20.0),
+            nodata: None,
+            ..CompositingConfig::default()
+        };
+
+        let result = TemporalCompositor::composite(&ts, &config).unwrap();
+        assert_eq!(result.data[[0, 0, 0]], 42.0);
+        assert_eq!(result.count[[0, 0, 0]], 1);
+    }
+
+    #[test]
+    fn test_max_composite_all_invalid_yields_nodata_not_infinity() {
+        let mut ts = TimeSeriesRaster::new();
+        ts.add_raster(meta(1, None, None), scalar_raster(f64::NAN))
+            .unwrap();
+        ts.add_raster(meta(2, None, None), scalar_raster(f64::NAN))
+            .unwrap();
+
+        let config = CompositingConfig {
+            method: CompositingMethod::Maximum,
+            max_cloud_cover: None,
+            nodata: Some(-9999.0),
+            ..CompositingConfig::default()
+        };
+
+        let result = TemporalCompositor::composite(&ts, &config).unwrap();
+        let v = result.data[[0, 0, 0]];
+        assert!(
+            v.is_finite() && (v - (-9999.0)).abs() < 1e-9,
+            "all-invalid pixel must become nodata, got {v}"
+        );
+        assert_eq!(result.count[[0, 0, 0]], 0);
+    }
+
+    #[test]
+    fn test_min_composite_all_invalid_yields_nan_when_no_nodata() {
+        let mut ts = TimeSeriesRaster::new();
+        ts.add_raster(meta(1, None, None), scalar_raster(f64::NAN))
+            .unwrap();
+
+        let config = CompositingConfig {
+            method: CompositingMethod::Minimum,
+            max_cloud_cover: None,
+            nodata: None,
+            ..CompositingConfig::default()
+        };
+
+        let result = TemporalCompositor::composite(&ts, &config).unwrap();
+        let v = result.data[[0, 0, 0]];
+        assert!(
+            v.is_nan(),
+            "all-invalid pixel with no nodata must become NaN, not +inf, got {v}"
+        );
+    }
+
+    #[test]
+    fn test_max_composite_honors_nodata_sentinel() {
+        let mut ts = TimeSeriesRaster::new();
+        // The nodata sentinel (999.0) is the numerically largest value but must
+        // be ignored so the real maximum (10.0) wins.
+        ts.add_raster(meta(1, None, None), scalar_raster(999.0))
+            .unwrap();
+        ts.add_raster(meta(2, None, None), scalar_raster(10.0))
+            .unwrap();
+
+        let config = CompositingConfig {
+            method: CompositingMethod::Maximum,
+            max_cloud_cover: None,
+            nodata: Some(999.0),
+            ..CompositingConfig::default()
+        };
+
+        let result = TemporalCompositor::composite(&ts, &config).unwrap();
+        assert_eq!(result.data[[0, 0, 0]], 10.0);
+        assert_eq!(result.count[[0, 0, 0]], 1);
+    }
+
+    #[test]
+    fn test_quality_weighted_respects_cloud_filter_and_nodata() {
+        let mut ts = TimeSeriesRaster::new();
+        ts.add_raster(meta(1, Some(95.0), Some(1.0)), scalar_raster(100.0))
+            .unwrap();
+        ts.add_raster(meta(2, Some(2.0), Some(1.0)), scalar_raster(20.0))
+            .unwrap();
+
+        let config = CompositingConfig {
+            method: CompositingMethod::QualityWeighted,
+            max_cloud_cover: Some(50.0),
+            nodata: None,
+            ..CompositingConfig::default()
+        };
+
+        let result = TemporalCompositor::composite(&ts, &config).unwrap();
+        // Cloudy scene filtered; only 20.0 with weight 1.0 remains.
+        assert!((result.data[[0, 0, 0]] - 20.0).abs() < 1e-9);
+        assert_eq!(result.count[[0, 0, 0]], 1);
     }
 }

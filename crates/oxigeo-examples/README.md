@@ -22,7 +22,7 @@ Collection of example programs demonstrating OxiGeo usage for geospatial data pr
 ## Example Programs (`cargo run --example <name>`)
 
 In addition to the binaries below, this crate's `examples/` directory holds
-~30 `cargo run --example <name>` programs: a 10-part tutorial series
+38 `cargo run --example <name>` programs: a 10-part tutorial series
 (`tutorial_01_quickstart` .. `tutorial_10_mobile_integration`), cookbook
 recipes (`cookbook_*`), and deeper single-purpose pipelines (`cog_pipeline`,
 `ml_inference`, `satellite_processing`, `timeseries_analysis`,

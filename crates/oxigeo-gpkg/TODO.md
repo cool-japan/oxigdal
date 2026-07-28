@@ -1,8 +1,8 @@
 # TODO: oxigeo-gpkg
 
-> **Purpose:** Pure Rust GeoPackage (GPKG) reader for OxiGeo — SQLite format parser without C dependencies.
-> **Status (2026-05-16):** ~3,992 Rust LoC · 156 tests · 0 in-source `TODO:` markers (gaps are missing modules in the public API).
-> **Roadmap:** v0.1.7 → v0.2.0 (current slice) → v1.0.0
+> **Purpose:** Pure Rust GeoPackage (GPKG) reader/writer for OxiGeo — SQLite format parser without C dependencies.
+> **Status (2026-07-28):** ~3,992 Rust LoC (as of last LoC count; substantially larger now given the modules below) · 553 tests (all-features) · 0 in-source `TODO:` markers · every item tracked in this file (High/Medium/Low) is now `[x]` — re-verified 2026-07-28, no open gaps found.
+> **Roadmap:** v0.1.7 → v0.2.1 (current slice) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
@@ -98,4 +98,4 @@
 - [x] Add full SQLite B-tree page traversal (completed 2026-04-19: `btree` module with leaf/interior page parsing, varint encode/decode, record serial-type dispatch, `scan_sqlite_master`, `scan_table`, `scan_table_by_name`, `load_contents` on `GeoPackage`)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

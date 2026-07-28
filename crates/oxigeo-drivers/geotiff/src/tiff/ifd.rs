@@ -372,7 +372,11 @@ impl IfdEntry {
     ) -> Result<Vec<u64>> {
         let bytes = self.get_value_bytes(source, variant)?;
         let elem_size = self.field_type.element_size();
-        let mut values = Vec::with_capacity(self.count as usize);
+        // `self.count` is an untrusted IFD field; the loop only yields one value
+        // per `elem_size` bytes actually read, so cap the preallocation hint to
+        // the real byte length to avoid an oversized speculative allocation.
+        let mut values =
+            Vec::with_capacity((self.count as usize).min(bytes.len() / elem_size.max(1)));
 
         for chunk in bytes.chunks_exact(elem_size) {
             let value = match self.field_type {
@@ -408,7 +412,9 @@ impl IfdEntry {
     ) -> Result<Vec<f64>> {
         let bytes = self.get_value_bytes(source, variant)?;
         let elem_size = self.field_type.element_size();
-        let mut values = Vec::with_capacity(self.count as usize);
+        // Cap the hint to the bytes actually read (see `get_u64_vec`).
+        let mut values =
+            Vec::with_capacity((self.count as usize).min(bytes.len() / elem_size.max(1)));
 
         for chunk in bytes.chunks_exact(elem_size) {
             let value = match self.field_type {

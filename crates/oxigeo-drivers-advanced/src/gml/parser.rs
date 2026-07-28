@@ -57,9 +57,10 @@ impl<R: BufRead> GmlParser<R> {
                     match name.as_ref() {
                         b"FeatureCollection" => in_collection = true,
                         b"featureMember" | b"featureMembers" if in_collection => {
-                            if let Ok(feature) = self.parse_feature_member() {
-                                collection.add_feature(feature);
-                            }
+                            // Propagate feature/geometry parse failures instead of
+                            // silently dropping the offending feature.
+                            let feature = self.parse_feature_member()?;
+                            collection.add_feature(feature);
                         }
                         b"boundedBy" if in_collection => {
                             // Parse envelope/bounds if needed
@@ -90,16 +91,19 @@ impl<R: BufRead> GmlParser<R> {
                 Ok(Event::Start(e)) => {
                     let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 
-                    // Check for common geometry elements
+                    // Check for common geometry elements. A malformed geometry
+                    // must propagate as an error, not be silently discarded with
+                    // `.ok()` — otherwise the caller gets a geometry-less feature
+                    // and a falsely-successful parse (silent data loss).
                     if name.contains("Point") || name.contains("point") {
                         self.current_srs_dimension = Self::extract_srs_dimension(&e);
-                        feature.geometry = self.parse_point().ok();
+                        feature.geometry = Some(self.parse_point()?);
                     } else if name.contains("LineString") || name.contains("linestring") {
                         self.current_srs_dimension = Self::extract_srs_dimension(&e);
-                        feature.geometry = self.parse_linestring().ok();
+                        feature.geometry = Some(self.parse_linestring()?);
                     } else if name.contains("Polygon") || name.contains("polygon") {
                         self.current_srs_dimension = Self::extract_srs_dimension(&e);
-                        feature.geometry = self.parse_polygon().ok();
+                        feature.geometry = Some(self.parse_polygon()?);
                     } else {
                         // Treat as property
                         if let Ok(value) = self.read_text() {
@@ -431,6 +435,27 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    /// Regression: a malformed geometry (here an empty `<pos>`) must surface as
+    /// a parse error, not be silently swallowed into a geometry-less feature.
+    #[test]
+    fn test_gml_malformed_geometry_is_not_silently_dropped() {
+        let xml = r#"<?xml version="1.0"?>
+<FeatureCollection>
+  <featureMember>
+    <Point>
+      <pos></pos>
+    </Point>
+  </featureMember>
+</FeatureCollection>"#;
+        let reader = BufReader::new(xml.as_bytes());
+        let mut parser = GmlParser::new(reader).expect("parser");
+        let result = parser.parse();
+        assert!(
+            result.is_err(),
+            "malformed geometry must produce a parse error, not a silent geometry-less feature"
+        );
     }
 
     /// `srsDimension` declared directly on `posList` must also be honored.

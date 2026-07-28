@@ -438,7 +438,7 @@ pub struct AggregateFunction {
 }
 
 /// Aggregate function type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateFunc {
     /// COUNT function.
     Count,

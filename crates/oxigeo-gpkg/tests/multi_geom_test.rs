@@ -305,3 +305,62 @@ fn test_add_geometry_column_def_rejects_unknown_table() {
         "add_geometry_column_def should fail for an unregistered table"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. add_geometry_column_def keeps sqlite_master DDL consistent with
+//     gpkg_geometry_columns metadata (regression for a real defect: the extra
+//     column used to be registered in metadata only, with the table's own
+//     CREATE TABLE statement never declaring it).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_add_geometry_column_def_extends_table_ddl() {
+    let extra = GeometryColumnDef::from_raw("pts", "outline", "POLYGON", 4326, 0, 0);
+
+    let mut builder = GeoPackageBuilder::new(4326);
+    builder.add_feature_table_mut("pts", "POINT", vec![(1, 5.0, 6.0)]);
+    builder
+        .add_geometry_column_def("pts", &extra)
+        .expect("add_geometry_column_def should succeed for known table");
+
+    let bytes = builder.build_from_ref().expect("build");
+    let gpkg = GeoPackage::from_bytes(bytes).expect("parse");
+
+    let master = gpkg.scan_sqlite_master().expect("scan sqlite_master");
+    let pts_entry = master
+        .iter()
+        .find(|e| e.name == "pts")
+        .expect("pts table must be present in sqlite_master");
+
+    assert!(
+        pts_entry.sql.contains("outline"),
+        "pts CREATE TABLE DDL must declare the 'outline' column registered via \
+         add_geometry_column_def, got: {}",
+        pts_entry.sql
+    );
+    assert!(
+        pts_entry.sql.contains("geom"),
+        "pts CREATE TABLE DDL must still declare the primary 'geom' column"
+    );
+
+    // The row must actually have 3 columns (fid, geom, outline) — the extra
+    // column's value is NULL (no per-row value API exists for it yet), but
+    // the column itself must be present, not silently dropped.
+    let rows = gpkg
+        .scan_table_by_name("pts")
+        .expect("scan")
+        .expect("pts table data must be present");
+    assert_eq!(rows.len(), 1);
+    let (_rowid, cols) = &rows[0];
+    assert_eq!(
+        cols.len(),
+        3,
+        "expected 3 columns (fid, geom, outline), got {}",
+        cols.len()
+    );
+    assert!(
+        matches!(cols[2], oxigeo_gpkg::CellValue::Null),
+        "extra 'outline' column must be NULL (no per-row value API yet), got {:?}",
+        cols[2]
+    );
+}

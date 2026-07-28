@@ -383,6 +383,7 @@ impl TextureResampler {
             compute_pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 
+        ctx.check_device_lost()?;
         ctx.queue().submit(std::iter::once(encoder.finish()));
 
         trace!(

@@ -32,10 +32,11 @@
 //! - decimal / exponent numbers → [`ScalarValue::Float64`]
 //! - single-quoted strings → [`ScalarValue::Utf8`] (double quotes denote
 //!   *identifiers* in SQL, not strings)
-//! - `TRUE` / `FALSE` → [`ScalarValue::Bool`] — note that the predicate
-//!   compiler in `oxigeo-geoparquet` currently evaluates only
-//!   `Int64` / `Float64` / `Utf8` scalars, so boolean filters surface a
-//!   type-mismatch error at execution time
+//! - `TRUE` / `FALSE` → [`ScalarValue::Bool`] — the predicate compiler in
+//!   `oxigeo-geoparquet` fully supports `Boolean` columns (`compare_scalar`
+//!   dispatches `Eq`/`Cmp`/`In` against [`ScalarValue::Bool`] the same way it
+//!   does for `Int64` / `Float64` / `Utf8`), so `col = TRUE` /
+//!   `col <> FALSE` filters execute correctly, not just parse
 //! - unary `-` / `+` on numeric literals is folded into the value
 //!
 //! Implemented by WP C3 (GeoParquet Live lane); stub created by WP W0.

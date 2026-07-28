@@ -5,6 +5,7 @@
 use crate::connection::ConnectionPool;
 use crate::error::{QueryError, Result};
 use crate::query::SpatialQuery;
+use crate::sql::{ColumnName, SqlIdentifier, TableName};
 use crate::types::FeatureBuilder;
 use futures::stream::{Stream, StreamExt};
 use oxigeo_core::vector::feature::Feature;
@@ -66,9 +67,14 @@ impl PostGisReader {
 
     /// Streams features from the table
     pub async fn stream(&self) -> Result<Pin<Box<dyn Stream<Item = Result<Feature>> + Send + '_>>> {
-        let client = self.pool.get().await?;
+        // Validate and quote the table name through the same `SqlIdentifier`
+        // machinery used by `SpatialQuery`, so `stream()` is no more injectable
+        // than `read_all()`/`count()`. Validate *before* acquiring a
+        // connection so hostile input fails fast.
+        let table = TableName::new(&self.table_name)?;
+        let query = format!("SELECT * FROM {}", table.qualified());
 
-        let query = format!("SELECT * FROM \"{}\"", self.table_name);
+        let client = self.pool.get().await?;
 
         debug!("Streaming features with query: {query}");
 
@@ -101,12 +107,15 @@ impl PostGisReader {
 
     /// Gets the spatial extent of the table
     pub async fn extent(&self) -> Result<Option<(f64, f64, f64, f64)>> {
-        let client = self.pool.get().await?;
-
+        let table = TableName::new(&self.table_name)?;
+        let geom_col = ColumnName::new(&self.geometry_column)?;
         let query = format!(
-            "SELECT ST_Extent(\"{}\")::text FROM \"{}\"",
-            self.geometry_column, self.table_name
+            "SELECT ST_Extent({})::text FROM {}",
+            geom_col.quoted(),
+            table.qualified()
         );
+
+        let client = self.pool.get().await?;
 
         let row = client
             .query_one(&query, &[])
@@ -148,12 +157,20 @@ impl PostGisReader {
 
     /// Gets the SRID of the geometry column
     pub async fn srid(&self) -> Result<Option<i32>> {
-        let client = self.pool.get().await?;
-
+        // `Find_SRID` takes the table and column as *string literals*, so they
+        // cannot be bound as parameters. Validate them as SQL identifiers
+        // (which rejects quotes, semicolons, comment markers, etc.) before
+        // splicing so a hostile table/column name cannot break out of the
+        // single-quoted literal.
+        let table = SqlIdentifier::new(&self.table_name)?;
+        let geom_col = SqlIdentifier::new(&self.geometry_column)?;
         let query = format!(
             "SELECT Find_SRID('public', '{}', '{}')",
-            self.table_name, self.geometry_column
+            table.as_str(),
+            geom_col.as_str()
         );
+
+        let client = self.pool.get().await?;
 
         let row = client
             .query_one(&query, &[])
@@ -168,6 +185,7 @@ impl PostGisReader {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::connection::ConnectionConfig;
@@ -201,5 +219,40 @@ mod tests {
         assert_eq!(reader.geometry_column, "the_geom");
         assert_eq!(reader.id_column, Some("fid".to_string()));
         assert_eq!(reader.batch_size, 500);
+    }
+
+    #[tokio::test]
+    async fn test_stream_rejects_injection_in_table_name() {
+        let pool = ConnectionPool::new(ConnectionConfig::default()).expect("pool creation failed");
+        let reader = PostGisReader::new(pool, "users\"; DROP TABLE users; --");
+        // Identifier validation must reject the malicious table name *before*
+        // any connection attempt, surfacing an SQL error rather than executing
+        // the injected statement. (The `Ok` type of `stream()` is not `Debug`,
+        // so match on the result explicitly rather than using `expect_err`.)
+        match reader.stream().await {
+            Err(crate::error::PostGisError::Sql(_)) => {}
+            Err(other) => panic!("expected an Sql validation error, got: {other:?}"),
+            Ok(_) => panic!("malicious table name should have been rejected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_srid_rejects_injection_in_geometry_column() {
+        let pool = ConnectionPool::new(ConnectionConfig::default()).expect("pool creation failed");
+        let reader =
+            PostGisReader::new(pool, "buildings").geometry_column("geom'); DROP TABLE t; --");
+        let err = reader.srid().await.expect_err("expected validation error");
+        assert!(matches!(err, crate::error::PostGisError::Sql(_)));
+    }
+
+    #[tokio::test]
+    async fn test_extent_rejects_injection_in_table_name() {
+        let pool = ConnectionPool::new(ConnectionConfig::default()).expect("pool creation failed");
+        let reader = PostGisReader::new(pool, "t\" UNION SELECT * FROM secrets --");
+        let err = reader
+            .extent()
+            .await
+            .expect_err("expected validation error");
+        assert!(matches!(err, crate::error::PostGisError::Sql(_)));
     }
 }

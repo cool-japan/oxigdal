@@ -1,9 +1,10 @@
 //! Full backup implementation.
 
-use super::{BackupCompression, BackupMetadata, BackupType};
-use crate::error::HaResult;
-use chrono::Utc;
+use super::{BackupCompression, BackupMetadata, BackupSource, BackupType};
+use crate::error::{HaError, HaResult};
+use parking_lot::RwLock;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
@@ -13,6 +14,8 @@ pub struct FullBackup {
     backup_dir: PathBuf,
     /// Compression type.
     compression: BackupCompression,
+    /// Source that supplies the real dataset bytes.
+    source: RwLock<Option<Arc<dyn BackupSource>>>,
 }
 
 impl FullBackup {
@@ -28,34 +31,121 @@ impl FullBackup {
         Self {
             backup_dir,
             compression,
+            source: RwLock::new(None),
         }
     }
 
-    /// Create full backup.
-    pub async fn create(&self) -> HaResult<BackupMetadata> {
-        info!("Creating full backup");
+    /// Inject the backup source. Required before [`create`](Self::create).
+    pub fn set_source(&self, source: Arc<dyn BackupSource>) {
+        *self.source.write() = Some(source);
+    }
 
-        let data = self.collect_all_data().await?;
-        let size_bytes = data.len() as u64;
-        let checksum = crc32fast::hash(&data);
-
-        let backup_id = Uuid::new_v4();
-
-        Ok(BackupMetadata {
-            id: backup_id,
-            backup_type: BackupType::Full,
-            timestamp: Utc::now(),
-            size_bytes,
-            compressed_size_bytes: None,
-            compression: self.compression,
-            checksum,
-            parent_id: None,
+    fn source(&self) -> HaResult<Arc<dyn BackupSource>> {
+        self.source.read().clone().ok_or_else(|| {
+            HaError::Backup("no backup source configured; refusing to persist canned bytes".into())
         })
     }
 
-    /// Collect all data.
-    async fn collect_all_data(&self) -> HaResult<Vec<u8>> {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    /// Create a full backup, collecting real data and persisting it to disk.
+    pub async fn create(&self) -> HaResult<BackupMetadata> {
+        info!("Creating full backup");
+
+        let data = self.source()?.read_full().await?;
+        let metadata = super::persist_backup(
+            &self.backup_dir,
+            BackupType::Full,
+            self.compression,
+            None,
+            &data,
+        )
+        .await?;
+
+        info!(
+            "Full backup {} persisted ({} bytes) to {}",
+            metadata.id,
+            metadata.size_bytes,
+            self.backup_dir.display()
+        );
+
+        Ok(metadata)
+    }
+
+    /// Restore a full backup by reading it back from disk and applying it.
+    pub async fn restore(&self, backup_id: Uuid) -> HaResult<()> {
+        info!("Restoring full backup {}", backup_id);
+        let metadata = super::load_metadata(&self.backup_dir, backup_id).await?;
+        let data = super::read_backup_payload(&self.backup_dir, &metadata).await?;
+        self.source()?.apply(&data).await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    #[derive(Default)]
+    struct MemSource {
+        state: RwLock<Vec<u8>>,
+    }
+
+    #[async_trait]
+    impl BackupSource for MemSource {
+        async fn read_full(&self) -> HaResult<Vec<u8>> {
+            Ok(self.state.read().clone())
+        }
+        async fn read_changes_since(&self, _since: Option<Uuid>) -> HaResult<Vec<u8>> {
+            Ok(self.state.read().clone())
+        }
+        async fn apply(&self, data: &[u8]) -> HaResult<()> {
+            *self.state.write() = data.to_vec();
+            Ok(())
+        }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("oxigeo-ha-full-{}-{}", tag, Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn test_full_backup_without_source_errors() {
+        let backup = FullBackup::new(temp_dir("no-source"), BackupCompression::Zstd);
+        assert!(backup.create().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_full_backup_persists_and_restores() {
+        let dir = temp_dir("roundtrip");
+        let backup = FullBackup::new(dir.clone(), BackupCompression::Zstd);
+        let source = Arc::new(MemSource::default());
+        let payload: Vec<u8> = (0u8..=255).cycle().take(8192).collect();
+        *source.state.write() = payload.clone();
+        backup.set_source(Arc::clone(&source) as Arc<dyn BackupSource>);
+
+        let metadata = backup.create().await.unwrap();
+        assert_eq!(metadata.backup_type, BackupType::Full);
+        assert_eq!(metadata.size_bytes, payload.len() as u64);
+
+        // The backup file actually exists on disk.
+        let data_path = dir.join(format!("{}.backup", metadata.id));
+        assert!(tokio::fs::metadata(&data_path).await.is_ok());
+
+        // Mutate live state then restore — the original bytes come back.
+        *source.state.write() = vec![9; 3];
+        backup.restore(metadata.id).await.unwrap();
+        assert_eq!(*source.state.read(), payload);
+    }
+
+    #[tokio::test]
+    async fn test_full_backup_uncompressed() {
+        let dir = temp_dir("uncompressed");
+        let backup = FullBackup::new(dir, BackupCompression::None);
+        let source = Arc::new(MemSource::default());
+        *source.state.write() = b"raw".to_vec();
+        backup.set_source(Arc::clone(&source) as Arc<dyn BackupSource>);
+
+        let metadata = backup.create().await.unwrap();
+        assert!(metadata.compressed_size_bytes.is_none());
     }
 }

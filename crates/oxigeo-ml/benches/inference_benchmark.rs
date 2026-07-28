@@ -140,6 +140,7 @@ fn bench_tiled_inference(c: &mut Criterion) {
                 padding: PaddingStrategy::Reflect,
             }),
             confidence_threshold: 0.5,
+            gpu_config: None,
         };
         let mut engine = InferenceEngine::new(model, config);
         let input = RasterBuffer::zeros(*size, *size, RasterDataType::Float32);

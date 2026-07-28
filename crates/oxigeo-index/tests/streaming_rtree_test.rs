@@ -4,6 +4,8 @@
 //! `rtree_test.rs` — so no external dependencies beyond `oxigeo_index` are
 //! required.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo_index::{Bbox2D, StreamingInsertConfig, StreamingRTree};
 
 // ---------------------------------------------------------------------------

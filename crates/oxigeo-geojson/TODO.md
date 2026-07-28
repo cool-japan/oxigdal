@@ -1,8 +1,8 @@
 # TODO: oxigeo-geojson
 
 > **Purpose:** Pure-Rust streaming GeoJSON reader and writer for OxiGeo (RFC 7946).
-> **Status (2026-05-16):** ~3,803 Rust LoC · 175 tests · 0 in-source `TODO:` markers.
-> **Roadmap:** v0.1.7 → v0.2.0 (current slice) → v1.0.0
+> **Status (2026-07-28):** ~3,803 Rust LoC · 451 tests (all-features) · 0 in-source `TODO:` markers.
+> **Roadmap:** v0.1.7 → v0.2.1 (current slice) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
@@ -31,6 +31,7 @@
   - **Why deferred:** Depends on the `oxigeo-proj` 0.2.x API stabilisation.
 
 - [ ] Spatial-index integration with `oxigeo-index` RTree on `FeatureCollection`
+  - **Re-verified 2026-07-28:** Still open — no `oxigeo-index` dependency in `Cargo.toml`, no `src/spatial_index.rs`.
   - **Goal:** O(log n) bbox queries on parsed collections.
   - **Files:** `(new) src/spatial_index.rs`.
   - **Why deferred:** Pulls in a heavy dependency; gate behind a feature.
@@ -87,4 +88,4 @@
 - [x] Implement 6-dimensional bbox support `[minx, miny, minz, maxx, maxy, maxz]` for 3D collections (bbox_3d() on GeoJsonGeometry/GeoJsonFeature, union_bboxes_3d(), parse_bbox_3d(), compute_bbox_3d(), write_features_iter_3d() in oxigeo-geojson-stream, 8 tests)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

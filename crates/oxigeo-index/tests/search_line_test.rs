@@ -1,5 +1,7 @@
 //! Tests for `RTree::search_line` — line-segment intersection query (Slice 7 W4).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo_index::{Bbox2D, RTree};
 
 // ---------------------------------------------------------------------------

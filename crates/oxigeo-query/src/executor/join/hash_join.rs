@@ -171,7 +171,6 @@ impl Join {
             hash_table.entry(key).or_default().push(row);
         }
 
-        let mut result_columns = Vec::new();
         let mut result_fields = Vec::new();
 
         // Collect schema
@@ -182,10 +181,8 @@ impl Join {
             result_fields.push(field.clone());
         }
 
-        // Initialize result columns
-        for _ in 0..result_fields.len() {
-            result_columns.push(Vec::new());
-        }
+        // Typed builders preserve each source column's native type.
+        let mut builders = self.init_builders(left, right);
 
         // Probe phase
         let mut result_rows = 0;
@@ -199,14 +196,14 @@ impl Join {
 
             if let Some(left_rows) = hash_table.get(&key) {
                 for &left_row in left_rows {
-                    self.append_row(&mut result_columns, left, right, left_row, right_row)?;
+                    self.append_row(&mut builders, left, right, left_row, right_row)?;
                     result_rows += 1;
                 }
             }
         }
 
         let schema = Arc::new(Schema::new(result_fields));
-        let columns = self.convert_columns(result_columns);
+        let columns = self.finish_builders(builders);
         RecordBatch::new(schema, columns, result_rows)
     }
 }

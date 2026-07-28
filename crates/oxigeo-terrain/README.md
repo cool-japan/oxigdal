@@ -25,10 +25,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-terrain = "0.2.0"
+oxigeo-terrain = "0.2.1"
 
 # With all features enabled
-oxigeo-terrain = { version = "0.2.0", features = ["all_features", "parallel"] }
+oxigeo-terrain = { version = "0.2.1", features = ["all_features", "parallel"] }
 ```
 
 ### Feature Flags
@@ -333,9 +333,8 @@ cargo bench --bench terrain_bench --all-features
 
 ## Code Statistics
 
-- **2,933 lines** of Rust code
-- **25 source files** organized by feature
-- **~130 lines** of documentation
+- **12,116 lines** of Rust code
+- **38 source files** organized by feature
 - **100% Pure Rust** implementation
 
 ## License

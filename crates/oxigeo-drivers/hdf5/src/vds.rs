@@ -1,11 +1,32 @@
-//! Virtual Dataset (VDS) support for HDF5.
+//! Virtual Dataset (VDS) **in-memory mapping helper** for HDF5 — not
+//! file-format-level VDS support.
 //!
-//! Virtual datasets provide a way to create a virtual view over multiple source datasets
-//! without copying data. This is useful for:
-//! - Combining multiple files into a single logical dataset
-//! - Creating subsets or slices of existing datasets
-//! - Time series data stored across multiple files
-//! - Parallel HDF5 output aggregation
+//! Real HDF5 VDS is a specific on-disk data-layout class (`H5D_VIRTUAL`, data
+//! layout message version 4) that lets a conformant HDF5 reader (including
+//! h5py/libhdf5) transparently follow a virtual dataset's mappings into their
+//! real source datasets, in any other real `.h5` files, with no cooperation
+//! needed from the reading application beyond opening the virtual dataset
+//! itself.
+//!
+//! **That on-disk layout is not implemented here.** [`oxih5::FileWriter`] (the
+//! real Pure-Rust HDF5 writer this crate's [`crate::writer::Hdf5Writer`] is
+//! backed by) has no `H5D_VIRTUAL` support to write to, and there is no code
+//! anywhere in this crate that parses a real file's virtual-layout message
+//! back into a [`VirtualDataset`] on read. [`VirtualDataset`]/[`VdsMapping`]/
+//! [`SourceDataset`]/[`Hyperslab`] are therefore only useful as an **in-app
+//! bookkeeping structure**: they validate a set of source-file → region
+//! mappings in memory (overlap/bounds checks, deterministic composition
+//! order) so a caller can plan how to read/stitch together the underlying
+//! source datasets themselves (e.g. via repeated [`crate::reader::Hdf5Reader::read_slice`]
+//! calls) — not something any other HDF5 tool can open and see the composed
+//! view of. Once `oxih5` gains `H5D_VIRTUAL` layout support, this module can
+//! be wired to actually write/read the real on-disk mappings; until then,
+//! treat it as a planning helper only.
+//!
+//! Useful today for:
+//! - Planning how to compose multiple source datasets into one logical view
+//!   inside this crate (validated bounds/overlap, deterministic ordering)
+//! - Prototyping a VDS mapping before real on-disk support lands
 
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
@@ -245,7 +266,13 @@ impl VdsMapping {
     }
 }
 
-/// Virtual dataset definition
+/// Virtual dataset definition.
+///
+/// An **in-memory mapping description only** — see the module doc. Building
+/// one and calling [`VirtualDataset::add_mapping`] validates the mappings
+/// (bounds, dimension match) but never writes an `H5D_VIRTUAL` data-layout
+/// message to any real `.h5` file; nothing else can open this structure and
+/// see the composed view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualDataset {
     /// Virtual dataset name

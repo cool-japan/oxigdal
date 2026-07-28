@@ -14,22 +14,22 @@
 
 **GeoSentinel**: watch any place on Earth for change — and tell no one where you're looking. It searches the public Earth Search STAC API for a cloud-filtered Sentinel-2 scene pair, streams only the needed COG windows via HTTP range requests, and runs the whole change-detection pipeline — NDVI difference, thresholding, polygonization, geodesic areas, GeoJSON export — 100% client-side in Pure-Rust WebAssembly; your area of interest never leaves your machine. **[Try it live](https://cooljapan.tech/geosentinel/)** — one of **four** hosted [demos](#demos) below, alongside [GeoLab](#geolab--terrain-analysis-on-streamed-cogs), [GeoVault](#geovault--sovereign-clean-room-workstation), and [GeoParquet Live](#geoparquet-live--query-59-gb-with-no-database).
 
-OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. Development is now at **v0.2.0**, the first version under the OxiGeo name (v0.1.7 completed production-hardening validation on 2026-07-20; v0.1.6 released 2026-06-15; 0.1.7 has not yet been published to crates.io — publication is a separate, not-yet-taken step). The library delivers ~747K Rust SLoC across **76 workspace crates**, covering 17 geospatial format drivers, full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. The current release is **v0.2.1**, a production-hardening release on top of **v0.2.0**, which was published to crates.io on 2026-07-20 as the first release under the OxiGeo name — a rename-only release, functionally identical to v0.1.7, which was published the same day as the final release under the OxiGDAL name (v0.1.6 released 2026-06-15). The library delivers ~784K Rust SLoC across **75 workspace crates**, covering 16 geospatial format drivers exposed through `oxigeo::Dataset::open()` (plus separate KML/KMZ and TopoJSON format support in dedicated crates, see [Format Drivers](#architecture)), full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.2.0 (in development; v0.1.7 production-hardening validation complete 2026-07-20, not yet published — v0.1.6 released 2026-06-15) |
-| **Rust SLoC** | ~747K across 2,448 `.rs` files (via `tokei`) |
-| **Total SLoC** | ~785K (all languages, via `tokei`) |
-| **Workspace crates** | 76 |
-| **Tests** | 16,232 passing (76 skipped), 0 failures; 409 doc tests passing |
-| **Format drivers** | 17 (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf, Shapefile, NetCDF, HDF5, GRIB, JPEG2000, VRT, COPC/LAS, GeoPackage, MBTiles, PMTiles, KML, TopoJSON) |
+| **Version** | 0.2.1 (2026-07-28, production-hardening release); v0.2.0 published 2026-07-20 (first OxiGeo release, rename-only); v0.1.7 published 2026-07-20 (final OxiGDAL release); v0.1.6 released 2026-06-15 |
+| **Rust SLoC** | ~784K across 2,478 `.rs` files (via `tokei`) |
+| **Total SLoC** | ~818K (all languages, via `tokei`) |
+| **Workspace crates** | 75 |
+| **Tests** | 17,723 passing (100 skipped), 0 failures; 416 doc tests passing |
+| **Format drivers** | 16, exposed through `oxigeo::Dataset::open()` (GeoTIFF/COG, GeoJSON, Shapefile, GeoParquet, NetCDF, HDF5, Zarr, GRIB, FlatGeobuf, JPEG2000, VRT, GeoPackage, PMTiles, MBTiles, COPC, LAS/LAZ) — plus KML/KMZ (`oxigeo-drivers-advanced`) and TopoJSON writer (`oxigeo-geojson`), which ship as separate, non-`Dataset`-registry format support |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
-| **Estimated dev cost** | $29.59M equivalent (COCOMO) |
+| **Estimated dev cost** | $30.89M equivalent (COCOMO) |
 
 ## Why OxiGeo?
 
@@ -297,7 +297,7 @@ python3 serve.py 8080
 
 ## Architecture
 
-76 workspace crates organized into functional layers:
+75 workspace crates organized into functional layers:
 
 ```
 Core & Algorithms
@@ -308,23 +308,28 @@ Core & Algorithms
   oxigeo-index              Spatial indexing (R-tree, grid, geometry validation/operations)
   oxigeo-qc                 Data validation, anomaly detection, quality scoring
 
-Format Drivers (16 formats)
+Format Drivers (16 formats, all wired into `oxigeo::Dataset::open()` / `DatasetFormat`)
   geotiff      GeoTIFF/COG   BigTIFF, HTTP range, overviews, DEFLATE/LZW/ZSTD/JPEG
   geojson      GeoJSON       RFC 7946, streaming parser, GeoArrow zero-copy
-  geoparquet   GeoParquet    Arrow native, spatial predicate pushdown, 10x faster
-  zarr         Zarr v2/v3    Sharding, codec pipeline, consolidated metadata
-  flatgeobuf   FlatGeobuf    Packed Hilbert R-tree, spatial filter during decode
   shapefile    Shapefile     SHP/SHX/DBF, full attribute table support
+  geoparquet   GeoParquet    Arrow native, spatial predicate pushdown
   netcdf       NetCDF        CF conventions, unlimited dims, root group (pure-Rust oxinetcdf)
   hdf5         HDF5          Hierarchical, attributes, real read/write (pure-Rust oxih5)
+  zarr         Zarr v2/v3    Sharding, codec pipeline, consolidated metadata
   grib         GRIB1/2       Meteorological parameter/level tables
+  flatgeobuf   FlatGeobuf    Packed Hilbert R-tree, spatial filter during decode
   jpeg2000     JPEG2000      Wavelet DWT, full EBCOT tier-1 decoder (MQ coder, 3-pass)
   vrt          VRT           Band math, source mosaicking, on-the-fly processing
-  copc         COPC/LAS      Cloud Optimized Point Cloud (LAS 1.4, octree)
   gpkg         GeoPackage    SQLite-based, vector features + tiles
-  mbtiles      MBTiles       Tile storage, TMS/XYZ schemes
   pmtiles      PMTiles v3    Hilbert curve, single-file tile archive
-  geojson-s    GeoJSON (streaming)  Streaming GeoJSON parser/writer/filter
+  mbtiles      MBTiles       Tile storage, TMS/XYZ schemes
+  copc         COPC          Cloud Optimized Point Cloud (LAS 1.4, octree)
+  las          LAS/LAZ       Plain (non-COPC) LAS/LAZ point clouds
+
+  Additional format support (dedicated crates, not part of the
+  `Dataset::open()` driver registry above, so not counted in the 16):
+  drivers-adv  KML/KMZ       Read + write (oxigeo-drivers-advanced)
+  geojson-s    TopoJSON      Writer only: arcs, quantization (oxigeo-geojson streaming module)
 
 Cloud & Storage
   oxigeo-cloud              S3 / GCS / Azure Blob backends with HTTP range support
@@ -359,7 +364,7 @@ Enterprise & Infrastructure
 
 Streaming & Messaging
   oxigeo-streaming          Real-time stream processing
-  oxigeo-kafka              Apache Kafka integration
+  oxigeo-kafka              Apache Kafka integration (RETIRED in 0.2.1)
   oxigeo-kinesis            AWS Kinesis integration
   oxigeo-pubsub             Google Pub/Sub integration
   oxigeo-mqtt               MQTT IoT sensor messaging
@@ -400,19 +405,25 @@ Tooling
 |--------|------|-------|-------|-------|-------|
 | GeoTIFF / COG | yes | yes | yes | yes | BigTIFF, overviews, HTTP range |
 | GeoJSON | yes | yes | yes | yes | RFC 7946, streaming, GeoArrow |
-| GeoParquet | yes | yes | yes | yes | Arrow-native, 10x faster than GeoPandas |
-| Zarr v2/v3 | yes | yes | yes | yes | Sharding, codec pipeline |
-| FlatGeobuf | yes | yes | yes | yes | Spatial filter during decode |
 | Shapefile | yes | yes | — | — | SHP/SHX/DBF |
+| GeoParquet | yes | yes | yes | yes | Arrow-native, spatial predicate pushdown |
 | NetCDF | yes | partial | — | — | Pure-Rust `oxinetcdf`; CF conventions, unlimited dims; reader surfaces the root group; `scale_factor`/`add_offset`/`_FillValue` exposed as attributes, not auto-applied |
 | HDF5 | yes | partial | — | — | Pure-Rust `oxih5`; v0-superblock files read fully, v2/v3-superblock files open but currently yield an empty tree (best-effort); write produces real contiguous HDF5 (no chunking/compression on write) |
+| Zarr v2/v3 | yes | yes | yes | yes | Sharding, codec pipeline |
 | GRIB1/GRIB2 | yes | — | — | — | Meteorological parameter tables |
+| FlatGeobuf | yes | yes | yes | yes | Spatial filter during decode |
 | JPEG2000 | yes | — | — | — | Wavelet DWT, tier-1 |
 | VRT | yes | yes | — | — | Band math, mosaic |
-| COPC/LAS | yes | — | — | — | Point cloud, octree spatial index |
 | GeoPackage | yes | partial | — | — | SQLite-based, vector features + tiles (write: point feature tables only, single-page B-tree) |
-| MBTiles | yes | yes | — | — | Tile storage, TMS/XYZ |
 | PMTiles v3 | yes | yes | — | — | Hilbert curve, single-file archive |
+| MBTiles | yes | yes | — | — | Tile storage, TMS/XYZ |
+| COPC | yes | — | — | — | Cloud Optimized Point Cloud, octree spatial index |
+| LAS/LAZ | yes | — | — | — | Plain (non-COPC) point cloud, read via the same reader as COPC |
+
+Additional, separately-shipped format support not listed above (not part of
+the `oxigeo::Dataset::open()` driver registry, so not counted in the 16):
+KML/KMZ read+write (`oxigeo-drivers-advanced`) and a TopoJSON writer
+(`oxigeo-geojson` streaming module).
 
 ## Feature Flags
 
@@ -421,7 +432,7 @@ Tooling
 | `geotiff` | yes | GeoTIFF / Cloud Optimized GeoTIFF |
 | `geojson` | yes | GeoJSON (RFC 7946) |
 | `shapefile` | yes | ESRI Shapefile |
-| `full` | no | All 15 format drivers |
+| `full` | no | All 16 format drivers |
 | `proj` | no | CRS transformations (20+ projections, 211+ EPSG) |
 | `algorithms` | no | SIMD raster/vector algorithms |
 | `cloud` | no | S3, GCS, Azure Blob storage |
@@ -577,7 +588,7 @@ oxigeo warp --t-srs EPSG:32654 input.tif output.tif
 | Crate | Integration |
 |-------|-------------|
 | `oxigeo-streaming` | Real-time stream processing |
-| `oxigeo-kafka` | Apache Kafka |
+| `oxigeo-kafka` | Apache Kafka — **RETIRED in 0.2.1**, no further releases ([why](#retired-crates)) |
 | `oxigeo-kinesis` | AWS Kinesis |
 | `oxigeo-pubsub` | Google Pub/Sub |
 | `oxigeo-mqtt` | MQTT / IoT |
@@ -589,6 +600,24 @@ oxigeo warp --t-srs EPSG:32654 input.tif output.tif
 - WFS 2.0.0 feature service
 - API gateway with JWT auth and rate limiting
 
+## Retired Crates
+
+| Crate | Retired | Status |
+|-------|---------|--------|
+| `oxigeo-kafka` | 0.2.1 | No further releases; crates.io 0.0.1 and 0.2.0 yanked |
+
+**`oxigeo-kafka` (Apache Kafka integration) was retired in 0.2.1** and will receive no
+further releases. It was the only crate in the workspace that made a C toolchain
+mandatory — `rdkafka-sys` builds librdkafka through `cmake` — which stands against the
+COOLJAPAN Pure Rust Policy, and it had no consumers anywhere inside the workspace.
+With it removed, `cargo check --workspace --all-features` no longer needs `cmake`.
+The `kafka` features of `oxigeo-etl` and `oxigeo-workflow` were removed at the same
+time. For messaging, use `oxigeo-streaming`, `oxigeo-kinesis`, `oxigeo-pubsub`, or
+`oxigeo-mqtt`; to talk to Kafka specifically, use a Kafka client directly in your own
+code. Workflow definitions can still describe Kafka endpoints via the pure-Rust
+`IntegrationType::Kafka` / `MessageQueueType::Kafka` metadata enums in
+`oxigeo-workflow`.
+
 ## Performance
 
 | Operation | Result |
@@ -596,7 +625,6 @@ oxigeo warp --t-srs EPSG:32654 input.tif output.tif
 | COG tile access (local SSD) | < 10ms |
 | COG tile access (S3/GCS) | < 100ms |
 | GeoTIFF metadata reading | < 5ms |
-| GeoParquet vs GeoPandas | 10x faster |
 | PROJ batch transform (1M pts) | < 10ms |
 | Docker image size | < 50MB (vs 1GB+ for GDAL) |
 | WASM bundle (gzipped) | < 1MB |
@@ -642,7 +670,8 @@ oxigeo warp --t-srs EPSG:32654 input.tif output.tif
 | **v0.1.5** | 2026-05-22 (released) | oxigeo-gpu WGSL RayMarchUniforms layout fix eliminated 120s GPU test hang (Metal compute kernel), 78 crates, 14,605 tests |
 | **v0.1.6** | 2026-06-15 (released) | Pure-Rust SQLite migration (rusqlite → oxisql-sqlite-compat), non-UTF-8 DBF encoding via encoding_rs, WKT→PROJ string conversion, W-TinyLFU + Count-Min Sketch cache eviction, HDF5 v2/v3 superblock, Delaunay triangulation, batch QC runner + GPKG/STAC/radiometric validators, Gaussian MLC sensor classification, terrain GLCM textures/TPI/geomorphons/cost-distance, Whittaker + Savitzky-Golay time-series smoothers, GPX/KML/TopoJSON vector formats, 14,605 tests |
 | **v0.1.7** | 2026-07-20 (final release under the OxiGDAL name) | Production-hardening campaign: 233 verified defects fixed across 69 crates (GeoTIFF float-predictor silent-corruption fix, JPEG2000 MQ-decoder spec conformance + real Tier-2 packet/precinct decode, real FlatGeobuf FlatBuffers wire format, LERC2 bit-stuffed decoder, HDF5 ScaleOffset/N-Bit real filters, RBAC pattern-match bypass fix), 3 new hosted demos (GeoSentinel change detection, GeoVault attestation workstation, GeoParquet Live), security attestation module (blake3 chain → Merkle root → Ed25519 seal), multicloud S3/GCS/Azure `build_backend()` factory, pure-Rust ONNX export encoder, WFS-T/WCS real transactions, 76 crates, 16,909 tests |
-| **v0.2.0** | Q2 2026 | 100+ projections, GPU expansion, advanced ML pipelines, JPEG2000 tier-2 |
+| **v0.2.0** | 2026-07-20 (released) | Project renamed: OxiGDAL → OxiGeo. Rename-only release, functionally identical to v0.1.7; all 74 crates republished as `oxigeo`/`oxigeo-<name>` |
+| **v0.2.1** | 2026-07-28 (released) | Production-hardening campaign: 342 defects found workspace-wide, 314 fixed across 38 crate lanes (~520 files) — GeoTIFF/JPEG2000/GRIB/HDF5/NetCDF correctness fixes, WFS-T fail-closed security fix, header-driven allocation DoS hardening; new axum-backed `oxigeo-gateway` serving layer (GraphQL + WebSocket + load-balanced reverse proxy); `oxih5`/`oxinetcdf` bumped to 0.2.2, `scirs2` to 0.6.4; 75 crates, 17,723 tests |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |
 

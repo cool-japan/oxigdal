@@ -138,13 +138,38 @@ pub fn cycle_count() -> Option<u64> {
 
     #[cfg(all(feature = "esp32", not(any(feature = "arm", feature = "riscv"))))]
     {
-        esp32::cycle_count()
+        esp32::cycle_count(esp32::detect_variant())
     }
 
     #[cfg(not(any(feature = "arm", feature = "riscv", feature = "esp32")))]
     {
         None
     }
+}
+
+/// Monotonic elapsed microseconds since the first call, on hosted (`std`)
+/// targets.
+///
+/// Bare-metal targets read a hardware cycle counter through
+/// [`cycle_count`], but on a hosted platform (running the crate under `std`,
+/// e.g. for tests or a Linux/RTOS deployment) no such counter feature is
+/// enabled and `cycle_count()` returns `None`. This function provides a real
+/// monotonic time source in that case, backed by [`std::time::Instant`], so
+/// that deadline/scheduling logic actually measures elapsed time instead of
+/// silently reporting zero.
+///
+/// The reference instant is captured lazily on the first call and shared
+/// process-wide, so successive calls return a strictly monotonic value.
+#[cfg(feature = "std")]
+#[inline]
+pub fn host_now_us() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static REFERENCE: OnceLock<Instant> = OnceLock::new();
+    let reference = REFERENCE.get_or_init(Instant::now);
+    // `u64` microseconds is enough for ~584,000 years of uptime.
+    u64::try_from(reference.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

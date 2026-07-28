@@ -1,7 +1,7 @@
 # TODO: oxigeo-cache-advanced
 
 > **Purpose:** Multi-tier caching for OxiGeo — L1 in-memory, L2 on-disk, optional L3 network; eviction policies (LRU/LFU/ARC/W-TinyLFU), adaptive compression (lz4/zstd/snappy via `oxiarc-*`), predictive prefetching, coherency, partitioning, warming, write policies.
-> **Status (2026-05-16):** 7,270 LoC · 31 tests · 1 real stub (`distributed.rs:212` remote lookup returns `None` placeholder; rest of distributed path conceptual).
+> **Status (2026-07-28):** 7,270 LoC · 159 tests · 0 silent-stub sites (`distributed.rs` remote lookup no longer silently returns `None` — see below).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -27,13 +27,13 @@
   - **Risk:** Mmap+truncate races on Windows — gate behind `cfg(unix)` or use `File::sync_all` discipline.
   - **Prerequisites:** Item 1 (eviction trait).
 
-- [ ] Real remote-lookup path in distributed cache (replace `None` placeholder)
-  - **Verified gap:** `src/distributed.rs:211-216` — `// Remote lookup (would use network RPC in production) / // For now, return None / let mut stats = self.stats.write().await; / stats.misses += 1; / return Ok(None);`
-  - **Goal:** Actual gRPC `CacheGet` RPC to the node identified by the consistent-hash ring for the key; uses `tonic` (already a dep).
-  - **Design:** New `src/distributed/transport.rs` with `cache_proto::CacheServiceClient`; `DistributedCache::get(key)` dispatches to the local store if `ring.get_nodes(key, 1)[0] == self.local_node` else uses the per-peer client (kept in `DashMap<NodeId, CacheServiceClient<Channel>>`). Replication factor `n` already in the design.
-  - **Files:** `crates/oxigeo-cache-advanced/src/distributed.rs` (replace lines 200-220 path), new `src/distributed/transport.rs`, `proto/cache.proto` (new).
-  - **Tests:** (proposed) `test_distributed_get_hits_remote_when_not_owner`, `test_distributed_put_replicates_to_n_nodes`, `test_distributed_quorum_read_majority`, `test_distributed_partition_returns_partial`, `test_distributed_consistent_hash_routing`.
-  - **Risk:** `tonic` adds tokio dependency to the cache crate (already a dep). Coordinate transport definitions with oxigeo-cluster's own `cluster.proto` to avoid divergence.
+- [ ] Real network transport behind `PeerTransport` (replace `InMemoryTransport`)
+  - **Updated 2026-07-28 — partially done:** The silent-`None` dishonesty bug is fixed. `distributed.rs` now defines a `PeerTransport` trait (`remote_get`/`remote_put`/`remote_remove`) and requires one to be configured: a remote lookup with no transport returns `CacheError::Network(...)` instead of silently reporting a cache miss. The only shipped implementation, `InMemoryTransport`, simulates peers via local `DashMap`s (real for single-process/testing use, not a network client) — the original goal of an actual gRPC `CacheGet` RPC over `tonic` to a real remote node is still not implemented.
+  - **Goal:** A `tonic`-backed `PeerTransport` impl that actually reaches other processes/nodes.
+  - **Design:** New `src/distributed/transport.rs` with `cache_proto::CacheServiceClient`; wire it as a `PeerTransport` impl. Coordinate transport/proto definitions with oxigeo-cluster's own `NodeTransport`/`cluster.proto` (same pattern, same honesty fix) to avoid divergence.
+  - **Files:** `crates/oxigeo-cache-advanced/src/distributed.rs`, new `src/distributed/transport.rs`, `proto/cache.proto` (new).
+  - **Tests:** (proposed) `test_distributed_get_hits_remote_when_not_owner_over_grpc`, `test_distributed_put_replicates_to_n_nodes_over_grpc`, `test_distributed_quorum_read_majority`, `test_distributed_partition_returns_partial`.
+  - **Risk:** `tonic` adds tokio dependency to the cache crate (already a dep).
   - **Prerequisites:** None.
 
 - [ ] Adaptive compression — zstd level selection by entropy
@@ -108,4 +108,4 @@
 *(No `[x]` entries on previous TODO.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

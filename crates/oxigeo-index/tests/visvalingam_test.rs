@@ -4,6 +4,8 @@
 //! `simplify_visvalingam_to_count`, including the lazy-heap invalidation
 //! correctness, monotonicity rule, closed-ring handling, and degenerate cases.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo_index::validation::Coord;
 use oxigeo_index::{simplify_visvalingam, simplify_visvalingam_to_count};
 

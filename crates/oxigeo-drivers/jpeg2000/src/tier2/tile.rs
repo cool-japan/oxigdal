@@ -76,6 +76,11 @@ pub fn decode_tile_components(
     let num_components = params.components.len();
 
     // --- Fail loud on structurally unsupported inputs (no silent mis-slice) ---
+    //
+    // Multi-layer (quality-progressive) streams require accumulating each code
+    // block's coding passes across layers with persistent tag-tree/Lblock state,
+    // which the single-packet parser does not yet carry between packets. Reject
+    // loud rather than mis-decode.
     if params.num_layers > 1 {
         return Err(Jpeg2000Error::UnsupportedFeature(format!(
             "multi-layer Tier-2 decoding not supported ({} layers); \
@@ -83,16 +88,10 @@ pub fn decode_tile_components(
             params.num_layers
         )));
     }
-    match params.progression {
-        ProgressionOrder::Lrcp | ProgressionOrder::Rlcp => {}
-        other => {
-            return Err(Jpeg2000Error::UnsupportedFeature(format!(
-                "progression order {:?} not supported by the Tier-2 decoder \
-                 (only LRCP and RLCP)",
-                other
-            )));
-        }
-    }
+    // All five ISO 15444-1 progression orders are driven by `ProgressionIterator`,
+    // which emits packet addresses in the exact codestream order; `decode_packets`
+    // consumes them sequentially, so for single-layer streams every order decodes
+    // correctly (they only differ in component/resolution/precinct interleave).
 
     // Build per-component layouts and zeroed subband coefficient storage.
     let layouts: Vec<TileComponentLayout> = params
@@ -524,26 +523,40 @@ mod tests {
     }
 
     #[test]
-    fn test_unsupported_progression_rejected() {
-        let comps = [TileComponentInput {
-            comp_w: 4,
-            comp_h: 4,
-            precision: 8,
-        }];
-        let params = TileDecodeParams {
-            components: &comps,
-            num_levels: 0,
-            cbw: 16,
-            cbh: 16,
-            progression: ProgressionOrder::Cprl,
-            num_layers: 1,
-            guard_bits: 2,
-            quantization: None,
-            has_sop: false,
-            has_eph: false,
-        };
-        let err = decode_tile_components(&[0x00], &params);
-        assert!(matches!(err, Err(Jpeg2000Error::UnsupportedFeature(_))));
+    fn test_all_progression_orders_single_layer_decode() {
+        // With a single quality layer, every progression order is driven by the
+        // shared ProgressionIterator and must decode (an empty packet header
+        // 0x00 => no included code blocks => all-zero coefficients), never a
+        // spurious UnsupportedFeature.
+        for progression in [
+            ProgressionOrder::Lrcp,
+            ProgressionOrder::Rlcp,
+            ProgressionOrder::Rpcl,
+            ProgressionOrder::Pcrl,
+            ProgressionOrder::Cprl,
+        ] {
+            let comps = [TileComponentInput {
+                comp_w: 4,
+                comp_h: 4,
+                precision: 8,
+            }];
+            let params = TileDecodeParams {
+                components: &comps,
+                num_levels: 0,
+                cbw: 16,
+                cbh: 16,
+                progression,
+                num_layers: 1,
+                guard_bits: 2,
+                quantization: None,
+                has_sop: false,
+                has_eph: false,
+            };
+            let out = decode_tile_components(&[0x00], &params)
+                .unwrap_or_else(|e| panic!("{progression:?} must decode, got {e:?}"));
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0], vec![0i32; 16], "{progression:?}");
+        }
     }
 
     #[test]

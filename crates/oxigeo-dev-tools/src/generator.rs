@@ -2,7 +2,7 @@
 //!
 //! This module provides tools for generating test data for OxiGeo operations.
 
-use crate::Result;
+use crate::{DevToolsError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -110,12 +110,37 @@ impl DataGenerator {
         points
     }
 
-    /// Generate regular grid of points
-    pub fn generate_grid(&self, rows: usize, cols: usize, bounds: Bounds) -> Vec<Point> {
+    /// Generate regular grid of points.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DevToolsError::Generator`] if `rows == 0` or
+    /// `cols == 0` (there is no meaningful grid with zero rows/columns).
+    ///
+    /// When `rows == 1` or `cols == 1`, the single row/column is placed at
+    /// `bounds`'s minimum instead of dividing by `(rows - 1)` or
+    /// `(cols - 1)` (which previously underflowed to `0` and produced
+    /// `+inf`/`NaN` point coordinates silently for every point in that row
+    /// or column).
+    pub fn generate_grid(&self, rows: usize, cols: usize, bounds: Bounds) -> Result<Vec<Point>> {
+        if rows == 0 || cols == 0 {
+            return Err(DevToolsError::Generator(format!(
+                "generate_grid requires rows >= 1 and cols >= 1, got rows={rows}, cols={cols}"
+            )));
+        }
+
         let mut points = Vec::with_capacity(rows * cols);
 
-        let dx = (bounds.max_x - bounds.min_x) / (cols - 1) as f64;
-        let dy = (bounds.max_y - bounds.min_y) / (rows - 1) as f64;
+        let dx = if cols > 1 {
+            (bounds.max_x - bounds.min_x) / (cols - 1) as f64
+        } else {
+            0.0
+        };
+        let dy = if rows > 1 {
+            (bounds.max_y - bounds.min_y) / (rows - 1) as f64
+        } else {
+            0.0
+        };
 
         for row in 0..rows {
             for col in 0..cols {
@@ -125,7 +150,7 @@ impl DataGenerator {
             }
         }
 
-        points
+        Ok(points)
     }
 }
 
@@ -395,8 +420,64 @@ mod tests {
     fn test_generate_grid() {
         let generator = DataGenerator::new();
         let bounds = Bounds::new(0.0, 0.0, 100.0, 100.0);
-        let points = generator.generate_grid(5, 5, bounds);
+        let points = generator
+            .generate_grid(5, 5, bounds)
+            .expect("5x5 grid should succeed");
         assert_eq!(points.len(), 25);
+        assert!(points.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+    }
+
+    #[test]
+    fn test_generate_grid_single_column_does_not_produce_nan_or_inf() {
+        let generator = DataGenerator::new();
+        let bounds = Bounds::new(0.0, 0.0, 100.0, 100.0);
+        let points = generator
+            .generate_grid(5, 1, bounds)
+            .expect("single-column grid should succeed, not divide by zero");
+        assert_eq!(points.len(), 5);
+        assert!(
+            points.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
+            "single-column grid must not produce NaN/inf coordinates: {points:?}"
+        );
+        // The single column is placed at the bounds' minimum X.
+        assert!(points.iter().all(|p| (p.x - 0.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn test_generate_grid_single_row_does_not_produce_nan_or_inf() {
+        let generator = DataGenerator::new();
+        let bounds = Bounds::new(0.0, 0.0, 100.0, 100.0);
+        let points = generator
+            .generate_grid(1, 5, bounds)
+            .expect("single-row grid should succeed, not divide by zero");
+        assert_eq!(points.len(), 5);
+        assert!(
+            points.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
+            "single-row grid must not produce NaN/inf coordinates: {points:?}"
+        );
+        assert!(points.iter().all(|p| (p.y - 0.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn test_generate_grid_single_point() {
+        let generator = DataGenerator::new();
+        let bounds = Bounds::new(10.0, 20.0, 100.0, 100.0);
+        let points = generator
+            .generate_grid(1, 1, bounds)
+            .expect("1x1 grid should succeed");
+        assert_eq!(points.len(), 1);
+        assert!(points[0].x.is_finite() && points[0].y.is_finite());
+        assert!((points[0].x - 10.0).abs() < 1e-9);
+        assert!((points[0].y - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_generate_grid_zero_rows_or_cols_errors_instead_of_panicking() {
+        let generator = DataGenerator::new();
+        let bounds = Bounds::new(0.0, 0.0, 100.0, 100.0);
+        assert!(generator.generate_grid(0, 5, bounds).is_err());
+        assert!(generator.generate_grid(5, 0, bounds).is_err());
+        assert!(generator.generate_grid(0, 0, bounds).is_err());
     }
 
     #[test]

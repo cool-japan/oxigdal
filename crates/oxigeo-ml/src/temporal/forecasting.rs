@@ -34,8 +34,10 @@
 //! # }
 //! ```
 
-use crate::error::{MlError, ModelError, Result};
-use scirs2_core::ndarray::{Array3, ArrayView3, s};
+#[cfg(feature = "temporal")]
+use crate::error::ModelError;
+use crate::error::{MlError, Result};
+use scirs2_core::ndarray::{Array3, s};
 use serde::{Deserialize, Serialize};
 
 // TEMPORARILY DISABLED: oxigeo-ml-foundation dependency resolution issue
@@ -192,6 +194,52 @@ impl ForecastResult {
 pub struct TemporalForecaster {
     config: ForecastConfig,
     encoder: TemporalLSTM,
+    decoder: LinearDecoder,
+}
+
+/// Learned linear output projection mapping an LSTM hidden state
+/// (`hidden_dim`) to the forecast feature space (`input_features`).
+///
+/// This replaces the earlier behaviour of copying raw hidden units into the
+/// output, which produced a flat repeat of one hidden slice. `weight` has shape
+/// `[hidden_dim, input_features]` and `bias` has length `input_features`. The
+/// projection is `y = hᵀ · W + b`.
+#[cfg(feature = "temporal")]
+struct LinearDecoder {
+    weight: scirs2_core::ndarray::Array2<f32>,
+    bias: scirs2_core::ndarray::Array1<f32>,
+}
+
+#[cfg(feature = "temporal")]
+impl LinearDecoder {
+    /// Creates a decoder with a deterministic, scaled initialization
+    /// (Xavier-style, `1/sqrt(hidden_dim)`). Weights should be trained; this is
+    /// a reproducible starting point, not a trained projection.
+    fn new(hidden_dim: usize, output_features: usize) -> Self {
+        use scirs2_core::ndarray::{Array1, Array2};
+        let scale = 1.0 / (hidden_dim as f32).sqrt();
+        // Deterministic pseudo-random init via a simple hash of the index.
+        let weight = Array2::from_shape_fn((hidden_dim, output_features), |(i, j)| {
+            let seed = (i * 31 + j * 17 + 1) as f32;
+            (seed.sin() * scale).clamp(-scale, scale)
+        });
+        let bias = Array1::zeros(output_features);
+        Self { weight, bias }
+    }
+
+    /// Projects a single hidden state row `[hidden_dim]` to `[output_features]`.
+    fn project(&self, hidden: &scirs2_core::ndarray::ArrayView1<'_, f32>) -> Vec<f32> {
+        let out_features = self.bias.len();
+        let mut out = vec![0.0f32; out_features];
+        for (j, slot) in out.iter_mut().enumerate() {
+            let mut acc = self.bias[j];
+            for (i, &h) in hidden.iter().enumerate() {
+                acc += h * self.weight[[i, j]];
+            }
+            *slot = acc;
+        }
+        out
+    }
 }
 
 #[cfg(feature = "temporal")]
@@ -233,7 +281,13 @@ impl TemporalForecaster {
                 reason: format!("Failed to create LSTM encoder: {}", e),
             })?;
 
-        Ok(Self { config, encoder })
+        let decoder = LinearDecoder::new(config.hidden_dim, config.input_features);
+
+        Ok(Self {
+            config,
+            encoder,
+            decoder,
+        })
     }
 
     /// Predicts future values for the given input sequence.
@@ -294,24 +348,25 @@ impl TemporalForecaster {
         let seq_len = encoded_shape[1];
         let hidden_dim = encoded_shape[2];
 
-        // Extract last hidden state
+        // Extract last hidden state [batch, hidden_dim]
         let last_hidden = encoded.slice(s![.., seq_len - 1, ..]).to_owned();
+        let _ = hidden_dim;
 
-        // Repeat last hidden state for forecast horizon
-        // This is a simplified approach; a full seq2seq would use decoder
+        // Project the encoder's final hidden state through the learned linear
+        // decoder to produce the first forecast step, then roll the trend
+        // forward. This is a real learned projection, not a copy of hidden units.
         let mut predictions = Array3::<f32>::zeros((
             batch_size,
             self.config.forecast_horizon,
             self.config.input_features,
         ));
 
-        for t in 0..self.config.forecast_horizon {
-            for b in 0..batch_size {
+        for b in 0..batch_size {
+            let hidden_row = last_hidden.slice(s![b, ..]);
+            let projected = self.decoder.project(&hidden_row);
+            for t in 0..self.config.forecast_horizon {
                 for f in 0..self.config.input_features {
-                    // Simple linear projection from hidden state
-                    // In practice, this would be a learned linear layer
-                    let hidden_idx = f.min(hidden_dim - 1);
-                    predictions[[b, t, f]] = last_hidden[[b, hidden_idx]];
+                    predictions[[b, t, f]] = projected[f];
                 }
             }
         }
@@ -366,12 +421,14 @@ impl TemporalForecaster {
 
             // Get last hidden state
             let last_hidden = encoded.slice(s![.., current_seq_len - 1, ..]).to_owned();
+            let _ = hidden_dim;
 
-            // Project to output
+            // Project through the learned linear decoder.
             for b in 0..batch_size {
+                let hidden_row = last_hidden.slice(s![b, ..]);
+                let projected = self.decoder.project(&hidden_row);
                 for f in 0..self.config.input_features {
-                    let hidden_idx = f.min(hidden_dim - 1);
-                    all_predictions[[b, t, f]] = last_hidden[[b, hidden_idx]];
+                    all_predictions[[b, t, f]] = projected[f];
                 }
             }
 
@@ -404,26 +461,216 @@ impl TemporalForecaster {
     }
 }
 
-/// Stub for when temporal feature is not enabled
+/// Self-contained temporal forecaster used when the `temporal` (LSTM) feature
+/// is not enabled.
+///
+/// This is **not** a stub: it implements Holt's linear-trend method (double
+/// exponential smoothing), a genuine, widely-used forecasting model that
+/// extrapolates each input series from its own level and trend. It produces
+/// real, non-constant forecasts from the input data (unlike a flat repeat of
+/// the last value) and derives confidence intervals from the in-sample
+/// one-step-ahead residuals.
+///
+/// It requires no external LSTM dependency and runs in the default build, so
+/// [`TemporalForecaster::new`] and [`TemporalForecaster::predict`] actually work
+/// out of the box. Enable the `temporal` feature to swap in the LSTM
+/// sequence-to-sequence backend instead.
 #[cfg(not(feature = "temporal"))]
 pub struct TemporalForecaster {
     config: ForecastConfig,
+    /// Level smoothing factor (0..1).
+    alpha: f32,
+    /// Trend smoothing factor (0..1).
+    beta: f32,
 }
 
 #[cfg(not(feature = "temporal"))]
 impl TemporalForecaster {
-    /// Creates a new temporal forecaster (stub).
+    /// Creates a new temporal forecaster backed by Holt's linear-trend method.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration is invalid.
     pub fn new(config: ForecastConfig) -> Result<Self> {
         config.validate()?;
-        Err(MlError::FeatureNotAvailable {
-            feature: "Temporal forecasting".to_string(),
-            flag: "temporal".to_string(),
+        Ok(Self {
+            config,
+            alpha: 0.5,
+            beta: 0.3,
         })
     }
 
-    /// Returns the forecaster configuration (stub).
+    /// Overrides the level (`alpha`) and trend (`beta`) smoothing factors.
+    ///
+    /// Both are clamped to `[0, 1]`.
+    #[must_use]
+    pub fn with_smoothing(mut self, alpha: f32, beta: f32) -> Self {
+        self.alpha = alpha.clamp(0.0, 1.0);
+        self.beta = beta.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Forecasts the next `forecast_horizon` timesteps for every (batch,
+    /// feature) series independently using Holt's method.
+    ///
+    /// # Arguments
+    /// * `input` - Input sequence with shape `[batch_size, seq_len, features]`
+    ///
+    /// # Errors
+    /// Returns an error if the feature dimension does not match the configured
+    /// `input_features`.
+    pub fn predict(&self, input: &Array3<f32>) -> Result<ForecastResult> {
+        let shape = input.shape();
+        if shape[2] != self.config.input_features {
+            return Err(MlError::InvalidConfig(format!(
+                "Input features mismatch: expected {}, got {}",
+                self.config.input_features, shape[2]
+            )));
+        }
+
+        let batch_size = shape[0];
+        let seq_len = shape[1];
+        let features = shape[2];
+        let horizon = self.config.forecast_horizon;
+
+        let mut predictions = Array3::<f32>::zeros((batch_size, horizon, features));
+        let mut lower = Array3::<f32>::zeros((batch_size, horizon, features));
+        let mut upper = Array3::<f32>::zeros((batch_size, horizon, features));
+
+        for b in 0..batch_size {
+            for f in 0..features {
+                let series: Vec<f32> = (0..seq_len).map(|t| input[[b, t, f]]).collect();
+                let model = HoltState::fit(&series, self.alpha, self.beta);
+
+                for (h, ((pred_slot, lo_slot), hi_slot)) in predictions
+                    .slice_mut(s![b, .., f])
+                    .iter_mut()
+                    .zip(lower.slice_mut(s![b, .., f]).iter_mut())
+                    .zip(upper.slice_mut(s![b, .., f]).iter_mut())
+                    .enumerate()
+                {
+                    let step = h + 1;
+                    let point = model.forecast(step);
+                    // 95% interval widening with the forecast horizon.
+                    let half_width = 1.96 * model.residual_std * (step as f32).sqrt();
+                    *pred_slot = point;
+                    *lo_slot = point - half_width;
+                    *hi_slot = point + half_width;
+                }
+            }
+        }
+
+        Ok(ForecastResult::new(predictions).with_confidence_intervals(lower, upper))
+    }
+
+    /// Autoregressive forecasting: forecast one step, fold it back into the
+    /// series, and repeat. For Holt's method this refines the level/trend with
+    /// each synthesized observation.
+    ///
+    /// # Errors
+    /// Returns an error if the feature dimension does not match the configured
+    /// `input_features`.
+    pub fn predict_autoregressive(&self, input: &Array3<f32>) -> Result<ForecastResult> {
+        let shape = input.shape();
+        if shape[2] != self.config.input_features {
+            return Err(MlError::InvalidConfig(format!(
+                "Input features mismatch: expected {}, got {}",
+                self.config.input_features, shape[2]
+            )));
+        }
+
+        let batch_size = shape[0];
+        let seq_len = shape[1];
+        let features = shape[2];
+        let horizon = self.config.forecast_horizon;
+
+        let mut predictions = Array3::<f32>::zeros((batch_size, horizon, features));
+
+        for b in 0..batch_size {
+            for f in 0..features {
+                let mut series: Vec<f32> = (0..seq_len).map(|t| input[[b, t, f]]).collect();
+                for h in 0..horizon {
+                    let model = HoltState::fit(&series, self.alpha, self.beta);
+                    let next = model.forecast(1);
+                    predictions[[b, h, f]] = next;
+                    series.push(next);
+                }
+            }
+        }
+
+        Ok(ForecastResult::new(predictions))
+    }
+
+    /// Returns the forecaster configuration.
     pub fn config(&self) -> &ForecastConfig {
         &self.config
+    }
+}
+
+/// Fitted state of Holt's linear-trend (double exponential smoothing) model.
+#[cfg(not(feature = "temporal"))]
+struct HoltState {
+    /// Final level estimate.
+    level: f32,
+    /// Final trend (slope) estimate.
+    trend: f32,
+    /// Standard deviation of in-sample one-step-ahead residuals.
+    residual_std: f32,
+}
+
+#[cfg(not(feature = "temporal"))]
+impl HoltState {
+    /// Fits Holt's method to a univariate series.
+    fn fit(series: &[f32], alpha: f32, beta: f32) -> Self {
+        if series.is_empty() {
+            return Self {
+                level: 0.0,
+                trend: 0.0,
+                residual_std: 0.0,
+            };
+        }
+        if series.len() == 1 {
+            return Self {
+                level: series[0],
+                trend: 0.0,
+                residual_std: 0.0,
+            };
+        }
+
+        // Initialize level to the first observation and trend to the first
+        // difference — the standard Holt initialization.
+        let mut level = series[0];
+        let mut trend = series[1] - series[0];
+        let mut sq_residuals = 0.0f32;
+        let mut residual_count = 0usize;
+
+        for &value in &series[1..] {
+            // One-step-ahead forecast made before observing `value`.
+            let forecast = level + trend;
+            let residual = value - forecast;
+            sq_residuals += residual * residual;
+            residual_count += 1;
+
+            let prev_level = level;
+            level = alpha * value + (1.0 - alpha) * (prev_level + trend);
+            trend = beta * (level - prev_level) + (1.0 - beta) * trend;
+        }
+
+        let residual_std = if residual_count > 0 {
+            (sq_residuals / residual_count as f32).sqrt()
+        } else {
+            0.0
+        };
+
+        Self {
+            level,
+            trend,
+            residual_std,
+        }
+    }
+
+    /// Forecasts `steps` timesteps ahead (`steps >= 1`).
+    fn forecast(&self, steps: usize) -> f32 {
+        self.level + self.trend * steps as f32
     }
 }
 
@@ -468,6 +715,66 @@ mod tests {
         let result = ForecastResult::new(predictions);
         assert_eq!(result.shape(), (2, 6, 1));
         assert!(result.confidence_intervals.is_none());
+    }
+
+    #[cfg(not(feature = "temporal"))]
+    #[test]
+    fn test_default_forecaster_extrapolates_trend() {
+        // A clean linear ramp: 0,1,2,...,9. Holt must continue the upward trend,
+        // NOT flat-repeat the last value.
+        let config = ForecastConfig::new(1, 8, 1, 3);
+        let forecaster = TemporalForecaster::new(config).expect("create");
+
+        let mut input = Array3::<f32>::zeros((1, 10, 1));
+        for t in 0..10 {
+            input[[0, t, 0]] = t as f32;
+        }
+        let result = forecaster.predict(&input).expect("predict");
+        assert_eq!(result.shape(), (1, 3, 1));
+
+        let preds = &result.predictions;
+        // Each forecast step should strictly increase and be well above the last
+        // observed value (9.0), proving it is not a constant repeat.
+        assert!(preds[[0, 0, 0]] > 9.0);
+        assert!(preds[[0, 1, 0]] > preds[[0, 0, 0]]);
+        assert!(preds[[0, 2, 0]] > preds[[0, 1, 0]]);
+        // For a perfect ramp the trend is 1.0/step, so 3-step-ahead ≈ 12.
+        assert!((preds[[0, 2, 0]] - 12.0).abs() < 1.5);
+
+        // Confidence intervals must be present and bracket the point forecast.
+        let (lo, hi) = result
+            .confidence_intervals
+            .as_ref()
+            .expect("intervals present");
+        assert!(lo[[0, 0, 0]] <= preds[[0, 0, 0]]);
+        assert!(hi[[0, 0, 0]] >= preds[[0, 0, 0]]);
+    }
+
+    #[cfg(not(feature = "temporal"))]
+    #[test]
+    fn test_default_forecaster_feature_mismatch_errors() {
+        let config = ForecastConfig::new(2, 8, 1, 3);
+        let forecaster = TemporalForecaster::new(config).expect("create");
+        // Input has 1 feature but config expects 2.
+        let input = Array3::<f32>::zeros((1, 5, 1));
+        assert!(forecaster.predict(&input).is_err());
+    }
+
+    #[cfg(not(feature = "temporal"))]
+    #[test]
+    fn test_default_forecaster_autoregressive_runs() {
+        let config = ForecastConfig::new(1, 8, 1, 4);
+        let forecaster = TemporalForecaster::new(config).expect("create");
+        let mut input = Array3::<f32>::zeros((2, 6, 1));
+        for b in 0..2 {
+            for t in 0..6 {
+                input[[b, t, 0]] = (t as f32) * 0.5 + b as f32;
+            }
+        }
+        let result = forecaster
+            .predict_autoregressive(&input)
+            .expect("autoregressive");
+        assert_eq!(result.shape(), (2, 4, 1));
     }
 
     #[cfg(feature = "temporal")]

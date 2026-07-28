@@ -5,6 +5,17 @@
 //! real dataset values. The legacy `OXIGDAL_HDF5_METADATA_V1` JSON sidecar
 //! reader (the 0.1.x-era on-disk format identifier, removed) has been retired —
 //! this reader never fabricates zero-filled data.
+//!
+//! Numeric dataset bytes are normalized to little-endian at read time
+//! (`build_dataset`'s big-endian byte-swap, driven by `is_big_endian`)
+//! before being cached, so a real file whose Datatype message declares
+//! big-endian order is read correctly rather than silently misinterpreted —
+//! every downstream consumer of [`Dataset::data`] can keep assuming
+//! little-endian.
+//!
+//! Chunk dimensions and filter pipelines are recovered directly from a
+//! dataset's real (V1) object header via `object_header`, making
+//! [`Hdf5Reader::decode_chunk`] usable against real chunked/filtered files.
 
 use crate::attribute::{Attribute, Attributes};
 use crate::convert;
@@ -246,8 +257,12 @@ impl Hdf5Reader {
             }
         }
 
+        let size_of_offsets = self.superblock.size_of_offsets;
+        let size_of_lengths = self.superblock.size_of_lengths;
         for dp in dataset_paths {
-            if let Some(ds) = build_dataset(&h5, &dp) {
+            if let Some(ds) =
+                build_dataset(&h5, &dp, &mut self.file, size_of_offsets, size_of_lengths)
+            {
                 self.datasets.insert(dp, ds);
             }
         }
@@ -344,7 +359,10 @@ impl Hdf5Reader {
         };
 
         let raw_data = self.read_dataset_raw(path)?;
-        let mut result = Vec::with_capacity(len);
+        // `len` is the header-declared element count; the loop only produces as
+        // many elements as `raw_data` actually holds, so cap the preallocation
+        // hint to avoid an oversized allocation from an untrusted dimension.
+        let mut result = Vec::with_capacity(len.min(raw_data.len() / 4));
 
         for chunk in raw_data.chunks_exact(4) {
             result.push(TypeConverter::read_i32_le(chunk)?);
@@ -364,7 +382,8 @@ impl Hdf5Reader {
         };
 
         let raw_data = self.read_dataset_raw(path)?;
-        let mut result = Vec::with_capacity(len);
+        // Cap the hint to the bytes actually read (see `read_i32`).
+        let mut result = Vec::with_capacity(len.min(raw_data.len() / 4));
 
         for chunk in raw_data.chunks_exact(4) {
             result.push(TypeConverter::read_f32_le(chunk)?);
@@ -384,7 +403,8 @@ impl Hdf5Reader {
         };
 
         let raw_data = self.read_dataset_raw(path)?;
-        let mut result = Vec::with_capacity(len);
+        // Cap the hint to the bytes actually read (see `read_i32`).
+        let mut result = Vec::with_capacity(len.min(raw_data.len() / 8));
 
         for chunk in raw_data.chunks_exact(8) {
             result.push(TypeConverter::read_f64_le(chunk)?);
@@ -477,20 +497,53 @@ fn read_group_attributes(g: &oxih5::Group) -> Attributes {
 
 /// Read a single dataset (shape, datatype, attributes, and — where the datatype
 /// is a plain byte buffer — its real values) from an `oxih5` file.
-fn build_dataset(h5: &oxih5::File, path: &str) -> Option<Dataset> {
+///
+/// Also recovers the dataset's real chunk dimensions and filter pipeline (if
+/// any) by walking its object header directly via [`crate::object_header`],
+/// since `oxih5`'s own decoded [`oxih5::Dataset`] view doesn't expose that
+/// metadata. This is what makes [`Hdf5Reader::decode_chunk`] usable against
+/// real, chunked/filtered files rather than always erroring.
+fn build_dataset(
+    h5: &oxih5::File,
+    path: &str,
+    file: &mut File,
+    size_of_offsets: u8,
+    size_of_lengths: u8,
+) -> Option<Dataset> {
     let ohd = h5.dataset(path).ok()?;
     let name = path.rsplit('/').next().unwrap_or(path).to_string();
     let dtype = convert::map_dtype(&ohd.dtype);
     let dims = ohd.shape.clone();
 
-    let mut ds = Dataset::new(
-        name,
-        path.to_string(),
-        dtype.clone(),
-        dims,
-        DatasetProperties::new(),
-    )
-    .ok()?;
+    let mut properties = DatasetProperties::new();
+    if let Ok(header_addr) = h5.header_addr_of(path)
+        && let Ok(raw_layout) = crate::object_header::read_dataset_layout(
+            file,
+            header_addr,
+            size_of_offsets,
+            size_of_lengths,
+        )
+    {
+        // Only trust chunk dims whose rank matches the dataset's real
+        // rank — a mismatch means our best-effort object-header walk
+        // mis-parsed something, and Dataset::new would otherwise reject
+        // the whole dataset outright (validate_chunks) rather than just
+        // this one property.
+        if let Some(chunk_dims) = raw_layout.chunk_dims
+            && chunk_dims.len() == dims.len()
+            && chunk_dims
+                .iter()
+                .zip(dims.iter())
+                .all(|(&c, &d)| c > 0 && c <= d)
+        {
+            properties = properties.with_chunks(chunk_dims);
+        }
+        if let Some(pipeline) = raw_layout.filter_pipeline {
+            properties = properties.with_filter_pipeline(pipeline);
+        }
+    }
+
+    let mut ds = Dataset::new(name, path.to_string(), dtype.clone(), dims, properties).ok()?;
 
     if let Ok(views) = h5.attr_views(path) {
         for v in &views {
@@ -502,10 +555,38 @@ fn build_dataset(h5: &oxih5::File, path: &str) -> Option<Dataset> {
     }
 
     if convert::is_storable(&dtype) && ohd.data.len() == ds.size_in_bytes() {
-        let _ = ds.set_data(ohd.data);
+        // `Hdf5Reader::read_f32`/`read_f64`/`read_i32` (and `read_slice`)
+        // decode this crate's own stored bytes assuming little-endian
+        // (`TypeConverter::read_*_le`) — oxigeo's [`Datatype`] enum, unlike
+        // `oxih5::Dtype`, does not carry a byte-order flag. A real HDF5 file
+        // whose numeric datatype message declares big-endian order (common
+        // for files written on/for big-endian platforms, or by tools that
+        // default to network byte order) would otherwise be silently
+        // misread element-by-element. Normalize to little-endian here, once,
+        // at read time, so every downstream consumer of `ds.data()` can keep
+        // assuming little-endian.
+        let mut data = ohd.data;
+        if convert::is_big_endian(&ohd.dtype) {
+            byte_swap_elements(&mut data, dtype.size());
+        }
+        let _ = ds.set_data(data);
     }
 
     Some(ds)
+}
+
+/// Reverse the byte order of every fixed-size `elem_size`-byte element in
+/// `data` in place (a no-op for `elem_size <= 1`, or when `data.len()` isn't
+/// an exact multiple of `elem_size`, since that indicates the caller
+/// mismeasured the element size and swapping partial elements would corrupt
+/// the buffer worse than leaving it alone).
+fn byte_swap_elements(data: &mut [u8], elem_size: usize) {
+    if elem_size <= 1 || data.is_empty() || !data.len().is_multiple_of(elem_size) {
+        return;
+    }
+    for chunk in data.chunks_exact_mut(elem_size) {
+        chunk.reverse();
+    }
 }
 
 /// Gather a contiguous (row-major) hyperslab from `data`.
@@ -608,6 +689,40 @@ mod tests {
     }
 
     #[test]
+    fn test_byte_swap_elements_reverses_each_element_independently() {
+        // Two 4-byte elements: swapping must reverse each independently, not
+        // the whole buffer.
+        let mut data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        byte_swap_elements(&mut data, 4);
+        assert_eq!(data, vec![4, 3, 2, 1, 8, 7, 6, 5]);
+
+        // f64 round-trip: BE bytes of a value, swapped, must decode as LE to
+        // the same value.
+        let v = 12345.6789_f64;
+        let mut be_bytes = v.to_be_bytes().to_vec();
+        byte_swap_elements(&mut be_bytes, 8);
+        assert_eq!(f64::from_le_bytes(be_bytes.try_into().expect("8 bytes")), v);
+    }
+
+    #[test]
+    fn test_byte_swap_elements_noop_cases() {
+        // elem_size <= 1: no-op.
+        let mut single = vec![1u8, 2, 3];
+        byte_swap_elements(&mut single, 1);
+        assert_eq!(single, vec![1, 2, 3]);
+
+        // Length not a multiple of elem_size: left untouched (never panics).
+        let mut mismatched = vec![1u8, 2, 3, 4, 5];
+        byte_swap_elements(&mut mismatched, 4);
+        assert_eq!(mismatched, vec![1, 2, 3, 4, 5]);
+
+        // Empty buffer: no-op, no panic.
+        let mut empty: Vec<u8> = Vec::new();
+        byte_swap_elements(&mut empty, 4);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn test_invalid_signature() {
         let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
         temp_file.write_all(b"INVALID\n").expect("Failed to write");
@@ -695,6 +810,148 @@ mod tests {
             title.as_string().ok(),
             Some("Real HDF5 Fixture".to_string())
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A real HDF5 dataset whose Datatype message declares **big-endian**
+    /// byte order must still decode to the correct values through
+    /// `read_f64` — not the silently-corrupted little-endian misread of the
+    /// same bytes.
+    ///
+    /// `oxih5::FileWriter` only ever writes little-endian, so this test
+    /// builds a genuine little-endian file with it and then, byte-for-byte,
+    /// (a) flips the Datatype message's byte-order bit and (b) reverses the
+    /// on-disk data bytes for each element — producing exactly the file a
+    /// real big-endian-authored HDF5 file would contain for the same
+    /// logical values. Both patches target fixed, known byte patterns
+    /// (`write_datatype_body`'s hardcoded F64 datatype-message bytes, and the
+    /// values' own little-endian encoding), so this genuinely exercises the
+    /// real object-header datatype parsing + byte-swap path end to end.
+    #[test]
+    fn test_read_f64_normalizes_big_endian_source_bytes() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_hdf5_reader_big_endian.h5");
+
+        // The exact 24-byte F64 (little-endian) datatype-message body oxih5's
+        // writer always emits (see `oxih5::write::messages::write_datatype_body`).
+        // Byte [1] = 0x20 encodes byte-order bit 0 = 0 (little-endian); flipping
+        // it to 0x21 marks the datatype big-endian without touching anything
+        // else about its meaning (size, precision, exponent/mantissa layout).
+        const F64_DTYPE_LE: [u8; 24] = [
+            0x11, 0x20, 0x3f, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x34, 0x0b,
+            0x00, 0x34, 0xff, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let values = [1.5_f64, -2.5_f64];
+
+        let mut bytes = {
+            let mut w = oxih5::FileWriter::new();
+            w.write_dataset_f64("x", &values, &[2]).expect("write f64");
+            w.build_to_vec().expect("build to vec")
+        };
+
+        // Sanity-check the file really is little-endian before patching, and
+        // decodes to the expected values through oxih5's own reader.
+        {
+            let f = oxih5::File::open_from_bytes(&bytes).expect("open LE bytes");
+            let ds = f.dataset("x").expect("dataset x");
+            assert_eq!(ds.as_f64().expect("as_f64"), values.to_vec());
+        }
+
+        // Patch 1: flip the F64 datatype message's byte-order bit.
+        let dtype_pos = bytes
+            .windows(F64_DTYPE_LE.len())
+            .position(|w| w == F64_DTYPE_LE)
+            .expect("F64 datatype message bytes must be present");
+        bytes[dtype_pos + 1] = 0x21; // byte-order bit -> big-endian
+
+        // Patch 2: reverse each element's on-disk bytes (LE encoding -> BE
+        // encoding of the same logical value).
+        let mut le_data = Vec::with_capacity(values.len() * 8);
+        for v in &values {
+            le_data.extend_from_slice(&v.to_le_bytes());
+        }
+        let data_pos = bytes
+            .windows(le_data.len())
+            .position(|w| w == le_data.as_slice())
+            .expect("little-endian data bytes must be present");
+        for chunk in bytes[data_pos..data_pos + le_data.len()].chunks_exact_mut(8) {
+            chunk.reverse();
+        }
+
+        // Confirm the patched file really is big-endian from oxih5's own
+        // point of view (as_f64 would misread it without a BE-aware caller).
+        {
+            let f = oxih5::File::open_from_bytes(&bytes).expect("open patched bytes");
+            let ds = f.dataset("x").expect("dataset x");
+            assert_eq!(
+                ds.dtype,
+                oxih5::Dtype::Float {
+                    size: 8,
+                    order: oxih5::ByteOrder::Big
+                }
+            );
+            assert_eq!(ds.as_f64().expect("as_f64 on BE dataset"), values.to_vec());
+        }
+
+        std::fs::write(&path, &bytes).expect("write patched file");
+
+        // The real assertion: oxigeo-hdf5's own reader must normalize the
+        // big-endian bytes and return the correct logical values.
+        let mut reader = Hdf5Reader::open(&path).expect("open big-endian file");
+        let read_values = reader.read_f64("/x").expect("read_f64");
+        assert_eq!(read_values, values.to_vec());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A dataset written with a real chunked layout must have its chunk
+    /// dimensions recovered on read (via the object-header walk), making
+    /// `decode_chunk` usable rather than always erroring with `Layout`.
+    #[test]
+    fn test_chunked_dataset_populates_chunk_dims_on_read() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_hdf5_reader_chunked_roundtrip.h5");
+
+        {
+            let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
+            let props = DatasetProperties::new().with_chunks(vec![4, 2]);
+            writer
+                .create_dataset("/chunked", Datatype::Float64, vec![4, 2], props)
+                .expect("create chunked dataset");
+            writer
+                .write_f64("/chunked", &(0..8).map(|i| i as f64).collect::<Vec<_>>())
+                .expect("write chunked data");
+            writer.finalize().expect("finalize");
+        }
+
+        let mut reader = Hdf5Reader::open(&path).expect("open real file");
+
+        // Chunk metadata recovered from the real object header.
+        {
+            let ds = reader.dataset("/chunked").expect("dataset");
+            assert_eq!(
+                ds.properties().layout(),
+                crate::dataset::LayoutType::Chunked
+            );
+            assert_eq!(ds.properties().chunk_dims(), Some(&[4, 2][..]));
+        }
+
+        // decode_chunk is now live: no filter pipeline was written, so the
+        // raw bytes pass through unchanged.
+        let raw_chunk: Vec<u8> = (0..8i64)
+            .map(|i| i as f64)
+            .flat_map(|v: f64| v.to_le_bytes())
+            .collect();
+        let decoded = reader
+            .decode_chunk("/chunked", &raw_chunk)
+            .expect("decode_chunk on a real chunked dataset");
+        assert_eq!(decoded, raw_chunk);
+
+        // Real values still read correctly through the normal path too.
+        let values = reader.read_f64("/chunked").expect("read f64");
+        assert_eq!(values, (0..8).map(|i| i as f64).collect::<Vec<_>>());
 
         let _ = std::fs::remove_file(&path);
     }

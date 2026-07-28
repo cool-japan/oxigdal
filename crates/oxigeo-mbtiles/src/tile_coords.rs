@@ -61,6 +61,21 @@ impl TileFormat {
     pub fn is_raster(&self) -> bool {
         matches!(self, Self::Png | Self::Jpeg | Self::Webp)
     }
+
+    /// Canonical lowercase string for the MBTiles `metadata.format` row.
+    ///
+    /// Round-trips through [`Self::parse_format`]: `parse_format(&x.as_metadata_str()) == x`
+    /// for every canonical variant, and `Unknown(s)` round-trips through its
+    /// own string as long as `s` was already lowercase.
+    pub fn as_metadata_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Png => std::borrow::Cow::Borrowed("png"),
+            Self::Jpeg => std::borrow::Cow::Borrowed("jpg"),
+            Self::Webp => std::borrow::Cow::Borrowed("webp"),
+            Self::Pbf => std::borrow::Cow::Borrowed("pbf"),
+            Self::Unknown(s) => std::borrow::Cow::Owned(s.to_lowercase()),
+        }
+    }
 }
 
 /// Convert a TMS y-coordinate to XYZ (flips the y axis).

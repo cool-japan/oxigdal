@@ -25,9 +25,7 @@ futures = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rayon.workspace = true
-num-traits.workspace = true
 approx.workspace = true
-tracing.workspace = true
 
 # Internal dependencies
 oxigeo-core = { workspace = true, default-features = true }
@@ -37,29 +35,21 @@ oxigeo-copc = { workspace = true, optional = true }
 
 # Point cloud dependencies
 las.workspace = true
-laz = { workspace = true, default-features = false }
 
 # Mesh and 3D formats
 gltf = { workspace = true, features = ["import"] }
-gltf-json.workspace = true
 
 # Geometry and triangulation
 delaunator.workspace = true
-geo.workspace = true
-geo-types.workspace = true
 
 # Spatial indexing
 rstar.workspace = true
 
 # Compression (for COPC, EPT)
-oxiarc-archive = { workspace = true }
 oxiarc-zstd = { workspace = true }
 
 # Base64 encoding for 3D Tiles
 base64.workspace = true
-
-# GLB binary support
-bytemuck.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -76,7 +66,11 @@ oxigeo-copc = { path = "../oxigeo-copc", features = ["laz-encoder"] }
 
 [features]
 default = ["las-laz", "mesh", "terrain", "tiles3d"]
-las-laz = []
+# Enables real LAZ (compressed LAS) decompression in `LasReader`/`LasWriter` by
+# turning on the `las` crate's `laz` feature, which is backed by the pure-Rust
+# `laz` crate (v0.12, already a workspace dependency). No C/C++/Fortran code is
+# pulled in, so this stays Pure-Rust-policy compliant and can live in `default`.
+las-laz = ["las/laz"]
 mesh = []
 terrain = []
 tiles3d = []

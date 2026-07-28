@@ -1,14 +1,14 @@
-//! SIMD-accelerated terrain analysis operations
+//! Terrain analysis operations
 //!
-//! This module provides high-performance implementations of terrain derivatives
-//! and geomorphometric calculations using SIMD instructions.
+//! This module provides implementations of terrain derivatives and
+//! geomorphometric calculations.
 //!
-//! # Performance
+//! # Implementation status
 //!
-//! Expected speedup over scalar implementations:
-//! - Slope/aspect: 3-4x (SIMD gradient calculations)
-//! - Curvature: 3-4x (SIMD second derivatives)
-//! - TPI/TRI/Roughness: 3-5x (SIMD neighborhood operations)
+//! These derivatives are currently scalar loops written to be
+//! auto-vectorization friendly; they do NOT yet contain hand-written SIMD
+//! intrinsics. Hardware-vectorized kernels are planned future work. The
+//! functions are correct and covered by unit tests.
 //!
 //! # Supported Operations
 //!

@@ -136,6 +136,7 @@ impl SpectralIndexKernel {
             cpass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed spectral index calculation: {:?}", self.index);
@@ -468,6 +469,7 @@ impl BandRatioKernel {
             cpass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed band ratio calculation");

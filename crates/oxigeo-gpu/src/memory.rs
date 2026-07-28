@@ -351,6 +351,7 @@ impl MemoryPool {
 
         encoder.copy_buffer_to_buffer(&self.buffer, 0, &new_buffer, 0, current_size);
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         // Update buffer and add new free block

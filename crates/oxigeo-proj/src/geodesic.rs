@@ -22,7 +22,7 @@
 //! println!("London-Paris: {:.0} m", result.distance_m);
 //! ```
 
-#[cfg(not(feature = "std"))]
+use alloc::format;
 use alloc::string::{String, ToString};
 
 use core::fmt;
@@ -184,28 +184,19 @@ fn azi_to_deg(azi_rad: f64) -> f64 {
 /// Validate geographic coordinates (degrees).
 fn validate_lat_lon(lat: f64, lon: f64, label: &str) -> Result<(), GeodesicError> {
     if !lat.is_finite() || !lon.is_finite() {
-        return Err(GeodesicError::InvalidInput(
-            #[cfg(feature = "std")]
-            format!("{label}: lat/lon must be finite numbers (got lat={lat}, lon={lon})"),
-            #[cfg(not(feature = "std"))]
-            "lat/lon must be finite numbers".to_string(),
-        ));
+        return Err(GeodesicError::InvalidInput(format!(
+            "{label}: lat/lon must be finite numbers (got lat={lat}, lon={lon})"
+        )));
     }
     if !(-90.0..=90.0).contains(&lat) {
-        return Err(GeodesicError::InvalidInput(
-            #[cfg(feature = "std")]
-            format!("{label}: latitude {lat} is outside [-90, 90]"),
-            #[cfg(not(feature = "std"))]
-            "latitude out of range [-90, 90]".to_string(),
-        ));
+        return Err(GeodesicError::InvalidInput(format!(
+            "{label}: latitude {lat} is outside [-90, 90]"
+        )));
     }
     if !(-180.0..=180.0).contains(&lon) {
-        return Err(GeodesicError::InvalidInput(
-            #[cfg(feature = "std")]
-            format!("{label}: longitude {lon} is outside [-180, 180]"),
-            #[cfg(not(feature = "std"))]
-            "longitude out of range [-180, 180]".to_string(),
-        ));
+        return Err(GeodesicError::InvalidInput(format!(
+            "{label}: longitude {lon} is outside [-180, 180]"
+        )));
     }
     Ok(())
 }

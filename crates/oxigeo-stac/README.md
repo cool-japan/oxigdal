@@ -24,10 +24,10 @@ Pure Rust STAC (SpatioTemporal Asset Catalog) support for cloud-native geospatia
 
 ```toml
 [dependencies]
-oxigeo-stac = "0.2"
+oxigeo-stac = "0.2.1"
 
 # With async HTTP client:
-oxigeo-stac = { version = "0.2", features = ["async"] }
+oxigeo-stac = { version = "0.2.1", features = ["async"] }
 ```
 
 ## Quick Start

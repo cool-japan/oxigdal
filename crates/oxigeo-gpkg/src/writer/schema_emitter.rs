@@ -52,12 +52,39 @@ pub const DDL_GPKG_GEOMETRY_COLUMNS: &str = "CREATE TABLE gpkg_geometry_columns 
 /// Produces a minimal table with an integer primary key `fid` and a single
 /// geometry column named `geom`.
 pub fn ddl_feature_table(table_name: &str) -> String {
-    format!(
+    ddl_feature_table_with_extra_columns(table_name, &[])
+}
+
+/// Generate the CREATE TABLE DDL for a user feature table, additionally
+/// declaring one `BLOB` column per name in `extra_column_names`.
+///
+/// This keeps the emitted `sqlite_master.sql` DDL consistent with any
+/// additional geometry columns registered against this table via
+/// [`crate::writer::builder::GeoPackageBuilder::add_geometry_column_def`] —
+/// without this, `gpkg_geometry_columns` would reference a column that the
+/// table's own `CREATE TABLE` statement never declares (a non-conformant,
+/// internally inconsistent GeoPackage).
+///
+/// Row values for these extra columns are always written as `NULL` by the
+/// current writer (there is no per-row value API for them yet); the DDL still
+/// declares the column so metadata and schema agree, and callers can `UPDATE`
+/// the column post-hoc via any SQLite-compatible tool.
+pub fn ddl_feature_table_with_extra_columns(
+    table_name: &str,
+    extra_column_names: &[&str],
+) -> String {
+    let mut ddl = format!(
         "CREATE TABLE {table_name} (\n\
   fid INTEGER PRIMARY KEY AUTOINCREMENT,\n\
-  geom BLOB\n\
-)"
-    )
+  geom BLOB"
+    );
+    for name in extra_column_names {
+        ddl.push_str(",\n  ");
+        ddl.push_str(name);
+        ddl.push_str(" BLOB");
+    }
+    ddl.push_str("\n)");
+    ddl
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,4 +154,60 @@ pub fn default_srs_rows() -> [&'static DefaultSrs; 3] {
         &SRS_UNDEFINED_GEOGRAPHIC,
         &SRS_WGS84,
     ]
+}
+
+/// The three SRS ids the GeoPackage writer always emits regardless of what
+/// the caller registers: -1 (undefined cartesian), 0 (undefined geographic),
+/// 4326 (WGS 84).
+pub const MANDATORY_SRS_IDS: [i32; 3] = [-1, 0, 4326];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom SRS rows — caller-supplied EPSG codes beyond the three mandatory ids
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A caller-supplied `gpkg_spatial_ref_sys` row for a custom (non-default)
+/// coordinate reference system, registered via
+/// [`crate::writer::builder::GeoPackageBuilder::add_custom_srs`].
+///
+/// Unlike [`DefaultSrs`], every field is an owned [`String`] since the value
+/// is supplied at runtime rather than known at compile time.
+#[derive(Debug, Clone)]
+pub struct CustomSrs {
+    /// Human-readable name of the SRS.
+    pub srs_name: String,
+    /// Numeric SRS identifier (primary key). Must not collide with a
+    /// [`MANDATORY_SRS_IDS`] value or another registered custom SRS.
+    pub srs_id: i32,
+    /// Defining organisation (e.g. `"EPSG"`).
+    pub organization: String,
+    /// Organisation-assigned CRS code.
+    pub organization_coordsys_id: i64,
+    /// WKT definition of the SRS.
+    pub definition: String,
+    /// Human-readable description.
+    pub description: String,
+}
+
+impl CustomSrs {
+    /// Convenience constructor for a standard EPSG-authority SRS.
+    ///
+    /// Sets `organization = "EPSG"` and `organization_coordsys_id = srs_id`,
+    /// which holds for the overwhelming majority of real-world EPSG codes
+    /// (the code and the CRS's own id in the EPSG registry coincide).
+    pub fn epsg(srs_id: i32, srs_name: impl Into<String>, definition: impl Into<String>) -> Self {
+        Self {
+            srs_name: srs_name.into(),
+            srs_id,
+            organization: "EPSG".to_string(),
+            organization_coordsys_id: i64::from(srs_id),
+            definition: definition.into(),
+            description: String::new(),
+        }
+    }
+
+    /// Builder-pattern setter for [`Self::description`].
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
 }

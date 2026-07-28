@@ -1,8 +1,8 @@
 # TODO: oxigeo-gpu
 
-> **Purpose:** wgpu 29 backed GPU acceleration for OxiGeo raster ops — WGSL compute kernels (element-wise, resampling, convolution, statistics, FFT), pipelines, memory pool, multi-GPU primitives, backend-specific paths (CUDA/Vulkan/Metal stubs).
-> **Status (2026-05-16):** 13,242 LoC · 324 tests (hardware-gated GPU tests remain `#[ignore]`) · 5 real stubs (multi-GPU gather, CUDA workgroup memory, three Metal MPS shaders, Vulkan future-support stubs).
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Purpose:** wgpu 30 backed GPU acceleration for OxiGeo raster ops — WGSL compute kernels (element-wise, resampling, convolution, statistics, FFT), pipelines, memory pool, multi-GPU primitives, backend-specific optimization paths (CUDA/Vulkan/Metal).
+> **Status (2026-07-28):** 13,242 LoC (as of last count) · 772 tests (all-features; hardware-gated GPU tests remain `#[ignore]`) · 0 real stubs remaining — multi-GPU gather (done 2026-05-17) and the backend placeholder paths (below) have both landed.
+> **Roadmap:** v0.1.7 → v0.2.1 → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Lanczos resampling with configurable window size (completed 2026-05-16)
@@ -29,14 +29,9 @@
   - **Done:** `src/buffer.rs` extended with `BufferElementType { F32, F16, U8, U16, U32, I32 }` enum with `byte_size()` and `wgsl_type()`. Free functions: `f16_to_f32_slice`, `f32_to_f16_slice`, `from_f16_slice_widening` (uploads as f32, transparent fallback path), `from_f16_slice_native` (raw u8 storage when adapter supports SHADER_F16), `read_f16_from_f32_buffer`. New `src/shader_helpers.rs` — `make_element_wise_shader_source(element_type) -> String` emits `enable f16;` directive and `array<f16>` bindings for F16 type. `GpuContextConfig::with_f16_support()` adds `Features::SHADER_F16` to requested set (best-effort). Re-exported `BufferElementType`, f16 helpers, and `half` re-export from `lib.rs`. Workspace `Cargo.toml` gains `half = { version = "2.7.1", features = ["bytemuck"] }`.
   - **Tests added (8, CPU-only):** test_buffer_element_type_byte_sizes, test_buffer_element_type_wgsl_type_strings, test_f16_round_trip_within_1bit_lsb_via_widening, test_f16_kernel_source_contains_enable_directive_when_f16, test_f16_fallback_widens_to_f32_on_unsupported, test_from_f16_slice_empty, test_f16_to_f32_to_f16_idempotent_for_representable_values, test_f16_f32_roundtrip_special_values. Total: 434 pass / 47 pre-existing GPU backend failures.
 
-- [ ] Backend-specific shader paths beyond placeholders
-  - **Verified gap:** `src/backends/metal.rs:374` — `"// MPS image filter shader placeholder\n".to_string()`; `:378` `"// MPS reduction shader placeholder\n"`; `:382` `"// MPS neural network shader placeholder\n"`; `src/backends/cuda.rs:402` — `// In WGSL, this is a placeholder that needs workgroup memory`; `src/backends/vulkan.rs:148` — `// these are placeholders for future support`.
-  - **Goal:** Either delete these unused backend hooks (if all paths already go through wgpu's WGSL) or wire them to real Metal-shader-source loading via the existing `backends/metal.rs::compile_metal_shader` stub.
-  - **Design:** Audit call sites of each `*_placeholder` constant; if no caller, remove the dead module. Otherwise, expose Metal-Performance-Shaders via `metal-rs` (already an optional dep elsewhere, gated by `metal` feature on macOS).
-  - **Files:** `crates/oxigeo-gpu/src/backends/{cuda,metal,vulkan}.rs`.
-  - **Tests:** (proposed) `test_metal_path_unused_or_real_compile`, `test_cuda_workgroup_kernel_compiles_when_feature_enabled`, `test_vulkan_subgroup_op_when_supported`.
-  - **Risk:** Backend stubs may be exercised by integration tests elsewhere — search workspace before deletion.
-  - **Prerequisites:** None.
+- [x] Backend-specific shader paths beyond placeholders
+  - **Done:** The literal placeholder strings are gone — `rg -n "placeholder" src/backends/{metal,cuda,vulkan}.rs` now returns no matches. Each backend module was substantially built out instead of deleted: `backends/metal.rs` (1,122 lines) has real `MetalOptimizer::optimize_shader`/`calculate_threadgroup_size` plus an `MPSIntegration` registry of `MPSKernel`s; `backends/cuda.rs` has `ComputeCapability`-aware `optimize_shader`, `calculate_block_size`/`calculate_grid_size`, and a CUDA stream pool (`create_stream`/`acquire_stream`/`release_stream`); `backends/vulkan.rs` has descriptor-set-layout/pool management (`register`/`allocate`/`free`/`reset`) and semaphore tracking. This resolves the "silently fake" concern (no more placeholder comments masquerading as shader source) via per-backend shader-optimization heuristics and resource pooling rather than the originally-proposed literal Metal-shader-source loader.
+  - **Files:** `src/backends/{cuda,metal,vulkan}.rs`.
 
 ## Medium Priority
 - [x] Radix-2 1D FFT GPU compute kernel (forward + inverse) (completed 2026-05-19).
@@ -83,7 +78,9 @@
 - [x] Indirect dispatch for adaptive workload sizing. (completed 2026-05-19)
   - **Done:** New `src/indirect_dispatch.rs` (~220 LoC). `#[repr(C)] DispatchIndirectArgs { x, y, z: u32 }` (12-byte little-endian, stable layout). `IndirectDispatchBuffer` wrapping `Arc<wgpu::Buffer>` with `INDIRECT | COPY_DST | STORAGE` usage; `new()`, `new_with_capacity()`, `update()`, `update_at()`. `dispatch_indirect_on_pass(pass, pipeline, bind_groups, indirect)` convenience one-shot helper. Pure helpers: `workgroup_count_1d/2d/3d`, `args_for_elements`. Re-exported from `lib.rs`.
   - **Tests added (12):** 8 pure math/layout tests (no GPU required) + 4 catch-unwind GPU tests (skip gracefully on headless). Full end-to-end test uses no-op WGSL shader writing 42u via `dispatch_workgroups_indirect`, reads back and verifies. Total: 12 pass.
-- [ ] Benchmarking suite (GPU vs CPU for each kernel).
+- [x] Benchmarking suite (GPU vs CPU for each kernel).
+  - **Done:** `benches/gpu_bench.rs` and `benches/comprehensive_bench.rs` exist as criterion-based benchmark targets.
+  - **Files:** `benches/gpu_bench.rs`, `benches/comprehensive_bench.rs`.
 - [x] Shader hot-reload file-watcher (skeleton already in `src/shader_reload.rs`) (completed 2026-05-20).
   - **Done:** New `src/shader_reload_native.rs` (~272 LoC, `#[cfg(feature = "shader-hot-reload")]`). `FilesystemPoller { mtimes, poll_interval, last_poll }` polls `std::fs::metadata().modified()`: `register_path` (seeds mtime, propagates `NotFound`), `track_expected` (UNIX_EPOCH sentinel for not-yet-created files), `deregister_path`, `watched_paths` (sorted), `poll` (throttled to `poll_interval`), `force_poll` (bypasses throttle). Emits `PolledChange { path, kind: PolledChangeKind::{Modified, Deleted, Created} }`; a shared `diff_against_disk` helper iterates sorted keys, distinguishes Created (sentinel→exists) from Modified, and never reports a still-missing sentinel as Deleted. `read_shader_source` strips a leading UTF-8 BOM. `ShaderWatcher::poll_filesystem(&mut self, &mut FilesystemPoller)` (one method added to `shader_reload.rs`) maps Modified/Created paths to source labels, re-reads, calls `update_source`, returns aggregated `ShaderChangeEvent`s; unmatched labels / deleted files skipped gracefully. New `shader-hot-reload = []` feature (std-only, no new deps).
   - **Tests added (15):** 13 in `tests/shader_reload_native_test.rs` (default interval, register seeds / nonexistent-io-error, deregister, sorted watched paths, modify/delete/create detection via `File::set_modified`, throttle / force_poll, watcher round-trip, BOM strip, missing-label) + 2 inline. All 15 pass (the crate's pre-existing headless-GPU hardware tests are environment-dependent and unaffected by this change).
@@ -93,10 +90,10 @@
 
 ## Cross-crate dependencies
 - **Blocks:** oxigeo-gpu-advanced (extends this crate), oxigeo-services (GPU-accelerated raster ops), oxigeo-ml (CUDA/Vulkan/Metal EP coverage).
-- **Blocked by:** wgpu 29 (workspace pin), oxionnx (for ML interop).
+- **Blocked by:** wgpu 30 (workspace pin), oxionnx (for ML interop).
 
 ## Recently completed (verbatim)
-*(No `[x]` entries on previous TODO. Memory notes wgpu 29 API migration fixes for this crate are project-level commits.)*
+*(No `[x]` entries on the original 2026-05-16 TODO; this 2026-07-28 audit found the remaining High/Low Priority gaps — backend placeholder paths and the benchmark suite — already resolved in source.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

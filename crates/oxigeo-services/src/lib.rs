@@ -36,6 +36,7 @@ pub mod error;
 pub mod mvt;
 pub mod ogc_features;
 pub mod ogc_tiles;
+pub mod ogc_tiles_server;
 pub mod style;
 pub mod tile_cache;
 pub mod wcs;
@@ -46,15 +47,17 @@ pub mod wps;
 pub use csw::{CswState, MetadataRecord};
 pub use error::{ServiceError, ServiceResult};
 pub use mvt::{
-    MvtFeature, MvtGeometryType, MvtLayer, MvtLayerBuilder, MvtTile, MvtValue, close_path,
-    decode_zigzag, delta_encode, encode_varint, encode_zigzag, line_to, linestring_geometry,
-    move_to, point_geometry, polygon_ring_geometry, scale_to_tile,
+    MvtFeature, MvtGeometryType, MvtLayer, MvtLayerBuilder, MvtTile, MvtValue,
+    build_tile_from_features, close_path, decode_zigzag, delta_encode, encode_varint,
+    encode_zigzag, line_to, linestring_geometry, move_to, point_geometry, polygon_ring_geometry,
+    polygon_rings_geometry, scale_to_tile,
 };
 pub use ogc_tiles::{
     ConformanceDeclaration, CornerOfOrigin, GeographicBoundingBox, TileDataType, TileLink,
     TileMatrix, TileMatrixSet, TileSetMetadata, lonlat_to_tile, tile_children, tile_parent,
     tile_to_bbox, tile_to_pixel_bounds, tiles_in_bbox, validate_tile_coords,
 };
+pub use ogc_tiles_server::{OgcTilesState, TileFeatureProvider};
 pub use wcs::{CoverageInfo, CoverageSource, WcsState};
 pub use wfs::{FeatureSource, FeatureTypeInfo, WfsState};
 pub use wps::{Process, ProcessInputs, ProcessOutputs, WpsState};

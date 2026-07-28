@@ -1,11 +1,13 @@
 # TODO: oxigeo-geotiff
 
 > **Purpose:** GeoTIFF/COG driver for OxiGeo — Pure Rust GDAL reimplementation with cloud-optimized reading and writing
-> **Status (2026-05-16):** 12,091 Rust LoC · 460 tests · 1 real-code stub (`CogConverter::convert` returns placeholder result), plus 2 documented partial features (FloatingPoint predictor branch, JPEG/WebP codecs already in TODO)
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 12,091 Rust LoC · 550 tests (all-features) · 0 real-code stubs — the 2026-05-16 audit's remaining High Priority gaps (JPEG codec, predictor, multi-band write, LERC decode, GeoKey writing) have all since landed; only parallel tile encoding remains open below
+> **Roadmap:** v0.1.7 → v0.2.1 → v1.0.0
 
 ## High Priority
-- [ ] Implement JPEG compression codec (currently placeholder, `jpeg` feature)
+- [x] Implement JPEG compression codec (currently placeholder, `jpeg` feature)
+  - **Done:** No longer a placeholder. `src/jpeg_codec.rs` implements real JPEG-in-TIFF decompression for compression types 6/7 (old-style TTN2 SOF/SOS reconstruction and new-style TTN1 standalone strips, with JPEGTables tag-347 merging). `src/compression/mod.rs` wires both directions: `Compression::Jpeg => decompress_jpeg(data)` and `Compression::Jpeg => compress_jpeg(data, 85)` via the `jpeg_encoder` crate.
+  - **Files:** `src/jpeg_codec.rs`, `src/compression/mod.rs`.
 - [x] Implement WebP compression codec (TIFF tag 50001) — pure Rust via `image-webp`; decoder handles VP8/VP8L, encoder produces lossless VP8L; closes #6 (2026-05-22)
 - [x] BigTIFF format writer — 64-bit offsets, >4GB output support (planned 2026-04-18)
   - **Goal:** GeoTIFF writer produces valid BigTIFF (magic `0x002B`, 8-byte offsets) when output would exceed the 4GB classic-TIFF limit or the caller explicitly requests it. Round-trippable via existing reader.
@@ -17,11 +19,20 @@
   - **Files:** bigtiff.rs (new), writer/mod.rs, tags.rs
   - **Tests:** 5 tests covering magic, auto mode, force mode, disable mode, roundtrip
   - **Risk:** u32 offsets may be hardcoded; refactor offset abstraction first
-- [ ] Implement predictor support for writer (horizontal differencing, floating point)
-- [ ] Add multi-band write support to `GeoTiffWriter` (currently single-band focus)
+- [x] Implement predictor support for writer (horizontal differencing, floating point)
+  - **Done:** `src/compression/mod.rs` implements `apply_predictor_forward`/`apply_predictor_reverse` dispatching on `Predictor::{None, HorizontalDifferencing, FloatingPoint}`, including the full TIFF 6.0 floating-point predictor byte-shuffle (`apply_float_predictor_row`/`undo_float_predictor_row`). Wired into the real write path in `src/writer/tiles.rs` (`compression::apply_predictor_forward(...)` called before compression for both strip and tile writers).
+  - **Files:** `src/compression/mod.rs`, `src/writer/tiles.rs`.
+- [x] Add multi-band write support to `GeoTiffWriter` (currently single-band focus)
+  - **Done:** `GeoTiffWriter` (`src/writer/geotiff_writer.rs`) uses `config.band_count` throughout — buffer sizing, `SamplesPerPixel` tag, per-band `BitsPerSample` array — not hardcoded to one band; the "single-band focus" note is no longer accurate.
+  - **Files:** `src/writer/geotiff_writer.rs`.
 - [ ] Implement parallel tile encoding in `CogWriter` using rayon
-- [ ] Add LERC codec full decoding (currently scaffolding in `lerc_codec.rs`)
-- [ ] Implement proper GeoKey writing (ModelTiepointTag, ModelPixelScaleTag)
+  - **Re-verified 2026-07-28:** Still open — no `rayon` usage found in `Cargo.toml` or `src/cog/*.rs`.
+- [x] Add LERC codec full decoding (currently scaffolding in `lerc_codec.rs`)
+  - **Done (decode side; encode remains out of scope):** `src/lerc_codec/lerc2.rs` is now a real, substantial (1,575-line) "faithful pure-Rust port of the decode side of the Esri LERC2 format" (module doc) — parses the LERC2 blob header, RLE valid/invalid mask, and both one-sweep and tiled `BitStuffer2` micro-block layouts, dequantizing to `f64`. Honestly scoped: the module doc states the Huffman-coded byte-tile / delta-Huffman float modes are **not** decoded and return an explicit `CompressionError::DecompressionFailed` rather than fabricating output, and there is still no LERC **encoder** (`pub fn encode*` absent) — this item covers decoding real-world GDAL-produced tiled/one-sweep LERC2 rasters, not literally every LERC sub-variant or round-trip write support.
+  - **Files:** `src/lerc_codec/lerc2.rs`.
+- [x] Implement proper GeoKey writing (ModelTiepointTag, ModelPixelScaleTag)
+  - **Done:** `src/writer/geokeys_writer.rs::add_geo_transform` is wired from `GeoTiffWriter` whenever `config.geo_transform` is set. For north-up transforms it emits `ModelPixelScaleTag` (33550) + `ModelTiepointTag` (33922) via `IfdBuilder::add_double_array`; for non-north-up (rotated/sheared) transforms it emits the full `ModelTransformationTag` affine matrix instead.
+  - **Files:** `src/writer/geokeys_writer.rs`, `src/writer/geotiff_writer.rs`, `src/writer/ifd_writer.rs`.
 - [x] Wire `CogConverter::convert` to real input read + COG writer pipeline (audit-discovered 2026-05-16)
   - **Goal:** Public API `CogConverter::convert(&mut self) -> Result<ConversionResult>` at `src/cog/converter.rs` currently returns a fabricated `ConversionResult` without reading input data or writing output bytes. Replace placeholders with an end-to-end read-analyze-write pipeline that yields a valid COG on disk.
   - **Verified gap:** Two literal placeholder annotations in the same method:
@@ -50,11 +61,16 @@
 
 ## Medium Priority
 - [ ] Add async tile reading for cloud-native COG access via HTTP range requests
+  - **Note (2026-07-28):** `CogReader`/`TiffFile` are generic over `oxigeo_core::io::DataSource`, and the README's cloud-storage example already composes `CogReader::open` with `oxigeo_core`'s `HttpDataSource` for range-request tile fetches; not re-verified in depth for this audit since `HttpDataSource` lives in `oxigeo-core` (a different crate/batch), so left open rather than claimed done.
 - [ ] Implement EXIF metadata preservation during read/write round-trip
 - [ ] Add planar configuration support (separate planes vs. contiguous)
+  - **Re-verified 2026-07-28:** `PlanarConfiguration` enum is parsed from tags, but `CogWriter` hardcodes `PlanarConfiguration::Chunky` on write (`src/writer/cog_writer.rs`) — Separate-plane write still unsupported.
 - [ ] Implement ICC color profile embedding and extraction
 - [ ] Add per-band nodata value support (currently single nodata for all bands)
-- [ ] Implement overview generation with configurable resampling in writer
+  - **Re-verified 2026-07-28:** `add_nodata_tag` (`src/writer/geotiff_writer.rs`) still takes one `NoDataValue` shared across all bands.
+- [x] Implement overview generation with configurable resampling in writer
+  - **Done:** `CogWriterOptions.overview_resampling: OverviewResampling` (README Quick Start shows `OverviewResampling::Average`) is threaded through `src/writer/cog_writer.rs` into the actual overview-generation path, not just accepted and ignored.
+  - **Files:** `src/writer/cog_writer.rs`.
 - [ ] Add TIFF tag preservation for unknown/custom tags during round-trip
 - [ ] Implement COG validation against OGC COG specification (stricter than current)
 
@@ -73,4 +89,4 @@
 - **Blocked by:** `oxigeo-core` (RasterBuffer, DataSource, GeoTransform); `oxiarc-deflate`/`oxiarc-lzw`/`oxiarc-zstd` (decompression — already wired via per-codec features)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

@@ -529,6 +529,111 @@ mod tests {
         assert!(json_str.contains("100"));
     }
 
+    /// Non-ASCII attribute values (CJK, emoji, accented Latin, RTL) must survive
+    /// a write → read round-trip byte-for-byte through the crate's own writer and
+    /// reader, and the serialized form must be valid UTF-8 carrying the raw
+    /// characters (serde_json does not \u-escape non-ASCII).
+    #[test]
+    fn test_non_ascii_property_round_trip() {
+        use crate::reader::GeoJsonReader;
+        use serde_json::Value;
+
+        let mut props = serde_json::Map::new();
+        props.insert("名前".to_string(), Value::String("東京都".to_string()));
+        props.insert("emoji".to_string(), Value::String("🗾🌏".to_string()));
+        props.insert(
+            "accent".to_string(),
+            Value::String("Zürich café Å".to_string()),
+        );
+        props.insert("rtl".to_string(), Value::String("مرحبا".to_string()));
+
+        let point = Point::new_2d(139.69, 35.68).expect("valid point");
+        let feature = Feature::new(Some(Geometry::Point(point)), Some(props.clone()));
+        let fc = FeatureCollection::new(vec![feature]);
+
+        let json = to_string(&fc).expect("serialize");
+        // The raw multibyte characters must appear (not mangled or lost).
+        assert!(
+            json.contains("東京都"),
+            "CJK value must be present verbatim"
+        );
+        assert!(json.contains("🗾🌏"), "emoji must be present verbatim");
+
+        let mut reader = GeoJsonReader::new(std::io::Cursor::new(json.into_bytes()));
+        let back = reader.read_feature_collection().expect("read back");
+        assert_eq!(back.features.len(), 1);
+        let got = back.features[0]
+            .properties
+            .as_ref()
+            .expect("properties present");
+        assert_eq!(got, &props, "non-ASCII properties must round-trip exactly");
+    }
+
+    /// The same non-ASCII round-trip through the streaming `GeoJsonWriter` buffer
+    /// path (not just the `to_string` helper).
+    #[test]
+    fn test_non_ascii_property_round_trip_writer_buffer() {
+        use crate::reader::GeoJsonReader;
+        use serde_json::Value;
+
+        let mut props = serde_json::Map::new();
+        props.insert(
+            "straße".to_string(),
+            Value::String("Grüße 日本語".to_string()),
+        );
+        let point = Point::new_2d(13.4, 52.5).expect("valid point");
+        let feature = Feature::new(Some(Geometry::Point(point)), Some(props.clone()));
+        let fc = FeatureCollection::new(vec![feature]);
+
+        let mut buffer = Vec::new();
+        {
+            let mut writer = GeoJsonWriter::new(&mut buffer);
+            writer
+                .write_feature_collection(&fc)
+                .expect("write collection");
+            writer.flush().expect("flush");
+        }
+
+        let mut reader = GeoJsonReader::new(std::io::Cursor::new(buffer));
+        let back = reader.read_feature_collection().expect("read back");
+        let got = back.features[0]
+            .properties
+            .as_ref()
+            .expect("properties present");
+        assert_eq!(
+            got.get("straße").and_then(Value::as_str),
+            Some("Grüße 日本語")
+        );
+        assert_eq!(got, &props);
+    }
+
+    /// Non-ASCII values must also survive the GeoJSONL (newline-delimited)
+    /// streaming write/read path.
+    #[test]
+    fn test_non_ascii_geojsonl_round_trip() {
+        use crate::reader::read_geojsonl;
+        use serde_json::Value;
+
+        let mut props = serde_json::Map::new();
+        props.insert(
+            "ville".to_string(),
+            Value::String("Montréal 🇨🇦".to_string()),
+        );
+        let point = Point::new_2d(-73.57, 45.5).expect("valid point");
+        let feature = Feature::new(Some(Geometry::Point(point)), Some(props.clone()));
+
+        let mut buffer = Vec::new();
+        write_geojsonl(&mut buffer, std::iter::once(feature)).expect("write geojsonl");
+
+        let features = read_geojsonl(std::io::Cursor::new(buffer)).expect("read geojsonl");
+        assert_eq!(features.len(), 1);
+        let got = features[0].properties.as_ref().expect("properties present");
+        assert_eq!(
+            got.get("ville").and_then(Value::as_str),
+            Some("Montréal 🇨🇦")
+        );
+    }
+
     #[test]
     fn test_write_feature() {
         let point = Point::new_2d(100.0, 0.0).expect("valid point");

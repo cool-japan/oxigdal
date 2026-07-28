@@ -23,7 +23,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-core = "0.2.0"
+oxigeo-core = "0.2.1"
 ```
 
 ### Feature Flags
@@ -37,7 +37,7 @@ Example with arrow support:
 
 ```toml
 [dependencies]
-oxigeo-core = { version = "0.2.0", features = ["arrow"] }
+oxigeo-core = { version = "0.2.1", features = ["arrow"] }
 ```
 
 ## Quick Start
@@ -212,10 +212,10 @@ cargo bench --package oxigeo-core
 
 ## Project Statistics
 
-- **~7,000 lines of code** (Rust)
-- **~1,750 lines of documentation**
-- **24 source files**
-- **Zero unsafe code** in core types
+- **~13,700 lines of code** (Rust)
+- **~2,400 lines of documentation**
+- **36 source files**
+- **Unsafe code confined to `buffer`** (typed raw-slice conversions, `#![allow(unsafe_code)]`) — zero unsafe in `types`
 
 ## Error Handling
 

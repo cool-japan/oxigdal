@@ -2,6 +2,7 @@
 
 pub mod checkpoint;
 pub mod consumer;
+pub(crate) mod md5;
 pub mod producer;
 pub mod shard;
 

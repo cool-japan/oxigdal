@@ -266,6 +266,5 @@ Copyright © 2025 COOLJAPAN OU (Team Kitasan)
 
 ## See Also
 
-- [Algorithm Guide](/tmp/oxigeo_algorithm_guide.md)
 - [API Documentation](https://docs.rs/oxigeo-algorithms)
 - [GitHub Repository](https://github.com/cool-japan/oxigeo)

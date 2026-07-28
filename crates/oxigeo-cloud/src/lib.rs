@@ -45,6 +45,7 @@
 //! ## Multi-cloud Abstraction
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "s3")]
 //! # async fn example() -> oxigeo_cloud::Result<()> {
 //! use oxigeo_cloud::CloudBackend;
 //!

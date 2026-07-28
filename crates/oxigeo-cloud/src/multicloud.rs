@@ -109,25 +109,44 @@ impl CloudProvider {
         }
     }
 
-    /// Returns typical egress cost per GB (USD)
+    /// Returns typical egress cost per GB (USD).
+    ///
+    /// # Pricing data is a static, unattributed snapshot -- last verified 2024
+    ///
+    /// These are illustrative, publicly-listed "standard tier, first tier of
+    /// usage" list prices as of 2024 -- **not** a live pricing feed. Real
+    /// cloud egress pricing changes over time, varies by region/usage
+    /// tier/negotiated discount, and these constants have no automated
+    /// staleness check against the providers' published pricing pages. Any
+    /// cost-based routing decision that relies on the default value here
+    /// (rather than [`CloudProviderConfig::with_egress_cost`]/
+    /// [`custom_egress_cost`](CloudProviderConfig::custom_egress_cost)) should
+    /// be treated as a rough order-of-magnitude estimate, not a billing-grade
+    /// figure. Prefer overriding this via your own current contract pricing
+    /// wherever cost-optimized routing decisions actually matter.
     #[must_use]
     pub fn egress_cost_per_gb(&self) -> f64 {
         match self {
-            Self::AwsS3 => 0.09,      // AWS S3 standard egress
-            Self::AzureBlob => 0.087, // Azure Blob standard egress
-            Self::Gcs => 0.12,        // GCS standard egress
+            Self::AwsS3 => 0.09,      // AWS S3 standard egress (2024 list price)
+            Self::AzureBlob => 0.087, // Azure Blob standard egress (2024 list price)
+            Self::Gcs => 0.12,        // GCS standard egress (2024 list price)
             Self::Http => 0.0,        // No cloud-specific egress
             Self::Custom => 0.0,
         }
     }
 
-    /// Returns typical storage cost per GB/month (USD)
+    /// Returns typical storage cost per GB/month (USD).
+    ///
+    /// See the "Pricing data is a static, unattributed snapshot" note on
+    /// [`egress_cost_per_gb`](Self::egress_cost_per_gb) -- the same caveat
+    /// (2024 list prices, no staleness check, override for anything
+    /// billing-sensitive) applies here.
     #[must_use]
     pub fn storage_cost_per_gb(&self) -> f64 {
         match self {
-            Self::AwsS3 => 0.023,     // S3 Standard
-            Self::AzureBlob => 0.018, // Azure Blob Hot
-            Self::Gcs => 0.020,       // GCS Standard
+            Self::AwsS3 => 0.023,     // S3 Standard (2024 list price)
+            Self::AzureBlob => 0.018, // Azure Blob Hot (2024 list price)
+            Self::Gcs => 0.020,       // GCS Standard (2024 list price)
             Self::Http => 0.0,
             Self::Custom => 0.0,
         }

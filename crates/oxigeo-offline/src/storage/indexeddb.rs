@@ -13,14 +13,58 @@ use crate::storage::{StorageBackend, StorageStatistics, serialization};
 use crate::types::{Operation, OperationId, Record, RecordId};
 use async_trait::async_trait;
 use js_sys::Uint8Array;
+use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    IdbCursorWithValue, IdbDatabase, IdbFactory, IdbObjectStore, IdbOpenDbRequest, IdbRequest,
-    IdbTransaction, IdbTransactionMode, IdbVersionChangeEvent,
+    DomException, IdbCursorWithValue, IdbDatabase, IdbFactory, IdbObjectStore, IdbOpenDbRequest,
+    IdbRequest, IdbTransaction, IdbTransactionMode, IdbVersionChangeEvent,
 };
+
+/// Bridge an event-based [`IdbRequest`] (IndexedDB requests fire
+/// `onsuccess`/`onerror` events; they do not return a `Promise`) into an
+/// awaitable `Result`. Accepts anything derefable to `IdbRequest`
+/// (including [`IdbOpenDbRequest`]).
+async fn await_idb_request(request: &IdbRequest) -> std::result::Result<JsValue, JsValue> {
+    let request_for_success = request.clone();
+    let request_for_error = request.clone();
+
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let request_for_success = request_for_success.clone();
+        let on_success = Closure::once(move |_evt: web_sys::Event| {
+            let result = request_for_success.result().unwrap_or(JsValue::UNDEFINED);
+            let _ = resolve.call1(&JsValue::NULL, &result);
+        });
+        request.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
+        on_success.forget();
+
+        let request_for_error = request_for_error.clone();
+        let on_error = Closure::once(move |_evt: web_sys::Event| {
+            let err: JsValue = request_for_error
+                .error()
+                .ok()
+                .flatten()
+                .map(Into::into)
+                .unwrap_or_else(|| JsValue::from_str("IndexedDB request failed"));
+            let _ = reject.call1(&JsValue::NULL, &err);
+        });
+        request.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        on_error.forget();
+    });
+
+    JsFuture::from(promise).await
+}
+
+/// `true` if `err` is the `DOMException` IndexedDB throws when creating an
+/// object store/index that already exists -- i.e. safe to ignore when
+/// (re-)opening a database whose schema was already created by a previous
+/// session/version.
+fn is_already_exists_error(err: &JsValue) -> bool {
+    err.dyn_ref::<DomException>()
+        .is_some_and(|e| e.name() == "ConstraintError")
+}
 
 /// Database version for schema management
 const DB_VERSION: u32 = 1;
@@ -70,6 +114,32 @@ impl IndexedDbBackend {
             .open_with_u32(&self.db_name, DB_VERSION)
             .map_err(|e| Error::storage(format!("Failed to open database: {e:?}")))?;
 
+        // The `onupgradeneeded` closure runs synchronously as a DOM event
+        // callback and cannot itself return a `Result` to this async
+        // function. Schema-creation failures (quota, disallowed
+        // characters, an object store/index that already exists with
+        // different parameters, ...) are captured here instead of being
+        // silently discarded via `.ok()`/`let _ =`, so a failure surfaces
+        // as a real `Error::storage(...)` after the open request settles
+        // rather than leaving the database silently missing a store or
+        // index that later query methods depend on.
+        let schema_error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let schema_error_handle = Rc::clone(&schema_error);
+
+        /// Record a schema-creation failure: log it immediately (the only
+        /// way to surface it while still inside the synchronous DOM
+        /// callback) and stash the first failure so `open_database` can
+        /// turn it into a real error once the open request settles.
+        fn record_schema_error(handle: &Rc<RefCell<Option<String>>>, message: String) {
+            web_sys::console::error_1(&JsValue::from_str(&format!(
+                "IndexedDB schema creation failed: {message}"
+            )));
+            let mut slot = handle.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(message);
+            }
+        }
+
         // Set up upgrade handler for schema creation/migration
         let upgrade_handler = Closure::once(move |event: IdbVersionChangeEvent| {
             let target = event
@@ -78,37 +148,98 @@ impl IndexedDbBackend {
                 .and_then(|r| r.result().ok())
                 .and_then(|r| r.dyn_into::<IdbDatabase>().ok());
 
-            if let Some(db) = target {
-                // Create records object store
-                if !db.object_store_names().contains(RECORDS_STORE) {
-                    let records_store = db.create_object_store(RECORDS_STORE).ok();
+            let Some(db) = target else {
+                record_schema_error(
+                    &schema_error_handle,
+                    "onupgradeneeded fired but no IdbDatabase result was available".to_string(),
+                );
+                return;
+            };
 
-                    if let Some(store) = records_store {
-                        // Create index on key field for fast lookups
-                        let _ = store.create_index(RECORDS_KEY_INDEX);
+            // Create records object store. Values are stored as opaque
+            // serialized byte blobs (see `bytes_to_js`/`js_to_bytes`), so
+            // the "key field" index below is created with a placeholder
+            // keyPath (it currently indexes no real property on the
+            // stored blob values) -- it exists so the store's schema
+            // matches its documented name, but no query in this file uses
+            // it yet; real per-field indexing would require storing
+            // structured JS objects instead of raw bytes.
+            //
+            // `create_object_store` throws a `ConstraintError` if the store
+            // already exists (e.g. this handler ran again after a future
+            // `DB_VERSION` bump) -- that's expected/idempotent, not a real
+            // failure, so it's the only error swallowed without being
+            // recorded.
+            match db.create_object_store(RECORDS_STORE) {
+                Ok(store) => {
+                    if let Err(e) =
+                        store.create_index_with_str(RECORDS_KEY_INDEX, RECORDS_KEY_INDEX)
+                    {
+                        if !is_already_exists_error(&e) {
+                            record_schema_error(
+                                &schema_error_handle,
+                                format!(
+                                    "failed to create index {RECORDS_KEY_INDEX} on \
+                                     {RECORDS_STORE}: {e:?}"
+                                ),
+                            );
+                        }
                     }
                 }
+                Err(e) if !is_already_exists_error(&e) => {
+                    record_schema_error(
+                        &schema_error_handle,
+                        format!("failed to create object store {RECORDS_STORE}: {e:?}"),
+                    );
+                }
+                Err(_) => {}
+            }
 
-                // Create operations object store
-                if !db.object_store_names().contains(OPERATIONS_STORE) {
-                    let operations_store = db.create_object_store(OPERATIONS_STORE).ok();
-
-                    if let Some(store) = operations_store {
-                        // Create index on priority for queue ordering
-                        let _ = store.create_index(OPERATIONS_PRIORITY_INDEX);
+            // Create operations object store (same opaque-blob caveat as above).
+            match db.create_object_store(OPERATIONS_STORE) {
+                Ok(store) => {
+                    if let Err(e) = store
+                        .create_index_with_str(OPERATIONS_PRIORITY_INDEX, OPERATIONS_PRIORITY_INDEX)
+                    {
+                        if !is_already_exists_error(&e) {
+                            record_schema_error(
+                                &schema_error_handle,
+                                format!(
+                                    "failed to create index {OPERATIONS_PRIORITY_INDEX} on \
+                                     {OPERATIONS_STORE}: {e:?}"
+                                ),
+                            );
+                        }
                     }
                 }
+                Err(e) if !is_already_exists_error(&e) => {
+                    record_schema_error(
+                        &schema_error_handle,
+                        format!("failed to create object store {OPERATIONS_STORE}: {e:?}"),
+                    );
+                }
+                Err(_) => {}
             }
         });
 
         open_request.set_onupgradeneeded(Some(upgrade_handler.as_ref().unchecked_ref()));
         upgrade_handler.forget();
 
-        // Wait for database to open
-        let promise = JsFuture::from(open_request);
-        let result = promise
+        // Wait for database to open. `IdbOpenDbRequest` is event-based
+        // (onsuccess/onerror), not `Promise`-returning, hence
+        // `await_idb_request` rather than `JsFuture::from(open_request)`.
+        let result = await_idb_request(&open_request)
             .await
             .map_err(|e| Error::storage(format!("Database open failed: {e:?}")))?;
+
+        // `onupgradeneeded` (if it fired at all) has already run to
+        // completion by the time the open request's success/error settles,
+        // so any schema-creation failure captured above is visible here.
+        if let Some(message) = schema_error.borrow_mut().take() {
+            return Err(Error::storage(format!(
+                "IndexedDB schema creation failed during upgrade: {message}"
+            )));
+        }
 
         let db = result
             .dyn_into::<IdbDatabase>()
@@ -162,10 +293,11 @@ impl IndexedDbBackend {
         Ok(array.to_vec())
     }
 
-    /// Execute a request and wait for completion
-    async fn execute_request(request: IdbRequest) -> Result<JsValue> {
-        let promise = JsFuture::from(request);
-        promise
+    /// Execute a request and wait for completion. `IdbRequest` is
+    /// event-based (onsuccess/onerror), not `Promise`-returning, hence
+    /// [`await_idb_request`] rather than `JsFuture::from(request)`.
+    async fn execute_request(request: &IdbRequest) -> Result<JsValue> {
+        await_idb_request(request)
             .await
             .map_err(|e| Error::storage(format!("Request failed: {e:?}")))
     }
@@ -179,7 +311,7 @@ impl IndexedDbBackend {
             .get(&JsValue::from_str(key))
             .map_err(|e| Error::storage(format!("Failed to get value: {e:?}")))?;
 
-        let result = Self::execute_request(request).await?;
+        let result = Self::execute_request(&request).await?;
 
         Ok(if result.is_undefined() || result.is_null() {
             None
@@ -197,7 +329,7 @@ impl IndexedDbBackend {
             .put_with_key(&value, &JsValue::from_str(key))
             .map_err(|e| Error::storage(format!("Failed to put value: {e:?}")))?;
 
-        Self::execute_request(request).await?;
+        Self::execute_request(&request).await?;
         Ok(())
     }
 
@@ -210,7 +342,7 @@ impl IndexedDbBackend {
             .delete(&JsValue::from_str(key))
             .map_err(|e| Error::storage(format!("Failed to delete value: {e:?}")))?;
 
-        Self::execute_request(request).await?;
+        Self::execute_request(&request).await?;
         Ok(())
     }
 
@@ -224,24 +356,31 @@ impl IndexedDbBackend {
             .map_err(|e| Error::storage(format!("Failed to open cursor: {e:?}")))?;
 
         let mut values = Vec::new();
-        let mut current_request = request;
 
+        // `IdbCursor::continue_()` doesn't return a new request -- it just
+        // re-arms the *same* underlying cursor request, which then fires
+        // another `success` event (with the next value, or `null` once
+        // exhausted). So we keep awaiting the one `request` object rather
+        // than chasing a new one each iteration.
         loop {
-            let result = Self::execute_request(current_request).await?;
+            let result = Self::execute_request(&request).await?;
 
             if result.is_null() || result.is_undefined() {
                 break;
             }
 
-            if let Ok(cursor) = result.dyn_into::<IdbCursorWithValue>() {
-                values.push(cursor.value());
+            let cursor = result.dyn_into::<IdbCursorWithValue>().map_err(|_| {
+                Error::storage("Cursor result was not an IdbCursorWithValue".to_string())
+            })?;
 
-                current_request = cursor
-                    .continue_()
-                    .map_err(|e| Error::storage(format!("Failed to continue cursor: {e:?}")))?;
-            } else {
-                break;
-            }
+            let value = cursor
+                .value()
+                .map_err(|e| Error::storage(format!("Failed to read cursor value: {e:?}")))?;
+            values.push(value);
+
+            cursor
+                .continue_()
+                .map_err(|e| Error::storage(format!("Failed to continue cursor: {e:?}")))?;
         }
 
         Ok(values)
@@ -256,7 +395,7 @@ impl IndexedDbBackend {
             .count()
             .map_err(|e| Error::storage(format!("Failed to count: {e:?}")))?;
 
-        let result = Self::execute_request(request).await?;
+        let result = Self::execute_request(&request).await?;
 
         // Extract count from JsValue
         if let Some(count) = result.as_f64() {
@@ -275,7 +414,7 @@ impl IndexedDbBackend {
             .clear()
             .map_err(|e| Error::storage(format!("Failed to clear store: {e:?}")))?;
 
-        Self::execute_request(request).await?;
+        Self::execute_request(&request).await?;
         Ok(())
     }
 }

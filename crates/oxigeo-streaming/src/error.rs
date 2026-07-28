@@ -97,6 +97,13 @@ pub enum StreamingError {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
+    /// A required optional feature was not enabled at build time.
+    ///
+    /// Returned instead of fabricating a fake success (e.g. an empty tile body)
+    /// when a code path genuinely requires a Cargo feature that is turned off.
+    #[error("feature '{0}' is not enabled; rebuild with that feature to use this operation")]
+    FeatureNotEnabled(String),
+
     /// Tile not found (HTTP 404 or equivalent)
     #[error("Tile not found")]
     TileNotFound,

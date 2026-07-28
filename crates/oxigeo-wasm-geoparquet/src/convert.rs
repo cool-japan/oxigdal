@@ -3,9 +3,10 @@
 //! Decodes each row's WKB geometry via `oxigeo-geoparquet`'s
 //! [`WkbReader`], maps the seven [`Geometry`] variants onto
 //! `oxigeo-geojson-stream` [`GeoJsonGeometry`] values, carries projected
-//! attribute columns (`Float64` / `Utf8`) as feature properties and
-//! accumulates the match count and total `area_in_meters`.  Output is written
-//! with the compact GeoJSON writer at coordinate precision 6.
+//! attribute columns (`Float64` / `Utf8` / `Int64` / `Int32` / `Boolean` /
+//! `Date32` / `Timestamp`) as feature properties and accumulates the match
+//! count and total `area_in_meters`.  Output is written with the compact
+//! GeoJSON writer at coordinate precision 6.
 //!
 //! This module is intentionally cross-platform (it links no `web_sys` /
 //! `wasm_bindgen` surface) so the parity test can exercise it — and the whole
@@ -17,7 +18,12 @@
 // (also WP C4); on a native lib build without the parity test it looks unused.
 #![allow(dead_code)]
 
-use arrow_array::{Array, BinaryArray, Float64Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
+    RecordBatch, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+    TimestampNanosecondArray, TimestampSecondArray,
+};
+use arrow_schema::DataType;
 use oxigeo_geojson_stream::{GeoJsonFeature, GeoJsonGeometry, GeoJsonWriter};
 use oxigeo_geoparquet::geometry::{Coordinate, Geometry, WkbReader};
 use serde_json::{Map, Value};
@@ -52,8 +58,9 @@ pub struct QueryOutput {
 ///   `area_in_meters`); when it is absent from a batch the running sum is left
 ///   unchanged.
 ///
-/// Every non-geometry column whose Arrow type is `Float64` or `Utf8` becomes a
-/// feature property; other column types (struct `bbox`, binary, …) are skipped.
+/// Every non-geometry column whose Arrow type is `Float64`, `Utf8`, `Int64`,
+/// `Int32`, `Boolean`, `Date32`, or `Timestamp` (any unit) becomes a feature
+/// property; other column types (struct `bbox`, binary, list, …) are skipped.
 /// Rows whose geometry is null are dropped rather than emitted with a null
 /// geometry.
 ///
@@ -134,10 +141,29 @@ enum PropColumn<'a> {
     Float(String, &'a Float64Array),
     /// A `Utf8` string column.
     Text(String, &'a StringArray),
+    /// An `Int64` integer column (e.g. population counts, feature IDs).
+    Int64(String, &'a Int64Array),
+    /// An `Int32` integer column.
+    Int32(String, &'a Int32Array),
+    /// A `Boolean` flag column.
+    Bool(String, &'a BooleanArray),
+    /// A `Date32` (days-since-epoch) column, rendered as `YYYY-MM-DD`.
+    Date32(String, &'a Date32Array),
+    /// A `Timestamp(Second, _)` column, rendered as an ISO-8601 datetime.
+    TimestampSecond(String, &'a TimestampSecondArray),
+    /// A `Timestamp(Millisecond, _)` column, rendered as an ISO-8601 datetime.
+    TimestampMillisecond(String, &'a TimestampMillisecondArray),
+    /// A `Timestamp(Microsecond, _)` column, rendered as an ISO-8601 datetime.
+    TimestampMicrosecond(String, &'a TimestampMicrosecondArray),
+    /// A `Timestamp(Nanosecond, _)` column, rendered as an ISO-8601 datetime.
+    TimestampNanosecond(String, &'a TimestampNanosecondArray),
 }
 
-/// Resolve the batch's non-geometry `Float64` / `Utf8` columns to typed
-/// accessors, preserving schema order.
+/// Resolve the batch's non-geometry `Float64` / `Utf8` / `Int64` / `Int32` /
+/// `Boolean` / `Date32` / `Timestamp` columns to typed accessors, preserving
+/// schema order. Other Arrow types (struct `bbox`, binary, list, …) are
+/// intentionally skipped — there is no lossless, self-describing GeoJSON
+/// property representation for them without a richer schema on the JS side.
 fn property_columns<'a>(batch: &'a RecordBatch, geometry_column: &str) -> Vec<PropColumn<'a>> {
     let mut cols = Vec::new();
     for (idx, field) in batch.schema_ref().fields().iter().enumerate() {
@@ -150,6 +176,24 @@ fn property_columns<'a>(batch: &'a RecordBatch, geometry_column: &str) -> Vec<Pr
             cols.push(PropColumn::Float(name.clone(), f));
         } else if let Some(s) = array.as_any().downcast_ref::<StringArray>() {
             cols.push(PropColumn::Text(name.clone(), s));
+        } else if let Some(i) = array.as_any().downcast_ref::<Int64Array>() {
+            cols.push(PropColumn::Int64(name.clone(), i));
+        } else if let Some(i) = array.as_any().downcast_ref::<Int32Array>() {
+            cols.push(PropColumn::Int32(name.clone(), i));
+        } else if let Some(b) = array.as_any().downcast_ref::<BooleanArray>() {
+            cols.push(PropColumn::Bool(name.clone(), b));
+        } else if let Some(d) = array.as_any().downcast_ref::<Date32Array>() {
+            cols.push(PropColumn::Date32(name.clone(), d));
+        } else if matches!(array.data_type(), DataType::Timestamp(_, _)) {
+            if let Some(t) = array.as_any().downcast_ref::<TimestampSecondArray>() {
+                cols.push(PropColumn::TimestampSecond(name.clone(), t));
+            } else if let Some(t) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
+                cols.push(PropColumn::TimestampMillisecond(name.clone(), t));
+            } else if let Some(t) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+                cols.push(PropColumn::TimestampMicrosecond(name.clone(), t));
+            } else if let Some(t) = array.as_any().downcast_ref::<TimestampNanosecondArray>() {
+                cols.push(PropColumn::TimestampNanosecond(name.clone(), t));
+            }
         }
     }
     cols
@@ -174,9 +218,87 @@ fn build_properties(cols: &[PropColumn<'_>], row: usize) -> Map<String, Value> {
                     map.insert(name.clone(), Value::String(arr.value(row).to_string()));
                 }
             }
+            PropColumn::Int64(name, arr) => {
+                if arr.is_null(row) {
+                    map.insert(name.clone(), Value::Null);
+                } else {
+                    map.insert(name.clone(), Value::Number(arr.value(row).into()));
+                }
+            }
+            PropColumn::Int32(name, arr) => {
+                if arr.is_null(row) {
+                    map.insert(name.clone(), Value::Null);
+                } else {
+                    map.insert(name.clone(), Value::Number(arr.value(row).into()));
+                }
+            }
+            PropColumn::Bool(name, arr) => {
+                if arr.is_null(row) {
+                    map.insert(name.clone(), Value::Null);
+                } else {
+                    map.insert(name.clone(), Value::Bool(arr.value(row)));
+                }
+            }
+            PropColumn::Date32(name, arr) => {
+                let value = if arr.is_null(row) {
+                    None
+                } else {
+                    arr.value_as_date(row).map(|d| d.to_string())
+                };
+                insert_string_or_null(&mut map, name, value);
+            }
+            PropColumn::TimestampSecond(name, arr) => {
+                insert_timestamp(&mut map, name, arr.is_null(row), || {
+                    arr.value_as_datetime(row)
+                });
+            }
+            PropColumn::TimestampMillisecond(name, arr) => {
+                insert_timestamp(&mut map, name, arr.is_null(row), || {
+                    arr.value_as_datetime(row)
+                });
+            }
+            PropColumn::TimestampMicrosecond(name, arr) => {
+                insert_timestamp(&mut map, name, arr.is_null(row), || {
+                    arr.value_as_datetime(row)
+                });
+            }
+            PropColumn::TimestampNanosecond(name, arr) => {
+                insert_timestamp(&mut map, name, arr.is_null(row), || {
+                    arr.value_as_datetime(row)
+                });
+            }
         }
     }
     map
+}
+
+/// Inserts `value` as a JSON string, or `Null` when the row was null or (for
+/// an out-of-range day count) the day-count-to-date conversion failed.
+fn insert_string_or_null(map: &mut Map<String, Value>, name: &str, value: Option<String>) {
+    let json = match value {
+        Some(s) => Value::String(s),
+        None => Value::Null,
+    };
+    map.insert(name.to_string(), json);
+}
+
+/// Inserts a `Timestamp` value as an ISO-8601 datetime string
+/// (`YYYY-MM-DDTHH:MM:SS.fff`), or `Null` when the row is null or (for an
+/// out-of-range instant) undecodable. `datetime` is only invoked when the row
+/// is not null, since it downcasts a raw integer that may be meaningless for
+/// a null slot.
+fn insert_timestamp(
+    map: &mut Map<String, Value>,
+    name: &str,
+    is_null: bool,
+    datetime: impl FnOnce() -> Option<chrono::NaiveDateTime>,
+) {
+    let value = if is_null {
+        None
+    } else {
+        datetime().map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+    };
+    insert_string_or_null(map, name, value);
 }
 
 /// Build a [`GpqLiveError`] for a missing column.
@@ -354,6 +476,94 @@ mod tests {
         assert!(out.geojson.contains("\"name\":\"a\""));
         // Geometry column must NOT leak into properties.
         assert!(!out.geojson.contains("\"geometry\":\""));
+    }
+
+    #[test]
+    fn int_bool_date_and_timestamp_columns_survive_as_properties() {
+        use std::sync::Arc;
+
+        use chrono::NaiveDate;
+
+        let raw = wkb(&Geometry::Point(Point::new_2d(139.0, 35.0)));
+        let geom = Arc::new(BinaryArray::from(vec![Some(raw.as_slice())])) as arrow_array::ArrayRef;
+        let area = Arc::new(Float64Array::from(vec![42.0])) as arrow_array::ArrayRef;
+        let population =
+            Arc::new(Int64Array::from(vec![1_234_567_890_123i64])) as arrow_array::ArrayRef;
+        let small_count = Arc::new(Int32Array::from(vec![7i32])) as arrow_array::ArrayRef;
+        let active = Arc::new(BooleanArray::from(vec![true])) as arrow_array::ArrayRef;
+
+        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch date");
+        let built_on_date = NaiveDate::from_ymd_opt(2023, 1, 15).expect("built-on date");
+        let built_on_days = built_on_date.signed_duration_since(epoch).num_days() as i32;
+        let built_on = Arc::new(Date32Array::from(vec![built_on_days])) as arrow_array::ArrayRef;
+
+        let surveyed_dt = built_on_date
+            .and_hms_opt(12, 30, 0)
+            .expect("built-on time")
+            .and_utc();
+        let surveyed_at = Arc::new(TimestampMicrosecondArray::from(vec![
+            surveyed_dt.timestamp_micros(),
+        ])) as arrow_array::ArrayRef;
+
+        let batch = RecordBatch::try_from_iter_with_nullable(vec![
+            ("geometry", geom, true),
+            ("area_in_meters", area, false),
+            ("population", population, false),
+            ("small_count", small_count, false),
+            ("active", active, false),
+            ("built_on", built_on, false),
+            ("surveyed_at", surveyed_at, false),
+        ])
+        .expect("batch");
+
+        let out = record_batches_to_geojson(&[batch], "geometry", "area_in_meters").unwrap();
+        assert_eq!(out.matched, 1);
+        assert!(
+            out.geojson.contains("\"population\":1234567890123"),
+            "{}",
+            out.geojson
+        );
+        assert!(out.geojson.contains("\"small_count\":7"), "{}", out.geojson);
+        assert!(out.geojson.contains("\"active\":true"), "{}", out.geojson);
+        assert!(
+            out.geojson.contains("\"built_on\":\"2023-01-15\""),
+            "{}",
+            out.geojson
+        );
+        assert!(
+            out.geojson
+                .contains("\"surveyed_at\":\"2023-01-15T12:30:00"),
+            "{}",
+            out.geojson
+        );
+    }
+
+    #[test]
+    fn null_attribute_columns_render_as_json_null() {
+        use std::sync::Arc;
+
+        let raw = wkb(&Geometry::Point(Point::new_2d(1.0, 2.0)));
+        let geom = Arc::new(BinaryArray::from(vec![Some(raw.as_slice())])) as arrow_array::ArrayRef;
+        let area = Arc::new(Float64Array::from(vec![1.0])) as arrow_array::ArrayRef;
+        let population: arrow_array::ArrayRef = Arc::new(Int64Array::from(vec![None]));
+        let active: arrow_array::ArrayRef = Arc::new(BooleanArray::from(vec![None]));
+
+        let batch = RecordBatch::try_from_iter_with_nullable(vec![
+            ("geometry", geom, true),
+            ("area_in_meters", area, false),
+            ("population", population, true),
+            ("active", active, true),
+        ])
+        .expect("batch");
+
+        let out = record_batches_to_geojson(&[batch], "geometry", "area_in_meters").unwrap();
+        assert_eq!(out.matched, 1);
+        assert!(
+            out.geojson.contains("\"population\":null"),
+            "{}",
+            out.geojson
+        );
+        assert!(out.geojson.contains("\"active\":null"), "{}", out.geojson);
     }
 
     #[test]

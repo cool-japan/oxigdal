@@ -1,7 +1,7 @@
 //! Data source implementations for ETL pipelines
 //!
 //! This module provides various data source implementations including file sources,
-//! HTTP/S3 sources, STAC catalog sources, Kafka sources, and database sources.
+//! HTTP/S3 sources, STAC catalog sources, and database sources.
 
 use crate::error::{Result, SourceError};
 use crate::stream::{BoxStream, StreamItem};
@@ -356,68 +356,6 @@ impl Source for StacSource {
 
     fn name(&self) -> &str {
         "StacSource"
-    }
-}
-
-/// Kafka source configuration
-#[cfg(feature = "kafka")]
-#[derive(Debug, Clone)]
-pub struct KafkaSourceConfig {
-    /// Bootstrap servers
-    pub brokers: String,
-    /// Topic to consume from
-    pub topic: String,
-    /// Consumer group ID
-    pub group_id: String,
-    /// Auto offset reset
-    pub auto_offset_reset: String,
-}
-
-/// Kafka source for consuming messages
-#[cfg(feature = "kafka")]
-pub struct KafkaSource {
-    config: KafkaSourceConfig,
-}
-
-#[cfg(feature = "kafka")]
-impl KafkaSource {
-    /// Create a new Kafka source
-    pub fn new(brokers: String, topic: String) -> Self {
-        Self {
-            config: KafkaSourceConfig {
-                brokers,
-                topic,
-                group_id: "oxigeo-etl".to_string(),
-                auto_offset_reset: "earliest".to_string(),
-            },
-        }
-    }
-
-    /// Set consumer group ID
-    pub fn group_id(mut self, group_id: String) -> Self {
-        self.config.group_id = group_id;
-        self
-    }
-}
-
-#[cfg(feature = "kafka")]
-#[async_trait]
-impl Source for KafkaSource {
-    async fn stream(&self) -> Result<BoxStream<StreamItem>> {
-        // Note: Kafka consumer requires proper lifecycle management with Arc/spawn
-        // For now, return an error indicating this feature needs implementation
-        // In production, use a background task or Arc-wrapped consumer
-
-        Err(SourceError::InvalidConfig(
-            "Kafka source requires proper consumer lifecycle management. \
-             Use a custom source with Arc-wrapped consumer for production use."
-                .to_string(),
-        )
-        .into())
-    }
-
-    fn name(&self) -> &str {
-        "KafkaSource"
     }
 }
 

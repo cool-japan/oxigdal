@@ -29,7 +29,6 @@ all_analytics = ["interpolation", "clustering", "timeseries", "hotspot", "change
 oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
-num-traits = { workspace = true }
 tracing = { workspace = true }
 
 # Scientific computing - Use SciRS2 ecosystem

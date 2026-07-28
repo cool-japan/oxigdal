@@ -1,15 +1,33 @@
 //! COG-optimized caching configuration
 //!
 //! This module provides caching strategies optimized for Cloud-Optimized GeoTIFF (COG)
-//! tile access patterns, leveraging rs3gw's ML-based cache prediction.
+//! tile access patterns.
+//!
+//! # Prefetching
+//!
+//! The `ml_prefetch`/`prefetch_radius`/`ml_training_threshold` knobs enable
+//! **real** background read-ahead prefetching (see
+//! [`to_concurrent_read_config`](CogCacheConfig::to_concurrent_read_config) and
+//! [`crate::datasource::Rs3gwDataSource`]): after a cache-miss read, the next
+//! `prefetch_radius` contiguous same-sized chunks are eagerly fetched in the
+//! background and stashed in the cache, once at least
+//! `ml_training_threshold` reads have been observed on that data source.
+//! Despite the field names (kept for API compatibility), this is a
+//! deterministic contiguous-access heuristic, **not** a trained/learned
+//! machine-learning model -- there is no model, no feature vector, and no
+//! training step involved.
 
+use crate::datasource::ConcurrentReadConfig;
 use rs3gw::storage::CacheConfig as Rs3gwCacheConfig;
 
 /// COG-optimized cache configuration
 ///
-/// This configuration is tuned for efficient COG tile caching, with ML-based
-/// prefetching to predict which tiles will be accessed next based on spatial
-/// access patterns.
+/// This configuration is tuned for efficient COG tile caching, with
+/// heuristic (not ML-based) read-ahead prefetching to warm the cache for
+/// tiles that are likely to be accessed next based on contiguous access
+/// patterns. See [`to_concurrent_read_config`](Self::to_concurrent_read_config)
+/// to turn this into a real, wired-up [`ConcurrentReadConfig`] for use with
+/// [`crate::datasource::Rs3gwDataSource`].
 #[derive(Debug, Clone)]
 pub struct CogCacheConfig {
     /// Maximum cache size in MB (default: 512 MB)
@@ -21,7 +39,11 @@ pub struct CogCacheConfig {
     /// TTL for cached tiles in seconds (default: 3600 = 1 hour)
     pub tile_ttl_secs: u64,
 
-    /// Enable ML-based prefetch prediction (default: true)
+    /// Enable heuristic background read-ahead prefetch (default: true)
+    ///
+    /// Note: despite the name (kept for API compatibility), this is a
+    /// deterministic contiguous-range look-ahead, not a machine-learned
+    /// prediction.
     pub ml_prefetch: bool,
 
     /// Prefetch radius in tiles (default: 2)
@@ -29,7 +51,10 @@ pub struct CogCacheConfig {
     /// When a tile is accessed, prefetch surrounding tiles within this radius
     pub prefetch_radius: u32,
 
-    /// Minimum access count before ML model training (default: 100)
+    /// Minimum access count on a data source before prefetching activates
+    /// (default: 100). Acts as a warm-up gate so a data source that is only
+    /// ever read once doesn't trigger background prefetch traffic. Despite
+    /// the name (kept for API compatibility), no model training occurs.
     pub ml_training_threshold: usize,
 }
 
@@ -96,12 +121,36 @@ impl CogCacheConfig {
     }
 
     /// Converts to rs3gw's CacheConfig
+    ///
+    /// This only carries over the raw cache-sizing knobs (`max_size_mb`,
+    /// `max_tiles`, `tile_ttl_secs`); rs3gw's own `CacheConfig` has no
+    /// concept of prefetching at all. Use
+    /// [`to_concurrent_read_config`](Self::to_concurrent_read_config) if you
+    /// want the `ml_prefetch`/`prefetch_radius`/`ml_training_threshold`
+    /// knobs to actually take effect.
     #[must_use]
     pub fn to_rs3gw_config(&self) -> Rs3gwCacheConfig {
         Rs3gwCacheConfig::default()
             .with_max_size_mb(self.max_size_mb)
             .with_max_objects(self.max_tiles)
             .with_ttl_secs(self.tile_ttl_secs)
+    }
+
+    /// Converts to a [`ConcurrentReadConfig`] that actually wires up this
+    /// configuration's prefetch knobs to
+    /// [`crate::datasource::Rs3gwDataSource`]'s real background read-ahead
+    /// prefetcher. This is the config to pass to
+    /// `Rs3gwDataSource::new_with_config`/`new_with_size_and_config` if you
+    /// want `ml_prefetch`/`prefetch_radius`/`ml_training_threshold` to have
+    /// any runtime effect.
+    #[must_use]
+    pub fn to_concurrent_read_config(&self) -> ConcurrentReadConfig {
+        ConcurrentReadConfig::new()
+            .with_cache(true)
+            .with_cache_config(self.max_tiles as u64, self.tile_ttl_secs)
+            .with_prefetch_radius(self.prefetch_radius as usize)
+            .with_spatial_prefetch(self.ml_prefetch)
+            .with_prefetch_warmup_reads(self.ml_training_threshold)
     }
 }
 

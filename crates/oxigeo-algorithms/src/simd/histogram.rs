@@ -1,7 +1,14 @@
-//! SIMD-accelerated histogram computation
+//! Histogram computation
 //!
-//! This module provides high-performance histogram generation and analysis
-//! using SIMD instructions for raster data processing.
+//! This module provides histogram generation and analysis for raster data
+//! processing.
+//!
+//! # Implementation status
+//!
+//! Histogram construction is a scatter/accumulate operation that does not map
+//! cleanly to SIMD; these routines are currently scalar and do NOT contain
+//! hand-written SIMD intrinsics. They are correct and unit-tested; any future
+//! vectorization would require gather/scatter or bucketed partial histograms.
 //!
 //! # Supported Operations
 //!
@@ -10,10 +17,6 @@
 //! - **Histogram Equalization**: Adaptive contrast enhancement
 //! - **Quantile Calculation**: Percentile and median computation
 //! - **Histogram Matching**: Histogram specification
-//!
-//! # Performance
-//!
-//! Expected speedup over scalar: 4-8x for histogram operations
 //!
 //! # Example
 //!

@@ -422,8 +422,17 @@ pub mod cpu {
     /// Element-wise division: `result[i] = a[i] / b[i]`.
     ///
     /// Division by zero follows IEEE 754 semantics (produces `±inf` or `NaN`).
+    /// Element-wise safe division: `result[i] = a[i] / b[i]`, or `0.0` when
+    /// `|b[i]| < 1e-10`.
+    ///
+    /// This matches the GPU `divide` kernel's `safe_div` guard exactly, so the
+    /// CPU fallback is numerically equivalent to the GPU path (including the
+    /// near-zero-denominator behavior) rather than diverging to `inf`/`NaN`.
     pub fn div_slices(a: &[f32], b: &[f32]) -> Vec<f32> {
-        a.iter().zip(b.iter()).map(|(x, y)| x / y).collect()
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| if y.abs() < 1e-10 { 0.0 } else { x / y })
+            .collect()
     }
 
     /// Element-wise maximum: `result[i] = a[i].max(b[i])`.
@@ -469,8 +478,14 @@ pub mod cpu {
     }
 
     /// Square root: `result[i] = data[i].sqrt()`.
+    /// Element-wise square root with a non-negative guard:
+    /// `result[i] = sqrt(max(data[i], 0.0))`.
+    ///
+    /// This matches the GPU `UnaryOp::Sqrt` kernel (`sqrt(max(input, 0.0))`) so
+    /// the CPU fallback is equivalent for negative inputs (both yield `0.0`)
+    /// instead of the CPU returning `NaN`.
     pub fn sqrt(data: &[f32]) -> Vec<f32> {
-        data.iter().map(|x| x.sqrt()).collect()
+        data.iter().map(|x| x.max(0.0).sqrt()).collect()
     }
 
     /// Power: `result[i] = data[i].powf(exponent)`.

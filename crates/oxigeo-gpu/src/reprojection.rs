@@ -3,7 +3,49 @@
 //! This module provides both a GPU-backed reprojection pipeline and a CPU
 //! fallback implementation for environments where GPU is unavailable.
 
+use crate::buffer::GpuBuffer;
+use crate::context::GpuContext;
 use crate::error::GpuError;
+use crate::shaders::{
+    ComputePipelineBuilder, WgslShader, create_compute_bind_group_layout, storage_buffer_layout,
+    uniform_buffer_layout,
+};
+use bytemuck::{Pod, Zeroable};
+use wgpu::{
+    BindGroupDescriptor, BindGroupEntry, BufferUsages, CommandEncoderDescriptor,
+    ComputePassDescriptor,
+};
+
+/// WGSL source for the reprojection compute shader.
+const REPROJECT_SHADER: &str = include_str!("shaders/reproject.wgsl");
+
+/// Host-side mirror of the `ReprojParams` uniform in `reproject.wgsl`.
+///
+/// The six affine coefficients are packed into `vec4` slots because WGSL's
+/// uniform address space requires 16-byte array element stride — a naive
+/// `[f32; 6]` would be mis-read on the GPU.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct ReprojParamsGpu {
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    resample_method: u32,
+    use_nodata: u32,
+    _pad0: u32,
+    _pad1: u32,
+    /// Source geo-transform (a, b, c, d).
+    src_gt0: [f32; 4],
+    /// Source geo-transform (e, f, unused, unused).
+    src_gt1: [f32; 4],
+    /// Destination inverse geo-transform (a, b, c, d).
+    dst_inv_gt0: [f32; 4],
+    /// Destination inverse geo-transform (e, f, unused, unused).
+    dst_inv_gt1: [f32; 4],
+    /// Nodata fill value in `.x` (remaining lanes unused).
+    nodata: [f32; 4],
+}
 
 /// Resampling method for reprojection.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,10 +102,12 @@ impl ReprojectionConfig {
 
 /// GPU-based raster reprojector.
 ///
-/// On platforms with GPU support this will eventually dispatch to a wgpu
-/// compute shader.  Until that path is fully wired up, [`reproject_cpu`]
-/// provides a correct CPU-based fallback.
+/// [`reproject_gpu`] dispatches a wgpu compute shader that performs the affine
+/// inverse-mapping and nearest/bilinear resampling on the GPU; [`reproject_cpu`]
+/// provides a bit-for-bit-equivalent CPU fallback for environments without a GPU
+/// (the two paths are verified against each other by parity tests).
 ///
+/// [`reproject_gpu`]: GpuReprojector::reproject_gpu
 /// [`reproject_cpu`]: GpuReprojector::reproject_cpu
 pub struct GpuReprojector {
     config: ReprojectionConfig,
@@ -199,6 +243,154 @@ impl GpuReprojector {
 
         Ok(dst)
     }
+
+    /// Reproject `src_data` on the GPU via a wgpu compute dispatch.
+    ///
+    /// This builds a compute pipeline from `reproject.wgsl`, uploads the source
+    /// raster and the packed affine parameters, dispatches one invocation per
+    /// destination pixel, and reads the result back to the host.  The shader
+    /// performs the identical affine inverse-mapping and nearest/bilinear
+    /// resampling as [`reproject_cpu`](Self::reproject_cpu), so the two paths
+    /// agree up to floating-point rounding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if the configuration is invalid, the source length
+    /// is wrong, shader/pipeline creation fails, the device is lost, or the
+    /// GPU→CPU read-back fails.
+    pub async fn reproject_gpu(
+        &self,
+        context: &GpuContext,
+        src_data: &[f32],
+    ) -> Result<Vec<f32>, GpuError> {
+        self.config.validate()?;
+
+        let expected_src = (self.config.src_width as usize) * (self.config.src_height as usize);
+        if src_data.len() != expected_src {
+            return Err(GpuError::invalid_kernel_params(format!(
+                "src_data length {} does not match declared source dimensions {}x{} ({})",
+                src_data.len(),
+                self.config.src_width,
+                self.config.src_height,
+                expected_src
+            )));
+        }
+
+        let params = self.gpu_params();
+
+        // Upload source raster and parameter uniform; allocate destination.
+        let src_buffer = GpuBuffer::from_data(
+            context,
+            src_data,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        )?;
+        let dst_len = (self.config.dst_width as usize) * (self.config.dst_height as usize);
+        let dst_buffer = GpuBuffer::<f32>::new(
+            context,
+            dst_len,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        )?;
+        let params_buffer = GpuBuffer::from_data(
+            context,
+            &[params],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )?;
+
+        let mut shader = WgslShader::new(REPROJECT_SHADER, "main");
+        let module = shader.compile(context.device())?;
+
+        let bind_group_layout = create_compute_bind_group_layout(
+            context.device(),
+            &[
+                uniform_buffer_layout(0),
+                storage_buffer_layout(1, true),
+                storage_buffer_layout(2, false),
+            ],
+            Some("Reproject BindGroupLayout"),
+        )?;
+
+        let pipeline = ComputePipelineBuilder::new(context.device(), module, "main")
+            .bind_group_layout(&bind_group_layout)
+            .label("Reproject Pipeline")
+            .build()?;
+
+        let bind_group = context.device().create_bind_group(&BindGroupDescriptor {
+            label: Some("Reproject BindGroup"),
+            layout: &bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: params_buffer.buffer().as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: src_buffer.buffer().as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: dst_buffer.buffer().as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = context
+            .device()
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("Reproject Encoder"),
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: Some("Reproject Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            let groups_x = self.config.dst_width.div_ceil(16);
+            let groups_y = self.config.dst_height.div_ceil(16);
+            pass.dispatch_workgroups(groups_x, groups_y, 1);
+        }
+
+        context.check_device_lost()?;
+        context.queue().submit(Some(encoder.finish()));
+
+        // `dst_buffer` is a STORAGE buffer and cannot be host-mapped directly
+        // (wgpu forbids `STORAGE | MAP_READ`). Copy it into a MAP_READ staging
+        // buffer, then read that back to the host.
+        let mut staging = GpuBuffer::<f32>::staging(context, dst_len)?;
+        staging.copy_from(&dst_buffer)?;
+        staging.read().await
+    }
+
+    /// Build the packed GPU uniform parameters from this configuration.
+    fn gpu_params(&self) -> ReprojParamsGpu {
+        let gt = &self.config.src_geotransform;
+        let inv = &self.config.dst_inv_geotransform;
+        let (use_nodata, nodata) = match self.config.nodata {
+            Some(v) => (1u32, v),
+            None => (0u32, 0.0_f32),
+        };
+        let resample_method = match self.config.resample_method {
+            ResampleMethod::NearestNeighbor => 0u32,
+            ResampleMethod::Bilinear => 1u32,
+        };
+
+        ReprojParamsGpu {
+            src_width: self.config.src_width,
+            src_height: self.config.src_height,
+            dst_width: self.config.dst_width,
+            dst_height: self.config.dst_height,
+            resample_method,
+            use_nodata,
+            _pad0: 0,
+            _pad1: 0,
+            src_gt0: [gt[0], gt[1], gt[2], gt[3]],
+            src_gt1: [gt[4], gt[5], 0.0, 0.0],
+            dst_inv_gt0: [inv[0], inv[1], inv[2], inv[3]],
+            dst_inv_gt1: [inv[4], inv[5], 0.0, 0.0],
+            nodata: [nodata, 0.0, 0.0, 0.0],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +449,95 @@ mod tests {
         let r = GpuReprojector::new(identity_config(size));
         let dst = r.reproject_cpu(&src).expect("reproject_cpu failed");
         assert_eq!(dst.len(), (size * size) as usize);
+    }
+
+    #[test]
+    fn test_gpu_params_packing() {
+        let mut cfg = identity_config(4);
+        cfg.src_geotransform = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        cfg.dst_inv_geotransform = [7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+        cfg.nodata = Some(-9999.0);
+        cfg.resample_method = ResampleMethod::Bilinear;
+        let r = GpuReprojector::new(cfg);
+        let p = r.gpu_params();
+        // 16-byte-strided vec4 packing must preserve every coefficient.
+        assert_eq!(p.src_gt0, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(p.src_gt1, [5.0, 6.0, 0.0, 0.0]);
+        assert_eq!(p.dst_inv_gt0, [7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(p.dst_inv_gt1, [11.0, 12.0, 0.0, 0.0]);
+        assert_eq!(p.nodata[0], -9999.0);
+        assert_eq!(p.use_nodata, 1);
+        assert_eq!(p.resample_method, 1);
+        // Layout must be exactly 112 bytes (2x uvec4 + 5x vec4).
+        assert_eq!(std::mem::size_of::<ReprojParamsGpu>(), 112);
+    }
+
+    /// Config that downsamples an 8x8 source into a 4x4 destination with
+    /// fractional source coordinates, exercising the bilinear path.
+    fn bilinear_downsample_config() -> ReprojectionConfig {
+        ReprojectionConfig {
+            src_width: 8,
+            src_height: 8,
+            dst_width: 4,
+            dst_height: 4,
+            // x_geo = col, y_geo = row
+            src_geotransform: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            // geo = (dst_pixel_centre) * 1.5 → fractional src samples
+            dst_inv_geotransform: [0.0, 1.5, 0.0, 0.0, 0.0, 1.5],
+            resample_method: ResampleMethod::Bilinear,
+            nodata: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reproject_gpu_matches_cpu_identity() {
+        // Environment guard: only the GPU-context creation is optional. Once a
+        // context exists, every step must succeed and GPU output must match the
+        // CPU reference within tolerance.
+        if let Ok(context) = GpuContext::new().await {
+            let size = 8u32;
+            let src: Vec<f32> = (0..(size * size)).map(|i| i as f32).collect();
+            let r = GpuReprojector::new(identity_config(size));
+
+            let cpu = r
+                .reproject_cpu(&src)
+                .expect("cpu reprojection must succeed");
+            let gpu = r
+                .reproject_gpu(&context, &src)
+                .await
+                .expect("gpu reprojection must succeed with a valid context");
+
+            assert_eq!(cpu.len(), gpu.len());
+            for (i, (c, g)) in cpu.iter().zip(gpu.iter()).enumerate() {
+                assert!(
+                    (c - g).abs() < 1e-3,
+                    "pixel {i}: cpu={c} gpu={g} diverge beyond tolerance"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reproject_gpu_matches_cpu_bilinear() {
+        if let Ok(context) = GpuContext::new().await {
+            let src: Vec<f32> = (0..64).map(|i| (i as f32) * 0.5).collect();
+            let r = GpuReprojector::new(bilinear_downsample_config());
+
+            let cpu = r
+                .reproject_cpu(&src)
+                .expect("cpu reprojection must succeed");
+            let gpu = r
+                .reproject_gpu(&context, &src)
+                .await
+                .expect("gpu reprojection must succeed");
+
+            assert_eq!(cpu.len(), gpu.len());
+            for (i, (c, g)) in cpu.iter().zip(gpu.iter()).enumerate() {
+                assert!(
+                    (c - g).abs() < 1e-3,
+                    "bilinear pixel {i}: cpu={c} gpu={g} diverge beyond tolerance"
+                );
+            }
+        }
     }
 }

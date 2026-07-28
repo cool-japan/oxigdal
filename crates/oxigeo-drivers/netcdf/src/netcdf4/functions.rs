@@ -167,6 +167,189 @@ pub(crate) fn fletcher32(data: &[u8]) -> u32 {
     }
     (sum2 << 16) | sum1
 }
+
+/// Bob Jenkins' lookup3 `hashlittle` hash function (2006) — the little-endian
+/// variant HDF5 uses for Superblock V2/V3 checksums (`H5checksum.c` in the
+/// official HDF5 source; HDF5 always calls it with `initval = 0`).
+///
+/// Used by [`super::types::Nc4Writer::write_superblock`] to compute a real
+/// superblock checksum rather than a hardcoded placeholder, so a written v2/v3
+/// superblock is at least internally consistent (`checksum ==
+/// jenkins_lookup3_hashlittle(everything_before_it, 0)`), matching the
+/// algorithm oxigeo-hdf5's `superblock_v2::validate_superblock_checksum` (the
+/// real reader-side counterpart) checks against.
+///
+/// # Reference
+///
+/// - <http://burtleburtle.net/bob/hash/doobs.html>
+pub(crate) fn jenkins_lookup3_hashlittle(data: &[u8], initval: u32) -> u32 {
+    let len = data.len();
+
+    let init = 0xdeadbeef_u32
+        .wrapping_add(len as u32)
+        .wrapping_add(initval);
+    let mut a: u32 = init;
+    let mut b: u32 = init;
+    let mut c: u32 = init;
+
+    let mut i = 0usize;
+    while i + 12 <= len {
+        a = a.wrapping_add(u32::from_le_bytes([
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+        ]));
+        b = b.wrapping_add(u32::from_le_bytes([
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
+        ]));
+        c = c.wrapping_add(u32::from_le_bytes([
+            data[i + 8],
+            data[i + 9],
+            data[i + 10],
+            data[i + 11],
+        ]));
+
+        a = a.wrapping_sub(c);
+        a ^= c.rotate_left(4);
+        c = c.wrapping_add(b);
+        b = b.wrapping_sub(a);
+        b ^= a.rotate_left(6);
+        a = a.wrapping_add(c);
+        c = c.wrapping_sub(b);
+        c ^= b.rotate_left(8);
+        b = b.wrapping_add(a);
+        a = a.wrapping_sub(c);
+        a ^= c.rotate_left(16);
+        c = c.wrapping_add(b);
+        b = b.wrapping_sub(a);
+        b ^= a.rotate_left(19);
+        a = a.wrapping_add(c);
+        c = c.wrapping_sub(b);
+        c ^= b.rotate_left(4);
+        b = b.wrapping_add(a);
+
+        i += 12;
+    }
+
+    let tail = &data[i..];
+    let remaining = tail.len();
+
+    if remaining > 0 {
+        match remaining {
+            11 => {
+                c = c.wrapping_add((tail[10] as u32) << 24);
+                c = c.wrapping_add((tail[9] as u32) << 16);
+                c = c.wrapping_add((tail[8] as u32) << 8);
+                b = b.wrapping_add((tail[7] as u32) << 24);
+                b = b.wrapping_add((tail[6] as u32) << 16);
+                b = b.wrapping_add((tail[5] as u32) << 8);
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            10 => {
+                c = c.wrapping_add((tail[9] as u32) << 16);
+                c = c.wrapping_add((tail[8] as u32) << 8);
+                b = b.wrapping_add((tail[7] as u32) << 24);
+                b = b.wrapping_add((tail[6] as u32) << 16);
+                b = b.wrapping_add((tail[5] as u32) << 8);
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            9 => {
+                c = c.wrapping_add((tail[8] as u32) << 8);
+                b = b.wrapping_add((tail[7] as u32) << 24);
+                b = b.wrapping_add((tail[6] as u32) << 16);
+                b = b.wrapping_add((tail[5] as u32) << 8);
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            8 => {
+                b = b.wrapping_add((tail[7] as u32) << 24);
+                b = b.wrapping_add((tail[6] as u32) << 16);
+                b = b.wrapping_add((tail[5] as u32) << 8);
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            7 => {
+                b = b.wrapping_add((tail[6] as u32) << 16);
+                b = b.wrapping_add((tail[5] as u32) << 8);
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            6 => {
+                b = b.wrapping_add((tail[5] as u32) << 8);
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            5 => {
+                b = b.wrapping_add(tail[4] as u32);
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            4 => {
+                a = a.wrapping_add((tail[3] as u32) << 24);
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            3 => {
+                a = a.wrapping_add((tail[2] as u32) << 16);
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            2 => {
+                a = a.wrapping_add((tail[1] as u32) << 8);
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            1 => {
+                a = a.wrapping_add(tail[0] as u32);
+            }
+            _ => {}
+        }
+    }
+
+    c ^= b;
+    c = c.wrapping_sub(b.rotate_left(14));
+    a ^= c;
+    a = a.wrapping_sub(c.rotate_left(11));
+    b ^= a;
+    b = b.wrapping_sub(a.rotate_left(25));
+    c ^= b;
+    c = c.wrapping_sub(b.rotate_left(16));
+    a ^= c;
+    a = a.wrapping_sub(c.rotate_left(4));
+    b ^= a;
+    b = b.wrapping_sub(a.rotate_left(14));
+    c ^= b;
+    c = c.wrapping_sub(b.rotate_left(24));
+
+    c
+}
+
 /// Convert NetCDF DataType to bytes per element
 fn data_type_size(dtype: DataType) -> usize {
     match dtype {
@@ -265,6 +448,38 @@ mod tests {
         let data = b"Hello, World!";
         let checksum = fletcher32(data);
         assert!(checksum > 0);
+    }
+    #[test]
+    fn test_jenkins_lookup3_deterministic_and_input_sensitive() {
+        let h1 = jenkins_lookup3_hashlittle(b"hello", 0);
+        let h2 = jenkins_lookup3_hashlittle(b"hello", 0);
+        assert_eq!(h1, h2, "same input must hash identically");
+
+        let h3 = jenkins_lookup3_hashlittle(b"world", 0);
+        assert_ne!(
+            h1, h3,
+            "different input must (overwhelmingly likely) hash differently"
+        );
+
+        // Different initval must also change the hash.
+        let h4 = jenkins_lookup3_hashlittle(b"hello", 1);
+        assert_ne!(h1, h4);
+    }
+    #[test]
+    fn test_jenkins_lookup3_empty_input() {
+        // Must not panic on empty input, and must be deterministic.
+        let h1 = jenkins_lookup3_hashlittle(&[], 0);
+        let h2 = jenkins_lookup3_hashlittle(&[], 0);
+        assert_eq!(h1, h2);
+    }
+    #[test]
+    fn test_jenkins_lookup3_all_tail_lengths() {
+        // Exercise every tail-length match arm (1..=11 remaining bytes after
+        // the last full 12-byte block) without panicking.
+        for len in 0..40usize {
+            let data: Vec<u8> = (0..len as u8).collect();
+            let _ = jenkins_lookup3_hashlittle(&data, 0);
+        }
     }
     #[test]
     fn test_data_type_size() {

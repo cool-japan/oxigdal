@@ -37,7 +37,29 @@ pub struct ConcurrentReadConfig {
     /// Cache TTL in seconds (default: 3600 = 1 hour)
     pub cache_ttl_secs: u64,
     /// Prefetch radius for spatial access (default: 2)
+    ///
+    /// When `spatial_prefetch` is enabled, after a cache-miss read of a range
+    /// of length `len`, the next `prefetch_radius` contiguous ranges of the
+    /// same length are eagerly fetched in the background and stored in the
+    /// cache so that a subsequent sequential read is a cache hit. This is a
+    /// deterministic look-ahead heuristic, not a learned/predictive model.
     pub prefetch_radius: usize,
+
+    /// Enables background spatial read-ahead prefetching (default: false)
+    ///
+    /// When enabled, every cache-miss read spawns background tasks that
+    /// eagerly warm the cache for the next `prefetch_radius` contiguous
+    /// ranges. Disabled by default so that callers who never opted into
+    /// prefetching don't get surprise background I/O.
+    pub spatial_prefetch: bool,
+
+    /// Minimum number of reads observed on this data source before spatial
+    /// prefetching activates (default: 0 = activate immediately once
+    /// `spatial_prefetch` is enabled).
+    ///
+    /// This acts as a warm-up gate: sources that only ever perform a single
+    /// one-shot read never trigger background prefetch traffic.
+    pub prefetch_warmup_reads: usize,
 }
 
 impl Default for ConcurrentReadConfig {
@@ -51,6 +73,8 @@ impl Default for ConcurrentReadConfig {
             max_cached_tiles: 1000,
             cache_ttl_secs: 3600,
             prefetch_radius: 2,
+            spatial_prefetch: false,
+            prefetch_warmup_reads: 0,
         }
     }
 }
@@ -105,6 +129,20 @@ impl ConcurrentReadConfig {
         self.prefetch_radius = radius;
         self
     }
+
+    /// Enables or disables background spatial read-ahead prefetching
+    #[must_use]
+    pub fn with_spatial_prefetch(mut self, enabled: bool) -> Self {
+        self.spatial_prefetch = enabled;
+        self
+    }
+
+    /// Sets the warm-up read count before spatial prefetch activates
+    #[must_use]
+    pub fn with_prefetch_warmup_reads(mut self, reads: usize) -> Self {
+        self.prefetch_warmup_reads = reads;
+        self
+    }
 }
 
 /// Rs3gw-backed data source
@@ -134,6 +172,8 @@ pub struct Rs3gwDataSource {
     semaphore: Arc<Semaphore>,
     /// LRU cache for tiles
     cache: Option<Arc<Cache<(u64, u64), Bytes>>>,
+    /// Count of reads served so far, used to gate spatial prefetch warm-up
+    access_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Rs3gwDataSource {
@@ -201,6 +241,7 @@ impl Rs3gwDataSource {
             config: Arc::new(config),
             semaphore,
             cache,
+            access_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -242,6 +283,7 @@ impl Rs3gwDataSource {
             config: Arc::new(config),
             semaphore,
             cache,
+            access_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -273,6 +315,14 @@ impl Rs3gwDataSource {
             let key = (range.start, range.end);
             cache.insert(key, data).await;
         }
+    }
+
+    /// Test-only helper: reports whether `range` is currently present in the
+    /// cache, used to observe background prefetch without depending on
+    /// timing-sensitive backend call counting.
+    #[cfg(test)]
+    async fn is_cached(&self, range: ByteRange) -> bool {
+        self.read_from_cache(range).await.is_some()
     }
 
     /// Reads a range with retry logic and exponential backoff
@@ -334,6 +384,15 @@ impl Rs3gwDataSource {
                     // Cache the result
                     self.write_to_cache(ByteRange::new(range.start, end), data)
                         .await;
+
+                    // Count this read and, once warmed up, kick off background
+                    // spatial read-ahead prefetch for the following ranges.
+                    let reads_so_far = self
+                        .access_count
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    self.maybe_spawn_prefetch(end, end - range.start, reads_so_far);
+
                     return Ok(vec_data);
                 }
                 Err(e) => {
@@ -365,6 +424,88 @@ impl Rs3gwDataSource {
             }
         }
     }
+
+    /// Kicks off background spatial read-ahead prefetch for the
+    /// `prefetch_radius` contiguous chunks following `next_start`, if
+    /// `spatial_prefetch` is enabled, a cache is configured, and the
+    /// warm-up gate (`prefetch_warmup_reads`) has been reached.
+    ///
+    /// This is a deterministic look-ahead heuristic (not a trained model):
+    /// it simply assumes that sequential/contiguous access is likely to
+    /// continue and pre-warms the cache for the next few chunks of the same
+    /// size as the one just read. Failures are logged and otherwise ignored
+    /// since prefetch is best-effort by nature.
+    fn maybe_spawn_prefetch(&self, next_start: u64, chunk_len: u64, reads_so_far: usize) {
+        if !self.config.spatial_prefetch
+            || self.cache.is_none()
+            || self.config.prefetch_radius == 0
+            || chunk_len == 0
+            || reads_so_far < self.config.prefetch_warmup_reads
+        {
+            return;
+        }
+
+        let source = self.clone();
+        tokio::spawn(async move {
+            let mut start = next_start;
+            for _ in 0..source.config.prefetch_radius {
+                if start >= source.size {
+                    break;
+                }
+                let end = (start + chunk_len).min(source.size);
+                let range = ByteRange::new(start, end);
+
+                // Skip work that's already cached.
+                if source.read_from_cache(range).await.is_some() {
+                    start = end;
+                    continue;
+                }
+
+                if let Err(e) = source.prefetch_one(range).await {
+                    tracing::debug!(
+                        "Spatial prefetch failed for range {}..{} in {}/{}: {}",
+                        start,
+                        end,
+                        source.bucket,
+                        source.key,
+                        e
+                    );
+                    break;
+                }
+                start = end;
+            }
+        });
+    }
+
+    /// Fetches a single range from the backend and stores it in the cache,
+    /// without retry (prefetch is best-effort: a failure just means we
+    /// didn't warm the cache, the real read will still be attempted with
+    /// full retry logic when the caller actually requests that range).
+    async fn prefetch_one(&self, range: ByteRange) -> Result<()> {
+        let _permit =
+            self.semaphore.acquire().await.map_err(|e| {
+                Rs3gwError::Io(std::io::Error::other(format!("Semaphore error: {e}")))
+            })?;
+
+        let rs3gw_end = if range.end > range.start {
+            range.end - 1
+        } else {
+            range.start
+        };
+        let byte_range = rs3gw::storage::ByteRange {
+            start: range.start,
+            end: rs3gw_end,
+        };
+
+        let (_metadata, data) = self
+            .storage
+            .get_object(&self.bucket, &self.key, Some(byte_range))
+            .await
+            .map_err(Rs3gwError::from)?;
+
+        self.write_to_cache(range, data).await;
+        Ok(())
+    }
 }
 
 impl DataSource for Rs3gwDataSource {
@@ -373,32 +514,42 @@ impl DataSource for Rs3gwDataSource {
     }
 
     fn read_range(&self, range: ByteRange) -> oxigeo_core::error::Result<Vec<u8>> {
-        // Use tokio runtime to execute async operation synchronously
-        let rt = tokio::runtime::Handle::try_current()
-            .or_else(|_| {
-                // If no runtime exists, create a new one
-                tokio::runtime::Runtime::new()
-                    .map(|rt| {
-                        let handle = rt.handle().clone();
-                        // Keep runtime alive by leaking it (this is a fallback scenario)
-                        std::mem::forget(rt);
-                        handle
-                    })
+        let source = self.clone();
+
+        // If a tokio runtime is already driving the calling task, we must NOT
+        // call `block_on` directly on that same runtime's handle -- that
+        // panics with "Cannot start a runtime from within a runtime". Instead
+        // use `block_in_place` to hand the current OS thread over to blocking
+        // work while the runtime schedules other tasks elsewhere, then block
+        // on a fresh call into that same handle. If no runtime is current,
+        // spin up a throwaway one just for this call (and shut it down
+        // properly afterwards, rather than leaking it).
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    source
+                        .read_range_with_retry(range)
+                        .await
+                        .map_err(Into::into)
+                })
+            }),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
                     .map_err(|e| {
                         Rs3gwError::Io(std::io::Error::other(format!(
                             "Failed to create tokio runtime: {e}"
                         )))
                     })
-            })
-            .map_err(oxigeo_core::error::OxiGeoError::from)?;
+                    .map_err(oxigeo_core::error::OxiGeoError::from)?;
 
-        let source = self.clone();
-        rt.block_on(async move {
-            source
-                .read_range_with_retry(range)
-                .await
-                .map_err(Into::into)
-        })
+                rt.block_on(async move {
+                    source
+                        .read_range_with_retry(range)
+                        .await
+                        .map_err(Into::into)
+                })
+            }
+        }
     }
 
     fn read_ranges(&self, ranges: &[ByteRange]) -> oxigeo_core::error::Result<Vec<Vec<u8>>> {
@@ -406,27 +557,13 @@ impl DataSource for Rs3gwDataSource {
             return Ok(Vec::new());
         }
 
-        // Use tokio runtime to execute async operation synchronously
-        let rt = tokio::runtime::Handle::try_current()
-            .or_else(|_| {
-                tokio::runtime::Runtime::new()
-                    .map(|rt| {
-                        let handle = rt.handle().clone();
-                        std::mem::forget(rt);
-                        handle
-                    })
-                    .map_err(|e| {
-                        Rs3gwError::Io(std::io::Error::other(format!(
-                            "Failed to create tokio runtime: {e}"
-                        )))
-                    })
-            })
-            .map_err(oxigeo_core::error::OxiGeoError::from)?;
-
         let source = self.clone();
         let ranges_vec = ranges.to_vec();
 
-        rt.block_on(async move {
+        async fn fetch_all(
+            source: Rs3gwDataSource,
+            ranges_vec: Vec<ByteRange>,
+        ) -> oxigeo_core::error::Result<Vec<Vec<u8>>> {
             // Create concurrent tasks for all ranges
             let mut tasks = Vec::with_capacity(ranges_vec.len());
 
@@ -447,7 +584,26 @@ impl DataSource for Rs3gwDataSource {
             }
 
             Ok(results)
-        })
+        }
+
+        // Same rationale as `read_range` above: never `block_on` directly on
+        // a handle that is already driving the current task.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(fetch_all(source, ranges_vec)))
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| {
+                        Rs3gwError::Io(std::io::Error::other(format!(
+                            "Failed to create tokio runtime: {e}"
+                        )))
+                    })
+                    .map_err(oxigeo_core::error::OxiGeoError::from)?;
+
+                rt.block_on(fetch_all(source, ranges_vec))
+            }
+        }
     }
 }
 
@@ -635,6 +791,53 @@ mod tests {
         let range = ByteRange::new(10, 16);
         let data = source.read_range(range).expect("Failed to read range");
         assert_eq!(data, b"ABCDEF");
+    }
+
+    /// Regression test for the "Cannot start a runtime from within a
+    /// runtime" panic: calling the *synchronous* `DataSource::read_range`
+    /// from code that is already executing inside a tokio task (e.g. a WCS
+    /// handler) must not panic. This is exactly the call path
+    /// `oxigeo-drivers/geotiff`'s COG reader and `oxigeo-services`'s WCS
+    /// coverage handler exercise in production.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_sync_read_range_from_within_tokio_runtime_does_not_panic() {
+        let (backend, _temp_dir) = create_test_backend().await;
+
+        backend
+            .create_bucket("test-bucket")
+            .await
+            .expect("Failed to create bucket");
+
+        let test_data = Bytes::from("0123456789ABCDEF");
+        backend
+            .put_object(
+                "test-bucket",
+                "data.bin",
+                test_data.clone(),
+                std::collections::HashMap::new(),
+            )
+            .await
+            .expect("Failed to put object");
+
+        let source =
+            Rs3gwDataSource::new(backend, "test-bucket".to_string(), "data.bin".to_string())
+                .await
+                .expect("Failed to create data source");
+
+        // We are inside a #[tokio::test] task right now, so a `Handle` is
+        // already current. Calling the sync trait method directly here
+        // (exactly as e.g. oxigeo-drivers' COG reader or oxigeo-services'
+        // WCS handler would from within an async request handler) previously
+        // panicked with "Cannot start a runtime from within a runtime".
+        let data = DataSource::read_range(&source, ByteRange::new(0, 5))
+            .expect("read_range should not panic or error when called from inside a runtime");
+        assert_eq!(data, b"01234");
+
+        // Also exercise read_ranges the same way.
+        let results =
+            DataSource::read_ranges(&source, &[ByteRange::new(0, 5), ByteRange::new(5, 10)])
+                .expect("read_ranges should not panic or error when called from inside a runtime");
+        assert_eq!(results, vec![b"01234".to_vec(), b"56789".to_vec()]);
     }
 
     #[tokio::test]
@@ -928,5 +1131,186 @@ mod tests {
             .await
             .expect("Failed to read empty ranges");
         assert_eq!(results.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_spatial_prefetch_warms_cache_for_following_ranges() {
+        let (backend, _temp_dir) = create_test_backend().await;
+
+        backend
+            .create_bucket("test-bucket")
+            .await
+            .expect("Failed to create bucket");
+
+        // 100 bytes -> 10 chunks of 10 bytes each.
+        let test_data: Vec<u8> = (0..100).map(|i| (i % 256) as u8).collect();
+        backend
+            .put_object(
+                "test-bucket",
+                "prefetch.bin",
+                Bytes::from(test_data.clone()),
+                std::collections::HashMap::new(),
+            )
+            .await
+            .expect("Failed to put object");
+
+        // No warm-up needed, prefetch 2 chunks ahead.
+        let config = ConcurrentReadConfig::new()
+            .with_cache(true)
+            .with_spatial_prefetch(true)
+            .with_prefetch_radius(2)
+            .with_prefetch_warmup_reads(0);
+
+        let source = Rs3gwDataSource::new_with_config(
+            backend,
+            "test-bucket".to_string(),
+            "prefetch.bin".to_string(),
+            config,
+        )
+        .await
+        .expect("Failed to create data source");
+
+        // Trigger a read (cache miss) of the first chunk; this should spawn
+        // background prefetch for the next two 10-byte chunks.
+        let data = source
+            .read_range_with_retry(ByteRange::new(0, 10))
+            .await
+            .expect("Failed to read range");
+        assert_eq!(&data, &test_data[0..10]);
+
+        // Give the spawned background task a chance to run.
+        for _ in 0..200 {
+            if source.is_cached(ByteRange::new(10, 20)).await
+                && source.is_cached(ByteRange::new(20, 30)).await
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert!(
+            source.is_cached(ByteRange::new(10, 20)).await,
+            "expected the next chunk to have been prefetched into the cache"
+        );
+        assert!(
+            source.is_cached(ByteRange::new(20, 30)).await,
+            "expected the chunk after that to have been prefetched into the cache (radius=2)"
+        );
+        // Beyond the configured radius, nothing should have been prefetched.
+        assert!(
+            !source.is_cached(ByteRange::new(30, 40)).await,
+            "prefetch radius is 2, so a third chunk ahead must not be prefetched"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spatial_prefetch_disabled_by_default_does_not_warm_cache() {
+        let (backend, _temp_dir) = create_test_backend().await;
+
+        backend
+            .create_bucket("test-bucket")
+            .await
+            .expect("Failed to create bucket");
+
+        let test_data: Vec<u8> = (0..100).map(|i| (i % 256) as u8).collect();
+        backend
+            .put_object(
+                "test-bucket",
+                "no_prefetch.bin",
+                Bytes::from(test_data),
+                std::collections::HashMap::new(),
+            )
+            .await
+            .expect("Failed to put object");
+
+        // Default config has spatial_prefetch = false.
+        let source = Rs3gwDataSource::new(
+            backend,
+            "test-bucket".to_string(),
+            "no_prefetch.bin".to_string(),
+        )
+        .await
+        .expect("Failed to create data source");
+
+        source
+            .read_range_with_retry(ByteRange::new(0, 10))
+            .await
+            .expect("Failed to read range");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !source.is_cached(ByteRange::new(10, 20)).await,
+            "spatial_prefetch defaults to false; no background prefetch should occur"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spatial_prefetch_respects_warmup_gate() {
+        let (backend, _temp_dir) = create_test_backend().await;
+
+        backend
+            .create_bucket("test-bucket")
+            .await
+            .expect("Failed to create bucket");
+
+        let test_data: Vec<u8> = (0..100).map(|i| (i % 256) as u8).collect();
+        backend
+            .put_object(
+                "test-bucket",
+                "warmup.bin",
+                Bytes::from(test_data),
+                std::collections::HashMap::new(),
+            )
+            .await
+            .expect("Failed to put object");
+
+        // Require 3 reads before prefetch activates.
+        let config = ConcurrentReadConfig::new()
+            .with_cache(true)
+            .with_spatial_prefetch(true)
+            .with_prefetch_radius(1)
+            .with_prefetch_warmup_reads(3);
+
+        let source = Rs3gwDataSource::new_with_config(
+            backend,
+            "test-bucket".to_string(),
+            "warmup.bin".to_string(),
+            config,
+        )
+        .await
+        .expect("Failed to create data source");
+
+        // First read of a distinct range: below warm-up threshold, no prefetch.
+        source
+            .read_range_with_retry(ByteRange::new(50, 60))
+            .await
+            .expect("Failed to read range");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !source.is_cached(ByteRange::new(0, 10)).await,
+            "prefetch must not fire before the warm-up threshold is reached"
+        );
+
+        // Two more reads bring the total to 3, satisfying the warm-up gate.
+        source
+            .read_range_with_retry(ByteRange::new(60, 70))
+            .await
+            .expect("Failed to read range");
+        source
+            .read_range_with_retry(ByteRange::new(0, 10))
+            .await
+            .expect("Failed to read range");
+
+        for _ in 0..200 {
+            if source.is_cached(ByteRange::new(10, 20)).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            source.is_cached(ByteRange::new(10, 20)).await,
+            "after the warm-up gate is satisfied, prefetch should fire"
+        );
     }
 }

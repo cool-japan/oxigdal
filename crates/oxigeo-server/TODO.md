@@ -1,18 +1,13 @@
 # TODO: oxigeo-server
 
 > **Purpose:** WMS 1.3.0 / WMTS 1.0.0 / XYZ tile server for OxiGeo rasters, built on axum + hyper.
-> **Status (2026-05-16):** 7,168 LoC (src) · 66 tests (51 inline + 15 in tests/) · 1 real-code stub
+> **Status (2026-07-28):** 6,211 LoC (src) · 93 tests · 0 real-code stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Wire `stats_handler` to the shared `TileCache` instance via Axum `State`.
-  - **Verified gap:** `src/server.rs:360` — `// This is a placeholder - in a real implementation, we'd need to access the cache through shared state`
-  - **Goal:** `GET /stats` returns real `CacheStats { hits, misses, evictions, size_bytes, entry_count }` JSON from the live tile cache, not the canned `"Cache statistics endpoint - requires state injection"` message.
-  - **Design:** `stats_handler` already exists in `server.rs`. Replace `async fn stats_handler()` with `async fn stats_handler(State(cache): State<Arc<TileCache>>) -> Response`. Threading `TileCache` into `TileServer::serve()` Router via `.with_state(...)`. `CacheStats` derive `Serialize`.
-  - **Files:** `src/server.rs`, `src/cache.rs` (verify `CacheStats: Serialize`).
-  - **Tests:** (proposed) `test_stats_handler_returns_real_counters`, `test_stats_handler_after_cache_hit_miss`.
-  - **Risk:** Lock contention on hot stats path — `TileCache` already uses `parking_lot::Mutex`; expose `stats()` returning a snapshot, not a guard.
-  - **Prerequisites:** None.
+- [x] Wire `stats_handler` to the shared `TileCache` instance via Axum `State`.
+  - **Done (verified 2026-07-28):** `src/server.rs:171` routes `/stats` with `.with_state(self.cache.clone())`; `stats_handler` (`src/server.rs:427`) now has the signature `async fn stats_handler(axum::extract::State(cache): axum::extract::State<TileCache>) -> Response`, reading real counters from the live cache instead of the canned placeholder message.
+  - **Original goal (for reference):** `GET /stats` returns real `CacheStats { hits, misses, evictions, size_bytes, entry_count }` JSON from the live tile cache.
 
 - [ ] Implement WMTS `TileMatrixSetLimits` advertisement in `GetCapabilities` XML.
   - **Verified gap:** `src/handlers/wmts.rs` exposes `get_tile_matrix_set()` and validates against `matrix.matrix_width/matrix_height` at runtime (`src/handlers/wmts.rs:778`) but the generated capabilities XML does not include `<TileMatrixSetLimits>` per WMTS 1.0.0 (07-057r7) §B.5 / 7.1.1.3.
@@ -77,4 +72,4 @@
 *No prior `[x]` entries — slate is empty.*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

@@ -226,6 +226,61 @@ impl AttributeValue {
         }
     }
 
+    /// Get a single-valued numeric attribute as `f64`, regardless of its
+    /// concrete on-disk numeric type.
+    ///
+    /// CF convention attributes that scale/mask variable data —
+    /// `scale_factor`, `add_offset`, `_FillValue`, `missing_value` — may be
+    /// stored as any numeric NetCDF type (the convention only requires it
+    /// match, or be losslessly convertible to, the variable's type). This
+    /// widens any single-element `I8`..`F64` variant to `f64` so callers don't
+    /// need to match on every numeric variant themselves.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for `Text` values or attributes with other than
+    /// exactly one value.
+    pub fn as_numeric_f64(&self) -> Result<f64> {
+        macro_rules! scalar {
+            ($values:expr) => {
+                match $values.as_slice() {
+                    [v] => Ok(f64::from(*v)),
+                    _ => Err(NetCdfError::AttributeError(
+                        "Attribute does not have exactly one value".to_string(),
+                    )),
+                }
+            };
+        }
+        match self {
+            Self::Text(_) => Err(NetCdfError::AttributeError(
+                "Attribute is text, not numeric".to_string(),
+            )),
+            Self::I8(v) => scalar!(v),
+            Self::U8(v) => scalar!(v),
+            Self::I16(v) => scalar!(v),
+            Self::U16(v) => scalar!(v),
+            Self::I32(v) => scalar!(v),
+            Self::U32(v) => scalar!(v),
+            Self::F32(v) => scalar!(v),
+            Self::F64(v) => scalar!(v),
+            // i64/u64 don't losslessly `From<T> for f64`; cast explicitly
+            // (values that don't fit f64's 53-bit mantissa exactly are
+            // vanishingly rare for scale/offset/fill-value metadata).
+            Self::I64(v) => match v.as_slice() {
+                [x] => Ok(*x as f64),
+                _ => Err(NetCdfError::AttributeError(
+                    "Attribute does not have exactly one value".to_string(),
+                )),
+            },
+            Self::U64(v) => match v.as_slice() {
+                [x] => Ok(*x as f64),
+                _ => Err(NetCdfError::AttributeError(
+                    "Attribute does not have exactly one value".to_string(),
+                )),
+            },
+        }
+    }
+
     /// Get the type name.
     #[must_use]
     pub const fn type_name(&self) -> &'static str {
@@ -469,6 +524,42 @@ mod tests {
             .expect("Failed to create numeric attribute");
         assert_eq!(attr.name(), "scale_factor");
         assert_eq!(attr.value().as_f64().expect("Failed to get f64 value"), 1.5);
+    }
+
+    #[test]
+    fn test_as_numeric_f64_widens_every_numeric_variant() {
+        assert_eq!(AttributeValue::i8(-5).as_numeric_f64().expect("i8"), -5.0);
+        assert_eq!(AttributeValue::u8(5).as_numeric_f64().expect("u8"), 5.0);
+        assert_eq!(
+            AttributeValue::i16(-500).as_numeric_f64().expect("i16"),
+            -500.0
+        );
+        assert_eq!(
+            AttributeValue::u16(500).as_numeric_f64().expect("u16"),
+            500.0
+        );
+        assert_eq!(
+            AttributeValue::i32(-9999).as_numeric_f64().expect("i32"),
+            -9999.0
+        );
+        assert_eq!(
+            AttributeValue::u32(9999).as_numeric_f64().expect("u32"),
+            9999.0
+        );
+        assert_eq!(AttributeValue::i64(-1).as_numeric_f64().expect("i64"), -1.0);
+        assert_eq!(AttributeValue::u64(1).as_numeric_f64().expect("u64"), 1.0);
+        assert_eq!(AttributeValue::f32(1.5).as_numeric_f64().expect("f32"), 1.5);
+        assert_eq!(AttributeValue::f64(2.5).as_numeric_f64().expect("f64"), 2.5);
+    }
+
+    #[test]
+    fn test_as_numeric_f64_rejects_text_and_multi_valued() {
+        assert!(AttributeValue::text("hello").as_numeric_f64().is_err());
+        assert!(
+            AttributeValue::f64_array(vec![1.0, 2.0])
+                .as_numeric_f64()
+                .is_err()
+        );
     }
 
     #[test]

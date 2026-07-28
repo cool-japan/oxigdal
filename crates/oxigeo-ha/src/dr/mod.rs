@@ -1,5 +1,6 @@
 //! Disaster recovery orchestration.
 
+pub mod control_plane;
 pub mod orchestration;
 pub mod runbook;
 pub mod testing;
@@ -9,6 +10,47 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Executes the concrete infrastructure actions that make up a DR failover.
+///
+/// The orchestrator sequences these steps; the actual effects (fencing the
+/// primary's traffic, promoting the DR region, repointing traffic, and
+/// verifying the new primary) are injected so the HA crate stays agnostic of
+/// the underlying DNS/LB/managed-database control plane. A real local
+/// implementation is provided by
+/// [`control_plane::InMemoryDrControlPlane`]. Every method must return an error
+/// on failure so the orchestrator aborts instead of reporting a fake success.
+#[async_trait]
+pub trait DrExecutor: Send + Sync {
+    /// Stop routing client traffic to `region` (fence the failing primary).
+    async fn stop_traffic(&self, region: &str) -> HaResult<()>;
+
+    /// Promote `region` to primary (accept writes / leadership).
+    async fn promote_region(&self, region: &str) -> HaResult<()>;
+
+    /// Repoint client traffic from `from` to `to`.
+    async fn redirect_traffic(&self, from: &str, to: &str) -> HaResult<()>;
+
+    /// Verify that `region` is actually serving as the healthy primary.
+    async fn verify_primary(&self, region: &str) -> HaResult<bool>;
+}
+
+/// Probes the real readiness of a DR region for compliance/readiness testing.
+///
+/// Injected so readiness sign-off reflects genuine region state rather than an
+/// unconditional pass. A real local implementation is provided by
+/// [`control_plane::InMemoryDrControlPlane`].
+#[async_trait]
+pub trait DrProbe: Send + Sync {
+    /// Probe whether `region` is reachable.
+    async fn check_connectivity(&self, region: &str) -> HaResult<bool>;
+
+    /// Probe whether `dr` is data-consistent with `primary`.
+    async fn check_data_consistency(&self, primary: &str, dr: &str) -> HaResult<bool>;
+
+    /// Probe whether `region` is prepared to accept a failover.
+    async fn check_failover_readiness(&self, region: &str) -> HaResult<bool>;
+}
 
 /// DR configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

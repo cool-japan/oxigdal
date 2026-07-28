@@ -7,9 +7,14 @@ pub mod continuous_agg;
 pub mod hypertable;
 
 use crate::error::{Error, Result};
-use deadpool_postgres::{Config as PoolConfig, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use crate::sql::{quote_pg_ident, validate_bare_ident};
+use deadpool_postgres::{
+    Config as PoolConfig, ManagerConfig, Pool, PoolConfig as DeadpoolPoolConfig, RecyclingMethod,
+    Runtime, Timeouts,
+};
 use std::time::Duration;
 use tokio_postgres::NoTls;
+use tokio_postgres::types::ToSql;
 
 /// TimescaleDB connector configuration.
 #[derive(Debug, Clone)]
@@ -60,11 +65,23 @@ impl TimescaleConnector {
         pg_config.dbname = Some(config.database.clone());
         pg_config.user = Some(config.username.clone());
         pg_config.password = Some(config.password.clone());
+        pg_config.connect_timeout = Some(config.connection_timeout);
 
-        // Note: ManagerConfig with recycling_method is configured internally by deadpool_postgres
-        let _manager_config = ManagerConfig {
+        // Actually apply the manager and pool settings. The previous code built
+        // a `ManagerConfig` into a discarded `_manager_config` local and never
+        // set `pg_config.pool`, so `max_connections`/`connection_timeout` were
+        // silently ignored and deadpool's built-in defaults were used instead.
+        pg_config.manager = Some(ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
-        };
+        });
+        pg_config.pool = Some(DeadpoolPoolConfig {
+            max_size: config.max_connections,
+            timeouts: Timeouts {
+                wait: Some(config.connection_timeout),
+                ..Timeouts::default()
+            },
+            ..DeadpoolPoolConfig::default()
+        });
 
         let pool = pg_config
             .create_pool(Some(Runtime::Tokio1), NoTls)
@@ -132,13 +149,15 @@ impl TimescaleConnector {
 
         let interval = chunk_time_interval.unwrap_or("1 day");
 
-        let sql = format!(
-            "SELECT create_hypertable('{}', '{}', chunk_time_interval => INTERVAL '{}')",
-            table_name, time_column, interval
-        );
+        // Bind every caller-supplied value as a query parameter instead of
+        // splicing it into the SQL text: the relation as regclass, the time
+        // column as text, and the chunk interval cast from text to interval.
+        // This removes the injection surface entirely.
+        let sql = "SELECT create_hypertable($1::regclass, $2, chunk_time_interval => $3::interval)";
+        let params: [&(dyn ToSql + Sync); 3] = [&table_name, &time_column, &interval];
 
         client
-            .execute(&sql, &[])
+            .execute(sql, &params)
             .await
             .map_err(|e| Error::TimescaleDB(e.to_string()))?;
 
@@ -168,13 +187,11 @@ impl TimescaleConnector {
     ) -> Result<()> {
         let client = self.get_conn().await?;
 
-        let sql = format!(
-            "SELECT add_retention_policy('{}', INTERVAL '{}')",
-            table_name, retention_interval
-        );
+        let sql = "SELECT add_retention_policy($1::regclass, $2::interval)";
+        let params: [&(dyn ToSql + Sync); 2] = [&table_name, &retention_interval];
 
         client
-            .execute(&sql, &[])
+            .execute(sql, &params)
             .await
             .map_err(|e| Error::TimescaleDB(e.to_string()))?;
 
@@ -185,10 +202,11 @@ impl TimescaleConnector {
     pub async fn remove_retention_policy(&self, table_name: &str) -> Result<()> {
         let client = self.get_conn().await?;
 
-        let sql = format!("SELECT remove_retention_policy('{}')", table_name);
+        let sql = "SELECT remove_retention_policy($1::regclass)";
+        let params: [&(dyn ToSql + Sync); 1] = [&table_name];
 
         client
-            .execute(&sql, &[])
+            .execute(sql, &params)
             .await
             .map_err(|e| Error::TimescaleDB(e.to_string()))?;
 
@@ -203,15 +221,28 @@ impl TimescaleConnector {
     ) -> Result<()> {
         let client = self.get_conn().await?;
 
+        // `ALTER TABLE ... SET (...)` is DDL and cannot take bind parameters,
+        // so the table name is validated + double-quoted and each segment-by
+        // column is validated against a strict identifier allow-list (rejecting
+        // any quote/semicolon) before being embedded in the reloption literal.
+        let quoted_table = quote_pg_ident(table_name)?;
+
         let segment_clause = if let Some(cols) = segment_by {
-            format!(", segment_by => '{}'", cols.join(","))
+            let mut validated = Vec::with_capacity(cols.len());
+            for col in cols {
+                validated.push(validate_bare_ident(col)?);
+            }
+            format!(
+                ", timescaledb.compress_segmentby = '{}'",
+                validated.join(", ")
+            )
         } else {
             String::new()
         };
 
         let sql = format!(
             "ALTER TABLE {} SET (timescaledb.compress{})",
-            table_name, segment_clause
+            quoted_table, segment_clause
         );
 
         client
@@ -230,13 +261,11 @@ impl TimescaleConnector {
     ) -> Result<()> {
         let client = self.get_conn().await?;
 
-        let sql = format!(
-            "SELECT add_compression_policy('{}', INTERVAL '{}')",
-            table_name, compress_after
-        );
+        let sql = "SELECT add_compression_policy($1::regclass, $2::interval)";
+        let params: [&(dyn ToSql + Sync); 2] = [&table_name, &compress_after];
 
         client
-            .execute(&sql, &[])
+            .execute(sql, &params)
             .await
             .map_err(|e| Error::TimescaleDB(e.to_string()))?;
 

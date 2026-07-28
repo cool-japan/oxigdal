@@ -58,7 +58,11 @@ impl<R: Read + Seek> FlatGeobufReader<R> {
                     "Feature count required when index is present".to_string(),
                 )
             })?;
-            Some(PackedRTree::read(&mut buf_reader, feature_count)?)
+            Some(PackedRTree::read(
+                &mut buf_reader,
+                feature_count,
+                header.index_node_size,
+            )?)
         } else {
             None
         };
@@ -280,16 +284,23 @@ impl<R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin> AsyncFlatGeobufRead
                 )
             })?;
 
-            let index_size = PackedRTree::calculate_node_count(
-                feature_count as usize,
-                PackedRTree::DEFAULT_NODE_SIZE,
-            ) * crate::index::Node::NODE_SIZE;
+            let node_size = if header.index_node_size < 2 {
+                PackedRTree::DEFAULT_NODE_SIZE
+            } else {
+                header.index_node_size as usize
+            };
+            let index_size = PackedRTree::calculate_node_count(feature_count as usize, node_size)
+                .saturating_mul(crate::index::Node::NODE_SIZE);
 
             let mut index_bytes = vec![0u8; index_size];
             reader.read_exact(&mut index_bytes).await?;
 
             let mut cursor = std::io::Cursor::new(&index_bytes);
-            Some(PackedRTree::read(&mut cursor, feature_count)?)
+            Some(PackedRTree::read(
+                &mut cursor,
+                feature_count,
+                header.index_node_size,
+            )?)
         } else {
             None
         };

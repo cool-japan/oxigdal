@@ -12,17 +12,17 @@ OxiGeo ML is a comprehensive machine learning framework for geospatial raster da
 
 **Key Benefits:**
 - **Pure Rust Implementation**: No C/Fortran dependencies for core functionality
-- **Multi-Backend Support**: ONNX Runtime, CoreML, TensorFlow Lite
-- **GPU Acceleration**: 7 GPU backends (CUDA, Metal, Vulkan, OpenCL, ROCm, DirectML, WebGPU)
+- **ONNX Inference**: Real model inference via the pure-Rust `oxionnx` backend
+- **GPU Backend Detection**: Discovers and enumerates 7 GPU backends (CUDA, Metal, Vulkan, OpenCL, ROCm, DirectML, WebGPU). See the note under *GPU Acceleration* below about what detection does and does not do today.
 - **Production Features**: Model serving, health checks, batch processing, monitoring
 - **Comprehensive Documentation**: 10,000+ lines of guides and examples
 
 ## Key Features
 
 ### 🚀 Model Inference
-- **ONNX Runtime 2.0** - Full integration with GPU acceleration
-- **CoreML** - Native Apple acceleration (CPU, GPU, Neural Engine)
-- **TensorFlow Lite** - Mobile and edge deployment
+- **ONNX (`oxionnx`)** - Pure-Rust ONNX inference (the working backend)
+- **CoreML** - *Not currently available* (feature disabled pending an `objc2` update)
+- **TensorFlow Lite** - *Not currently available* (the `tflitec` C binding violates the Pure Rust policy and needs Bazel 6.5.0; the module returns `FeatureNotAvailable`)
 - **Tiled Inference** - Process large images efficiently
 - **Batch Processing** - Auto-tuning and progress tracking
 
@@ -51,14 +51,25 @@ OxiGeo ML is a comprehensive machine learning framework for geospatial raster da
 - **Knowledge Distillation** - Teacher-student model compression
 - **Performance Benchmarking** - Speedup and accuracy metrics
 
-### 🎮 GPU Acceleration
+### 🎮 GPU Backend Detection
+
+> **Scope:** the `gpu` module performs backend **detection and device
+> enumeration** — it answers "which GPUs are present and available?" via
+> dynamic-library / API probing (`GpuBackend::detect_all`, `list_devices`,
+> `select_device`). It does **not** by itself execute inference on the GPU:
+> selecting a backend records a preference on `InferenceConfig`, but actual GPU
+> execution requires the ONNX backend to be compiled with the `gpu` feature
+> (which routes CUDA through `oxionnx`). Without that feature, inference runs on
+> CPU regardless of what was detected.
+
+Detected/enumerable backends:
 - **CUDA** (NVIDIA) - Dynamic detection, device enumeration
-- **Metal** (Apple) - Native macOS/iOS support
-- **Vulkan** - Cross-platform compute
-- **OpenCL** - Industry standard compute
-- **ROCm** (AMD) - AMD GPU support
-- **DirectML** (Windows) - Microsoft's ML acceleration
-- **WebGPU** - Browser-based compute
+- **Metal** (Apple) - Native macOS/iOS detection
+- **Vulkan** - Cross-platform detection
+- **OpenCL** - Industry standard detection
+- **ROCm** (AMD) - AMD GPU detection
+- **DirectML** (Windows) - Adapter enumeration
+- **WebGPU** - Browser environment detection
 
 ### 🌐 Production Features
 - **Model Zoo** - 6 pretrained models with automatic download
@@ -73,11 +84,11 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-ml = "0.2.0"
-oxigeo-ml-foundation = "0.2.0"
+oxigeo-ml = "0.2.1"
+oxigeo-ml-foundation = "0.2.1"
 
 # Optional: Enable specific features
-oxigeo-ml = { version = "0.2.0", features = ["gpu", "cuda", "temporal", "cloud-removal"] }
+oxigeo-ml = { version = "0.2.1", features = ["gpu", "cuda", "cloud-removal"] }
 ```
 
 ### System Requirements
@@ -174,25 +185,37 @@ let results = processor.infer_batch_with_progress(inputs, true)?;
 | `vulkan` | Vulkan compute backend | ❌ No |
 | `opencl` | OpenCL backend | ❌ No |
 | `rocm` | AMD ROCm backend | ❌ No |
-| `directml` | DirectML (Windows) | ❌ No |
-| `coreml` | CoreML (macOS/iOS) | ❌ No |
-| `tflite` | TensorFlow Lite | ❌ No |
 | `quantization` | Model quantization | ❌ No |
 | `pruning` | Model pruning | ❌ No |
 | `distillation` | Knowledge distillation | ❌ No |
-| `temporal` | Temporal forecasting | ❌ No |
 | `cloud-removal` | Cloud detection/removal | ❌ No |
+
+The following are **not currently selectable Cargo features** — they are commented out in
+`Cargo.toml` and requesting them fails the build (`error: Package oxigeo-ml does not contain
+this feature`), so they are intentionally left out of the table above:
+
+| Feature | Why it's unavailable |
+|---------|-----------------------|
+| `directml` | Not supported by the `oxionnx` backend (Windows DirectML has no execution provider there yet) |
+| `coreml` | Commented out pending an `objc2` 0.6 API migration (`alloc`/`NSArray::from_slice` breaking changes) |
+| `tflite` | The `tflitec` C binding requires Bazel 6.5.0 (modern systems ship 8.x+) and violates the Pure Rust policy; pending a Pure-Rust TFLite path via TenfloweRS |
+| `temporal` | Commented out — the `oxigeo-ml-foundation`/`oxigeo-temporal` optional-dependency feature resolution didn't resolve correctly under the workspace's feature unification |
 
 ## Platform Support
 
-| Platform | Build | ONNX RT | CoreML | TFLite | GPU |
-|----------|-------|---------|--------|--------|-----|
-| **Linux x86_64** | ✅ | ✅ | ❌ | ✅ | ✅ CUDA, Vulkan, OpenCL, ROCm |
-| **macOS ARM64** | ✅ | ✅ | ✅ | ✅ | ✅ Metal |
-| **macOS x86_64** | ✅ | ✅ | ✅ | ✅ | ✅ Metal |
-| **Windows x86_64** | ✅ | ✅ | ❌ | ✅ | ✅ CUDA, DirectML, Vulkan |
-| **iOS** | ✅ | ❌ | ✅ | ✅ | ✅ Metal |
-| **Android** | ✅ | ❌ | ❌ | ✅ | ✅ Vulkan, OpenCL |
+"GPU" below means backend **detection/enumeration** is available on that
+platform, not that inference is offloaded to the GPU (see *GPU Backend
+Detection*). CoreML and TFLite backends are currently **unavailable** (disabled
+dependencies) and always return `FeatureNotAvailable`.
+
+| Platform | Build | ONNX (`oxionnx`) | CoreML | TFLite | GPU detection |
+|----------|-------|------------------|--------|--------|---------------|
+| **Linux x86_64** | ✅ | ✅ | ❌ | ❌ | CUDA, Vulkan, OpenCL, ROCm |
+| **macOS ARM64** | ✅ | ✅ | ❌ | ❌ | Metal |
+| **macOS x86_64** | ✅ | ✅ | ❌ | ❌ | Metal |
+| **Windows x86_64** | ✅ | ✅ | ❌ | ❌ | CUDA, DirectML, Vulkan |
+| **iOS** | ✅ | ❌ | ❌ | ❌ | Metal |
+| **Android** | ✅ | ❌ | ❌ | ❌ | Vulkan, OpenCL |
 
 ## Examples
 
@@ -210,20 +233,32 @@ let features = extractor.extract(&input)?;
 // Train custom classifier on extracted features
 ```
 
-### GPU Acceleration
+### GPU Backend Detection
 
 ```rust
-use oxigeo_ml::gpu::{select_best_device, GpuBackend};
+use oxigeo_ml::gpu::{GpuBackend, GpuConfig, list_devices, select_device};
 
-// Automatically select best GPU
-let device = select_best_device()?;
-println!("Using {} GPU: {}", device.backend, device.name);
+// Which GPU backends are actually available on this machine?
+let available = GpuBackend::detect_all();
+println!("Available backends: {available:?}");
 
-// Configure model for GPU
-let config = OnnxConfig::default()
-    .with_gpu(device.backend)
-    .with_device_index(device.index);
+// Enumerate concrete devices across all detected backends.
+for device in list_devices()? {
+    println!("{} device: {}", device.backend, device.name);
+}
+
+// Express a device preference, then resolve the concrete device.
+let gpu_config = GpuConfig::builder()
+    .preferred_backend(GpuBackend::Cuda)
+    .build();
+let selected = select_device(&gpu_config)?;
+println!("Selected: {}", selected.name);
 ```
+
+> **Note:** this discovers and selects a device; it does not by itself move
+> inference onto the GPU. Record `gpu_config` on `InferenceConfig::gpu_config`
+> and compile the ONNX backend with the `gpu` feature to run on CUDA; otherwise
+> inference executes on CPU.
 
 ### Cloud Detection and Removal
 
@@ -271,14 +306,14 @@ Run the complete test suite:
 cargo test --all-features
 
 # Specific package
-cargo test -p oxigeo-ml --lib --features temporal,cloud-removal
+cargo test -p oxigeo-ml --lib --features cloud-removal
 cargo test -p oxigeo-ml-foundation --lib --all-features
 
 # With output
 cargo test -- --nocapture --test-threads=1
 ```
 
-**Test Coverage**: 99.68% (316/317 tests passing)
+**Test Coverage**: 455/455 tests passing, 0 failed (100%, all-features; 442/442 with default features)
 
 ## Performance
 
@@ -291,9 +326,9 @@ See the Optimization Guide for detailed performance tuning.
 
 ## Project Status
 
-- **Version**: 0.2.0
+- **Version**: 0.2.1
 - **Status**: Production Ready
-- **Test Coverage**: 99.68%
+- **Test Coverage**: 455/455 tests passing (100%, all-features)
 - **Documentation**: Comprehensive (10,000+ lines)
 - **COOLJAPAN Compliance**: 100%
 

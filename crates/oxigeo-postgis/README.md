@@ -186,25 +186,27 @@ let mut writer = PostGisWriter::new(pool.clone(), "results")
     .batch_size(1000);
 
 for feature in features {
-    writer.add_to_batch(feature);
+    // `add` accumulates and auto-flushes once `batch_size` is reached,
+    // keeping memory bounded while streaming.
+    writer.add(feature).await?;
 }
 
-// Flush remaining batch
+// Flush any features still buffered in the final partial batch.
 writer.flush().await?;
 ```
 
 #### Batch Configuration
 
 ```rust
-let writer = PostGisWriter::new(pool, "output_table")
+let mut writer = PostGisWriter::new(pool, "output_table")
     .srid(4326)                    // SRID for geometries
     .create_table(true)            // Create table if not exists
     .geometry_column("geom")       // Geometry column name
-    .batch_size(5000)              // Batch insert size
-    .overwrite(false);             // Keep existing data
+    .batch_size(5000)              // Auto-flush threshold for `add`
+    .overwrite(false);             // Keep existing data (true = TRUNCATE first)
 
-// Or use individual inserts
-writer.write_feature(feature).await?;
+// Write a single feature immediately (returns the generated id).
+let id = writer.write_feature(feature).await?;
 ```
 
 ### Reading Data
@@ -236,9 +238,18 @@ let reader = PostGisReader::new(pool, "table_name")?
 
 ### Transaction Management
 
+> **Note:** `Transaction` is constructed internally (`Transaction::new` is
+> crate-private) and no public `TransactionManager` implementation is wired
+> up onto `ConnectionPool` yet, so the snippets below are illustrative of the
+> intended shape of the API rather than directly callable today. `execute()`,
+> `query()`, `savepoint()`, `release_savepoint()`, `rollback_to_savepoint()`,
+> `commit()` and `rollback()` on `Transaction` itself are real, public, and
+> `async` (see [`src/transaction.rs`](src/transaction.rs)); what's missing is
+> a public entry point that hands you a `Transaction` in the first place.
+
 #### Using Transactions
 
-```rust
+```rust,ignore
 use oxigeo_postgis::*;
 
 let client = pool.get().await?;
@@ -261,18 +272,18 @@ tx.commit().await?;
 
 #### Savepoints
 
-```rust
+```rust,ignore
 use oxigeo_postgis::*;
 
 let mut tx = Transaction::new(client)?;
 
 // Create savepoint
-tx.savepoint("sp1")?;
+tx.savepoint("sp1").await?;
 
 // Do work...
 
 // Rollback to savepoint if needed
-tx.rollback_to("sp1")?;
+tx.rollback_to_savepoint("sp1").await?;
 
 // Continue and commit
 tx.commit().await?;

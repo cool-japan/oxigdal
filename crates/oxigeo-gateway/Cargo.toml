@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/oxigeo-gateway"
 readme = "README.md"
-description = "Enterprise API gateway with rate limiting, authentication, GraphQL, and WebSocket support for OxiGeo"
+description = "API gateway for OxiGeo: axum-based HTTP serving layer with rate limiting, JWT/RBAC/MFA authentication, GraphQL (queries/mutations/subscriptions), WebSocket routing, API version negotiation, and load-balanced reverse proxying with health probes and circuit breaking"
 keywords = ["api-gateway", "graphql", "rate-limiting", "authentication", "science"]
 categories = ["api-bindings", "network-programming", "web-programming::http-server", "authentication"]
 
@@ -27,35 +27,39 @@ futures.workspace = true
 async-trait.workspace = true
 
 # Web framework
-axum.workspace = true
-tower.workspace = true
-tower-http.workspace = true
-hyper.workspace = true
 http.workspace = true
+
+# Web framework / serving layer (Pure Rust)
+axum = { workspace = true, features = ["ws"] }
+tower.workspace = true
+tower-http = { workspace = true, features = ["trace", "cors"] }
+hyper = { workspace = true }
 http-body-util.workspace = true
+async-graphql-axum.workspace = true
 
 # GraphQL
 async-graphql.workspace = true
-async-graphql-axum.workspace = true
-
-# WebSocket
-tokio-tungstenite.workspace = true
 
 # Authentication
 jsonwebtoken.workspace = true
-# Enable the crate's own async reqwest/rustls HTTP client (workspace pins
-# default-features = false; these named features are unioned on top and stay Pure Rust).
-oauth2 = { workspace = true, features = ["reqwest", "rustls-tls"] }
+# OAuth2 is OPTIONAL and gated behind the non-default `oauth2` feature. Its reqwest
+# `rustls-tls` backend pulls `ring` (C + assembly crypto), so keeping it out of the default
+# build is what makes the default `oxigeo-gateway` closure 100% Pure Rust. Enable the
+# `oauth2` feature explicitly when you need the Authorization Code flow.
+oauth2 = { workspace = true, features = ["reqwest", "rustls-tls"], optional = true }
 hmac.workspace = true
 sha2.workspace = true
 
 # Rate limiting
-governor.workspace = true
 redis = { workspace = true, optional = true }
 
-# TLS
+# TLS — Pure Rust stack (OxiTLS RustCrypto provider, no ring/C/ASM). Used for real HTTPS
+# health-check probes. `tokio-rustls` is pinned default-features = false so it never pulls
+# the ring crypto provider; the provider comes from oxitls-adapter-rustls-rustcrypto.
 rustls.workspace = true
-rustls-pemfile.workspace = true
+tokio-rustls = { workspace = true, features = ["tls12"] }
+oxitls-adapter-rustls-rustcrypto = { workspace = true, default-features = false }
+oxitls-webpki-roots = { workspace = true }
 
 # Utilities
 url.workspace = true
@@ -75,9 +79,6 @@ oxiarc-brotli = { workspace = true }
 # Logging
 tracing.workspace = true
 
-# Internal crates
-oxigeo-core = { workspace = true, default-features = true }
-
 [dev-dependencies]
 # Testing
 tokio = { workspace = true, features = ["test-util", "macros"] }
@@ -85,11 +86,15 @@ tempfile.workspace = true
 proptest.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
+tokio-tungstenite.workspace = true
 
 [features]
 default = ["memory"]
 redis = ["dep:redis"]
 memory = []
+# OAuth2 Authorization Code flow. NOT in default because its reqwest/rustls-tls backend
+# pulls `ring` (C + assembly), which would violate the Pure-Rust-by-default policy.
+oauth2 = ["dep:oauth2"]
 
 [[bench]]
 name = "gateway_bench"
@@ -98,6 +103,11 @@ harness = false
 [lints]
 workspace = true
 
+# `all-features = true` would also turn on `oauth2`, whose reqwest/rustls-tls
+# backend pulls `ring` (C + assembly crypto) -- see the Pure Rust Policy note
+# on the `oauth2` feature above. Excluding it here keeps the docs.rs build on
+# the same Pure-Rust closure as the default feature set (mirrors the pattern
+# in oxigeo-cloud-enhanced).
 [package.metadata.docs.rs]
-all-features = true
+features = ["memory", "redis"]
 rustdoc-args = ["--cfg", "docsrs"]

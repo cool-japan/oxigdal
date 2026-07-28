@@ -66,8 +66,10 @@ pub struct GeoTiffDataset {
     num_channels: usize,
     /// Number of classes for output
     num_classes: usize,
-    /// LRU cache for loaded rasters
-    cache: Mutex<LruCache<PathBuf, RasterBuffer>>,
+    /// LRU cache for loaded rasters. Each entry holds every band of the file as
+    /// a separate single-band [`RasterBuffer`], so multi-channel reads do not
+    /// re-open the file per band.
+    cache: Mutex<LruCache<PathBuf, Vec<RasterBuffer>>>,
     /// Optional augmentation pipeline
     transform: Option<AugmentationPipeline>,
     /// Number of patches per image
@@ -177,14 +179,13 @@ impl GeoTiffDataset {
         Ok(self)
     }
 
-    /// Loads a raster from file with caching.
+    /// Loads every band of a raster from file, with caching.
     ///
-    /// # Note
-    ///
-    /// Currently supports single-band GeoTIFF files. Multi-band support
-    /// requires handling band interleaving properly.
+    /// Returns one single-band [`RasterBuffer`] per band present in the file.
+    /// Bands are read once and cached together so that a multi-channel dataset
+    /// does not re-open the file for each channel.
     #[cfg(feature = "ml")]
-    fn load_raster(&self, path: &Path) -> Result<RasterBuffer> {
+    fn load_all_bands(&self, path: &Path) -> Result<Vec<RasterBuffer>> {
         // Check cache first
         {
             let mut cache = self
@@ -192,8 +193,8 @@ impl GeoTiffDataset {
                 .lock()
                 .map_err(|e| Error::InvalidState(format!("Failed to lock cache mutex: {}", e)))?;
 
-            if let Some(buffer) = cache.get(path) {
-                return Ok(buffer.clone());
+            if let Some(bands) = cache.get(path) {
+                return Ok(bands.clone());
             }
         }
 
@@ -219,6 +220,7 @@ impl GeoTiffDataset {
         let height = reader.height();
         let band_count = reader.band_count();
         let data_type = reader.data_type().unwrap_or(RasterDataType::UInt8);
+        let nodata = reader.nodata();
 
         tracing::debug!(
             "GeoTIFF info: {}x{}, {} bands, type={:?}",
@@ -228,15 +230,48 @@ impl GeoTiffDataset {
             data_type
         );
 
-        // Read all bands
-        // For multi-band images, we'll read band 0 (level 0)
-        let raw_data = reader.read_band(0, 0)?;
+        if band_count == 0 {
+            return Err(Error::invalid_dimensions(
+                "at least 1 band",
+                format!("{} bands", band_count),
+            ));
+        }
 
-        // Get nodata value
-        let nodata = reader.nodata();
+        // `GeoTiffReader::read_band` ignores its band argument and returns the
+        // full-resolution raster with every band pixel-interleaved (chunky
+        // layout): for pixel `p` the samples are laid out band-major within the
+        // pixel as `[b0, b1, ..., b_{K-1}]`. We read that single interleaved
+        // buffer once (level 0) and de-interleave it into one single-band
+        // [`RasterBuffer`] per band so that downstream patch extraction can
+        // address channels independently.
+        let interleaved = reader.read_band(0, 0)?;
 
-        // Create the raster buffer
-        let buffer = RasterBuffer::new(raw_data, width, height, data_type, nodata)?;
+        let band_count = band_count as usize;
+        let bytes_per_sample = data_type.size_bytes();
+        let pixel_count = (width * height) as usize;
+        let expected_len = pixel_count * band_count * bytes_per_sample;
+        if interleaved.len() != expected_len {
+            return Err(Error::invalid_dimensions(
+                format!(
+                    "{} bytes ({}x{} x {} band(s) x {} byte(s))",
+                    expected_len, width, height, band_count, bytes_per_sample
+                ),
+                format!("{} bytes", interleaved.len()),
+            ));
+        }
+
+        let stride = band_count * bytes_per_sample;
+        let mut bands = Vec::with_capacity(band_count);
+        for band_idx in 0..band_count {
+            let mut band_bytes = Vec::with_capacity(pixel_count * bytes_per_sample);
+            let band_base = band_idx * bytes_per_sample;
+            for pixel in 0..pixel_count {
+                let src = pixel * stride + band_base;
+                band_bytes.extend_from_slice(&interleaved[src..src + bytes_per_sample]);
+            }
+            let buffer = RasterBuffer::new(band_bytes, width, height, data_type, nodata)?;
+            bands.push(buffer);
+        }
 
         // Cache the result
         {
@@ -244,15 +279,46 @@ impl GeoTiffDataset {
                 .cache
                 .lock()
                 .map_err(|e| Error::InvalidState(format!("Failed to lock cache mutex: {}", e)))?;
-            cache.put(path.to_path_buf(), buffer.clone());
+            cache.put(path.to_path_buf(), bands.clone());
         }
 
-        Ok(buffer)
+        Ok(bands)
     }
 
-    /// Extracts a random patch from a raster buffer.
+    /// Loads a raster from file with caching, returning the first band only.
+    ///
+    /// Retained as a single-band convenience for tests; multi-channel training
+    /// uses [`Self::load_bands`] / [`Self::load_all_bands`].
+    #[cfg(all(feature = "ml", test))]
+    fn load_raster(&self, path: &Path) -> Result<RasterBuffer> {
+        let bands = self.load_all_bands(path)?;
+        bands
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::invalid_dimensions("at least 1 band", "0 bands".to_string()))
+    }
+
+    /// Loads the first `num_bands` bands of a file, erroring if the file does
+    /// not contain enough bands to satisfy the request.
     #[cfg(feature = "ml")]
-    fn extract_random_patch(&self, buffer: &RasterBuffer) -> Result<Vec<f32>> {
+    fn load_bands(&self, path: &Path, num_bands: usize) -> Result<Vec<RasterBuffer>> {
+        let mut bands = self.load_all_bands(path)?;
+        if bands.len() < num_bands {
+            return Err(Error::invalid_parameter(
+                "num_channels",
+                num_bands,
+                format!("file {} only has {} band(s)", path.display(), bands.len()),
+            ));
+        }
+        bands.truncate(num_bands);
+        Ok(bands)
+    }
+
+    /// Validates that a patch of the configured size fits inside `buffer` and
+    /// returns the usable maximum offsets `(max_x, max_y)` (inclusive upper
+    /// bounds for the top-left corner).
+    #[cfg(feature = "ml")]
+    fn patch_bounds(&self, buffer: &RasterBuffer) -> Result<(usize, usize)> {
         let width = buffer.width() as usize;
         let height = buffer.height() as usize;
 
@@ -263,23 +329,17 @@ impl GeoTiffDataset {
             ));
         }
 
-        // Random offset
-        let max_x = width - self.patch_size.1;
-        let max_y = height - self.patch_size.0;
+        Ok((width - self.patch_size.1, height - self.patch_size.0))
+    }
 
-        let offset_x = if max_x > 0 {
-            (getrandom::get_random_u64()? % max_x as u64) as usize
-        } else {
-            0
-        };
-
-        let offset_y = if max_y > 0 {
-            (getrandom::get_random_u64()? % max_y as u64) as usize
-        } else {
-            0
-        };
-
-        // Extract patch
+    /// Extracts a patch at a fixed top-left offset from a single-band buffer.
+    #[cfg(feature = "ml")]
+    fn extract_patch_at(
+        &self,
+        buffer: &RasterBuffer,
+        offset_x: usize,
+        offset_y: usize,
+    ) -> Result<Vec<f32>> {
         let mut patch = Vec::with_capacity(self.patch_size.0 * self.patch_size.1);
 
         for y in offset_y..(offset_y + self.patch_size.0) {
@@ -291,6 +351,66 @@ impl GeoTiffDataset {
 
         Ok(patch)
     }
+
+    /// Extracts a random patch from a raster buffer (single band).
+    ///
+    /// Uses OS entropy for the offset. For reproducible sampling used by
+    /// training, [`Self::get_batch`] derives a deterministic offset from the
+    /// sample index instead, so this random sampler is exercised only in tests.
+    #[cfg(all(feature = "ml", test))]
+    fn extract_random_patch(&self, buffer: &RasterBuffer) -> Result<Vec<f32>> {
+        let (max_x, max_y) = self.patch_bounds(buffer)?;
+
+        let offset_x = if max_x > 0 {
+            (getrandom::get_random_u64()? % (max_x as u64 + 1)) as usize
+        } else {
+            0
+        };
+
+        let offset_y = if max_y > 0 {
+            (getrandom::get_random_u64()? % (max_y as u64 + 1)) as usize
+        } else {
+            0
+        };
+
+        self.extract_patch_at(buffer, offset_x, offset_y)
+    }
+}
+
+/// Derives a deterministic patch offset from a sample index.
+///
+/// Uses a SplitMix64 hash of the index so that the same `idx` always maps to
+/// the same `(offset_x, offset_y)`, keeping validation / early-stopping /
+/// checkpoint comparisons reproducible across calls and epochs while still
+/// spreading patches across the image.
+#[cfg(feature = "ml")]
+fn deterministic_offset(idx: usize, max_x: usize, max_y: usize) -> (usize, usize) {
+    // SplitMix64: two successive draws from the seeded state give two
+    // independent, well-distributed 64-bit values.
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    let mut state = (idx as u64).wrapping_add(0x1234_5678_9ABC_DEF0);
+    let rx = splitmix64(&mut state);
+    let ry = splitmix64(&mut state);
+
+    let offset_x = if max_x > 0 {
+        (rx % (max_x as u64 + 1)) as usize
+    } else {
+        0
+    };
+    let offset_y = if max_y > 0 {
+        (ry % (max_y as u64 + 1)) as usize
+    } else {
+        0
+    };
+
+    (offset_x, offset_y)
 }
 
 #[cfg(not(feature = "ml"))]
@@ -329,6 +449,17 @@ impl DatasetTrait for GeoTiffDataset {
     }
 
     fn get_batch(&self, indices: &[usize]) -> Result<(Vec<f32>, Vec<f32>)> {
+        // Supervised training requires ground-truth labels. Returning fabricated
+        // all-zero targets would silently train the model against a fake
+        // supervision signal, so refuse instead.
+        let label_paths = self.label_paths.as_ref().ok_or_else(|| {
+            Error::invalid_parameter(
+                "label_paths",
+                "None",
+                "supervised get_batch requires labels; call with_labels() before training",
+            )
+        })?;
+
         let batch_size = indices.len();
         let patch_pixels = self.patch_size.0 * self.patch_size.1;
         let input_size = batch_size * self.num_channels * patch_pixels;
@@ -338,23 +469,36 @@ impl DatasetTrait for GeoTiffDataset {
         let mut targets = Vec::with_capacity(output_size);
 
         for &idx in indices {
-            // Determine which file and which patch
-            let file_idx = idx / self.patches_per_image;
-            let file_idx = file_idx.min(self.file_paths.len() - 1);
+            // Determine which file and which patch.
+            let file_idx = (idx / self.patches_per_image).min(self.file_paths.len() - 1);
 
-            // Load input raster
-            let input_buffer = self.load_raster(&self.file_paths[file_idx])?;
-            let patch = self.extract_random_patch(&input_buffer)?;
-            inputs.extend_from_slice(&patch);
+            // Load the requested number of input channels (bands). This errors
+            // if the file has fewer bands than `num_channels`.
+            let input_bands = self.load_bands(&self.file_paths[file_idx], self.num_channels)?;
 
-            // Load target/label if available
-            if let Some(ref label_paths) = self.label_paths {
-                let label_buffer = self.load_raster(&label_paths[file_idx])?;
-                let label_patch = self.extract_random_patch(&label_buffer)?;
+            // Derive a single deterministic offset per sample index so the same
+            // index always yields the same patch, and so the input patch and its
+            // label patch are spatially aligned.
+            let (max_x, max_y) = self.patch_bounds(&input_bands[0])?;
+            let (offset_x, offset_y) = deterministic_offset(idx, max_x, max_y);
+
+            // Channel-major layout (all of channel 0, then channel 1, ...) to
+            // match the NCHW input shape advertised by `shapes()`.
+            for band in &input_bands {
+                let patch = self.extract_patch_at(band, offset_x, offset_y)?;
+                inputs.extend_from_slice(&patch);
+            }
+
+            // Labels use `num_classes` bands and are sampled at the same offset.
+            let label_bands = self.load_bands(&label_paths[file_idx], self.num_classes)?;
+            let (lmax_x, lmax_y) = self.patch_bounds(&label_bands[0])?;
+            // Clamp the shared offset into the label's valid range in case the
+            // label raster is smaller than the input.
+            let loffset_x = offset_x.min(lmax_x);
+            let loffset_y = offset_y.min(lmax_y);
+            for band in &label_bands {
+                let label_patch = self.extract_patch_at(band, loffset_x, loffset_y)?;
                 targets.extend_from_slice(&label_patch);
-            } else {
-                // No labels: use zeros or same as input
-                targets.extend(vec![0.0; patch_pixels]);
             }
         }
 
@@ -378,8 +522,9 @@ impl DatasetTrait for GeoTiffDataset {
     }
 }
 
-/// Helper function to get a random u64 value
-#[cfg(feature = "ml")]
+/// Helper function to get a random u64 value (used by the test-only random
+/// patch sampler).
+#[cfg(all(feature = "ml", test))]
 mod getrandom {
     use crate::Result;
 
@@ -394,6 +539,9 @@ mod getrandom {
 
 #[cfg(test)]
 mod tests {
+    // Channel/class counts are written out in full (e.g. `2 * 1 * patch_pixels`)
+    // to document the tensor layout, so the `* 1` factors are intentional.
+    #![allow(clippy::identity_op)]
     use super::*;
     #[cfg(feature = "ml")]
     use std::env;
@@ -556,24 +704,37 @@ mod tests {
     #[test]
     #[cfg(feature = "ml")]
     fn test_load_raster_multi_band() {
-        // NOTE: Currently, the GeoTIFF reader returns all bands interleaved,
-        // but RasterBuffer expects single-band data. Multi-band support
-        // requires additional work to properly handle band interleaving.
-        // For now, test with single-band and verify basic loading works.
+        // The GeoTIFF reader returns every band pixel-interleaved in a single
+        // call; `load_all_bands` must de-interleave that into one single-band
+        // buffer per band, each of full spatial size.
+        let test_file = create_test_geotiff(32, 16, 3).expect("Failed to create test file");
 
-        // Create a single-band test GeoTIFF file
-        let test_file = create_test_geotiff(256, 256, 1).expect("Failed to create test file");
-
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (128, 128))
-            .and_then(|d| d.with_channels(1))
+        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (8, 8))
+            .and_then(|d| d.with_channels(3))
             .expect("Failed to create dataset");
 
-        let result = dataset.load_raster(&test_file);
-        assert!(result.is_ok(), "Failed to load raster");
+        let bands = dataset
+            .load_all_bands(&test_file)
+            .expect("Failed to load bands");
+        assert_eq!(bands.len(), 3, "expected 3 de-interleaved bands");
+        for band in &bands {
+            assert_eq!(band.width(), 32);
+            assert_eq!(band.height(), 16);
+        }
 
-        let buffer = result.expect("Failed to load raster");
-        assert_eq!(buffer.width(), 256);
-        assert_eq!(buffer.height(), 256);
+        // create_test_geotiff fills bytes with `i % 256` over the interleaved
+        // [b0,b1,b2, b0,b1,b2, ...] stream (UInt8), so for pixel 0 the three
+        // bands are 0,1,2 and for pixel 1 they are 3,4,5. Verify the split put
+        // the right sample in the right band.
+        let b0 = bands[0].get_pixel(0, 0).expect("pixel");
+        let b1 = bands[1].get_pixel(0, 0).expect("pixel");
+        let b2 = bands[2].get_pixel(0, 0).expect("pixel");
+        assert_eq!((b0, b1, b2), (0.0, 1.0, 2.0));
+        // Pixel (1,0) is the second pixel -> byte indices 3,4,5.
+        let n0 = bands[0].get_pixel(1, 0).expect("pixel");
+        let n1 = bands[1].get_pixel(1, 0).expect("pixel");
+        let n2 = bands[2].get_pixel(1, 0).expect("pixel");
+        assert_eq!((n0, n1, n2), (3.0, 4.0, 5.0));
 
         // Cleanup
         let _ = fs::remove_file(&test_file);
@@ -627,6 +788,102 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_file(&test_file);
+    }
+
+    #[test]
+    #[cfg(feature = "ml")]
+    fn test_get_batch_requires_labels() {
+        // A dataset created without labels must refuse supervised get_batch
+        // rather than fabricating all-zero targets.
+        let test_file = create_test_geotiff(64, 64, 1).expect("Failed to create test file");
+
+        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (16, 16))
+            .expect("Failed to create dataset");
+
+        let result = dataset.get_batch(&[0]);
+        assert!(result.is_err(), "get_batch without labels must error");
+
+        let _ = fs::remove_file(&test_file);
+    }
+
+    #[test]
+    #[cfg(feature = "ml")]
+    fn test_get_batch_deterministic() {
+        // The same sample index must always yield the same patch data.
+        let input_file = create_test_geotiff(128, 128, 1).expect("Failed to create input file");
+        let label_file = create_test_geotiff(128, 128, 1).expect("Failed to create label file");
+
+        let dataset = GeoTiffDataset::new(vec![input_file.clone()], (32, 32))
+            .and_then(|d| d.with_channels(1))
+            .and_then(|d| d.with_labels(vec![label_file.clone()]))
+            .expect("Failed to create dataset");
+
+        let (in1, tg1) = dataset.get_batch(&[5]).expect("first get_batch failed");
+        let (in2, tg2) = dataset.get_batch(&[5]).expect("second get_batch failed");
+
+        assert_eq!(in1, in2, "input patch for index 5 must be reproducible");
+        assert_eq!(tg1, tg2, "target patch for index 5 must be reproducible");
+
+        // Different indices should (generally) draw different offsets.
+        let (in_other, _) = dataset.get_batch(&[7]).expect("get_batch failed");
+        assert_eq!(in_other.len(), in1.len());
+
+        let _ = fs::remove_file(&input_file);
+        let _ = fs::remove_file(&label_file);
+    }
+
+    #[test]
+    #[cfg(feature = "ml")]
+    fn test_get_batch_multichannel_length() {
+        // A 3-channel dataset must return inputs sized for all 3 channels.
+        let input_file = create_test_geotiff(64, 64, 3).expect("Failed to create input file");
+        let label_file = create_test_geotiff(64, 64, 1).expect("Failed to create label file");
+
+        let dataset = GeoTiffDataset::new(vec![input_file.clone()], (16, 16))
+            .and_then(|d| d.with_channels(3))
+            .and_then(|d| d.with_classes(1))
+            .and_then(|d| d.with_labels(vec![label_file.clone()]))
+            .expect("Failed to create dataset");
+
+        let (inputs, targets) = dataset.get_batch(&[0, 1]).expect("get_batch failed");
+
+        let patch_pixels = 16 * 16;
+        assert_eq!(
+            inputs.len(),
+            2 * 3 * patch_pixels,
+            "inputs must cover 3 channels"
+        );
+        assert_eq!(
+            targets.len(),
+            2 * 1 * patch_pixels,
+            "targets must cover 1 class"
+        );
+
+        let _ = fs::remove_file(&input_file);
+        let _ = fs::remove_file(&label_file);
+    }
+
+    #[test]
+    #[cfg(feature = "ml")]
+    fn test_get_batch_too_many_channels_errors() {
+        // Requesting more channels than the file provides must error, not
+        // silently return a short buffer.
+        let input_file = create_test_geotiff(64, 64, 1).expect("Failed to create input file");
+        let label_file = create_test_geotiff(64, 64, 1).expect("Failed to create label file");
+
+        let dataset = GeoTiffDataset::new(vec![input_file.clone()], (16, 16))
+            .and_then(|d| d.with_channels(4))
+            .and_then(|d| d.with_labels(vec![label_file.clone()]))
+            .expect("Failed to create dataset");
+
+        let result = dataset.get_batch(&[0]);
+        assert!(
+            result.is_err(),
+            "requesting 4 channels from a 1-band file must error"
+        );
+
+        let _ = fs::remove_file(&input_file);
+        let _ = fs::remove_file(&label_file);
     }
 
     #[test]

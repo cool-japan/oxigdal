@@ -20,7 +20,7 @@ alloc = []
 
 # Kinesis components
 streams = ["async", "dep:aws-sdk-kinesis", "dep:aws-config"]
-firehose = ["async", "dep:aws-sdk-firehose"]
+firehose = ["async", "dep:aws-sdk-firehose", "dep:aws-sdk-lambda", "dep:aws-config"]
 analytics = ["async", "dep:aws-sdk-kinesisanalyticsv2"]
 monitoring = ["async", "dep:aws-sdk-cloudwatch"]
 
@@ -47,6 +47,7 @@ futures = { workspace = true, optional = true }
 # AWS SDK
 aws-sdk-kinesis = { workspace = true, optional = true }
 aws-sdk-firehose = { workspace = true, optional = true }
+aws-sdk-lambda = { workspace = true, optional = true }
 aws-sdk-kinesisanalyticsv2 = { workspace = true, optional = true }
 aws-sdk-cloudwatch = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
@@ -58,10 +59,7 @@ oxiarc-archive = { workspace = true, optional = true }
 oxiarc-zstd = { workspace = true, optional = true }
 
 # Utilities
-dashmap = { workspace = true }
 parking_lot = { workspace = true }
-num-traits = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

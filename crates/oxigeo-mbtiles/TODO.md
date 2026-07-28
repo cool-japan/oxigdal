@@ -1,8 +1,8 @@
 # TODO: oxigeo-mbtiles
 
-> **Purpose:** Pure Rust MBTiles tile archive reader for OxiGeo — SQLite-based tile pyramid support.
-> **Status (2026-05-16):** ~1,553 Rust LoC · 123 tests · 0 in-source `TODO:` markers (gap is in the type's prose contract).
-> **Roadmap:** v0.1.7 → v0.2.0 (current slice) → v1.0.0
+> **Purpose:** Pure Rust MBTiles tile archive reader/writer for OxiGeo — SQLite-based tile pyramid support.
+> **Status (2026-07-28):** 1,430 Rust LoC (tokei, `src/`) · 157 tests (all-features and default-features), 0 failed · both the reader and writer are now real, Pure-Rust `oxisql-sqlite-compat`-backed SQLite I/O (see below)
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
@@ -14,10 +14,10 @@
   - **Tests:** `(proposed)` test_reader_opens_tippecanoe_sample_mbtiles, test_reader_parses_metadata_bounds, test_reader_tile_count_matches_select_count, test_reader_handles_jpeg_png_webp_pbf_formats, test_reader_skips_grids_table_if_absent
   - **Risk:** Cross-crate dependency on `oxigeo-gpkg` for SQLite parsing — acceptable because both crates already depend on the SQLite format. Alternative: move `SqliteReader` to a shared `oxigeo-sqlite` crate (track separately).
   - **Prerequisites:** None — the gpkg crate already exposes the SQLite reader.
-  - **Done:** 2026-05-20 (Slice 24). Implementation chose `rusqlite = { workspace = true, features = ["bundled"] }` directly instead of building a B-tree walker on top of `oxigeo-gpkg::sqlite_reader::SqliteReader` (which only exposes `page`/`page_count`/`raw_data` primitives, not table scans). MBTiles 1.3 IS SQLite by spec, so calling the canonical engine is the canonical implementation; workspace already pins `rusqlite = "0.37"` for proj-sys/libsqlite3-sys compatibility. Feature gate: `sqlite`. `MBTilesMetadata.extra` field renamed to `extras` to align with new `from_map_strict` + accessor.
+  - **Done:** 2026-05-20 (Slice 24), implementation superseded 2026-07-28. Originally shipped on `rusqlite = { workspace = true, features = ["bundled"] }` (a COOLJAPAN Pure-Rust-policy violation, since `rusqlite`'s `bundled` feature vendors and compiles C SQLite). **Re-verified 2026-07-28: `src/reader.rs` and `Cargo.toml` no longer reference `rusqlite` at all** — the `sqlite` feature now depends on `oxisql-core` + `oxisql-sqlite-compat` (Pure Rust, no C/FFI), and `src/reader.rs` uses `oxisql_core::{Connection, Value}` + `oxisql_sqlite_compat::SqliteConnection` directly. The policy violation noted here is resolved; this note is kept for history. Feature gate: `sqlite`. `MBTilesMetadata.extra` field renamed to `extras` to align with new `from_map_strict` + accessor.
   - **Tests:** 16 in `crates/oxigeo-mbtiles/tests/reader_test.rs` (canonical metadata keys; bounds/center CSV parsing; tile round-trip + missing; zoom_levels distinct/sorted; list_tiles ordered; into_mbtiles preservation; malformed-bounds typed error; in-memory open round-trip via tempfile rendezvous; missing-tiles/metadata-table guards).
 
-- [ ] Real SQLite-backed MBTiles file writer
+- [x] Real SQLite-backed MBTiles file writer
   - **Verified gap:** `src/writer.rs:441-445` `MBTilesWriter { metadata, tiles: HashMap<TileCoord, Vec<u8>>, format }` — produces `MBTilesData` (an immutable in-memory snapshot, line 391), not a serialised `.mbtiles` byte stream. Line 1 doc-comment: `"MBTiles writer and in-memory tile archive builder."` — accurate but the "writer" half is unimplemented.
   - **Goal:** Add `MBTilesWriter::build_sqlite() -> Result<Vec<u8>>` and `write_to_path(path: &Path) -> Result<()>` producing a valid `.mbtiles` SQLite archive that QGIS / `mbview` / `tile-stitch` can open.
   - **Design:** Reuse the `sqlite_writer` planned for `oxigeo-gpkg` (see that crate's high-priority writer item) via re-export. Required tables per MBTiles 1.3 spec: `metadata(name TEXT, value TEXT)` and `tiles(zoom_level INT, tile_column INT, tile_row INT, tile_data BLOB)`. Required indexes: `tile_index ON tiles (zoom_level, tile_column, tile_row)`. Required metadata keys: `name, format, bounds, center, minzoom, maxzoom, attribution, description, type, version, json`.
@@ -25,6 +25,7 @@
   - **Tests:** `(proposed)` test_writer_emits_metadata_required_keys, test_writer_round_trip_via_reader, test_writer_unique_index_on_tile_coords, test_writer_handles_empty_archive_valid_sqlite, test_writer_tms_y_coordinate_preserved
   - **Risk:** Blocked on the gpkg writer landing first; can scaffold the API and gate behind a `sqlite` feature in the interim.
   - **Prerequisites:** `oxigeo-gpkg` writer (sibling crate, sibling slice).
+  - **Done:** verified fixed as of 2026-07-28 (root `CHANGELOG.md` [0.2.1] Added: "`oxigeo-mbtiles` / `oxigeo-gpkg` / `oxigeo-pmtiles`: a real SQLite-backed MBTiles writer (now genuinely persists to `.mbtiles`)"). Implemented independently as `(new) src/sqlite_writer.rs` (290 LoC, not `writer_sqlite.rs` as sketched here) rather than a re-export from `oxigeo-gpkg`: `impl MBTilesData { pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), MbTilesError> }` (and a consuming variant), using `oxisql_core`/`oxisql_sqlite_compat` (same Pure-Rust engine as the reader, gated behind the same `sqlite` feature) to emit exactly the `metadata`/`tiles` tables and `tile_index` unique index the spec requires, all inside one transaction so a failed write never leaves a half-written archive on disk. API name differs from the `build_sqlite`/`write_to_path` sketched above but the goal is met.
 
 - [ ] Tile decompression for compressed vector tiles (PBF + gzip)
   - **Verified gap:** `src/writer.rs:1-2` and `lib.rs:1-5` say nothing about decompression; `rg "decompress|gunzip"` across `src/` returns no matches. MBTiles 1.3 (§Metadata) mandates that PBF tiles MUST be gzip-compressed in the BLOB column — current code returns the raw gzipped bytes, forcing every caller to dig out an `oxiarc-flate`-equivalent decoder themselves.
@@ -118,4 +119,4 @@
 (No prior `[x]` items in previous TODO.md)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

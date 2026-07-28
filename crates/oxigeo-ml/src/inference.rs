@@ -2,10 +2,14 @@
 //!
 //! This module coordinates model loading, preprocessing, prediction, and postprocessing.
 
+use std::time::SystemTime;
+
 use oxigeo_core::buffer::RasterBuffer;
+use oxigeo_core::types::RasterDataType;
 use tracing::{debug, info};
 
 use crate::error::Result;
+use crate::inference_cache::{CacheEntry, InferenceCache};
 use crate::models::{Model, OnnxModel};
 use crate::preprocessing::{NormalizationParams, Tile, TileConfig, normalize, tile_raster};
 
@@ -18,6 +22,15 @@ pub struct InferenceConfig {
     pub tiling: Option<TileConfig>,
     /// Confidence threshold for filtering results
     pub confidence_threshold: f32,
+    /// Optional GPU device-selection preference.
+    ///
+    /// This records *which* detected GPU backend/device the caller would like to
+    /// use (see [`crate::gpu`]). Actual GPU execution still depends on the ONNX
+    /// backend being compiled with the `gpu` feature; when it is not, inference
+    /// runs on CPU regardless of this setting. Use
+    /// [`InferenceEngine::selected_gpu_device`] to resolve the concrete device
+    /// this config points at.
+    pub gpu_config: Option<crate::gpu::GpuConfig>,
 }
 
 impl Default for InferenceConfig {
@@ -26,6 +39,7 @@ impl Default for InferenceConfig {
             normalization: Some(NormalizationParams::imagenet()),
             tiling: None,
             confidence_threshold: 0.5,
+            gpu_config: None,
         }
     }
 }
@@ -34,13 +48,62 @@ impl Default for InferenceConfig {
 pub struct InferenceEngine<M: Model> {
     model: M,
     config: InferenceConfig,
+    /// Optional content-addressed result cache. When present, single-tile
+    /// predictions are looked up by `SHA-256(model_hash || normalized input)`
+    /// before running the model, and inserted afterwards.
+    cache: Option<InferenceCache>,
+    /// Model identity hash mixed into every cache key so that swapping the model
+    /// invalidates cached results.
+    model_hash: Vec<u8>,
 }
 
 impl<M: Model> InferenceEngine<M> {
     /// Creates a new inference engine
     #[must_use]
     pub fn new(model: M, config: InferenceConfig) -> Self {
-        Self { model, config }
+        Self {
+            model,
+            config,
+            cache: None,
+            model_hash: Vec::new(),
+        }
+    }
+
+    /// Enables content-addressed result caching for single-tile predictions.
+    ///
+    /// `capacity` is the maximum number of cached results (LRU eviction);
+    /// `model_hash` uniquely identifies the loaded model so cache entries are
+    /// invalidated when the model changes (e.g. a file hash or version bytes).
+    #[must_use]
+    pub fn with_cache(mut self, capacity: usize, model_hash: Vec<u8>) -> Self {
+        self.cache = Some(InferenceCache::new(capacity));
+        self.model_hash = model_hash;
+        self
+    }
+
+    /// Returns cache statistics if caching is enabled.
+    #[must_use]
+    pub fn cache_stats(&self) -> Option<crate::inference_cache::CacheStats> {
+        self.cache.as_ref().map(|c| c.stats().clone())
+    }
+
+    /// Resolves the concrete GPU device the [`InferenceConfig::gpu_config`]
+    /// points at, if GPU selection was requested and a matching device is
+    /// present.
+    ///
+    /// This is device *discovery/selection* only: it does not change how
+    /// [`predict`](Self::predict) executes (see [`crate::gpu`] for why). Returns
+    /// `Ok(None)` when no GPU preference was set, and an error when a preference
+    /// was set but no matching device is available.
+    ///
+    /// # Errors
+    /// Returns an error if a GPU was requested but device enumeration fails or no
+    /// matching device exists.
+    pub fn selected_gpu_device(&self) -> Result<Option<crate::gpu::GpuDevice>> {
+        match self.config.gpu_config {
+            Some(ref gpu_config) => Ok(Some(crate::gpu::select_device(gpu_config)?)),
+            None => Ok(None),
+        }
     }
 
     /// Runs inference on a raster buffer
@@ -82,8 +145,43 @@ impl<M: Model> InferenceEngine<M> {
             input.clone()
         };
 
-        // Run inference
-        self.model.predict(&normalized)
+        // Without a cache, run the model directly.
+        if self.cache.is_none() {
+            return self.model.predict(&normalized);
+        }
+
+        // Content-addressed lookup on the normalized input.
+        let input_floats = flatten_buffer(&normalized)?;
+        let key = InferenceCache::compute_key(&self.model_hash, &input_floats);
+
+        // Cache probe (scoped so the mutable borrow is released before predict).
+        let hit = if let Some(cache) = self.cache.as_mut() {
+            cache
+                .get(&key)
+                .map(|entry| (entry.outputs.clone(), entry.output_shapes.clone()))
+        } else {
+            None
+        };
+        if let Some((outputs, shapes)) = hit {
+            debug!("Inference cache hit");
+            return reconstruct_buffer(&outputs, &shapes);
+        }
+
+        // Miss: run the model and cache the result.
+        let result = self.model.predict(&normalized)?;
+        let (flat, shape) = encode_buffer(&result)?;
+        if let Some(cache) = self.cache.as_mut() {
+            let entry = CacheEntry {
+                outputs: vec![flat],
+                output_shapes: vec![shape],
+                created_at: SystemTime::now(),
+                hit_count: 0,
+                input_size_bytes: input_floats.len() * 4,
+            };
+            // A rejected insert (e.g. oversized) is not fatal to inference.
+            let _ = cache.insert(key, entry);
+        }
+        Ok(result)
     }
 
     /// Runs inference on a tiled buffer
@@ -139,6 +237,97 @@ impl InferenceEngine<OnnxModel> {
     ) -> Result<Self> {
         let model = OnnxModel::from_file(path)?;
         Ok(Self::new(model, config))
+    }
+}
+
+/// Flattens a raster buffer's pixels into a row-major `f32` vector (used for
+/// cache-key computation on the model input).
+fn flatten_buffer(buffer: &RasterBuffer) -> Result<Vec<f32>> {
+    let width = buffer.width();
+    let height = buffer.height();
+    let mut out = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let value =
+                buffer
+                    .get_pixel(x, y)
+                    .map_err(|e| crate::error::InferenceError::Failed {
+                        reason: format!("Failed to read input pixel for cache key: {e}"),
+                    })?;
+            out.push(value as f32);
+        }
+    }
+    Ok(out)
+}
+
+/// Encodes an output raster buffer as `(row-major f32 pixels, [height, width,
+/// dtype_code])` for storage in the cache.
+fn encode_buffer(buffer: &RasterBuffer) -> Result<(Vec<f32>, Vec<usize>)> {
+    let flat = flatten_buffer(buffer)?;
+    let shape = vec![
+        buffer.height() as usize,
+        buffer.width() as usize,
+        buffer.data_type() as u8 as usize,
+    ];
+    Ok((flat, shape))
+}
+
+/// Reconstructs a raster buffer from a cached `(pixels, [height, width,
+/// dtype_code])` pair.
+fn reconstruct_buffer(outputs: &[Vec<f32>], shapes: &[Vec<usize>]) -> Result<RasterBuffer> {
+    let flat = outputs
+        .first()
+        .ok_or_else(|| crate::error::InferenceError::Failed {
+            reason: "cached entry has no output tensor".to_string(),
+        })?;
+    let shape = shapes
+        .first()
+        .ok_or_else(|| crate::error::InferenceError::Failed {
+            reason: "cached entry has no output shape".to_string(),
+        })?;
+    if shape.len() != 3 {
+        return Err(crate::error::InferenceError::Failed {
+            reason: format!("cached raster shape must be [h, w, dtype], got {shape:?}"),
+        }
+        .into());
+    }
+    let height = shape[0] as u64;
+    let width = shape[1] as u64;
+    let dtype = raster_dtype_from_code(shape[2] as u8);
+
+    let mut buffer = RasterBuffer::zeros(width, height, dtype);
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) as usize;
+            if let Some(&value) = flat.get(idx) {
+                buffer.set_pixel(x, y, value as f64).map_err(|e| {
+                    crate::error::InferenceError::Failed {
+                        reason: format!("Failed to write cached pixel: {e}"),
+                    }
+                })?;
+            }
+        }
+    }
+    Ok(buffer)
+}
+
+/// Maps a [`RasterDataType`] `#[repr(u8)]` discriminant back to the enum,
+/// defaulting to `Float32` for an unrecognized code.
+fn raster_dtype_from_code(code: u8) -> RasterDataType {
+    match code {
+        1 => RasterDataType::UInt8,
+        2 => RasterDataType::Int8,
+        3 => RasterDataType::UInt16,
+        4 => RasterDataType::Int16,
+        5 => RasterDataType::UInt32,
+        6 => RasterDataType::Int32,
+        7 => RasterDataType::UInt64,
+        8 => RasterDataType::Int64,
+        9 => RasterDataType::Float32,
+        10 => RasterDataType::Float64,
+        11 => RasterDataType::CFloat32,
+        12 => RasterDataType::CFloat64,
+        _ => RasterDataType::Float32,
     }
 }
 
@@ -249,9 +438,124 @@ fn compute_tile_weight(x: u64, y: u64, width: u64, height: u64, overlap: u64) ->
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::models::{Model, ModelMetadata};
     use oxigeo_core::types::RasterDataType;
+
+    /// A model that records how many times `predict` was invoked and returns a
+    /// deterministic single-pixel-doubling output, so cache hits (which skip
+    /// `predict`) are observable.
+    struct CountingModel {
+        calls: usize,
+        metadata: ModelMetadata,
+    }
+
+    impl CountingModel {
+        fn new() -> Self {
+            Self {
+                calls: 0,
+                metadata: ModelMetadata {
+                    name: "counting".to_string(),
+                    version: "1".to_string(),
+                    description: String::new(),
+                    input_names: vec!["in".to_string()],
+                    output_names: vec!["out".to_string()],
+                    input_shape: (1, 4, 4),
+                    output_shape: (1, 4, 4),
+                    class_labels: None,
+                },
+            }
+        }
+    }
+
+    impl Model for CountingModel {
+        fn metadata(&self) -> &ModelMetadata {
+            &self.metadata
+        }
+        fn predict(&mut self, input: &RasterBuffer) -> Result<RasterBuffer> {
+            self.calls += 1;
+            let mut out =
+                RasterBuffer::zeros(input.width(), input.height(), RasterDataType::Float32);
+            for y in 0..input.height() {
+                for x in 0..input.width() {
+                    let v = input.get_pixel(x, y).unwrap_or(0.0);
+                    out.set_pixel(x, y, v * 2.0).unwrap();
+                }
+            }
+            Ok(out)
+        }
+        fn predict_batch(&mut self, inputs: &[RasterBuffer]) -> Result<Vec<RasterBuffer>> {
+            inputs.iter().map(|i| self.predict(i)).collect()
+        }
+        fn input_shape(&self) -> (usize, usize, usize) {
+            (1, 4, 4)
+        }
+        fn output_shape(&self) -> (usize, usize, usize) {
+            (1, 4, 4)
+        }
+    }
+
+    fn ramp_buffer() -> RasterBuffer {
+        let mut b = RasterBuffer::zeros(4, 4, RasterDataType::Float32);
+        for y in 0..4u64 {
+            for x in 0..4u64 {
+                b.set_pixel(x, y, (y * 4 + x) as f64).unwrap();
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn test_inference_cache_hit_skips_model() {
+        let config = InferenceConfig {
+            normalization: None,
+            tiling: None,
+            confidence_threshold: 0.5,
+            gpu_config: None,
+        };
+        let mut engine =
+            InferenceEngine::new(CountingModel::new(), config).with_cache(16, b"model-v1".to_vec());
+
+        let input = ramp_buffer();
+
+        // First call: miss -> model runs.
+        let out1 = engine.predict(&input).expect("predict 1");
+        assert_eq!(engine.model().calls, 1);
+        // (2,3) pixel = value 4*... let's check a known doubling.
+        assert!((out1.get_pixel(1, 1).unwrap() - 10.0).abs() < 1e-6); // (y=1,x=1)=5 -> 10
+
+        // Second identical call: hit -> model must NOT run again.
+        let out2 = engine.predict(&input).expect("predict 2");
+        assert_eq!(engine.model().calls, 1, "cache hit must skip the model");
+        assert!((out2.get_pixel(1, 1).unwrap() - 10.0).abs() < 1e-6);
+
+        let stats = engine.cache_stats().expect("stats");
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn test_inference_cache_distinct_inputs_miss() {
+        let config = InferenceConfig {
+            normalization: None,
+            tiling: None,
+            confidence_threshold: 0.5,
+            gpu_config: None,
+        };
+        let mut engine =
+            InferenceEngine::new(CountingModel::new(), config).with_cache(16, b"m".to_vec());
+
+        let a = ramp_buffer();
+        let mut b = ramp_buffer();
+        b.set_pixel(0, 0, 99.0).unwrap();
+
+        engine.predict(&a).expect("a");
+        engine.predict(&b).expect("b");
+        // Two different inputs => two model runs.
+        assert_eq!(engine.model().calls, 2);
+    }
 
     #[test]
     fn test_inference_config_default() {

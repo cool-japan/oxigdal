@@ -42,7 +42,7 @@ fn omerc_params(
     if !lat_0.is_finite() || !lon_c.is_finite() || !alpha_c.is_finite() {
         return Err(Error::invalid_parameter("omerc", "non-finite parameter"));
     }
-    if lat_0.abs() > std::f64::consts::FRAC_PI_2 - 1e-10 {
+    if lat_0.abs() > core::f64::consts::FRAC_PI_2 - 1e-10 {
         return Err(Error::invalid_parameter(
             "omerc",
             "projection centre cannot be at a pole",
@@ -54,7 +54,7 @@ fn omerc_params(
             "scale factor must be positive and finite",
         ));
     }
-    let theta = alpha_c - std::f64::consts::FRAC_PI_2;
+    let theta = alpha_c - core::f64::consts::FRAC_PI_2;
     Ok(OmercParams {
         cos_lc: lon_c.cos(),
         sin_lc: lon_c.sin(),
@@ -151,7 +151,7 @@ pub fn oblique_mercator_forward(
 
     // Standard Mercator in the rotated system
     let x = p.rk * lon_r;
-    let half_pi = std::f64::consts::FRAC_PI_2;
+    let half_pi = core::f64::consts::FRAC_PI_2;
     let lat_clamped = lat_r.clamp(-half_pi + 1e-10, half_pi - 1e-10);
     let y = p.rk * (half_pi * 0.5 + lat_clamped * 0.5).tan().ln();
 
@@ -187,7 +187,7 @@ pub fn oblique_mercator_inverse(
     // Inverse Mercator: recover rotated coordinates
     let lon_r = x / p.rk;
     let t = y / p.rk;
-    let lat_r = 2.0 * t.exp().atan() - std::f64::consts::FRAC_PI_2;
+    let lat_r = 2.0 * t.exp().atan() - core::f64::consts::FRAC_PI_2;
 
     // Rotated (lon', lat') → Cartesian on unit sphere
     let (sin_lr, cos_lr) = lat_r.sin_cos();

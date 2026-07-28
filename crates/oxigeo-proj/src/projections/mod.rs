@@ -12,6 +12,7 @@
 //! All projections use radians internally. Degree conversion must be handled
 //! at the calling layer.
 
+pub mod additional;
 pub mod albers;
 pub mod azimuthal;
 pub mod conic;
@@ -21,6 +22,10 @@ pub mod oblique_mercator;
 pub mod polyconic;
 pub mod pseudocylindrical;
 
+pub use additional::{
+    bonne_forward, bonne_inverse, craster_forward, craster_inverse, goode_forward, goode_inverse,
+    hammer_forward, hammer_inverse, miller_forward, miller_inverse, werner_forward, werner_inverse,
+};
 pub use albers::{albers_forward, albers_inverse};
 pub use azimuthal::{
     azimuthal_equidistant_forward, azimuthal_equidistant_inverse, gnomonic_forward,

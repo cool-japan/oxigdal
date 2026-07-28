@@ -382,6 +382,78 @@ pub struct DatasetInfo {
 pub struct Dataset {
     path: String,
     info: DatasetInfo,
+    /// Optional pixel window that constrains every real raster read of this
+    /// dataset to a sub-rectangle of the on-disk file.
+    ///
+    /// Populated by [`Dataset::clip`] for raster datasets so that subsequent
+    /// operations that re-open the underlying file ([`Dataset::read_band`],
+    /// [`Dataset::statistics`], [`Dataset::convert`]) honour the clip instead of
+    /// silently reprocessing the full raster. `None` means "read the whole
+    /// file" (the default for freshly-opened datasets).
+    clip_window: Option<PixelWindow>,
+}
+
+/// A pixel-space sub-rectangle of a raster dataset.
+///
+/// Coordinates are in the on-disk file's pixel grid: `(col, row)` is the
+/// upper-left corner (0-based) and `(width, height)` the size of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PixelWindow {
+    /// Left column (0-based) of the window in the source file.
+    pub col: u32,
+    /// Top row (0-based) of the window in the source file.
+    pub row: u32,
+    /// Window width in pixels.
+    pub width: u32,
+    /// Window height in pixels.
+    pub height: u32,
+}
+
+/// Crop an interleaved raster byte buffer to a pixel window.
+///
+/// `data` is `full_width × full_height` pixels, each pixel occupying a fixed
+/// stride of bytes (the stride covers every band / sample of that pixel, so
+/// this works for both single-band and pixel-interleaved multi-band buffers).
+/// The window `(col, row, width, height)` must fit entirely within the source
+/// dimensions.
+///
+/// Returns `None` when the buffer length is not an exact multiple of the pixel
+/// count or the window falls outside the source extent — callers treat that as
+/// "cannot honour the clip" and surface an error rather than returning wrong
+/// pixels.
+#[cfg(feature = "geotiff")]
+pub(crate) fn crop_interleaved(
+    data: &[u8],
+    full_width: u32,
+    full_height: u32,
+    window: PixelWindow,
+) -> Option<Vec<u8>> {
+    let full_w = full_width as usize;
+    let full_h = full_height as usize;
+    if full_w == 0 || full_h == 0 {
+        return None;
+    }
+    let total_px = full_w.checked_mul(full_h)?;
+    if total_px == 0 || !data.len().is_multiple_of(total_px) {
+        return None;
+    }
+    let stride = data.len() / total_px;
+    let col = window.col as usize;
+    let row = window.row as usize;
+    let w = window.width as usize;
+    let h = window.height as usize;
+    if col.checked_add(w)? > full_w || row.checked_add(h)? > full_h {
+        return None;
+    }
+    let mut out = Vec::with_capacity(w.saturating_mul(h).saturating_mul(stride));
+    for r in 0..h {
+        let src_row_start = (row + r) * full_w;
+        for c in 0..w {
+            let px = (src_row_start + col + c) * stride;
+            out.extend_from_slice(&data[px..px + stride]);
+        }
+    }
+    Some(out)
 }
 
 impl Dataset {
@@ -472,6 +544,11 @@ impl Dataset {
             #[cfg(feature = "copc")]
             DatasetFormat::Copc => Self::open_raster(path, DatasetFormat::Copc),
 
+            // Plain LAS/LAZ point clouds route through the same point-cloud
+            // reader as COPC (a COPC reader is a superset of a LAS reader).
+            #[cfg(feature = "copc")]
+            DatasetFormat::Las => Self::open_raster(path, DatasetFormat::Las),
+
             _ => Err(OxiGeoError::NotSupported {
                 operation: format!(
                     "Format '{}' for '{}' — enable the corresponding feature flag or check the file extension",
@@ -529,6 +606,7 @@ impl Dataset {
         Ok(Self {
             path: path.to_string(),
             info,
+            clip_window: None,
         })
     }
 
@@ -578,6 +656,7 @@ impl Dataset {
         Ok(Self {
             path: path.to_string(),
             info,
+            clip_window: None,
         })
     }
 
@@ -588,7 +667,30 @@ impl Dataset {
     /// Used internally by the cloud-detect module and by tests that need to
     /// create a `Dataset` without a file on disk.
     pub(crate) fn from_info(path: String, info: DatasetInfo) -> Self {
-        Self { path, info }
+        Self {
+            path,
+            info,
+            clip_window: None,
+        }
+    }
+
+    /// Construct a `Dataset` carrying a pixel-space clip window that every real
+    /// raster read must honour.  Used by [`Dataset::clip`].
+    pub(crate) fn from_info_with_window(
+        path: String,
+        info: DatasetInfo,
+        clip_window: Option<PixelWindow>,
+    ) -> Self {
+        Self {
+            path,
+            info,
+            clip_window,
+        }
+    }
+
+    /// The pixel window constraining reads of this dataset, if any.
+    pub(crate) fn clip_window(&self) -> Option<PixelWindow> {
+        self.clip_window
     }
 
     // -- Accessors (GDAL-like API) ------------------------------------------
@@ -705,6 +807,139 @@ impl Dataset {
         }
     }
 
+    /// Read a rectangular pixel window from a single raster band.
+    ///
+    /// Unlike [`Self::read_band`] (which reads the full band), this reads only
+    /// the `width × height` sub-rectangle whose upper-left corner is
+    /// `(col, row)` in this dataset's pixel grid.  It is the real
+    /// pixel-populating primitive behind windowed / tiled access: callers can
+    /// walk a [`crate::streaming::TileStream`]'s coordinates and call
+    /// `read_window` per tile to obtain actual pixels.
+    ///
+    /// Coordinates are relative to the dataset's *current* extent, so on a
+    /// dataset produced by [`Dataset::clip`] the window is taken within the
+    /// clipped region.
+    ///
+    /// `band` is **0-based**.
+    ///
+    /// # Errors
+    ///
+    /// - [`OxiGeoError::NotSupported`] — format is not a supported raster type.
+    /// - [`OxiGeoError::InvalidParameter`] — `band` is out of range, the window
+    ///   has zero size, or it extends past the dataset extent.
+    /// - [`OxiGeoError::Io`] / [`OxiGeoError::Format`] — underlying read failure.
+    pub fn read_window(
+        &self,
+        band: u32,
+        col: u32,
+        row: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<oxigeo_core::buffer::RasterBuffer> {
+        if width == 0 || height == 0 {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "window",
+                message: format!("window size must be non-zero, got {width}×{height}"),
+            });
+        }
+        if self.info.band_count > 0 && band >= self.info.band_count {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "band",
+                message: format!(
+                    "band index {} is out of range (dataset has {} bands)",
+                    band, self.info.band_count
+                ),
+            });
+        }
+
+        #[cfg(feature = "geotiff")]
+        if matches!(self.info.format, DatasetFormat::GeoTiff) {
+            return self.read_window_geotiff(band, col, row, width, height);
+        }
+
+        let _ = (col, row);
+        Err(OxiGeoError::NotSupported {
+            operation: format!(
+                "read_window() is not supported for format '{}' (enable the 'geotiff' feature for GeoTIFF support)",
+                self.info.format.driver_name()
+            ),
+        })
+    }
+
+    /// GeoTIFF-specific windowed band reader.
+    #[cfg(feature = "geotiff")]
+    fn read_window_geotiff(
+        &self,
+        band: u32,
+        col: u32,
+        row: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<oxigeo_core::buffer::RasterBuffer> {
+        use oxigeo_core::buffer::RasterBuffer;
+        use oxigeo_core::io::FileDataSource;
+        use oxigeo_core::types::NoDataValue;
+        use oxigeo_geotiff::GeoTiffReader;
+
+        let source = FileDataSource::open(&self.path).map_err(|e| {
+            OxiGeoError::Io(oxigeo_core::error::IoError::Read {
+                message: format!("failed to open '{}': {e}", self.path),
+            })
+        })?;
+        let reader = GeoTiffReader::open(source)?;
+        let file_w = reader.width();
+        let file_h = reader.height();
+        let raw_bytes = reader.read_band(0, band as usize)?;
+        let data_type = reader
+            .data_type()
+            .unwrap_or(oxigeo_core::types::RasterDataType::UInt8);
+
+        // Reduce to the current (possibly clipped) view first, then take the
+        // requested window within it.
+        let (view_bytes, view_w, view_h) = self.apply_clip_window(raw_bytes, file_w, file_h)?;
+
+        if u64::from(col) + u64::from(width) > view_w || u64::from(row) + u64::from(height) > view_h
+        {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "window",
+                message: format!(
+                    "window [{col},{row} {width}×{height}] extends past dataset extent {view_w}×{view_h}"
+                ),
+            });
+        }
+
+        let view_w32 = u32::try_from(view_w).map_err(|_| OxiGeoError::Internal {
+            message: format!("view width {view_w} exceeds u32"),
+        })?;
+        let view_h32 = u32::try_from(view_h).map_err(|_| OxiGeoError::Internal {
+            message: format!("view height {view_h} exceeds u32"),
+        })?;
+
+        let window = PixelWindow {
+            col,
+            row,
+            width,
+            height,
+        };
+        let cropped =
+            crop_interleaved(&view_bytes, view_w32, view_h32, window).ok_or_else(|| {
+                OxiGeoError::Internal {
+                    message: "failed to crop pixel window from band buffer".to_string(),
+                }
+            })?;
+
+        RasterBuffer::new(
+            cropped,
+            u64::from(width),
+            u64::from(height),
+            data_type,
+            NoDataValue::None,
+        )
+        .map_err(|e| OxiGeoError::Internal {
+            message: format!("failed to create RasterBuffer: {e}"),
+        })
+    }
+
     /// Inner implementation for [`Self::read_band`].
     fn read_band_impl(&self, band: u32) -> Result<oxigeo_core::buffer::RasterBuffer> {
         if self.info.band_count > 0 && band >= self.info.band_count {
@@ -754,11 +989,51 @@ impl Dataset {
             .data_type()
             .unwrap_or(oxigeo_core::types::RasterDataType::UInt8);
 
-        RasterBuffer::new(raw_bytes, width, height, data_type, NoDataValue::None).map_err(|e| {
+        // Honour any clip window recorded by `Dataset::clip` — otherwise a
+        // clipped dataset would silently return the full raster.
+        let (out_bytes, out_w, out_h) = self.apply_clip_window(raw_bytes, width, height)?;
+
+        RasterBuffer::new(out_bytes, out_w, out_h, data_type, NoDataValue::None).map_err(|e| {
             OxiGeoError::Internal {
                 message: format!("failed to create RasterBuffer: {e}"),
             }
         })
+    }
+
+    /// Apply the dataset's [`PixelWindow`] (if present) to a full-raster byte
+    /// buffer read from the source file.
+    ///
+    /// Returns `(bytes, width, height)` — either the cropped window or, when no
+    /// clip is active, the original buffer and dimensions untouched.  Returns
+    /// [`OxiGeoError::Internal`] if the recorded window cannot be applied to the
+    /// buffer (dimension mismatch), rather than silently returning wrong pixels.
+    #[cfg(feature = "geotiff")]
+    fn apply_clip_window(
+        &self,
+        raw_bytes: Vec<u8>,
+        width: u64,
+        height: u64,
+    ) -> Result<(Vec<u8>, u64, u64)> {
+        match self.clip_window {
+            Some(window) => {
+                let full_w = u32::try_from(width).map_err(|_| OxiGeoError::Internal {
+                    message: format!("raster width {width} exceeds u32 for clip"),
+                })?;
+                let full_h = u32::try_from(height).map_err(|_| OxiGeoError::Internal {
+                    message: format!("raster height {height} exceeds u32 for clip"),
+                })?;
+                let cropped = crop_interleaved(&raw_bytes, full_w, full_h, window).ok_or_else(
+                    || OxiGeoError::Internal {
+                        message: format!(
+                            "clip window [{},{} {}×{}] does not fit source raster {full_w}×{full_h}",
+                            window.col, window.row, window.width, window.height
+                        ),
+                    },
+                )?;
+                Ok((cropped, u64::from(window.width), u64::from(window.height)))
+            }
+            None => Ok((raw_bytes, width, height)),
+        }
     }
 
     /// Compute per-band raster statistics (min / max / mean / std_dev / valid_count).
@@ -784,8 +1059,11 @@ impl Dataset {
     /// For **raster** datasets the method converts `bbox` from world coordinates
     /// to pixel coordinates using the stored [`GeoTransform`], clamps the window
     /// to the dataset extent, and returns a new `Dataset` whose `width`, `height`,
-    /// and geo-transform origin reflect the cropped region.  No pixels are read or
-    /// written — the result is a lightweight metadata view.
+    /// and geo-transform origin reflect the cropped region.  No pixels are read at
+    /// clip time, but the pixel window is recorded on the returned dataset so that
+    /// every subsequent real read — [`Dataset::read_band`], [`Dataset::bands`],
+    /// [`Dataset::statistics`], and [`Dataset::convert`] — crops the source file
+    /// to the clipped region rather than reprocessing the full raster.
     ///
     /// For **vector** datasets (no geo-transform) the same bounding-box is stored
     /// and the returned `Dataset` records the reduced spatial extent without
@@ -877,7 +1155,11 @@ impl Dataset {
             .data_type()
             .unwrap_or(oxigeo_core::types::RasterDataType::UInt8);
 
-        let buf = RasterBuffer::new(raw_bytes, width, height, data_type, NoDataValue::None)
+        // Honour any clip window so statistics reflect the clipped region, not
+        // the full on-disk raster.
+        let (out_bytes, out_w, out_h) = self.apply_clip_window(raw_bytes, width, height)?;
+
+        let buf = RasterBuffer::new(out_bytes, out_w, out_h, data_type, NoDataValue::None)
             .map_err(|e| OxiGeoError::Internal {
                 message: format!("failed to create RasterBuffer: {e}"),
             })?;
@@ -1245,10 +1527,12 @@ mod tests {
 
     #[test]
     fn test_magic_bytes_las() {
+        // The generic LASF magic maps to plain LAS, not COPC (the octree VLR
+        // that identifies COPC sits beyond the magic window).
         let bytes = b"LASF";
         assert_eq!(
             DatasetFormat::detect_from_magic_bytes(bytes),
-            Some(DatasetFormat::Copc)
+            Some(DatasetFormat::Las)
         );
     }
 
@@ -1318,7 +1602,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_file_las_as_copc() {
+    fn test_detect_file_plain_las() {
         use std::io::Write;
         let dir = std::env::temp_dir();
         let path = dir.join("test_detect_las.las");
@@ -1328,6 +1612,23 @@ mod tests {
         std::fs::File::create(&path)
             .and_then(|mut f| f.write_all(&bytes))
             .expect("write las");
+        // A plain `.las` file is reported as LAS, not COPC.
+        let fmt = DatasetFormat::detect(&path).expect("detect");
+        assert_eq!(fmt, DatasetFormat::Las);
+    }
+
+    #[test]
+    fn test_detect_file_copc_laz_promoted() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_detect_cloud.copc.laz");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"LASF");
+        bytes.extend_from_slice(&[0u8; 64]);
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&bytes))
+            .expect("write copc laz");
+        // The compound `.copc.laz` extension promotes LASF magic to COPC.
         let fmt = DatasetFormat::detect(&path).expect("detect");
         assert_eq!(fmt, DatasetFormat::Copc);
     }
@@ -1367,6 +1668,162 @@ mod tests {
             ds.info().path,
             Some(path.to_str().expect("path str").to_string())
         );
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_crop_interleaved_single_band() {
+        // 4×4 single-band (1 byte/pixel) buffer 0..16, crop a 2×2 window at (1,1).
+        let data: Vec<u8> = (0u8..16).collect();
+        let window = PixelWindow {
+            col: 1,
+            row: 1,
+            width: 2,
+            height: 2,
+        };
+        let out = crop_interleaved(&data, 4, 4, window).expect("crop");
+        // Rows 1 and 2, cols 1 and 2: {5,6, 9,10}
+        assert_eq!(out, vec![5, 6, 9, 10]);
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_crop_interleaved_multiband_stride() {
+        // 2×2 image, 3 bytes/pixel (RGB-like). Pixel (x,y) = [x, y, 0].
+        let data: Vec<u8> = vec![
+            0, 0, 0, /* (0,0) */ 1, 0, 0, /* (1,0) */
+            0, 1, 0, /* (0,1) */ 1, 1, 0, /* (1,1) */
+        ];
+        let window = PixelWindow {
+            col: 1,
+            row: 0,
+            width: 1,
+            height: 2,
+        };
+        let out = crop_interleaved(&data, 2, 2, window).expect("crop");
+        // Column x=1, both rows: [1,0,0] then [1,1,0]
+        assert_eq!(out, vec![1, 0, 0, 1, 1, 0]);
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_crop_interleaved_out_of_bounds_none() {
+        let data: Vec<u8> = (0u8..16).collect();
+        let window = PixelWindow {
+            col: 3,
+            row: 3,
+            width: 2,
+            height: 2,
+        };
+        assert!(crop_interleaved(&data, 4, 4, window).is_none());
+    }
+
+    #[cfg(feature = "geotiff")]
+    fn write_test_geotiff_4x4(path: &std::path::Path) {
+        use crate::builder::{DatasetCreateBuilder, OutputFormat};
+        let mut writer = DatasetCreateBuilder::new(path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create writer");
+        writer.set_dimensions(4, 4, 1).expect("dims");
+        writer.set_data_type(RasterDataType::UInt8);
+        writer.set_geo_transform(GeoTransform::north_up(0.0, 4.0, 1.0, 1.0));
+        let data: Vec<u8> = (0u8..16).collect();
+        writer.write_all_bands(&data).expect("write bands");
+        writer.finalize().expect("finalize");
+    }
+
+    // Build a `Dataset` that points at a real on-disk 4×4 GeoTIFF and carries a
+    // known geo-transform. The lightweight `extract_tiff_info` used by
+    // `Dataset::open` does not recover the writer's geo-transform, so we attach
+    // it explicitly to exercise the clip window against real pixel reads.
+    #[cfg(feature = "geotiff")]
+    fn dataset_over_4x4(path: &std::path::Path) -> Dataset {
+        let gt = GeoTransform::north_up(0.0, 4.0, 1.0, 1.0);
+        let info = DatasetInfo {
+            format: DatasetFormat::GeoTiff,
+            path: Some(path.to_string_lossy().into_owned()),
+            width: Some(4),
+            height: Some(4),
+            band_count: 1,
+            layer_count: 0,
+            crs: None,
+            geotransform: Some(gt),
+            feature_count: None,
+            bounds: None,
+        };
+        Dataset::from_info(path.to_string_lossy().into_owned(), info)
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_read_window_reads_real_pixels() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_read_window_test.tif");
+        write_test_geotiff_4x4(&path);
+
+        let ds = Dataset::open(path.to_str().expect("path")).expect("open");
+        let buf = ds.read_window(0, 1, 1, 2, 2).expect("read window");
+        assert_eq!(buf.width(), 2);
+        assert_eq!(buf.height(), 2);
+        assert_eq!(buf.as_bytes(), &[5u8, 6, 9, 10]);
+
+        // Out-of-bounds window is rejected.
+        assert!(ds.read_window(0, 3, 3, 2, 2).is_err());
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_clip_is_honored_by_statistics() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_clip_stats_test.tif");
+        write_test_geotiff_4x4(&path);
+
+        let ds = dataset_over_4x4(&path);
+        // Full-raster statistics see all 16 pixels.
+        let full = ds.statistics(0).expect("full stats");
+        assert_eq!(full.valid_count, 16);
+
+        // Build a bbox covering pixel window cols 1..3, rows 1..3 using the
+        // dataset's own geo-transform, then clip.
+        let gt = ds.geotransform().copied().expect("gt");
+        let (x0, y0) = gt.pixel_to_world(1.0, 1.0);
+        let (x1, y1) = gt.pixel_to_world(3.0, 3.0);
+        let bbox = BoundingBox::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)).expect("bbox");
+        let clipped = ds.clip(bbox).expect("clip");
+        assert_eq!(clipped.width(), 2, "clipped width");
+        assert_eq!(clipped.height(), 2, "clipped height");
+
+        // Statistics on the clipped dataset must reflect ONLY the 4 clipped
+        // pixels {5,6,9,10}, not the full raster.
+        let clip_stats = clipped.statistics(0).expect("clip stats");
+        assert_eq!(clip_stats.valid_count, 4, "clip honored by statistics");
+        assert_eq!(clip_stats.min, 5.0);
+        assert_eq!(clip_stats.max, 10.0);
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn test_clip_is_honored_by_convert() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_clip_convert_src.tif");
+        write_test_geotiff_4x4(&path);
+        let out = dir.join("oxigeo_clip_convert_out.tif");
+
+        let ds = dataset_over_4x4(&path);
+        let gt = ds.geotransform().copied().expect("gt");
+        let (x0, y0) = gt.pixel_to_world(1.0, 1.0);
+        let (x1, y1) = gt.pixel_to_world(3.0, 3.0);
+        let bbox = BoundingBox::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)).expect("bbox");
+        let clipped = ds.clip(bbox).expect("clip");
+
+        let converted = clipped
+            .convert(&out, DatasetFormat::GeoTiff, ConversionOptions::default())
+            .expect("convert");
+        // The written output must carry the clipped 2×2 dimensions, not 4×4.
+        assert_eq!(converted.width(), 2);
+        assert_eq!(converted.height(), 2);
+        let stats = converted.statistics(0).expect("stats");
+        assert_eq!(stats.valid_count, 4);
     }
 
     #[cfg(feature = "geotiff")]

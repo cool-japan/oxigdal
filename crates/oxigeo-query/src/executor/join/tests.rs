@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use super::{Join, JoinValue};
 use crate::error::Result;
 use crate::executor::scan::{ColumnData, DataType, Field, RecordBatch, Schema};
@@ -718,6 +720,81 @@ fn test_hash_join_optimization() -> Result<()> {
 
     // Overlap: 50-99 (50 values)
     assert_eq!(result.num_rows, 50);
+
+    Ok(())
+}
+
+#[test]
+fn test_join_preserves_column_types() -> Result<()> {
+    use crate::executor::filter::Filter;
+
+    // left: id (Int64), amount (Float64); right: id (Int64), active (Boolean)
+    let left_schema =
+        create_multi_column_schema(vec![("id", DataType::Int64), ("amount", DataType::Float64)]);
+    let left_columns = vec![
+        ColumnData::Int64(vec![Some(1), Some(2), Some(3)]),
+        ColumnData::Float64(vec![Some(10.5), Some(20.5), Some(30.5)]),
+    ];
+    let left = RecordBatch::new(left_schema, left_columns, 3)?;
+
+    let right_schema = create_multi_column_schema(vec![
+        ("rid", DataType::Int64),
+        ("active", DataType::Boolean),
+    ]);
+    let right_columns = vec![
+        ColumnData::Int64(vec![Some(2), Some(3)]),
+        ColumnData::Boolean(vec![Some(true), Some(false)]),
+    ];
+    let right = RecordBatch::new(right_schema, right_columns, 2)?;
+
+    let condition = Expr::BinaryOp {
+        left: Box::new(Expr::Column {
+            table: Some("a".to_string()),
+            name: "id".to_string(),
+        }),
+        op: BinaryOperator::Eq,
+        right: Box::new(Expr::Column {
+            table: Some("b".to_string()),
+            name: "rid".to_string(),
+        }),
+    };
+    let join = Join::new(JoinType::Inner, Some(condition))
+        .with_left_alias("a")
+        .with_right_alias("b");
+    let result = join.execute(&left, &right)?;
+
+    // Rows (2,20.5,true) and (3,30.5,false).
+    assert_eq!(result.num_rows, 2);
+    assert_eq!(result.columns.len(), 4);
+
+    // Native types must be preserved, NOT collapsed to String.
+    assert!(matches!(result.columns[0], ColumnData::Int64(_)));
+    assert!(matches!(result.columns[1], ColumnData::Float64(_)));
+    assert!(matches!(result.columns[2], ColumnData::Int64(_)));
+    assert!(matches!(result.columns[3], ColumnData::Boolean(_)));
+
+    // Concrete values survive.
+    let ColumnData::Float64(amount) = &result.columns[1] else {
+        panic!("amount should be Float64");
+    };
+    assert_eq!(amount, &vec![Some(20.5), Some(30.5)]);
+    let ColumnData::Boolean(active) = &result.columns[3] else {
+        panic!("active should be Boolean");
+    };
+    assert_eq!(active, &vec![Some(true), Some(false)]);
+
+    // Downstream numeric filtering on a joined column must now succeed instead
+    // of erroring with a spurious String-vs-Float type mismatch.
+    let predicate = Expr::BinaryOp {
+        left: Box::new(Expr::Column {
+            table: None,
+            name: "amount".to_string(),
+        }),
+        op: BinaryOperator::Gt,
+        right: Box::new(Expr::Literal(Literal::Float(25.0))),
+    };
+    let filtered = Filter::new(predicate).execute(&result)?;
+    assert_eq!(filtered.num_rows, 1); // only amount = 30.5
 
     Ok(())
 }

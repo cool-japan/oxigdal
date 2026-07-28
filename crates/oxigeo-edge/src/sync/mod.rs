@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub use manager::SyncManager;
+#[cfg(any(test, feature = "test-utils"))]
+pub use protocol::MockSyncProtocol;
 pub use protocol::SyncProtocol;
+#[cfg(feature = "http-sync")]
+pub use protocol::{HttpSyncConfig, HttpSyncProtocol};
 
 /// Synchronization strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

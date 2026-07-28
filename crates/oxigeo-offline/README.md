@@ -89,7 +89,7 @@ struct MyRemoteBackend {
     // ... your implementation
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl RemoteBackend for MyRemoteBackend {
     async fn push_operation(&self, operation: &Operation) -> Result<()> {
         // Push to your remote API
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
     let manager = OfflineManager::new(config)
         .await?
-        .with_remote(Box::new(MyRemoteBackend::new()));
+        .with_remote(Box::new(MyRemoteBackend::new()))?;
 
     // Now sync operations will use your remote backend
     manager.write("key", b"value").await?;

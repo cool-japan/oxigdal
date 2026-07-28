@@ -41,6 +41,13 @@ pub enum DatasetFormat {
     MBTiles,
     /// Cloud Optimized Point Cloud (.copc.laz)
     Copc,
+    /// Plain LAS / LAZ point cloud (.las, .laz) — not COPC-structured.
+    ///
+    /// COPC is a specific LAZ 1.4 profile requiring an octree-hierarchy VLR and
+    /// chunked layout.  A generic `.las`/`.laz` file does not have that
+    /// structure, so it is tagged `Las` rather than `Copc`.  Only the compound
+    /// `.copc.laz` extension (or a verified COPC VLR) is reported as `Copc`.
+    Las,
     /// Unknown / user-specified
     Unknown,
 }
@@ -78,7 +85,9 @@ impl DatasetFormat {
             "gpkg" => Self::GeoPackage,
             "pmtiles" => Self::PMTiles,
             "mbtiles" => Self::MBTiles,
-            "laz" | "las" => Self::Copc,
+            // Plain LAS/LAZ — COPC is only assumed for the compound `.copc.laz`
+            // extension handled above.
+            "laz" | "las" => Self::Las,
             _ => Self::Unknown,
         }
     }
@@ -139,9 +148,13 @@ impl DatasetFormat {
             return Some(Self::PMTiles);
         }
 
-        // LAS / LAZ → COPC
+        // LAS / LAZ. The generic `LASF` magic is present in every LAS/LAZ file,
+        // COPC or not — and the COPC-identifying octree VLR sits far past the
+        // 72-byte magic window we read here — so classify as plain `Las`.
+        // Callers that need COPC disambiguate via the `.copc.laz` extension (see
+        // `detect`) or a full VLR scan.
         if bytes.len() >= 4 && bytes[..4] == LAS_MAGIC {
-            return Some(Self::Copc);
+            return Some(Self::Las);
         }
 
         // GRIB / GRIB2
@@ -202,6 +215,16 @@ impl DatasetFormat {
                     _ => Self::GeoPackage,
                 }
             }
+            // Plain LASF magic can't reveal the COPC octree VLR (it lives past
+            // the magic window). Promote to COPC only when the compound
+            // `.copc.laz` extension says so.
+            Some(Self::Las) => {
+                let is_copc = path
+                    .to_str()
+                    .map(|s| s.to_lowercase().ends_with(".copc.laz"))
+                    .unwrap_or(false);
+                if is_copc { Self::Copc } else { Self::Las }
+            }
             Some(fmt) => fmt,
             None => {
                 // Fall back to extension
@@ -233,6 +256,7 @@ impl DatasetFormat {
             Self::PMTiles => "PMTiles",
             Self::MBTiles => "MBTiles",
             Self::Copc => "COPC",
+            Self::Las => "LAS",
             Self::Unknown => "Unknown",
         }
     }

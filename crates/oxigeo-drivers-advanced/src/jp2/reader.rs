@@ -28,6 +28,21 @@ impl<R: Read + Seek> Jp2Reader<R> {
 
     /// Decode the JP2 image.
     pub fn decode(&mut self) -> Result<Jp2Image> {
+        // Surface JPEG2000 Part-2 (JPX) structures we cannot interpret as a
+        // typed error, rather than silently decoding only the Part-1 subset and
+        // dropping compositing layers / associations / animation.
+        if let Some(b) = self
+            .parser
+            .boxes()
+            .iter()
+            .find(|b| b.box_type.is_jpx_part2())
+        {
+            return Err(Error::jpeg2000(format!(
+                "JPEG2000 Part-2 (JPX) box {:?} is not supported; only Part-1 JP2 is decodable",
+                b.box_type
+            )));
+        }
+
         // Read image header
         let ihdr = self.parser.read_image_header()?;
 
@@ -170,13 +185,144 @@ mod tests {
         data
     }
 
+    /// Minimal, structurally valid raw J2K codestream: 4×4, 1 component, no
+    /// wavelet levels, empty SOD (decodes to all-zero coefficients).
+    fn minimal_codestream_4x4_gray() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0xFF, 0x4F]); // SOC
+        // SIZ (Lsiz = 41)
+        out.extend_from_slice(&[0xFF, 0x51]);
+        out.extend_from_slice(&41u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes()); // Rsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // Xsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // Ysiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // XOsiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // YOsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // XTsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // YTsiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // XTOsiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // YTOsiz
+        out.extend_from_slice(&1u16.to_be_bytes()); // Csiz
+        out.push(0x07); // Ssiz
+        out.push(0x01); // XRsiz
+        out.push(0x01); // YRsiz
+        // COD (Lcod = 12)
+        out.extend_from_slice(&[0xFF, 0x52]);
+        out.extend_from_slice(&12u16.to_be_bytes());
+        out.push(0x00);
+        out.push(0x00);
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x01);
+        // QCD (Lqcd = 4)
+        out.extend_from_slice(&[0xFF, 0x5C]);
+        out.extend_from_slice(&4u16.to_be_bytes());
+        out.push(0x00);
+        out.push(0x00);
+        // SOT
+        out.extend_from_slice(&[0xFF, 0x90]);
+        out.extend_from_slice(&10u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.push(0x00);
+        out.push(0x01);
+        // SOD + EOC
+        out.extend_from_slice(&[0xFF, 0x93]);
+        out.extend_from_slice(&[0xFF, 0xD9]);
+        out
+    }
+
+    /// Wrap a box body in a JP2 box (`length | type | body`).
+    fn jp2_box(box_type: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        b.extend_from_slice(box_type);
+        b.extend_from_slice(body);
+        b
+    }
+
+    /// Build a complete, spec-conformant JP2 with `ihdr` and `colr` correctly
+    /// nested inside the `jp2h` superbox plus a `jp2c` codestream.
+    fn create_full_jp2() -> Vec<u8> {
+        let mut data = Vec::new();
+        // Signature box
+        data.extend_from_slice(&12u32.to_be_bytes());
+        data.extend_from_slice(b"jP  ");
+        data.extend_from_slice(&0x0D0A870Au32.to_be_bytes());
+        // File Type box
+        data.extend(jp2_box(b"ftyp", b"jp2 \x00\x00\x00\x00jp2 "));
+
+        // ihdr (14 bytes): height, width, NC, BPC, C, UnkC, IPR
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&4u32.to_be_bytes()); // height
+        ihdr.extend_from_slice(&4u32.to_be_bytes()); // width
+        ihdr.extend_from_slice(&1u16.to_be_bytes()); // num components
+        ihdr.push(0x07); // bits per component (8-bit unsigned)
+        ihdr.push(0x07); // compression type = 7 (JPEG2000)
+        ihdr.push(0x00); // colorspace unknown
+        ihdr.push(0x00); // IPR
+        // colr (enumerated, grayscale = 17)
+        let mut colr = Vec::new();
+        colr.push(0x01); // METH = enumerated
+        colr.push(0x00); // PREC
+        colr.push(0x00); // APPROX
+        colr.extend_from_slice(&17u32.to_be_bytes());
+
+        let mut jp2h_body = Vec::new();
+        jp2h_body.extend(jp2_box(b"ihdr", &ihdr));
+        jp2h_body.extend(jp2_box(b"colr", &colr));
+        data.extend(jp2_box(b"jp2h", &jp2h_body));
+
+        // jp2c codestream box
+        data.extend(jp2_box(b"jp2c", &minimal_codestream_4x4_gray()));
+        data
+    }
+
     #[test]
-    fn test_jp2_reader_creation() {
-        let data = create_minimal_jp2();
-        let cursor = Cursor::new(data);
-        let result = Jp2Reader::new(cursor);
-        // Will fail because we don't have complete JP2, but should parse signature
-        assert!(result.is_err() || result.is_ok());
+    fn test_jp2_reader_decodes_nested_boxes() {
+        // Regression: the parser must recurse into jp2h and locate the nested
+        // ihdr/colr, so a real spec-conformant JP2 decodes with correct
+        // dimensions instead of failing with "Missing image header box".
+        let data = create_full_jp2();
+        let mut reader = Jp2Reader::new(Cursor::new(data)).expect("reader creation");
+        let image = reader.decode().expect("decode of nested-box JP2");
+        assert_eq!(image.width, 4);
+        assert_eq!(image.height, 4);
+        assert_eq!(image.num_components, 1);
+        assert_eq!(image.data.len(), 4 * 4);
+    }
+
+    #[test]
+    fn test_parser_finds_nested_ihdr() {
+        let data = create_full_jp2();
+        let mut parser = Jp2Parser::new(Cursor::new(data)).expect("parser");
+        parser.parse().expect("parse");
+        // ihdr and colr live inside jp2h yet must be discoverable via find_box.
+        assert!(parser.find_box(BoxType::Jp2Header).is_some());
+        assert!(parser.find_box(BoxType::ImageHeader).is_some());
+        assert!(parser.find_box(BoxType::ColorSpec).is_some());
+        assert!(parser.find_box(BoxType::CodeStream).is_some());
+        let ihdr = parser.read_image_header().expect("ihdr");
+        assert_eq!(ihdr.width, 4);
+        assert_eq!(ihdr.height, 4);
+    }
+
+    #[test]
+    fn test_jpx_part2_box_rejected() {
+        // A file carrying a Part-2 (JPX) box must fail with a typed error, not
+        // be silently decoded as plain Part-1.
+        let mut data = Vec::new();
+        data.extend_from_slice(&12u32.to_be_bytes());
+        data.extend_from_slice(b"jP  ");
+        data.extend_from_slice(&0x0D0A870Au32.to_be_bytes());
+        data.extend(jp2_box(b"ftyp", b"jpx \x00\x00\x00\x00jpx "));
+        data.extend(jp2_box(b"jpch", &[0u8; 4])); // JPX codestream header
+        let mut reader = Jp2Reader::new(Cursor::new(data)).expect("reader creation");
+        assert!(reader.decode().is_err());
     }
 
     #[test]

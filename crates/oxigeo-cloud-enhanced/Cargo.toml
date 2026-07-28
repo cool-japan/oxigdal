@@ -18,8 +18,6 @@ categories = ["science", "network-programming", "api-bindings"]
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = { workspace = true }
-byteorder = { workspace = true }
 chrono = { workspace = true }
 
 # Async runtime
@@ -28,14 +26,10 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 
 # Oxigeo crates
-oxigeo-core = { workspace = true, default-features = true }
 oxigeo-cloud = { workspace = true }
 
 # Arrow ecosystem
 arrow = { workspace = true }
-arrow-array = { workspace = true }
-arrow-buffer = { workspace = true }
-arrow-schema = { workspace = true }
 parquet = { workspace = true }
 
 # AWS SDK (optional — enabled by "aws" feature)
@@ -88,9 +82,6 @@ tracing = { workspace = true }
 # Utilities
 url = { workspace = true }
 uuid = { workspace = true }
-dashmap = { workspace = true }
-lru = { workspace = true }
-regex = { workspace = true }
 
 [features]
 default = []

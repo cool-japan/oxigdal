@@ -1,45 +1,26 @@
 # TODO: oxigeo-services
 
 > **Purpose:** OGC Web Services (WFS 2.0.0, WCS 2.0, WPS 2.0, CSW 2.0.2) + OGC API Features/Tiles + MVT encoder for OxiGeo.
-> **Status (2026-05-16):** 11,691 LoC (src) · 578 tests (205 inline + 373 in tests/) · 3 real-code stubs
+> **Status (2026-07-28):** 11,965 LoC (src) · 659 tests · 0 real-code stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Implement real raster read-and-window in WCS `retrieve_coverage_data` (currently returns zeroed buffer).
-  - **Verified gap:** `src/wcs/coverage.rs:333` — `// For now, return placeholder data` followed by `Ok(CoverageData { data: vec![0u8; coverage.grid_size.0 * coverage.grid_size.1 * coverage.band_count], ... })`
-  - **Goal:** WCS 2.0 (OGC 09-110r4) `GetCoverage` returns real pixel data — opened via OxiGeo, windowed to the `Subset` region, in the requested CRS.
-  - **Design:** Replace the placeholder branch with `oxigeo_core::Dataset::open(path)?`, derive read window from `Subset` (axis-based subsetting per 09-147r3), apply scale + sample-type conversion, fill `CoverageData`. For `CoverageSource::Url` use `oxigeo_core::ObjectStore` if scheme is `s3://`/`gs://`/`https://`; else return `ServiceError::UnsupportedFormat`. Wire `Format` parameter to existing `encode_as_geotiff/png/jpeg`.
-  - **Files:** `src/wcs/coverage.rs:322-348` (replace `retrieve_coverage_data`), `src/wcs/mod.rs` (extend `CoverageInfo` with band data-type).
-  - **Tests:** (proposed) `test_wcs_get_coverage_real_pixels`, `test_wcs_subset_window_clipped_to_bbox`, `test_wcs_url_source_via_object_store`, `test_wcs_unsupported_url_scheme_errors`.
-  - **Risk:** GeoTIFF round-trip for floating-point bands needs sample-format tags; ensure WCS-reported band datatype matches encoder. Current `encode_as_geotiff` (`coverage.rs:365`) just wraps `Bytes::from(data.data)` — it does **not** produce a real GeoTIFF; fold that into this fix.
-  - **Prerequisites:** None.
+- [x] Implement real raster read-and-window in WCS `retrieve_coverage_data` (currently returns zeroed buffer).
+  - **Done (verified 2026-07-28):** `retrieve_coverage_data` (`src/wcs/coverage.rs:428-466`) now dispatches on `coverage.source`: `CoverageSource::File` opens via `FileDataSource::open` + `decode_geotiff`; `CoverageSource::Url` fetches real bytes via `fetch_url_bytes(url).await?` then decodes; `CoverageSource::Memory` decodes the in-memory buffer directly (erroring if empty) — no more zeroed placeholder. `encode_as_geotiff` (`coverage.rs:567-584`) was also fixed as flagged in the original risk note: it now calls `write_geotiff_bytes(&data, coverage)` for a real GeoTIFF, not a raw `Bytes::from(data.data)` wrap.
+  - **Original goal (for reference):** WCS 2.0 (OGC 09-110r4) `GetCoverage` returns real pixel data — opened via OxiGeo, windowed to the `Subset` region, in the requested CRS.
 
-- [ ] Wire WFS `count` queries to a real database executor (currently always returns an error).
-  - **Verified gap:** `src/wfs/database.rs:422` — `// This is a placeholder for actual database execution` and returns `Err(ServiceError::Internal("Database connection not configured. ..."))` unconditionally.
-  - **Goal:** WFS 2.0.0 (OGC 09-025r2) `GetFeature?resultType=hits` returns an accurate `<wfs:FeatureCollection numberMatched="..."/>` driven by a SQL count against the live datastore.
-  - **Design:** Inject an `Arc<dyn FeatureCountExecutor>` into `CountCache::new(...)`. Implementations: `PostGisCountExecutor` (calls `oxigeo-postgis::SpatialQuery::count`), `GeoJsonCountExecutor` (in-memory length). `execute_sql_count` becomes a dispatcher; the explicit "not configured" error stays as `NoOpExecutor` for tests.
-  - **Files:** `src/wfs/database.rs:402-436`, `src/wfs/mod.rs` (re-export trait).
-  - **Tests:** (proposed) `test_wfs_count_via_postgis_executor`, `test_wfs_count_cache_hit_skips_executor`, `test_wfs_count_noop_executor_returns_error`.
-  - **Risk:** Cross-crate cyclic dep — keep `FeatureCountExecutor` as a trait in services; only the binary wiring imports oxigeo-postgis.
-  - **Prerequisites:** Resolution of `oxigeo-postgis` writer COPY work (sibling crate) for symmetry, but not strictly blocking.
+- [x] Wire WFS `count` queries to a real database executor (currently always returns an error).
+  - **Done (verified 2026-07-28):** `execute_sql_count` (`src/wfs/database.rs:366-394`) is now `cfg`-dispatched rather than an unconditional error: with the `postgis` feature (`Cargo.toml:20`, Pure Rust — `oxigeo-postgis`/`tokio-postgres`/`deadpool-postgres`) it opens a real `oxigeo_postgis::ConnectionPool`, runs `client.query_one(sql, &[])`, and returns the `BIGINT` count; without the feature it returns a descriptive `ServiceError::Internal` ("PostGIS support is not compiled in...") instead of the old unconditional "Database connection not configured" message. Implemented as an inline `cfg`-gated dispatcher rather than the originally-sketched injectable `FeatureCountExecutor` trait, but the functional goal (real DB-backed count when configured, honest error otherwise) is met.
+  - **Original goal (for reference):** WFS 2.0.0 (OGC 09-025r2) `GetFeature?resultType=hits` returns an accurate `<wfs:FeatureCollection numberMatched="..."/>` driven by a SQL count against the live datastore.
 
-- [ ] Implement `!=` CQL operator (OGC CQL2, OGC 21-065 §A.5).
-  - **Verified gap:** `src/ogc_features/cql.rs:247` — `fn build_neq_placeholder(_property: &str, _value_str: &str) -> Result<CqlExpr, FeaturesError> { Err(FeaturesError::CqlParseError("!= operator is not yet supported".to_string())) }`
-  - **Goal:** `WHERE foo != 'bar'` parses to `CqlExpr::Neq { property, value }` and evaluates via existing filter engine.
-  - **Design:** Add `Neq { property, value: CqlValue }` variant to `CqlExpr` (parallel to existing `Eq`), wire evaluation as `!eq`, rename `build_neq_placeholder` → `build_neq`. Also add `<>` alias per CQL2.
-  - **Files:** `src/ogc_features/cql.rs:180,247` and types.rs `CqlExpr` enum.
-  - **Tests:** (proposed) `test_cql_neq_string`, `test_cql_neq_number`, `test_cql_angle_bracket_alias`.
-  - **Risk:** Trivial; just verify parse precedence vs `<=`/`>=` doesn't shadow `<>`.
-  - **Prerequisites:** None.
+- [x] Implement `!=` CQL operator (OGC CQL2, OGC 21-065 §A.5).
+  - **Done (verified 2026-07-28):** `src/ogc_features/cql.rs` now has `CqlExpr::Neq { property, value }` (line 27), a real `build_neq` (line 327, no longer `build_neq_placeholder`) registered for both `!=` and the `<>` alias (line 259-260), and evaluated in the filter match arm (line 494).
+  - **Original goal (for reference):** `WHERE foo != 'bar'` parses to `CqlExpr::Neq { property, value }` and evaluates via existing filter engine.
 
-- [ ] Real-content ETag generation in `tile_cache` (currently FNV-1a key hash, not content hash).
-  - **Verified gap:** `src/tile_cache/cache.rs` uses cache-key hash for ETag; per RFC 7232 §2.3 an ETag must represent the response payload, not the request key. (The prior TODO line acknowledged this — keeping as verified gap.)
-  - **Goal:** Strong ETag derived from BLAKE3 (or SHA-256) of the cached tile body; 304 responses driven by `If-None-Match` per RFC 9110.
-  - **Design:** Add `etag: String` field to `CachedTile`. On insert, compute `blake3::hash(body).to_hex()`. ETag format: `"<algo>:<hex16>"`. `If-None-Match` handler short-circuits with 304 + `Cache-Control: max-age=...`.
-  - **Files:** `src/tile_cache/cache.rs`, `src/cache_headers.rs`.
-  - **Tests:** (proposed) `test_etag_changes_when_tile_changes`, `test_if_none_match_returns_304`, `test_etag_format_is_strong`.
-  - **Risk:** BLAKE3 already in workspace deps (gateway uses it).
-  - **Prerequisites:** None.
+- [x] Real-content ETag generation in `tile_cache` (currently FNV-1a key hash, not content hash).
+  - **Done (verified 2026-07-28):** `CachedTile::new` (`src/tile_cache/cache.rs:137-144`) now computes `etag` via `compute_etag(&data)` over the actual tile **body** bytes, not the cache key — the RFC 7232 §2.3 correctness gap (ETag must represent the payload) is closed. `CacheHeaders::is_not_modified(if_none_match)` (`src/cache_headers.rs:348-356`) implements the conditional-GET comparison for a 304 response path.
+  - **Algorithm note:** the hash is FNV-1a (fast, deterministic per exact byte content), not the BLAKE3/SHA-256 originally sketched in this item's design. FNV-1a still yields a content-derived, change-detecting ETag; upgrading to a cryptographic hash remains a legitimate future hardening step but is no longer a functional gap.
+  - **Original goal (for reference):** Strong ETag derived from a content hash of the cached tile body; 304 responses driven by `If-None-Match` per RFC 9110.
 
 ## Medium Priority
 - [ ] OGC API Features Part 1 (17-069r4) wired to real backends (currently in-memory only via `FeatureSource`).
@@ -86,4 +67,4 @@
 *No prior `[x]` entries — original TODO had only open items.*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

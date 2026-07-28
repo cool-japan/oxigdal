@@ -1,7 +1,7 @@
 # TODO: oxigeo-drivers/zarr
 
 > **Purpose:** Zarr v2/v3 driver for OxiGeo - Pure Rust multidimensional array storage
-> **Status (2026-05-16):** 17,111 Rust LoC (incl. tests) - 286 tests - 3 real stubs (transformers + sharding codec resolver)
+> **Status (2026-07-28):** 19,558 Rust LoC (incl. tests) - 349 tests - 0 real-code stubs remain among the items tracked below; the S3 store and the ZEP-0002 sharded read path from the prior audit are now implemented (see Recently completed).
 > **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
@@ -24,23 +24,13 @@
   - **Risk:** Codec configuration JSON shape varies subtly per codec; cross-check against numcodecs spec.
   - **Prerequisites:** None - all needed codec types already in `src/codecs/`.
 
-- [ ] Implement Zarr v3 sharding codec read path (`storage_transformers::sharding_indexed`)
-  - **Verified gap:** `src/sharding.rs` defines `ShardIndexEntry`, codec chain assembly, but the codec dispatch is the stub above. End-to-end sharded array read is not exercised.
-  - **Goal:** Open and read a Zarr v3 sharded array produced by zarr-python 3.x; chunks-of-chunks layout, shard footer index decoded, individual chunks materialized.
-  - **Design:** Per ZEP-0002 sharding: each shard file contains N inner chunks concatenated with a footer index `[offset_0, size_0, ..., offset_{N-1}, size_{N-1}]` of `N * 16` bytes at file end (or beginning, configurable). Read shard footer first; for each requested inner chunk, look up `(offset, size)`; decode inner chunk using chunk-codec chain. `ShardIndexEntry::missing()` sentinel = `(u64::MAX, u64::MAX)` -> return fill value.
-  - **Files:** `src/sharding.rs`, `src/reader/v3.rs` (sharding dispatch)
-  - **Tests:** (proposed) `test_sharded_read_2x2_inner_chunks`, `test_sharded_read_missing_chunk_returns_fill`, `test_sharded_read_inner_gzip_codec`, `test_sharded_read_footer_at_start_position`
-  - **Risk:** ZEP-0002 footer position is configurable (`"end"` vs `"start"`); honour both.
-  - **Prerequisites:** `build_codec_from_metadata` item above.
+- [x] Implement Zarr v3 sharding codec read path (`storage_transformers::sharding_indexed`)
+  - **Done:** 2026-07-21 (0.2.1 production campaign). `ZarrV3Reader::read_chunk` (`src/reader/v3.rs`) detects a `sharding_indexed` codec via `find_sharding_config()` and delegates to `read_sharded_chunk`, which computes `shard_coords = coords / chunks_per_shard` and `inner_coords = coords % chunks_per_shard`, fetches the shard file, and dispatches through `ShardReader` / `ShardIndexEntry` (`src/sharding.rs`) for real per-codec chunk + index decode via `codecs::dispatch::build_codec_from_metadata` (the codec registry moved from the originally-stubbed spot in `sharding.rs` into its own `src/codecs/dispatch.rs`, shared by the v3 reader, v3 writer, and sharding). `shard_index_encoded_len` derives the footer length from the actual index codec instead of assuming a fixed `n*16` layout, so both length-deterministic index codecs are handled correctly; a compressive index codec is rejected with a typed error rather than silently mis-reading the footer.
+  - **Original gap (resolved):** end-to-end sharded array read was not exercised — codec dispatch used to always return `NullCodec` (see codec-dispatch item above).
 
-- [ ] Implement S3 store async I/O for cloud Zarr
-  - **Verified gap:** `Cargo.toml` declares optional `aws-sdk-s3` / `aws-config` dependencies and `s3` feature flag, but `src/storage/` has no `s3.rs` (verified by `ls`). The `pub use storage::s3::S3Storage` in `src/lib.rs:174` is gated behind `#[cfg(feature = "s3")]`.
-  - **Goal:** Open a Zarr group/array stored on S3 (`s3://bucket/prefix/zarr/`) and read chunks asynchronously.
-  - **Design:** Implement `Store` trait for `S3Storage { client: aws_sdk_s3::Client, bucket: String, prefix: String }`. `get(key)` -> `GetObjectRequest`; `set(key, val)` -> `PutObject`; `list_prefix(prefix)` -> `ListObjectsV2` paginated. Use `tokio` runtime. Concurrent multi-chunk reads via `futures::stream::FuturesUnordered`.
-  - **Files:** (new) `src/storage/s3.rs`, `src/storage/mod.rs` (add `#[cfg(feature = "s3")] pub mod s3;`)
-  - **Tests:** (proposed) `test_s3_get_object_round_trip`, `test_s3_list_prefix_pagination`, `test_s3_concurrent_chunk_reads`, `test_s3_404_returns_keynotfound` (use `aws-sdk-s3-mock` or `localstack`)
-  - **Risk:** Real S3 integration tests need a mock; gate behind `#[cfg(feature = "s3-mock")]` to avoid network in CI.
-  - **Prerequisites:** None.
+- [x] Implement S3 store async I/O for cloud Zarr
+  - **Done:** by 2026-07-20 (0.2.0 release cycle). `src/storage/s3.rs` (378 lines) implements a real `S3Storage { bucket, prefix, region, endpoint }` backed by `aws-sdk-s3`: `AsyncStore` impl with `get`/`set`/`delete`/`exists` (via `head_object`, treating 404/NotFound as `Ok(false)` rather than an error) and a paginated `list_prefix` (loops on `continuation_token` until `is_truncated != Some(true)`); errors mapped to `StorageError::S3`. Wired at `lib.rs:174-175` as `pub use storage::s3::S3Storage` behind `#[cfg(feature = "s3")]`. 5 unit tests cover construction/builder/key-prefixing; 2 `#[ignore]`d live-S3/MinIO round-trip and list integration tests are gated on `TEST_S3_BUCKET`/`TEST_S3_ENDPOINT` env vars (run via `cargo test --features s3,async -- --ignored`). Concurrent multi-chunk reads (`FuturesUnordered`) from the original design were not added — sequential per-call today — flagged as a possible future optimization, not a correctness gap.
+  - **Original gap (resolved):** `src/storage/` used to have no `s3.rs` at all.
 
 ## Medium Priority (planned - design sketched)
 
@@ -109,5 +99,8 @@
 ## Recently completed (kept verbatim from previous TODO.md)
 _(Previous TODO.md had no `[x]` entries.)_
 
+- [x] Zarr v3 sharding codec read path (ZEP-0002) — `src/reader/v3.rs::read_sharded_chunk`, `src/sharding.rs`, `src/codecs/dispatch.rs`
+- [x] S3 storage backend (`aws-sdk-s3`-backed `AsyncStore`) — `src/storage/s3.rs`
+
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

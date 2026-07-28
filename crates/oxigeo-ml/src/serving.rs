@@ -356,14 +356,12 @@ impl ModelServer {
         for line in meminfo.lines() {
             if let Some(rest) = line.strip_prefix("MemTotal:") {
                 total = rest
-                    .trim()
                     .split_whitespace()
                     .next()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
             } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
                 available = rest
-                    .trim()
                     .split_whitespace()
                     .next()
                     .and_then(|s| s.parse::<u64>().ok())

@@ -1,8 +1,28 @@
-//! SWMR (Single Writer Multiple Reader) support for HDF5.
+//! SWMR (Single Writer Multiple Reader) **coordination primitive** for HDF5.
 //!
-//! SWMR mode allows concurrent access to HDF5 files with one writer
-//! and multiple readers. This is useful for real-time data acquisition
-//! and streaming scenarios.
+//! Real HDF5 SWMR (as libhdf5 implements it) is a file-format-level protocol:
+//! a specific object-header/page-buffer write ordering that lets a reader
+//! observe a live-growing `.h5` file's dataset content without ever seeing a
+//! torn read, backed by metadata-cache flush ordering and (optionally) the
+//! page buffer. **That protocol is not implemented here.**
+//!
+//! What this module actually provides: [`FileLock`] (a PID-stamped, staleness-
+//! detecting file lock) plus [`SwmrWriter`]/[`SwmrReader`], which coordinate
+//! through a `<file>.swmr-version` JSON sidecar — [`SwmrWriter::flush`] atomically
+//! increments and republishes a monotonic version+timestamp+checksum record,
+//! and [`SwmrReader::refresh`] polls it. `SwmrWriter` holds **no handle to any
+//! [`crate::writer::Hdf5Writer`]** and has no method to write dataset bytes at
+//! all — so `flush()` never touches the real `.h5` file's contents; it only
+//! tells readers "a new version exists," on whatever protocol the caller
+//! builds for actually publishing dataset data (e.g. write a new file and
+//! rename it into place, then call `flush()`). [`SwmrConfig`]'s
+//! `metadata_cache_size`/`page_buffer_size` fields are accepted for
+//! API-compatibility with real HDF5 SWMR tuning knobs but are not read by
+//! anything — no cache or page buffer exists here to tune.
+//!
+//! Useful for real-time data acquisition / streaming scenarios that need a
+//! lock + "has anything changed" coordination signal — not a drop-in
+//! replacement for libhdf5 SWMR's live dataset-content visibility guarantees.
 
 use crate::error::{Hdf5Error, Result};
 use serde::{Deserialize, Serialize};
@@ -100,14 +120,21 @@ pub enum SwmrMode {
     Reader,
 }
 
-/// SWMR configuration
+/// SWMR configuration.
+///
+/// `metadata_cache_size`/`page_buffer_size` mirror real HDF5 SWMR tuning
+/// knobs for API-compatibility, but **nothing in this module reads them** —
+/// there is no metadata cache or page buffer here to size (see the module
+/// doc). They're stored/returned via their setters/getters only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwmrConfig {
     /// Access mode
     mode: SwmrMode,
-    /// Metadata cache size in bytes
+    /// Metadata cache size in bytes (accepted, not currently consulted by
+    /// anything — see struct doc).
     metadata_cache_size: usize,
-    /// Page buffer size in bytes
+    /// Page buffer size in bytes (accepted, not currently consulted by
+    /// anything — see struct doc).
     page_buffer_size: usize,
     /// Metadata flush interval
     flush_interval: Duration,
@@ -376,7 +403,16 @@ impl MetadataVersion {
     }
 }
 
-/// SWMR writer handle
+/// SWMR writer handle.
+///
+/// Coordinates concurrent access via a [`FileLock`] plus an atomically
+/// published version-sidecar (see the module doc) — it does **not** hold a
+/// handle to any [`crate::writer::Hdf5Writer`] and has no method to write
+/// dataset bytes. [`SwmrWriter::flush`] publishes a new version number; it
+/// never touches the real `.h5` file's dataset content. Callers that need
+/// real dataset content published to SWMR readers must write it themselves
+/// (e.g. via [`crate::writer::Hdf5Writer`], atomically renamed into place)
+/// and call `flush()` only to signal that a new version is ready.
 pub struct SwmrWriter {
     /// File path
     file_path: PathBuf,
@@ -428,19 +464,26 @@ impl SwmrWriter {
         self.metadata_version
     }
 
-    /// Flush metadata to disk.
+    /// Publish a new coordination version.
     ///
-    /// Increments the in-memory metadata version and atomically publishes it to
-    /// the sidecar version file so that concurrent [`SwmrReader`]s can observe
-    /// the update via [`SwmrReader::refresh`]. Publication uses a
-    /// write-to-temp-then-rename sequence so readers never observe a torn file.
+    /// Increments the in-memory version counter and atomically publishes it
+    /// (version + timestamp + checksum) to the `<file>.swmr-version` sidecar
+    /// so that concurrent [`SwmrReader`]s can observe the change via
+    /// [`SwmrReader::refresh`]. Publication uses a write-to-temp-then-rename
+    /// sequence so readers never observe a torn sidecar record.
+    ///
+    /// This does **not** write, flush, or otherwise touch the real `.h5`
+    /// file's dataset content — see the module doc. Call it only after the
+    /// real dataset content a reader should observe next has already been
+    /// durably written by whatever means the caller uses.
     pub fn flush(&mut self) -> Result<()> {
-        // Increment metadata version
+        // Increment the coordination version counter.
         self.metadata_version += 1;
         self.last_flush = SystemTime::now();
 
-        // Persist the new version so readers can pick it up. This is the real
-        // SWMR publication step: the version is written durably and atomically.
+        // Persist the new version so readers can pick it up (durably and
+        // atomically) — this is the sidecar coordination signal, not a
+        // dataset-content publication.
         let timestamp = unix_now_secs();
         let checksum = version_checksum(self.metadata_version, timestamp);
         let version = MetadataVersion::new(self.metadata_version, timestamp, checksum);
@@ -731,9 +774,11 @@ mod tests {
 
     #[test]
     fn test_metadata_version_persistence_roundtrip() {
-        // A writer's flush must durably publish the metadata version, and a
-        // reader's refresh must read it back — this exercises the real SWMR
-        // publication path (not a stub).
+        // A writer's flush must durably publish the coordination version to
+        // the sidecar, and a reader's refresh must read it back. This
+        // exercises the real (not stubbed) sidecar version-publication path —
+        // it does NOT demonstrate real HDF5 dataset-content SWMR visibility,
+        // since SwmrWriter never writes any dataset bytes (see module doc).
         let dir = std::env::temp_dir();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -225,32 +225,22 @@ impl GeoSentinel {
         };
         let (level, x0, y0, w, h) = (plan.level, plan.x0, plan.y0, plan.w, plan.h);
 
-        // Fetch the four AOI windows (each read re-borrows a scene slot and
-        // releases it at the end of the statement).
-        let red_a = self
-            .scene(0)?
-            .red
-            .read_window_u16(level, x0, y0, w, h)
-            .await
-            .map_err(|e| to_js_error(&e))?;
-        let nir_a = self
-            .scene(0)?
-            .nir
-            .read_window_u16(level, x0, y0, w, h)
-            .await
-            .map_err(|e| to_js_error(&e))?;
-        let red_b = self
-            .scene(1)?
-            .red
-            .read_window_u16(level, x0, y0, w, h)
-            .await
-            .map_err(|e| to_js_error(&e))?;
-        let nir_b = self
-            .scene(1)?
-            .nir
-            .read_window_u16(level, x0, y0, w, h)
-            .await
-            .map_err(|e| to_js_error(&e))?;
+        // Fetch the four AOI windows concurrently: each `read_window_u16` is
+        // an independent HTTP range read, so awaiting them one after another
+        // (the previous approach) summed four round trips instead of taking
+        // the max. `try_join!` polls all four futures together, so the
+        // browser issues all four range requests up front.
+        let (red_a, nir_a, red_b, nir_b) = {
+            let a = self.scene(0)?;
+            let b = self.scene(1)?;
+            futures::try_join!(
+                a.red.read_window_u16(level, x0, y0, w, h),
+                a.nir.read_window_u16(level, x0, y0, w, h),
+                b.red.read_window_u16(level, x0, y0, w, h),
+                b.nir.read_window_u16(level, x0, y0, w, h),
+            )
+            .map_err(|e| to_js_error(&e))?
+        };
 
         let out: ChangeOutput = detect_changes_core(
             &red_a, &nir_a, &red_b, &nir_b, w, h, &params, &plan, boa_a, boa_b,

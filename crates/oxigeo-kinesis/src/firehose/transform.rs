@@ -32,17 +32,36 @@ pub trait Transformer: Send + Sync {
     }
 }
 
-/// Lambda transformer (invokes AWS Lambda for transformation)
+/// Lambda transformer that invokes an AWS Lambda function synchronously
+/// (client-side transformation).
+///
+/// Each record is sent as the Lambda function's request payload via the
+/// `Invoke` API (`RequestResponse` invocation), and the function's response
+/// payload becomes the transformed record. This is the client-side counterpart
+/// to Firehose's AWS-managed processing configuration
+/// (see [`DeliveryStreamConfig::with_transformation`]).
+///
+/// [`DeliveryStreamConfig::with_transformation`]: crate::firehose::DeliveryStreamConfig::with_transformation
 pub struct LambdaTransformer {
     lambda_arn: String,
+    client: aws_sdk_lambda::Client,
 }
 
 impl LambdaTransformer {
-    /// Creates a new Lambda transformer
-    pub fn new(lambda_arn: impl Into<String>) -> Self {
+    /// Creates a new Lambda transformer from an existing Lambda client.
+    pub fn new(client: aws_sdk_lambda::Client, lambda_arn: impl Into<String>) -> Self {
         Self {
             lambda_arn: lambda_arn.into(),
+            client,
         }
+    }
+
+    /// Creates a new Lambda transformer, loading AWS credentials/region from
+    /// the environment.
+    pub async fn from_env(lambda_arn: impl Into<String>) -> Self {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let client = aws_sdk_lambda::Client::new(&config);
+        Self::new(client, lambda_arn)
     }
 
     /// Gets the Lambda ARN
@@ -54,9 +73,32 @@ impl LambdaTransformer {
 #[async_trait]
 impl Transformer for LambdaTransformer {
     async fn transform(&self, data: &[u8]) -> Result<TransformResult> {
-        // In a real implementation, this would invoke Lambda
-        // For now, this is a placeholder
-        Ok(TransformResult::Ok(Bytes::copy_from_slice(data)))
+        // Invoke the Lambda function synchronously with the record as payload.
+        let response = self
+            .client
+            .invoke()
+            .function_name(&self.lambda_arn)
+            .invocation_type(aws_sdk_lambda::types::InvocationType::RequestResponse)
+            .payload(aws_smithy_types::Blob::new(data.to_vec()))
+            .send()
+            .await
+            .map_err(|e| KinesisError::Firehose {
+                message: format!("Lambda invocation failed for {}: {}", self.lambda_arn, e),
+            })?;
+
+        // A function-level error (handled exception) marks the record as failed
+        // rather than silently passing the original data through.
+        if response.function_error().is_some() {
+            return Ok(TransformResult::Failed);
+        }
+
+        match response.payload() {
+            Some(blob) if !blob.as_ref().is_empty() => {
+                Ok(TransformResult::Ok(Bytes::copy_from_slice(blob.as_ref())))
+            }
+            // An empty/absent payload means the function chose to drop the record.
+            _ => Ok(TransformResult::Dropped),
+        }
     }
 }
 
@@ -353,8 +395,18 @@ mod tests {
 
     #[test]
     fn test_lambda_transformer_creation() {
-        let transformer =
-            LambdaTransformer::new("arn:aws:lambda:us-east-1:123456789012:function:my-function");
+        // Build a Lambda client without hitting the network; construction only
+        // needs a region + behavior version. Actual invocation is exercised in
+        // integration tests against a live/mocked endpoint.
+        let conf = aws_sdk_lambda::Config::builder()
+            .behavior_version(aws_sdk_lambda::config::BehaviorVersion::latest())
+            .region(aws_sdk_lambda::config::Region::new("us-east-1"))
+            .build();
+        let client = aws_sdk_lambda::Client::from_conf(conf);
+        let transformer = LambdaTransformer::new(
+            client,
+            "arn:aws:lambda:us-east-1:123456789012:function:my-function",
+        );
         assert_eq!(
             transformer.lambda_arn(),
             "arn:aws:lambda:us-east-1:123456789012:function:my-function"

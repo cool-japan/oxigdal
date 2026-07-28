@@ -1,4 +1,5 @@
 //! ClickHouse connector tests.
+#![cfg(feature = "clickhouse")]
 
 use oxigeo_db_connectors::clickhouse::{ClickHouseConfig, types::Point};
 

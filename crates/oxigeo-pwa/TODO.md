@@ -1,8 +1,8 @@
 # TODO: oxigeo-pwa
 
 > **Purpose:** Progressive Web App primitives — Service Worker registration, Cache API + IndexedDB persistence, Push notifications, Background Sync, Web App Manifest, geospatial tile caching.
-> **Status (2026-05-17):** 5,452 LoC · 52 #[test]/#[wasm_bindgen_test] attributes · 1 real-code soft stub.
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 5,452 LoC · 62 #[test]/#[wasm_bindgen_test] attributes · 2 real-code soft stubs.
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wait-for-active service worker with real `statechange` event subscription
@@ -57,10 +57,10 @@
   - **Prerequisites:** Item 1 (real wait_for_active) so subscribers receive notifications only on activated workers.
 
 ## Medium Priority
-- [ ] Background sync queue with retry-when-online semantics
+- [x] Background sync queue with retry-when-online semantics
   - **Goal:** Failed uploads queued in IDB; SyncManager retries via `SyncEvent` when network returns.
-  - **Files:** `crates/oxigeo-pwa/src/sync.rs` (extend).
-  - **Why deferred:** Pending Item 3 (IDB cache).
+  - **Verified 2026-07-28:** `sync::persistence` persists each `QueuedOperation` to IndexedDB (`open_db`, `DB_NAME`/`STORE_NAME`/`DB_VERSION` kept in sync with `templates/service-worker.js`); `SyncCoordinator::process_queues` retries via `QueuedOperation::should_retry`/`increment_retry`, and the JS template's `handleBackgroundSync`/`replayOperation` replay queued operations when the browser fires the `sync` event.
+  - **Files:** `crates/oxigeo-pwa/src/sync.rs` (implemented).
 
 - [ ] Bandwidth estimation for tile quality selection
   - **Goal:** Measure recent fetch RTTs, pick low/medium/high tile quality.
@@ -72,10 +72,10 @@
   - **Files:** `crates/oxigeo-pwa/src/sync.rs` (extend).
   - **Why deferred:** Periodic Sync is Chrome-only (no Firefox/Safari).
 
-- [ ] App update detection (`updatefound` event) with user prompt
+- [x] App update detection (`updatefound` event) with user prompt
   - **Goal:** Surface a "New version available, reload?" banner when SW updates.
-  - **Files:** `crates/oxigeo-pwa/src/lifecycle.rs` (extend).
-  - **Why deferred:** Quick win; pair with Item 1 (statechange).
+  - **Verified 2026-07-28:** `lifecycle::UpdateManager` implements `check_for_updates()`, `on_update_available()` (subscribes to the real `onupdatefound` event), and `activate_update()` (posts `skipWaiting` to the waiting worker). The banner UI itself is an application-level concern built on top of this callback.
+  - **Files:** `crates/oxigeo-pwa/src/lifecycle.rs` (implemented).
 
 - [ ] Share Target API to receive .tif / .geojson from share sheet
   - **Goal:** Manifest `share_target` config + handler that ingests shared files into IDB.
@@ -119,4 +119,4 @@
 - (no `[x]` entries in prior TODO.md — see README.md for the PWA architecture)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

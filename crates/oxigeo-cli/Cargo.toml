@@ -55,7 +55,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 # Utilities
-num-traits.workspace = true
 rayon.workspace = true
 num_cpus.workspace = true
 

@@ -33,6 +33,21 @@
 #![allow(clippy::panic)]
 
 pub mod alerting;
+// `alerts` is a fully-documented rule-based `AlertEngine` (condition
+// evaluation, state machine, grouping/dedup, multi-channel notification,
+// silencing, history) that previously existed on disk but was never
+// declared here, so it never compiled, was never tested, and its
+// doc-comment usage example was never doctested. It has been audited and
+// wired in: the one hard compile error (a missing `regex` dependency, used
+// by `alerts::silence` for regex label matching) is fixed via this crate's
+// Cargo.toml, and `alerts::evaluator::ConditionExpression::LabelMatch` (the
+// only remaining stub -- it unconditionally returned `true`) now does a
+// real regex match against the label context passed to
+// `ConditionEvaluator::evaluate_with_labels`. `alerts::channels` was
+// hardened to match `alerting::routing`'s honest-error handling for
+// HTTP delivery (status-code checking, and an `ExporterFeatureDisabled`
+// error instead of a silent no-op when `http-exporter` is disabled).
+pub mod alerts;
 pub mod anomaly;
 pub mod config;
 pub mod correlation;

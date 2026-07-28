@@ -514,7 +514,10 @@ fn focal_operation(
 ) -> Result<RasterBuffer> {
     let width = src.width();
     let height = src.height();
-    let mut dst = RasterBuffer::zeros(width, height, src.data_type());
+    // Preserve the source NoData designation on the output so that pixels whose
+    // entire window is NoData are marked as NoData (rather than a spurious 0.0),
+    // and so downstream callers can query `dst.is_nodata(..)` on the result.
+    let mut dst = RasterBuffer::nodata_filled(width, height, src.data_type(), src.nodata());
 
     let offsets = window.offsets();
 
@@ -613,11 +616,21 @@ fn compute_focal_value(
             }
         };
 
+        // Exclude NoData sentinels (e.g. -9999 or NaN) from the neighborhood so
+        // they are not silently averaged/summed/min'd into the focal result.
+        if src.is_nodata(value) || value.is_nan() {
+            continue;
+        }
+
         values.push(value);
     }
 
     if values.is_empty() {
-        return Ok(0.0);
+        // Every contributing pixel in the window was NoData: propagate NoData to
+        // the output. If the source declares a NoData value, emit that sentinel;
+        // otherwise (no NoData declared) an empty window can only arise from
+        // BoundaryMode::Ignore at an edge, for which 0.0 preserves prior behavior.
+        return Ok(src.nodata().as_f64().unwrap_or(0.0));
     }
 
     let result = match operation {
@@ -980,6 +993,124 @@ mod tests {
             .get_pixel(2, 2)
             .expect("getting pixel (2,2) from result should succeed in test");
         assert!(center > 0.0);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Property: at every pixel, focal_min <= focal_mean <= focal_max, and
+        /// focal_range == focal_max - focal_min, for arbitrary finite rasters
+        /// (no NoData declared here).
+        #[test]
+        fn prop_focal_min_mean_max_ordering(
+            values in prop::collection::vec(-1000.0f64..1000.0, 25),
+        ) {
+            let mut src = RasterBuffer::zeros(5, 5, RasterDataType::Float64);
+            for (i, &v) in values.iter().enumerate() {
+                let (x, y) = (i as u64 % 5, i as u64 / 5);
+                src.set_pixel(x, y, v).expect("set pixel");
+            }
+            let window = WindowShape::rectangular(3, 3).expect("window");
+            let fmin = focal_min(&src, &window, &BoundaryMode::Edge).expect("min");
+            let fmax = focal_max(&src, &window, &BoundaryMode::Edge).expect("max");
+            let fmean = focal_mean(&src, &window, &BoundaryMode::Edge).expect("mean");
+            let frange = focal_range(&src, &window, &BoundaryMode::Edge).expect("range");
+
+            for y in 0..5 {
+                for x in 0..5 {
+                    let mn = fmin.get_pixel(x, y).expect("mn");
+                    let mx = fmax.get_pixel(x, y).expect("mx");
+                    let me = fmean.get_pixel(x, y).expect("me");
+                    let rg = frange.get_pixel(x, y).expect("rg");
+                    prop_assert!(mn <= me + 1e-9);
+                    prop_assert!(me <= mx + 1e-9);
+                    prop_assert!((rg - (mx - mn)).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_focal_mean_excludes_nodata() {
+        use oxigeo_core::types::NoDataValue;
+        // 5x5 buffer where NoData is the -9999 sentinel.
+        let mut src =
+            RasterBuffer::nodata_filled(5, 5, RasterDataType::Float32, NoDataValue::Float(-9999.0));
+        // Fill everything with 4.0 first, then drop a NoData sentinel next to the
+        // center so the naive mean would be dragged toward -9999.
+        for y in 0..5 {
+            for x in 0..5 {
+                src.set_pixel(x, y, 4.0)
+                    .expect("setting pixel should succeed in test");
+            }
+        }
+        src.set_pixel(1, 2, -9999.0)
+            .expect("setting NoData pixel should succeed in test");
+
+        let window = WindowShape::rectangular(3, 3)
+            .expect("3x3 rectangular window creation should succeed in test");
+        let result = focal_mean(&src, &window, &BoundaryMode::Edge)
+            .expect("focal_mean operation should succeed in test");
+
+        // The NoData pixel must be excluded, so the mean over the 3x3 window at
+        // the center is exactly 4.0 (all remaining valid neighbors are 4.0),
+        // NOT dragged toward the -9999 sentinel.
+        let center = result
+            .get_pixel(2, 2)
+            .expect("getting pixel (2,2) from result should succeed in test");
+        assert_abs_diff_eq!(center, 4.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_focal_all_nodata_propagates_nodata() {
+        use oxigeo_core::types::NoDataValue;
+        // Every pixel is the NoData sentinel.
+        let src =
+            RasterBuffer::nodata_filled(5, 5, RasterDataType::Float32, NoDataValue::Float(-9999.0));
+        let window = WindowShape::rectangular(3, 3)
+            .expect("3x3 rectangular window creation should succeed in test");
+        let result = focal_mean(&src, &window, &BoundaryMode::Edge)
+            .expect("focal_mean operation should succeed in test");
+
+        // Output must be flagged NoData, not a spurious blend of the sentinels.
+        let center = result
+            .get_pixel(2, 2)
+            .expect("getting pixel (2,2) from result should succeed in test");
+        assert!(
+            result.is_nodata(center),
+            "all-NoData window must propagate NoData, got {center}"
+        );
+    }
+
+    #[test]
+    fn test_focal_sum_excludes_nan_nodata() {
+        use oxigeo_core::types::NoDataValue;
+        let mut src = RasterBuffer::nodata_filled(
+            5,
+            5,
+            RasterDataType::Float64,
+            NoDataValue::Float(f64::NAN),
+        );
+        for y in 0..5 {
+            for x in 0..5 {
+                src.set_pixel(x, y, 2.0)
+                    .expect("setting pixel should succeed in test");
+            }
+        }
+        src.set_pixel(2, 1, f64::NAN)
+            .expect("setting NaN NoData pixel should succeed in test");
+
+        let window = WindowShape::rectangular(3, 3)
+            .expect("3x3 rectangular window creation should succeed in test");
+        let result = focal_sum(&src, &window, &BoundaryMode::Edge)
+            .expect("focal_sum operation should succeed in test");
+
+        // 9-cell window minus 1 NaN cell = 8 valid cells * 2.0 = 16.0 (not NaN).
+        let center = result
+            .get_pixel(2, 2)
+            .expect("getting pixel (2,2) from result should succeed in test");
+        assert!(center.is_finite(), "sum must not be NaN-poisoned");
+        assert_abs_diff_eq!(center, 16.0, epsilon = 1e-6);
     }
 
     #[test]

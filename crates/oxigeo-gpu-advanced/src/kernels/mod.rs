@@ -217,6 +217,30 @@ impl FftKernel {
     pub fn num_stages(n: u32) -> u32 {
         (n as f32).log2() as u32
     }
+
+    /// Parameters for the row-wise pass of a 2-D FFT (`fft_2d_rows`).
+    ///
+    /// One invocation processes one full row, so the dispatch covers `n` rows
+    /// with a workgroup size of 64 in x.
+    pub fn params_2d_rows(n: u32) -> KernelParams {
+        KernelParams {
+            workgroup_size: (64, 1, 1),
+            dispatch_size: (n.div_ceil(64), 1, 1),
+            entry_point: "fft_2d_rows".to_string(),
+        }
+    }
+
+    /// Parameters for the column-wise pass of a 2-D FFT (`fft_2d_cols`).
+    ///
+    /// Run after [`params_2d_rows`](Self::params_2d_rows) to complete the
+    /// separable 2-D transform.
+    pub fn params_2d_cols(n: u32) -> KernelParams {
+        KernelParams {
+            workgroup_size: (64, 1, 1),
+            dispatch_size: (n.div_ceil(64), 1, 1),
+            entry_point: "fft_2d_cols".to_string(),
+        }
+    }
 }
 
 /// Histogram equalization kernel helper
@@ -424,6 +448,205 @@ mod tests {
 
         let stages = FftKernel::num_stages(1024);
         assert_eq!(stages, 10); // log2(1024) = 10
+    }
+
+    #[test]
+    fn test_fft_2d_kernel_params() {
+        let rows = FftKernel::params_2d_rows(128);
+        assert_eq!(rows.entry_point, "fft_2d_rows");
+        assert_eq!(rows.workgroup_size, (64, 1, 1));
+        assert_eq!(rows.dispatch_size, (128_u32.div_ceil(64), 1, 1));
+
+        let cols = FftKernel::params_2d_cols(128);
+        assert_eq!(cols.entry_point, "fft_2d_cols");
+        assert_eq!(cols.dispatch_size, (128_u32.div_ceil(64), 1, 1));
+
+        // The WGSL entry points named by these params must exist in the shader.
+        assert!(FFT_SHADER.contains("fn fft_2d_rows"));
+        assert!(FFT_SHADER.contains("fn fft_2d_cols"));
+        assert!(FFT_SHADER.contains("fn fft_1d_strided"));
+    }
+
+    // ----------------------------------------------------------------------
+    // 2-D FFT algorithm-correctness reference.
+    //
+    // The GPU 2-D FFT is separable: a full 1-D FFT along every row, then a full
+    // 1-D FFT down every column. `fft_2d_rows`/`fft_2d_cols` call the exact
+    // radix-2 DIT butterfly implemented below in `fft_1d_strided_ref`. This test
+    // ports that identical algorithm to Rust and verifies it against a naive 2-D
+    // DFT, guaranteeing the design the WGSL mirrors is numerically correct. (A
+    // GPU-gated end-to-end dispatch test additionally exists where hardware is
+    // present.)
+    // ----------------------------------------------------------------------
+
+    #[derive(Clone, Copy)]
+    struct C {
+        re: f32,
+        im: f32,
+    }
+    impl C {
+        fn add(self, o: C) -> C {
+            C {
+                re: self.re + o.re,
+                im: self.im + o.im,
+            }
+        }
+        fn sub(self, o: C) -> C {
+            C {
+                re: self.re - o.re,
+                im: self.im - o.im,
+            }
+        }
+        fn mul(self, o: C) -> C {
+            C {
+                re: self.re * o.re - self.im * o.im,
+                im: self.re * o.im + self.im * o.re,
+            }
+        }
+    }
+
+    fn bit_reverse_ref(x: u32, bits: u32) -> u32 {
+        let mut result = 0u32;
+        let mut val = x;
+        for _ in 0..bits {
+            result = (result << 1) | (val & 1);
+            val >>= 1;
+        }
+        result
+    }
+
+    fn twiddle_ref(k: u32, len: u32, inverse: bool) -> C {
+        let angle = -2.0 * std::f32::consts::PI * (k as f32) / (len as f32);
+        let sign = if inverse { -1.0 } else { 1.0 };
+        C {
+            re: angle.cos(),
+            im: sign * angle.sin(),
+        }
+    }
+
+    /// Exact Rust port of the WGSL `fft_1d_strided`.
+    fn fft_1d_strided_ref(data: &mut [C], base: usize, stride: usize, n: usize, inverse: bool) {
+        let mut bits = 0u32;
+        let mut t = n;
+        while t > 1 {
+            t >>= 1;
+            bits += 1;
+        }
+        for i in 0..n {
+            let r = bit_reverse_ref(i as u32, bits) as usize;
+            if i < r {
+                data.swap(base + i * stride, base + r * stride);
+            }
+        }
+        let mut len = 2usize;
+        while len <= n {
+            let half = len >> 1;
+            let mut start = 0usize;
+            while start < n {
+                for k in 0..half {
+                    let w = twiddle_ref(k as u32, len as u32, inverse);
+                    let even = base + (start + k) * stride;
+                    let odd = base + (start + k + half) * stride;
+                    let tw = w.mul(data[odd]);
+                    let u = data[even];
+                    data[even] = u.add(tw);
+                    data[odd] = u.sub(tw);
+                }
+                start += len;
+            }
+            len <<= 1;
+        }
+    }
+
+    fn naive_dft_2d(input: &[C], n: usize) -> Vec<C> {
+        let mut out = vec![C { re: 0.0, im: 0.0 }; n * n];
+        for ku in 0..n {
+            for kv in 0..n {
+                let mut acc = C { re: 0.0, im: 0.0 };
+                for x in 0..n {
+                    for y in 0..n {
+                        let angle =
+                            -2.0 * std::f32::consts::PI * ((ku * x + kv * y) as f32) / (n as f32);
+                        let w = C {
+                            re: angle.cos(),
+                            im: angle.sin(),
+                        };
+                        acc = acc.add(input[x * n + y].mul(w));
+                    }
+                }
+                out[ku * n + kv] = acc;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_fft_2d_separable_matches_naive_dft() {
+        let n = 4usize;
+        let input: Vec<C> = (0..n * n)
+            .map(|i| C {
+                re: (i as f32).sin() + 0.5 * (i as f32),
+                im: 0.0,
+            })
+            .collect();
+
+        // Separable FFT: rows then columns (identical to the WGSL passes).
+        let mut data = input.clone();
+        for row in 0..n {
+            fft_1d_strided_ref(&mut data, row * n, 1, n, false);
+        }
+        for col in 0..n {
+            fft_1d_strided_ref(&mut data, col, n, n, false);
+        }
+
+        let reference = naive_dft_2d(&input, n);
+        for (i, (a, b)) in data.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a.re - b.re).abs() < 1e-3 && (a.im - b.im).abs() < 1e-3,
+                "2D FFT mismatch at {i}: fft=({},{}) dft=({},{})",
+                a.re,
+                a.im,
+                b.re,
+                b.im
+            );
+        }
+    }
+
+    #[test]
+    fn test_fft_2d_roundtrip_matches_input() {
+        let n = 8usize;
+        let input: Vec<C> = (0..n * n)
+            .map(|i| C {
+                re: ((i * 7 % 13) as f32) - 6.0,
+                im: 0.0,
+            })
+            .collect();
+
+        // Forward: rows then cols.
+        let mut data = input.clone();
+        for row in 0..n {
+            fft_1d_strided_ref(&mut data, row * n, 1, n, false);
+        }
+        for col in 0..n {
+            fft_1d_strided_ref(&mut data, col, n, n, false);
+        }
+        // Inverse: rows then cols, with 1/(n*n) normalization.
+        for row in 0..n {
+            fft_1d_strided_ref(&mut data, row * n, 1, n, true);
+        }
+        for col in 0..n {
+            fft_1d_strided_ref(&mut data, col, n, n, true);
+        }
+        let norm = (n * n) as f32;
+        for (i, v) in data.iter().enumerate() {
+            let re = v.re / norm;
+            assert!(
+                (re - input[i].re).abs() < 1e-3,
+                "roundtrip mismatch at {i}: {} vs {}",
+                re,
+                input[i].re
+            );
+        }
     }
 
     #[test]

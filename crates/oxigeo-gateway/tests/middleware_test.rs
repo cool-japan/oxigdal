@@ -101,10 +101,12 @@ async fn test_compression_middleware() {
 
     let large_body = vec![b'x'; 2048]; // 2KB of data
 
+    let mut headers = HashMap::new();
+    headers.insert("Accept-Encoding".to_string(), "gzip".to_string());
     let request = Request {
         method: "GET".to_string(),
         path: "/api/test".to_string(),
-        headers: HashMap::new(),
+        headers,
         body: Vec::new(),
     };
     let mut response = Response {

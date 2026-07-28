@@ -1,13 +1,19 @@
 //! Tile-set diff between two PMTiles archives.
 //!
 //! Compares two in-memory PMTiles v3 archives and reports per-tile
-//! changes — tiles added, removed, or content-changed — using a 64-bit
+//! changes — tiles added, removed, or content-changed. A 64-bit
 //! [FNV-1a](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function)
-//! non-cryptographic hash for cheap content comparison.
+//! non-cryptographic hash (plus byte-length) is used only as a cheap
+//! *pre-filter*; a tile is never classified as "unchanged" on a hash match
+//! alone. Every hash-and-length hit is followed by a full raw-byte
+//! comparison before being trusted, matching the same guarantee
+//! [`crate::writer::PmTilesBuilder`]'s dedup path enforces for its own hash
+//! hits — a deliberately constructed FNV-1a collision between two distinct
+//! payloads can never be misreported as "unchanged".
 //!
 //! The diff is purely structural: tiles are identified by their PMTiles v3
 //! Hilbert-curve tile ID, and content-changed tiles are detected by
-//! comparing their decompressed-as-stored (raw) byte payload's FNV-1a hash.
+//! byte-comparing their decompressed-as-stored (raw) payloads.
 //! Two tiles with identical bytes are treated as unchanged even when the
 //! source archives differ in unrelated layout (offsets, dedup runs, …).
 //!
@@ -248,13 +254,23 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Compact per-tile record kept while building the diff index.
-#[derive(Debug, Clone, Copy)]
+///
+/// `content_hash` (FNV-1a, non-cryptographic) is only a cheap *filter*: two
+/// tiles are never classified as "unchanged" on the strength of a matching
+/// hash alone. [`diff_archives`] always follows up a hash match with an
+/// actual `bytes` comparison — mirroring the same safety bar
+/// [`crate::writer::PmTilesBuilder`]'s dedup path enforces ("a hash collision
+/// can never cause two distinct payloads to be merged/treated as identical").
+#[derive(Debug, Clone)]
 struct IndexedTile {
     z: u8,
     x: u32,
     y: u32,
     content_hash: u64,
     byte_size: usize,
+    /// Full raw tile payload, kept so a hash match can be byte-verified
+    /// without a second fetch from the reader.
+    bytes: Vec<u8>,
 }
 
 /// Build a `tile_id → IndexedTile` map from a parsed reader.
@@ -281,11 +297,25 @@ fn build_index(reader: &PmTilesReader) -> Result<HashMap<u64, IndexedTile>, PmTi
                 y: info.y,
                 content_hash: fnv1a_64(&bytes),
                 byte_size: bytes.len(),
+                bytes,
             },
         );
     }
 
     Ok(map)
+}
+
+/// Decide whether two tiles are truly identical.
+///
+/// The FNV-1a `content_hash` (and `byte_size`) are only a cheap pre-filter —
+/// a matching hash and length can *never*, on their own, classify two tiles
+/// as unchanged. This function always follows up with a full raw-byte
+/// comparison, so a deliberately constructed FNV-1a collision between two
+/// distinct same-length payloads is still correctly reported as `Changed`,
+/// matching the same guarantee [`crate::writer::PmTilesBuilder`]'s
+/// `find_verified_dedup_match` enforces for its own hash hits.
+fn tiles_are_identical(a: &IndexedTile, b: &IndexedTile) -> bool {
+    a.content_hash == b.content_hash && a.byte_size == b.byte_size && a.bytes == b.bytes
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +367,9 @@ pub fn diff_archives(old_bytes: &[u8], new_bytes: &[u8]) -> Result<DiffReport, P
                 new_bytes: new_tile.byte_size,
             }),
             Some(old_tile) => {
-                if old_tile.content_hash != new_tile.content_hash {
+                if tiles_are_identical(old_tile, new_tile) {
+                    report.unchanged_count += 1;
+                } else {
                     report.changed.push(TileChange::Changed {
                         tile_id,
                         z: new_tile.z,
@@ -346,8 +378,6 @@ pub fn diff_archives(old_bytes: &[u8], new_bytes: &[u8]) -> Result<DiffReport, P
                         old_bytes: old_tile.byte_size,
                         new_bytes: new_tile.byte_size,
                     });
-                } else {
-                    report.unchanged_count += 1;
                 }
             }
         }
@@ -403,6 +433,52 @@ mod tests {
     #[test]
     fn test_fnv1a_64_is_deterministic() {
         assert_eq!(fnv1a_64(b"oxigeo"), fnv1a_64(b"oxigeo"));
+    }
+
+    /// Regression test for a real defect: `diff_archives` used to classify
+    /// two tiles as "unchanged" based purely on `content_hash` equality, with
+    /// no byte-level fallback — unlike the writer's dedup path, which never
+    /// trusts a hash hit alone. This constructs a *manufactured* hash
+    /// collision (same `content_hash`, same `byte_size`, genuinely different
+    /// `bytes`) — the exact scenario a real FNV-1a collision would produce —
+    /// and confirms `tiles_are_identical` still reports them as different.
+    #[test]
+    fn tiles_are_identical_rejects_hash_collision_with_different_bytes() {
+        let a = IndexedTile {
+            z: 0,
+            x: 0,
+            y: 0,
+            content_hash: 0xDEAD_BEEF_0000_0001, // manufactured shared hash
+            byte_size: 4,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let b = IndexedTile {
+            z: 0,
+            x: 0,
+            y: 0,
+            content_hash: 0xDEAD_BEEF_0000_0001, // same hash as `a`
+            byte_size: 4,                        // same length as `a`
+            bytes: vec![9, 9, 9, 9],             // genuinely different payload
+        };
+
+        assert!(
+            !tiles_are_identical(&a, &b),
+            "a hash+length match must never be trusted without a real byte comparison"
+        );
+    }
+
+    #[test]
+    fn tiles_are_identical_accepts_true_match() {
+        let a = IndexedTile {
+            z: 1,
+            x: 2,
+            y: 3,
+            content_hash: 42,
+            byte_size: 3,
+            bytes: vec![7, 8, 9],
+        };
+        let b = a.clone();
+        assert!(tiles_are_identical(&a, &b));
     }
 
     #[test]

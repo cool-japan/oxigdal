@@ -32,7 +32,7 @@ We take the security of OxiGeo seriously. If you believe you have found a securi
 
 Instead, please report them via one of the following methods:
 
-1. **Email**: Send details to `security@cooljapan.ee`
+1. **Email**: Send details to `security@cooljapan.tech`
 2. **GitHub Security Advisory**: Use the [Security Advisories](https://github.com/cool-japan/oxigeo/security/advisories/new) feature
 
 ### What to Include
@@ -81,26 +81,29 @@ lockfile on your own schedule rather than assuming upstream CI coverage.
 ### Allowlisted advisories
 
 `.cargo/audit.toml` maintains an explicit, commented allowlist of advisories that
-`cargo audit` would otherwise flag. As of the 0.1.7 release this allowlist covers 21
-advisories, all transitive (pulled in by a dependency several levels removed from OxiGeo
-code, with no upstream fix available yet or no fixed version published), grouped roughly
-as:
+`cargo audit` would otherwise flag. As of the 0.2.1 development line this allowlist
+covers 15 advisories, all transitive (pulled in by a dependency several levels removed
+from OxiGeo code, with no upstream fix available yet or no fixed version published),
+grouped roughly as:
 
-- **TLS/certificate-validation edge cases** in `aws-lc-sys` / `rustls-webpki` /
-  `rustls-pemfile`, reached only when the optional `cloud`/`security`/`tls` feature set
-  pulls in the AWS/Azure SDKs or the TLS stack
-- **Cloud/DB client crates** (`azure_core`/`http-types`, `tokio-postgres`/
-  `postgres-protocol` via the optional `postgis` feature) — panics or DoS vectors in
-  malformed-response parsing, not memory-unsafety
+- **TLS/certificate-validation edge cases** in `rustls-webpki` / `rustls-pemfile`,
+  reached only when the optional `cloud`/`security`/`tls` feature set pulls in the
+  AWS/Azure SDKs or the TLS stack (the `aws-lc-sys` advisories previously ignored here
+  were removed after a review confirmed our pinned `aws-lc-sys` version already patches
+  them)
+- **`http-types`** (`azure_core`, non-default `azure`/`azure-blob` features) — an
+  `Authorization` header ASCII-invariant violation, not memory-unsafety
 - **`quick-xml` DoS-class advisories** (unbounded namespace-declaration allocation;
   quadratic-runtime duplicate-attribute-name checking) — CPU/memory exhaustion, not
-  memory-unsafety — reached via `pprof`/`inferno` (default dependency of
-  `oxigeo-dev-tools`/`oxigeo-bench`) and via `azure_core` (non-default `azure`/
-  `azure-blob` features of `oxigeo-cloud`/`oxigeo-cloud-enhanced`)
+  memory-unsafety — reached via `pprof`/`inferno`, a default (non-optional) dependency
+  of `oxigeo-dev-tools` only (`oxigeo-bench` gates `pprof` behind its non-default
+  `profiling` feature), and via `azure_core` (non-default `azure`/`azure-blob` features
+  of `oxigeo-cloud`/`oxigeo-cloud-enhanced`)
 - **Unmaintained-but-unpatched** crates reached transitively (`fxhash`, `instant`, `json`,
-  `paste`, `proc-macro-error2`, `atomic-polyfill`, `rand` 0.7.3) via `sled`, `heapless`/
-  `proj`, `evcxr`/Jupyter, `nalgebra`/`scirs2`, `mysql_async`, and `azure_core`
-  respectively
+  `paste`, `atomic-polyfill`, `rand` 0.7.3) via `sled`, `heapless`/`proj`,
+  `evcxr`/Jupyter, `nalgebra`/`scirs2`, and `azure_core` respectively (the
+  `proc-macro-error2` advisory previously ignored here was removed: that crate is no
+  longer in the dependency graph at all)
 - **`rsa` timing side-channel** (RUSTSEC-2023-0071, the Marvin Attack) — no fixed version
   exists upstream yet
 
@@ -108,6 +111,9 @@ None of these are reachable through OxiGeo's default (Pure-Rust, no-cloud) featu
 Each entry in `.cargo/audit.toml` carries a one-line justification; consult that file for
 the authoritative, currently-ignored advisory IDs, and re-run `cargo audit` yourself before
 enabling `cloud`, `security`/`tls`, or `postgis` in a security-sensitive deployment.
+The previously-ignored `tokio-postgres`/`postgres-protocol` advisories (DoS-class panics
+in the `postgis` feature's Postgres client) were also removed after confirming our pinned
+versions already ship the fix.
 
 ## Security Best Practices for Users
 
@@ -231,7 +237,7 @@ We protect against supply chain attacks:
 
 For security-related questions or concerns:
 
-- **Email**: security@cooljapan.ee
+- **Email**: security@cooljapan.tech
 - **GitHub**: [Security Advisories](https://github.com/cool-japan/oxigeo/security/advisories)
 - **Project Homepage**: https://github.com/cool-japan/oxigeo
 

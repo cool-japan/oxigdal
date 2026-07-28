@@ -260,10 +260,10 @@ impl AnomalyDetector for EwmaDetector {
 
 /// Holt-Winters exponential smoothing for time series with trend and seasonality.
 pub struct HoltWintersDetector {
-    alpha: f64,      // Level smoothing
-    beta: f64,       // Trend smoothing
-    gamma: f64,      // Seasonal smoothing
-    period: usize,   // Seasonal period
+    alpha: f64,    // Level smoothing
+    beta: f64,     // Trend smoothing
+    gamma: f64,    // Seasonal smoothing
+    period: usize, // Seasonal period
     threshold: f64,
     state: RwLock<Option<HoltWintersState>>,
     metric_name: String,
@@ -308,21 +308,19 @@ impl HoltWintersDetector {
     /// Initialize the Holt-Winters model.
     fn initialize(&self, data: &[DataPoint]) -> Result<HoltWintersState> {
         if data.len() < self.period * 2 {
-            return Err(ObservabilityError::AnomalyDetectionError(
-                format!(
-                    "Insufficient data for Holt-Winters: need at least {} points",
-                    self.period * 2
-                ),
-            ));
+            return Err(ObservabilityError::AnomalyDetectionError(format!(
+                "Insufficient data for Holt-Winters: need at least {} points",
+                self.period * 2
+            )));
         }
 
         // Calculate initial level as mean of first period
-        let initial_level: f64 = data[..self.period].iter().map(|d| d.value).sum::<f64>()
-            / self.period as f64;
+        let initial_level: f64 =
+            data[..self.period].iter().map(|d| d.value).sum::<f64>() / self.period as f64;
 
         // Calculate initial trend
-        let first_period_mean: f64 = data[..self.period].iter().map(|d| d.value).sum::<f64>()
-            / self.period as f64;
+        let first_period_mean: f64 =
+            data[..self.period].iter().map(|d| d.value).sum::<f64>() / self.period as f64;
         let second_period_mean: f64 = data[self.period..self.period * 2]
             .iter()
             .map(|d| d.value)
@@ -355,37 +353,79 @@ impl HoltWintersDetector {
         })
     }
 
+    /// Maximum number of fitted-value samples retained on [`HoltWintersState`]
+    /// across the detector's lifetime. `detect()` itself no longer depends on
+    /// history beyond the current call's batch (see its doc comment), so this
+    /// only bounds memory for a long-lived streaming detector -- without a
+    /// cap, `fitted_values` would otherwise grow forever.
+    const MAX_RETAINED_FITTED_VALUES: usize = 10_000;
+
     /// Predict and update the model for a single value.
-    fn predict_and_update(&self, state: &mut HoltWintersState, value: f64, season_idx: usize) -> f64 {
+    fn predict_and_update(
+        &self,
+        state: &mut HoltWintersState,
+        value: f64,
+        season_idx: usize,
+    ) -> f64 {
         let prediction = state.level + state.trend + state.seasonal[season_idx];
 
         // Update components
         let new_level = self.alpha * (value - state.seasonal[season_idx])
             + (1.0 - self.alpha) * (state.level + state.trend);
         let new_trend = self.beta * (new_level - state.level) + (1.0 - self.beta) * state.trend;
-        let new_seasonal = self.gamma * (value - new_level) + (1.0 - self.gamma) * state.seasonal[season_idx];
+        let new_seasonal =
+            self.gamma * (value - new_level) + (1.0 - self.gamma) * state.seasonal[season_idx];
 
         state.level = new_level;
         state.trend = new_trend;
         state.seasonal[season_idx] = new_seasonal;
+
         state.fitted_values.push(prediction);
+        if state.fitted_values.len() > Self::MAX_RETAINED_FITTED_VALUES {
+            let excess = state.fitted_values.len() - Self::MAX_RETAINED_FITTED_VALUES;
+            state.fitted_values.drain(0..excess);
+        }
 
         prediction
     }
 }
 
 impl AnomalyDetector for HoltWintersDetector {
+    /// Detect anomalies in `data` against the running Holt-Winters model.
+    ///
+    /// Predictions for `data` are computed in a first pass (in causal order,
+    /// updating the model online as each point arrives) so that the
+    /// residual-standard-deviation used as the anomaly threshold is always
+    /// computed from *this call's* predictions paired with *this call's*
+    /// actual values -- never from a previous call's stale predictions
+    /// zipped against a differently-sized/positioned new batch, which was
+    /// structurally incorrect (and, on top of that, let `fitted_values` grow
+    /// without bound; see [`Self::predict_and_update`]).
     fn detect(&self, data: &[DataPoint]) -> Result<Vec<Anomaly>> {
         let mut state_guard = self.state.write();
         let state = state_guard.as_mut().ok_or_else(|| {
-            ObservabilityError::AnomalyDetectionError("Holt-Winters model not initialized".to_string())
+            ObservabilityError::AnomalyDetectionError(
+                "Holt-Winters model not initialized".to_string(),
+            )
         })?;
 
         let mut anomalies = Vec::new();
 
-        // Calculate residual standard deviation from fitted values
-        let residuals: Vec<f64> = state
-            .fitted_values
+        // First pass: compute this call's predictions, updating the model
+        // online in causal order (each prediction uses only state from
+        // strictly-earlier points).
+        let predictions: Vec<f64> = data
+            .iter()
+            .enumerate()
+            .map(|(i, point)| {
+                let season_idx = i % self.period;
+                self.predict_and_update(state, point.value, season_idx)
+            })
+            .collect();
+
+        // Residuals are now correctly aligned: predictions[i] was made
+        // *before* observing data[i].value, using the same batch.
+        let residuals: Vec<f64> = predictions
             .iter()
             .zip(data.iter())
             .map(|(f, d)| (d.value - f).abs())
@@ -400,9 +440,8 @@ impl AnomalyDetector for HoltWintersDetector {
             1.0
         };
 
-        for (i, point) in data.iter().enumerate() {
-            let season_idx = i % self.period;
-            let prediction = self.predict_and_update(state, point.value, season_idx);
+        for (point, prediction) in data.iter().zip(predictions.iter()) {
+            let prediction = *prediction;
             let residual = (point.value - prediction).abs();
 
             if residual > self.threshold * residual_std {
@@ -672,7 +711,12 @@ impl GeoAnomalyDetector {
     /// * `neighbor_distance` - Distance threshold for neighbors in km
     /// * `min_neighbors` - Minimum neighbors required for local analysis
     /// * `threshold` - Z-score threshold for anomaly detection
-    pub fn new(cell_size: f64, neighbor_distance: f64, min_neighbors: usize, threshold: f64) -> Self {
+    pub fn new(
+        cell_size: f64,
+        neighbor_distance: f64,
+        min_neighbors: usize,
+        threshold: f64,
+    ) -> Self {
         Self {
             cell_size: cell_size.max(0.001),
             neighbor_distance: neighbor_distance.max(0.1),
@@ -701,7 +745,11 @@ impl GeoAnomalyDetector {
         let values: Vec<f64> = data.iter().map(|p| p.value).collect();
         let n = values.len() as f64;
         let global_mean = values.iter().sum::<f64>() / n;
-        let global_variance = values.iter().map(|v| (v - global_mean).powi(2)).sum::<f64>() / n;
+        let global_variance = values
+            .iter()
+            .map(|v| (v - global_mean).powi(2))
+            .sum::<f64>()
+            / n;
         let global_std = global_variance.sqrt();
 
         // Calculate cell-level statistics
@@ -944,7 +992,9 @@ impl ThresholdAlertManager {
             });
 
             // Check critical threshold
-            let is_critical = threshold.operator.check(value, threshold.critical_threshold);
+            let is_critical = threshold
+                .operator
+                .check(value, threshold.critical_threshold);
             // Check warning threshold
             let is_warning = threshold.operator.check(value, threshold.warning_threshold);
 
@@ -989,8 +1039,8 @@ impl ThresholdAlertManager {
 
             // Check if we should emit an alert
             let should_alert = if let Some(triggered_at) = state.triggered_at {
-                let duration_satisfied = timestamp.signed_duration_since(triggered_at)
-                    >= threshold.min_duration;
+                let duration_satisfied =
+                    timestamp.signed_duration_since(triggered_at) >= threshold.min_duration;
 
                 let cooldown_satisfied = state
                     .last_notified
@@ -1118,7 +1168,10 @@ impl LofDetector {
     fn k_distance(&self, point: f64, data: &[f64]) -> f64 {
         let mut distances: Vec<f64> = data.iter().map(|d| (d - point).abs()).collect();
         distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        distances.get(self.k_neighbors.min(distances.len()) - 1).copied().unwrap_or(0.0)
+        distances
+            .get(self.k_neighbors.min(distances.len()) - 1)
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// Calculate reachability distance.
@@ -1130,10 +1183,7 @@ impl LofDetector {
 
     /// Calculate local reachability density.
     fn local_reachability_density(&self, point: f64, data: &[f64]) -> f64 {
-        let mut distances: Vec<(f64, f64)> = data
-            .iter()
-            .map(|d| ((d - point).abs(), *d))
-            .collect();
+        let mut distances: Vec<(f64, f64)> = data.iter().map(|d| ((d - point).abs(), *d)).collect();
         distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let k_nearest: Vec<f64> = distances
@@ -1166,10 +1216,7 @@ impl LofDetector {
             return 1.0;
         }
 
-        let mut distances: Vec<(f64, f64)> = data
-            .iter()
-            .map(|d| ((d - point).abs(), *d))
-            .collect();
+        let mut distances: Vec<(f64, f64)> = data.iter().map(|d| ((d - point).abs(), *d)).collect();
         distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let k_nearest: Vec<f64> = distances
@@ -1214,7 +1261,8 @@ impl AnomalyDetector for LofDetector {
                     .iter()
                     .map(|d| ((d - point.value).abs(), *d))
                     .collect();
-                distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                distances
+                    .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let expected = distances
                     .iter()
                     .take(self.k_neighbors)
@@ -1230,7 +1278,10 @@ impl AnomalyDetector for LofDetector {
                     score,
                     severity,
                     anomaly_type: AnomalyType::Pattern,
-                    description: format!("LOF anomaly: LOF={:.2}, threshold={:.2}", lof, self.threshold),
+                    description: format!(
+                        "LOF anomaly: LOF={:.2}, threshold={:.2}",
+                        lof, self.threshold
+                    ),
                 });
             }
         }
@@ -1455,7 +1506,10 @@ impl SeverityClassifier {
     /// Record an anomaly occurrence for frequency tracking.
     pub fn record_anomaly(&self, metric_name: &str) {
         let mut context = self.context.write();
-        *context.recent_counts.entry(metric_name.to_string()).or_insert(0) += 1;
+        *context
+            .recent_counts
+            .entry(metric_name.to_string())
+            .or_insert(0) += 1;
     }
 
     /// Reset frequency counts.
@@ -1557,7 +1611,9 @@ mod tests {
             .map(|i| DataPoint::new(Utc::now(), 50.0 + (i as f64 % 10.0)))
             .collect();
 
-        detector.update_baseline(&baseline_data).expect("Failed to update baseline");
+        detector
+            .update_baseline(&baseline_data)
+            .expect("Failed to update baseline");
 
         // Test data with an anomaly
         let test_data = vec![
@@ -1575,11 +1631,12 @@ mod tests {
         let mut detector = EwmaDetector::new(0.3, 3.0, "test_metric");
 
         // Initialize with baseline data
-        let baseline_data: Vec<DataPoint> = (0..50)
-            .map(|_| DataPoint::new(Utc::now(), 100.0))
-            .collect();
+        let baseline_data: Vec<DataPoint> =
+            (0..50).map(|_| DataPoint::new(Utc::now(), 100.0)).collect();
 
-        detector.update_baseline(&baseline_data).expect("Failed to update baseline");
+        detector
+            .update_baseline(&baseline_data)
+            .expect("Failed to update baseline");
 
         // Test with anomalous data
         let test_data = vec![
@@ -1592,20 +1649,112 @@ mod tests {
     }
 
     #[test]
+    fn test_holt_winters_detector_repeated_calls_stay_aligned() {
+        // Regression test: detect() used to zip the *previous* call's
+        // fitted_values against the *current* call's data, which is
+        // structurally wrong once batch sizes differ. Here we deliberately
+        // call detect() several times with batches of DIFFERENT lengths; if
+        // detect() were still misaligned, this would either panic (it
+        // doesn't, since zip() just stops at the shorter side) or silently
+        // produce garbage residuals. We assert it runs cleanly and that the
+        // per-call predictions/anomalies stay well-formed (finite,
+        // non-degenerate) across every call.
+        let period = 4;
+        let mut detector = HoltWintersDetector::new(0.3, 0.1, 0.1, period, 3.0, "test_metric");
+
+        let baseline_data: Vec<DataPoint> = (0..(period * 4))
+            .map(|i| DataPoint::new(Utc::now(), 50.0 + (i % period) as f64))
+            .collect();
+        detector
+            .update_baseline(&baseline_data)
+            .expect("Failed to update baseline");
+
+        // Call 1: a batch of 5 points.
+        let batch1: Vec<DataPoint> = (0..5)
+            .map(|i| DataPoint::new(Utc::now(), 50.0 + (i % period) as f64))
+            .collect();
+        let anomalies1 = detector
+            .detect(&batch1)
+            .expect("detect call 1 should succeed");
+        for a in &anomalies1 {
+            assert!(a.expected_value.is_finite());
+            assert!(a.observed_value.is_finite());
+        }
+
+        // Call 2: a DIFFERENTLY-SIZED batch of 11 points, including one
+        // genuine, large spike. With the old (buggy) alignment, this call's
+        // residual_std would have been computed by zipping call 1's stale
+        // 5-element fitted_values against these 11 new data points --
+        // comparing unrelated indices. With the fix, residual_std reflects
+        // only this call's own predictions vs. its own data.
+        let mut batch2: Vec<DataPoint> = (0..11)
+            .map(|i| DataPoint::new(Utc::now(), 50.0 + (i % period) as f64))
+            .collect();
+        batch2[7] = DataPoint::new(Utc::now(), 5000.0); // obvious spike
+
+        let anomalies2 = detector
+            .detect(&batch2)
+            .expect("detect call 2 should succeed");
+        assert!(
+            anomalies2
+                .iter()
+                .any(|a| a.anomaly_type == AnomalyType::Spike),
+            "an obvious 100x spike must be detected once residual_std is computed correctly \
+             from THIS batch instead of a stale, differently-sized previous batch"
+        );
+        for a in &anomalies2 {
+            assert!(a.score.is_finite() && a.score >= 0.0);
+        }
+    }
+
+    #[test]
+    fn test_holt_winters_fitted_values_do_not_grow_unbounded() {
+        let period = 4;
+        let mut detector = HoltWintersDetector::new(0.3, 0.1, 0.1, period, 3.0, "test_metric");
+
+        let baseline_data: Vec<DataPoint> = (0..(period * 4))
+            .map(|i| DataPoint::new(Utc::now(), 50.0 + (i % period) as f64))
+            .collect();
+        detector
+            .update_baseline(&baseline_data)
+            .expect("Failed to update baseline");
+
+        // Feed many more points than the retention cap across many calls;
+        // this must not make the detector's internal state grow without
+        // bound (previously fitted_values was pushed to on every point and
+        // never trimmed).
+        for _ in 0..50 {
+            let batch: Vec<DataPoint> = (0..300)
+                .map(|i| DataPoint::new(Utc::now(), 50.0 + (i % period) as f64))
+                .collect();
+            detector.detect(&batch).expect("detect should succeed");
+        }
+
+        let state_guard = detector.state.read();
+        let state = state_guard.as_ref().expect("state should be initialized");
+        assert!(
+            state.fitted_values.len() <= HoltWintersDetector::MAX_RETAINED_FITTED_VALUES,
+            "fitted_values grew to {} entries, exceeding the retention cap of {}",
+            state.fitted_values.len(),
+            HoltWintersDetector::MAX_RETAINED_FITTED_VALUES
+        );
+    }
+
+    #[test]
     fn test_change_point_detector() {
         let mut detector = ChangePointDetector::new(5.0, 0.5, "test_metric");
 
         // Baseline data with stable mean
-        let baseline_data: Vec<DataPoint> = (0..100)
-            .map(|_| DataPoint::new(Utc::now(), 50.0))
-            .collect();
+        let baseline_data: Vec<DataPoint> =
+            (0..100).map(|_| DataPoint::new(Utc::now(), 50.0)).collect();
 
-        detector.update_baseline(&baseline_data).expect("Failed to update baseline");
+        detector
+            .update_baseline(&baseline_data)
+            .expect("Failed to update baseline");
 
         // Test data with a shift
-        let mut test_data: Vec<DataPoint> = (0..20)
-            .map(|_| DataPoint::new(Utc::now(), 50.0))
-            .collect();
+        let mut test_data: Vec<DataPoint> =
+            (0..20).map(|_| DataPoint::new(Utc::now(), 50.0)).collect();
         test_data.extend((0..20).map(|_| DataPoint::new(Utc::now(), 100.0)));
 
         let anomalies = detector.detect(&test_data).expect("Failed to detect");
@@ -1626,7 +1775,9 @@ mod tests {
             })
             .collect();
 
-        detector.update_geo_baseline(&baseline_data).expect("Failed to update geo baseline");
+        detector
+            .update_geo_baseline(&baseline_data)
+            .expect("Failed to update geo baseline");
 
         // Test data with a hotspot
         let mut test_data = baseline_data.clone();
@@ -1640,7 +1791,9 @@ mod tests {
             ));
         }
 
-        let anomalies = detector.detect_geo_anomalies(&test_data).expect("Failed to detect");
+        let anomalies = detector
+            .detect_geo_anomalies(&test_data)
+            .expect("Failed to detect");
         // May or may not find anomalies depending on clustering
         assert!(anomalies.len() >= 0);
     }
@@ -1684,7 +1837,9 @@ mod tests {
             .map(|i| DataPoint::new(Utc::now(), 45.0 + (i as f64 % 10.0)))
             .collect();
 
-        detector.update_baseline(&training_data).expect("Failed to update baseline");
+        detector
+            .update_baseline(&training_data)
+            .expect("Failed to update baseline");
 
         // Test with outliers
         let test_data = vec![
@@ -1703,10 +1858,7 @@ mod tests {
 
         // Add some data points
         for i in 0..100 {
-            baseline.add_data_point(DataPoint::new(
-                Utc::now(),
-                50.0 + (i as f64 % 20.0),
-            ));
+            baseline.add_data_point(DataPoint::new(Utc::now(), 50.0 + (i as f64 % 20.0)));
         }
 
         // Check that baselines are computed
@@ -1732,7 +1884,10 @@ mod tests {
         };
 
         let severity = classifier.classify(&critical_anomaly);
-        assert!(matches!(severity, AnomalySeverity::Critical | AnomalySeverity::High));
+        assert!(matches!(
+            severity,
+            AnomalySeverity::Critical | AnomalySeverity::High
+        ));
 
         let normal_anomaly = Anomaly {
             timestamp: Utc::now(),
@@ -1746,7 +1901,10 @@ mod tests {
         };
 
         let severity = classifier.classify(&normal_anomaly);
-        assert!(matches!(severity, AnomalySeverity::Low | AnomalySeverity::Medium));
+        assert!(matches!(
+            severity,
+            AnomalySeverity::Low | AnomalySeverity::Medium
+        ));
     }
 
     #[test]

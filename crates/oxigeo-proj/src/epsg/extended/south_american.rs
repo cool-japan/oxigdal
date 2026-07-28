@@ -1,6 +1,7 @@
 //! South American national grid CRS registrations.
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::ToString;
 
 pub(super) fn register_south_american_grids(db: &mut EpsgDatabase) {
     let sa_grids: &[(u32, &str, &str, &str, &str)] = &[

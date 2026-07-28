@@ -1,6 +1,25 @@
 //! SQL generation helpers for PostGIS queries
 //!
-//! This module provides safe SQL query generation with SQL injection prevention.
+//! This module provides SQL query generation with identifier-level SQL
+//! injection prevention: [`SqlIdentifier`], [`TableName`] and [`ColumnName`]
+//! validate table/column/function names and quote them safely, and the spatial
+//! predicate builders in [`crate::query`] bind geometries as parameters.
+//!
+//! # Security
+//!
+//! Not every entry point is injection-safe *by construction*. The raw-fragment
+//! builders — [`WhereClause::and`], [`WhereClause::or`],
+//! [`crate::query::SpatialQuery::where_clause`],
+//! [`crate::query::SpatialQuery::select`] and
+//! [`crate::query::SpatialQuery::order_by`] — accept arbitrary SQL text and
+//! splice it verbatim. They are intended for *trusted*, developer-authored
+//! fragments only. **Never** pass unsanitized end-user input to these methods;
+//! use the parameter-binding predicates ([`where_intersects`], [`where_bbox`],
+//! …) or validate/quote identifiers via [`ColumnName`]/[`SqlIdentifier`]
+//! first.
+//!
+//! [`where_intersects`]: crate::query::SpatialQuery::where_intersects
+//! [`where_bbox`]: crate::query::SpatialQuery::where_bbox
 
 use crate::error::{Result, SqlError};
 use oxigeo_core::types::BoundingBox;
@@ -431,13 +450,26 @@ impl WhereClause {
         }
     }
 
-    /// Adds a condition
+    /// Adds a condition, combined with any existing conditions using `AND`.
+    ///
+    /// # Security
+    ///
+    /// `condition` is spliced into the generated SQL **verbatim**, with no
+    /// validation or escaping. Pass only trusted, developer-authored fragments
+    /// — never unsanitized user input. For user-driven filtering, use the
+    /// parameter-binding spatial predicates on
+    /// [`SpatialQuery`](crate::query::SpatialQuery) instead.
     pub fn and(mut self, condition: impl Into<String>) -> Self {
         self.conditions.push(condition.into());
         self
     }
 
-    /// Adds an OR condition
+    /// Adds an OR condition.
+    ///
+    /// # Security
+    ///
+    /// As with [`and`](Self::and), `condition` is spliced verbatim and is
+    /// **not** injection-safe; pass only trusted fragments.
     pub fn or(mut self, condition: impl Into<String>) -> Self {
         if let Some(last) = self.conditions.last_mut() {
             *last = format!("({last}) OR ({condition})", condition = condition.into());

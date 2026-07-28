@@ -501,6 +501,7 @@ fn lanczos(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!(

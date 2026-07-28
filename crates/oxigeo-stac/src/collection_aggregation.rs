@@ -92,6 +92,10 @@ pub struct CollectionAggregator {
     min_lat: f64,
     max_lat: f64,
     has_bbox: bool,
+    // Temporal-extent accumulators, derived from `properties.datetime` (or,
+    // for non-instantaneous items, `properties.start_datetime`/`end_datetime`).
+    min_datetime: Option<chrono::DateTime<chrono::Utc>>,
+    max_datetime: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl CollectionAggregator {
@@ -108,7 +112,15 @@ impl CollectionAggregator {
             min_lat: f64::INFINITY,
             max_lat: f64::NEG_INFINITY,
             has_bbox: false,
+            min_datetime: None,
+            max_datetime: None,
         }
+    }
+
+    /// Widens the running temporal extent to include `dt`.
+    fn observe_datetime(&mut self, dt: chrono::DateTime<chrono::Utc>) {
+        self.min_datetime = Some(self.min_datetime.map_or(dt, |cur| cur.min(dt)));
+        self.max_datetime = Some(self.max_datetime.map_or(dt, |cur| cur.max(dt)));
     }
 
     /// Ingests a single STAC item (as a JSON value) into the aggregator.
@@ -137,6 +149,36 @@ impl CollectionAggregator {
         }
 
         let props = item.get("properties").and_then(|p| p.as_object());
+
+        // ── Temporal extent from `datetime` / `start_datetime`+`end_datetime` ──
+        //
+        // Per the STAC item spec, an instantaneous item has a non-null
+        // `properties.datetime`; a item covering a time range instead has
+        // `datetime: null` plus `start_datetime`/`end_datetime`. We handle
+        // both so the streaming aggregator reports a real temporal extent
+        // instead of always leaving it `None`.
+        if let Some(props_map) = props {
+            match props_map.get("datetime").and_then(|v| v.as_str()) {
+                Some(dt_str) => {
+                    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(dt_str) {
+                        self.observe_datetime(parsed.with_timezone(&chrono::Utc));
+                    }
+                }
+                None => {
+                    if let Some(start_str) =
+                        props_map.get("start_datetime").and_then(|v| v.as_str())
+                        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(start_str)
+                    {
+                        self.observe_datetime(parsed.with_timezone(&chrono::Utc));
+                    }
+                    if let Some(end_str) = props_map.get("end_datetime").and_then(|v| v.as_str())
+                        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(end_str)
+                    {
+                        self.observe_datetime(parsed.with_timezone(&chrono::Utc));
+                    }
+                }
+            }
+        }
 
         // ── EO cloud cover ─────────────────────────────────────────────────
         if let Some(cc) = props
@@ -177,10 +219,15 @@ impl CollectionAggregator {
             None
         };
 
+        let temporal_extent = match (self.min_datetime, self.max_datetime) {
+            (Some(min), Some(max)) => Some([min.to_rfc3339(), max.to_rfc3339()]),
+            _ => None,
+        };
+
         CollectionStats {
             collection_id: self.collection_id,
             item_count: self.item_count,
-            temporal_extent: None, // Populated externally from item datetimes if required
+            temporal_extent,
             spatial_extent,
             cloud_cover: NumericStats::from_values(&self.cloud_covers),
             property_frequencies: self.property_counts,
@@ -206,6 +253,28 @@ mod tests {
                 "eo:cloud_cover": cloud,
                 "platform": platform,
                 "constellation": "sentinel"
+            }
+        })
+    }
+
+    fn item_with_datetime(id: &str, datetime: &str) -> serde_json::Value {
+        json!({
+            "id": id,
+            "type": "Feature",
+            "properties": {
+                "datetime": datetime,
+            }
+        })
+    }
+
+    fn item_with_datetime_range(id: &str, start: &str, end: &str) -> serde_json::Value {
+        json!({
+            "id": id,
+            "type": "Feature",
+            "properties": {
+                "datetime": null,
+                "start_datetime": start,
+                "end_datetime": end,
             }
         })
     }
@@ -313,5 +382,96 @@ mod tests {
         let json = serde_json::to_string(&stats).expect("serialize");
         let back: CollectionStats = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(stats, back);
+    }
+
+    #[test]
+    fn test_temporal_extent_absent_when_no_datetime_present() {
+        let mut agg = CollectionAggregator::new("no-dt");
+        agg.ingest(&eo_item("i1", 10.0, "s2a", [0.0, 0.0, 1.0, 1.0]));
+        let stats = agg.build();
+        assert!(stats.temporal_extent.is_none());
+    }
+
+    #[test]
+    fn test_temporal_extent_from_instant_datetimes() {
+        let mut agg = CollectionAggregator::new("dt-col");
+        agg.ingest(&item_with_datetime("i1", "2021-06-15T12:00:00Z"));
+        agg.ingest(&item_with_datetime("i2", "2020-01-01T00:00:00Z"));
+        agg.ingest(&item_with_datetime("i3", "2022-12-31T23:59:59Z"));
+        let stats = agg.build();
+        let [earliest, latest] = stats.temporal_extent.expect("temporal_extent");
+
+        let earliest_dt = chrono::DateTime::parse_from_rfc3339(&earliest).expect("valid rfc3339");
+        let latest_dt = chrono::DateTime::parse_from_rfc3339(&latest).expect("valid rfc3339");
+        assert_eq!(
+            earliest_dt,
+            chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z").expect("valid")
+        );
+        assert_eq!(
+            latest_dt,
+            chrono::DateTime::parse_from_rfc3339("2022-12-31T23:59:59Z").expect("valid")
+        );
+    }
+
+    #[test]
+    fn test_temporal_extent_from_datetime_ranges() {
+        let mut agg = CollectionAggregator::new("range-col");
+        agg.ingest(&item_with_datetime_range(
+            "i1",
+            "2019-03-01T00:00:00Z",
+            "2019-03-10T00:00:00Z",
+        ));
+        agg.ingest(&item_with_datetime_range(
+            "i2",
+            "2019-02-01T00:00:00Z",
+            "2019-02-15T00:00:00Z",
+        ));
+        let stats = agg.build();
+        let [earliest, latest] = stats.temporal_extent.expect("temporal_extent");
+
+        let earliest_dt = chrono::DateTime::parse_from_rfc3339(&earliest).expect("valid rfc3339");
+        let latest_dt = chrono::DateTime::parse_from_rfc3339(&latest).expect("valid rfc3339");
+        assert_eq!(
+            earliest_dt,
+            chrono::DateTime::parse_from_rfc3339("2019-02-01T00:00:00Z").expect("valid")
+        );
+        assert_eq!(
+            latest_dt,
+            chrono::DateTime::parse_from_rfc3339("2019-03-10T00:00:00Z").expect("valid")
+        );
+    }
+
+    #[test]
+    fn test_temporal_extent_ignores_unparseable_datetime() {
+        let mut agg = CollectionAggregator::new("bad-dt");
+        agg.ingest(&item_with_datetime("i1", "not-a-real-datetime"));
+        let stats = agg.build();
+        assert!(
+            stats.temporal_extent.is_none(),
+            "an unparseable datetime must not silently produce a bogus extent"
+        );
+    }
+
+    #[test]
+    fn test_temporal_extent_mixed_instant_and_range_items() {
+        let mut agg = CollectionAggregator::new("mixed-col");
+        agg.ingest(&item_with_datetime("i1", "2021-06-15T12:00:00Z"));
+        agg.ingest(&item_with_datetime_range(
+            "i2",
+            "2018-01-01T00:00:00Z",
+            "2018-06-01T00:00:00Z",
+        ));
+        let stats = agg.build();
+        let [earliest, latest] = stats.temporal_extent.expect("temporal_extent");
+        let earliest_dt = chrono::DateTime::parse_from_rfc3339(&earliest).expect("valid rfc3339");
+        let latest_dt = chrono::DateTime::parse_from_rfc3339(&latest).expect("valid rfc3339");
+        assert_eq!(
+            earliest_dt,
+            chrono::DateTime::parse_from_rfc3339("2018-01-01T00:00:00Z").expect("valid")
+        );
+        assert_eq!(
+            latest_dt,
+            chrono::DateTime::parse_from_rfc3339("2021-06-15T12:00:00Z").expect("valid")
+        );
     }
 }

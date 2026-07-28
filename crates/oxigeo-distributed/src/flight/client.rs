@@ -4,6 +4,8 @@
 //! geospatial data using zero-copy transfers.
 
 use crate::error::{DistributedError, Result};
+use crate::flight::wire::{self, ExecuteTaskResponse};
+use crate::task::Task;
 use arrow::record_batch::RecordBatch;
 use arrow_flight::{Action, HandshakeRequest, Ticket, flight_service_client::FlightServiceClient};
 use bytes::Bytes;
@@ -168,6 +170,30 @@ impl FlightClient {
             results.len()
         );
         Ok(results)
+    }
+
+    /// Dispatch a task (with its input partition) to the remote worker's Flight
+    /// server and await the executed result.
+    ///
+    /// This is the client half of the coordinator → Flight → worker path: it
+    /// ships the serialized `Task` plus its `input` batch through the
+    /// `execute_task` action and returns the worker's response metadata together
+    /// with the output batch (present on success).
+    pub async fn execute_task(
+        &mut self,
+        task: &Task,
+        input: Option<&RecordBatch>,
+    ) -> Result<(ExecuteTaskResponse, Option<RecordBatch>)> {
+        let body = wire::encode_execute_request(task, input)?;
+        let results = self
+            .do_action(wire::EXECUTE_TASK_ACTION.to_string(), body)
+            .await?;
+
+        let payload = results.first().ok_or_else(|| {
+            DistributedError::flight_rpc("execute_task returned no result payload")
+        })?;
+
+        wire::decode_execute_response(payload)
     }
 
     /// List all available tickets.

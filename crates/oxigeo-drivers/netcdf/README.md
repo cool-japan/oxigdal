@@ -1,6 +1,6 @@
 # oxigeo-netcdf
 
-Pure Rust NetCDF-3 driver for OxiGeo with CF (Climate and Forecast) conventions support and optional HDF5-based NetCDF-4.
+Pure Rust NetCDF-4 (HDF5-based) driver for OxiGeo with CF (Climate and Forecast) conventions support and optional classic NetCDF-3.
 
 [![Crates.io](https://img.shields.io/crates/v/oxigeo-netcdf)](https://crates.io/crates/oxigeo-netcdf)
 [![Documentation](https://docs.rs/oxigeo-netcdf/badge.svg)](https://docs.rs/oxigeo-netcdf)
@@ -8,18 +8,19 @@ Pure Rust NetCDF-3 driver for OxiGeo with CF (Climate and Forecast) conventions 
 
 ## Overview
 
-`oxigeo-netcdf` provides comprehensive support for reading and writing NetCDF files, with emphasis on climate and weather data through CF (Climate and Forecast) Conventions compliance. The crate offers a Pure Rust implementation for NetCDF-3 files by default, with optional feature-gated support for NetCDF-4 (HDF5-based) format.
+`oxigeo-netcdf` provides comprehensive support for reading and writing NetCDF files, with emphasis on climate and weather data through CF (Climate and Forecast) Conventions compliance. NetCDF-4 (HDF5-based) files are read and written natively through the Pure Rust `oxinetcdf`/`oxih5` backend by default — no C dependencies, no feature flag required. Classic NetCDF-3 support is available as an optional Pure Rust feature (`netcdf3`).
 
 ### Features
 
-- ✅ **Pure Rust NetCDF-3** - Default Pure Rust implementation (no C dependencies)
+- ✅ **Pure Rust NetCDF-4** - Native HDF5-based NetCDF-4 support by default (no C dependencies, via `oxinetcdf`/`oxih5`)
+- ✅ **Pure Rust NetCDF-3** - Classic format support via the optional `netcdf3` feature (no C dependencies)
 - ✅ **CF Conventions 1.8** - Full support for Climate and Forecast metadata standards
+- ✅ **CF Axis Detection** - Classifies variables as X/Y/Z/T via `axis`/`standard_name`/`units`/`positive` attributes
 - ✅ **Multi-dimensional Arrays** - Fixed and unlimited dimensions
 - ✅ **Comprehensive Data Types** - i8, i16, i32, f32, f64, char (NetCDF-3); u8-u64, i64, strings (NetCDF-4)
 - ✅ **Attributes** - Global and variable-level attributes
 - ✅ **Coordinate Variables** - Automatic detection and handling
-- ✅ **Async I/O** - Optional async/await support via `tokio`
-- ✅ **Feature-gated NetCDF-4** - HDF5-based format with groups, compression, and unlimited dimensions
+- ✅ **CF-Aware Reads** - `read_f32_cf`/`read_f64_cf` apply `scale_factor`/`add_offset` unpacking and `_FillValue`/`missing_value` masking to `NaN`
 - ✅ **Error Handling** - Comprehensive error types with no unwrap() calls
 - ✅ **Format Detection** - Automatic NetCDF-3/4 format detection
 
@@ -28,22 +29,17 @@ Pure Rust NetCDF-3 driver for OxiGeo with CF (Climate and Forecast) conventions 
 Add to your `Cargo.toml`:
 
 ```toml
-# Pure Rust NetCDF-3 (default, recommended)
+# Pure Rust NetCDF-4 (HDF5-based) - the default, no C dependencies
 [dependencies]
 oxigeo-netcdf = "0.2"
+
+# With Pure Rust NetCDF-3 (classic format) support
+[dependencies]
+oxigeo-netcdf = { version = "0.2", features = ["netcdf3"] }
 
 # With CF conventions validation
 [dependencies]
 oxigeo-netcdf = { version = "0.2", features = ["cf_conventions"] }
-
-# With async I/O support
-[dependencies]
-oxigeo-netcdf = { version = "0.2", features = ["async"] }
-
-# With NetCDF-4/HDF5 support (requires system libraries)
-# WARNING: Not Pure Rust - requires libnetcdf and libhdf5
-[dependencies]
-oxigeo-netcdf = { version = "0.2", features = ["netcdf4"] }
 ```
 
 ## Quick Start
@@ -179,22 +175,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Async I/O (with `async` feature)
+### CF-Aware Reads (scale/offset unpacking + fill-value masking)
 
 ```rust
 use oxigeo_netcdf::NetCdfReader;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Read file asynchronously
-    let reader = NetCdfReader::open("large_dataset.nc")?;
-    let data = reader.read_f32_async("temperature").await?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let reader = NetCdfReader::open("packed_temperature.nc")?;
 
-    println!("Read {} temperature values", data.len());
+    // Applies scale_factor/add_offset unpacking (CF §8.1) and replaces
+    // _FillValue/missing_value elements with NaN (CF §2.5.1).
+    let temperature = reader.read_f32_cf("temperature")?;
+    println!("Physical values: {:?}", temperature);
 
     Ok(())
 }
 ```
+
+Note: the `async` Cargo feature (`oxigeo-core/async` + `tokio`) is defined for
+forward compatibility but does not yet add async read/write methods to
+`NetCdfReader`/`NetCdfWriter` — all I/O today is synchronous.
 
 ## API Overview
 
@@ -208,8 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `dimension` | Dimension management (fixed and unlimited) |
 | `variable` | Variable definitions, data types, and attributes |
 | `attribute` | Global and variable-level attributes |
-| `cf_conventions` | CF 1.8 compliance validation and utilities |
-| `netcdf4` | NetCDF-4/HDF5 format support (feature-gated) |
+| `cf_conventions` | CF 1.8 compliance validation and utilities (`cf_conventions` feature) |
+| `netcdf4` | Internal experimental HDF5 primitives used for test fixtures — **not** the real NetCDF-4 backend (that's `reader`/`writer`, via `oxinetcdf`) |
 
 ### Key Types
 
@@ -262,22 +262,22 @@ pub enum CfComplianceLevel {
 
 ## Supported Data Types
 
-### NetCDF-3 (Pure Rust, Default)
+### NetCDF-3 (Pure Rust, Optional `netcdf3` Feature)
 
 - **Integers**: i8, i16, i32
 - **Floating Point**: f32, f64
 - **Character**: char
 
-### NetCDF-4 (Feature-Gated, Requires `netcdf4` Feature)
+### NetCDF-4 (Pure Rust, Always Available)
 
-Additional types (with HDF5):
+Additional types (via the `oxinetcdf`/`oxih5` backend, no feature flag needed):
 - **Unsigned Integers**: u8, u16, u32, u64
 - **64-bit Integers**: i64
 - **Variable-length Strings**: String
 
 ## Format Features
 
-### NetCDF-3 (Pure Rust Default)
+### NetCDF-3 (Pure Rust, Optional `netcdf3` Feature)
 
 - ✅ Fixed dimensions
 - ✅ Single unlimited dimension
@@ -288,14 +288,13 @@ Additional types (with HDF5):
 - ⚠️ No groups
 - ⚠️ No user-defined types
 
-### NetCDF-4 (HDF5-Based, Feature-Gated)
+### NetCDF-4 (Pure Rust, Always Available)
 
-Additional features (requires `netcdf4` feature and system libraries):
-- ✅ HDF5 compression (deflate, shuffle, etc.)
-- ✅ Multiple unlimited dimensions
-- ✅ Group hierarchies
-- ✅ User-defined types
-- ✅ All NetCDF-3 features
+- ✅ Reading: dimension scales, coordinate variables, `DIMENSION_LIST` axis linkage
+- ✅ Reading: sub-groups flattened into `"<group>/<var>"` names (recursive)
+- ✅ Global and variable attributes, including `scale_factor`/`add_offset`/`_FillValue`
+- ✅ All NetCDF-3 data model features
+- ⚠️ Writing is currently flat (root group only) — the `oxinetcdf` writer backend has no group-scoped variable definition API yet
 
 ## CF Conventions Support
 
@@ -311,11 +310,10 @@ When `cf_conventions` feature is enabled:
 
 ## Performance Considerations
 
-- **Pure Rust NetCDF-3**: Comparable performance to C libraries (libnetcdf)
+- **Pure Rust**: Comparable performance to C libraries (libnetcdf/libhdf5) for typical read/write workloads
 - **Lazy Metadata Loading**: Metadata parsed on-demand
 - **Unlimited Dimensions**: May have slight performance overhead
 - **Large Files**: Consider chunked reading for memory efficiency
-- **Streaming API**: Available for processing large datasets without loading all in memory
 
 ## Error Handling
 
@@ -336,12 +334,10 @@ pub enum NetCdfError {
 
 ## Feature Flags
 
-- **`netcdf3`** (enabled by default) - Pure Rust NetCDF-3 support
-- **`cf_conventions`** - CF 1.8 compliance validation
-- **`async`** - Async I/O with tokio
-- **`netcdf4`** - NetCDF-4/HDF5 support (requires system libraries, NOT Pure Rust)
-- **`compression`** - Compression support (NetCDF-4 only)
 - **`std`** (enabled by default) - Standard library support
+- **`netcdf3`** - Pure Rust NetCDF-3 (classic/64-bit-offset) support via the `netcdf3` crate; NetCDF-4 needs no feature (always available)
+- **`cf_conventions`** - CF 1.8 compliance validation and axis/grid-mapping detection
+- **`async`** - Pulls in `tokio` and `oxigeo-core/async`; reserved for future async I/O (no async methods are exposed by this crate yet)
 - **`alloc`** - Allocation support for no_std environments
 
 ## COOLJAPAN Policies
@@ -355,35 +351,40 @@ pub enum NetCdfError {
 
 ## Advanced Usage
 
-### Reading NetCDF-4 Files (with feature-gate)
+### Reading NetCDF-4 Files
+
+No feature flag is needed — `NetCdfReader::open` auto-detects the file format and reads NetCDF-4/HDF5 files natively via the Pure Rust `oxinetcdf`/`oxih5` backend:
 
 ```rust
-#[cfg(feature = "netcdf4")]
-use oxigeo_netcdf::Nc4Reader;
+use oxigeo_netcdf::NetCdfReader;
 
-#[cfg(feature = "netcdf4")]
-fn read_hdf5() -> Result<()> {
-    let reader = Nc4Reader::open("compressed_data.nc4")?;
-    // NetCDF-4 specific operations
+fn read_hdf5() -> oxigeo_netcdf::Result<()> {
+    let reader = NetCdfReader::open("compressed_data.nc4")?;
+    for var in reader.variables().iter() {
+        println!("{}: {}", var.name(), var.data_type().name());
+    }
     Ok(())
 }
 ```
 
-### Compression Settings
+### Writing NetCDF-4 Files
 
 ```rust
-#[cfg(feature = "netcdf4")]
-use oxigeo_netcdf::{NetCdfWriter, CompressionFilter};
+use oxigeo_netcdf::{NetCdfWriter, NetCdfVersion};
 
-#[cfg(feature = "netcdf4")]
-fn write_compressed() -> Result<()> {
+fn write_nc4() -> oxigeo_netcdf::Result<()> {
     let mut writer = NetCdfWriter::create("output.nc4", NetCdfVersion::NetCdf4)?;
-    // Configure compression
-    let compression = CompressionFilter::deflate(9); // Maximum compression
-    // ... rest of implementation
+    // ... add_dimension / add_variable / write_f32, as in the Quick Start above
+    writer.close()?;
     Ok(())
 }
 ```
+
+> The crate also ships an internal, experimental `netcdf4` module
+> (`Nc4Reader`/`Nc4Writer`) used to build low-level test fixtures. It is
+> explicitly **not** for real use — `Nc4Reader::open` always returns
+> `NetCdf4NotAvailable` — and is not re-exported at the crate root. Use
+> `NetCdfReader`/`NetCdfWriter` above instead.
 
 ## Examples
 
@@ -423,44 +424,35 @@ Key documentation:
 
 ## Limitations
 
-### Pure Rust Mode (NetCDF-3)
+### NetCDF-4 (default, always available)
 
-When using the default Pure Rust implementation:
-
-- Single unlimited dimension only (NetCDF-3 Classic/64-bit limitation)
-- No HDF5-based compression
-- No group hierarchies
-- Limited to NetCDF-3 data types
+- Writing is flat (root group only) — the `oxinetcdf` writer backend has no group-scoped variable definition API yet
+- No variable slicing/hyperslab reads yet — `read_f32`/`read_f64`/`read_i32` always materialize the full variable
 - No user-defined types
 
-### To Use NetCDF-4/HDF5 Features
+### NetCDF-3 (optional `netcdf3` feature)
 
-Enable the `netcdf4` feature (requires C dependencies):
+- Single unlimited dimension only (NetCDF-3 Classic/64-bit limitation)
+- No compression
+- No groups
+- Limited to NetCDF-3 data types (i8/i16/i32/f32/f64/char)
+- No user-defined types
 
-```toml
-oxigeo-netcdf = { version = "0.2", features = ["netcdf4"] }
-```
-
-**Prerequisites**:
-- libnetcdf ≥ 4.0
-- libhdf5 ≥ 1.8
-
-**Note**: Enabling this violates the COOLJAPAN Pure Rust policy.
+Both formats are 100% Pure Rust — there are no C dependencies (no libnetcdf, no libhdf5) in any feature combination of this crate.
 
 ## Integration with OxiGeo
 
 This driver integrates seamlessly with the OxiGeo ecosystem:
 
 ```rust
-use oxigeo_core::gdal::Driver;
 use oxigeo_netcdf::NetCdfReader;
 
-fn main() -> Result<()> {
-    // Register NetCDF driver with OxiGeo
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reader = NetCdfReader::open("climate_data.nc")?;
 
     // Work with dimensions, variables, and attributes
-    // through the unified OxiGeo interface
+    // through the same Dimensions/Variables/Attributes types used
+    // across other OxiGeo format drivers.
     Ok(())
 }
 ```
@@ -470,12 +462,12 @@ fn main() -> Result<()> {
 | Feature | oxigeo-netcdf | netCDF-C | netcdf4 crate |
 |---------|---|---|---|
 | Pure Rust (default) | ✅ | ❌ | ❌ |
-| NetCDF-3 | ✅ | ✅ | ✅ |
-| NetCDF-4/HDF5 | ✅ (opt-in) | ✅ | ✅ |
+| NetCDF-3 | ✅ (opt-in) | ✅ | ✅ |
+| NetCDF-4/HDF5 | ✅ (default) | ✅ | ✅ |
 | CF Conventions | ✅ | ⚠️ | ⚠️ |
 | No unsafe code* | ✅ | ❌ | ⚠️ |
 | Zero-copy reading | ✅ | ✅ | ✅ |
-| Async I/O | ✅ | ❌ | ❌ |
+| Async I/O | ⚠️ (feature reserved, not yet exposed) | ❌ | ❌ |
 
 *In Pure Rust mode (default)
 

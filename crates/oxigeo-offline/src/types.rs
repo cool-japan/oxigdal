@@ -206,6 +206,31 @@ pub enum RecordSource {
     Merged,
 }
 
+impl RecordSource {
+    /// Stable integer code for persistence (e.g. SQLite `source` column).
+    pub fn to_code(self) -> i64 {
+        match self {
+            Self::Local => 0,
+            Self::Remote => 1,
+            Self::Merged => 2,
+        }
+    }
+
+    /// Parse a persisted integer code back into a [`RecordSource`].
+    ///
+    /// Unknown codes (e.g. from a newer schema version) fall back to
+    /// [`RecordSource::Local`] rather than failing the read, since this is
+    /// a best-effort classification field, not load-bearing for
+    /// correctness.
+    pub fn from_code(code: i64) -> Self {
+        match code {
+            1 => Self::Remote,
+            2 => Self::Merged,
+            _ => Self::Local,
+        }
+    }
+}
+
 /// Sync status of a record
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncStatus {
@@ -220,6 +245,34 @@ pub enum SyncStatus {
     Failed,
     /// Conflict detected
     Conflict,
+}
+
+impl SyncStatus {
+    /// Stable integer code for persistence (e.g. SQLite `sync_status` column).
+    pub fn to_code(self) -> i64 {
+        match self {
+            Self::Pending => 0,
+            Self::Syncing => 1,
+            Self::Synced => 2,
+            Self::Failed => 3,
+            Self::Conflict => 4,
+        }
+    }
+
+    /// Parse a persisted integer code back into a [`SyncStatus`].
+    ///
+    /// Unknown codes fall back to [`SyncStatus::Pending`] rather than
+    /// failing the read (see [`RecordSource::from_code`] for the same
+    /// rationale).
+    pub fn from_code(code: i64) -> Self {
+        match code {
+            1 => Self::Syncing,
+            2 => Self::Synced,
+            3 => Self::Failed,
+            4 => Self::Conflict,
+            _ => Self::Pending,
+        }
+    }
 }
 
 /// An operation to be synced
@@ -480,5 +533,41 @@ mod tests {
 
         let conflict = Conflict::new(local, remote, None);
         assert_eq!(conflict.conflict_type, ConflictType::InsertInsert);
+    }
+
+    #[test]
+    fn test_record_source_code_roundtrip() {
+        for source in [
+            RecordSource::Local,
+            RecordSource::Remote,
+            RecordSource::Merged,
+        ] {
+            let code = source.to_code();
+            assert_eq!(RecordSource::from_code(code), source);
+        }
+    }
+
+    #[test]
+    fn test_record_source_unknown_code_falls_back_to_local() {
+        assert_eq!(RecordSource::from_code(999), RecordSource::Local);
+    }
+
+    #[test]
+    fn test_sync_status_code_roundtrip() {
+        for status in [
+            SyncStatus::Pending,
+            SyncStatus::Syncing,
+            SyncStatus::Synced,
+            SyncStatus::Failed,
+            SyncStatus::Conflict,
+        ] {
+            let code = status.to_code();
+            assert_eq!(SyncStatus::from_code(code), status);
+        }
+    }
+
+    #[test]
+    fn test_sync_status_unknown_code_falls_back_to_pending() {
+        assert_eq!(SyncStatus::from_code(999), SyncStatus::Pending);
     }
 }

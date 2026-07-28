@@ -1,7 +1,7 @@
 # TODO: oxigeo-stac
 
 > **Purpose:** STAC (SpatioTemporal Asset Catalog) 1.0.0 support for OxiGeo — Pure Rust cloud-native geospatial catalog.
-> **Status (2026-05-16):** ~7,700 Rust LoC · 372 tests · 0 in-source `TODO:` markers.
+> **Status (2026-07-28):** ~8,753 Rust LoC · 415 tests (all-features; 369 with default-features only) · 0 in-source `TODO:` markers.
 > **Roadmap:** v0.1.7 → v0.2.0 (current slice) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
@@ -83,4 +83,4 @@
 - [x] Add CQL2-JSON filter support (verified 2026-05-16: `src/cql2.rs` `Cql2Filter` enum with `#[serde(tag = "op")]`, full spatial/temporal operator coverage)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

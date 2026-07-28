@@ -77,7 +77,9 @@ pub use unstructured::{
     NoOpFineTune, PruningMask, UnstructuredPruner, WeightStatistics, WeightTensor,
 };
 
-use crate::error::{MlError, Result};
+use crate::error::{MlError, ModelError, Result};
+use crate::optimization::onnx_weights;
+use std::cmp::Ordering;
 use std::path::Path;
 use tracing::{debug, info};
 
@@ -295,35 +297,98 @@ pub fn structured_pruning<P: AsRef<Path>>(
 
     debug!("Applying structured pruning");
 
-    // For structured pruning, we would need to:
-    // 1. Load the ONNX model
-    // 2. Analyze each convolutional layer
-    // 3. Compute channel importance scores
-    // 4. Remove low-importance channels
-    // 5. Adjust subsequent layers
-    // 6. Save modified model
+    // Structured pruning removes whole output channels/filters. Physically
+    // resizing weight tensors would require propagating the new shapes through
+    // every downstream consumer (Conv -> BN -> next Conv, etc.), which is a
+    // graph-wide transformation. Instead we perform *structured sparsity*: the
+    // lowest-importance output channels (by L2 norm) of every ≥2-D weight
+    // initializer are zeroed in place. The output remains a byte-for-byte valid
+    // ONNX model and the reported statistics reflect the real weights that were
+    // zeroed — no fabricated parameter counts.
+    let mut file_data = std::fs::read(input)?;
+    let initializers = onnx_weights::parse_float_initializers(&file_data)?;
 
-    // Since full ONNX manipulation requires more infrastructure,
-    // we copy the model and return expected statistics.
-    // In production, use ONNX Runtime's model manipulation APIs.
+    let mut original_params = 0usize;
+    let mut kept_params = 0usize;
+    let mut pruned_tensors = 0usize;
 
-    std::fs::copy(input, output)?;
+    for init in &initializers {
+        let shape = init.normalized_shape();
+        if shape.len() < 2 {
+            // 1-D tensors (biases, scales) have no channel structure.
+            continue;
+        }
+        let out_channels = shape[0];
+        if out_channels == 0 {
+            continue;
+        }
+        let channel_size = init.values.len() / out_channels;
+        if channel_size == 0 || out_channels * channel_size != init.values.len() {
+            continue;
+        }
 
-    // Estimate statistics based on config
-    // In real implementation, this would come from actual pruning
-    let estimated_original_params = 1_000_000; // Would be read from model
-    let estimated_pruned_params =
-        (estimated_original_params as f32 * (1.0 - config.sparsity_target)) as usize;
+        // L2 norm of each output channel.
+        let mut norms: Vec<(usize, f32)> = (0..out_channels)
+            .map(|c| {
+                let start = c * channel_size;
+                let norm = init.values[start..start + channel_size]
+                    .iter()
+                    .map(|w| w * w)
+                    .sum::<f32>()
+                    .sqrt();
+                (c, norm)
+            })
+            .collect();
+        norms.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+        let num_prune_channels =
+            ((out_channels as f32 * config.sparsity_target).round() as usize).min(out_channels);
+
+        let mut keep = vec![true; init.values.len()];
+        for (channel, _) in norms.iter().take(num_prune_channels) {
+            let start = channel * channel_size;
+            for slot in keep.iter_mut().skip(start).take(channel_size) {
+                *slot = false;
+            }
+        }
+
+        let kept = keep.iter().filter(|&&k| k).count();
+        onnx_weights::zero_values_in_place(&mut file_data, init, &keep);
+
+        original_params += init.values.len();
+        kept_params += kept;
+        pruned_tensors += 1;
+    }
+
+    if pruned_tensors == 0 {
+        return Err(ModelError::InvalidFormat {
+            message: "structured pruning found no multi-dimensional float32 weight tensors \
+                      (external weights or unsupported encoding)"
+                .to_string(),
+        }
+        .into());
+    }
+
+    std::fs::write(output, &file_data)?;
+
+    let actual_sparsity = if original_params > 0 {
+        1.0 - (kept_params as f32 / original_params as f32)
+    } else {
+        0.0
+    };
 
     info!(
-        "Structured pruning applied: {} -> {} parameters",
-        estimated_original_params, estimated_pruned_params
+        "Structured pruning applied to {} tensor(s): {} -> {} parameters ({:.1}% sparsity)",
+        pruned_tensors,
+        original_params,
+        kept_params,
+        actual_sparsity * 100.0
     );
 
     Ok(PruningStats {
-        original_params: estimated_original_params,
-        pruned_params: estimated_pruned_params,
-        actual_sparsity: config.sparsity_target,
+        original_params,
+        pruned_params: kept_params,
+        actual_sparsity,
     })
 }
 
@@ -375,14 +440,6 @@ pub fn unstructured_pruning<P: AsRef<Path>>(
         config.strategy
     );
 
-    // Read the input file to get its size (represents model weights)
-    let file_data = std::fs::read(input)?;
-    let file_size = file_data.len();
-
-    // For ONNX models, we would extract weights from the protobuf structure
-    // Here we use a simulated approach that works with any binary file
-    // In production, use ort crate for proper ONNX manipulation
-
     // Determine importance method based on strategy
     let importance_method = match config.strategy {
         PruningStrategy::Magnitude => ImportanceMethod::L1Norm,
@@ -395,29 +452,54 @@ pub fn unstructured_pruning<P: AsRef<Path>>(
         }
     };
 
-    // Create simulated weight tensors from file data
-    // In real implementation, this would parse ONNX protobuf
-    let weights = extract_simulated_weights(&file_data, file_size);
-    let original_params: usize = weights.iter().map(|w| w.numel()).sum();
+    // Parse the real ONNX model and extract its actual float32 weight
+    // initializers. This validates that the input is a genuine ONNX model and
+    // never touches non-weight bytes.
+    let mut file_data = std::fs::read(input)?;
+    let initializers = onnx_weights::parse_float_initializers(&file_data)?;
 
-    // Create pruner with configuration
+    if initializers.is_empty() {
+        return Err(ModelError::InvalidFormat {
+            message: "no inline float32 weight initializers found to prune \
+                      (external weights or unsupported encoding)"
+                .to_string(),
+        }
+        .into());
+    }
+
+    // Build weight tensors from the real initializer data.
+    let weights: Vec<WeightTensor> = initializers
+        .iter()
+        .map(|init| {
+            WeightTensor::new(
+                init.values.clone(),
+                init.normalized_shape(),
+                init.name.clone(),
+            )
+        })
+        .collect();
+    let original_params: usize = weights.iter().map(WeightTensor::numel).sum();
+
+    // Create pruner with configuration and apply global magnitude pruning
+    // across all weight tensors.
     let mut pruner = UnstructuredPruner::new(config.clone(), importance_method);
+    let (_pruned_weights, masks) = pruner.prune_tensors_global(&weights)?;
 
-    // Apply global pruning across all weight tensors
-    let (pruned_weights, masks) = pruner.prune_tensors_global(&weights)?;
-
-    // Compute actual statistics
-    let pruned_params: usize = masks.iter().map(|m| m.num_kept()).sum();
+    // Compute actual statistics from the real masks.
+    let pruned_params: usize = masks.iter().map(PruningMask::num_kept).sum();
     let actual_sparsity = if original_params > 0 {
         1.0 - (pruned_params as f32 / original_params as f32)
     } else {
         0.0
     };
 
-    // Write the modified model
-    // In real implementation, this would serialize modified ONNX protobuf
-    let modified_data = serialize_pruned_weights(&file_data, &pruned_weights, &masks);
-    std::fs::write(output, modified_data)?;
+    // Write the pruned weights back into the ONNX file in place. Because we only
+    // zero existing float values (no field length changes), the output remains a
+    // valid, loadable ONNX model.
+    for (init, mask) in initializers.iter().zip(masks.iter()) {
+        onnx_weights::zero_values_in_place(&mut file_data, init, &mask.mask);
+    }
+    std::fs::write(output, &file_data)?;
 
     info!(
         "Unstructured pruning complete: {} -> {} parameters ({:.1}% sparsity)",
@@ -431,100 +513,6 @@ pub fn unstructured_pruning<P: AsRef<Path>>(
         pruned_params,
         actual_sparsity,
     })
-}
-
-/// Extracts simulated weight tensors from file data
-///
-/// In production, this would parse the ONNX protobuf format to extract
-/// actual weight tensors. This simulated version creates weight tensors
-/// from the file bytes for demonstration purposes.
-fn extract_simulated_weights(file_data: &[u8], file_size: usize) -> Vec<WeightTensor> {
-    // Estimate number of float parameters (4 bytes per float)
-    // Reserve some space for model metadata (headers, operators, etc.)
-    let metadata_overhead = file_size.min(1024); // At least 1KB for metadata
-    let weight_bytes = file_size.saturating_sub(metadata_overhead);
-    let num_floats = weight_bytes / 4;
-
-    if num_floats == 0 {
-        return Vec::new();
-    }
-
-    // Convert bytes to simulated float weights
-    // In real implementation, this would read actual float values from ONNX tensors
-    let mut weights: Vec<f32> = Vec::with_capacity(num_floats);
-    for chunk in file_data.chunks(4) {
-        if chunk.len() == 4 {
-            // Convert bytes to a value in reasonable weight range [-1, 1]
-            let byte_sum: u32 = chunk.iter().map(|&b| b as u32).sum();
-            let normalized = (byte_sum as f32 / 1020.0) * 2.0 - 1.0; // 255*4 = 1020 max
-            weights.push(normalized);
-        }
-    }
-
-    // Split into multiple "layers" for realistic simulation
-    // Real ONNX models have multiple weight tensors
-    let num_layers = ((weights.len() as f32).sqrt() as usize).clamp(1, 10);
-    let weights_per_layer = weights.len() / num_layers;
-
-    let mut tensors = Vec::with_capacity(num_layers);
-    for (i, chunk) in weights.chunks(weights_per_layer).enumerate() {
-        if !chunk.is_empty() {
-            // Create realistic layer shapes
-            let layer_size = chunk.len();
-            let dim1 = (layer_size as f32).sqrt() as usize;
-            let dim2 = layer_size.checked_div(dim1).unwrap_or(1);
-            let shape = if dim1 * dim2 == layer_size {
-                vec![dim1, dim2]
-            } else {
-                vec![layer_size]
-            };
-
-            tensors.push(WeightTensor::new(
-                chunk.to_vec(),
-                shape,
-                format!("layer_{}.weight", i),
-            ));
-        }
-    }
-
-    tensors
-}
-
-/// Serializes pruned weights back to file format
-///
-/// In production, this would serialize the modified weights back to ONNX protobuf.
-/// This simulated version maintains file structure while zeroing pruned weights.
-fn serialize_pruned_weights(
-    original_data: &[u8],
-    pruned_weights: &[WeightTensor],
-    masks: &[PruningMask],
-) -> Vec<u8> {
-    // Start with a copy of original data
-    let mut result = original_data.to_vec();
-
-    // Calculate the offset where weights begin (after metadata)
-    let metadata_overhead = original_data.len().min(1024);
-    let mut offset = metadata_overhead;
-
-    // Apply masks to the byte representation
-    // This is a simplified approach - real ONNX manipulation would be more complex
-    for (tensor, mask) in pruned_weights.iter().zip(masks.iter()) {
-        for (i, &keep) in mask.mask.iter().enumerate() {
-            if !keep {
-                // Zero out the bytes for this weight (4 bytes per float)
-                let byte_offset = offset + i * 4;
-                if byte_offset + 4 <= result.len() {
-                    result[byte_offset] = 0;
-                    result[byte_offset + 1] = 0;
-                    result[byte_offset + 2] = 0;
-                    result[byte_offset + 3] = 0;
-                }
-            }
-        }
-        offset += tensor.numel() * 4;
-    }
-
-    result
 }
 
 /// Prunes weight tensors directly (in-memory operation)

@@ -11,6 +11,8 @@
 
 pub mod builder;
 pub mod feature_writer;
+pub mod rtree_writer;
 pub mod schema_emitter;
 
 pub use builder::GeoPackageBuilder;
+pub use schema_emitter::CustomSrs;

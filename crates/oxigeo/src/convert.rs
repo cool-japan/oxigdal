@@ -42,6 +42,7 @@ fn is_raster(fmt: DatasetFormat) -> bool {
             | DatasetFormat::PMTiles
             | DatasetFormat::MBTiles
             | DatasetFormat::Copc
+            | DatasetFormat::Las
     )
 }
 
@@ -308,6 +309,7 @@ const ALL_FORMATS: &[DatasetFormat] = &[
     DatasetFormat::PMTiles,
     DatasetFormat::MBTiles,
     DatasetFormat::Copc,
+    DatasetFormat::Las,
 ];
 
 /// Check whether a conversion from `from` to `to` is supported.
@@ -487,13 +489,14 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_copc_laz_ext() {
-        assert_eq!(detect_format("data.laz").ok(), Some(DatasetFormat::Copc));
+    fn test_detect_plain_laz_ext() {
+        // Plain `.laz` is not COPC — only the compound `.copc.laz` is.
+        assert_eq!(detect_format("data.laz").ok(), Some(DatasetFormat::Las));
     }
 
     #[test]
-    fn test_detect_copc_las_ext() {
-        assert_eq!(detect_format("data.las").ok(), Some(DatasetFormat::Copc));
+    fn test_detect_plain_las_ext() {
+        assert_eq!(detect_format("data.las").ok(), Some(DatasetFormat::Las));
     }
 
     #[test]

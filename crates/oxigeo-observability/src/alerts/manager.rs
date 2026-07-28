@@ -1,20 +1,19 @@
 //! Main alert engine and manager
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::error::{ObservabilityError, Result};
-use super::*;
-use super::evaluator::{ConditionEvaluator, MetricProvider};
 use super::channels::NotificationSender;
-use super::silence::SilenceManager;
-use super::history::{AlertHistory, AlertHistoryEvent, AlertHistoryEventType};
+use super::evaluator::{ConditionEvaluator, MetricProvider};
 use super::grouping::AlertGrouper;
-use super::rules::AlertRuleDefinition;
+use super::history::{AlertHistory, AlertHistoryEvent, AlertHistoryEventType};
 use super::instance::AlertInstance;
-use super::{AlertLevel, AlertState};
+use super::rules::AlertRuleDefinition;
+use super::silence::SilenceManager;
+use super::*;
+use crate::error::{ObservabilityError, Result};
 /// Main alert engine coordinating all alert operations.
 pub struct AlertEngine<P: MetricProvider> {
     /// Alert rules.
@@ -80,7 +79,11 @@ impl<P: MetricProvider + 'static> AlertEngine<P> {
             }
 
             if let Some(ref condition) = rule.condition {
-                let condition_met = self.evaluator.evaluate(condition);
+                // Pass the rule's static labels as context so a
+                // `ConditionExpression::LabelMatch` clause (e.g. "only fire
+                // for env=production") can actually be evaluated instead of
+                // always matching.
+                let condition_met = self.evaluator.evaluate_with_labels(condition, &rule.labels);
                 let alert = self.process_rule_evaluation(&rule, condition_met).await?;
                 if let Some(a) = alert {
                     processed_alerts.push(a);
@@ -96,77 +99,92 @@ impl<P: MetricProvider + 'static> AlertEngine<P> {
         rule: &AlertRuleDefinition,
         condition_met: bool,
     ) -> Result<Option<AlertInstance>> {
-        let mut alerts = self.alerts.write();
-        let alert = alerts
-            .entry(rule.id.clone())
-            .or_insert_with(|| AlertInstance::from_rule(rule));
+        // Mutate the alert instance while holding the write lock, then release
+        // the guard before performing any notification I/O. Holding a
+        // `parking_lot` guard across an `.await` risks deadlocks and blocks the
+        // executor thread, so we snapshot the alert and drop the lock first.
+        let (alert_snapshot, should_notify) = {
+            let mut alerts = self.alerts.write();
+            let alert = alerts
+                .entry(rule.id.clone())
+                .or_insert_with(|| AlertInstance::from_rule(rule));
 
-        let previous_state = alert.state;
+            let previous_state = alert.state;
 
-        if condition_met {
-            match alert.state {
-                AlertState::Inactive | AlertState::Resolved => {
-                    if rule.pending_duration.is_zero() {
-                        alert.transition_to_firing();
-                        self.history.record(AlertHistoryEvent::new(
-                            &alert.id,
-                            AlertHistoryEventType::Firing,
-                        ));
-                    } else {
-                        alert.transition_to_pending();
-                        self.history.record(AlertHistoryEvent::new(
-                            &alert.id,
-                            AlertHistoryEventType::Pending,
-                        ));
-                    }
-                }
-                AlertState::Pending => {
-                    if let Some(pending_at) = alert.pending_at {
-                        let elapsed = Utc::now() - pending_at;
-                        if elapsed >= Duration::from_std(rule.pending_duration).unwrap_or(Duration::zero()) {
+            if condition_met {
+                match alert.state {
+                    AlertState::Inactive | AlertState::Resolved => {
+                        if rule.pending_duration.is_zero() {
                             alert.transition_to_firing();
                             self.history.record(AlertHistoryEvent::new(
                                 &alert.id,
                                 AlertHistoryEventType::Firing,
                             ));
+                        } else {
+                            alert.transition_to_pending();
+                            self.history.record(AlertHistoryEvent::new(
+                                &alert.id,
+                                AlertHistoryEventType::Pending,
+                            ));
                         }
                     }
+                    AlertState::Pending => {
+                        if let Some(pending_at) = alert.pending_at {
+                            let elapsed = Utc::now() - pending_at;
+                            if elapsed
+                                >= Duration::from_std(rule.pending_duration)
+                                    .unwrap_or(Duration::zero())
+                            {
+                                alert.transition_to_firing();
+                                self.history.record(AlertHistoryEvent::new(
+                                    &alert.id,
+                                    AlertHistoryEventType::Firing,
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-        } else if alert.state.is_active() {
-            alert.transition_to_resolved();
-            self.history.record(AlertHistoryEvent::new(
-                &alert.id,
-                AlertHistoryEventType::Resolved,
-            ));
-        }
-
-        // Check silencing
-        if self.silence_manager.is_silenced(alert) {
-            alert.transition_to_silenced();
-            self.history.record(AlertHistoryEvent::new(
-                &alert.id,
-                AlertHistoryEventType::Silenced,
-            ));
-        }
-
-        // Update grouping
-        self.grouper.add_alert(alert);
-
-        // Send notifications on state change
-        if previous_state != alert.state && alert.state.requires_attention() {
-            let notifier = self.notifier.read();
-            if let Err(e) = notifier.send(alert).await {
-                self.history.record(
-                    AlertHistoryEvent::new(&alert.id, AlertHistoryEventType::NotificationFailed {
-                        channel: "all".to_string(),
-                        error: e.to_string(),
-                    })
-                );
-            } else {
+            } else if alert.state.is_active() {
+                alert.transition_to_resolved();
                 self.history.record(AlertHistoryEvent::new(
                     &alert.id,
+                    AlertHistoryEventType::Resolved,
+                ));
+            }
+
+            // Check silencing
+            if self.silence_manager.is_silenced(alert) {
+                alert.transition_to_silenced();
+                self.history.record(AlertHistoryEvent::new(
+                    &alert.id,
+                    AlertHistoryEventType::Silenced,
+                ));
+            }
+
+            // Update grouping
+            self.grouper.add_alert(alert);
+
+            let should_notify = previous_state != alert.state && alert.state.requires_attention();
+            (alert.clone(), should_notify)
+        };
+
+        // Send notifications on state change, with no lock held across the
+        // await. The notifier is cloned out under a short-lived read guard so
+        // the guard itself is dropped before the network I/O begins.
+        if should_notify {
+            let notifier = self.notifier.read().clone();
+            if let Err(e) = notifier.send(&alert_snapshot).await {
+                self.history.record(AlertHistoryEvent::new(
+                    &alert_snapshot.id,
+                    AlertHistoryEventType::NotificationFailed {
+                        channel: "all".to_string(),
+                        error: e.to_string(),
+                    },
+                ));
+            } else {
+                self.history.record(AlertHistoryEvent::new(
+                    &alert_snapshot.id,
                     AlertHistoryEventType::NotificationSent {
                         channel: "all".to_string(),
                     },
@@ -174,7 +192,7 @@ impl<P: MetricProvider + 'static> AlertEngine<P> {
             }
         }
 
-        Ok(Some(alert.clone()))
+        Ok(Some(alert_snapshot))
     }
 
     /// Get all active alerts.
@@ -229,4 +247,3 @@ impl<P: MetricProvider + 'static> AlertEngine<P> {
         self.silence_manager.active_silences()
     }
 }
-

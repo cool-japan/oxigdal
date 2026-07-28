@@ -99,11 +99,6 @@ pub enum SourceError {
     #[error("Source exhausted")]
     Exhausted,
 
-    /// Kafka-specific error
-    #[cfg(feature = "kafka")]
-    #[error("Kafka error: {0}")]
-    Kafka(String),
-
     /// STAC-specific error
     #[cfg(feature = "stac")]
     #[error("STAC error: {0}")]
@@ -143,11 +138,6 @@ pub enum SinkError {
     /// Sink full (backpressure)
     #[error("Sink full, backpressure applied")]
     Full,
-
-    /// Kafka-specific error
-    #[cfg(feature = "kafka")]
-    #[error("Kafka error: {0}")]
-    Kafka(String),
 
     /// Database-specific error
     #[cfg(feature = "postgres")]
@@ -355,20 +345,6 @@ pub enum SchedulerError {
 }
 
 // Conversion implementations for optional feature errors
-#[cfg(feature = "kafka")]
-impl From<rdkafka::error::KafkaError> for SourceError {
-    fn from(err: rdkafka::error::KafkaError) -> Self {
-        Self::Kafka(err.to_string())
-    }
-}
-
-#[cfg(feature = "kafka")]
-impl From<rdkafka::error::KafkaError> for SinkError {
-    fn from(err: rdkafka::error::KafkaError) -> Self {
-        Self::Kafka(err.to_string())
-    }
-}
-
 #[cfg(feature = "postgres")]
 impl From<tokio_postgres::Error> for SourceError {
     fn from(err: tokio_postgres::Error) -> Self {

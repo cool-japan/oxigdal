@@ -18,6 +18,11 @@ pub(crate) struct PhysicalMemory {
     /// Memory currently available for (re)use.
     pub available: u64,
     /// Memory currently in use.
+    ///
+    /// Only read on iOS (`ios::memory`); allowed dead on other platform
+    /// feature combinations (e.g. `--features android` alone) since it is
+    /// still a genuine real reading, just not yet consumed by every caller.
+    #[cfg_attr(not(feature = "ios"), allow(dead_code))]
     pub used: u64,
     /// Resident memory of the current process (0 if the OS could not report it).
     pub process: u64,

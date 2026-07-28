@@ -333,12 +333,28 @@ pub fn field_encoding(field: &Field) -> Option<EncodingType> {
 
 /// Returns the coordinate dimensionality declared by the field.
 ///
-/// Inferred from the FixedSizeList arity of the (possibly nested) coord array.
-/// Returns `None` for WKB or any field that cannot be classified.
+/// Resolved from the FixedSizeList of the (possibly nested) coord array.  The
+/// child field's *name* (`xy` / `xyz` / `xym` / `xyzm`) is consulted first so
+/// that arity-3 columns are correctly split into `Xyz` vs `Xym`; only when the
+/// name is absent or unrecognised does this fall back to arity-based inference
+/// (`3 → Xyz`).  Returns `None` for WKB or any field that cannot be classified.
 pub fn field_coord_dim(field: &Field) -> Option<CoordDim> {
     fn drill(dt: &DataType) -> Option<CoordDim> {
         match dt {
-            DataType::FixedSizeList(_, n) => CoordDim::from_arity(*n as usize),
+            DataType::FixedSizeList(element, n) => {
+                let arity = *n as usize;
+                let by_name = match element.name().as_str() {
+                    "xy" => Some(CoordDim::Xy),
+                    "xyz" => Some(CoordDim::Xyz),
+                    "xym" => Some(CoordDim::Xym),
+                    "xyzm" => Some(CoordDim::Xyzm),
+                    _ => None,
+                };
+                match by_name {
+                    Some(dim) if dim.arity() == arity => Some(dim),
+                    _ => CoordDim::from_arity(arity),
+                }
+            }
             DataType::List(inner) => drill(inner.data_type()),
             _ => None,
         }
@@ -439,6 +455,31 @@ mod tests {
             Some(EncodingType::Polygon)
         );
         assert_eq!(field_coord_dim(geo_field.field()), Some(CoordDim::Xyz));
+    }
+
+    #[test]
+    fn test_field_coord_dim_disambiguates_xym() {
+        // Arity 3 is shared by XYZ and XYM; the child field name must decide.
+        let xyz = GeoArrowField::new_with_dim(
+            "geom",
+            GeometryColumnMetadata::new_native(EncodingType::Point),
+            CoordDim::Xyz,
+        );
+        assert_eq!(field_coord_dim(xyz.field()), Some(CoordDim::Xyz));
+
+        let xym = GeoArrowField::new_with_dim(
+            "geom",
+            GeometryColumnMetadata::new_native(EncodingType::LineString),
+            CoordDim::Xym,
+        );
+        assert_eq!(field_coord_dim(xym.field()), Some(CoordDim::Xym));
+
+        let xyzm = GeoArrowField::new_with_dim(
+            "geom",
+            GeometryColumnMetadata::new_native(EncodingType::Point),
+            CoordDim::Xyzm,
+        );
+        assert_eq!(field_coord_dim(xyzm.field()), Some(CoordDim::Xyzm));
     }
 
     #[test]

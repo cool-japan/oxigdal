@@ -118,6 +118,35 @@ pub fn execute(args: FillNodataArgs, format: OutputFormat) -> Result<()> {
         .or(raster_info.no_data_value)
         .ok_or_else(|| anyhow::anyhow!("NoData value not specified and not found in file"))?;
 
+    // Optional mask band: when supplied, pixel validity is defined by that band
+    // (mask value 0 → invalid / to be filled, non-zero → valid), following GDAL
+    // FillNodata's mask-band convention, instead of comparing the target band
+    // to the NoData value.
+    let valid_mask: Option<Vec<bool>> = match args.mask_band {
+        Some(mask_band) => {
+            if mask_band >= raster_info.bands {
+                anyhow::bail!(
+                    "Mask band {} out of range (file has {} bands)",
+                    mask_band,
+                    raster_info.bands
+                );
+            }
+            let mask_buffer = raster::read_band_region(
+                &args.input,
+                mask_band,
+                0,
+                0,
+                raster_info.width,
+                raster_info.height,
+            )
+            .with_context(|| format!("Failed to read mask band {mask_band}"))?;
+            let mask_values =
+                raster_buffer_to_f64(&mask_buffer).context("Failed to decode mask band values")?;
+            Some(mask_values.iter().map(|&v| v != 0.0).collect())
+        }
+        None => None,
+    };
+
     // Fill NoData
     let pb = progress::create_spinner("Filling NoData values");
 
@@ -128,6 +157,7 @@ pub fn execute(args: FillNodataArgs, format: OutputFormat) -> Result<()> {
         no_data_value,
         args.max_distance,
         args.smoothing_iterations,
+        valid_mask.as_deref(),
     )
     .context("Failed to fill NoData")?;
 
@@ -182,19 +212,40 @@ fn fill_nodata(
     no_data_value: f64,
     max_distance: usize,
     smoothing_iterations: usize,
+    valid_mask: Option<&[bool]>,
 ) -> Result<(RasterBuffer, usize)> {
     // Convert input data to f64 values
     let input_values = raster_buffer_to_f64(input_band)?;
 
+    if let Some(mask) = valid_mask
+        && mask.len() != input_values.len()
+    {
+        anyhow::bail!(
+            "mask band pixel count ({}) does not match target band ({})",
+            mask.len(),
+            input_values.len()
+        );
+    }
+
     let mut output_values = input_values.clone();
     let mut pixels_filled = 0;
+    let mut filled_flags = vec![false; width * height];
 
-    // Identify NoData pixels
+    // Per-pixel validity: from the mask band when provided, otherwise from the
+    // NoData comparison on the target band itself.
+    let is_valid = |idx: usize| -> bool {
+        match valid_mask {
+            Some(mask) => mask[idx],
+            None => (input_values[idx] - no_data_value).abs() > f64::EPSILON,
+        }
+    };
+
+    // Identify pixels to fill (invalid pixels).
     let mut nodata_pixels = Vec::new();
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
-            if (input_values[idx] - no_data_value).abs() < f64::EPSILON {
+            if !is_valid(idx) {
                 nodata_pixels.push((x, y, idx));
             }
         }
@@ -222,8 +273,8 @@ fn fill_nodata(
                         let nidx = (ny as usize) * width + (nx as usize);
                         let nvalue = input_values[nidx];
 
-                        // Check if valid pixel
-                        if (nvalue - no_data_value).abs() > f64::EPSILON {
+                        // Check if valid pixel (mask band or NoData comparison)
+                        if is_valid(nidx) {
                             let dist = ((dx * dx + dy * dy) as f64).sqrt();
                             let weight = 1.0 / (dist + 1.0);
 
@@ -242,16 +293,18 @@ fn fill_nodata(
 
         if found_valid && sum_weights > 0.0 {
             output_values[idx] = sum_values / sum_weights;
+            filled_flags[idx] = true;
             pixels_filled += 1;
         }
     }
 
-    // Apply smoothing iterations
+    // Apply smoothing iterations over the pixels we actually filled, averaging
+    // only over neighbours that carry real data (originally valid or filled).
     for _ in 0..smoothing_iterations {
         let mut smoothed = output_values.clone();
 
         for &(x, y, idx) in &nodata_pixels {
-            if (output_values[idx] - no_data_value).abs() > f64::EPSILON {
+            if filled_flags[idx] {
                 // Average with neighbors
                 let mut sum = 0.0;
                 let mut count = 0;
@@ -267,10 +320,9 @@ fn fill_nodata(
 
                         if nx >= 0 && ny >= 0 && (nx as usize) < width && (ny as usize) < height {
                             let nidx = (ny as usize) * width + (nx as usize);
-                            let nvalue = output_values[nidx];
 
-                            if (nvalue - no_data_value).abs() > f64::EPSILON {
-                                sum += nvalue;
+                            if is_valid(nidx) || filled_flags[nidx] {
+                                sum += output_values[nidx];
                                 count += 1;
                             }
                         }
@@ -385,7 +437,7 @@ mod tests {
         .expect("Failed to create buffer");
 
         let (filled, count) =
-            fill_nodata(&band, 3, 3, -9999.0, 10, 0).expect("Failed to fill nodata");
+            fill_nodata(&band, 3, 3, -9999.0, 10, 0, None).expect("Failed to fill nodata");
 
         assert_eq!(count, 1);
 
@@ -393,5 +445,34 @@ mod tests {
         // Center pixel should be filled with average of neighbors
         assert!(values[4] > 0.0 && values[4] < 10.0);
         assert!((values[4] - (-9999.0)).abs() > f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fill_nodata_mask_band_drives_validity() {
+        // Every value is a normal number (no NoData sentinel present), so the
+        // NoData comparison alone would fill nothing. A mask marking the centre
+        // invalid must still cause exactly that pixel to be filled.
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let band = f64_to_raster_buffer(
+            &data,
+            3,
+            3,
+            RasterDataType::Float64,
+            oxigeo_core::types::NoDataValue::Float(-9999.0),
+        )
+        .expect("Failed to create buffer");
+
+        // Without a mask: no pixel equals the NoData value, so nothing fills.
+        let (_no_mask, no_mask_count) =
+            fill_nodata(&band, 3, 3, -9999.0, 10, 0, None).expect("fill without mask");
+        assert_eq!(no_mask_count, 0, "no NoData pixels without a mask");
+
+        // With a mask marking the centre invalid: exactly one pixel fills.
+        let mask = vec![true, true, true, true, false, true, true, true, true];
+        let (filled, count) =
+            fill_nodata(&band, 3, 3, -9999.0, 10, 0, Some(&mask)).expect("fill with mask");
+        assert_eq!(count, 1, "mask marks exactly one invalid pixel");
+        let values = raster_buffer_to_f64(&filled).expect("values");
+        assert!(values[4].is_finite());
     }
 }

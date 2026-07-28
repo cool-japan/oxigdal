@@ -1,8 +1,24 @@
 //! GeoJSON reader implementation
 //!
-//! This module provides efficient reading and parsing of GeoJSON files
-//! with support for streaming large files, GeoJSONL (newline-delimited GeoJSON),
-//! and spatial filtering via bounding-box predicates.
+//! This module reads and parses GeoJSON and GeoJSONL, with spatial filtering via
+//! bounding-box predicates.
+//!
+//! ## Memory model — read this before pointing it at a multi-gigabyte file
+//!
+//! Only the **GeoJSONL** (newline-delimited GeoJSON) path is genuinely streaming:
+//! [`read_geojsonl`] parses one feature per line with O(1) memory per feature.
+//!
+//! The **standard** (single `FeatureCollection`) path is *not* incremental. Both
+//! [`GeoJsonReader::read`]/[`read_feature_collection`](GeoJsonReader::read_feature_collection)
+//! and the confusingly-named [`FeatureIterator`] read the entire document into
+//! memory and fully deserialize it up front before yielding anything — a standard
+//! GeoJSON document has no line framing, so a token-level incremental parser would
+//! be required to stream it, which is not implemented here. Consequently a
+//! multi-gigabyte standard GeoJSON `FeatureCollection` is buffered in full.
+//!
+//! To bound memory on untrusted input, construct the reader with a byte limit via
+//! [`GeoJsonReader::with_max_bytes`]; the standard path then fails fast with
+//! [`GeoJsonError`] instead of attempting an unbounded allocation.
 
 use std::io::{BufRead, Read};
 use std::marker::PhantomData;
@@ -19,6 +35,7 @@ pub struct GeoJsonReader<R: Read> {
     reader: R,
     validator: Option<Validator>,
     buffer_size: usize,
+    max_bytes: Option<usize>,
 }
 
 impl<R: Read> GeoJsonReader<R> {
@@ -28,6 +45,7 @@ impl<R: Read> GeoJsonReader<R> {
             reader,
             validator: Some(Validator::new()),
             buffer_size: 8192,
+            max_bytes: None,
         }
     }
 
@@ -37,6 +55,7 @@ impl<R: Read> GeoJsonReader<R> {
             reader,
             validator: Some(Validator::with_config(config)),
             buffer_size: 8192,
+            max_bytes: None,
         }
     }
 
@@ -46,6 +65,7 @@ impl<R: Read> GeoJsonReader<R> {
             reader,
             validator: None,
             buffer_size: 8192,
+            max_bytes: None,
         }
     }
 
@@ -54,10 +74,51 @@ impl<R: Read> GeoJsonReader<R> {
         self.buffer_size = size;
     }
 
+    /// Caps how many bytes the *non-streaming* (standard GeoJSON) read paths
+    /// will buffer.
+    ///
+    /// The standard `FeatureCollection`/`Feature`/`Geometry` paths deserialize
+    /// the whole document in memory (see the module docs). On untrusted or
+    /// unbounded input this can exhaust memory. With a limit set, those paths and
+    /// [`FeatureIterator`] fail fast with a clear [`GeoJsonError`] once the input
+    /// exceeds `max_bytes`, instead of attempting an unbounded allocation. The
+    /// genuinely streaming [`read_geojsonl`] path is unaffected.
+    #[must_use]
+    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = Some(max_bytes);
+        self
+    }
+
+    /// Reads the entire underlying reader into memory, enforcing `max_bytes`
+    /// when configured. Fails fast with a clear error if the limit is exceeded
+    /// rather than growing the buffer without bound.
+    fn read_all_bounded(&mut self) -> Result<Vec<u8>> {
+        match self.max_bytes {
+            None => {
+                let mut buffer = Vec::with_capacity(self.buffer_size);
+                self.reader.read_to_end(&mut buffer)?;
+                Ok(buffer)
+            }
+            Some(limit) => {
+                // Read at most `limit + 1` bytes: if we manage to read more than
+                // `limit`, the document is over budget.
+                let mut buffer = Vec::with_capacity(self.buffer_size.min(limit).max(1));
+                let cap = limit as u64 + 1;
+                let read = self.reader.by_ref().take(cap).read_to_end(&mut buffer)?;
+                if read as u64 > limit as u64 || buffer.len() > limit {
+                    return Err(GeoJsonError::invalid_structure(format!(
+                        "GeoJSON document exceeds the configured {limit}-byte limit; \
+                         use the streaming GeoJSONL path for inputs this large"
+                    )));
+                }
+                Ok(buffer)
+            }
+        }
+    }
+
     /// Reads a complete GeoJSON document and determines its type
     pub fn read(&mut self) -> Result<GeoJsonDocument> {
-        let mut buffer = Vec::with_capacity(self.buffer_size);
-        self.reader.read_to_end(&mut buffer)?;
+        let buffer = self.read_all_bounded()?;
 
         let value: serde_json::Value = serde_json::from_slice(&buffer)?;
 
@@ -94,8 +155,7 @@ impl<R: Read> GeoJsonReader<R> {
 
     /// Reads a FeatureCollection
     pub fn read_feature_collection(&mut self) -> Result<FeatureCollection> {
-        let mut buffer = Vec::with_capacity(self.buffer_size);
-        self.reader.read_to_end(&mut buffer)?;
+        let buffer = self.read_all_bounded()?;
 
         let fc: FeatureCollection = serde_json::from_slice(&buffer)?;
 
@@ -108,8 +168,7 @@ impl<R: Read> GeoJsonReader<R> {
 
     /// Reads a single Feature
     pub fn read_feature(&mut self) -> Result<Feature> {
-        let mut buffer = Vec::with_capacity(self.buffer_size);
-        self.reader.read_to_end(&mut buffer)?;
+        let buffer = self.read_all_bounded()?;
 
         let feature: Feature = serde_json::from_slice(&buffer)?;
 
@@ -122,8 +181,7 @@ impl<R: Read> GeoJsonReader<R> {
 
     /// Reads a Geometry
     pub fn read_geometry(&mut self) -> Result<Geometry> {
-        let mut buffer = Vec::with_capacity(self.buffer_size);
-        self.reader.read_to_end(&mut buffer)?;
+        let buffer = self.read_all_bounded()?;
 
         let geom: Geometry = serde_json::from_slice(&buffer)?;
 
@@ -148,7 +206,7 @@ impl<R: Read> GeoJsonReader<R> {
     /// "read/parse failure" should use this fallible constructor rather than
     /// treating an empty iterator as success.
     pub fn iter_features(self) -> Result<FeatureIterator<R>> {
-        FeatureIterator::new(self.reader, self.validator)
+        FeatureIterator::new(self.reader, self.validator, self.max_bytes)
     }
 
     /// Consumes the reader and returns the inner reader
@@ -238,9 +296,25 @@ pub struct FeatureIterator<R: Read> {
 }
 
 impl<R: Read> FeatureIterator<R> {
-    fn new(mut reader: R, validator: Option<Validator>) -> Result<Self> {
+    fn new(mut reader: R, validator: Option<Validator>, max_bytes: Option<usize>) -> Result<Self> {
         let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)?;
+        match max_bytes {
+            None => {
+                reader.read_to_end(&mut buffer)?;
+            }
+            Some(limit) => {
+                let read = reader
+                    .by_ref()
+                    .take(limit as u64 + 1)
+                    .read_to_end(&mut buffer)?;
+                if read as u64 > limit as u64 || buffer.len() > limit {
+                    return Err(GeoJsonError::invalid_structure(format!(
+                        "GeoJSON document exceeds the configured {limit}-byte limit; \
+                         use the streaming GeoJSONL path for inputs this large"
+                    )));
+                }
+            }
+        }
 
         // Parse the FeatureCollection, propagating I/O and JSON-parse errors
         // instead of silently substituting an empty feature list: a truncated
@@ -497,6 +571,39 @@ mod tests {
         assert!(doc.is_some());
         let document = doc.expect("valid document");
         assert!(document.is_geometry());
+    }
+
+    #[test]
+    fn test_max_bytes_rejects_oversized_document() {
+        // A standard FeatureCollection larger than the configured limit must fail
+        // fast rather than buffering the whole thing.
+        let json = r#"{"type":"FeatureCollection","features":[]}"#;
+        let cursor = Cursor::new(json.as_bytes());
+        let mut reader = GeoJsonReader::new(cursor).with_max_bytes(8);
+        let result = reader.read_feature_collection();
+        assert!(result.is_err(), "over-limit document must error");
+    }
+
+    #[test]
+    fn test_max_bytes_allows_within_limit() {
+        let json = r#"{"type":"FeatureCollection","features":[]}"#;
+        let cursor = Cursor::new(json.as_bytes());
+        let mut reader = GeoJsonReader::new(cursor).with_max_bytes(json.len());
+        let fc = reader
+            .read_feature_collection()
+            .expect("document within limit must parse");
+        assert_eq!(fc.features.len(), 0);
+    }
+
+    #[test]
+    fn test_max_bytes_iter_features_rejects_oversized() {
+        let json = r#"{"type":"FeatureCollection","features":[]}"#;
+        let cursor = Cursor::new(json.as_bytes());
+        let reader = GeoJsonReader::new(cursor).with_max_bytes(4);
+        assert!(
+            reader.iter_features().is_err(),
+            "iter_features must honor the byte limit"
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ Advanced geospatial format drivers for OxiGeo, providing Pure Rust implementatio
 
 - **JPEG2000 (JP2)** - Pure Rust JPEG2000 codec
   - JP2 box structure parsing
-  - Codestream decoding (simplified)
+  - Real codestream decoding (tier-1 EBCOT entropy decode + inverse 5/3 DWT, delegated to the `oxigeo-jpeg2000` crate) — no longer a gray-fill placeholder
   - Multi-resolution pyramid support
   - GeoJP2 metadata extraction
   - Metadata handling (XML boxes, ICC profiles)
@@ -38,7 +38,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-drivers-advanced = "0.2.0"
+oxigeo-drivers-advanced = "0.2.1"
 ```
 
 ### JPEG2000
@@ -116,7 +116,7 @@ write_gml(&mut output, &collection)?;
 ## Features Flags
 
 - `jpeg2000` - JPEG2000 format support (default)
-- `geopackage` - GeoPackage format support (default)
+- `geopackage` - GeoPackage format support (pure-Rust `oxisql-sqlite-compat` backend; **not** in default — enable explicitly)
 - `kml` - KML/KMZ format support (default)
 - `gml` - GML format support (default)
 - `async` - Async I/O support (optional)

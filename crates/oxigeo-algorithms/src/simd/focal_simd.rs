@@ -1,15 +1,14 @@
-//! SIMD-accelerated focal (neighborhood) statistics operations
+//! Focal (neighborhood) statistics operations
 //!
-//! This module provides high-performance implementations of focal/moving window operations
-//! using SIMD instructions. These operations are fundamental for spatial analysis and
-//! image processing tasks.
+//! This module provides implementations of focal/moving window operations that
+//! are fundamental for spatial analysis and image processing tasks.
 //!
-//! # Performance
+//! # Implementation status
 //!
-//! Expected speedup over scalar implementations:
-//! - Focal mean/sum: 3-5x (horizontal + vertical passes with SIMD)
-//! - Focal min/max: 2-4x (SIMD reduction operations)
-//! - Focal variance/stddev: 3-4x (SIMD arithmetic)
+//! These operations are currently scalar loops written to be
+//! auto-vectorization friendly; they do NOT yet contain hand-written SIMD
+//! intrinsics. Hardware-vectorized kernels are planned future work. The
+//! functions are correct and covered by unit tests.
 //!
 //! # Supported Operations
 //!

@@ -112,7 +112,8 @@ pub mod workflow;
 
 // Re-export common types
 pub use autoscale::{
-    AutoscaleConfig, AutoscaleStats, Autoscaler, MetricsSnapshot as AutoscaleMetrics, ScaleDecision,
+    AutoscaleConfig, AutoscaleStats, Autoscaler, CloudProvider,
+    MetricsSnapshot as AutoscaleMetrics, ScaleDecision, ScaleOutcome, WorkerPoolProvider,
 };
 pub use cache_coherency::{CacheConfig, CacheKey, DistributedCache};
 pub use coordinator::{ClusterCoordinator, CoordinatorConfig, NodeId, NodeRole};

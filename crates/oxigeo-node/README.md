@@ -247,6 +247,23 @@ const stats = oxigeo.zonalStats(raster, zones);
 // Returns: [{ zoneId, count, min, max, mean, stddev, sum }, ...]
 ```
 
+#### Raster Calculator
+
+Evaluates a map-algebra expression across one or more input bands. Bands are
+referenced positionally as `B1`, `B2`, ... (1-indexed). The language supports
+arithmetic (`+ - * / ^`), math functions (`sqrt`, `log`, `log10`, `exp`,
+`abs`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `min`, `max`),
+comparisons (`> < >= <= == !=`), logical `and`/`or`, and `if/then/else`.
+
+```javascript
+// NDVI = (NIR - RED) / (NIR + RED)
+const ndvi = oxigeo.calculate('(B1 - B2) / (B1 + B2)', [nirBand, redBand]);
+
+// Math functions and conditionals
+const magnitude = oxigeo.calculate('sqrt(B1 ^ 2 + B2 ^ 2)', [dx, dy]);
+const mask = oxigeo.calculate('if B1 > 100 then 1 else 0', [band]);
+```
+
 #### Vector Algorithms
 
 ```javascript
@@ -280,16 +297,22 @@ const slope = await oxigeo.slopeAsync(dem, pixelSize, zFactor, asPercent);
 const aspect = await oxigeo.aspectAsync(dem, pixelSize);
 const stats = await oxigeo.zonalStatsAsync(raster, zones);
 
-// Batch processing
-const paths = await oxigeo.batchProcessRasters(inputPaths, outputDir, operation);
-const result = await oxigeo.processRasterParallel(dataset, operation, config);
+// Batch processing.
+// `operation` is a per-pixel transform applied to every band:
+//   'identity' | 'abs' | 'negate' | 'square' | 'sqrt'
+const paths = await oxigeo.batchProcessRasters(inputPaths, outputDir, 'sqrt');
+
+// `processRasterParallel` splits each band into `chunkSize`-row chunks and
+// applies the operation across `numThreads` worker threads.
+const config = { numThreads: 0, chunkSize: 512, reportProgress: true };
+const result = await oxigeo.processRasterParallel(dataset, 'square', config);
 
 // Progress reporting: register a callback before starting a long-running
 // operation to receive periodic progress fractions in [0.0, 1.0].
 oxigeo.setProgressCallback((progress) => {
   console.log(`Progress: ${(progress * 100).toFixed(1)}%`);
 });
-await oxigeo.batchProcessRasters(inputPaths, outputDir, operation);
+await oxigeo.batchProcessRasters(inputPaths, outputDir, 'identity');
 oxigeo.clearProgressCallback();
 ```
 
@@ -309,20 +332,33 @@ while ((chunk = await stream.readNextChunk()) !== null) {
 
 ### Cancellation
 
+A `CancellationToken` can be passed to the long-running batch/parallel
+processors. When it is cancelled while work is in flight, the operation aborts
+with a `CANCELLED` error instead of returning partially-processed data (chunks
+not yet started are skipped; already-written batch outputs are left in place).
+
 ```javascript
 const token = new oxigeo.CancellationToken();
 
-// Start operation
-const promise = oxigeo.openRasterAsync(path);
+// Pass the token into a long-running operation.
+const promise = oxigeo.processRasterParallel(dataset, 'sqrt', config, token);
 
-// Cancel if needed
+// Cancel it from elsewhere (e.g. a timeout or a user action).
 setTimeout(() => token.cancel(), 1000);
 
-// Check status
-if (token.isCancelled()) {
-  console.log('Operation cancelled');
+try {
+  const result = await promise;
+} catch (err) {
+  // err.message starts with "CANCELLED:" if the token was cancelled.
+  console.log('Operation cancelled or failed:', err.message);
 }
+
+// The token can be reused after resetting it.
+token.reset();
 ```
+
+The token is likewise accepted as the trailing argument of
+`batchProcessRasters(paths, outputDir, operation, token)`.
 
 ## Data Types
 
@@ -340,7 +376,6 @@ Supported raster data types:
 
 ### Raster
 - **GeoTIFF** (.tif, .tiff) - Full support including COG
-- Additional format bindings (GeoParquet, Zarr, FlatGeobuf) accessible via `oxigeo.open()` with appropriate features enabled
 
 ### Vector
 - **GeoJSON** (.json, .geojson) - Full support

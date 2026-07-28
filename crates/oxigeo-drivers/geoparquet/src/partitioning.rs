@@ -18,6 +18,9 @@
 //! assert!(path.ends_with("year=2024/month=01"));
 //! ```
 
+use crate::error::{GeoParquetError, Result};
+use crate::reader::GeoParquetReader;
+use arrow_array::RecordBatch;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -223,6 +226,97 @@ impl PartitionedDataset {
         }
     }
 
+    /// Discover a hive-style partitioned GeoParquet dataset rooted at
+    /// `base_path`.
+    ///
+    /// Recursively walks the directory tree with [`std::fs::read_dir`],
+    /// collecting every `*.parquet` file, parsing the Hive-style
+    /// `column=value` components of each file's path into [`PartitionKey`]s,
+    /// and opening each file's footer to populate its `row_count` and — when
+    /// the file carries GeoParquet 1.1 `covering.bbox` columns (or a
+    /// column-level bbox in its `geo` metadata) — its `spatial_extent`.  The
+    /// discovered [`partition_columns`](PartitionedDataset::partition_columns)
+    /// are inferred from the Hive components in first-seen order.
+    ///
+    /// Files are opened only for their metadata; no geometry is decoded, so
+    /// discovery is cheap even for large datasets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `base_path` cannot be read, or if any discovered
+    /// `.parquet` file cannot be opened as a valid GeoParquet file.
+    pub fn discover(base_path: impl AsRef<Path>) -> Result<Self> {
+        let base_path = base_path.as_ref().to_path_buf();
+        if !base_path.is_dir() {
+            return Err(GeoParquetError::internal(format!(
+                "partitioned dataset base path is not a directory: {}",
+                base_path.display()
+            )));
+        }
+
+        let mut parquet_files: Vec<PathBuf> = Vec::new();
+        collect_parquet_files(&base_path, &mut parquet_files)?;
+        parquet_files.sort();
+
+        let mut dataset = Self::new(&base_path, Vec::new());
+        let mut column_order: Vec<String> = Vec::new();
+
+        for file in parquet_files {
+            let keys = parse_hive_components(&base_path, &file);
+            for key in &keys {
+                if !column_order.iter().any(|c| c == &key.column) {
+                    column_order.push(key.column.clone());
+                }
+            }
+
+            let reader = GeoParquetReader::open(&file)?;
+            let row_count = reader.num_rows().max(0) as u64;
+            let mut partition = Partition::new(&file, keys).with_row_count(row_count);
+            if let Some(extent) = file_spatial_extent(&reader) {
+                partition = partition.with_spatial_extent(extent);
+            }
+            if let Ok(meta) = std::fs::metadata(&file) {
+                partition = partition.with_file_size(meta.len());
+            }
+            dataset.add_partition(partition);
+        }
+
+        dataset.partition_columns = column_order;
+        Ok(dataset)
+    }
+
+    /// Executes a bounding-box query across every partition whose spatial extent
+    /// overlaps `(min_x, min_y, max_x, max_y)`.
+    ///
+    /// For each surviving partition (see
+    /// [`partitions_for_bbox`](Self::partitions_for_bbox)) this opens the
+    /// underlying GeoParquet file, applies the bbox filter via
+    /// [`GeoParquetReader::read_pushdown`] (covering-column row-group pruning
+    /// plus a per-row bbox predicate), and concatenates the resulting
+    /// [`RecordBatch`]es across all partitions.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O, Parquet, or Arrow error encountered while reading a
+    /// partition.
+    pub fn query_bbox(
+        &self,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> Result<Vec<RecordBatch>> {
+        let mut results: Vec<RecordBatch> = Vec::new();
+        for partition in self.partitions_for_bbox(min_x, min_y, max_x, max_y) {
+            let reader = GeoParquetReader::open(&partition.path)?;
+            let batches = reader
+                .with_bbox_filter((min_x, min_y, max_x, max_y))
+                .read_pushdown()?;
+            results.extend(batches);
+        }
+        Ok(results)
+    }
+
     /// Set the spatial partition strategy.
     #[must_use]
     pub fn with_spatial_strategy(mut self, strategy: SpatialPartitionStrategy) -> Self {
@@ -317,6 +411,64 @@ impl PartitionedDataset {
             vals.dedup();
         }
         map
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hive-style discovery helpers
+// ---------------------------------------------------------------------------
+
+/// Recursively collect every `*.parquet` file under `dir` into `out`.
+fn collect_parquet_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_parquet_files(&path, out)?;
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Parse the Hive-style `column=value` components of `file`'s path relative to
+/// `base_path` (the file name itself is never a partition component).
+fn parse_hive_components(base_path: &Path, file: &Path) -> Vec<PartitionKey> {
+    let dir = file.parent().unwrap_or(file);
+    let rel = dir.strip_prefix(base_path).unwrap_or(dir);
+    rel.components()
+        .filter_map(|c| {
+            c.as_os_str()
+                .to_str()
+                .and_then(PartitionKey::from_hive_component)
+        })
+        .collect()
+}
+
+/// Best-effort spatial extent for a partition file: prefer the cheap
+/// covering.bbox statistics, then fall back to the column-level bbox declared
+/// in the file's `geo` metadata.
+fn file_spatial_extent(reader: &GeoParquetReader) -> Option<[f64; 4]> {
+    if let Some((xmin, ymin, xmax, ymax)) = reader.covering_extent() {
+        return Some([xmin, ymin, xmax, ymax]);
+    }
+    let bbox = reader
+        .metadata()
+        .primary_column_metadata()
+        .ok()?
+        .bbox
+        .clone()?;
+    if bbox.len() >= 4 {
+        Some([bbox[0], bbox[1], bbox[2], bbox[3]])
+    } else {
+        None
     }
 }
 
@@ -658,5 +810,91 @@ mod tests {
         let summary = stats.summary();
         assert!(summary.contains("1 partitions"));
         assert!(summary.contains("100 rows"));
+    }
+
+    // -- Hive-style discovery / query --
+
+    use crate::geometry::{Geometry, Point};
+    use crate::metadata::GeometryColumnMetadata;
+    use crate::writer::GeoParquetWriterBuilder;
+
+    /// Writes a single-point GeoParquet file (with covering bbox columns so the
+    /// discovered partition gets a spatial extent) at `path`.
+    fn write_point_file(path: &Path, x: f64, y: f64) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdirs");
+        }
+        let metadata = GeometryColumnMetadata::new_wkb();
+        let mut writer = GeoParquetWriterBuilder::new("geometry", metadata)
+            .with_covering_bbox(true)
+            .build(path)
+            .expect("build writer");
+        writer
+            .add_geometry(&Geometry::Point(Point::new_2d(x, y)))
+            .expect("add geometry");
+        writer.finish().expect("finish");
+    }
+
+    fn unique_base(name: &str) -> PathBuf {
+        let mut base = std::env::temp_dir();
+        base.push(format!(
+            "oxigeo_geoparquet_partition_{}_{}",
+            name,
+            std::process::id()
+        ));
+        // Start from a clean slate for deterministic discovery.
+        let _ = std::fs::remove_dir_all(&base);
+        base
+    }
+
+    #[test]
+    fn test_discover_hive_dataset() {
+        let base = unique_base("discover");
+        write_point_file(&base.join("year=2024/month=01/part-0.parquet"), 10.0, 10.0);
+        write_point_file(&base.join("year=2024/month=02/part-0.parquet"), 20.0, 20.0);
+        write_point_file(&base.join("year=2023/month=12/part-0.parquet"), -5.0, -5.0);
+
+        let ds = PartitionedDataset::discover(&base).expect("discover");
+        assert_eq!(ds.partition_count(), 3);
+        assert_eq!(
+            ds.partition_columns,
+            vec!["year".to_string(), "month".to_string()]
+        );
+        assert_eq!(ds.total_row_count, 3);
+
+        // Every discovered partition carries its hive keys and a spatial extent.
+        for p in &ds.partitions {
+            assert!(p.get_value("year").is_some());
+            assert!(p.get_value("month").is_some());
+            assert!(
+                p.spatial_extent.is_some(),
+                "covering bbox should yield a spatial extent"
+            );
+            assert_eq!(p.row_count, Some(1));
+        }
+
+        // Partition pruning by key still works on the discovered set.
+        let y2024 = ds.filter_partitions(&[PartitionKey::new("year", "2024")]);
+        assert_eq!(y2024.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_query_bbox_across_partitions() {
+        let base = unique_base("query");
+        write_point_file(&base.join("tile=a/part-0.parquet"), 10.0, 10.0);
+        write_point_file(&base.join("tile=b/part-0.parquet"), 500.0, 500.0);
+
+        let ds = PartitionedDataset::discover(&base).expect("discover");
+        assert_eq!(ds.partition_count(), 2);
+
+        // Only tile=a overlaps this query window; spatial pruning must drop
+        // tile=b before it is even opened, and the row filter returns 1 row.
+        let batches = ds.query_bbox(8.0, 8.0, 12.0, 12.0).expect("query");
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -36,6 +36,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ml")]
 use scirs2_core::random::SeedableRng;
 #[cfg(feature = "ml")]
+use scirs2_neural::layers::recurrent::Bidirectional;
+#[cfg(feature = "ml")]
 use scirs2_neural::layers::{LSTM, Layer};
 
 /// Configuration for LSTM models.
@@ -146,7 +148,12 @@ impl LSTMConfig {
 #[cfg(feature = "ml")]
 pub struct TemporalLSTM {
     config: LSTMConfig,
-    lstm_layers: Vec<LSTM<f32>>,
+    /// One entry per stacked layer. For a unidirectional config each entry is a
+    /// single [`LSTM`]; for a bidirectional config each entry is a
+    /// [`Bidirectional`] wrapper that owns an independent forward and backward
+    /// LSTM and concatenates their per-timestep hidden states along the feature
+    /// axis (producing `2 * hidden_dim` features).
+    lstm_layers: Vec<Box<dyn Layer<f32> + Send + Sync>>,
 }
 
 #[cfg(feature = "ml")]
@@ -176,20 +183,48 @@ impl TemporalLSTM {
         config.validate()?;
 
         let mut rng = scirs2_core::random::rngs::StdRng::seed_from_u64(42);
-        let mut lstm_layers = Vec::with_capacity(config.num_layers);
+        let mut lstm_layers: Vec<Box<dyn Layer<f32> + Send + Sync>> =
+            Vec::with_capacity(config.num_layers);
 
         for i in 0..config.num_layers {
+            // The input width of a stacked layer is the *output* width of the
+            // previous layer. For bidirectional stacks that is `2 * hidden_dim`
+            // (see [`LSTMConfig::output_dim`]).
             let input_size = if i == 0 {
                 config.input_dim
             } else {
                 config.output_dim()
             };
 
-            let lstm = LSTM::new(input_size, config.hidden_dim, &mut rng).map_err(|e| {
-                Error::ModelArchitecture(format!("Failed to create LSTM layer {}: {}", i, e))
-            })?;
-
-            lstm_layers.push(lstm);
+            if config.bidirectional {
+                // Independent parameters for each direction: seed the backward
+                // LSTM differently so it does not mirror the forward pass.
+                let forward = LSTM::new(input_size, config.hidden_dim, &mut rng).map_err(|e| {
+                    Error::ModelArchitecture(format!(
+                        "Failed to create forward LSTM for layer {}: {}",
+                        i, e
+                    ))
+                })?;
+                let backward = LSTM::new(input_size, config.hidden_dim, &mut rng).map_err(|e| {
+                    Error::ModelArchitecture(format!(
+                        "Failed to create backward LSTM for layer {}: {}",
+                        i, e
+                    ))
+                })?;
+                let bidir = Bidirectional::new(Box::new(forward), Some(Box::new(backward)), None)
+                    .map_err(|e| {
+                    Error::ModelArchitecture(format!(
+                        "Failed to create bidirectional wrapper for layer {}: {}",
+                        i, e
+                    ))
+                })?;
+                lstm_layers.push(Box::new(bidir));
+            } else {
+                let lstm = LSTM::new(input_size, config.hidden_dim, &mut rng).map_err(|e| {
+                    Error::ModelArchitecture(format!("Failed to create LSTM layer {}: {}", i, e))
+                })?;
+                lstm_layers.push(Box::new(lstm));
+            }
         }
 
         Ok(Self {
@@ -267,7 +302,10 @@ impl TemporalLSTM {
                     + self.config.hidden_dim * self.config.hidden_dim
                     + self.config.hidden_dim
                     + self.config.hidden_dim);
-            total += layer_params;
+            // A bidirectional layer owns two independent LSTMs (forward and
+            // backward), doubling its parameter count.
+            let directions = if self.config.bidirectional { 2 } else { 1 };
+            total += layer_params * directions;
         }
         total
     }
@@ -365,6 +403,52 @@ mod tests {
 
         let output = output.expect("Forward pass failed");
         assert_eq!(output.shape(), &[2, 5, 64]);
+    }
+
+    #[cfg(feature = "ml")]
+    #[test]
+    fn test_temporal_lstm_forward_bidirectional() {
+        use scirs2_core::ndarray::Array3;
+
+        // Single bidirectional layer: output width must double to 2 * hidden_dim.
+        let config = LSTMConfig::new(10, 32, 1, 0.0).with_bidirectional(true);
+        let lstm = TemporalLSTM::new(config).expect("Failed to create bidirectional LSTM");
+
+        let input = Array3::<f32>::zeros((2, 6, 10)).into_dyn();
+        let output = lstm.forward(&input).expect("Bidirectional forward failed");
+
+        // [batch=2, seq_len=6, 2 * hidden=64]
+        assert_eq!(output.shape(), &[2, 6, 64]);
+    }
+
+    #[cfg(feature = "ml")]
+    #[test]
+    fn test_temporal_lstm_forward_bidirectional_stacked() {
+        use scirs2_core::ndarray::Array3;
+
+        // Two stacked bidirectional layers: the second layer must accept the
+        // doubled feature width produced by the first without a shape mismatch.
+        let config = LSTMConfig::new(8, 16, 2, 0.0).with_bidirectional(true);
+        let lstm = TemporalLSTM::new(config).expect("Failed to create stacked bidirectional LSTM");
+
+        let input = Array3::<f32>::zeros((3, 4, 8)).into_dyn();
+        let output = lstm
+            .forward(&input)
+            .expect("Stacked bidirectional forward failed");
+
+        assert_eq!(output.shape(), &[3, 4, 32]);
+    }
+
+    #[cfg(feature = "ml")]
+    #[test]
+    fn test_temporal_lstm_bidirectional_param_count() {
+        let uni = TemporalLSTM::new(LSTMConfig::new(10, 32, 1, 0.0))
+            .expect("Failed to create unidirectional LSTM");
+        let bi = TemporalLSTM::new(LSTMConfig::new(10, 32, 1, 0.0).with_bidirectional(true))
+            .expect("Failed to create bidirectional LSTM");
+
+        // A bidirectional layer owns two LSTMs, so it has twice the parameters.
+        assert_eq!(bi.num_parameters(), 2 * uni.num_parameters());
     }
 
     #[cfg(feature = "ml")]

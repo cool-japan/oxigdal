@@ -1,6 +1,6 @@
 //! Sync manager for coordinating synchronization
 
-use super::protocol::{MockSyncProtocol, SyncProtocol};
+use super::protocol::SyncProtocol;
 use super::{SyncItem, SyncState, SyncStrategy};
 use crate::cache::Cache;
 use crate::error::{EdgeError, Result};
@@ -21,10 +21,23 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    /// Create new sync manager
-    pub fn new(strategy: SyncStrategy, cache: Arc<Cache>) -> Result<Self> {
+    /// Create a new sync manager backed by the given [`SyncProtocol`].
+    ///
+    /// Callers must supply a real, network-backed (or otherwise persistent)
+    /// `SyncProtocol` implementation appropriate for their deployment (e.g.
+    /// [`super::protocol::HttpSyncProtocol`] under the `http-sync` feature).
+    /// This crate deliberately does **not** default to any in-memory mock
+    /// protocol here: a device configured to sync to the cloud must be
+    /// explicitly wired to a protocol that actually talks to that cloud, or
+    /// it will not compile/construct a `SyncManager` at all -- there is no
+    /// silent fallback that would appear to sync while only ever reading
+    /// and writing its own local process memory.
+    pub fn new(
+        strategy: SyncStrategy,
+        cache: Arc<Cache>,
+        protocol: Arc<dyn SyncProtocol>,
+    ) -> Result<Self> {
         let state = Arc::new(RwLock::new(SyncState::new()));
-        let protocol: Arc<dyn SyncProtocol> = Arc::new(MockSyncProtocol::new());
 
         Ok(Self {
             strategy,
@@ -270,12 +283,17 @@ impl Drop for SyncManager {
 mod tests {
     use super::*;
     use crate::cache::CacheConfig;
+    use crate::sync::protocol::MockSyncProtocol;
+
+    fn mock_protocol() -> Arc<dyn SyncProtocol> {
+        Arc::new(MockSyncProtocol::new())
+    }
 
     #[tokio::test]
     async fn test_sync_manager_creation() -> Result<()> {
         let cache_config = CacheConfig::minimal();
         let cache = Arc::new(Cache::new(cache_config)?);
-        let manager = SyncManager::new(SyncStrategy::Manual, cache)?;
+        let manager = SyncManager::new(SyncStrategy::Manual, cache, mock_protocol())?;
 
         assert!(!manager.is_running());
         Ok(())
@@ -285,7 +303,7 @@ mod tests {
     async fn test_sync_manager_lifecycle() -> Result<()> {
         let cache_config = CacheConfig::minimal();
         let cache = Arc::new(Cache::new(cache_config)?);
-        let manager = SyncManager::new(SyncStrategy::Manual, cache)?;
+        let manager = SyncManager::new(SyncStrategy::Manual, cache, mock_protocol())?;
 
         manager.start().await?;
         assert!(manager.is_running());
@@ -300,7 +318,7 @@ mod tests {
     async fn test_sync_manager_add_pending() -> Result<()> {
         let cache_config = CacheConfig::minimal();
         let cache = Arc::new(Cache::new(cache_config)?);
-        let manager = SyncManager::new(SyncStrategy::Manual, cache)?;
+        let manager = SyncManager::new(SyncStrategy::Manual, cache, mock_protocol())?;
 
         let item = SyncItem::new("item-1".to_string(), "key-1".to_string(), vec![1, 2, 3], 1);
 
@@ -316,7 +334,7 @@ mod tests {
     async fn test_sync_manager_manual_sync() -> Result<()> {
         let cache_config = CacheConfig::minimal();
         let cache = Arc::new(Cache::new(cache_config)?);
-        let manager = SyncManager::new(SyncStrategy::Manual, cache)?;
+        let manager = SyncManager::new(SyncStrategy::Manual, cache, mock_protocol())?;
 
         let item = SyncItem::new("item-1".to_string(), "key-1".to_string(), vec![1, 2, 3], 1);
 
@@ -333,11 +351,54 @@ mod tests {
     async fn test_sync_manager_statistics() -> Result<()> {
         let cache_config = CacheConfig::minimal();
         let cache = Arc::new(Cache::new(cache_config)?);
-        let manager = SyncManager::new(SyncStrategy::Manual, cache)?;
+        let manager = SyncManager::new(SyncStrategy::Manual, cache, mock_protocol())?;
 
         let stats = manager.statistics();
         assert_eq!(stats.total_syncs, 0);
         assert_eq!(stats.pending_items, 0);
+
+        Ok(())
+    }
+
+    /// Regression test: `SyncManager` must actually route pushes through
+    /// whatever protocol was injected, not a hardcoded internal mock. Two
+    /// managers wired to *different* protocol instances must not see each
+    /// other's synced data.
+    #[tokio::test]
+    async fn test_sync_manager_uses_injected_protocol_not_a_hardcoded_mock() -> Result<()> {
+        let cache_config = CacheConfig::minimal();
+
+        let protocol_a = mock_protocol();
+        let manager_a = SyncManager::new(
+            SyncStrategy::Manual,
+            Arc::new(Cache::new(cache_config.clone())?),
+            Arc::clone(&protocol_a),
+        )?;
+
+        let protocol_b = mock_protocol();
+        let manager_b = SyncManager::new(
+            SyncStrategy::Manual,
+            Arc::new(Cache::new(cache_config)?),
+            Arc::clone(&protocol_b),
+        )?;
+
+        let item_a = SyncItem::new("item-a".to_string(), "key-a".to_string(), vec![9, 9, 9], 1);
+        manager_a.add_pending(item_a);
+        manager_a.sync_now().await?;
+
+        let item_b = SyncItem::new("item-b".to_string(), "key-b".to_string(), vec![7, 7, 7], 1);
+        manager_b.add_pending(item_b);
+        manager_b.sync_now().await?;
+
+        // manager_a's item went to protocol_a, not protocol_b, and vice
+        // versa: each protocol must see only its own manager's data.
+        let items_in_b = protocol_b.pull(None).await?;
+        assert_eq!(items_in_b.len(), 1);
+        assert_eq!(items_in_b[0].id, "item-b");
+
+        let items_in_a = protocol_a.pull(None).await?;
+        assert_eq!(items_in_a.len(), 1);
+        assert_eq!(items_in_a[0].id, "item-a");
 
         Ok(())
     }

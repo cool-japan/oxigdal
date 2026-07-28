@@ -955,16 +955,40 @@ impl CloudRangeCoalescer {
     /// `coalesced_start` is the byte offset at which `coalesced_data` begins.
     /// `sub_range` is the desired slice within the full object.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `sub_range` does not fall within the coalesced data window.
+    /// Returns [`CloudError::RangeOutOfBounds`] if `sub_range` does not fall
+    /// entirely within the `[coalesced_start, coalesced_start + len)` window —
+    /// for example when the server ignored the `Range` header, the connection
+    /// was truncated mid-transfer, or `sub_range.start < coalesced_start`. This
+    /// never panics, so callers can react to a short/mismatched response.
     pub fn slice_response<'a>(
         coalesced_data: &'a [u8],
         coalesced_start: u64,
         sub_range: &std::ops::Range<u64>,
-    ) -> &'a [u8] {
+    ) -> Result<&'a [u8], CloudError> {
+        let coalesced_end = coalesced_start.saturating_add(coalesced_data.len() as u64);
+        // The sub-range must start at or after the window start, be non-inverted,
+        // and end at or before the window end.
+        if sub_range.start < coalesced_start
+            || sub_range.end < sub_range.start
+            || sub_range.end > coalesced_end
+        {
+            return Err(CloudError::RangeOutOfBounds {
+                start: sub_range.start,
+                end: sub_range.end,
+                size: coalesced_end,
+            });
+        }
         let offset = (sub_range.start - coalesced_start) as usize;
         let len = (sub_range.end - sub_range.start) as usize;
-        &coalesced_data[offset..offset + len]
+        // Bounds are guaranteed by the checks above, but slice defensively.
+        coalesced_data
+            .get(offset..offset + len)
+            .ok_or(CloudError::RangeOutOfBounds {
+                start: sub_range.start,
+                end: sub_range.end,
+                size: coalesced_end,
+            })
     }
 }

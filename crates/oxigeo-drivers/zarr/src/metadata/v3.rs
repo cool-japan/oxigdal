@@ -467,6 +467,13 @@ pub enum CodecMetadata {
         #[serde(skip_serializing_if = "Option::is_none")]
         configuration: Option<ZstdConfig>,
     },
+    /// LZ4 compression (bytes-to-bytes)
+    #[serde(rename = "lz4")]
+    Lz4 {
+        /// Configuration
+        #[serde(skip_serializing_if = "Option::is_none")]
+        configuration: Option<Lz4Config>,
+    },
     /// Blosc compression (bytes-to-bytes)
     #[serde(rename = "blosc")]
     Blosc {
@@ -530,6 +537,14 @@ pub struct ZstdConfig {
     /// Use checksum
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checksum: Option<bool>,
+}
+
+/// LZ4 codec configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Lz4Config {
+    /// Acceleration factor (>= 1; higher is faster but compresses less)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceleration: Option<i32>,
 }
 
 /// Blosc codec configuration
@@ -727,6 +742,29 @@ impl ArrayMetadataV3 {
             }));
         }
 
+        // Guard the regular chunk grid: its `chunk_shape` must match the array
+        // rank and contain no zero entries. `chunk_shape` comes straight from
+        // (possibly attacker-controlled) `zarr.json`, and a zero chunk
+        // dimension would trigger an unconditional integer-division-by-zero
+        // panic during chunk-range calculation on the first read.
+        if let ChunkGrid::Regular { configuration } = &self.chunk_grid {
+            let chunk_shape = &configuration.chunk_shape;
+            if chunk_shape.len() != self.shape.len() {
+                return Err(ZarrError::Metadata(MetadataError::InvalidChunkGrid {
+                    reason: format!(
+                        "chunk_shape rank {} does not match array rank {}",
+                        chunk_shape.len(),
+                        self.shape.len()
+                    ),
+                }));
+            }
+            if chunk_shape.contains(&0) {
+                return Err(ZarrError::Metadata(MetadataError::InvalidChunkGrid {
+                    reason: "chunk_shape entries must all be non-zero".to_string(),
+                }));
+            }
+        }
+
         Ok(())
     }
 }
@@ -897,6 +935,41 @@ mod tests {
         let fv = FillValue::Bool(false);
         let bytes = fv.to_bytes(1).expect("to_bytes");
         assert_eq!(bytes, vec![0]);
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_chunk_shape() {
+        // A zero chunk dimension from untrusted zarr.json must be rejected at
+        // validate() time, not cause a division-by-zero panic on first read.
+        let mut metadata = ArrayMetadataV3::new(vec![100, 200], vec![10, 20], "float32");
+        metadata.chunk_grid = ChunkGrid::regular(vec![0, 20]);
+        assert!(matches!(
+            metadata.validate(),
+            Err(ZarrError::Metadata(MetadataError::InvalidChunkGrid { .. }))
+        ));
+    }
+
+    #[test]
+    fn test_validate_rejects_rank_mismatched_chunk_shape() {
+        let mut metadata = ArrayMetadataV3::new(vec![100, 200], vec![10, 20], "float32");
+        metadata.chunk_grid = ChunkGrid::regular(vec![10]);
+        assert!(matches!(
+            metadata.validate(),
+            Err(ZarrError::Metadata(MetadataError::InvalidChunkGrid { .. }))
+        ));
+    }
+
+    #[test]
+    fn test_lz4_codec_metadata_roundtrips_json() {
+        let meta = CodecMetadata::Lz4 {
+            configuration: Some(Lz4Config {
+                acceleration: Some(3),
+            }),
+        };
+        let json = serde_json::to_string(&meta).expect("serialize");
+        assert!(json.contains("\"lz4\""));
+        let parsed: CodecMetadata = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed, meta);
     }
 
     #[test]

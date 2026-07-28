@@ -1,11 +1,10 @@
 //! Condition evaluation engine
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::rules::{AggregationFunction, ConditionExpression, ThresholdOperator};
+use super::rules::{AggregationFunction, ConditionExpression};
 /// Metric data point for evaluation.
 #[derive(Debug, Clone)]
 pub struct MetricDataPoint {
@@ -25,11 +24,7 @@ pub trait MetricProvider: Send + Sync {
     fn get_metric(&self, name: &str) -> Option<f64>;
 
     /// Get metric values over a time range.
-    fn get_metric_range(
-        &self,
-        name: &str,
-        duration_seconds: u64,
-    ) -> Vec<MetricDataPoint>;
+    fn get_metric_range(&self, name: &str, duration_seconds: u64) -> Vec<MetricDataPoint>;
 
     /// Check if a metric exists.
     fn has_metric(&self, name: &str) -> bool {
@@ -48,19 +43,45 @@ impl<P: MetricProvider> ConditionEvaluator<P> {
         Self { provider }
     }
 
-    /// Evaluate a condition expression.
+    /// Evaluate a condition expression with no label context.
+    ///
+    /// Equivalent to [`Self::evaluate_with_labels`] with an empty label map:
+    /// a [`super::rules::ConditionExpression::LabelMatch`] condition will
+    /// therefore never match (there are no labels to match against), which
+    /// is the honest outcome when no context is available -- see
+    /// [`Self::evaluate_with_labels`] for the real implementation used by
+    /// [`super::manager::AlertEngine`], which passes the firing rule's
+    /// static labels.
     pub fn evaluate(&self, condition: &ConditionExpression) -> bool {
+        self.evaluate_with_labels(condition, &HashMap::new())
+    }
+
+    /// Evaluate a condition expression against a label context (typically
+    /// an [`super::rules::AlertRuleDefinition`]'s static `labels`, or an
+    /// in-flight [`super::instance::AlertInstance`]'s `labels`).
+    ///
+    /// This is what makes [`super::rules::ConditionExpression::LabelMatch`]
+    /// a real check instead of the unconditional `true` it previously
+    /// returned (which meant every rule using `LabelMatch` fired regardless
+    /// of whether the label actually matched): the referenced label is
+    /// looked up in `label_context` and matched against `pattern` as a
+    /// regular expression.  An invalid regex pattern or a missing label
+    /// means the condition does not match (fails closed, not open).
+    pub fn evaluate_with_labels(
+        &self,
+        condition: &ConditionExpression,
+        label_context: &HashMap<String, String>,
+    ) -> bool {
         match condition {
             ConditionExpression::Threshold {
                 metric,
                 operator,
                 value,
-            } => {
-                self.provider
-                    .get_metric(metric)
-                    .map(|v| operator.evaluate(v, *value))
-                    .unwrap_or(false)
-            }
+            } => self
+                .provider
+                .get_metric(metric)
+                .map(|v| operator.evaluate(v, *value))
+                .unwrap_or(false),
             ConditionExpression::AggregatedThreshold {
                 metric,
                 aggregation,
@@ -94,17 +115,21 @@ impl<P: MetricProvider> ConditionEvaluator<P> {
                 metric,
                 for_seconds: _,
             } => !self.provider.has_metric(metric),
-            ConditionExpression::And(conditions) => {
-                conditions.iter().all(|c| self.evaluate(c))
+            ConditionExpression::And(conditions) => conditions
+                .iter()
+                .all(|c| self.evaluate_with_labels(c, label_context)),
+            ConditionExpression::Or(conditions) => conditions
+                .iter()
+                .any(|c| self.evaluate_with_labels(c, label_context)),
+            ConditionExpression::Not(condition) => {
+                !self.evaluate_with_labels(condition, label_context)
             }
-            ConditionExpression::Or(conditions) => {
-                conditions.iter().any(|c| self.evaluate(c))
-            }
-            ConditionExpression::Not(condition) => !self.evaluate(condition),
-            ConditionExpression::LabelMatch { label: _, pattern: _ } => {
-                // Label matching would require additional context
-                true
-            }
+            ConditionExpression::LabelMatch { label, pattern } => match label_context.get(label) {
+                Some(value) => regex::Regex::new(pattern)
+                    .map(|re| re.is_match(value))
+                    .unwrap_or(false),
+                None => false,
+            },
         }
     }
 
@@ -116,17 +141,13 @@ impl<P: MetricProvider> ConditionEvaluator<P> {
         let values: Vec<f64> = data_points.iter().map(|p| p.value).collect();
 
         match aggregation {
-            AggregationFunction::Avg => {
-                values.iter().sum::<f64>() / values.len() as f64
-            }
+            AggregationFunction::Avg => values.iter().sum::<f64>() / values.len() as f64,
             AggregationFunction::Sum => values.iter().sum(),
             AggregationFunction::Min => values.iter().cloned().fold(f64::INFINITY, f64::min),
             AggregationFunction::Max => values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             AggregationFunction::Count => values.len() as f64,
             AggregationFunction::Rate => self.calculate_rate(data_points),
-            AggregationFunction::Percentile(p) => {
-                self.calculate_percentile(&values, *p)
-            }
+            AggregationFunction::Percentile(p) => self.calculate_percentile(&values, *p),
         }
     }
 

@@ -22,16 +22,17 @@ oxigeo-geotiff.workspace = true
 
 # Web framework
 axum.workspace = true
-tower = { workspace = true, features = ["util", "timeout", "load-shed", "limit"] }
-tower-http = { workspace = true, features = ["fs", "trace", "cors", "compression-br", "compression-gzip", "compression-deflate"] }
-hyper.workspace = true
+tower.workspace = true
+# NOTE: tower-http's `compression-*` features are intentionally NOT enabled.
+# They pull flate2 -> libz-sys (C) for gzip/deflate and the `brotli` crate, both
+# banned by the COOLJAPAN Pure Rust Policy. No `CompressionLayer` is used here;
+# if HTTP response compression is added later it must be built on oxiarc-* behind
+# an explicit non-default feature.
+tower-http = { workspace = true, features = ["fs", "trace", "cors"] }
 http.workspace = true
-http-body-util.workspace = true
 
 # Async runtime
 tokio.workspace = true
-futures.workspace = true
-async-trait.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -47,6 +48,9 @@ image.workspace = true
 png.workspace = true
 jpeg-encoder.workspace = true
 
+# Utilities
+bytes.workspace = true
+
 # Caching
 lru.workspace = true
 
@@ -60,17 +64,8 @@ clap = { workspace = true, features = ["derive", "env", "cargo"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-# Utilities
-bytes.workspace = true
-num-traits.workspace = true
-chrono.workspace = true
-url.workspace = true
-
 # XML generation
 quick-xml = { workspace = true, features = ["serialize"] }
-
-# Compression
-oxiarc-archive = { workspace = true }
 
 [dev-dependencies]
 # Testing

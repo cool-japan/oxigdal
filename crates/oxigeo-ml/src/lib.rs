@@ -171,10 +171,13 @@
 //! # }
 //! ```
 //!
-//! # Example: GPU Acceleration
+//! # Example: GPU Backend Detection
 //!
-//! ```ignore
-//! use oxigeo_ml::*;
+//! Detection and device selection are real; actual GPU execution additionally
+//! requires the ONNX backend compiled with the `gpu` feature (otherwise
+//! inference runs on CPU).
+//!
+//! ```no_run
 //! use oxigeo_ml::gpu::{GpuBackend, GpuConfig};
 //! use oxigeo_ml::inference::{InferenceEngine, InferenceConfig};
 //! use oxigeo_ml::models::OnnxModel;

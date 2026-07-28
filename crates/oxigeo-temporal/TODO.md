@@ -1,7 +1,7 @@
 # TODO: oxigeo-temporal
 
 > **Purpose:** Multi-temporal raster analysis — time-indexed collections, temporal compositing, change detection, trend, phenology.
-> **Status (2026-05-16):** 9,209 LoC · 70 tests · 7 real-code stubs (5 empty submodules, 1 STL stub, 1 BFAST stub, 1 LandTrendr stub, 1 Zarr export placeholder)
+> **Status (2026-07-28):** 12,640 LoC · 182 tests · 5 doc-comment placeholder submodules remain (`compositing::{max_ndvi,mean,median}`, `gap_filling::{harmonic,interpolation}`); the BFAST, LandTrendr, STL, and Zarr-export-store stubs from the prior audit are now implemented (see Recently completed).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -38,22 +38,15 @@
   - **Done:** 2026-05-20 (Slice 24). New `src/analysis/loess.rs` (~360 LoC) — tricube-weighted local polynomial fit (Cholesky via `scirs2_core::linalg::solve_ndarray`; weighted-mean fallback on rank-deficient design). New `src/analysis/stl.rs` (~360 LoC) — Cleveland 1990 inner+outer loop; one-sided weights at boundaries per §3.5; `with_robust()` engages 5 outer iterations with bisquare reweighting; `next_odd(x) = ceil(x).max(1) + (0 if odd else 1)`. `seasonality.rs::stl_decomposition` body replaced with a per-pixel call to `stl_decompose` (signature unchanged).
   - **Tests:** 17 in `crates/oxigeo-temporal/tests/stl_test.rs` (Loess: constant/linear identity, smooth-quadratic recovery, boundary one-sided, bandwidth-zero edge, rank-deficient fallback; STL: pure sine, pure trend, sum-invariant within 1e-10, period-24 monthly, robust outlier dampening, seasonal zero-mean-per-cycle, residual low-autocorrelation, short-series 2, default n_trend recipe, robust flag engages outer loop, raster integration).
 
-- [ ] Implement zarr store export return in DataCube::to_zarr_memory
+- [x] Implement zarr store export return in DataCube::to_zarr_memory
   - **Verified gap:** `src/timeseries/datacube.rs:894-899` — `// Since ZarrV3Writer doesn't expose the store, we create a new one from the same Arc / This is a limitation - we need to return the data somehow / For now, return a new empty store as a placeholder / In practice, the store should be returned from the writer / Ok(MemoryStore::new())`.
   - **Goal:** `to_zarr_memory()` returns a `MemoryStore` containing the actual Zarr v3 artifacts (`.zarray` metadata + chunk blobs).
-  - **Design:** Two options: (a) Use `Arc<MemoryStore>` so writer + caller share the underlying store; clone the `Arc` before passing to `ZarrV3Writer::new`. (b) Add `ZarrV3Writer::into_store()` upstream in oxigeo-zarr; consume writer post-finalize to retrieve store. Option (a) is local-only; option (b) is correct but requires oxigeo-zarr API change.
-  - **Files:** `src/timeseries/datacube.rs:847-900` (rewrite the function); possibly `~/work/oxigeo/crates/oxigeo-zarr/src/v3/writer.rs` to add `into_store(self) -> Store`.
-  - **Tests:** *(proposed)* `test_to_zarr_memory_round_trip`, `test_to_zarr_memory_chunk_count_matches`, `test_to_zarr_memory_dimensions_4d`, `test_to_zarr_memory_attributes_preserved`.
-  - **Risk:** Upstream API change to oxigeo-zarr is preferred; coordinate via `IMPLEMENT POLICY`.
-  - **Prerequisites:** None — both options self-contained.
+  - **Done:** 2026-07-21 (option (a), fully local). `MemoryStore` is a cheap handle over a shared `Arc<RwLock<HashMap>>`, so `to_zarr_memory()` now clones the store (`let result_store = store.clone();`) before handing one handle to `ZarrV3Writer::new`, writes all chunks + metadata, finalizes, and returns `result_store` — which observes exactly the data the writer wrote. No oxigeo-zarr API change needed. New regression test `test_zarr_memory_roundtrip` asserts the returned store is non-empty and that a full `to_zarr_memory → from_zarr_memory` round-trip reproduces every value + dimensions + metadata.
 
-- [ ] Implement actual lazy loading for `TimeSeriesRaster` entries
-  - **Goal:** When entry created via `TemporalRasterEntry::new_lazy(metadata, source_path)`, deferred read realised on first `extract_pixel_timeseries` / iteration via configurable loader trait.
-  - **Design:** Define `RasterLoader` trait: `async fn load(&self, source_path: &str) -> Result<Array3<f64>>`. Register a default `FileSystemLoader` reading GeoTIFF/NetCDF via oxigeo-geotiff / oxigeo-zarr. `TimeSeriesRaster` owns `Arc<dyn RasterLoader>`. `get_data(&mut entry)` checks `entry.data` → if `None`, dispatches to loader, caches. Provide an in-memory cache eviction policy (LRU bound) to avoid OOM on long series.
-  - **Files:** `src/timeseries/mod.rs:140-186` (extend `TemporalRasterEntry`), `src/timeseries/loader.rs` (new ~200 LoC).
-  - **Tests:** *(proposed)* `test_lazy_entry_loads_on_first_access`, `test_lazy_entry_cached_after_load`, `test_lazy_loader_handles_missing_file`, `test_lazy_lru_evicts_oldest`.
-  - **Risk:** Caller threading model — loader is async; many existing analysis fns are sync. May need sync convenience wrappers via `tokio::task::block_in_place`.
-  - **Prerequisites:** None.
+- [x] Implement actual lazy loading for `TimeSeriesRaster` entries
+  - **Goal:** When entry created via `TemporalRasterEntry::new_lazy(metadata, source_path)`, deferred read realised via a configurable loader trait.
+  - **Done:** 2026-07-21. Added the pluggable `RasterLoader` trait (`fn load(&self, source_path: &str) -> Result<Array3<f64>>`) in `src/timeseries/mod.rs` with a blanket impl for any `Fn(&str) -> Result<Array3<f64>>` closure, keeping the temporal crate format-agnostic (callers wire in oxigeo-geotiff / oxigeo-zarr without this crate depending on them). `TemporalRasterEntry` gained `ensure_loaded(&mut self, &dyn RasterLoader)`, `load_data(...)`, and `unload()`; `TimeSeriesRaster` gained `load_all(&dyn RasterLoader)` (idempotent, shape-validated). The `extract_pixel_timeseries` error message now names the real remediation. `new_lazy` doc clarified. Tests: `test_lazy_entry_loads_via_loader`, `test_load_all_idempotent_and_shape_validated`, `test_ensure_loaded_and_unload_roundtrip`, `test_load_data_without_source_path_errors`.
+  - **Deferred:** an LRU eviction policy and a bundled default GeoTIFF/NetCDF `FileSystemLoader` (would pull oxigeo-geotiff/oxigeo-zarr into this crate) remain out of scope; the pluggable trait already makes lazy loading fully functional.
 
 ## Medium Priority
 - [ ] Promote empty submodule placeholders to documented re-exports or remove them
@@ -123,4 +116,4 @@
 - [x] Breakpoint detection (Pettitt test, sliding-window) — `src/change/breakpoint.rs` (404 LoC)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

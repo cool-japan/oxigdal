@@ -418,14 +418,47 @@ struct CoordReader<'a> {
     has_m: bool,
 }
 
+/// Resolve the coordinate dimensionality for a `FixedSizeList<f64, N>` coord
+/// array.
+///
+/// GeoArrow stores the *arity* structurally (the FixedSizeList value length)
+/// but arity 3 is ambiguous between `XYZ` (x, y, z) and `XYM` (x, y, m).  The
+/// distinguishing information is carried by the FixedSizeList child field's
+/// **name** — writers in this crate name it `xy` / `xyz` / `xym` / `xyzm` (see
+/// [`coord_field`]).  This helper therefore inspects the field name first and
+/// only falls back to arity-based inference (`3 → Xyz`) when the name is
+/// absent or unrecognised, so that an XYM column round-trips as XYM rather than
+/// silently mislabelling its M value as Z.
+fn resolve_coord_dim(fsl: &FixedSizeListArray) -> Result<CoordDim> {
+    let arity = fsl.value_length() as usize;
+    if let DataType::FixedSizeList(field, _) = fsl.data_type() {
+        let by_name = match field.name().as_str() {
+            "xy" => Some(CoordDim::Xy),
+            "xyz" => Some(CoordDim::Xyz),
+            "xym" => Some(CoordDim::Xym),
+            "xyzm" => Some(CoordDim::Xyzm),
+            _ => None,
+        };
+        // Only honour the name when its arity agrees with the array's actual
+        // value length; otherwise the name is untrustworthy and we defer to
+        // the structural arity.
+        if let Some(dim) = by_name
+            && dim.arity() == arity
+        {
+            return Ok(dim);
+        }
+    }
+    CoordDim::from_arity(arity).ok_or_else(|| {
+        GeoParquetError::invalid_encoding(format!(
+            "FixedSizeList arity {arity} is not a valid coord dimensionality (2/3/4)"
+        ))
+    })
+}
+
 impl<'a> CoordReader<'a> {
     fn new(fsl: &'a FixedSizeListArray) -> Result<Self> {
         let arity = fsl.value_length() as usize;
-        let dim = CoordDim::from_arity(arity).ok_or_else(|| {
-            GeoParquetError::invalid_encoding(format!(
-                "FixedSizeList arity {arity} is not a valid coord dimensionality (2/3/4)"
-            ))
-        })?;
+        let dim = resolve_coord_dim(fsl)?;
         let values_arr = fsl
             .values()
             .as_any()
@@ -889,6 +922,59 @@ mod tests {
         for (got, expected) in back.iter().zip(geoms.iter()) {
             assert_eq!(got, expected);
         }
+    }
+
+    #[test]
+    fn test_native_point_xym_encode_decode() {
+        // XYM points share arity 3 with XYZ.  The decoder must consult the
+        // FixedSizeList child field name ("xym") to recover the M value rather
+        // than mislabelling it as Z.
+        let geoms = vec![
+            Geometry::Point(Point::new(Coordinate::new_2dm(1.0, 2.0, 100.0))),
+            Geometry::Point(Point::new(Coordinate::new_2dm(3.0, 4.0, 200.0))),
+        ];
+        let arr =
+            encode_native_array(&geoms, EncodingType::Point, CoordDim::Xym).expect("encode xym");
+        let back = decode_native_array(arr.as_ref(), EncodingType::Point).expect("decode xym");
+        assert_eq!(back.len(), 2);
+        for (got, expected) in back.iter().zip(geoms.iter()) {
+            assert_eq!(
+                got, expected,
+                "XYM round-trip must preserve M (not turn it into Z)"
+            );
+        }
+        // Explicitly assert the M/Z split is correct.
+        if let Geometry::Point(p) = &back[0] {
+            assert_eq!(p.coord.m, Some(100.0), "M must survive the round trip");
+            assert_eq!(p.coord.z, None, "no Z must be invented from an XYM column");
+        } else {
+            panic!("expected Point");
+        }
+    }
+
+    #[test]
+    fn test_native_linestring_xym_roundtrip() {
+        let coords = vec![
+            Coordinate::new_2dm(0.0, 0.0, 10.0),
+            Coordinate::new_2dm(1.0, 1.0, 20.0),
+            Coordinate::new_2dm(2.0, 0.5, 30.0),
+        ];
+        let geoms = vec![Geometry::LineString(LineString::new(coords))];
+        let arr =
+            encode_native_array(&geoms, EncodingType::LineString, CoordDim::Xym).expect("encode");
+        let back = decode_native_array(arr.as_ref(), EncodingType::LineString).expect("decode");
+        assert_eq!(back, geoms);
+    }
+
+    #[test]
+    fn test_native_point_xyzm_roundtrip() {
+        let geoms = vec![Geometry::Point(Point::new(Coordinate::new_3dm(
+            1.0, 2.0, 3.0, 4.0,
+        )))];
+        let arr =
+            encode_native_array(&geoms, EncodingType::Point, CoordDim::Xyzm).expect("encode xyzm");
+        let back = decode_native_array(arr.as_ref(), EncodingType::Point).expect("decode xyzm");
+        assert_eq!(back, geoms);
     }
 
     #[test]

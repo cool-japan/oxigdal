@@ -5,7 +5,362 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-07-28
+
+Production-hardening campaign (2026-07): a workspace-wide, multi-agent defect
+sweep across all 76 crates surfaced **342 confirmed defects**
+(47 critical / 84 high / 83 medium / 33 low). **314 were fixed** across 38 crate
+lanes (~520 files changed); the remaining 79 were honestly deferred, each left
+with a safe typed-error path — a loud `Unsupported*` / `NotImplemented` /
+`DecodingError` rather than silent or fabricated data. Quality gates all green:
+`cargo fmt --check` clean; `cargo clippy --workspace --all-features --all-targets`
+0 warnings; `cargo nextest run --all-features` 17,723 passed / 0 failed /
+100 skipped (16,307 passed / 0 failed / 79 skipped on default features); 416
+doc tests passing; `cargo deny check` passing. The categorized list of
+deferrals carried to v0.3.0 is in TODO.md.
+
+### Fixed
+
+**Format drivers**
+
+- **oxigeo-jpeg2000**: two CRITICAL correctness bugs fixed — multi-tile decode now
+  `Psot`-bounds each tile's bitstream and composites it at its real pixel offset
+  (previously every tile silently returned tile 0), and the JP2 box parser now
+  recurses into `jp2h` so `ihdr`/`colr` in spec-conformant `.jp2` files are read
+- **oxigeo-geotiff**: real planar-configuration (`PlanarConfiguration=2`) decoding;
+  authoritative EPSG projected/geographic classification; a working JPEG/WebP writer
+  path; the silent `GeoKeyDirectory` error and a policy-violating `expect()` removed;
+  a `usize`-overflow bug in header-driven allocation fixed
+- **oxigeo** (umbrella): fixed GitHub issue #12, "Metadata missing when reading
+  geotif" — the lightweight `extract_tiff_info()` peek parser used by `Dataset::open()`
+  (distinct from the full `oxigeo-geotiff` driver above) only scanned a GeoTIFF's
+  first 8 KiB, so `ModelPixelScaleTag`/`ModelTiepointTag`/`GeoKeyDirectoryTag` values
+  stored out-of-line past that offset — routine for striped TIFFs with many strips —
+  were silently treated as absent and `crs()`/`geotransform()`/`bounds()` all returned
+  `None` even though the tags were present and well-formed; the peek buffer now
+  extends up to a bounded 1 MiB when a georeferencing tag's value lands past the
+  initial window, a Y-axis sign inversion in the derived `GeoTransform` is fixed
+  (`ModelPixelScaleTag`'s Y scale is a positive magnitude per spec but
+  `GeoTransform::north_up` expects a negative `pixel_height`), and `bounds()` —
+  previously hardcoded to `None` — is now derived from the geotransform and raster
+  dimensions; regression test `test_issue_12_far_offset_georeferencing` added
+- **oxigeo-drivers/grib**: CRITICAL DRT 5.40 silent-corruption bug fixed — the GRIB2
+  decoder now dispatches on the Data Representation Template number, so a
+  JPEG2000/PNG/CCSDS payload can never fall through to the simple-packing
+  bit-unpacker; DRT 5.40 is wired to a real Pure-Rust JPEG2000 decode via
+  `oxigeo-jpeg2000` (new default-on `jpeg2000` feature)
+- **oxigeo-shapefile** (vector drivers): the Polygon reader now reconstructs
+  multi-part polygons by ESRI ring winding (clockwise = exterior, CCW = hole) with
+  containment-based hole assignment, emitting `MultiPolygon` for multiple exteriors —
+  a two-island country shapefile round-trips instead of merging its rings
+- **oxigeo-drivers/netcdf** & **oxigeo-drivers/hdf5**: NetCDF-4 reader now recurses
+  into HDF5 sub-groups (was silently dropping their variables); the HDF5 writer's
+  chunking/compression/fill-value hints are no longer silently dropped (real chunked
+  write path plus honest errors for shapes oxih5 cannot represent); real object-header
+  parsing so `decode_chunk`/filter-pipeline/chunking are no longer dead code
+- **oxigeo-drivers/netcdf** & **oxigeo-drivers/hdf5**: attribute decoding now trusts
+  the dataspace-declared element count (`count × dtype_size`) and ignores trailing
+  bytes, so scalar/small numeric attributes written with padded payloads no longer
+  decode as phantom extra elements — this silently disabled CF `_FillValue`/
+  `scale_factor` handling for files written by oxih5 0.2.1, whose `FileWriter` padded
+  sub-8-byte scalar attribute payloads; the writer regression is now root-fixed
+  upstream in oxih5 0.2.2 (this workspace is pinned to it), and the defensive trim
+  stays in place as a belt-and-suspenders guard against older files written by 0.2.1
+- **oxigeo-drivers/geoparquet**: XYZ/XYM geometry decode ambiguity fixed
+
+**Algorithms & CRS**
+
+- **oxigeo** (umbrella): CRITICAL `Dataset::clip()` bug fixed — clip now records a
+  pixel window that every raster read (`read_band`/`bands`/`statistics`/`convert`/
+  `read_window`) crops the source file to, so a clipped dataset no longer silently
+  reprocesses the full raster
+- **oxigeo-algorithms**: real NEON SIMD (with scalar-parity tests) for morphology
+  (3×3 erode/dilate) and threshold kernels; a real CSE (let-binding hoisting) + DCE
+  (liveness/reachability) pass for the raster-algebra optimizer
+- **oxigeo-proj**: PROJ `+proj=hgridshift` / `+proj=vgridshift` pipeline steps now
+  actually apply a grid — new `GridRegistry` + `Pipeline::with_hgrid/with_vgrid` and
+  evaluators calling the crate's NTv2 grid parser (a sign bug in it was fixed)
+
+**Server & OGC services**
+
+- **oxigeo-server**: the `/tiles/{layer}/{z}/{x}/{y}.{fmt}` XYZ endpoint now renders
+  real raster data — reads the intersecting source window, reprojects Web-Mercator
+  tiles into the dataset's native CRS (per-pixel inverse warp for non-3857 data),
+  applies the layer colormap/RGB style, and masks off-dataset/nodata pixels as
+  transparent — replacing a hard-coded checkerboard
+- **oxigeo-services**: WPS `buffer`/`clip`/`union` now perform real geometry math via
+  `oxigeo-algorithms` and return the computed GeoJSON (previously ignored their
+  inputs); CQL2 gained `!=`/`<>`, `IN (...)`, and `IS [NOT] NULL`
+
+**Query engine**
+
+- **oxigeo-query** / **oxigeo-index**: JOIN output now preserves native column types
+  instead of stringifying everything; SELECT projection lists are actually applied;
+  HAVING is executed (including aggregates referenced only by HAVING); the WHERE
+  evaluator gained `BETWEEN`/`IN`/`CASE`/`CAST` with real type coercion
+
+**ML**
+
+- **oxigeo-ml**: model pruning/quantization no longer corrupts ONNX files — a real
+  ONNX protobuf walker (`optimization/onnx_weights.rs`) applies genuine tensor
+  transforms; `ModelVersion` `Ord` bug fixed
+- **oxigeo-ml-foundation**: the crate now compiles and trains — a genuine trainable
+  scirs2-neural backend (real forward/backward/optimizer step with explicit gradient
+  routing) replaces code that referenced removed `rand` APIs and mismatched types
+
+**Cloud & DB connectors**
+
+- **oxigeo-postgis**: `Transaction::drop` now issues a real implicit `ROLLBACK`
+  (was a log-only message that leaked locks) with a double-take guard
+- **oxigeo-db-connectors**: MySQL/TimescaleDB SQL-injection surfaces closed via a new
+  `crate::sql` identifier-quoting/literal-escaping module plus parameter binding
+- **oxigeo-cloud**: CRITICAL rs3gw tokio nested-runtime panic fixed; byte-range reads,
+  the prefetch I/O driver, OAuth2/SAS credential refresh (HttpBackend), and STAC fixes
+- **oxigeo-cloud-enhanced**: fabricated Azure (Cost/Monitor/ML/Synapse) and GCP (Vertex
+  AI/Dataflow/Cost) clients replaced with real, bearer-token-authenticated REST clients
+  behind the existing `azure`/`gcp` features — Azure Cost Management queries/forecasts/
+  budgets/Advisor, Azure Monitor metrics/Log Analytics/alerts/diagnostic settings, Azure
+  ML v2 control-plane compute/model/endpoint/job management, Synapse SQL/Spark pool (ARM)
+  management and Spark job/pipeline submission (Livy); GCP Dataflow template launch with
+  job status/list/metrics/cancel/drain, Vertex AI model/endpoint/training/batch-prediction
+  (long-running-operation polling), and GCP Cost Management via BigQuery billing export
+  plus Cloud Billing budgets/Recommender — every previously-fabricated success/ID/
+  empty-list is now a real call or an honest typed `NotImplemented`. True data-plane
+  operations a control-plane REST client can't mint stay `NotImplemented` (Monitor
+  metric/diagnostic ingestion, Cost alert/export, Synapse `execute_query`, ML
+  `invoke_endpoint`, GCP cost forecast/export)
+
+**HA & infra**
+
+- **oxigeo-ha**: PITR, snapshot, backup, and DR were entirely fabricated (canned bytes,
+  always-pass tests) — replaced with real WAL + on-disk persistence and injectable
+  executors; a genuine Raft log-replication module (`failover/log_replication.rs`) with
+  `AppendEntries` consistency check, conflict truncation, and majority commit added
+- **oxigeo-cluster** (cluster-dist): leader heartbeats now travel over the transport to
+  followers (real `AppendEntries`-style RPC + handler) so followers stop perpetually
+  re-running elections; W-TinyLFU is now reachable and used by the multi-tier cache
+- **oxigeo-kinesis** / **oxigeo-kafka** / **oxigeo-pubsub**: fake/no-op broker paths
+  replaced with real implementations and honest errors — Firehose transformation now
+  actually happens; Kafka read-process-write exactly-once wired to real transactions
+
+**Bindings**
+
+- **oxigeo-node**: multi-band GeoTIFF save (BIP interleave round-trip); GeoJSON parser
+  handles every geometry type; `CancellationToken` wired into batch/parallel processors
+  doing real chunked multi-threaded per-pixel work
+- **oxigeo-jupyter**: `%crs`/`%bounds`/`%stats` now read a real parsed GeoTIFF dataset
+  instead of returning hard-coded `"(example)"` literals
+- **oxigeo-python**: `open_raster`/`create_raster` no longer silently discard the
+  `driver`/`options` arguments — a real remote/cloud data-source layer (`remote.rs`)
+  wires `driver="COG"` and S3/HTTP options through to `oxigeo-cloud`
+
+**no_std & platform**
+
+- **oxigeo-core** / **oxigeo-embedded**: the no_std/embedded claim is now real
+  end-to-end — both crates genuinely cross-compile for bare-metal
+  `thumbv7em-none-eabihf` (Cortex-M4) and `riscv32imac-unknown-none-elf` (verified with
+  actual `--target` builds); `parking_lot`/`crossbeam` are std-gated; `RealtimeScheduler`
+  deadline enforcement now actually fires
+- **oxigeo-gpu** / **oxigeo-gpu-advanced**: `reproject_gpu`/`execute_gpu` no longer error
+  `InvalidBuffer` at runtime — the output buffers now request `MAP_READ` usage
+  (verified on Metal)
+- **oxigeo-proj**: the `no_std` (`--no-default-features`) build was broken — the crate
+  declared `#![cfg_attr(not(feature = "std"), no_std)]` but failed with 63 errors; `extern
+  crate alloc` is now unconditional and the alloc-prelude imports
+  (`String`/`Vec`/`Box`/`ToString`/`format!`) plus `core::f64::consts` replacements were
+  added across the crate, so `no_std` genuinely compiles and its tests pass
+
+**Release-verification pass**
+
+- **oxigeo-cloud**: a doctest in the multi-cloud abstraction example was missing a
+  `#[cfg(feature = "s3")]` guard, so `cargo test --doc` failed to compile it under
+  default (non-`s3`) features
+- **oxigeo-drivers-advanced**: the GeoPackage doctest in `src/lib.rs` had the same bug —
+  `gpkg::GeoPackage` used with no `#[cfg(feature = "geopackage")]` guard, because the
+  doc prose wrongly called `geopackage` "enabled by default"; fixed with the guard, the
+  prose, and a `fn example()`/`async fn example()` in place of `fn main`
+- 9 `rustdoc::private_intra_doc_links` violations fixed across 8 files in 7 crates —
+  `oxigeo-index`, `oxigeo-gateway`, `oxigeo-security` (×2 files), `oxigeo-drivers/hdf5`,
+  `oxigeo-gpu`, `oxigeo-ml-foundation`, `oxigeo-postgis`
+- Publish-order bug: `oxigeo-grib` (its default-on `jpeg2000` feature depends on
+  `oxigeo-jpeg2000`) was sequenced *before* `oxigeo-jpeg2000` in both
+  `~/work/pub_oxigeo.sh` and `scripts/publish-order.txt` — publishing in that order
+  would have failed with an unresolved dependency; both are now correctly ordered
+- 3 crates were missing `repository` metadata: `oxigeo-geojson-stream`, `oxigeo-index`,
+  `oxigeo-noalloc`
+- **oxigeo-node**: npm `optionalDependencies` were still pinned to `0.2.0` while the
+  package itself is `0.2.1`
+- Two hardcoded version strings in HTTP `User-Agent` headers (`oxigeo-stac`,
+  `oxigeo-ml`) replaced with `env!("CARGO_PKG_VERSION")` so they can no longer drift
+  from the crate version
+
+### Added
+
+- **oxigeo-drivers/zarr**: the empty Zarr v2 reader/writer stubs replaced with a working
+  v2 read/write path (chunk-key builder, compressor+filter pipeline, fill values,
+  dimension separator, dtype sizing); the ZEP-0002 v3 sharding codec; the fake ZFP codec
+  made honest (mode-honoring, overflow-checked)
+- **oxigeo-drivers/geoparquet**: the writer now emits real attribute columns and a
+  `covering.bbox` column (was silently dropping all attributes); extended-WKB nested
+  geometry encoding; Hive-style + spatial (bbox-grid/quadtree/Z-order) partitioning
+- **oxigeo-geotiff**: real LERC decode (BitStuffer2 v1/v2/v3) and a JPEG-in-TIFF read
+  path that auto-merges shared `JPEGTables` (tag 347)
+- **oxigeo-proj**: native forward/inverse projections + round-trip tests for Equidistant
+  Conic, Sinusoidal, Mollweide, Robinson, Eckert IV/VI, Cassini-Soldner, and
+  Gauss-Krüger (extended zones)
+- **oxigeo-drivers/grib**: template-based product-definition expansion (PDT 0.0–0.48
+  coverage) and NetCDF CF-conventions v1.11 parsing (`cf_conventions/v1_11.rs`)
+- **oxigeo-gpu**: reprojection, raster-algebra, and hillshade WGSL compute shaders;
+  multi-GPU workload distribution; WebGPU/WASM shader compilation via a compile-time
+  `ShaderRegistry`
+- **oxigeo-ml**: ONNX model hot-reload (file-watch + atomic swap), content-addressed
+  inference caching (SHA-256 key + LRU), adaptive batch sizing, and model
+  versioning / deterministic A/B testing
+- **oxigeo** / **oxigeo-streaming**: `DatasetOpenBuilder`/`DatasetCreateBuilder` fluent
+  builders; a `FeatureStream`/`TileStream` streaming-iterator API
+- **oxigeo-mbtiles** / **oxigeo-gpkg** / **oxigeo-pmtiles**: a real SQLite-backed MBTiles
+  writer (now genuinely persists to `.mbtiles`); an opt-in R-tree spatial-index writer
+  for GeoPackage
+- **fuzz/**: 7 new libFuzzer targets (NetCDF, HDF5 superblock/object-headers, VRT XML,
+  GeoJSON, and more), bringing coverage to 11 format/parser targets
+- **tests/**: the 1,337-line mock re-implementation in `vector_advanced.rs` replaced —
+  33 tests now exercise the real `oxigeo-algorithms` vector stack
+- **oxigeo-gateway serving layer**: the previously stubbed `Gateway::serve()` (it accepted
+  TCP connections and its `handle_connection` did nothing) is now a real axum 0.8 HTTP
+  service — a new `GatewayServer` / `GatewayServerBuilder` wires the crate's
+  already-implemented components into a running router:
+  - routes: `GET /health`, `GET /gateway/metrics`, `POST /graphql` (plus a GraphiQL page
+    when introspection is enabled and a `/graphql/ws` subscription endpoint when
+    `enable_subscriptions` is set — that flag is now actually enforced), a `GET /ws`
+    WebSocket upgrade (WebSocketManager wiring, default `EchoHandler` route, per-user
+    connection caps, ping keepalive, gated on `enable_websocket`), and a load-balanced
+    reverse-proxy fallback
+  - reverse proxy: a streaming hyper 1 connection client, HTTPS upstreams over the
+    Pure-Rust OxiTLS (rustls/RustCrypto) probe connector, hop-by-hop header stripping,
+    `FailoverManager` retries that finally honor the previously-ignored
+    `LoadBalancerConfig.retry_attempts`, circuit-breaker outcome reporting, and per-attempt
+    request timeouts
+  - pipeline: query-free trace spans (no query strings), API version negotiation +
+    deprecation headers, the in-house middleware chain (CORS with real `OPTIONS` preflight,
+    compression, response caching, logging, metrics), JWT/API-key/session auth via
+    `MultiAuthenticator` (authenticate-if-present plus a `require_auth` mode, with the
+    `require_mfa` flag now enforced), atomic rate limiting with `X-RateLimit-*` /
+    `Retry-After` headers, request timeout and body-size limits; a `require_permission`
+    RBAC guard is available for route groups and `GatewayError` now implements
+    `IntoResponse`
+  - honesty fixes: `CachingMiddleware` is now a real LRU+TTL cache instead of a no-op stub;
+    compression performs real `Accept-Encoding` negotiation; the 1,865-line
+    `middleware::advanced` module (request-ID / enhanced-logging / timeout-header /
+    error-handling / histogram-metrics / cache-control) was orphaned — never declared or
+    compiled — and is now wired in, compiling and tested; `X-Forwarded-For` is built
+    against a trusted-proxy allowlist (`with_trusted_proxies`) rather than blindly trusting
+    client-supplied values
+  - honest limitations (v0.3.0+): GraphQL resolvers still serve demo/in-memory data (no
+    storage backend); middleware-chain hops and proxied requests are buffered (bounded by
+    `max_body_size`) while proxy responses stream; there is no WebSocket pass-through
+    proxying, no upstream keep-alive pooling, and response-side transformation is not yet
+    wired (request-side only)
+  - the crate's own test suite grew from 266 to 381 tests (1 → 3 doctests)
+
+### Security
+
+- **oxigeo-services**: WFS-T CQL filtering now **fails closed** on unparseable CQL —
+  an unparseable filter previously failed *open*, matching every feature and enabling a
+  mass delete/update; it now rejects the request
+- **Memory-safety (DoS/OOM hardening)**: header-driven allocation caps added to the
+  NetCDF, HDF5, GRIB, and GeoTIFF parsers so a crafted header can no longer trigger a
+  multi-gigabyte allocation; includes the GeoTIFF `usize`-overflow fix noted above
+- **oxigeo-gateway**: load-balancer health checks now issue genuine HTTP/1.1-over-TCP
+  requests (real Pure-Rust TLS via the OxiTLS RustCrypto provider for HTTPS) instead of
+  always returning healthy, so a down backend is correctly marked unhealthy; the
+  `MalwareScanner` now actually reads and inspects its input; the gRPC health check
+  **fails closed** with an honest error rather than reporting unknown backends healthy
+- **oxigeo-observability**: health checks do real work (sysinfo disk usage, injectable
+  connectivity checker) instead of returning hard-coded `Healthy`; a stub `LabelMatch`
+  alert condition that always returned `true` fixed
+
+### Changed
+
+- **oxigeo-db-connectors**: default features made Pure-Rust — the C-FFI database backends
+  are now strictly opt-in behind named features
+- **oxigeo-query**: `tokio` moved to dev-dependencies and `rayon` gated behind a
+  default-on `parallel` feature, so the SQL engine is consumable from
+  `wasm32-unknown-unknown`
+- **Packaging & legal**: added `NOTICE` and `THIRD_PARTY.md` (Apache-2.0 §4(d)
+  attribution + generated third-party license inventory), a committed `deny.toml`
+  (advisories + bans + licenses) wired into `cargo deny check`, an in-repo 75-crate
+  topological publish-order manifest (previously only in an external script), a license
+  note for the vendored `pathfinder_simd`, and `[package.metadata.docs.rs]` fixes on
+  the C-FFI-gated crates
+- **Supply-chain hygiene**: `.cargo/audit.toml`'s advisory allowlist re-verified against
+  the current lockfile and pruned from 21 to 15 entries — `aws-lc-sys`
+  (RUSTSEC-2026-0044/-0048) and `tokio-postgres`/`postgres-protocol`
+  (RUSTSEC-2026-0178/-0179/-0180) are already patched at our pinned versions, and
+  `proc-macro-error2` (RUSTSEC-2026-0173) is no longer in the dependency graph; the new
+  `deny.toml` `[bans]` list enforces this workspace-wide, and `tower-http`'s
+  `compression-br`/`compression-gzip`/`compression-deflate` features (unused — no
+  `CompressionLayer` anywhere — but pulling banned `flate2`/`brotli`/`miniz_oxide` outside
+  `deny.toml`'s allowed wrapper scoping) are now explicitly excluded in every consumer;
+  `SECURITY.md`'s contact address corrected to `security@cooljapan.tech`
+- Dependencies kept current per the Latest Crates Policy (`arrow` 58 → 59, `indicatif`
+  0.18 dropping the unmaintained `number_prefix`, `oxih5`/`oxih5-core`/`oxinetcdf`
+  0.2.0 → 0.2.2, `scirs2-core` and the `scirs2-{neural,autograd,optimize,datasets,
+  metrics,linalg,vision,series}` family 0.6.1 → 0.6.4)
+- A further round of Latest Crates Policy bumps: `base64` 0.22 → 0.23, `pollster`
+  0.4 → 1.0, `las` 0.9 → 0.10, `jsonwebtoken` 10 → 11, `ed25519-dalek` 2 → 3
+  (`std` feature dropped, `zeroize` retained), `azure_core` 1.0 → 1.1,
+  `google-cloud-pubsub` 1.1 → 1.2, `statrs` 0.18 → 0.19, `tokio-tungstenite`
+  0.29 → 0.30. Only `las` 0.10 required a source change: it replaced the
+  per-point `Reader::points()` streaming iterator with a batch/buffer API
+  (`Reader::read_all()` / `read_points(n)` returning a `PointData` slab whose
+  `.points()` yields the same row-oriented iterator), so `oxigeo-3d`'s
+  `LasReader::read_all`/`read_n` were updated accordingly; the other eight
+  bumps were drop-in with no source changes required
+- **Dependency hygiene**: genuinely-unused dependencies removed from 66 crates'
+  `Cargo.toml` files (found via `cargo-machete`, each removal build-verified);
+  `deny.toml`'s advisory-ignore list pruned from 15 to 7 entries (the other 8 IDs no
+  longer match anything in the current `Cargo.lock`) and its license allowlist trimmed
+  of entries no longer reachable in the dependency graph; a `wildcard`-dependency
+  `cargo-deny` warning resolved via `allow-wildcard-paths` (three intra-workspace
+  dev-dependencies — `oxigeo-3d` → `oxigeo-copc`, `oxigeo-dev-tools` →
+  `oxigeo-algorithms`, `oxigeo-qc` → `oxigeo-geojson` — are deliberately unpinned path
+  deps so publish ordering doesn't become circular)
+
+### Removed
+
+- **`oxigeo-kafka` is retired as a project, effective 0.2.1.** The crate has been
+  deleted from the workspace and **will receive no further releases**; the versions
+  already on crates.io (0.0.1 and 0.2.0) have been yanked. This is a deliberate
+  retirement, not an oversight — the crate is gone on purpose and is not coming back.
+
+  Removed alongside it: the `kafka` feature of **oxigeo-etl** (and with it
+  `KafkaSource`/`KafkaSourceConfig`, `KafkaSink`/`KafkaSinkConfig`, their prelude
+  re-exports, and the `Kafka` variants of `SourceError`/`SinkError`), the `kafka`
+  feature of **oxigeo-workflow** (which gated an `rdkafka` dependency that no source
+  file in that crate ever used), and the `rdkafka` entry in `[workspace.dependencies]`.
+
+  Reason: `oxigeo-kafka` was the **sole mandatory C-toolchain dependency in the entire
+  workspace** — `rdkafka-sys` builds librdkafka via `cmake` — which stands against the
+  COOLJAPAN Pure Rust Policy. At 4,831 lines it was 0.62% of the workspace's ~778k
+  lines of Rust and had **zero reverse dependencies inside the workspace**: nothing
+  built on it. As a direct result of the removal, **`cargo check --workspace
+  --all-features` no longer requires `cmake` or a C toolchain** and completes clean.
+
+  Migration: use a dedicated Kafka client (e.g. `rdkafka`) directly in your own code,
+  or one of the sibling messaging crates that remain supported — `oxigeo-streaming`,
+  `oxigeo-kinesis`, `oxigeo-pubsub`, `oxigeo-mqtt`. Workflow definitions can still
+  *describe* a Kafka endpoint over the wire: the pure-Rust `IntegrationType::Kafka`
+  and `MessageQueueType::Kafka` metadata enums in `oxigeo-workflow` are unchanged.
+
+- **oxigeo-proj**: the `proj-sys` feature and the `proj` C-bindings dependency (C
+  bindings to the system libproj) removed, per the COOLJAPAN Pure Rust Policy. All
+  coordinate transformation already routed through the pure-Rust `oxiproj` engine, so
+  the feature was vestigial — it contributed only an unused error variant and its
+  `From<proj::ProjError>` conversion, and no transformation path ever called the C
+  library. Its one real effect was that `--all-features` builds required `cmake` and a
+  system libproj (the `proj` crate builds PROJ from source), which broke
+  `cargo test --workspace --all-features`. For higher-fidelity CRS coverage use the
+  pure-Rust `proj-db` feature (oxisql PROJ.db reader, ~7500 EPSG codes) instead.
 
 ## [0.2.0] - 2026-07-20
 
@@ -742,7 +1097,8 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigeo>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigeo/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigeo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/cool-japan/oxigeo/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/cool-japan/oxigeo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/cool-japan/oxigeo/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.7
 [0.1.6]: https://github.com/cool-japan/oxigdal/compare/v0.1.5...v0.1.6

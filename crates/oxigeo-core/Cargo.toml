@@ -15,28 +15,64 @@ categories = ["science", "data-structures", "no-std"]
 
 [features]
 default = ["std"]
-std = ["thiserror/std", "serde/std", "dep:memmap2"]
-alloc = []
+# The `std` feature turns on the OS-backed capabilities: memory-mapped I/O, the
+# advanced memory-management module (custom allocators / arenas / pools / NUMA /
+# huge pages), the JSON conversions and the `time`-backed date field. Every
+# dependency that cannot compile without libstd (`parking_lot`, `libc`,
+# `memmap2`), plus `serde_json`/`time` (which resolve with std-requiring default
+# features through the workspace) and `bytemuck` (only used by the std-only
+# memory module), is gated here so a genuine bare-metal
+# `--no-default-features --features alloc` build never has to compile them.
+std = [
+    "thiserror/std",
+    "serde/std",
+    "dep:serde_json",
+    "dep:time",
+    "dep:memmap2",
+    "dep:parking_lot",
+    "dep:libc",
+    "dep:bytemuck",
+]
+# `alloc` enables no_std builds that still have a global allocator. It pulls in
+# `libm` because `core` (unlike `std`) does not provide `sqrt`/`floor`/`atan2`/
+# `mul_add`; see `crate::math`. `libm` is pure Rust, so this keeps the default
+# (`std`) build free of it while giving genuine bare-metal targets working float
+# math.
+alloc = ["dep:libm"]
 arrow = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema", "std"]
 async = ["dep:async-trait", "dep:futures", "std"]
 
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-byteorder = { workspace = true }
-bytes = { workspace = true, optional = true }
-time = { workspace = true }
-base64 = { workspace = true, optional = true }
+# `serde_json` is only used by the std-gated `FieldValue` <-> JSON `Value`
+# conversions in `vector::feature` (every `serde_json::` reference there is behind
+# `#[cfg(feature = "std")]`), so it is optional and pulled in exclusively by the
+# `std` feature. The workspace declaration resolves it with its default `std`
+# feature, which cannot compile on a target without libstd — hence the gating.
+serde_json = { workspace = true, optional = true }
+# `time` is pulled from the workspace with the `formatting` feature, which forces
+# `time/std`. The only `time::` users here are the `FieldValue::Date(time::Date)`
+# variant and its helpers, all `#[cfg(feature = "std")]`-gated, so `time` is
+# optional and enabled only by the `std` feature — keeping no_std/alloc clean.
+time = { workspace = true, optional = true }
 
 # Memory-mapped I/O (std-only)
 memmap2 = { workspace = true, optional = true }
 
-# Memory optimization dependencies
-libc = { workspace = true }
-parking_lot = { workspace = true }
-crossbeam = { workspace = true }
-bytemuck = { workspace = true }
+# Memory optimization dependencies. These are only ever used by the std-only
+# `memory` module (see src/lib.rs — `#[cfg(feature = "std")] pub mod memory`),
+# so they are optional and pulled in exclusively by the `std` feature. Making
+# them mandatory previously broke every real no_std target because `parking_lot`
+# and `libc` cannot compile without an operating system / libstd.
+libc = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+
+# Pure-Rust libm for floating-point ops that `core` lacks on no_std targets
+# (sqrt/floor/atan2/mul_add). Enabled by the `alloc` feature; never compiled for
+# the default `std` build. See `crate::math`.
+libm = { workspace = true, optional = true }
 
 # Arrow support
 arrow-array = { workspace = true, optional = true }

@@ -95,4 +95,4 @@ pub use vector::{
     gpkg_geom_to_geojson,
 };
 pub use wal::{WalReader, overlay_wal};
-pub use writer::GeoPackageBuilder;
+pub use writer::{CustomSrs, GeoPackageBuilder};

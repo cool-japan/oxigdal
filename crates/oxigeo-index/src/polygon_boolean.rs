@@ -70,6 +70,9 @@ pub fn polygon_boolean(subject: &Polygon, clip: &Polygon, op: BooleanOp) -> Bool
 /// Returns `Single` when the polygons are identical or one contains the
 /// other; `Multiple` when they are disjoint or produce separate pieces
 /// in an overlapping union; `Empty` only if both inputs are degenerate.
+// The lone `.expect()` below is reached only from the `polys.len() == 1`
+// branch, so `.into_iter().next()` is statically guaranteed to yield `Some`.
+#[allow(clippy::expect_used)]
 pub fn polygon_union(a: &Polygon, b: &Polygon) -> BooleanResult {
     let a_ext = a.exterior.coords();
     let b_ext = b.exterior.coords();
@@ -806,6 +809,9 @@ fn find_original_position(verts: &[WaVertex], orig_idx: usize) -> Option<usize> 
 ///
 /// For union, we trace the subject ring when outside the clip, and the clip
 /// ring when outside the subject, switching at intersection vertices.
+// The lone `.expect()` below is reached only after the `output.len() < 3`
+// early return, so `output.last()` is statically guaranteed to yield `Some`.
+#[allow(clippy::expect_used)]
 fn trace_weiler_union(
     subj_verts: &[WaVertex],
     clp_verts: &[WaVertex],
@@ -950,6 +956,9 @@ fn coords_close(a: Coord, b: Coord) -> bool {
 }
 
 /// Remove the closing vertex if the ring is explicitly closed (first == last).
+// The lone `.expect()` below is reached only inside the `coords.len() >= 2`
+// guard, so `coords.last()` is statically guaranteed to yield `Some`.
+#[allow(clippy::expect_used)]
 fn strip_closing(coords: &mut Vec<Coord>) {
     if coords.len() >= 2 {
         let first = coords[0];
@@ -965,6 +974,9 @@ fn strip_closing(coords: &mut Vec<Coord>) {
 // ---------------------------------------------------------------------------
 
 /// Convert a coordinate list to a [`Polygon`], ensuring the ring is closed.
+// The lone `.expect()` below is reached only after the `coords.is_empty()`
+// early return, so `ring_coords.last()` is statically guaranteed to yield `Some`.
+#[allow(clippy::expect_used)]
 fn coords_to_polygon(coords: &[Coord]) -> Polygon {
     if coords.is_empty() {
         return Polygon::simple(Ring::new(Vec::new()));

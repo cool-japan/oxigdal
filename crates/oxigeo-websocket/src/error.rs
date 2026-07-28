@@ -16,6 +16,14 @@ pub enum Error {
     #[error("Connection error: {0}")]
     Connection(String),
 
+    /// Authentication failure (missing or invalid credentials)
+    #[error("Authentication failed: {0}")]
+    Authentication(String),
+
+    /// Authorization failure (insufficient privileges)
+    #[error("Authorization failed: {0}")]
+    Authorization(String),
+
     /// Protocol error
     #[error("Protocol error: {0}")]
     Protocol(String),

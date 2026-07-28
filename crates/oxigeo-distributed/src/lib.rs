@@ -94,8 +94,12 @@
 //!
 //! let worker = Worker::new(config);
 //!
-//! // Execute tasks
-//! // (Tasks would be received from coordinator in real implementation)
+//! // Serve the worker over Arrow Flight so a coordinator can dispatch tasks to
+//! // it end-to-end via `Coordinator::dispatch_task_to_worker` (which ships the
+//! // task + its input partition through the `execute_task` Flight action):
+//! let flight_server = FlightServer::new().with_worker(std::sync::Arc::new(worker));
+//! let _service = flight_server.into_service();
+//! // tonic::transport::Server::builder().add_service(_service).serve(addr).await?;
 //! # Ok(())
 //! # }
 //! ```

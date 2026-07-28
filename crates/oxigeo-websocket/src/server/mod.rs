@@ -6,12 +6,14 @@
 //! - Connection lifecycle management
 //! - Backpressure handling
 
+pub mod auth;
 pub mod connection;
 pub mod heartbeat;
 pub mod manager;
 pub mod pool;
 mod ws_server;
 
+pub use auth::{AuthConfig, AuthPrincipal, Role};
 pub use connection::{Connection, ConnectionId, ConnectionState};
 pub use heartbeat::{HeartbeatConfig, HeartbeatMonitor};
 pub use manager::{ConnectionManager, ConnectionStats};

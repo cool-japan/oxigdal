@@ -137,17 +137,33 @@ impl WorkflowTemplate {
     }
 
     /// Instantiate the template with parameter values.
+    ///
+    /// Any optional parameter (`required: false`) that is absent from `params`
+    /// but has a `default_value` defined is filled in with that default before
+    /// validation and placeholder substitution. Required parameters and
+    /// caller-supplied values always take precedence over defaults.
     pub fn instantiate(
         &self,
         params: HashMap<String, ParameterValue>,
     ) -> Result<WorkflowDefinition> {
+        // Merge in default values for any optional parameter the caller omitted.
+        let mut merged_params = params;
+        for param in &self.parameters {
+            if !merged_params.contains_key(&param.name)
+                && let Some(default) = &param.default_value
+            {
+                merged_params.insert(param.name.clone(), default.clone());
+            }
+        }
+
         // Validate parameters
         let validator = TemplateValidator::new();
-        validator.validate_parameters(&self.parameters, &params)?;
+        validator.validate_parameters(&self.parameters, &merged_params)?;
 
         // Instantiate template
         let parameterizer = TemplateParameterizer::new();
-        let workflow_json = parameterizer.apply_parameters(&self.workflow_template, &params)?;
+        let workflow_json =
+            parameterizer.apply_parameters(&self.workflow_template, &merged_params)?;
 
         // Parse workflow definition
         let workflow: WorkflowDefinition = serde_json::from_str(&workflow_json)
@@ -304,6 +320,107 @@ mod tests {
 
         assert_eq!(template.get_required_parameters().len(), 1);
         assert_eq!(template.get_optional_parameters().len(), 1);
+    }
+
+    #[test]
+    fn test_instantiate_applies_default_value_for_omitted_optional_parameter() {
+        use crate::dag::WorkflowDag;
+
+        let mut template = WorkflowTemplate::new(
+            "test-defaults",
+            "Test Defaults",
+            "Verifies optional parameter defaults are applied",
+        );
+
+        template.add_parameter(Parameter {
+            name: "workflow_id".to_string(),
+            param_type: ParameterType::String,
+            description: "Workflow identifier".to_string(),
+            required: true,
+            default_value: None,
+            constraints: None,
+        });
+
+        template.add_parameter(Parameter {
+            name: "output_format".to_string(),
+            param_type: ParameterType::String,
+            description: "Output format driver".to_string(),
+            required: false,
+            default_value: Some(ParameterValue::String("COG".to_string())),
+            constraints: None,
+        });
+
+        // Build a real WorkflowDefinition, but with placeholder text in place of
+        // `id`/`version`, then serialize it to get a structurally valid template
+        // string (dag internals included) without hand-writing JSON.
+        let base = WorkflowDefinition {
+            id: "{{workflow_id}}".to_string(),
+            name: "Test Workflow".to_string(),
+            version: "{{output_format}}".to_string(),
+            dag: WorkflowDag::new(),
+            description: None,
+        };
+        let template_json =
+            serde_json::to_string(&base).expect("failed to serialize base workflow definition");
+        template.set_template(template_json);
+
+        // Only the required parameter is supplied; `output_format` is
+        // deliberately omitted and must be filled in from its `default_value`.
+        let mut params = HashMap::new();
+        params.insert(
+            "workflow_id".to_string(),
+            ParameterValue::String("wf-1".to_string()),
+        );
+
+        let workflow = template.instantiate(params).expect(
+            "instantiate should succeed by applying the optional parameter's default_value",
+        );
+
+        assert_eq!(workflow.id, "wf-1");
+        assert_eq!(workflow.version, "COG");
+    }
+
+    #[test]
+    fn test_instantiate_caller_value_overrides_default() {
+        use crate::dag::WorkflowDag;
+
+        let mut template = WorkflowTemplate::new(
+            "test-override",
+            "Test Override",
+            "Verifies caller-supplied values win over defaults",
+        );
+
+        template.add_parameter(Parameter {
+            name: "output_format".to_string(),
+            param_type: ParameterType::String,
+            description: "Output format driver".to_string(),
+            required: false,
+            default_value: Some(ParameterValue::String("COG".to_string())),
+            constraints: None,
+        });
+
+        let base = WorkflowDefinition {
+            id: "fixed-id".to_string(),
+            name: "Test Workflow".to_string(),
+            version: "{{output_format}}".to_string(),
+            dag: WorkflowDag::new(),
+            description: None,
+        };
+        let template_json =
+            serde_json::to_string(&base).expect("failed to serialize base workflow definition");
+        template.set_template(template_json);
+
+        let mut params = HashMap::new();
+        params.insert(
+            "output_format".to_string(),
+            ParameterValue::String("GTiff".to_string()),
+        );
+
+        let workflow = template
+            .instantiate(params)
+            .expect("instantiate should succeed");
+
+        assert_eq!(workflow.version, "GTiff");
     }
 
     #[test]

@@ -36,6 +36,15 @@ pub trait EvictionPolicy<K: Clone + Hash + Eq>: Send + Sync {
 
     /// Clear all tracking data
     fn clear(&mut self);
+
+    /// The concrete policy variant this implementation represents.
+    ///
+    /// Lets callers (and tests) observe which policy a boxed
+    /// `dyn EvictionPolicy` actually is — for instance to confirm that a tier was
+    /// wired with [`EvictionPolicyType::WTinyLfu`] rather than the LRU default.
+    fn policy_type(&self) -> EvictionPolicyType {
+        EvictionPolicyType::Lru
+    }
 }
 
 /// Statistics for eviction policy
@@ -206,6 +215,10 @@ impl<K: Clone + Hash + Eq + Send + Sync + 'static> EvictionPolicy<K> for LfuEvic
         self.frequencies.clear();
         self.stats = EvictionStats::default();
     }
+
+    fn policy_type(&self) -> EvictionPolicyType {
+        EvictionPolicyType::Lfu
+    }
 }
 
 /// ARC (Adaptive Replacement Cache) eviction policy
@@ -346,6 +359,10 @@ impl<K: Clone + Hash + Eq + Send + Sync + 'static> EvictionPolicy<K> for ArcEvic
         self.p = 0;
         self.stats = EvictionStats::default();
     }
+
+    fn policy_type(&self) -> EvictionPolicyType {
+        EvictionPolicyType::Arc
+    }
 }
 
 /// TTL-based eviction policy
@@ -428,6 +445,10 @@ impl<K: Clone + Hash + Eq + Send + Sync + 'static> EvictionPolicy<K> for TtlEvic
     fn clear(&mut self) {
         self.expiration_times.clear();
         self.stats = EvictionStats::default();
+    }
+
+    fn policy_type(&self) -> EvictionPolicyType {
+        EvictionPolicyType::Ttl
     }
 }
 
@@ -520,11 +541,16 @@ impl<K: Clone + Hash + Eq + Send + Sync + 'static> EvictionPolicy<K> for CostAwa
         self.costs.clear();
         self.stats = EvictionStats::default();
     }
+
+    fn policy_type(&self) -> EvictionPolicyType {
+        EvictionPolicyType::CostAware
+    }
 }
 
 /// Eviction policy type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum EvictionPolicyType {
+    #[default]
     /// Least Recently Used
     Lru,
     /// Least Frequently Used

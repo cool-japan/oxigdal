@@ -35,6 +35,80 @@ fn db_err(e: impl std::fmt::Display) -> Error {
 }
 
 // ---------------------------------------------------------------------------
+// Compact binary encoding for `RecordMetadata.tags` / `.attributes`
+//
+// Neither `Vec<String>` nor `Vec<(String, String)>` derive `serde::Serialize`
+// (this crate's `serde` support is an optional feature, and the native
+// SQLite backend must work without it), so these are hand-rolled
+// length-prefixed binary encodings stored in dedicated BLOB columns. This
+// avoids any ambiguity from separator characters that could legitimately
+// appear inside a tag or attribute value.
+// ---------------------------------------------------------------------------
+
+fn encode_tags(tags: &[String]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for tag in tags {
+        let bytes = tag.as_bytes();
+        buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(bytes);
+    }
+    buf
+}
+
+fn read_length_prefixed_string(blob: &[u8], pos: &mut usize) -> Result<String> {
+    if *pos + 4 > blob.len() {
+        return Err(Error::Database(
+            "corrupt metadata blob: truncated length prefix".to_string(),
+        ));
+    }
+    let len =
+        u32::from_le_bytes([blob[*pos], blob[*pos + 1], blob[*pos + 2], blob[*pos + 3]]) as usize;
+    *pos += 4;
+    if *pos + len > blob.len() {
+        return Err(Error::Database(
+            "corrupt metadata blob: truncated string data".to_string(),
+        ));
+    }
+    let s = String::from_utf8(blob[*pos..*pos + len].to_vec())
+        .map_err(|e| Error::Database(format!("corrupt metadata blob: invalid utf8: {e}")))?;
+    *pos += len;
+    Ok(s)
+}
+
+fn decode_tags(blob: &[u8]) -> Result<Vec<String>> {
+    let mut tags = Vec::new();
+    let mut pos = 0usize;
+    while pos < blob.len() {
+        tags.push(read_length_prefixed_string(blob, &mut pos)?);
+    }
+    Ok(tags)
+}
+
+fn encode_attributes(attrs: &[(String, String)]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for (key, value) in attrs {
+        let kb = key.as_bytes();
+        let vb = value.as_bytes();
+        buf.extend_from_slice(&(kb.len() as u32).to_le_bytes());
+        buf.extend_from_slice(kb);
+        buf.extend_from_slice(&(vb.len() as u32).to_le_bytes());
+        buf.extend_from_slice(vb);
+    }
+    buf
+}
+
+fn decode_attributes(blob: &[u8]) -> Result<Vec<(String, String)>> {
+    let mut attrs = Vec::new();
+    let mut pos = 0usize;
+    while pos < blob.len() {
+        let key = read_length_prefixed_string(blob, &mut pos)?;
+        let value = read_length_prefixed_string(blob, &mut pos)?;
+        attrs.push((key, value));
+    }
+    Ok(attrs)
+}
+
+// ---------------------------------------------------------------------------
 // SqliteBackend
 // ---------------------------------------------------------------------------
 
@@ -98,7 +172,9 @@ impl SqliteBackend {
                 updated_at INTEGER NOT NULL,
                 deleted INTEGER NOT NULL,
                 source INTEGER NOT NULL,
-                sync_status INTEGER NOT NULL
+                sync_status INTEGER NOT NULL,
+                tags BLOB NOT NULL,
+                attributes BLOB NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_records_key ON records(key);
@@ -130,7 +206,8 @@ impl SqliteBackend {
     /// Map an OxiSQL `Row` to a [`Record`].
     fn row_to_record(row: &oxisql_core::Row) -> Result<Record> {
         // Expected column order: id(0), key(1), data(2), version(3),
-        //   created_at(4), updated_at(5), deleted(6)
+        //   created_at(4), updated_at(5), deleted(6), source(7),
+        //   sync_status(8), tags(9), attributes(10)
         let id_str = match row.get_by_index(0) {
             Some(Value::Text(s)) => s.clone(),
             other => {
@@ -194,6 +271,42 @@ impl SqliteBackend {
                 )));
             }
         };
+        let source_code: i64 = match row.get_by_index(7) {
+            Some(Value::I64(n)) => *n,
+            other => {
+                return Err(Error::Database(format!(
+                    "record.source: expected I64, got {:?}",
+                    other
+                )));
+            }
+        };
+        let sync_status_code: i64 = match row.get_by_index(8) {
+            Some(Value::I64(n)) => *n,
+            other => {
+                return Err(Error::Database(format!(
+                    "record.sync_status: expected I64, got {:?}",
+                    other
+                )));
+            }
+        };
+        let tags_blob: Vec<u8> = match row.get_by_index(9) {
+            Some(Value::Blob(b)) => b.clone(),
+            other => {
+                return Err(Error::Database(format!(
+                    "record.tags: expected BLOB, got {:?}",
+                    other
+                )));
+            }
+        };
+        let attributes_blob: Vec<u8> = match row.get_by_index(10) {
+            Some(Value::Blob(b)) => b.clone(),
+            other => {
+                return Err(Error::Database(format!(
+                    "record.attributes: expected BLOB, got {:?}",
+                    other
+                )));
+            }
+        };
 
         let id = RecordId::parse(&id_str).map_err(|e| Error::Database(e.to_string()))?;
 
@@ -204,6 +317,13 @@ impl SqliteBackend {
             Error::Database(format!("invalid updated_at timestamp: {updated_at}"))
         })?;
 
+        let metadata = crate::types::RecordMetadata {
+            tags: decode_tags(&tags_blob)?,
+            attributes: decode_attributes(&attributes_blob)?,
+            source: crate::types::RecordSource::from_code(source_code),
+            sync_status: crate::types::SyncStatus::from_code(sync_status_code),
+        };
+
         Ok(Record {
             id,
             key,
@@ -212,7 +332,7 @@ impl SqliteBackend {
             created_at: created,
             updated_at: updated,
             deleted: deleted != 0,
-            metadata: crate::types::RecordMetadata::default(),
+            metadata,
         })
     }
 
@@ -376,14 +496,17 @@ impl StorageBackend for SqliteBackend {
         let created_i = record.created_at.timestamp();
         let updated_i = record.updated_at.timestamp();
         let deleted_i: i64 = if record.deleted { 1 } else { 0 };
-        let source_i: i64 = 0;
-        let sync_status_i: i64 = 0;
+        let source_i: i64 = record.metadata.source.to_code();
+        let sync_status_i: i64 = record.metadata.sync_status.to_code();
+        let tags_blob = encode_tags(&record.metadata.tags);
+        let attributes_blob = encode_attributes(&record.metadata.attributes);
         let id_ref: &str = &id_s;
 
         self.exec(
             "INSERT OR REPLACE INTO records
-             (id, key, data, version, created_at, updated_at, deleted, source, sync_status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             (id, key, data, version, created_at, updated_at, deleted, source, sync_status,
+              tags, attributes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             &[
                 &id_ref,
                 &key_s,
@@ -394,6 +517,8 @@ impl StorageBackend for SqliteBackend {
                 &deleted_i,
                 &source_i,
                 &sync_status_i,
+                &tags_blob,
+                &attributes_blob,
             ],
         )
         .await?;
@@ -404,7 +529,8 @@ impl StorageBackend for SqliteBackend {
     async fn get_record(&self, key: &str) -> Result<Option<Record>> {
         let rows = self
             .query(
-                "SELECT id, key, data, version, created_at, updated_at, deleted
+                "SELECT id, key, data, version, created_at, updated_at, deleted,
+                        source, sync_status, tags, attributes
              FROM records WHERE key = $1 AND deleted = 0",
                 &[&key],
             )
@@ -421,7 +547,8 @@ impl StorageBackend for SqliteBackend {
         let id_ref: &str = &id_s;
         let rows = self
             .query(
-                "SELECT id, key, data, version, created_at, updated_at, deleted
+                "SELECT id, key, data, version, created_at, updated_at, deleted,
+                        source, sync_status, tags, attributes
              FROM records WHERE id = $1 AND deleted = 0",
                 &[&id_ref],
             )
@@ -446,7 +573,8 @@ impl StorageBackend for SqliteBackend {
     async fn list_records(&self) -> Result<Vec<Record>> {
         let rows = self
             .query(
-                "SELECT id, key, data, version, created_at, updated_at, deleted
+                "SELECT id, key, data, version, created_at, updated_at, deleted,
+                        source, sync_status, tags, attributes
              FROM records WHERE deleted = 0 ORDER BY updated_at DESC",
                 &[],
             )
@@ -713,5 +841,100 @@ mod tests {
             .await
             .expect("failed to get pending");
         assert_eq!(pending.len(), 0);
+    }
+
+    /// Regression test: full `RecordMetadata` (tags, attributes, source,
+    /// sync_status) must survive a put/get round trip through
+    /// `SqliteBackend`, not silently reset to defaults.
+    #[tokio::test]
+    async fn test_put_get_record_preserves_full_metadata() {
+        let mut backend = SqliteBackend::in_memory()
+            .await
+            .expect("failed to create backend");
+        backend.initialize().await.expect("failed to initialize");
+
+        let mut record = Record::new("meta_key".to_string(), Bytes::from("meta_data"));
+        record.metadata.tags = vec!["important".to_string(), "geo:tokyo".to_string()];
+        record.metadata.attributes = vec![
+            ("owner".to_string(), "kitasan".to_string()),
+            ("region".to_string(), "ap-northeast-1".to_string()),
+        ];
+        record.metadata.source = crate::types::RecordSource::Remote;
+        record.metadata.sync_status = crate::types::SyncStatus::Synced;
+
+        backend
+            .put_record(&record)
+            .await
+            .expect("failed to put record");
+
+        let retrieved = backend
+            .get_record("meta_key")
+            .await
+            .expect("failed to get record")
+            .expect("record must exist");
+
+        assert_eq!(retrieved.metadata.tags, record.metadata.tags);
+        assert_eq!(retrieved.metadata.attributes, record.metadata.attributes);
+        assert_eq!(
+            retrieved.metadata.source,
+            crate::types::RecordSource::Remote
+        );
+        assert_eq!(
+            retrieved.metadata.sync_status,
+            crate::types::SyncStatus::Synced
+        );
+
+        // Also verify via `get_record_by_id` and `list_records`, which share
+        // the same row-mapping path.
+        let by_id = backend
+            .get_record_by_id(&record.id)
+            .await
+            .expect("failed to get by id")
+            .expect("record must exist");
+        assert_eq!(by_id.metadata.tags, record.metadata.tags);
+        assert_eq!(by_id.metadata.sync_status, crate::types::SyncStatus::Synced);
+
+        let all = backend.list_records().await.expect("failed to list");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].metadata.attributes, record.metadata.attributes);
+    }
+
+    /// Tags/attributes containing characters that could be mistaken for a
+    /// naive separator (colons, commas, empty strings) must still round-trip
+    /// exactly through the length-prefixed binary encoding.
+    #[tokio::test]
+    async fn test_put_get_record_metadata_with_tricky_characters() {
+        let mut backend = SqliteBackend::in_memory()
+            .await
+            .expect("failed to create backend");
+        backend.initialize().await.expect("failed to initialize");
+
+        let mut record = Record::new("tricky_key".to_string(), Bytes::from("data"));
+        record.metadata.tags = vec![
+            String::new(),
+            "a,b:c=d".to_string(),
+            "emoji-\u{1F600}".to_string(),
+        ];
+        record.metadata.attributes = vec![
+            ("".to_string(), "".to_string()),
+            (
+                "key:with:colons".to_string(),
+                "value=with=equals".to_string(),
+            ),
+        ];
+
+        backend
+            .put_record(&record)
+            .await
+            .expect("failed to put record");
+
+        let retrieved = backend
+            .get_record("tricky_key")
+            .await
+            .expect("failed to get record")
+            .expect("record must exist");
+
+        assert_eq!(retrieved.metadata.tags, record.metadata.tags);
+        assert_eq!(retrieved.metadata.attributes, record.metadata.attributes);
     }
 }

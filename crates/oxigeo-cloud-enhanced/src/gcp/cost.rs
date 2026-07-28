@@ -7,10 +7,17 @@
 //! authenticated by delegating to
 //! [`super::workload_identity::WorkloadIdentityClient`].
 //!
-//! The remaining budget/recommendation endpoints (Cloud Billing Budgets API,
-//! Recommender API) are not yet wired to a real backend; they return
-//! [`CloudEnhancedError::NotImplemented`] rather than a fabricated success,
-//! per this crate's policy of never returning a silently-empty/zeroed
+//! The budget endpoints (`create_budget`, `delete_budget`, `list_budgets`,
+//! `create_cost_alert`) call the real Cloud Billing Budgets API
+//! (`billingbudgets.googleapis.com`), and the recommendation endpoints
+//! (`get_recommendations`, `get_cud_recommendations`) call the real
+//! Recommender API (`recommender.googleapis.com`).
+//!
+//! `analyze_storage_costs`, `get_cost_forecast`, and
+//! `configure_billing_export` remain unimplemented (they need a defined cost
+//! model / forecasting model / the Cloud Billing account-management API) and
+//! return [`CloudEnhancedError::NotImplemented`] rather than a fabricated
+//! success, per this crate's policy of never returning a silently-empty/zeroed
 //! "successful" result. See `TODO.md` for the tracked follow-up.
 //!
 //! [BigQuery billing export]: https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
@@ -24,8 +31,23 @@ use std::collections::HashMap;
 /// Default base URL of the BigQuery REST API.
 const DEFAULT_BIGQUERY_BASE_URL: &str = "https://bigquery.googleapis.com";
 
+/// Default base URL of the Cloud Billing Budgets API.
+const DEFAULT_BUDGETS_BASE_URL: &str = "https://billingbudgets.googleapis.com";
+
+/// Default base URL of the Recommender API.
+const DEFAULT_RECOMMENDER_BASE_URL: &str = "https://recommender.googleapis.com";
+
+/// Recommender id for machine-type (right-sizing) cost recommendations.
+const MACHINE_TYPE_RECOMMENDER: &str = "google.compute.instance.MachineTypeRecommender";
+
+/// Recommender id for committed-use-discount (CUD) recommendations.
+const CUD_RECOMMENDER: &str = "google.compute.commitment.UsageCommitmentRecommender";
+
 /// OAuth2 scope requested for calls to the BigQuery API.
 const BIGQUERY_SCOPE: &str = "https://www.googleapis.com/auth/bigquery.readonly";
+
+/// OAuth2 scope requested for calls to the Cloud Billing / Recommender APIs.
+const CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
 /// Maximum number of `getQueryResults` polls performed while waiting for an
 /// asynchronous BigQuery job to complete.
@@ -40,6 +62,10 @@ pub struct CostClient {
     project_id: String,
     /// Base URL of the BigQuery REST API (overridable for tests).
     bigquery_base_url: String,
+    /// Base URL of the Cloud Billing Budgets API (overridable for tests).
+    budgets_base_url: String,
+    /// Base URL of the Recommender API (overridable for tests).
+    recommender_base_url: String,
     http_client: reqwest::Client,
     /// Auth provider, reusing the GCE metadata / IAM Credentials token flow.
     identity: WorkloadIdentityClient,
@@ -89,9 +115,35 @@ impl CostClient {
         Ok(Self {
             project_id: config.project_id().to_string(),
             bigquery_base_url: bigquery_base_url.into(),
+            budgets_base_url: DEFAULT_BUDGETS_BASE_URL.to_string(),
+            recommender_base_url: DEFAULT_RECOMMENDER_BASE_URL.to_string(),
             http_client,
             identity,
         })
+    }
+
+    /// Overrides the Cloud Billing Budgets API base URL (primarily for tests).
+    #[must_use]
+    pub fn with_budgets_base_url(mut self, url: impl Into<String>) -> Self {
+        self.budgets_base_url = url.into();
+        self
+    }
+
+    /// Overrides the Recommender API base URL (primarily for tests).
+    #[must_use]
+    pub fn with_recommender_base_url(mut self, url: impl Into<String>) -> Self {
+        self.recommender_base_url = url.into();
+        self
+    }
+
+    /// Obtains a bearer token with the broad `cloud-platform` scope, used by
+    /// the Cloud Billing Budgets and Recommender APIs.
+    async fn platform_token(&self) -> Result<String> {
+        let token = self
+            .identity
+            .generate_access_token("default", vec![CLOUD_PLATFORM_SCOPE.to_string()], 3600)
+            .await?;
+        Ok(token.access_token)
     }
 
     /// Obtains a bearer token for authenticating to the BigQuery API, using
@@ -278,12 +330,14 @@ impl CostClient {
             .await
     }
 
-    /// Creates a budget.
+    /// Creates a budget via the Cloud Billing Budgets API.
+    ///
+    /// Returns the created budget's resource name
+    /// (`billingAccounts/{acct}/budgets/{id}`).
     ///
     /// # Errors
     ///
-    /// This is not yet implemented against the Cloud Billing Budgets API;
-    /// always returns [`CloudEnhancedError::NotImplemented`].
+    /// Returns an error if the budget cannot be created.
     pub async fn create_budget(
         &self,
         billing_account: &str,
@@ -292,87 +346,198 @@ impl CostClient {
         currency_code: &str,
     ) -> Result<String> {
         tracing::info!(
-            "create_budget requested but not implemented: {} for billing account: {} (amount: {} {})",
+            "Creating budget: {} for billing account: {} (amount: {} {})",
             display_name,
             billing_account,
             amount,
             currency_code
         );
 
-        Err(CloudEnhancedError::not_implemented(
-            "CostClient::create_budget requires the Cloud Billing Budgets API, which is not yet wired up",
-        ))
+        let url = format!(
+            "{}/v1/billingAccounts/{billing_account}/budgets",
+            self.budgets_base_url
+        );
+        let (units, nanos) = split_amount(amount);
+        let body = serde_json::json!({
+            "displayName": display_name,
+            "budgetFilter": {},
+            "amount": {
+                "specifiedAmount": {
+                    "currencyCode": currency_code,
+                    "units": units.to_string(),
+                    "nanos": nanos,
+                }
+            }
+        });
+
+        let token = self.platform_token().await?;
+        let response = self
+            .http_client
+            .post(&url)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CloudEnhancedError::gcp_service(format!("Budgets create request failed: {e}"))
+            })?;
+
+        let wire: BudgetWire = parse_gcp_response(response, "create budget").await?;
+        wire.name.ok_or_else(|| {
+            CloudEnhancedError::gcp_service("Budgets create response contained no name".to_string())
+        })
     }
 
-    /// Deletes a budget.
+    /// Deletes a budget via the Cloud Billing Budgets API.
+    ///
+    /// `budget_name` is the full resource name
+    /// (`billingAccounts/{acct}/budgets/{id}`).
     ///
     /// # Errors
     ///
-    /// This is not yet implemented against the Cloud Billing Budgets API;
-    /// always returns [`CloudEnhancedError::NotImplemented`].
+    /// Returns an error if the budget cannot be deleted.
     pub async fn delete_budget(&self, budget_name: &str) -> Result<()> {
-        tracing::info!(
-            "delete_budget requested but not implemented: {}",
-            budget_name
-        );
+        tracing::info!("Deleting budget: {}", budget_name);
 
-        Err(CloudEnhancedError::not_implemented(
-            "CostClient::delete_budget requires the Cloud Billing Budgets API, which is not yet wired up",
-        ))
+        let url = format!(
+            "{}/v1/{}",
+            self.budgets_base_url,
+            budget_name.trim_start_matches('/')
+        );
+        let token = self.platform_token().await?;
+        let response = self
+            .http_client
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| {
+                CloudEnhancedError::gcp_service(format!("Budgets delete request failed: {e}"))
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable response body>".to_string());
+            return Err(CloudEnhancedError::gcp_service(format!(
+                "Budgets API returned status {status} while deleting budget: {text}"
+            )));
+        }
+        Ok(())
     }
 
-    /// Lists budgets.
+    /// Lists budgets via the Cloud Billing Budgets API.
     ///
     /// # Errors
     ///
-    /// This is not yet implemented against the Cloud Billing Budgets API;
-    /// always returns [`CloudEnhancedError::NotImplemented`].
+    /// Returns an error if the budgets cannot be listed.
     pub async fn list_budgets(&self, billing_account: &str) -> Result<Vec<BudgetInfo>> {
-        tracing::info!(
-            "list_budgets requested but not implemented for billing account: {}",
-            billing_account
-        );
+        tracing::info!("Listing budgets for billing account: {}", billing_account);
 
-        Err(CloudEnhancedError::not_implemented(
-            "CostClient::list_budgets requires the Cloud Billing Budgets API, which is not yet wired up",
-        ))
+        let url = format!(
+            "{}/v1/billingAccounts/{billing_account}/budgets",
+            self.budgets_base_url
+        );
+        let token = self.platform_token().await?;
+        let response = self
+            .http_client
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| {
+                CloudEnhancedError::gcp_service(format!("Budgets list request failed: {e}"))
+            })?;
+
+        let body: BudgetListWire = parse_gcp_response(response, "list budgets").await?;
+        Ok(body
+            .budgets
+            .into_iter()
+            .map(BudgetWire::into_info)
+            .collect())
     }
 
-    /// Gets cost recommendations.
+    /// Gets cost recommendations via the Recommender API (machine-type /
+    /// right-sizing recommender).
     ///
     /// # Errors
     ///
-    /// This is not yet implemented against the Recommender API; always
-    /// returns [`CloudEnhancedError::NotImplemented`].
+    /// Returns an error if the recommendations cannot be retrieved.
     pub async fn get_recommendations(&self, location: &str) -> Result<Vec<CostRecommendation>> {
-        tracing::info!(
-            "get_recommendations requested but not implemented for location: {}",
-            location
-        );
+        tracing::info!("Getting cost recommendations for location: {}", location);
 
-        Err(CloudEnhancedError::not_implemented(
-            "CostClient::get_recommendations requires the Recommender API, which is not yet wired up",
-        ))
+        let recs = self
+            .fetch_recommendations(location, MACHINE_TYPE_RECOMMENDER)
+            .await?;
+        Ok(recs
+            .into_iter()
+            .map(|r| CostRecommendation {
+                name: r.name.clone().unwrap_or_default(),
+                description: r.description.clone().unwrap_or_default(),
+                potential_savings: r.savings(),
+                currency: r.currency(),
+                recommender_type: r
+                    .recommender_subtype
+                    .clone()
+                    .unwrap_or_else(|| MACHINE_TYPE_RECOMMENDER.to_string()),
+            })
+            .collect())
     }
 
-    /// Gets committed use discount (CUD) recommendations.
+    /// Gets committed use discount (CUD) recommendations via the Recommender
+    /// API.
     ///
     /// # Errors
     ///
-    /// This is not yet implemented against the Recommender API; always
-    /// returns [`CloudEnhancedError::NotImplemented`].
+    /// Returns an error if the recommendations cannot be retrieved.
     pub async fn get_cud_recommendations(
         &self,
         location: &str,
     ) -> Result<Vec<CommitmentRecommendation>> {
-        tracing::info!(
-            "get_cud_recommendations requested but not implemented for location: {}",
-            location
-        );
+        tracing::info!("Getting CUD recommendations for location: {}", location);
 
-        Err(CloudEnhancedError::not_implemented(
-            "CostClient::get_cud_recommendations requires the Recommender API, which is not yet wired up",
-        ))
+        let recs = self
+            .fetch_recommendations(location, CUD_RECOMMENDER)
+            .await?;
+        Ok(recs
+            .into_iter()
+            .map(|r| CommitmentRecommendation {
+                name: r.name.clone().unwrap_or_default(),
+                description: r.description.clone().unwrap_or_default(),
+                commitment_amount: 0.0,
+                estimated_savings: r.savings(),
+                currency: r.currency(),
+                term_years: 1,
+            })
+            .collect())
+    }
+
+    /// Fetches recommendations for a given recommender id + location.
+    async fn fetch_recommendations(
+        &self,
+        location: &str,
+        recommender: &str,
+    ) -> Result<Vec<RecommendationWire>> {
+        let url = format!(
+            "{}/v1/projects/{}/locations/{location}/recommenders/{recommender}/recommendations",
+            self.recommender_base_url, self.project_id
+        );
+        let token = self.platform_token().await?;
+        let response = self
+            .http_client
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| {
+                CloudEnhancedError::gcp_service(format!("Recommender list request failed: {e}"))
+            })?;
+
+        let body: RecommendationListWire =
+            parse_gcp_response(response, "list recommendations").await?;
+        Ok(body.recommendations)
     }
 
     /// Analyzes storage costs.
@@ -436,15 +601,47 @@ impl CostClient {
         notification_channels: Vec<String>,
     ) -> Result<()> {
         tracing::info!(
-            "create_cost_alert requested but not implemented for budget: {} (threshold: {}%, {} channels)",
+            "Creating cost alert for budget: {} (threshold: {}%, {} channels)",
             budget_name,
             threshold_percent,
             notification_channels.len()
         );
 
-        Err(CloudEnhancedError::not_implemented(
-            "CostClient::create_cost_alert requires the Cloud Billing Budgets API, which is not yet wired up",
-        ))
+        let url = format!(
+            "{}/v1/{}?updateMask=thresholdRules,notificationsRule",
+            self.budgets_base_url,
+            budget_name.trim_start_matches('/')
+        );
+        let body = serde_json::json!({
+            "thresholdRules": [{ "thresholdPercent": threshold_percent / 100.0 }],
+            "notificationsRule": { "monitoringNotificationChannels": notification_channels }
+        });
+
+        let token = self.platform_token().await?;
+        let response = self
+            .http_client
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CloudEnhancedError::gcp_service(format!(
+                    "Budgets patch (cost alert) request failed: {e}"
+                ))
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable response body>".to_string());
+            return Err(CloudEnhancedError::gcp_service(format!(
+                "Budgets API returned status {status} while creating cost alert: {text}"
+            )));
+        }
+        Ok(())
     }
 
     /// Exports cost data to BigQuery.
@@ -718,6 +915,157 @@ struct BqQueryResult {
     rows: Vec<BqRow>,
 }
 
+/// Splits a floating-point currency amount into whole `units` and `nanos`
+/// (billionths), matching Google's `Money`/`Amount` wire representation.
+fn split_amount(amount: f64) -> (i64, i32) {
+    let units = amount.trunc() as i64;
+    let nanos = ((amount - amount.trunc()) * 1_000_000_000.0).round() as i32;
+    (units, nanos)
+}
+
+/// Reassembles a `units` + `nanos` money value into an `f64`.
+fn join_amount(units: i64, nanos: i32) -> f64 {
+    units as f64 + f64::from(nanos) / 1_000_000_000.0
+}
+
+/// Verifies `response` is a success and deserializes its JSON body as `T`.
+async fn parse_gcp_response<T: for<'de> Deserialize<'de>>(
+    response: reqwest::Response,
+    action: &str,
+) -> Result<T> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unreadable response body>".to_string());
+        return Err(CloudEnhancedError::gcp_service(format!(
+            "GCP API returned status {status} while trying to {action}: {body}"
+        )));
+    }
+    response.json::<T>().await.map_err(|e| {
+        CloudEnhancedError::gcp_service(format!(
+            "Failed to parse GCP API response while trying to {action}: {e}"
+        ))
+    })
+}
+
+// ---------------------------------------------------------------------
+// Wire (JSON) types for the Cloud Billing Budgets and Recommender APIs.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct BudgetListWire {
+    #[serde(default)]
+    budgets: Vec<BudgetWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BudgetWire {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(rename = "displayName", default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    amount: Option<BudgetAmountWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BudgetAmountWire {
+    #[serde(rename = "specifiedAmount", default)]
+    specified_amount: Option<MoneyWire>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MoneyWire {
+    #[serde(rename = "currencyCode", default)]
+    currency_code: String,
+    #[serde(default)]
+    units: Option<String>,
+    #[serde(default)]
+    nanos: i32,
+}
+
+impl BudgetWire {
+    fn into_info(self) -> BudgetInfo {
+        let money = self
+            .amount
+            .and_then(|a| a.specified_amount)
+            .unwrap_or_default();
+        let units = money.units.and_then(|u| u.parse::<i64>().ok()).unwrap_or(0);
+        BudgetInfo {
+            name: self.name.unwrap_or_default(),
+            display_name: self.display_name.unwrap_or_default(),
+            amount: join_amount(units, money.nanos),
+            currency_code: if money.currency_code.is_empty() {
+                "USD".to_string()
+            } else {
+                money.currency_code
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RecommendationListWire {
+    #[serde(default)]
+    recommendations: Vec<RecommendationWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecommendationWire {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(rename = "recommenderSubtype", default)]
+    recommender_subtype: Option<String>,
+    #[serde(rename = "primaryImpact", default)]
+    primary_impact: Option<ImpactWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImpactWire {
+    #[serde(rename = "costProjection", default)]
+    cost_projection: Option<CostProjectionWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CostProjectionWire {
+    #[serde(default)]
+    cost: Option<MoneyWire>,
+}
+
+impl RecommendationWire {
+    /// Estimated savings magnitude in currency units (the Recommender API
+    /// reports cost *savings* as a negative cost, so the sign is inverted).
+    fn savings(&self) -> f64 {
+        self.primary_impact
+            .as_ref()
+            .and_then(|i| i.cost_projection.as_ref())
+            .and_then(|c| c.cost.as_ref())
+            .map(|m| {
+                let units = m
+                    .units
+                    .as_deref()
+                    .and_then(|u| u.parse::<i64>().ok())
+                    .unwrap_or(0);
+                -join_amount(units, m.nanos)
+            })
+            .unwrap_or(0.0)
+    }
+
+    fn currency(&self) -> String {
+        self.primary_impact
+            .as_ref()
+            .and_then(|i| i.cost_projection.as_ref())
+            .and_then(|c| c.cost.as_ref())
+            .map(|m| m.currency_code.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "USD".to_string())
+    }
+}
+
 /// Cost entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostEntry {
@@ -949,13 +1297,121 @@ mod tests {
         assert!(matches!(result, Err(CloudEnhancedError::NotImplemented(_))));
     }
 
-    #[tokio::test]
-    async fn test_create_budget_is_not_implemented() {
-        let client = test_client(r#"{"jobComplete": true, "rows": []}"#).await;
+    async fn client_with_budgets(budgets_body: &str) -> CostClient {
+        let metadata_base = spawn_mock_server(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            r#"{"access_token":"mock-token","expires_in":3600}"#.to_string(),
+        )
+        .await;
+        let budgets_base = spawn_mock_server(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            budgets_body.to_string(),
+        )
+        .await;
+        let config =
+            crate::gcp::GcpConfig::new("test-project".to_string(), None).expect("gcp config");
+        CostClient::with_urls(&config, DEFAULT_BIGQUERY_BASE_URL, Some(metadata_base))
+            .expect("cost client")
+            .with_budgets_base_url(budgets_base)
+    }
 
-        let result = client
-            .create_budget("billing-account", "Monthly", 1000.0, "USD")
+    #[tokio::test]
+    async fn test_create_budget_returns_real_name() {
+        let client = client_with_budgets(
+            r#"{"name":"billingAccounts/ABC/budgets/123","displayName":"Monthly"}"#,
+        )
+        .await;
+
+        let name = client
+            .create_budget("ABC", "Monthly", 1000.0, "USD")
+            .await
+            .expect("budget name");
+        assert_eq!(name, "billingAccounts/ABC/budgets/123");
+    }
+
+    #[tokio::test]
+    async fn test_list_budgets_parses_amount() {
+        let client = client_with_budgets(
+            r#"{"budgets":[{"name":"billingAccounts/ABC/budgets/1","displayName":"b","amount":{"specifiedAmount":{"currencyCode":"USD","units":"1500","nanos":500000000}}}]}"#,
+        )
+        .await;
+
+        let budgets = client.list_budgets("ABC").await.expect("budgets");
+        assert_eq!(budgets.len(), 1);
+        assert_eq!(budgets[0].amount, 1500.5);
+        assert_eq!(budgets[0].currency_code, "USD");
+    }
+
+    #[tokio::test]
+    async fn test_get_recommendations_parses_savings() {
+        let metadata_base = spawn_mock_server(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            r#"{"access_token":"mock-token","expires_in":3600}"#.to_string(),
+        )
+        .await;
+        let recommender_base = spawn_mock_server(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            r#"{"recommendations":[{"name":"r1","description":"Resize","recommenderSubtype":"CHANGE_MACHINE_TYPE","primaryImpact":{"costProjection":{"cost":{"currencyCode":"USD","units":"-40","nanos":0}}}}]}"#
+                .to_string(),
+        )
+        .await;
+        let config =
+            crate::gcp::GcpConfig::new("test-project".to_string(), None).expect("gcp config");
+        let client = CostClient::with_urls(&config, DEFAULT_BIGQUERY_BASE_URL, Some(metadata_base))
+            .expect("cost client")
+            .with_recommender_base_url(recommender_base);
+
+        let recs = client
+            .get_recommendations("us-central1-a")
+            .await
+            .expect("recs");
+        assert_eq!(recs.len(), 1);
+        // Savings reported as negative cost -> positive savings.
+        assert_eq!(recs[0].potential_savings, 40.0);
+        assert_eq!(recs[0].currency, "USD");
+    }
+
+    #[tokio::test]
+    async fn test_budgets_error_status_not_swallowed() {
+        let client = {
+            let metadata_base = spawn_mock_server(
+                "HTTP/1.1 200 OK",
+                "application/json",
+                r#"{"access_token":"mock-token","expires_in":3600}"#.to_string(),
+            )
             .await;
+            let budgets_base = spawn_mock_server(
+                "HTTP/1.1 403 Forbidden",
+                "application/json",
+                r#"{"error":"x"}"#.to_string(),
+            )
+            .await;
+            let config =
+                crate::gcp::GcpConfig::new("test-project".to_string(), None).expect("gcp config");
+            CostClient::with_urls(&config, DEFAULT_BIGQUERY_BASE_URL, Some(metadata_base))
+                .expect("cost client")
+                .with_budgets_base_url(budgets_base)
+        };
+
+        assert!(client.list_budgets("ABC").await.is_err());
+    }
+
+    #[test]
+    fn test_split_join_amount() {
+        let (units, nanos) = split_amount(1500.5);
+        assert_eq!(units, 1500);
+        assert_eq!(nanos, 500_000_000);
+        assert!((join_amount(units, nanos) - 1500.5).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn test_get_cost_forecast_is_still_not_implemented() {
+        let client = test_client(r#"{"jobComplete": true, "rows": []}"#).await;
+        let result = client.get_cost_forecast("billing_export", 30).await;
         assert!(matches!(result, Err(CloudEnhancedError::NotImplemented(_))));
     }
 

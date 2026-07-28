@@ -38,6 +38,14 @@ impl VersionNegotiator {
         }
     }
 
+    /// Returns the configured negotiation strategy.
+    ///
+    /// Used by the serving layer's versioning middleware to dispatch to the matching
+    /// `negotiate_from_*` method (path, headers, or query).
+    pub fn strategy(&self) -> VersionStrategy {
+        self.strategy
+    }
+
     /// Sets custom header name.
     pub fn with_header_name(mut self, name: impl Into<String>) -> Self {
         self.header_name = name.into();
@@ -256,6 +264,13 @@ mod tests {
             context.as_ref().map(|c| &c.resolved),
             Some(&ApiVersion::new(1, 1, 0))
         );
+    }
+
+    #[test]
+    fn test_strategy_accessor() {
+        let registry = create_test_registry();
+        let negotiator = VersionNegotiator::new(registry, VersionStrategy::QueryParameter);
+        assert_eq!(negotiator.strategy(), VersionStrategy::QueryParameter);
     }
 
     #[test]

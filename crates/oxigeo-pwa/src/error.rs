@@ -45,6 +45,11 @@ pub enum PwaError {
     #[error("Background sync is not supported in this browser")]
     BackgroundSyncNotSupported,
 
+    /// Persisting a queued sync operation to IndexedDB (so the service
+    /// worker can replay it while the page is closed) failed.
+    #[error("Failed to persist sync queue operation: {0}")]
+    SyncQueuePersistenceFailed(String),
+
     /// Push notification subscription failed
     #[error("Push notification subscription failed: {0}")]
     PushSubscriptionFailed(String),

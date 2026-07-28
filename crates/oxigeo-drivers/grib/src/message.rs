@@ -121,9 +121,23 @@ impl GribMessage {
             }
         })?;
 
-        // Read the message data
-        let mut data = vec![0u8; data_length];
-        reader.read_exact(&mut data)?;
+        // Read the message data. `data_length` derives directly from the
+        // attacker-controllable total-length header field (8 bytes for GRIB2),
+        // so a `vec![0u8; data_length]` preallocation would let a tiny
+        // truncated file request a multi-gigabyte buffer (OOM / DoS). Reading
+        // through `take(..).read_to_end(..)` grows the buffer only as bytes
+        // actually arrive, then we verify the full section was present.
+        let mut data = Vec::new();
+        let got = reader
+            .by_ref()
+            .take(data_length as u64)
+            .read_to_end(&mut data)?;
+        if got != data_length {
+            return Err(GribError::TruncatedMessage {
+                expected: data_length,
+                actual: got,
+            });
+        }
 
         // Read end marker '7777'
         let mut end_marker = [0u8; 4];
@@ -317,6 +331,24 @@ mod tests {
         let mut cursor = Cursor::new(data);
         let result = GribMessage::from_reader(&mut cursor);
         assert!(result.is_err());
+    }
+
+    /// A GRIB2 indicator section that declares a multi-gigabyte total length
+    /// but supplies no body must fail fast with a truncation error rather than
+    /// speculatively allocating gigabytes from the untrusted length field.
+    #[test]
+    fn test_from_reader_rejects_truncated_oversized_message() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"GRIB"); // magic
+        data.extend_from_slice(&[0x00, 0x00]); // reserved
+        data.push(0x00); // discipline
+        data.push(0x02); // edition = GRIB2
+        data.extend_from_slice(&4_000_000_000u64.to_be_bytes()); // total length ~4 GB
+        // ...and no message body follows.
+
+        let mut cursor = Cursor::new(data);
+        let result = GribMessage::from_reader(&mut cursor);
+        assert!(matches!(result, Err(GribError::TruncatedMessage { .. })));
     }
 
     #[test]

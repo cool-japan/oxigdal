@@ -4,7 +4,10 @@
 //! per-endpoint, and combined rules.
 
 use crate::error::{GatewayError, Result};
-use crate::rate_limit::{Algorithm, Decision, RateLimitKey, Storage};
+use crate::rate_limit::{
+    Algorithm, DEFAULT_LOCK_STRIPES, Decision, RateLimitKey, Storage, StripedLocks,
+};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Rate limit rule configuration.
@@ -159,6 +162,7 @@ pub struct RuleEngine<S: Storage, A: Algorithm> {
     rules: Vec<RateLimitRule>,
     storage: S,
     algorithm: A,
+    locks: Arc<StripedLocks>,
 }
 
 impl<S: Storage, A: Algorithm> RuleEngine<S, A> {
@@ -169,6 +173,7 @@ impl<S: Storage, A: Algorithm> RuleEngine<S, A> {
             rules: Vec::new(),
             storage,
             algorithm,
+            locks: Arc::new(StripedLocks::new(DEFAULT_LOCK_STRIPES)),
         }
     }
 
@@ -219,6 +224,41 @@ impl<S: Storage, A: Algorithm> RuleEngine<S, A> {
         self.algorithm
             .record(&self.storage, &key, rule.limit, rule.window)
             .await
+    }
+
+    /// Atomically checks and records a request against the matched rule's own
+    /// `limit`/`window`.
+    ///
+    /// Equivalent to [`Self::check`] immediately followed by [`Self::record`], but the two
+    /// steps are serialized under a per-key stripe lock so concurrent requests for the same
+    /// key can never both read the same pre-increment count and each independently be
+    /// admitted -- the TOCTOU bypass that separate `check` + `record` calls are subject to.
+    pub async fn try_acquire(&self, context: &RuleContext) -> Result<Decision> {
+        let rule = self
+            .find_matching_rule(context)
+            .ok_or_else(|| GatewayError::ConfigError("No matching rule found".to_string()))?;
+
+        let key = self.build_key(context, rule).to_key();
+        let _guard = self.locks.lock(&key).await;
+
+        let allowed = self
+            .algorithm
+            .check(&self.storage, &key, rule.limit, rule.window)
+            .await?;
+
+        if allowed {
+            self.algorithm
+                .record(&self.storage, &key, rule.limit, rule.window)
+                .await?;
+            Ok(Decision::Allowed)
+        } else {
+            let current = self.storage.get(&key).await?.unwrap_or(0);
+            Ok(Decision::Limited {
+                retry_after: rule.window,
+                limit: rule.limit,
+                current,
+            })
+        }
     }
 
     fn build_key(&self, context: &RuleContext, rule: &RateLimitRule) -> RateLimitKey {

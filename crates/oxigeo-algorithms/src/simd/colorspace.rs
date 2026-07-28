@@ -1,7 +1,16 @@
-//! SIMD-accelerated color space conversions
+//! Color space conversions
 //!
-//! This module provides high-performance color space transformations using SIMD instructions.
-//! It supports common color spaces used in remote sensing and image processing.
+//! This module provides color space transformations for remote sensing and image
+//! processing. It supports common color spaces used in remote sensing and image
+//! processing.
+//!
+//! # Implementation status
+//!
+//! These conversions are currently implemented as scalar loops written to be
+//! auto-vectorization friendly; they do NOT yet contain hand-written SIMD
+//! intrinsics. Hardware-vectorized kernels (matching the NEON/AVX2 pattern used
+//! in `crate::simd::math`, `raster`, `morphology`, and `threshold`) are planned
+//! future work. The functions remain correct and are covered by unit tests.
 //!
 //! # Supported Color Spaces
 //!
@@ -11,10 +20,6 @@
 //! - **LAB**: CIELAB (perceptually uniform)
 //! - **XYZ**: CIE XYZ (intermediate color space)
 //! - **YCbCr**: Luma and chroma (used in JPEG)
-//!
-//! # Performance
-//!
-//! Expected speedup over scalar: 4-6x for color space conversions
 //!
 //! # Example
 //!

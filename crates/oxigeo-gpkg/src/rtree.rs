@@ -67,7 +67,11 @@ use crate::gpkg::GeoPackage;
 // ── Byte count of a single cell entry in the node BLOB ─────────────────────
 
 /// Size of a single 2-D R-tree cell inside a node BLOB (bytes).
-const CELL_BYTES: usize = 24;
+///
+/// `pub(crate)` so [`crate::writer::rtree_writer`] (the writer-side
+/// counterpart of this reader) can encode node BLOBs using the exact same
+/// constant rather than duplicating the magic number.
+pub(crate) const CELL_BYTES: usize = 24;
 
 /// Minimum node BLOB size: 2 reserved bytes + 2-byte (u16 BE) cell count.
 ///
@@ -75,7 +79,9 @@ const CELL_BYTES: usize = 24;
 /// only a 2-byte reserved field (unused by this reader) followed by the
 /// cell count. See the module-level "Wire format" section for the full
 /// layout, verified against real SQLite-generated `_node` shadow tables.
-const NODE_HEADER_BYTES: usize = 4;
+///
+/// `pub(crate)` — see [`CELL_BYTES`].
+pub(crate) const NODE_HEADER_BYTES: usize = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public data structures

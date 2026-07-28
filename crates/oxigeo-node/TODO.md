@@ -1,12 +1,13 @@
 # TODO: oxigeo-node
 
 > **Purpose:** napi-rs v3 (N-API v8) bindings exposing raster/vector ops to Node.js + Deno + Bun with async/await and zero-copy Buffer.
-> **Status (2026-05-17):** 3,081 LoC · 50 #[test] / `__test__/` attributes · 3 real-code soft stubs.
+> **Status (2026-07-28):** 3,081 LoC · 84 tests, 0 failed (default and all-features) · progress-callback and slope/aspect pixel_size placeholders resolved; buffer zero-copy and full async-op coverage remain open.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Wire `set_progress_callback` from placeholder to functioning `ThreadsafeFunction` plumbing
-  - **Verified gap:** `src/async_ops.rs:268-275` — `/// Progress callback for long-running operations` / `#[napi(ts_args_type = "callback: (progress: number) => void")] pub fn set_progress_callback(_callback: Function<'_, Unknown<'_>>) -> Result<()> {` / `// Store callback for use in long-running operations` / `// This is a placeholder for actual implementation` / `Ok(())`
+- [x] Wire `set_progress_callback` from placeholder to functioning `ThreadsafeFunction` plumbing
+  - **Resolved (2026-07-28):** `src/async_ops.rs` now stores a real `ThreadsafeFunction<f64, (), f64, Status, false, false, 0>` in a `OnceLock<Mutex<Option<ProgressTsfn>>>` (`set_progress_callback`/`clear_progress_callback`/`report_progress`), and `report_progress` is actually invoked from `batch_process_rasters` and `process_raster_parallel` (progress fraction per completed item/chunk, plus 0.0/1.0 start/end markers). No panics on a poisoned lock (returns `INTERNAL_ERROR` instead).
+  - **Verified gap (historical):** `src/async_ops.rs:268-275` — `/// Progress callback for long-running operations` / `#[napi(ts_args_type = "callback: (progress: number) => void")] pub fn set_progress_callback(_callback: Function<'_, Unknown<'_>>) -> Result<()> {` / `// Store callback for use in long-running operations` / `// This is a placeholder for actual implementation` / `Ok(())`
   - **Goal:** Real progress reporting where Rust-side long-running tasks (warp, build_overviews, write) invoke a JS callback from a worker thread. Currently the function silently swallows the callback.
   - **Design:** Use `napi::threadsafe_function::ThreadsafeFunction<Args, JsValueOrPromise>` (napi-rs v3 API, N-API v8). Store it in a `Lazy<Mutex<Option<TsFn>>>`. Wrap long-running ops with a `ProgressEmitter::report(percent: f64, message: &str)` that the algorithms layer calls. Avoid `Drop` re-entrancy bugs: the TSFn must outlive the worker job, so reference-count via `Arc<ThreadsafeFunction>`.
   - **Files:** `crates/oxigeo-node/src/async_ops.rs` (replace placeholder); (new) `crates/oxigeo-node/src/progress.rs` (`ProgressEmitter`); modify long-running entry points in `crates/oxigeo-node/src/raster.rs` and `crates/oxigeo-node/src/algorithms.rs`.
@@ -14,8 +15,9 @@
   - **Risk:** ThreadsafeFunction call-back ordering is not guaranteed under load — document that callback `progress` may decrease if multiple tasks race; recommend per-job emitters in JS docs.
   - **Prerequisites:** None — napi-rs 3.x already in deps.
 
-- [ ] Honor `pixel_size` and `z_factor` in `slope()` / `aspect()` instead of hard-coded 1.0
-  - **Verified gap:** `src/algorithms.rs:223-225` — `pub fn slope(dem: &BufferWrapper, z_factor: f64, _as_percent: bool) -> Result<BufferWrapper> {` / `// Note: pixel_size is assumed to be 1.0 for now` / `let result = compute_slope(dem.inner(), 1.0, z_factor).to_napi()?;`. Same at `src/algorithms.rs:231-233`. The `_as_percent` parameter is also discarded.
+- [x] Honor `pixel_size` and `z_factor` in `slope()` / `aspect()` instead of hard-coded 1.0
+  - **Resolved (2026-07-28):** `src/algorithms.rs` now takes real `pixel_size` (`fn slope(dem, pixel_size, z_factor, as_percent)` / `fn aspect(dem, pixel_size)`), validated via `validate_pixel_size`, and threaded into `compute_slope_advanced`/`compute_aspect_advanced` with an honored `as_percent` unit switch. Covered by `slope_scales_inversely_with_pixel_size` and `slope_as_percent_flag_changes_units` regression tests (their doc comments explicitly call out the old hardcoded-1.0 bug).
+  - **Verified gap (historical):** `src/algorithms.rs:223-225` — `pub fn slope(dem: &BufferWrapper, z_factor: f64, _as_percent: bool) -> Result<BufferWrapper> {` / `// Note: pixel_size is assumed to be 1.0 for now` / `let result = compute_slope(dem.inner(), 1.0, z_factor).to_napi()?;`. Same at `src/algorithms.rs:231-233`. The `_as_percent` parameter is also discarded.
   - **Goal:** Slope/aspect compute with real `pixel_size_x`, `pixel_size_y` (from GeoTransform) and an `as_percent: bool` toggle. Discarding these yields incorrect slope magnitudes on non-isotropic CRSs (Web Mercator at high latitude, UTM strips).
   - **Design:** Extend `BufferWrapper` (`src/buffer.rs`) to optionally carry a `GeoTransform`. When the user calls `oxigeo.slope(dem, zFactor, asPercent)`, the wrapper exposes `pixel_size_x()` / `pixel_size_y()` (cell size in CRS units). Slope formula switches between `tan(slope)` (radians, default), `tan*100` (percent), `degrees(atan(slope))`. Aspect honors z_factor scaling and the existing Horn/Z&T choice.
   - **Files:** `crates/oxigeo-node/src/algorithms.rs` (replace assumed-1.0 calls); `crates/oxigeo-node/src/buffer.rs` (add optional geotransform); `crates/oxigeo-node/index.d.ts` (extend typings).
@@ -23,8 +25,9 @@
   - **Risk:** Buffer wrapper API change is observable in TS typings — bump napi minor only.
   - **Prerequisites:** None.
 
-- [ ] Generate `index.d.ts` from napi-derive macros instead of manual maintenance
-  - **Verified gap:** Existing TODO line — `[ ] Add TypeScript declaration generation from napi-rs annotations`. The current `index.d.ts` (13.7K) is hand-maintained and known to drift; `index.js` (11.6K) similarly hand-rolled.
+- [x] Generate `index.d.ts` from napi-derive macros instead of manual maintenance
+  - **Resolved:** `index.d.ts` now carries the `/* auto-generated by NAPI-RS */` banner and `package.json`'s `"build"` script (`napi build --platform --release`) regenerates it directly from the `#[napi]` annotations. No longer hand-maintained.
+  - **Verified gap (historical):** Existing TODO line — `[ ] Add TypeScript declaration generation from napi-rs annotations`. The current `index.d.ts` (13.7K) is hand-maintained and known to drift; `index.js` (11.6K) similarly hand-rolled.
   - **Goal:** `npm run build` re-generates `index.d.ts` and the platform-specific loader stub `index.js` via `napi build --release --js index.js --dts index.d.ts`. CI fails if a `git diff` after build shows changes.
   - **Design:** Add `@napi-rs/cli` to `package.json` devDependencies (already implicit via `napi build`); add `package.json` script `"build:dts": "napi build --release --js false --dts index.d.ts"`. Move hand-written `index.js` to a generated loader matching napi-rs v3 convention. Annotate every `#[napi]` with explicit `ts_type` / `ts_args_type` where inferred TS is imprecise.
   - **Files:** `crates/oxigeo-node/package.json` (scripts); `crates/oxigeo-node/index.d.ts` (will be overwritten by codegen); `crates/oxigeo-node/index.js` (generated loader); every `#[napi]` site under `crates/oxigeo-node/src/`.
@@ -104,4 +107,4 @@
 - (no `[x]` entries in prior TODO.md — `oxigeo.darwin-arm64.node` 1.9 MB present in tree as local-build artifact)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

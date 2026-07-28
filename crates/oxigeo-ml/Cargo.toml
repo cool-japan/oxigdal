@@ -69,10 +69,6 @@ ndarray = { workspace = true }
 # Random number generation via scirs2-core (SciRS2 Policy: no direct rand usage)
 scirs2-core = { workspace = true, features = ["random"] }
 
-# Image processing primitives
-num-traits = { workspace = true }
-byteorder = { workspace = true }
-
 # Parallel processing
 rayon = { workspace = true }
 

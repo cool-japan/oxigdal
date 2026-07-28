@@ -1087,6 +1087,7 @@ mod decode_tests {
             red: Some(100),
             green: Some(200),
             blue: Some(300),
+            nir: None,
             waveform: None,
         };
         let point = copc_point_to_point(&p);

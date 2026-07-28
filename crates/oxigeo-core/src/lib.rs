@@ -71,6 +71,9 @@ pub(crate) mod compat {
 pub mod buffer;
 pub mod error;
 pub mod io;
+// Portable floating-point helpers (`libm`-backed on `no_std`). The module body
+// is empty under `std`, so this has no effect on hosted builds.
+pub(crate) mod math;
 // The advanced memory-management module (custom allocators, memory-mapped I/O,
 // NUMA/huge-page support) relies on `parking_lot`, hashed collections, the global
 // allocator and OS primitives, so it requires the standard library.

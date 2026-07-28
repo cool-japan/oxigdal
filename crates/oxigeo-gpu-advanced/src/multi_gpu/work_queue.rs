@@ -11,8 +11,13 @@ use std::time::Instant;
 /// Work item for GPU execution
 type WorkItem = Box<dyn FnOnce(&GpuDevice) -> Result<()> + Send>;
 
-/// Result sender for work completion
-type ResultSender = Sender<Result<()>>;
+/// Result sender for work completion.
+///
+/// A `futures::channel::oneshot` sender so that [`WorkQueue::submit_work`] can
+/// `.await` completion instead of blocking the async executor thread on a
+/// synchronous channel `recv()` (which would starve single-worker-thread /
+/// `current_thread` tokio runtimes).
+type ResultSender = futures::channel::oneshot::Sender<Result<()>>;
 
 /// Work queue for a single GPU device
 pub struct WorkQueue {
@@ -65,7 +70,7 @@ impl WorkQueue {
             // Update workload
             device.set_workload(0.0);
 
-            // Send result
+            // Send result (oneshot: ignore error if the awaiter was dropped).
             let _ = result_sender.send(result);
 
             // Update pending tasks
@@ -89,7 +94,7 @@ impl WorkQueue {
         F: FnOnce(&GpuDevice) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
-        let (result_sender, result_receiver) = bounded(1);
+        let (result_sender, result_receiver) = futures::channel::oneshot::channel();
         let result_arc = Arc::new(Mutex::new(None));
         let result_clone = result_arc.clone();
 
@@ -123,10 +128,13 @@ impl WorkQueue {
                 GpuAdvancedError::WorkStealingError(format!("Failed to send work: {}", e))
             })?;
 
-        // Wait for completion
+        // Wait for completion by awaiting the oneshot — this yields to the
+        // async executor instead of blocking the worker thread. The inner
+        // `Result<()>` is always `Ok` (the work wrapper stores the real typed
+        // result in `result_arc`), so it is intentionally discarded here.
         let _ = result_receiver
-            .recv()
-            .map_err(|e| GpuAdvancedError::SyncError(format!("Failed to receive result: {}", e)))?;
+            .await
+            .map_err(|_| GpuAdvancedError::SyncError("worker dropped result sender".to_string()))?;
 
         // Extract result
         result_arc
@@ -313,6 +321,76 @@ impl BatchSubmitter {
     /// Get total pending tasks across all queues
     pub fn total_pending(&self) -> usize {
         self.queues.iter().map(|q| q.pending_count()).sum()
+    }
+
+    /// Submit a batch using work-stealing load balancing across devices.
+    ///
+    /// Items are first distributed round-robin into a per-device
+    /// [`WorkStealingQueue`]. Idle (empty) device queues then *steal* work from
+    /// neighbours whose backlog exceeds `steal_threshold`, after which every
+    /// queue is drained into its device's real [`WorkQueue`] and executed on the
+    /// GPU concurrently. This connects `WorkStealingQueue`'s push/pop/steal to
+    /// actual `GpuDevice` submission rather than leaving them unused.
+    ///
+    /// Each work item runs for side effects and reports success/failure; the
+    /// call resolves once every stolen item has completed on its device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there are no queues or if any work item fails.
+    pub async fn submit_batch_work_stealing(
+        &self,
+        work_items: Vec<WorkItem>,
+        steal_threshold: usize,
+    ) -> Result<()> {
+        let num = self.queues.len();
+        if num == 0 {
+            return Err(GpuAdvancedError::WorkStealingError(
+                "No work queues available".to_string(),
+            ));
+        }
+
+        // Distribute round-robin into per-device stealing queues.
+        let steal_queues: Vec<WorkStealingQueue> = (0..num)
+            .map(|_| WorkStealingQueue::new(steal_threshold))
+            .collect();
+        for (i, item) in work_items.into_iter().enumerate() {
+            steal_queues[i % num].push(item);
+        }
+
+        // Rebalance: empty queues steal from overloaded neighbours.
+        for target in 0..num {
+            while steal_queues[target].is_empty() {
+                let donor =
+                    (0..num).find(|&d| d != target && steal_queues[d].should_allow_stealing());
+                match donor {
+                    Some(d) => {
+                        let stolen = steal_queues[d].steal();
+                        if stolen.is_empty() {
+                            break;
+                        }
+                        for w in stolen {
+                            steal_queues[target].push(w);
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        // Drain each stealing queue into its device's real WorkQueue.
+        let mut futures = Vec::new();
+        for (dev_idx, sq) in steal_queues.iter().enumerate() {
+            while let Some(item) = sq.pop() {
+                let queue = Arc::clone(&self.queues[dev_idx]);
+                futures.push(async move { queue.submit_work(move |dev| item(dev)).await });
+            }
+        }
+
+        for result in futures::future::join_all(futures).await {
+            result?;
+        }
+        Ok(())
     }
 }
 

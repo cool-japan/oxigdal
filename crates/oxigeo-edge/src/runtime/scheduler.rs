@@ -4,13 +4,28 @@ use crate::error::{EdgeError, Result};
 use crate::resource::ResourceManager;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 use tokio::task::JoinHandle;
 
 /// Scheduled task
 pub type ScheduledTask = Box<dyn Fn() -> Result<()> + Send + Sync>;
+
+/// A caller-registered task run periodically by the [`Scheduler`]'s
+/// heartbeat loop, alongside the built-in heartbeat.
+struct RegisteredTask {
+    /// Unique id assigned at registration time (returned by
+    /// [`Scheduler::add_task`]) so callers can later [`Scheduler::remove_task`].
+    id: u64,
+    /// How often to run this task, in multiples of the scheduler's
+    /// heartbeat interval (at least 1).
+    interval_ticks: u64,
+    /// Number of heartbeat ticks elapsed since this task last ran.
+    ticks_since_run: AtomicU64,
+    /// The task closure itself.
+    task: ScheduledTask,
+}
 
 /// Samples host CPU utilization using platform-native counters (via `sysinfo`).
 ///
@@ -52,6 +67,8 @@ pub struct Scheduler {
     running: Arc<AtomicBool>,
     handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     cpu_sampler: Arc<CpuSampler>,
+    tasks: Arc<RwLock<Vec<RegisteredTask>>>,
+    next_task_id: Arc<AtomicU64>,
 }
 
 impl Scheduler {
@@ -63,6 +80,63 @@ impl Scheduler {
             running: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(RwLock::new(None)),
             cpu_sampler: Arc::new(CpuSampler::new()),
+            tasks: Arc::new(RwLock::new(Vec::new())),
+            next_task_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    /// Register a custom [`ScheduledTask`] to run periodically alongside the
+    /// built-in heartbeat, every time `interval` has elapsed (rounded up to
+    /// the nearest multiple of the scheduler's heartbeat interval, since
+    /// tasks are only checked on each heartbeat tick).
+    ///
+    /// Returns a task id that can later be passed to [`Scheduler::remove_task`].
+    /// If the task closure returns `Err`, the error is logged via
+    /// `tracing::error!` and the task remains registered (it will be tried
+    /// again on its next due tick).
+    pub fn add_task(&self, task: ScheduledTask, interval: Duration) -> u64 {
+        let heartbeat_secs = self.heartbeat_interval.as_secs_f64().max(f64::EPSILON);
+        let interval_ticks = (interval.as_secs_f64() / heartbeat_secs).ceil().max(1.0) as u64;
+
+        let id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+        let mut tasks = self.tasks.write();
+        tasks.push(RegisteredTask {
+            id,
+            interval_ticks,
+            // Start "due" so the task runs on the first heartbeat tick
+            // after registration rather than waiting a full interval.
+            ticks_since_run: AtomicU64::new(interval_ticks),
+            task,
+        });
+
+        id
+    }
+
+    /// Unregister a previously-added task by its id. Returns `true` if a
+    /// task with that id was found and removed.
+    pub fn remove_task(&self, task_id: u64) -> bool {
+        let mut tasks = self.tasks.write();
+        let original_len = tasks.len();
+        tasks.retain(|t| t.id != task_id);
+        tasks.len() != original_len
+    }
+
+    /// Number of currently-registered custom tasks.
+    pub fn task_count(&self) -> usize {
+        self.tasks.read().len()
+    }
+
+    /// Run any registered custom tasks whose interval has elapsed.
+    fn run_due_tasks(tasks: &RwLock<Vec<RegisteredTask>>) {
+        let tasks_read = tasks.read();
+        for registered in tasks_read.iter() {
+            let ticks = registered.ticks_since_run.fetch_add(1, Ordering::Relaxed) + 1;
+            if ticks >= registered.interval_ticks {
+                registered.ticks_since_run.store(0, Ordering::Relaxed);
+                if let Err(e) = (registered.task)() {
+                    tracing::error!(task_id = registered.id, error = %e, "Scheduled task failed");
+                }
+            }
         }
     }
 
@@ -78,11 +152,15 @@ impl Scheduler {
         let heartbeat_interval = self.heartbeat_interval;
         let running = Arc::clone(&self.running);
         let cpu_sampler = Arc::clone(&self.cpu_sampler);
+        let tasks = Arc::clone(&self.tasks);
 
         let handle = tokio::spawn(async move {
             while running.load(Ordering::Relaxed) {
                 // Perform heartbeat checks
                 Self::heartbeat(&resource_manager, &cpu_sampler);
+
+                // Run any custom registered tasks that are due.
+                Self::run_due_tasks(&tasks);
 
                 tokio::time::sleep(heartbeat_interval).await;
             }
@@ -253,5 +331,72 @@ mod tests {
             saw_nonzero,
             "expected at least one non-zero CPU sample while actively burning CPU"
         );
+    }
+
+    /// Regression test: `ScheduledTask` closures registered via
+    /// `add_task` must actually be executed by the scheduler's heartbeat
+    /// loop, not merely declared as an unused type alias.
+    #[tokio::test]
+    async fn test_scheduler_add_task_executes_registered_closure() -> Result<()> {
+        use std::sync::atomic::AtomicUsize;
+
+        let constraints = ResourceConstraints::minimal();
+        let manager = Arc::new(ResourceManager::new(constraints)?);
+        let scheduler = Scheduler::new(manager, 1);
+
+        let executed = Arc::new(AtomicUsize::new(0));
+        let executed_clone = Arc::clone(&executed);
+
+        let task_id = scheduler.add_task(
+            Box::new(move || {
+                executed_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(scheduler.task_count(), 1);
+
+        scheduler.start().await?;
+        // A freshly-registered task is due immediately, so the first
+        // heartbeat tick (which runs right away, before any sleep) should
+        // execute it well within this window.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        scheduler.stop().await?;
+
+        assert!(
+            executed.load(Ordering::SeqCst) >= 1,
+            "registered ScheduledTask closure must actually run"
+        );
+
+        assert!(scheduler.remove_task(task_id));
+        assert_eq!(scheduler.task_count(), 0);
+        assert!(!scheduler.remove_task(task_id));
+
+        Ok(())
+    }
+
+    /// A task registration error must be surfaced via logging, not silently
+    /// swallowed, and must not deregister the task (it should be retried).
+    #[tokio::test]
+    async fn test_scheduler_task_error_does_not_deregister_task() -> Result<()> {
+        let constraints = ResourceConstraints::minimal();
+        let manager = Arc::new(ResourceManager::new(constraints)?);
+        let scheduler = Scheduler::new(manager, 1);
+
+        let task_id = scheduler.add_task(
+            Box::new(|| Err(EdgeError::runtime("intentional test failure"))),
+            Duration::from_secs(1),
+        );
+
+        scheduler.start().await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        scheduler.stop().await?;
+
+        // The task must still be registered even though it errored.
+        assert_eq!(scheduler.task_count(), 1);
+        assert!(scheduler.remove_task(task_id));
+
+        Ok(())
     }
 }

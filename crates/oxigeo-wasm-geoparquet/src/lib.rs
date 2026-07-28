@@ -10,6 +10,7 @@
 //!
 //! - `sparse` — [`parquet`] `ChunkReader` over sparse prefetched byte segments
 //! - `coalesce` — column-chunk byte ranges deduped and merged into few HTTP fetches
+//! - `chunk_cache` — byte-capacity-bounded true-LRU cache for fetched column chunks
 //! - `error` — typed error surface (`GpqLiveError`), JS-serializable on wasm
 //! - `filter_expr` — SQL `WHERE` fragment → `AttributeFilter` lowering (sqlparser)
 //! - `convert` — Arrow `RecordBatch` → GeoJSON `FeatureCollection` output
@@ -22,6 +23,7 @@
 //!
 //! Module scaffold created by WP W0; implementations land in WP C2-C4.
 
+mod chunk_cache;
 mod coalesce;
 mod convert;
 mod error;

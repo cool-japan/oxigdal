@@ -31,16 +31,17 @@ tiles = ["std"]
 [dependencies]
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-geotiff = { workspace = true }
-thiserror = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = { workspace = true }
 
 # JNI support for Android
 jni = { workspace = true, optional = true }
 
-# Logging
-tracing = { workspace = true }
+[target.'cfg(target_os = "ios")'.dependencies]
+# Objective-C runtime bindings (msg_send!), used to query real iOS sandbox
+# paths (NSSearchPathForDirectoriesInDomains) instead of hardcoded placeholder
+# strings. Pure-Rust ABI binding (no C library linked); only compiled for
+# target_os = "ios".
+objc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

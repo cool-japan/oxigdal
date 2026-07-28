@@ -24,8 +24,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-dev-tools = "0.2.0"
-oxigeo-core = "0.2.0"
+oxigeo-dev-tools = "0.2.1"
+oxigeo-core = "0.2.1"
 ```
 
 ## Quick Start

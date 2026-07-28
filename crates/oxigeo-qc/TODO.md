@@ -1,19 +1,19 @@
 # TODO: oxigeo-qc
 
 > **Purpose:** Quality control and validation suite for OxiGeo — comprehensive data integrity checks for geospatial data.
-> **Status (2026-05-16):** 6,849 Rust LoC · 89 tests · 0 real stubs
+> **Status (2026-07-28):** 10,012 Rust LoC · 158 tests · 0 real stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
-- [x] Add STAC item/collection schema validation (planned 2026-06-06)
+- [x] Add STAC item/collection schema validation (completed 2026-06-06)
   - **Goal:** `StacValidator` struct in `src/stac.rs` implementing `check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<StacValidationResult>`. Result holds `issues: Vec<QcIssue>` + `is_valid()`.
   - **Design:** Read file bytes → sniff JSON `"type"` field to determine Item/Collection/Catalog → `serde_json::from_slice::<oxigeo_stac::Item>` (or Collection) → call `.validate()` → translate errors to QcIssue (Critical: missing required fields, wrong type, unsupported version; Major: datetime/bbox issues). Extra checks: bbox length 4 or 6, bbox↔geometry consistency, RFC3339 datetime format, `eo:cloud_cover ∈ [0,100]` from additional_fields. Add dep `oxigeo-stac` to Cargo.toml. Map foreign errors manually (no `#[from]` for stac errors in QcError). Register `pub mod stac;` in `src/lib.rs`.
   - **Files:** new `src/stac.rs`; update `src/lib.rs` (add pub mod + pub use); update `Cargo.toml` (add oxigeo-stac dep).
   - **Tests:** minimal valid item → no issues; item missing geometry → Critical; item with bad datetime → Major; collection missing extent → Critical; eo:cloud_cover out of range → Warning; bbox/geometry length mismatch → Major. (~6 tests)
   - **Risk:** Low — serde_json deserialization is robust; STAC schema is well-defined.
 
-- [x] Add batch QC mode for processing entire directories (planned 2026-06-06)
+- [x] Add batch QC mode for processing entire directories (completed 2026-06-06)
   - **Goal:** `BatchRunner` struct in `src/batch.rs` with `new(cfg: BatchConfig) -> Self` and `run<P: AsRef<Path>>(&self, dir: P) -> QcResult<BatchReport>`. BatchReport: `per_file: Vec<FileQcResult>`, `severity_counts: SeverityCounts`, `total_files`, `total_issues`.
   - **Design:** Recursive directory walk using `std::fs::read_dir` (no walkdir dep); dispatch by file extension: .tif/.tiff → CogValidator + CompletenessChecker + RadiometricValidator; .shp/.geojson → TopologyChecker + AttributionChecker; .gpkg → GpkgValidator + TopologyChecker; .json → check via local `is_stac_json` fingerprint (read 4 KiB, look for `"stac_version"` or `"stac_extensions"`, use `unwrap_or`) → StacValidator if STAC. Aggregate all QcIssues into BatchReport with SeverityCounts per severity level.
   - **Files:** new `src/batch.rs`; update `src/lib.rs` (add pub mod + pub use).
@@ -21,14 +21,14 @@
   - **Tests:** walk a temp directory tree; dispatch by extension routes correctly; severity counts aggregate correctly; non-geospatial files skipped. (~5 tests)
   - **Risk:** Low — pure file dispatch logic; no new deps needed.
 
-- [x] Add GeoPackage compliance validation (OGC GeoPackage 1.4 spec) (planned 2026-06-06)
+- [x] Add GeoPackage compliance validation (OGC GeoPackage 1.4 spec) (completed 2026-06-06)
   - **Goal:** `GpkgValidator` struct in `src/gpkg.rs` implementing `check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<GpkgValidationResult>`. Result holds `issues: Vec<QcIssue>` + `is_valid()`.
   - **Design:** `std::fs::read(path)` → `GeoPackage::from_bytes(bytes)` → `load_contents()` → wrap `check_integrity()` (translate `IntegrityIssue` → `QcIssue` manually). Additional 1.4 checks: SQLite magic bytes check, `application_id == 0x47504B47` (Critical if wrong), `user_version >= 10400` (Major if < 10400, targeting GeoPackage 1.4.0), `gpkg_contents` table existence via `scan_table_by_name` (Critical if missing), geometry columns table presence. Use pure-Rust default (no rusqlite feature). Add dep `oxigeo-gpkg` to Cargo.toml. Register `pub mod gpkg;` in `src/lib.rs`.
   - **Files:** new `src/gpkg.rs`; update `src/lib.rs`; update `Cargo.toml` (add oxigeo-gpkg dep).
   - **Tests:** valid minimal GPKG bytes → passes; wrong application_id → Critical; missing gpkg_contents → Critical; user_version < 10400 → Major; orphan feature table → Major. Construct minimal SQLite byte sequences for testing. (~6 tests)
   - **Risk:** Medium — need to construct valid minimal SQLite byte sequences for tests; IntegrityIssue translation requires reading oxigeo-gpkg API.
 
-- [x] Implement raster radiometric range validation per sensor type (planned 2026-06-06)
+- [x] Implement raster radiometric range validation per sensor type (completed 2026-06-06)
   - **Goal:** `RadiometricValidator` struct in `src/raster/radiometric.rs` with `SensorProfile` enum and `check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<RadiometricValidationResult>`. Result: `per_band: Vec<BandRadiometricResult>`, `issues: Vec<QcIssue>`, `is_valid()`.
   - **Design:** SensorProfile enum: Landsat8_SR, Landsat9_SR, Sentinel2_L2A, Sentinel2_L1C, MODIS_SR, Custom { per_band_ranges: Vec<(f64, f64)> }. Open raster via `oxigeo_geotiff::cog::CogReader` (mirror pattern from `src/raster/nodata.rs`). Deterministic stride sampling — every Nth pixel based on raster size (no `rand`, no SciRS2 random). Per-band: compute min/max/mean/p99 from samples; compare against profile expected ranges → Critical if >0.1% of samples out of range, Major if any out of range, Warning if mean drifts >2σ from expected center.
   - **Files:** new `src/raster/radiometric.rs`; register in `src/raster/mod.rs`; update `src/lib.rs`.
@@ -121,4 +121,4 @@
 - [x] Implement spatial extent validation — see "CRS + spatial extent validation (combined module)" above (completed 2026-05-08)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

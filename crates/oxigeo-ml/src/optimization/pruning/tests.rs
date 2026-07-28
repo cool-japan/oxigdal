@@ -1,6 +1,8 @@
 //! Tests for model pruning module.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::optimization::onnx_weights::test_support::build_model;
 
 #[test]
 fn test_pruning_config_builder() {
@@ -129,4 +131,113 @@ fn test_polynomial_schedule() {
 
     assert!((s_0 - 0.1).abs() < 0.01); // Should be ~10%
     assert!((s_final - 0.8).abs() < 0.01); // Should be ~80%
+}
+
+/// Counts the number of exact-zero float32 values across all initializers of a
+/// serialized ONNX model.
+fn count_zeros(model_bytes: &[u8]) -> (usize, usize) {
+    let inits =
+        crate::optimization::onnx_weights::parse_float_initializers(model_bytes).expect("parse");
+    let total: usize = inits.iter().map(|i| i.values.len()).sum();
+    let zeros: usize = inits
+        .iter()
+        .flat_map(|i| i.values.iter())
+        .filter(|&&v| v == 0.0)
+        .count();
+    (zeros, total)
+}
+
+#[test]
+fn test_unstructured_pruning_real_onnx_roundtrip() {
+    // Build a real ONNX model with two float weight tensors, none initially zero.
+    let w1: Vec<f32> = (1..=16).map(|i| i as f32).collect();
+    let w2: Vec<f32> = (1..=9).map(|i| -(i as f32)).collect();
+    let model = build_model(&[("w1", vec![4, 4], w1), ("w2", vec![3, 3], w2)]);
+
+    let dir = std::env::temp_dir();
+    let input = dir.join("oxigeo_prune_unstruct_in.onnx");
+    let output = dir.join("oxigeo_prune_unstruct_out.onnx");
+    std::fs::write(&input, &model).expect("write input");
+
+    let config = PruningConfig::builder()
+        .strategy(PruningStrategy::Magnitude)
+        .sparsity_target(0.5)
+        .build();
+
+    let stats = unstructured_pruning(&input, &output, &config).expect("prune");
+
+    // 25 total params; 50% sparsity => ~12 or 13 pruned.
+    assert_eq!(stats.original_params, 25);
+    assert!(stats.actual_sparsity > 0.4 && stats.actual_sparsity < 0.6);
+
+    // The output must be a valid ONNX model whose zeroed-value count matches
+    // the reported sparsity (real in-place pruning, not a byte-reinterpretation).
+    let out_bytes = std::fs::read(&output).expect("read output");
+    let (zeros, total) = count_zeros(&out_bytes);
+    assert_eq!(total, 25);
+    assert_eq!(zeros, stats.params_removed());
+    // The smallest-magnitude weights (±1, ±2, ...) must have been zeroed.
+    let inits =
+        crate::optimization::onnx_weights::parse_float_initializers(&out_bytes).expect("parse");
+    let w1_out = &inits[0].values;
+    assert_eq!(w1_out[0], 0.0, "smallest magnitude weight should be pruned");
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+#[test]
+fn test_structured_pruning_zeroes_whole_channels() {
+    // 4 output channels of 4 weights each; channel 0 has the smallest L2 norm.
+    let weights: Vec<f32> = vec![
+        0.1, 0.1, 0.1, 0.1, // channel 0 (smallest)
+        5.0, 5.0, 5.0, 5.0, // channel 1
+        9.0, 9.0, 9.0, 9.0, // channel 2
+        7.0, 7.0, 7.0, 7.0, // channel 3
+    ];
+    let model = build_model(&[("conv", vec![4, 4], weights)]);
+
+    let dir = std::env::temp_dir();
+    let input = dir.join("oxigeo_prune_struct_in.onnx");
+    let output = dir.join("oxigeo_prune_struct_out.onnx");
+    std::fs::write(&input, &model).expect("write input");
+
+    let config = PruningConfig::builder()
+        .strategy(PruningStrategy::Structured)
+        .sparsity_target(0.25) // prune 1 of 4 channels
+        .build();
+
+    let stats = structured_pruning(&input, &output, &config).expect("prune");
+    assert_eq!(stats.original_params, 16);
+    assert_eq!(stats.pruned_params, 12); // one channel (4 weights) removed
+    assert!((stats.actual_sparsity - 0.25).abs() < 1e-6);
+
+    let out_bytes = std::fs::read(&output).expect("read output");
+    let inits =
+        crate::optimization::onnx_weights::parse_float_initializers(&out_bytes).expect("parse");
+    let vals = &inits[0].values;
+    // Channel 0 (indices 0..4) must be fully zeroed; others untouched.
+    assert_eq!(&vals[0..4], &[0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(&vals[4..8], &[5.0, 5.0, 5.0, 5.0]);
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+#[test]
+fn test_pruning_rejects_non_onnx_input() {
+    let dir = std::env::temp_dir();
+    let input = dir.join("oxigeo_prune_bad_in.bin");
+    let output = dir.join("oxigeo_prune_bad_out.bin");
+    std::fs::write(&input, vec![0xAAu8; 128]).expect("write");
+
+    let config = PruningConfig::builder().sparsity_target(0.5).build();
+    let result = unstructured_pruning(&input, &output, &config);
+    assert!(
+        result.is_err(),
+        "non-ONNX input must be rejected, not corrupted"
+    );
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
 }

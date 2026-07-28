@@ -198,7 +198,7 @@ impl DeliveryStream {
                     message: "S3 destination required".to_string(),
                 })?;
 
-        let s3_destination = aws_sdk_firehose::types::ExtendedS3DestinationConfiguration::builder()
+        let mut s3_builder = aws_sdk_firehose::types::ExtendedS3DestinationConfiguration::builder()
             .bucket_arn(&s3_config.bucket_arn)
             .role_arn(&s3_config.role_arn)
             .prefix(&s3_config.prefix)
@@ -210,11 +210,49 @@ impl DeliveryStream {
             )
             .compression_format(aws_sdk_firehose::types::CompressionFormat::from(
                 self.config.compression_format.to_aws_compression(),
-            ))
-            .build()
-            .map_err(|e| KinesisError::Firehose {
-                message: e.to_string(),
-            })?;
+            ));
+
+        // Wire AWS-managed data transformation: when transformation is enabled,
+        // attach a ProcessingConfiguration with a Lambda processor so Firehose
+        // itself invokes the function on every record before delivery. Without
+        // this, `with_transformation(lambda_arn)` would be silently ignored.
+        if self.config.enable_transformation {
+            let lambda_arn = self
+                .config
+                .transformation_lambda_arn
+                .as_ref()
+                .ok_or_else(|| KinesisError::InvalidConfig {
+                    message: "transformation enabled but no Lambda ARN configured".to_string(),
+                })?;
+
+            let lambda_param = aws_sdk_firehose::types::ProcessorParameter::builder()
+                .parameter_name(aws_sdk_firehose::types::ProcessorParameterName::LambdaArn)
+                .parameter_value(lambda_arn)
+                .build()
+                .map_err(|e| KinesisError::Firehose {
+                    message: e.to_string(),
+                })?;
+
+            let processor = aws_sdk_firehose::types::Processor::builder()
+                .r#type(aws_sdk_firehose::types::ProcessorType::Lambda)
+                .parameters(lambda_param)
+                .build()
+                .map_err(|e| KinesisError::Firehose {
+                    message: e.to_string(),
+                })?;
+
+            let processing_configuration =
+                aws_sdk_firehose::types::ProcessingConfiguration::builder()
+                    .enabled(true)
+                    .processors(processor)
+                    .build();
+
+            s3_builder = s3_builder.processing_configuration(processing_configuration);
+        }
+
+        let s3_destination = s3_builder.build().map_err(|e| KinesisError::Firehose {
+            message: e.to_string(),
+        })?;
 
         let response = self
             .client

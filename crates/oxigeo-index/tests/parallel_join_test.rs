@@ -2,6 +2,7 @@
 //! ([`oxigeo_index::spatial_join_parallel`]).
 
 #![cfg(feature = "parallel")]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxigeo_index::{
     Bbox2D, ParallelJoinOptions, RTree, SpatialQuery, spatial_join_parallel,

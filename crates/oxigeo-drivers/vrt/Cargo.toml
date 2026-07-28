@@ -22,13 +22,9 @@ async = ["oxigeo-core/async", "dep:tokio"]
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-geotiff = { workspace = true }
 thiserror = { workspace = true }
-byteorder = { workspace = true }
-bytes = { workspace = true }
 serde = { workspace = true }
-tracing = { workspace = true }
 quick-xml = { workspace = true }
 lru = { workspace = true }
-bytemuck = { workspace = true }
 
 # Async
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }

@@ -80,6 +80,19 @@ impl Default for ResourceRequirements {
     }
 }
 
+impl TaskNode {
+    /// Extracts the optional shell command associated with this task, if its `config` carries
+    /// one.
+    ///
+    /// A task opts into command execution by setting `config = {"command": "<shell command>"}`
+    /// (or including a `"command"` string field alongside other config keys). External-system
+    /// exporters (Temporal, Airflow, Prefect, ...) use this to decide whether to emit a real
+    /// command invocation or a placeholder body for a given task.
+    pub fn command(&self) -> Option<&str> {
+        self.config.get("command").and_then(|v| v.as_str())
+    }
+}
+
 impl PartialEq for TaskNode {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id

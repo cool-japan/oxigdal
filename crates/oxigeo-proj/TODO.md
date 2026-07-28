@@ -1,8 +1,8 @@
 # TODO: oxigeo-proj
 
 > **Purpose:** Pure-Rust coordinate transformation and projection support for OxiGeo — EPSG database, WKT2/WKT1/ESRI WKT, Helmert/Molodensky/NTv2/NADCON datum transforms, ~140 projections.
-> **Status (2026-05-16):** 13,629 Rust LoC · 452 tests · 1 real stub
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 18,513 Rust LoC · 783 tests all-features (770 default-features) · 0 known stubs
+> **Roadmap:** v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
@@ -89,7 +89,7 @@
 ## Cross-crate dependencies
 
 - **Blocks:** `oxigeo-qc` (CRS validator), `oxigeo-algorithms` (CrsTransformer integration), `oxigeo-services` (reproject pipeline), `oxigeo-geotiff`/`oxigeo-geoparquet` (CRS metadata)
-- **Blocked by:** None directly (proj4rs optional via std feature)
+- **Blocked by:** None directly (proj4rs optional via the `proj4rs-compat` feature; OxiProj is the default pure-Rust engine)
 
 ## Recently completed (verbatim)
 
@@ -100,4 +100,4 @@
 - [x] Add Polyconic and Equirectangular projections (American Polyconic with Newton-Raphson inverse + Plate Carrée, 12 tests)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

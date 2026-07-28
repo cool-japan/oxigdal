@@ -350,6 +350,12 @@ pub struct Header {
     pub features_count: Option<u64>,
     /// Whether the file has a spatial index
     pub has_index: bool,
+    /// Packed R-tree node size (branching factor) declared by the file. The
+    /// FlatGeobuf spec allows any value; the reference default is 16. This is the
+    /// value that must be used to parse the spatial index — a producer that wrote
+    /// the index with a non-default node size stores it here so the reader lays
+    /// the tree out identically. A value of 0 means "no index".
+    pub index_node_size: u16,
     /// CRS information
     pub crs: Option<CrsInfo>,
     /// Title of the dataset
@@ -375,6 +381,7 @@ impl Header {
             columns: Vec::new(),
             features_count: None,
             has_index: false,
+            index_node_size: PackedRTree::DEFAULT_NODE_SIZE as u16,
             crs: None,
             title: None,
             description: None,
@@ -401,6 +408,25 @@ impl Header {
     #[must_use]
     pub const fn with_index(mut self, has_index: bool) -> Self {
         self.has_index = has_index;
+        if has_index {
+            // Keep whatever node size was set; default to the reference 16.
+            if self.index_node_size == 0 {
+                self.index_node_size = PackedRTree::DEFAULT_NODE_SIZE as u16;
+            }
+        } else {
+            self.index_node_size = 0;
+        }
+        self
+    }
+
+    /// Sets the packed R-tree node size (branching factor) for the spatial
+    /// index. Only meaningful when the header also carries an index. Values below
+    /// 2 are rejected by the reader (the tree math requires a fan-out of at least
+    /// 2), so callers should use 16 (the reference default) unless matching an
+    /// existing file.
+    #[must_use]
+    pub const fn with_index_node_size(mut self, node_size: u16) -> Self {
+        self.index_node_size = node_size;
         self
     }
 
@@ -543,7 +569,13 @@ fn build_header(fbb: &mut FlatBufferBuilder<'_>, header: &Header) -> Offset {
     let crs_off = header.crs.as_ref().map(|c| build_crs(fbb, c));
 
     let index_node_size = if header.has_index {
-        PackedRTree::DEFAULT_NODE_SIZE as u16
+        // Preserve the header's declared node size (defaulting to the reference
+        // 16 when it was left unset) so round-tripping keeps the index parseable.
+        if header.index_node_size == 0 {
+            PackedRTree::DEFAULT_NODE_SIZE as u16
+        } else {
+            header.index_node_size
+        }
     } else {
         0
     };
@@ -651,6 +683,7 @@ fn read_header(t: &FbTable<'_>) -> Result<Header> {
         columns,
         features_count,
         has_index,
+        index_node_size,
         crs,
         title: t.get_string(fbs::HEADER_VT_TITLE)?,
         description: t.get_string(fbs::HEADER_VT_DESCRIPTION)?,
@@ -754,7 +787,34 @@ mod tests {
         let bytes = header.to_flatbuffer().expect("encode header");
         let decoded = Header::from_bytes(&bytes).expect("decode header");
         assert!(!decoded.has_index);
+        assert!(decoded.index_node_size == 0);
         assert!(decoded.crs.is_none());
         assert!(decoded.extent.is_none());
+    }
+
+    /// A non-default index node size must survive the FlatBuffers round-trip so
+    /// the reader can lay the spatial index out identically.
+    #[test]
+    fn test_header_custom_node_size_roundtrip() {
+        let header = Header::new(GeometryType::Point)
+            .with_index(true)
+            .with_index_node_size(8)
+            .with_features_count(100);
+        let bytes = header.to_flatbuffer().expect("encode header");
+        let decoded = Header::from_bytes(&bytes).expect("decode header");
+        assert!(decoded.has_index);
+        assert_eq!(decoded.index_node_size, 8);
+    }
+
+    /// The default index node size (the reference value 16) is also preserved.
+    #[test]
+    fn test_header_default_node_size_roundtrip() {
+        let header = Header::new(GeometryType::Point)
+            .with_index(true)
+            .with_features_count(3);
+        let bytes = header.to_flatbuffer().expect("encode header");
+        let decoded = Header::from_bytes(&bytes).expect("decode header");
+        assert!(decoded.has_index);
+        assert_eq!(decoded.index_node_size, 16);
     }
 }

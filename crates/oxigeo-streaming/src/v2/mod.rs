@@ -15,6 +15,9 @@ pub mod session_window;
 pub mod stream_join;
 
 pub use backpressure::{BackpressureConsumer, BackpressureProducer, CreditPool, PendingItem};
-pub use checkpoint::{CheckpointId, CheckpointManager, CheckpointState, InMemoryCheckpointStore};
+pub use checkpoint::{
+    CheckpointId, CheckpointManager, CheckpointState, CheckpointStore, FileCheckpointStore,
+    InMemoryCheckpointStore,
+};
 pub use session_window::{SessionWindow, SessionWindowConfig, SessionWindowProcessor, StreamEvent};
 pub use stream_join::{JoinEvent, JoinMode, JoinedPair, TemporalJoinConfig, TemporalJoiner};

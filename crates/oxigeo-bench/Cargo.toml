@@ -39,24 +39,21 @@ oxigeo-analytics = { workspace = true, optional = true }
 # Benchmarking
 criterion.workspace = true
 
-# Profiling
-pprof = { workspace = true }
+# Profiling (pulls in `backtrace` -> `miniz_oxide`; kept out of default
+# features per the Pure Rust Policy -- see the `profiling` feature below).
+pprof = { workspace = true, optional = true }
 
 # Parallel processing
 rayon.workspace = true
 
 # Statistics and reporting
 tinytemplate.workspace = true
-num-traits.workspace = true
 
 # System information
 sysinfo.workspace = true
 
 # Temporary files
 tempfile.workspace = true
-
-# Logging
-tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Used only by the DirectIoScenario benchmark scenario to request O_DIRECT
@@ -79,6 +76,12 @@ algorithms = ["oxigeo-algorithms"]
 lzw = ["raster", "oxigeo-geotiff?/lzw"]
 deflate = ["raster", "oxigeo-geotiff?/deflate"]
 zstd = ["raster", "oxigeo-geotiff?/zstd"]
+# CPU/flamegraph profiling via `pprof`. Non-default: `pprof` depends on
+# `backtrace`, which depends on `miniz_oxide` for compressed debug-info
+# sections -- keeping this feature opt-in keeps the default build graph
+# Pure-Rust-clean (Pure Rust Policy). Enable explicitly for local profiling:
+# `cargo bench -p oxigeo-bench --features profiling`.
+profiling = ["dep:pprof"]
 full = [
     "async",
     "raster",
@@ -169,6 +172,15 @@ required-features = ["algorithms", "raster"]
 [lints]
 workspace = true
 
+# `all-features = true` would also turn on `profiling`, which pulls `pprof` ->
+# `backtrace` -> `miniz_oxide` -- see the Pure Rust Policy note on the
+# `profiling` feature above (it is deliberately left out of the `full` bundle
+# for the same reason). The list below mirrors `full`'s contents so the docs
+# build stays on the same Pure-Rust closure as the default feature set
+# (mirrors the pattern in oxigeo-cloud-enhanced).
 [package.metadata.docs.rs]
-all-features = true
+features = [
+    "async", "raster", "vector", "cloud", "ml",
+    "analytics", "algorithms", "lzw", "deflate", "zstd",
+]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -86,31 +86,89 @@ impl GapFiller {
         method: GapFillMethod,
         params: Option<GapFillParams>,
     ) -> Result<TimeSeriesRaster> {
-        match method {
-            GapFillMethod::LinearInterpolation => Self::linear_interpolation(ts),
-            GapFillMethod::SplineInterpolation => Self::spline_interpolation(ts),
-            GapFillMethod::NearestNeighbor => Self::nearest_neighbor(ts),
+        let mut filled = match method {
+            GapFillMethod::LinearInterpolation => Self::linear_interpolation(ts)?,
+            GapFillMethod::SplineInterpolation => Self::spline_interpolation(ts)?,
+            GapFillMethod::NearestNeighbor => Self::nearest_neighbor(ts)?,
             GapFillMethod::HarmonicRegression => {
                 let period = params.map_or(12, |p| p.harmonic_period);
-                Self::harmonic_regression(ts, period)
+                Self::harmonic_regression(ts, period)?
             }
             GapFillMethod::MovingAverage => {
                 let window = params.map_or(3, |p| p.window_size);
-                Self::moving_average(ts, window)
+                Self::moving_average(ts, window)?
             }
-            GapFillMethod::ForwardFill => Self::forward_fill(ts),
-            GapFillMethod::BackwardFill => Self::backward_fill(ts),
+            GapFillMethod::ForwardFill => Self::forward_fill(ts)?,
+            GapFillMethod::BackwardFill => Self::backward_fill(ts)?,
             GapFillMethod::Whittaker => {
                 let lambda = params.map_or(100.0, |p| p.whittaker_lambda);
                 let order = params.map_or(2, |p| p.whittaker_order);
-                Self::whittaker_smooth(ts, lambda, order)
+                Self::whittaker_smooth(ts, lambda, order)?
             }
             GapFillMethod::SavitzkyGolay => {
                 let win = params.map_or(7, |p| p.savgol_window);
                 let poly = params.map_or(2, |p| p.savgol_poly_order);
-                Self::savitzky_golay_smooth(ts, win, poly)
+                Self::savitzky_golay_smooth(ts, win, poly)?
+            }
+        };
+
+        // Honor `max_gap_size`: any maximal run of consecutive missing
+        // observations longer than the threshold is left unfilled (restored to
+        // NaN) so a caller who sets, e.g., `max_gap_size: Some(3)` does not get
+        // a multi-month outage silently interpolated across.
+        if let Some(max_gap) = params.and_then(|p| p.max_gap_size) {
+            Self::apply_max_gap_size(ts, &mut filled, max_gap)?;
+        }
+
+        Ok(filled)
+    }
+
+    /// Restore `NaN` at positions belonging to a gap (maximal run of
+    /// consecutive missing observations in the *original* series) longer than
+    /// `max_gap`, undoing any fill for those positions.
+    ///
+    /// A `max_gap` of 0 means no gap may be filled at all.
+    fn apply_max_gap_size(
+        original: &TimeSeriesRaster,
+        filled: &mut TimeSeriesRaster,
+        max_gap: usize,
+    ) -> Result<()> {
+        let (height, width, n_bands) = original
+            .expected_shape()
+            .ok_or_else(|| TemporalError::insufficient_data("No shape information"))?;
+
+        for i in 0..height {
+            for j in 0..width {
+                for k in 0..n_bands {
+                    let orig = original.extract_pixel_timeseries(i, j, k)?;
+                    let n = orig.len();
+                    let mut t = 0;
+                    while t < n {
+                        if orig[t].is_nan() {
+                            let start = t;
+                            while t < n && orig[t].is_nan() {
+                                t += 1;
+                            }
+                            let run_len = t - start;
+                            if run_len > max_gap {
+                                for (idx, entry) in filled.entries_mut().values_mut().enumerate() {
+                                    if idx >= start
+                                        && idx < t
+                                        && let Some(data) = &mut entry.data
+                                    {
+                                        data[[i, j, k]] = f64::NAN;
+                                    }
+                                }
+                            }
+                        } else {
+                            t += 1;
+                        }
+                    }
+                }
             }
         }
+
+        Ok(())
     }
 
     /// Linear interpolation gap filling
@@ -621,5 +679,105 @@ impl Default for GapFillParams {
             savgol_window: 7,
             savgol_poly_order: 2,
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::timeseries::TemporalMetadata;
+    use chrono::{DateTime, NaiveDate, Utc};
+    use scirs2_core::ndarray::Array3;
+
+    fn meta(day: u32) -> TemporalMetadata {
+        let date = NaiveDate::from_ymd_opt(2024, 1, day).expect("valid date");
+        let ndt = date.and_hms_opt(0, 0, 0).expect("valid time");
+        let ts = DateTime::from_naive_utc_and_offset(ndt, Utc);
+        TemporalMetadata::new(ts, date)
+    }
+
+    /// Build a 1x1x1 time series from a slice of per-timestep values
+    /// (NaN = missing).
+    fn ts_from(values: &[f64]) -> TimeSeriesRaster {
+        let mut ts = TimeSeriesRaster::new();
+        for (idx, &v) in values.iter().enumerate() {
+            let raster = Array3::from_elem((1, 1, 1), v);
+            ts.add_raster(meta(idx as u32 + 1), raster).unwrap();
+        }
+        ts
+    }
+
+    fn pixel_series(ts: &TimeSeriesRaster) -> Vec<f64> {
+        ts.extract_pixel_timeseries(0, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn test_max_gap_size_leaves_long_gaps_unfilled() {
+        // A single-step gap and a 3-step gap. With max_gap_size = 1, only the
+        // single-step gap may be filled; the 3-step run must remain NaN.
+        let values = vec![
+            1.0,
+            f64::NAN, // 1-step gap (fillable)
+            3.0,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN, // 3-step gap (too long)
+            7.0,
+        ];
+        let ts = ts_from(&values);
+
+        let params = GapFillParams {
+            max_gap_size: Some(1),
+            ..GapFillParams::default()
+        };
+
+        let filled =
+            GapFiller::fill_gaps(&ts, GapFillMethod::LinearInterpolation, Some(params)).unwrap();
+        let out = pixel_series(&filled);
+
+        // 1-step gap filled to 2.0 (linear between 1.0 and 3.0).
+        assert!(
+            (out[1] - 2.0).abs() < 1e-9,
+            "short gap should be filled, got {}",
+            out[1]
+        );
+        // The 3-step gap must stay NaN.
+        assert!(out[3].is_nan(), "long gap position 3 must stay NaN");
+        assert!(out[4].is_nan(), "long gap position 4 must stay NaN");
+        assert!(out[5].is_nan(), "long gap position 5 must stay NaN");
+        // Anchors preserved.
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[2], 3.0);
+        assert_eq!(out[6], 7.0);
+    }
+
+    #[test]
+    fn test_no_max_gap_size_fills_everything() {
+        // Without max_gap_size the whole gap is interpolated.
+        let values = vec![1.0, f64::NAN, f64::NAN, f64::NAN, 5.0];
+        let ts = ts_from(&values);
+
+        let filled = GapFiller::fill_gaps(&ts, GapFillMethod::LinearInterpolation, None).unwrap();
+        let out = pixel_series(&filled);
+
+        for (idx, v) in out.iter().enumerate() {
+            assert!(!v.is_nan(), "position {idx} should be filled, got NaN");
+        }
+        assert!((out[2] - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_max_gap_size_zero_blocks_all_fills() {
+        let values = vec![1.0, f64::NAN, 3.0];
+        let ts = ts_from(&values);
+        let params = GapFillParams {
+            max_gap_size: Some(0),
+            ..GapFillParams::default()
+        };
+        let filled =
+            GapFiller::fill_gaps(&ts, GapFillMethod::LinearInterpolation, Some(params)).unwrap();
+        let out = pixel_series(&filled);
+        assert!(out[1].is_nan(), "max_gap_size=0 must block all fills");
     }
 }

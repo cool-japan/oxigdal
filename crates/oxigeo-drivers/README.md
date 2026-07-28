@@ -2,7 +2,7 @@
 
 This directory is the workspace home for the core geospatial format drivers that make up the OxiGeo I/O layer. Each driver lives in its own sub-crate so you can pull in only what your project needs.
 
-**Version**: 0.2.0 — Last updated: 2026-07-20
+**Version**: 0.2.1 — Last updated: 2026-07-28
 
 ---
 
@@ -26,9 +26,9 @@ There is no single `oxigeo-drivers` meta-crate to depend on. Add only the driver
 
 ```toml
 [dependencies]
-oxigeo-geotiff   = "0.2.0"
-oxigeo-geojson   = "0.2.0"
-oxigeo-shapefile = "0.2.0"
+oxigeo-geotiff   = "0.2.1"
+oxigeo-geojson   = "0.2.1"
+oxigeo-shapefile = "0.2.1"
 ```
 
 ---
@@ -151,7 +151,7 @@ Note: The `hdf5_sys` feature (C bindings to libhdf5) is intentionally absent fro
 
 ### `oxigeo-jpeg2000`
 
-`std` and `async` only — no additional flags in 0.2.0.
+`std` and `async` only — no additional flags in 0.2.1.
 
 ### `oxigeo-netcdf`
 

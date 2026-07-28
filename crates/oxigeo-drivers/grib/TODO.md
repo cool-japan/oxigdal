@@ -1,8 +1,8 @@
 # TODO: oxigeo-drivers/grib
 
 > **Purpose:** GRIB1/GRIB2 meteorological data format driver for OxiGeo - Pure Rust implementation
-> **Status (2026-05-16):** 4,753 Rust LoC (incl. tests) - 65 tests - 1 verified behavior gap (DRT 5.2/5.3/5.40/5.41 errors out)
-> **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
+> **Status (2026-07-28):** 4,753 Rust LoC (incl. tests, as of last count) - 122 tests (all-features) - DRT 5.2/5.3 complex packing implemented (2026-05-22); DRT 5.40 (JPEG2000) / 5.41 (PNG) still error out (re-verified below)
+> **Roadmap:** v0.1.7 - v0.2.1 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
@@ -18,6 +18,7 @@
   - **Tests:** 12 in `crates/oxigeo-drivers/grib/tests/complex_packing_test.rs` — hand-built synthetic byte fixtures with hand-verified expected f32 (bit reader MSB-first / overrun / byte-boundary-spanning; DRT 5.2 param parse, uniform/variable group widths, zero-width group, E/D scaling, single-group round trip; DRT 5.3 param parse, first-/second-order spatial diff). Full crate suite 77/77.
 
 - [ ] Implement GRIB2 DRT 5.40 (JPEG2000 compressed) and 5.41 (PNG compressed) data sections
+  - **Re-verified 2026-07-28:** Still open — `src/grib2/section5.rs` retains a catch-all `_ => Err(GribError::UnsupportedDataTemplate(template_number))` arm; DRT 5.2/5.3 are now parsed explicitly (done 2026-05-22) but 40/41 still fall through to this error.
   - **Verified gap:** Same match arm at `src/grib2/section5.rs:51` rejects DRT 40 and 41. (Note: the arm currently lists `0 | 40`, but the `40` here matches DRT 5.0 incorrectly used as a placeholder for satellite simulation - read the surrounding code; it should fall through to the error path for the JPEG2000 case.) The TODO claim "Template 5.40 JPEG2000" and "Template 5.41 PNG" align.
   - **Goal:** Decoding GRIB2 files that use JPEG2000 (very common in NCEP NDFD products) or PNG (less common but present) packing.
   - **Design:** Section 7 (data) is the entire JPEG2000 J2K codestream / PNG file. Forward to `oxigeo-jpeg2000::Jpeg2000Reader` (Pure-Rust J2K decoder; currently incomplete but exists - see `oxigeo-drivers/jpeg2000/TODO.md`) for DRT 5.40; for DRT 5.41 use a Pure-Rust PNG decoder (no PNG crate currently in workspace; introduce `oxiarc-png` if exists, else `image-png` per workspace policy). Output values mapped through Section 5 scaling (R, E, D) as for simple packing.
@@ -27,6 +28,7 @@
   - **Prerequisites:** `oxigeo-drivers/jpeg2000` decode wiring item.
 
 - [ ] Implement GRIB2 writing support (at least DRT 5.0 simple packing)
+  - **Re-verified 2026-07-28:** Still open — no `src/grib2/writer.rs` or public `Grib2Writer` in source.
   - **Verified gap:** `src/reader.rs` exposes `GribReader` / `GribRecord`; no `GribWriter` exists. `rg -n "pub struct.*Writer|pub fn.*write" -g '*.rs' src/` returns no public writer.
   - **Goal:** Caller can produce a valid GRIB2 file from gridded f32 data + parameter/grid metadata.
   - **Design:** Top-down: assemble Sections 0-8 byte-by-byte. Section 0 (indicator): magic "GRIB" + edition 2. Section 1 (identification): originating center, reference time. Section 3 (grid): use templates from existing `src/grid.rs`. Section 4 (product): use templates from `src/templates.rs`. Section 5 (data representation): emit DRT 5.0 with caller-chosen `bits_per_value` (default 16). Section 7 (data): forward-pack values via R + 2^E * D scaling. Section 8: "7777" end marker. Each section's length prefix is big-endian per WMO spec.
@@ -36,6 +38,7 @@
   - **Prerequisites:** None for DRT 5.0; complex packing items above are independent.
 
 - [ ] Multi-message GRIB file scanning / inventory (current API only iterates linearly)
+  - **Re-verified 2026-07-28:** Still open — no `fn scan` or `MessageDescriptor` in `src/reader.rs`.
   - **Verified gap:** `src/reader.rs` defines `GribReader::open` returning `Iterator<Item = Result<GribRecord>>`. No `scan()` returning a vector of `(byte_offset, parameter, level, time)` tuples without decoding data. `rg -n "scan|inventory|index|offset_map" -g '*.rs' src/` returns no relevant matches.
   - **Goal:** Cheap inventory of large multi-message GRIB files: list all messages with metadata, then random-seek to decode specific ones.
   - **Design:** Implement `GribReader::scan(&mut self) -> Result<Vec<MessageDescriptor>>` where `MessageDescriptor` carries `byte_offset`, `total_length`, `edition`, `parameter`, `level`, `forecast_time`. Walk sections 0/1/3/4 only (skip data Section 7), advance by `section_length`. Add `read_message_at(offset: u64)` for random access.
@@ -110,4 +113,4 @@
 _(Previous TODO.md had no `[x]` entries.)_
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

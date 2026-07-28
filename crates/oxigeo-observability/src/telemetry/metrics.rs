@@ -37,18 +37,31 @@ pub fn init_metrics(config: &TelemetryConfig, resource: Resource) -> Result<SdkM
 }
 
 /// Create Prometheus provider.
-fn create_prometheus_provider(_endpoint: &str, resource: Resource) -> Result<SdkMeterProvider> {
-    let exporter = opentelemetry_stdout::MetricExporter::default();
-    let reader = PeriodicReader::builder(exporter)
-        .with_interval(Duration::from_secs(60))
-        .build();
-
-    let provider = SdkMeterProvider::builder()
-        .with_resource(resource)
-        .with_reader(reader)
-        .build();
-
-    Ok(provider)
+///
+/// This crate has no OTel-SDK-compatible `PushMetricExporter` that serializes
+/// [`opentelemetry_sdk::metrics::data::ResourceMetrics`] into Prometheus text
+/// exposition format and serves it over HTTP -- building one (plus an actual
+/// scrape-able HTTP listener) is a substantial feature in its own right, and
+/// is out of scope to fabricate here. Rather than silently substituting the
+/// stdout exporter (which is unreachable by any real Prometheus server and
+/// looks configured but does nothing -- the exact bug this function used to
+/// have), this returns an honest [`ObservabilityError::ConfigError`] so
+/// callers immediately learn that `prometheus_endpoint` has no effect in
+/// this build.
+///
+/// For an actually-working push path today, use
+/// [`crate::exporters::prometheus::PrometheusExporter`] (behind the
+/// `http-exporter` feature), which formats and POSTs real metrics to a
+/// Prometheus **push gateway**.
+fn create_prometheus_provider(endpoint: &str, _resource: Resource) -> Result<SdkMeterProvider> {
+    Err(ObservabilityError::ConfigError(format!(
+        "prometheus_endpoint '{endpoint}' was configured, but this crate does not implement a \
+         real OTel-SDK Prometheus scrape exporter (no HTTP `/metrics` endpoint is started \
+         anywhere in oxigeo-observability). Use TelemetryConfig::with_otlp_endpoint (feature \
+         'otlp') or leave prometheus_endpoint unset to fall back to the stdout exporter, or use \
+         crate::exporters::prometheus::PrometheusExporter (feature 'http-exporter') to push \
+         metrics to a Prometheus push gateway instead."
+    )))
 }
 
 /// Create OTLP provider.
@@ -296,6 +309,23 @@ mod tests {
             .add_bool("enabled", true);
 
         assert_eq!(attrs.as_slice().len(), 4);
+    }
+
+    #[test]
+    fn test_prometheus_endpoint_returns_honest_config_error_instead_of_silent_stdout() {
+        let mut config = TelemetryConfig::new("test-service");
+        config.prometheus_endpoint = Some("http://localhost:9090".to_string());
+
+        let resource = Resource::builder_empty().build();
+        let result = init_metrics(&config, resource);
+
+        assert!(
+            result.is_err(),
+            "configuring prometheus_endpoint with no real Prometheus transport compiled in \
+             must not silently succeed with a stdout exporter"
+        );
+        let err = result.expect_err("checked is_err above");
+        assert!(matches!(err, ObservabilityError::ConfigError(_)));
     }
 
     #[test]

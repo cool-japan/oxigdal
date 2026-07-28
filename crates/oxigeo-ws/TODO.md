@@ -1,19 +1,13 @@
 # TODO: oxigeo-ws
 
 > **Purpose:** WebSocket streaming (axum-based) for OxiGeo — real-time tile / feature / event delivery with subscriptions, filtering, and backpressure.
-> **Status (2026-05-16):** 3,866 LoC · 100 tests · 3 real-code stubs
+> **Status (2026-07-28):** 4,590 LoC · 63 tests · 1 real-code stub remains (attribute-based feature filtering) — the `TileHandler` viewport/prefetch zero-fill stubs from the prior audit are now implemented via a pluggable `TileGenerator`.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace zero-filled tile data with real tile generation in `TileHandler::generate_viewport_tiles`
-  - **Verified gap:** `src/handlers/tiles.rs:119-124` — literal:
-    `// Generate tiles (placeholder - would integrate with actual tile generation)  let mut tile_data = Vec::new();  for (x, y) in tiles {  // This would call actual tile generation from OxiGeo  let data = vec![0u8; 256]; // Placeholder`
-  - **Goal:** Streamed tiles carry real pixel data. Handler accepts a pluggable `TileProvider` trait so callers wire in `oxigeo-pmtiles`, `oxigeo-mbtiles`, or `oxigeo-services` tile sources without modifying this crate.
-  - **Design:** Introduce `pub trait TileProvider: Send + Sync + 'static { async fn fetch(&self, z: u8, x: u32, y: u32, fmt: TileFormat) -> Result<TileData>; }`. `TileHandler::new(provider: Arc<dyn TileProvider>)`. `generate_viewport_tiles` calls `provider.fetch(zoom, x, y, format)` per coord. For backwards-compatible callers, ship an `EmptyTileProvider` that returns the existing 256-byte zero pattern with an explicit deprecation note. `oxigeo-services` can plug its own `PmTilesProvider` / `XyzProvider`.
-  - **Files:** `src/handlers/tiles.rs:90-150`; new `src/handlers/tile_provider.rs`.
-  - **Tests:** (proposed) `test_tile_handler_invokes_provider_per_tile`, `test_tile_handler_propagates_provider_errors_as_close_frame`, `test_tile_handler_with_empty_provider_returns_legacy_pattern`.
-  - **Risk:** `TileProvider` boxing adds an async trait object — `async-trait` already in workspace; no MSRV issue.
-  - **Prerequisites:** None.
+- [x] Replace zero-filled tile data with real tile generation in `TileHandler::generate_viewport_tiles`
+  - **Done:** 2026-07-21 (0.2.1 production campaign). Implemented via a pluggable `TileGenerator` closure type rather than a boxed async trait: `pub type TileGenerator = Arc<dyn Fn(u32, u32, u8) -> Result<TileData> + Send + Sync>`. `TileHandler` gained an `Option<TileGenerator>` field wired through `with_tile_source` (builder-style) / `set_tile_source` / `has_tile_source`. `generate_viewport_tiles` now returns `Error::NotFound` when no source is configured — instead of fabricating placeholder bytes — and otherwise calls the generator per tile coordinate, logging and skipping (not aborting) individual tile failures.
+  - **Original gap (resolved):** `src/handlers/tiles.rs:119-124` used to read `// Generate tiles (placeholder - would integrate with actual tile generation)` / `let data = vec![0u8; 256]; // Placeholder`.
 
 - [ ] Implement attribute-based feature filtering inside `FeatureHandler::stream_features`
   - **Verified gap:** `src/handlers/features.rs:260` — literal: `// For now, include all` (inside the per-feature loop where `SubscriptionFilter::Attribute` predicates should be evaluated)
@@ -24,14 +18,9 @@
   - **Risk:** Numeric coercion (JSON `1.0` vs `1`) — document explicit-type semantics in `SubscriptionFilter` docstring.
   - **Prerequisites:** None.
 
-- [ ] Wire prefetch path in `TileHandler` to the same provider (currently same placeholder pattern repeated)
-  - **Verified gap:** `src/handlers/tiles.rs:179` — literal: `// Generate tiles for prefetch area` (followed by the same zero-byte fill path as the viewport handler above)
-  - **Goal:** Tile prefetch fetches real bytes from `TileProvider` and primes the client-side LRU.
-  - **Design:** Reuse the `TileProvider` trait from item 1 above; `prefetch_tiles` simply iterates over the prefetch coord set with `provider.fetch(...)`. Optional `prefetch_concurrency` cap via `tokio::sync::Semaphore` to avoid overloading the provider.
-  - **Files:** `src/handlers/tiles.rs:175-210`.
-  - **Tests:** (proposed) `test_prefetch_uses_provider_not_placeholder`, `test_prefetch_respects_concurrency_limit`, `test_prefetch_short_circuits_on_provider_error`.
-  - **Risk:** Same as item 1.
-  - **Prerequisites:** Item 1 (`TileProvider` trait).
+- [x] Wire prefetch path in `TileHandler` to the same provider (currently same placeholder pattern repeated)
+  - **Done:** 2026-07-21 (0.2.1 production campaign). `prefetch_tiles` computes the expanded prefetch bbox (`expand_bbox`) and delegates straight to the now-real `generate_viewport_tiles` (item above), so it shares the same `TileGenerator` and the same `Error::NotFound`-when-unconfigured behavior — no separate placeholder path remains. No `prefetch_concurrency` semaphore was added (calls are sequential per-tile via the shared generator); left as a possible future optimization, not a correctness gap.
+  - **Original gap (resolved):** `src/handlers/tiles.rs:179` used to read `// Generate tiles for prefetch area` followed by the same zero-byte fill path as the viewport handler.
 
 ## Medium Priority
 - [ ] TLS support (`wss://`) via `axum-server::tls_rustls`
@@ -83,7 +72,7 @@
 - **Sibling:** oxigeo-websocket (raw tokio-tungstenite; this crate is axum-based — keep both, do not duplicate functionality between them)
 
 ## Recently completed (verbatim)
-- *(none in this slice)*
+- [x] Real tile generation via pluggable `TileGenerator` for both viewport (`generate_viewport_tiles`) and prefetch (`prefetch_tiles`) — `src/handlers/tiles.rs`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

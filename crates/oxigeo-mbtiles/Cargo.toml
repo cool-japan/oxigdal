@@ -23,7 +23,6 @@ sqlite = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio"]
 [dependencies]
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 oxisql-core = { workspace = true, optional = true }
 oxisql-sqlite-compat = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

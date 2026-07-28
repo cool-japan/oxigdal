@@ -25,7 +25,10 @@ Add to your `Cargo.toml`:
 [dependencies]
 oxigeo-kinesis = "0.2"
 
-# With all default features (streams, firehose, analytics, monitoring)
+# streams/firehose/analytics/monitoring are opt-in, not default: the AWS SDK
+# crates they pull in default to a rustls crypto provider backed by
+# aws-lc-sys (C/assembly), so the plain `std`-only default keeps a Pure Rust
+# dependency closure. Enable what you need explicitly:
 # oxigeo-kinesis = { version = "0.2", features = ["streams", "firehose", "analytics", "monitoring"] }
 
 # With optional features
@@ -348,18 +351,23 @@ impl Transformer for JsonTransformer {
 
 ### Default Features
 
-- `std` - Standard library support
-- `streams` - Kinesis Data Streams support
-- `firehose` - Kinesis Firehose support
-- `analytics` - Kinesis Analytics support
-- `monitoring` - CloudWatch monitoring
+- `std` - Standard library support (the only feature enabled by default)
 
 ### Optional Features
 
-- `checkpointing` - DynamoDB checkpoint storage for consumers
-- `enhanced-fanout` - Enhanced fan-out consumer support
+- `streams` - Kinesis Data Streams support (pulls in `aws-sdk-kinesis`)
+- `firehose` - Kinesis Firehose support (pulls in `aws-sdk-firehose`, `aws-sdk-lambda`)
+- `analytics` - Kinesis Analytics support (pulls in `aws-sdk-kinesisanalyticsv2`)
+- `monitoring` - CloudWatch monitoring (pulls in `aws-sdk-cloudwatch`)
+- `checkpointing` - DynamoDB checkpoint storage for consumers (requires `streams`)
+- `enhanced-fanout` - Enhanced fan-out consumer support via `SubscribeToShard` (requires `streams`)
 - `compression` - Data compression (GZIP/Zstandard)
 - `alloc` - Allocator support for no_std environments
+
+`streams`/`firehose`/`analytics`/`monitoring` (and anything that depends on them) are
+opt-in rather than default because the AWS SDK crates they pull in default to a rustls
+crypto provider backed by `aws-lc-sys` (C/assembly); `docs.rs` builds with
+`std, alloc, async, compression` to keep the published docs on the Pure Rust closure.
 
 ## Performance Characteristics
 

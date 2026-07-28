@@ -1,6 +1,28 @@
 # OxiGeo Prometheus Configuration
 # Metrics collection and monitoring configuration
 # Author: COOLJAPAN OU (Team Kitasan)
+#
+# Only the `oxigeo-server`, `kubernetes-pods`, `prometheus`, and `grafana` jobs
+# below scrape something OxiGeo itself exposes: `oxigeo-server` serves real
+# Prometheus text-format metrics (oxigeo_version_info, http_requests_total,
+# http_request_duration_seconds, cache_hits_total/cache_requests_total,
+# tile_generation_total/_failures_total, wms_requests_total, and standard
+# process_* metrics -- see crates/oxigeo-server/src/metrics.rs) on
+# `ServerConfig::metrics_port` (default 8081) at `/metrics`.
+#
+# The `postgres` and `node` jobs below are OPTIONAL, external infrastructure
+# prerequisites, not something OxiGeo ships or runs itself:
+#   - `postgres` only applies if you deploy the optional `oxigeo-postgis`
+#     feature against a real PostgreSQL instance -- you must separately run
+#     `postgres_exporter` pointed at *that* instance for these metrics to exist.
+#   - `node` (`node_exporter`) is a generic host-metrics exporter for whatever
+#     machine runs oxigeo-server; it has nothing OxiGeo-specific about it.
+# There is no Redis integration anywhere in the OxiGeo codebase (in
+# particular, `oxigeo-cache-advanced` does not depend on a Redis client), so
+# no `redis_exporter` job is listed here -- add one yourself only if your own
+# deployment puts a real Redis instance in front of OxiGeo for some other
+# reason. The `nginx` job is likewise commented out below: it only applies if
+# your deployment fronts oxigeo-server with nginx.
 
 global:
   scrape_interval: 15s
@@ -62,7 +84,10 @@ scrape_configs:
         action: replace
         target_label: kubernetes_pod_name
 
-  # PostgreSQL metrics (using postgres_exporter)
+  # OPTIONAL: PostgreSQL metrics, via a separately-run `postgres_exporter`
+  # pointed at your own PostgreSQL instance. Only meaningful if this
+  # deployment uses the optional `oxigeo-postgis` feature; OxiGeo does not
+  # run or bundle PostgreSQL or postgres_exporter itself.
   - job_name: 'postgres'
     static_configs:
       - targets:
@@ -71,13 +96,8 @@ scrape_configs:
       - target_label: database
         replacement: oxigeo
 
-  # Redis metrics (using redis_exporter)
-  - job_name: 'redis'
-    static_configs:
-      - targets:
-          - 'redis-exporter:9121'
-
-  # Node exporter for system metrics
+  # OPTIONAL: generic host-level system metrics via `node_exporter`, for the
+  # machine(s) running oxigeo-server. Not OxiGeo-specific.
   - job_name: 'node'
     static_configs:
       - targets:
@@ -95,11 +115,13 @@ scrape_configs:
       - targets:
           - 'grafana:3000'
 
-  # Nginx (if using)
-  - job_name: 'nginx'
-    static_configs:
-      - targets:
-          - 'nginx-exporter:9113'
+  # OPTIONAL, disabled by default: only uncomment if this deployment fronts
+  # oxigeo-server with nginx and runs `nginx-exporter` against it. Not part
+  # of OxiGeo itself.
+  # - job_name: 'nginx'
+  #   static_configs:
+  #     - targets:
+  #         - 'nginx-exporter:9113'
 
 # Remote write configuration (optional - for long-term storage)
 remote_write:

@@ -1,7 +1,7 @@
 # TODO: oxigeo-copc
 
 > **Purpose:** Pure Rust COPC (Cloud Optimized Point Cloud) reader for OxiGeo — LAS/LAZ format with spatial index.
-> **Status (2026-05-16):** ~4,132 Rust LoC · 139 tests · 0 in-source `TODO:` markers (gaps are absences in the module tree).
+> **Status (2026-07-28):** ~5,270 Rust LoC · 303 tests · 0 in-source `TODO:` markers (gaps are absences in the module tree).
 > **Roadmap:** v0.1.7 → v0.2.0 (current slice) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
@@ -110,4 +110,4 @@
 - [x] Add point record binary deserialization (completed 2026-04-19, part of C1)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: test count 139→303, LoC ~4,132→~5,270; checkbox contents re-verified against source, no changes — writer/CSF/canopy-height/intensity-norm/extra-bytes/streaming-octree/PF6-8 LAZ all confirmed still open)*

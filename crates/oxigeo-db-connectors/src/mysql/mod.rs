@@ -9,6 +9,7 @@ pub mod writer;
 pub use reader::MySqlFeature;
 
 use crate::error::{Error, Result};
+use crate::sql::quote_mysql_ident;
 use geo_types::Geometry;
 use mysql_async::{Pool, PoolConstraints, PoolOpts, prelude::*};
 use std::time::Duration;
@@ -145,31 +146,39 @@ impl MySqlConnector {
     ) -> Result<()> {
         let mut conn = self.get_conn().await?;
 
+        let quoted_geom = quote_mysql_ident(geometry_column)?;
         let mut columns = vec![
             "id BIGINT PRIMARY KEY AUTO_INCREMENT".to_string(),
-            format!("{} GEOMETRY NOT NULL", geometry_column),
+            format!("{} GEOMETRY NOT NULL", quoted_geom),
         ];
 
+        // `col_name` is quoted as an identifier; `col_type` is a SQL type
+        // fragment (e.g. `VARCHAR(255)`) and is treated as trusted,
+        // developer-supplied schema.
         for (col_name, col_type) in additional_columns {
-            columns.push(format!("{} {}", col_name, col_type));
+            columns.push(format!("{} {}", quote_mysql_ident(col_name)?, col_type));
         }
 
         let create_sql = format!(
             "CREATE TABLE IF NOT EXISTS {} ({}, SPATIAL INDEX({}))",
-            table_name,
+            quote_mysql_ident(table_name)?,
             columns.join(", "),
-            geometry_column
+            quoted_geom
         );
 
         conn.query_drop(&create_sql)
             .await
             .map_err(|e| Error::Query(e.to_string()))?;
 
-        // Set SRID if supported (MySQL 8.0+)
+        // Set SRID if supported (MySQL 8.0+). `geometry_type` is a trusted SQL
+        // type keyword; the table and column are quoted identifiers.
         if srid != 0 {
             let alter_sql = format!(
                 "ALTER TABLE {} MODIFY COLUMN {} {} SRID {}",
-                table_name, geometry_column, geometry_type, srid
+                quote_mysql_ident(table_name)?,
+                quoted_geom,
+                geometry_type,
+                srid
             );
 
             // Try to set SRID, but don't fail if not supported
@@ -182,7 +191,7 @@ impl MySqlConnector {
     /// Drop a table.
     pub async fn drop_table(&self, table_name: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
-        let sql = format!("DROP TABLE IF EXISTS {}", table_name);
+        let sql = format!("DROP TABLE IF EXISTS {}", quote_mysql_ident(table_name)?);
 
         conn.query_drop(&sql)
             .await
@@ -205,7 +214,7 @@ impl MySqlConnector {
     /// Get table schema.
     pub async fn table_schema(&self, table_name: &str) -> Result<Vec<(String, String)>> {
         let mut conn = self.get_conn().await?;
-        let sql = format!("DESCRIBE {}", table_name);
+        let sql = format!("DESCRIBE {}", quote_mysql_ident(table_name)?);
 
         let rows: Vec<(String, String)> = conn
             .query_map(&sql, |(field, field_type): (String, String)| {

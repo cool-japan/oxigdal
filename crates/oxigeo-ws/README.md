@@ -22,7 +22,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-ws = "0.2"
+oxigeo-ws = "0.2.1"
 ```
 
 ## Usage

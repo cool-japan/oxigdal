@@ -67,6 +67,13 @@ impl SqliteWriter {
         let param_refs: Vec<&dyn ToSqlValue> =
             params.iter().map(|p| p as &dyn ToSqlValue).collect();
 
+        // The `INSERT` and the subsequent `SELECT last_insert_rowid()` must be
+        // atomic with respect to any other write on this shared connection —
+        // otherwise a concurrent insert could complete between the two
+        // statements and we would return the wrong rowid. Hold the connector's
+        // write lock across both.
+        let _guard = self.connector.lock_writes();
+
         self.connector
             .blocking_conn()
             .execute(&sql, &param_refs)
@@ -79,8 +86,7 @@ impl SqliteWriter {
             .query("SELECT last_insert_rowid()", &[])
             .map_err(|e| Error::Query(e.to_string()))?;
 
-        let last_id = rows
-            .first()
+        rows.first()
             .and_then(|row| row.get_by_index(0))
             .and_then(|v| {
                 if let oxisql_core::Value::I64(n) = v {
@@ -89,9 +95,9 @@ impl SqliteWriter {
                     None
                 }
             })
-            .unwrap_or(0);
-
-        Ok(last_id)
+            .ok_or_else(|| {
+                Error::Query("failed to read last_insert_rowid() after INSERT".to_string())
+            })
     }
 
     /// Insert multiple features in batch using transaction SQL statements.

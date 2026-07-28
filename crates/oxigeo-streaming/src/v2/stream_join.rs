@@ -3,9 +3,13 @@
 //! Supports:
 //! - **Inner join**: emit a pair when both streams have a matching key **and**
 //!   their timestamps are within `time_tolerance` of each other.
-//! - **Left outer join** (mode variant): same as inner, but the joiner also
-//!   tracks which left-stream events were emitted without a right-side match
-//!   (accessible via `unmatched_left`).
+//! - **Left outer join** (mode variant): same matching rule as inner, but the
+//!   joiner additionally tracks left-stream events that were never matched by
+//!   any right-stream event. A left event is surfaced as *unmatched* once it
+//!   leaves the bounded left buffer without ever having produced a join pair —
+//!   either because it was evicted when the buffer overflowed, or because
+//!   [`TemporalJoiner::flush`] was called at end-of-stream. Unmatched left
+//!   events are retrieved with [`TemporalJoiner::drain_unmatched_left`].
 //! - **Interval join**: join when `right.time + lower ≤ left.time ≤ right.time + upper`.
 //!
 //! Buffers are bounded: when `max_buffer_size` is reached, the oldest entry is
@@ -60,7 +64,9 @@ pub struct JoinedPair<L, R> {
 pub enum JoinMode {
     /// Emit only when both sides have a matching key + timestamp within `time_tolerance`.
     Inner,
-    /// Like inner, but also tracks left events that had no right match.
+    /// Like inner, but also tracks left events that left the bounded buffer
+    /// without ever matching a right event (see
+    /// [`TemporalJoiner::drain_unmatched_left`]).
     LeftOuter,
     /// Interval join: `left.time ∈ [right.time + lower, right.time + upper]`
     Interval {
@@ -104,12 +110,21 @@ impl Default for TemporalJoinConfig {
 /// with [`Self::drain_output`].
 pub struct TemporalJoiner<L: Clone, R: Clone> {
     config: TemporalJoinConfig,
-    left_buffer: VecDeque<JoinEvent<L>>,
+    left_buffer: VecDeque<LeftEntry<L>>,
     right_buffer: VecDeque<JoinEvent<R>>,
     output: VecDeque<JoinedPair<L, R>>,
+    /// Left events (LeftOuter mode only) that left the buffer without a match.
+    unmatched_left: VecDeque<JoinEvent<L>>,
     total_joined: u64,
     total_expired_left: u64,
     total_expired_right: u64,
+    total_unmatched_left: u64,
+}
+
+/// A buffered left-stream event together with whether it has ever been joined.
+struct LeftEntry<L> {
+    event: JoinEvent<L>,
+    matched: bool,
 }
 
 impl<L: Clone, R: Clone> TemporalJoiner<L, R> {
@@ -120,25 +135,40 @@ impl<L: Clone, R: Clone> TemporalJoiner<L, R> {
             left_buffer: VecDeque::new(),
             right_buffer: VecDeque::new(),
             output: VecDeque::new(),
+            unmatched_left: VecDeque::new(),
             total_joined: 0,
             total_expired_left: 0,
             total_expired_right: 0,
+            total_unmatched_left: 0,
         }
     }
 
     /// Add an event from the left stream.
     ///
-    /// If the buffer is full, the oldest entry is evicted first.
-    /// Then the event is matched against all buffered right-stream events
-    /// before being added to the left buffer.
+    /// If the buffer is full, the oldest entry is evicted first. In
+    /// [`JoinMode::LeftOuter`] mode, an evicted entry that never matched is
+    /// recorded as an unmatched-left event (retrievable via
+    /// [`Self::drain_unmatched_left`]). The new event is then matched against all
+    /// buffered right-stream events before being added to the left buffer.
     pub fn add_left(&mut self, event: JoinEvent<L>) -> Result<(), StreamingError> {
-        if self.left_buffer.len() >= self.config.max_buffer_size {
-            self.left_buffer.pop_front();
+        if self.left_buffer.len() >= self.config.max_buffer_size
+            && let Some(evicted) = self.left_buffer.pop_front()
+        {
             self.total_expired_left += 1;
+            self.record_if_unmatched(evicted);
         }
-        self.try_join_with_left(&event);
-        self.left_buffer.push_back(event);
+        let matched = self.try_join_with_left(&event);
+        self.left_buffer.push_back(LeftEntry { event, matched });
         Ok(())
+    }
+
+    /// Record an evicted/flushed left entry as unmatched when in LeftOuter mode
+    /// and it never produced a join pair.
+    fn record_if_unmatched(&mut self, entry: LeftEntry<L>) {
+        if matches!(self.config.mode, JoinMode::LeftOuter) && !entry.matched {
+            self.total_unmatched_left += 1;
+            self.unmatched_left.push_back(entry.event);
+        }
     }
 
     /// Add an event from the right stream.
@@ -159,6 +189,33 @@ impl<L: Clone, R: Clone> TemporalJoiner<L, R> {
     /// Drain all join pairs produced since the last call to `drain_output`.
     pub fn drain_output(&mut self) -> Vec<JoinedPair<L, R>> {
         self.output.drain(..).collect()
+    }
+
+    /// Close the joiner at end-of-stream.
+    ///
+    /// In [`JoinMode::LeftOuter`] mode, every left event still buffered that has
+    /// not produced a join pair is recorded as an unmatched-left event. Both
+    /// buffers are then cleared. Call [`Self::drain_unmatched_left`] afterwards
+    /// to collect the surfaced events.
+    pub fn flush(&mut self) {
+        while let Some(entry) = self.left_buffer.pop_front() {
+            self.record_if_unmatched(entry);
+        }
+        self.right_buffer.clear();
+    }
+
+    /// Drain the left-stream events that were surfaced as unmatched.
+    ///
+    /// Only ever non-empty in [`JoinMode::LeftOuter`] mode. Events are surfaced
+    /// when they leave the bounded left buffer (via overflow eviction or
+    /// [`Self::flush`]) without ever having matched a right-stream event.
+    pub fn drain_unmatched_left(&mut self) -> Vec<JoinEvent<L>> {
+        self.unmatched_left.drain(..).collect()
+    }
+
+    /// Total number of left events surfaced as unmatched since creation.
+    pub fn total_unmatched_left(&self) -> u64 {
+        self.total_unmatched_left
     }
 
     /// Total number of join pairs produced since creation.
@@ -219,8 +276,10 @@ impl<L: Clone, R: Clone> TemporalJoiner<L, R> {
         }
     }
 
-    /// Try to join the newly arrived `left` event against all buffered right events.
-    fn try_join_with_left(&mut self, left: &JoinEvent<L>) {
+    /// Try to join the newly arrived `left` event against all buffered right
+    /// events. Returns `true` if at least one join pair was produced.
+    fn try_join_with_left(&mut self, left: &JoinEvent<L>) -> bool {
+        let mut matched = false;
         for right in &self.right_buffer {
             if right.key != left.key {
                 continue;
@@ -232,23 +291,33 @@ impl<L: Clone, R: Clone> TemporalJoiner<L, R> {
                     time_delta: delta,
                 });
                 self.total_joined += 1;
+                matched = true;
             }
         }
+        matched
     }
 
-    /// Try to join the newly arrived `right` event against all buffered left events.
+    /// Try to join the newly arrived `right` event against all buffered left
+    /// events, marking any matched left entry so it is not later surfaced as
+    /// an unmatched-left event.
     fn try_join_with_right(&mut self, right: &JoinEvent<R>) {
-        for left in &self.left_buffer {
-            if left.key != right.key {
+        for idx in 0..self.left_buffer.len() {
+            let (left_key, left_ts) = {
+                let entry = &self.left_buffer[idx];
+                (entry.event.key.clone(), entry.event.timestamp)
+            };
+            if left_key != right.key {
                 continue;
             }
-            if let Some(delta) = self.matches(left.timestamp, right.timestamp) {
+            if let Some(delta) = self.matches(left_ts, right.timestamp) {
+                let left_event = self.left_buffer[idx].event.clone();
                 self.output.push_back(JoinedPair {
-                    left: left.clone(),
+                    left: left_event,
                     right: right.clone(),
                     time_delta: delta,
                 });
                 self.total_joined += 1;
+                self.left_buffer[idx].matched = true;
             }
         }
     }
@@ -311,6 +380,85 @@ mod tests {
         let pairs = joiner.drain_output();
         // Left outer: matching pair is still produced
         assert_eq!(pairs.len(), 1);
+    }
+
+    #[test]
+    fn test_left_outer_surfaces_unmatched_left_on_flush() {
+        let cfg = TemporalJoinConfig {
+            mode: JoinMode::LeftOuter,
+            ..Default::default()
+        };
+        let mut joiner = TemporalJoiner::<&str, &str>::new(cfg);
+        // Left event that never gets a right-side match (right has a different key).
+        joiner.add_left(left_event(100, "k1")).expect("add ok");
+        joiner.add_right(right_event(101, "k2")).expect("add ok");
+        // No join pair produced.
+        assert!(joiner.drain_output().is_empty());
+        // At end-of-stream, the unmatched left event is surfaced.
+        joiner.flush();
+        let unmatched = joiner.drain_unmatched_left();
+        assert_eq!(unmatched.len(), 1);
+        assert_eq!(unmatched[0].key, "k1");
+        assert_eq!(joiner.total_unmatched_left(), 1);
+    }
+
+    #[test]
+    fn test_left_outer_matched_left_not_surfaced() {
+        let cfg = TemporalJoinConfig {
+            mode: JoinMode::LeftOuter,
+            ..Default::default()
+        };
+        let mut joiner = TemporalJoiner::<&str, &str>::new(cfg);
+        joiner.add_left(left_event(100, "k1")).expect("add ok");
+        joiner.add_right(right_event(102, "k1")).expect("add ok"); // matches
+        assert_eq!(joiner.drain_output().len(), 1);
+        joiner.flush();
+        // A matched left event must NOT appear as unmatched.
+        assert!(joiner.drain_unmatched_left().is_empty());
+        assert_eq!(joiner.total_unmatched_left(), 0);
+    }
+
+    #[test]
+    fn test_left_outer_match_arrives_after_left_buffered() {
+        let cfg = TemporalJoinConfig {
+            mode: JoinMode::LeftOuter,
+            ..Default::default()
+        };
+        let mut joiner = TemporalJoiner::<&str, &str>::new(cfg);
+        // Left first, right arrives later and matches the buffered left entry.
+        joiner.add_left(left_event(100, "k1")).expect("add ok");
+        joiner.add_right(right_event(103, "k1")).expect("add ok");
+        assert_eq!(joiner.drain_output().len(), 1);
+        joiner.flush();
+        assert!(joiner.drain_unmatched_left().is_empty());
+    }
+
+    #[test]
+    fn test_left_outer_eviction_surfaces_unmatched() {
+        let cfg = TemporalJoinConfig {
+            mode: JoinMode::LeftOuter,
+            max_buffer_size: 2,
+            ..Default::default()
+        };
+        let mut joiner = TemporalJoiner::<&str, &str>::new(cfg);
+        // Three unmatched left events with a buffer of 2 → first is evicted.
+        joiner.add_left(left_event(0, "a")).expect("ok");
+        joiner.add_left(left_event(1, "b")).expect("ok");
+        joiner.add_left(left_event(2, "c")).expect("ok"); // evicts "a"
+        let unmatched = joiner.drain_unmatched_left();
+        assert_eq!(unmatched.len(), 1);
+        assert_eq!(unmatched[0].key, "a");
+    }
+
+    #[test]
+    fn test_inner_mode_does_not_track_unmatched() {
+        // Inner mode never surfaces unmatched-left events, even after flush.
+        let mut joiner = TemporalJoiner::<&str, &str>::new(TemporalJoinConfig::default());
+        joiner.add_left(left_event(100, "k1")).expect("ok");
+        joiner.add_right(right_event(101, "k2")).expect("ok");
+        joiner.flush();
+        assert!(joiner.drain_unmatched_left().is_empty());
+        assert_eq!(joiner.total_unmatched_left(), 0);
     }
 
     #[test]

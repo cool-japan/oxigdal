@@ -2,6 +2,9 @@
 //!
 //! Provides middleware components for CORS, compression, caching, logging, and metrics.
 
+/// Advanced enterprise middleware: request IDs, enhanced structured logging, request
+/// timeouts, centralized error handling, histogram metrics, and cache-control headers.
+pub mod advanced;
 pub mod caching;
 pub mod compression;
 pub mod cors;

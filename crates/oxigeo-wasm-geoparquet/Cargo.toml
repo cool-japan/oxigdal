@@ -27,8 +27,12 @@ oxigeo-geoparquet = { workspace = true, features = ["snappy"] }
 oxigeo-geojson-stream = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["arrow"] }
 arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+# Formats Date32 / Timestamp attribute columns as ISO-8601 strings for GeoJSON
+# properties (`NaiveDate`/`NaiveDateTime` returned by arrow-array's
+# `value_as_date` / `value_as_datetime`).
+chrono = { workspace = true }
 bytes = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 # WHERE-clause parsing for attribute filters
 sqlparser = { workspace = true }
@@ -37,8 +41,13 @@ thiserror = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+# Drives concurrent batches of `fetch_with_retry` futures (`join_all`) so
+# every request in a batch actually starts before any is awaited.
+futures = { workspace = true }
 js-sys = { workspace = true }
 web-sys = { workspace = true, features = [
+    "AbortController",
+    "AbortSignal",
     "Headers",
     "Request",
     "RequestInit",

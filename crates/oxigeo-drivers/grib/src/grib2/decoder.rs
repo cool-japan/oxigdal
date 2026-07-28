@@ -3,6 +3,19 @@
 use crate::error::{GribError, Result};
 use crate::grib2::Grib2Message;
 
+/// Upper sanity bound on any single count (grid points, group count, unpacked
+/// value count) that a decoder derives from an untrusted GRIB2 header field.
+///
+/// GRIB2 stores these counts in 32-bit fields, so a malformed or hostile
+/// message can declare billions of elements. Without a bound a tiny message
+/// would drive a `Vec::with_capacity`/decode loop into a multi-gigabyte
+/// allocation (OOM / denial of service). `1 << 28` (~268 million) comfortably
+/// exceeds any real meteorological grid (a global 1 km field is ~500 M points
+/// only at resolutions no operational GRIB2 product uses in a single message,
+/// and such a message would carry a correspondingly large Section 7) while
+/// capping a hostile header's allocation to a survivable size.
+const MAX_DECODED_ELEMENTS: usize = 1 << 28;
+
 /// GRIB2 data decoder for unpacking binary meteorological data.
 pub struct Grib2Decoder<'a> {
     /// Reference to the GRIB2 message to decode
@@ -40,7 +53,36 @@ impl<'a> Grib2Decoder<'a> {
             return Ok(self.apply_bitmap(raw, num_points));
         }
 
-        // DRT 5.0 / 5.40: simple packing.
+        // Remaining templates are dispatched explicitly on the template number
+        // so that a template the crate cannot actually decode (e.g. a
+        // JPEG2000/PNG/CCSDS payload) never silently falls through to the
+        // simple-packing bit-unpacker — which would interpret a compressed
+        // codestream as fixed-width raw integers and return plausible-looking
+        // but entirely corrupt values.
+        match dr.template_number {
+            0 => self.decode_simple_packing(),
+            4 => self.decode_ieee(),
+            40 => self.decode_jpeg2000(),
+            41 => Err(GribError::UnsupportedPacking(
+                "DRT 5.41 (PNG-packed data) decoding is not implemented; \
+                 the PNG codestream cannot be unpacked as simple packing"
+                    .to_string(),
+            )),
+            42 => Err(GribError::UnsupportedPacking(
+                "DRT 5.42 (CCSDS AEC / libaec-packed data) decoding is not implemented; \
+                 the compressed payload cannot be unpacked as simple packing"
+                    .to_string(),
+            )),
+            other => Err(GribError::UnsupportedDataTemplate(other)),
+        }
+    }
+
+    /// Decodes DRT 5.0 simple-packed Section 7 data (fixed-width scaled
+    /// integers with the `(R + X * 2^E) / 10^D` formula).
+    fn decode_simple_packing(&self) -> Result<Vec<f32>> {
+        let dr = &self.message.data_representation;
+        let num_points = self.message.num_points();
+
         if dr.bits_per_value == 0 {
             return Ok(vec![dr.reference_value; num_points]);
         }
@@ -54,7 +96,10 @@ impl<'a> Grib2Decoder<'a> {
         let scale = dr.scale_multiplier();
         let decimal = dr.decimal_divisor();
 
-        let mut values = Vec::with_capacity(num_points);
+        // `num_points` is untrusted; the loop below only ever pushes as many
+        // values as the (already-bounded) bitmap or unpacked-value arrays hold,
+        // so cap the preallocation hint to avoid a speculative huge allocation.
+        let mut values = Vec::with_capacity(num_points.min(MAX_DECODED_ELEMENTS));
 
         if let Some(bitmap) = &self.message.bitmap {
             let mut packed_idx = 0;
@@ -83,12 +128,109 @@ impl<'a> Grib2Decoder<'a> {
         Ok(values)
     }
 
+    /// Decodes DRT 5.4 IEEE floating-point Section 7 data.
+    ///
+    /// Section 7 holds the grid-point values as raw big-endian IEEE-754
+    /// numbers (no R/E/D scaling). Precision code 1 = 32-bit, 2 = 64-bit,
+    /// 3 = 128-bit (WMO Code Table 5.7). 128-bit IEEE has no native Rust type
+    /// and is rejected with a typed error rather than truncated.
+    fn decode_ieee(&self) -> Result<Vec<f32>> {
+        let dr = &self.message.data_representation;
+        let num_points = self.message.num_points();
+        let data = &self.message.data_section.packed_data;
+        let precision = dr.ieee_precision.unwrap_or(1);
+
+        let raw: Vec<f32> = match precision {
+            1 => {
+                if data.len() < num_points * 4 {
+                    return Err(GribError::TruncatedMessage {
+                        expected: num_points * 4,
+                        actual: data.len(),
+                    });
+                }
+                data.chunks_exact(4)
+                    .take(num_points)
+                    .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
+            }
+            2 => {
+                if data.len() < num_points * 8 {
+                    return Err(GribError::TruncatedMessage {
+                        expected: num_points * 8,
+                        actual: data.len(),
+                    });
+                }
+                data.chunks_exact(8)
+                    .take(num_points)
+                    .map(|c| {
+                        f64::from_be_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
+                    })
+                    .collect()
+            }
+            other => {
+                return Err(GribError::UnsupportedPacking(format!(
+                    "DRT 5.4: IEEE precision code {other} (128-bit) has no native \
+                     Rust representation and is not supported"
+                )));
+            }
+        };
+
+        Ok(self.apply_bitmap(raw, num_points))
+    }
+
+    /// Decodes DRT 5.40 JPEG2000-packed Section 7 data.
+    ///
+    /// The Section 7 payload is a raw JPEG2000 codestream whose single
+    /// grayscale component carries the scaled integer field values `X`, to
+    /// which the `(R + X * 2^E) / 10^D` GRIB2 scaling is then applied. When the
+    /// `jpeg2000` feature is enabled the codestream is decoded with the
+    /// `oxigeo-jpeg2000` Pure-Rust decoder; any decode failure surfaces as a
+    /// typed error. When the feature is disabled this is a typed error rather
+    /// than a silent mis-unpack.
+    #[cfg(feature = "jpeg2000")]
+    fn decode_jpeg2000(&self) -> Result<Vec<f32>> {
+        let dr = &self.message.data_representation;
+        let num_points = self.message.num_points();
+        let raw = crate::grib2::jpeg2000::decode_jpeg2000_values(
+            &self.message.data_section.packed_data,
+            dr.reference_value,
+            dr.binary_scale_factor,
+            dr.decimal_scale_factor,
+            num_points,
+        )?;
+        Ok(self.apply_bitmap(raw, num_points))
+    }
+
+    /// Fallback for DRT 5.40 when the `jpeg2000` feature is disabled: a typed
+    /// error, never a silent simple-packing mis-unpack of the codestream.
+    #[cfg(not(feature = "jpeg2000"))]
+    fn decode_jpeg2000(&self) -> Result<Vec<f32>> {
+        Err(GribError::UnsupportedPacking(
+            "DRT 5.40 (JPEG2000-packed data) requires the `jpeg2000` feature; \
+             enable it to decode the codestream (it must not be unpacked as \
+             simple packing)"
+                .to_string(),
+        ))
+    }
+
     fn unpack_bits(&self, data: &[u8], num_bits: u8, num_values: usize) -> Result<Vec<u32>> {
         if num_bits > 32 {
             return Err(GribError::InvalidBitOperation(format!(
                 "Number of bits {} exceeds 32",
                 num_bits
             )));
+        }
+
+        // `num_values` comes from the untrusted Section 5 point count. Each
+        // value occupies `num_bits` bits, so a well-formed message can never
+        // request more than `data.len() * 8` values. Reject anything larger
+        // before allocating, so a tiny message cannot claim billions of points.
+        let max_values = data.len().saturating_mul(8);
+        if num_values > max_values {
+            return Err(GribError::TruncatedMessage {
+                expected: num_values,
+                actual: max_values,
+            });
         }
 
         let mut values = Vec::with_capacity(num_values);
@@ -141,7 +283,9 @@ impl<'a> Grib2Decoder<'a> {
     fn apply_bitmap(&self, decoded: Vec<f32>, num_points: usize) -> Vec<f32> {
         match &self.message.bitmap {
             Some(bitmap) => {
-                let mut values = Vec::with_capacity(num_points);
+                // The loop is bounded by the in-memory bitmap length; cap the
+                // hint to it so an untrusted `num_points` cannot over-allocate.
+                let mut values = Vec::with_capacity(num_points.min(bitmap.len()));
                 let mut idx = 0usize;
                 for &present in bitmap.iter().take(num_points) {
                     if present {
@@ -347,6 +491,16 @@ fn read_group_descriptors(
             "complex packing: number of groups is zero".to_string(),
         ));
     }
+    // `num_groups` is an untrusted 32-bit header field. The three arrays below
+    // each push `ng` elements, so an absurd count would grow those Vecs into a
+    // multi-gigabyte allocation regardless of how little Section 7 data backs
+    // it. Reject an implausible group count up front.
+    if ng > MAX_DECODED_ELEMENTS {
+        return Err(GribError::InvalidDataRepresentation(format!(
+            "complex packing: number of groups ({ng}) exceeds the maximum \
+             supported ({MAX_DECODED_ELEMENTS})"
+        )));
+    }
 
     // Array 1: NG group reference values, each `bits_per_value` bits wide.
     let mut references = Vec::with_capacity(ng);
@@ -410,7 +564,19 @@ fn read_group_values(
     descriptors: &[GroupDescriptor],
     params: &ComplexPackingParams,
 ) -> Result<Vec<Option<i64>>> {
-    let total: usize = descriptors.iter().map(|d| d.length).sum();
+    // Group lengths derive from untrusted header fields; a width-0 group can
+    // declare a huge length while consuming no Section 7 bits, so the total is
+    // not bounded by the data and must be sanity-checked before it is used as
+    // an allocation size. Sum with saturation to avoid `usize` overflow.
+    let total: usize = descriptors
+        .iter()
+        .fold(0usize, |acc, d| acc.saturating_add(d.length));
+    if total > MAX_DECODED_ELEMENTS {
+        return Err(GribError::InvalidDataRepresentation(format!(
+            "complex packing: total group length ({total}) exceeds the maximum \
+             supported ({MAX_DECODED_ELEMENTS})"
+        )));
+    }
     let mut values: Vec<Option<i64>> = Vec::with_capacity(total);
 
     let mvm = params.missing_value_management;
@@ -635,5 +801,81 @@ fn missing_substitute_value(params: &ComplexPackingParams) -> f32 {
         candidate
     } else {
         f32::NAN
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod alloc_guard_tests {
+    use super::*;
+
+    fn params_with_groups(num_groups: u32) -> ComplexPackingParams {
+        ComplexPackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 8,
+            num_groups,
+            group_widths_reference: 0,
+            group_widths_bits: 0,
+            group_lengths_reference: 0,
+            group_length_increment: 0,
+            group_last_length: 0,
+            group_lengths_bits: 0,
+            missing_value_management: 0,
+            primary_missing_substitute: 0,
+            secondary_missing_substitute: 0,
+        }
+    }
+
+    #[test]
+    fn read_group_descriptors_rejects_absurd_group_count() {
+        // A tiny (empty) Section 7 that nevertheless declares billions of
+        // groups must be rejected up front rather than trying to allocate.
+        let params = params_with_groups(u32::MAX);
+        let data: [u8; 0] = [];
+        let mut reader = BitReader::new(&data);
+        let result = read_group_descriptors(&mut reader, &params);
+        assert!(matches!(
+            result,
+            Err(GribError::InvalidDataRepresentation(_))
+        ));
+    }
+
+    #[test]
+    fn read_group_values_rejects_absurd_total_length() {
+        // A single width-0 group whose declared length dwarfs the cap consumes
+        // no data bits, so only the explicit total-length guard can stop the
+        // multi-gigabyte allocation.
+        let params = params_with_groups(1);
+        let descriptors = [GroupDescriptor {
+            reference: 0,
+            width: 0,
+            length: MAX_DECODED_ELEMENTS + 1,
+        }];
+        let data: [u8; 0] = [];
+        let mut reader = BitReader::new(&data);
+        let result = read_group_values(&mut reader, &descriptors, &params);
+        assert!(matches!(
+            result,
+            Err(GribError::InvalidDataRepresentation(_))
+        ));
+    }
+
+    #[test]
+    fn read_group_values_accepts_small_total() {
+        // A modest, in-bounds total must still decode (here every member equals
+        // the group reference because width == 0).
+        let params = params_with_groups(1);
+        let descriptors = [GroupDescriptor {
+            reference: 5,
+            width: 0,
+            length: 4,
+        }];
+        let data: [u8; 0] = [];
+        let mut reader = BitReader::new(&data);
+        let result = read_group_values(&mut reader, &descriptors, &params);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap_or_default().len(), 4);
     }
 }

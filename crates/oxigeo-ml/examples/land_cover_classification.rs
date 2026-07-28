@@ -44,6 +44,7 @@ fn main() -> Result<()> {
         normalization: Some(NormalizationParams::imagenet()),
         tiling: None,
         confidence_threshold: 0.5,
+        gpu_config: None,
     };
     let mut engine = InferenceEngine::new(model, config);
 

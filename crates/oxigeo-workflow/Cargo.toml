@@ -28,33 +28,21 @@ uuid = { workspace = true }
 petgraph = { workspace = true, features = ["serde-1"] }
 cron = { workspace = true }
 
-# Serialization
-toml = { workspace = true }
-
 # Concurrency
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
-crossbeam = { workspace = true }
-crossbeam-channel = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-
-# Internal dependencies
-oxigeo-core = { workspace = true, default-features = true }
 
 # Optional dependencies for integrations
 reqwest = { workspace = true, optional = true }
-rdkafka = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 
 # Utilities
 regex = { workspace = true }
-ahash = { workspace = true }
-bytes = { workspace = true }
 num_cpus.workspace = true
 
 # Cryptography
@@ -69,10 +57,9 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [features]
 default = ["server", "http-client"]
-full = ["http-client", "kafka", "server"]
+full = ["http-client", "server"]
 http-client = ["reqwest"]
-kafka = ["rdkafka"]
-integrations = ["http-client", "kafka"]
+integrations = ["http-client"]
 server = ["axum", "tower", "tower-http"]
 
 [[bench]]
@@ -82,9 +69,12 @@ harness = false
 [lints]
 workspace = true
 
-# NOTE: `http-client` (reqwest -> aws-lc-sys) and `kafka` (rdkafka-sys, C
-# librdkafka) are not Pure Rust. `server` (axum/tower) stays on a pure-Rust
-# dependency closure.
+# NOTE: `http-client` (reqwest -> aws-lc-sys) is not Pure Rust. `server`
+# (axum/tower) stays on a pure-Rust dependency closure. The `kafka` feature was
+# removed in 0.2.1 along with the retired `oxigeo-kafka` crate; it gated an
+# `rdkafka` dependency that no source file in this crate ever used. Workflows
+# still describe Kafka endpoints via the pure-Rust `IntegrationType::Kafka` /
+# `MessageQueueType::Kafka` metadata enums.
 [package.metadata.docs.rs]
 features = ["server"]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -109,7 +109,7 @@ impl ConsolidatedMetadata {
         Self::from_json(&data)
     }
 
-    /// Saves consolidated metadata to a store
+    /// Saves consolidated metadata to a store (Zarr v2 `.zmetadata` file).
     ///
     /// # Errors
     /// Returns error if serialization or writing fails
@@ -118,34 +118,154 @@ impl ConsolidatedMetadata {
         let data = self.to_json()?;
         store.set(&key, &data)
     }
+
+    /// Returns the root `zarr.json` key for a (possibly empty) root path.
+    fn v3_root_key(root_path: &str) -> StoreKey {
+        if root_path.is_empty() {
+            StoreKey::new("zarr.json".to_string())
+        } else {
+            StoreKey::new(format!("{}/zarr.json", root_path.trim_end_matches('/')))
+        }
+    }
+
+    /// Saves consolidated metadata using the Zarr **v3** extension: the
+    /// `consolidated_metadata` object is embedded inside the root group's
+    /// `zarr.json` (there is no separate `.zmetadata` file in v3).
+    ///
+    /// An existing root `zarr.json` is preserved and augmented; if none
+    /// exists a minimal group `zarr.json` is created.
+    ///
+    /// # Errors
+    /// Returns error if reading/serializing/writing the root `zarr.json` fails.
+    pub fn save_to_store_v3(&self, store: &mut impl Store, root_path: &str) -> Result<()> {
+        let root_key = Self::v3_root_key(root_path);
+
+        let mut root: serde_json::Value = match store.get(&root_key) {
+            Ok(data) => serde_json::from_slice(&data).map_err(|e| {
+                ZarrError::Metadata(MetadataError::InvalidJson {
+                    message: format!("Failed to parse root zarr.json: {e}"),
+                })
+            })?,
+            Err(ZarrError::Storage(StorageError::KeyNotFound { .. })) => {
+                serde_json::json!({ "zarr_format": 3, "node_type": "group" })
+            }
+            Err(e) => return Err(e),
+        };
+
+        let obj = root.as_object_mut().ok_or_else(|| {
+            ZarrError::Metadata(MetadataError::InvalidJson {
+                message: "root zarr.json is not a JSON object".to_string(),
+            })
+        })?;
+
+        let metadata_value = serde_json::to_value(&self.metadata).map_err(|e| {
+            ZarrError::Metadata(MetadataError::InvalidJson {
+                message: format!("Failed to serialize consolidated metadata: {e}"),
+            })
+        })?;
+
+        obj.insert(
+            "consolidated_metadata".to_string(),
+            serde_json::json!({
+                "kind": "inline",
+                "must_understand": false,
+                "metadata": metadata_value,
+            }),
+        );
+
+        let data = serde_json::to_vec_pretty(&root).map_err(|e| {
+            ZarrError::Metadata(MetadataError::InvalidJson {
+                message: format!("Failed to serialize root zarr.json: {e}"),
+            })
+        })?;
+        store.set(&root_key, &data)
+    }
+
+    /// Loads consolidated metadata from the Zarr **v3** extension embedded in
+    /// the root group's `zarr.json`.
+    ///
+    /// # Errors
+    /// Returns [`MetadataError::MissingField`] if the root `zarr.json` (or its
+    /// `consolidated_metadata` object) is absent.
+    pub fn load_from_store_v3(store: &impl Store, root_path: &str) -> Result<Self> {
+        let root_key = Self::v3_root_key(root_path);
+        let data = store.get(&root_key).map_err(|e| match e {
+            ZarrError::Storage(StorageError::KeyNotFound { .. }) => {
+                ZarrError::Metadata(MetadataError::MissingField { field: "zarr.json" })
+            }
+            other => other,
+        })?;
+
+        let root: serde_json::Value = serde_json::from_slice(&data).map_err(|e| {
+            ZarrError::Metadata(MetadataError::InvalidJson {
+                message: format!("Failed to parse root zarr.json: {e}"),
+            })
+        })?;
+
+        let cm = root.get("consolidated_metadata").ok_or({
+            ZarrError::Metadata(MetadataError::MissingField {
+                field: "consolidated_metadata",
+            })
+        })?;
+
+        let metadata_map = cm.get("metadata").and_then(|m| m.as_object()).ok_or({
+            ZarrError::Metadata(MetadataError::MissingField {
+                field: "consolidated_metadata.metadata",
+            })
+        })?;
+
+        let mut metadata = HashMap::new();
+        for (k, v) in metadata_map {
+            metadata.insert(k.clone(), v.clone());
+        }
+
+        Ok(Self {
+            zarr_format: 3,
+            metadata_version: "1".to_string(),
+            metadata,
+            extra: HashMap::new(),
+        })
+    }
 }
 
-/// Consolidates metadata from a Zarr store
+/// Returns true if `key` names a metadata file for the given Zarr format.
 ///
-/// This function walks through a Zarr store and collects all metadata files
-/// (.zarray, .zgroup, .zattrs) into a consolidated metadata structure.
+/// * v2 keeps per-node metadata in `.zarray`/`.zgroup`/`.zattrs` files.
+/// * v3 keeps all node metadata in `zarr.json` files.
+fn is_metadata_key(key: &str, zarr_format: u8) -> bool {
+    match zarr_format {
+        3 => key == "zarr.json" || key.ends_with("/zarr.json"),
+        _ => key.ends_with(".zarray") || key.ends_with(".zgroup") || key.ends_with(".zattrs"),
+    }
+}
+
+/// Consolidates metadata from a Zarr store.
+///
+/// Walks the store and collects every metadata file for the requested format
+/// (v2: `.zarray`/`.zgroup`/`.zattrs`; v3: `zarr.json`) into a consolidated
+/// metadata structure.
 ///
 /// # Arguments
 /// * `store` - The store to consolidate
 /// * `zarr_format` - The Zarr format version (2 or 3)
 ///
 /// # Errors
-/// Returns error if reading metadata fails
+/// Returns [`MetadataError::MissingField`] when the store contains no metadata
+/// files for the requested format (previously this silently returned an empty
+/// structure, which masked a wrong-format or empty store), and propagates any
+/// storage/parse error.
 pub fn consolidate_metadata(store: &impl Store, zarr_format: u8) -> Result<ConsolidatedMetadata> {
     let mut consolidated = ConsolidatedMetadata::new(zarr_format);
 
     // List all keys in the store
     let all_keys = store.list_all()?;
 
-    // Process metadata files
+    // Process metadata files for the requested format.
+    let mut found = 0usize;
     for key in &all_keys {
         let key_str = key.as_str();
 
-        // Check if this is a metadata file
-        if key_str.ends_with(".zarray")
-            || key_str.ends_with(".zgroup")
-            || key_str.ends_with(".zattrs")
-        {
+        if is_metadata_key(key_str, zarr_format) {
             // Read the metadata
             let data = store.get(key)?;
 
@@ -158,7 +278,18 @@ pub fn consolidate_metadata(store: &impl Store, zarr_format: u8) -> Result<Conso
 
             // Add to consolidated metadata
             consolidated.add_metadata(key_str, json);
+            found += 1;
         }
+    }
+
+    if found == 0 {
+        return Err(ZarrError::Metadata(MetadataError::MissingField {
+            field: if zarr_format == 3 {
+                "zarr.json"
+            } else {
+                ".zarray/.zgroup/.zattrs"
+            },
+        }));
     }
 
     Ok(consolidated)
@@ -401,6 +532,90 @@ mod tests {
         assert!(consolidated.has_metadata("array/.zarray"));
         assert!(consolidated.has_metadata("array/.zattrs"));
         assert!(!consolidated.has_metadata("array/0"));
+    }
+
+    #[test]
+    fn test_consolidate_metadata_v3() {
+        let mut store = MemoryStore::new();
+        store
+            .set(
+                &StoreKey::new("zarr.json".to_string()),
+                br#"{"zarr_format":3,"node_type":"group"}"#,
+            )
+            .expect("set root");
+        store
+            .set(
+                &StoreKey::new("arr/zarr.json".to_string()),
+                br#"{"zarr_format":3,"node_type":"array","shape":[4],"data_type":"float32"}"#,
+            )
+            .expect("set array");
+
+        let consolidated = consolidate_metadata(&store, 3).expect("consolidate v3");
+        assert_eq!(consolidated.metadata.len(), 2);
+        assert!(consolidated.has_metadata("zarr.json"));
+        assert!(consolidated.has_metadata("arr/zarr.json"));
+    }
+
+    #[test]
+    fn test_consolidate_metadata_errors_when_empty() {
+        // A v3 store consolidated with the wrong (v2) format finds zero
+        // metadata files and must error, not silently return an empty struct.
+        let mut store = MemoryStore::new();
+        store
+            .set(
+                &StoreKey::new("arr/zarr.json".to_string()),
+                br#"{"zarr_format":3,"node_type":"array"}"#,
+            )
+            .expect("set");
+
+        let result = consolidate_metadata(&store, 2);
+        assert!(
+            matches!(
+                result,
+                Err(ZarrError::Metadata(MetadataError::MissingField { .. }))
+            ),
+            "consolidating with no matching metadata must error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_consolidated_metadata_v3_roundtrip_embedded() {
+        let mut store = MemoryStore::new();
+        store
+            .set(
+                &StoreKey::new("zarr.json".to_string()),
+                br#"{"zarr_format":3,"node_type":"group","attributes":{"k":"v"}}"#,
+            )
+            .expect("set root");
+
+        let mut cm = ConsolidatedMetadata::new(3);
+        cm.add_metadata("arr/zarr.json", serde_json::json!({"shape":[8]}));
+        cm.save_to_store_v3(&mut store, "").expect("save v3");
+
+        // The root zarr.json is preserved and augmented, not overwritten.
+        let raw = store
+            .get(&StoreKey::new("zarr.json".to_string()))
+            .expect("get root");
+        let root: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
+        assert_eq!(root["attributes"]["k"], "v");
+        assert!(root.get("consolidated_metadata").is_some());
+
+        let loaded = ConsolidatedMetadata::load_from_store_v3(&store, "").expect("load v3");
+        assert_eq!(loaded.zarr_format, 3);
+        assert_eq!(
+            loaded.get_metadata("arr/zarr.json"),
+            Some(&serde_json::json!({"shape":[8]}))
+        );
+    }
+
+    #[test]
+    fn test_load_from_store_v3_missing_errors() {
+        let store = MemoryStore::new();
+        let result = ConsolidatedMetadata::load_from_store_v3(&store, "");
+        assert!(matches!(
+            result,
+            Err(ZarrError::Metadata(MetadataError::MissingField { .. }))
+        ));
     }
 
     #[test]

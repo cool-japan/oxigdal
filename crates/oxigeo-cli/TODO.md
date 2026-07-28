@@ -1,7 +1,7 @@
 # TODO: oxigeo-cli
 
 > **Purpose:** Command-line interface for OxiGeo geospatial operations
-> **Status (2026-05-16):** 13,397 Rust LoC · 258 tests · 3 real-code stubs (inspect/profile subcommands bail unconditionally; FlatGeobuf vector conversion unimplemented)
+> **Status (2026-07-28):** 13,397 Rust LoC · 342 tests · 0 real-code stubs (inspect/profile subcommands and FlatGeobuf vector conversion — see "Recently completed" — are all wired to real implementations)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority
@@ -39,37 +39,11 @@
   - **Risk:** API drift from disabled `oxigeo_dev_tools` — reimplement minimally; do not resurrect the disabled crate unless explicitly asked.
   - **Done:** 2026-05-22 (Slice 27). New `src/util/inspector.rs` (~296 LoC): `InspectionReport`/`RasterSummary`/`VectorSummary` (`#[derive(Serialize)]`), `inspect_file(path, detailed) -> Result<InspectionReport>` — opens GeoTIFF via `GeoTiffReader` / GeoJSON via `GeoJsonReader` (the CLI has no `oxigeo::Dataset` umbrella type; it uses per-format crates, mirroring `commands/info.rs`), `crate::util::cloud::is_cloud_uri`, `crate::util::detect_format`. `commands/inspect.rs` body swapped from the `anyhow::bail!` stub to a real call; honours the global `OutputFormat` (Json → `serde_json::to_string_pretty`, Text → human-readable); `--detailed` fills geo_transform/nodata/data_types. `util/mod.rs` +3 re-export lines. ALSO fixed pre-existing breakage (a): `oxigeo-rs3gw/src/error.rs` non-exhaustive match on `rs3gw 0.2.1` `StorageError` (+8 lines — the `ObjectLocked`/`InvalidBucketState` arms) which blocked `cargo build -p oxigeo-cli` entirely. ALSO fixed newly-surfaced breakage (d): `oxigeo-cli/Cargo.toml` `oxigeo-proj` dep now sets `features = ["std"]` — the workspace declares `oxigeo-proj` with `default-features = false` (added after 0.1.4) but `oxigeo-proj` is not no_std-clean, so any consumer not re-enabling `std` fails to build; `oxigeo-geojson` already does this, `oxigeo-cli` now does too.
   - **Tests:** 9 in `crates/oxigeo-cli/tests/inspect_test.rs` (GeoTIFF summary; GeoJSON summary; detailed flag; nonexistent-file error; JSON output valid + has `format` key; file-size; extension; unknown-format no-panic). Build + clippy clean.
-- [ ] Wire `profile` subcommand to a real micro-benchmark harness (audit-discovered 2026-05-16)
-  - **Goal:** Replace unconditional bail at `src/commands/profile.rs:30-32` so that `oxigeo profile <op> <input> -n N` measures and reports wall-clock for repeated operations.
-  - **Verified gap:** `anyhow::bail!("Profile command is not yet implemented. oxigeo_dev_tools crate is currently disabled.");` (commands/profile.rs:30-32). Commented-out scaffolding (lines 34-73) references `oxigeo_dev_tools::profiler::Profiler`.
-  - **Design:**
-    1. New `crates/oxigeo-cli/src/util/profiler.rs` providing `Profiler::new(name)`, `Profiler::start()`, `Profiler::stop()`, `Profiler::report()` (text + JSON), `Profiler::export_json()`.
-    2. `Operation` enum: `OpenDataset`, `ReadAllBands`, `ReadFeatures`, `ComputeStats`. Map `args.operation` string → enum via `FromStr`.
-    3. For each iteration: call `Operation::execute(&input)`; record `std::time::Instant`; accumulate min/max/mean/median/p95.
-    4. JSON export via `serde_json` to `args.output` if provided.
-  - **Files:**
-    - `crates/oxigeo-cli/src/commands/profile.rs` (replace function body; delete commented-out scaffolding).
-    - `crates/oxigeo-cli/src/util/profiler.rs` (new, ~200 LoC).
-    - `crates/oxigeo-cli/src/util/mod.rs` (re-export).
-    - `crates/oxigeo-cli/tests/cli_test.rs` (3 new integration tests).
-  - **Tests:** `test_profile_open_dataset_iterations`, `test_profile_unknown_operation_errors`, `test_profile_export_json_schema`.
-  - **Prerequisites:** None.
-  - **Risk:** Don't over-engineer — this is a CLI convenience, not a replacement for `criterion`. Keep median + p95 reporting simple.
-- [ ] Implement FlatGeobuf vector conversion in `util::vector::convert_vector` (audit-discovered 2026-05-16)
-  - **Goal:** `oxigeo convert input.geojson output.fgb` (and shapefile→fgb, fgb→anything) should produce valid FlatGeobuf instead of bailing.
-  - **Verified gap:** `anyhow::bail!("FlatGeobuf vector conversion is not yet implemented (input: {}, output: {})", input.display(), output.display())` (util/vector.rs:592-596). The match arm covers `(GeoJson, FlatGeobuf)`, `(Shapefile, FlatGeobuf)`, and `(FlatGeobuf, _)` — i.e. every direction involving FlatGeobuf is unimplemented.
-  - **Design:**
-    1. Add `oxigeo-flatgeobuf = { workspace = true }` to `crates/oxigeo-cli/Cargo.toml` under a new `fgb` feature (or unconditional if the umbrella always pulls it).
-    2. New helpers in `util/vector.rs`: `convert_geojson_to_fgb`, `convert_shapefile_to_fgb`, `convert_fgb_to_geojson`, `convert_fgb_to_shapefile`, `convert_fgb_to_fgb` (identity copy).
-    3. Reuse `oxigeo_flatgeobuf::{FgbReader, FgbWriter}` (verify API surface before sliding); plumb attribute filter through reader iteration.
-    4. Replace the bail arm with explicit dispatch.
-  - **Files:**
-    - `crates/oxigeo-cli/Cargo.toml`.
-    - `crates/oxigeo-cli/src/util/vector.rs` (replace lines 589-597 + add ~250 LoC of helpers).
-    - `crates/oxigeo-cli/tests/vector_convert_test.rs` (add 5 new tests).
-  - **Tests:** `test_convert_geojson_to_fgb_roundtrip`, `test_convert_shapefile_to_fgb_roundtrip`, `test_convert_fgb_to_geojson_roundtrip`, `test_convert_fgb_attribute_filter_applied`, `test_convert_fgb_identity_copy`.
-  - **Prerequisites:** `oxigeo-flatgeobuf` reader+writer must be feature-complete (verify via `cargo doc -p oxigeo-flatgeobuf`); if not, slice this into "reader only" first.
-  - **Risk:** FlatGeobuf spatial index is mandatory in spec — writer must compute Hilbert R-tree; ensure writer API doesn't require all features in-memory at once.
+- [x] Wire `profile` subcommand to a real micro-benchmark harness (audit-discovered 2026-05-16)
+  - **Done (verified 2026-07-28):** `src/util/profiler.rs` (510 LoC) provides `Profiler::new`/`start`/`stop`/`report`/`export_json` and an `Operation` enum (`open`, `read-features`, `read-bands`, `stats`, parsed via `FromStr`) with a real `execute_open`/`execute_read_features`/`execute_read_bands`/`execute_stats` dispatch. `src/commands/profile.rs` runs `iterations` timed passes and prints a text table or JSON (`--json`/`--format json`), with optional `--output` file export. Old `anyhow::bail!` scaffolding fully removed.
+  - **Tests:** `test_profiler_report_format`, `test_profiler_export_json`, `test_profiler_no_measurements`, `test_profile_command_nonexistent_file` in `tests/cli_test.rs`.
+- [x] Implement FlatGeobuf vector conversion in `util::vector::convert_vector` (audit-discovered 2026-05-16)
+  - **Done (verified 2026-07-28):** `src/util/vector.rs` now dispatches all 5 FlatGeobuf directions to real helpers — `convert_geojson_to_fgb`, `convert_shapefile_to_fgb`, `convert_fgb_to_geojson`, `convert_fgb_to_shapefile`, `convert_fgb_to_fgb` (identity copy) — built on `oxigeo_flatgeobuf::FlatGeobufWriterBuilder` (with spatial index) and column-type inference (`infer_fgb_columns`, `core_geom_to_fgb_geometry_type`). The old `anyhow::bail!("FlatGeobuf vector conversion is not yet implemented ...")` arm is gone.
 
 ## Medium Priority
 - [x] `tileindex` command for generating tile index shapefiles (done 2026-04-18)
@@ -145,4 +119,4 @@
 - **Blocked by:** `oxigeo` umbrella (all driver dispatch flows through it), `oxigeo-rs3gw` (cloud input via S3/GCS/Azure URIs), `oxigeo-flatgeobuf` (for the pending FlatGeobuf conversion item above), `oxigeo-terrain` (DEM/contour/fillnodata commands)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

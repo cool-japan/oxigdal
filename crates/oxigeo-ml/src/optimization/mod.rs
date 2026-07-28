@@ -29,6 +29,7 @@
 
 pub mod distillation;
 pub mod graph_opt;
+pub(crate) mod onnx_weights;
 pub mod pruning;
 pub mod quantization;
 
@@ -100,7 +101,8 @@ pub use pruning::{
 };
 pub use quantization::{
     QuantizationConfig, QuantizationMode, QuantizationParams, QuantizationResult, QuantizationType,
-    calibrate_quantization, dequantize_tensor, quantize_model, quantize_tensor,
+    analyze_model_quantization, calibrate_quantization, dequantize_tensor, quantize_model,
+    quantize_tensor,
 };
 
 use crate::error::Result;
@@ -118,8 +120,15 @@ pub struct OptimizationStats {
     pub compression_ratio: f32,
     /// Inference speedup factor
     pub speedup: f32,
-    /// Accuracy change (percentage points)
-    pub accuracy_delta: f32,
+    /// **Estimated** accuracy change in percentage points (negative = loss).
+    ///
+    /// This is a conservative heuristic derived from the optimization
+    /// configuration (quantization type and pruning sparsity), **not** a
+    /// measured value from evaluating the model on a dataset. Do not treat it
+    /// as a real accuracy-regression measurement; run a proper evaluation for
+    /// that. See [`OptimizationStats::is_worthwhile`], which folds this estimate
+    /// into its decision.
+    pub estimated_accuracy_delta: f32,
 }
 
 impl OptimizationStats {
@@ -129,7 +138,7 @@ impl OptimizationStats {
         original_size: usize,
         optimized_size: usize,
         speedup: f32,
-        accuracy_delta: f32,
+        estimated_accuracy_delta: f32,
     ) -> Self {
         let compression_ratio = if optimized_size > 0 {
             original_size as f32 / optimized_size as f32
@@ -142,7 +151,7 @@ impl OptimizationStats {
             optimized_size,
             compression_ratio,
             speedup,
-            accuracy_delta,
+            estimated_accuracy_delta,
         }
     }
 
@@ -162,10 +171,16 @@ impl OptimizationStats {
         }
     }
 
-    /// Checks if optimization is worthwhile (> 20% size reduction with < 2% accuracy loss)
+    /// Checks if optimization is worthwhile: more than 20% (measured) size
+    /// reduction combined with less than 2% *estimated* accuracy loss.
+    ///
+    /// Note: the accuracy component is the heuristic
+    /// [`estimated_accuracy_delta`](Self::estimated_accuracy_delta), not a
+    /// measured regression. For automated CI gating, verify accuracy with a real
+    /// evaluation run rather than relying on this estimate alone.
     #[must_use]
     pub fn is_worthwhile(&self) -> bool {
-        self.size_reduction_percent() > 20.0 && self.accuracy_delta.abs() < 2.0
+        self.size_reduction_percent() > 20.0 && self.estimated_accuracy_delta.abs() < 2.0
     }
 }
 
@@ -328,10 +343,22 @@ impl OptimizationPipeline {
         }
 
         // 2. Quantization (if configured)
+        //
+        // Emitting a valid quantized ONNX file is not yet supported (see
+        // `quantize_model`). When quantization is requested we surface the real,
+        // measured achievable compression via `analyze_model_quantization` and
+        // record that quantization was *not* applied, rather than silently
+        // pretending the model was quantized. Pruning + graph optimization still
+        // apply, so the pipeline produces a genuinely optimized model.
         if let Some(ref config) = self.quantization {
-            let quantized_path = output.with_extension("quantized.onnx");
-            quantize_model(&current_path, &quantized_path, config)?;
-            current_path = quantized_path;
+            match analyze_model_quantization(&current_path, config) {
+                Ok(analysis) => info!(
+                    "Quantization requested ({:?}): achievable {:.2}x compression, but \
+                     quantized-ONNX emission is not yet implemented — leaving weights in fp32",
+                    config.quantization_type, analysis.compression_ratio
+                ),
+                Err(e) => info!("Quantization analysis skipped: {}", e),
+            }
         }
 
         // 3. Final rename
@@ -346,15 +373,17 @@ impl OptimizationPipeline {
         let opt_level = self.opt_level();
         let speedup = Self::measure_speedup(input, output, opt_level)?;
 
-        // Accuracy measurement would require test dataset
-        // For now, use conservative estimate based on optimization level
-        let accuracy_delta = Self::estimate_accuracy_delta(self);
+        // Accuracy measurement would require a labelled evaluation dataset, which
+        // this API does not receive. We therefore report a clearly-labelled
+        // *estimate* (see `OptimizationStats::estimated_accuracy_delta`) rather
+        // than a measured value.
+        let estimated_accuracy_delta = Self::estimate_accuracy_delta(self);
 
         Ok(OptimizationStats::new(
             original_size,
             optimized_size,
             speedup,
-            accuracy_delta,
+            estimated_accuracy_delta,
         ))
     }
 

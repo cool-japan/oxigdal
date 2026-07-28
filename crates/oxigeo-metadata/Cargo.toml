@@ -32,7 +32,6 @@ url = { workspace = true }
 quick-xml = { workspace = true, optional = true, features = ["serialize"] }
 
 # Internal crates
-oxigeo-core = { workspace = true, default-features = true }
 oxigeo-stac = { workspace = true, features = ["std"], optional = true }
 oxigeo-netcdf = { workspace = true, optional = true }
 oxigeo-hdf5 = { workspace = true, optional = true }

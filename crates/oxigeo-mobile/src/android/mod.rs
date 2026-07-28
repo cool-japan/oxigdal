@@ -507,6 +507,103 @@ pub extern "system" fn Java_com_cooljapan_oxigeo_OxiGeo_nativeReadRegion(
     }
 }
 
+/// JNI binding to read a map tile in XYZ scheme.
+///
+/// Mirrors the Kotlin `OxiGeo.Dataset.readTile` contract (`OxiGeo.kt`'s
+/// `nativeReadTile` `external fun`): reads the real dataset pixels for tile
+/// `(z, x, y)` at `tile_size` through the same overview-selection pipeline
+/// used by [`crate::android::raster::oxigeo_android_read_tile`], then
+/// converts down to a 3-channel (RGB) byte layout to match
+/// `nativeReadRegion`'s `channels = 3` contract that the Kotlin
+/// `ImageBuffer` assumes.
+///
+/// Returns `null` (rather than a Java exception) on any failure; the Kotlin
+/// wrapper (`OxiGeo.Dataset.readTile`) turns a `null` return into an
+/// `IOErrorException`.
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_cooljapan_oxigeo_OxiGeo_nativeReadTile(
+    mut unowned_env: EnvUnowned,
+    _class: JClass,
+    dataset_ptr: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    tile_size: jint,
+) -> jbyteArray {
+    if dataset_ptr == 0 {
+        return std::ptr::null_mut();
+    }
+
+    if z < 0 || x < 0 || y < 0 || tile_size <= 0 || tile_size > 4096 {
+        return std::ptr::null_mut();
+    }
+
+    // Read the tile as ARGB via the shared, already-tested Android tile
+    // pipeline (real GeoTIFF overview-selection logic; see
+    // `android::raster::oxigeo_android_read_tile`).
+    let argb_len = (tile_size as usize) * (tile_size as usize) * 4;
+    let mut argb_data = vec![0u8; argb_len];
+    let mut argb_buffer = OxiGeoBuffer {
+        data: argb_data.as_mut_ptr(),
+        length: argb_data.len(),
+        width: tile_size,
+        height: tile_size,
+        channels: 4,
+    };
+
+    let result = unsafe {
+        crate::android::raster::oxigeo_android_read_tile(
+            dataset_ptr as *const OxiGeoDataset,
+            z,
+            x,
+            y,
+            tile_size,
+            &mut argb_buffer,
+        )
+    };
+
+    if result != OxiGeoErrorCode::Success {
+        return std::ptr::null_mut();
+    }
+
+    // Convert ARGB -> RGB (drop the alpha channel) so the returned byte
+    // array matches `nativeReadRegion`'s 3-channel contract.
+    let pixel_count = (tile_size as usize) * (tile_size as usize);
+    let mut rgb_data = vec![0u8; pixel_count * 3];
+    for i in 0..pixel_count {
+        let src = i * 4;
+        let dst = i * 3;
+        // argb_data[src] is alpha; [src+1, src+2, src+3] are R, G, B.
+        rgb_data[dst] = argb_data[src + 1];
+        rgb_data[dst + 1] = argb_data[src + 2];
+        rgb_data[dst + 2] = argb_data[src + 3];
+    }
+
+    // Create Java byte array and copy data via with_env, same pattern as
+    // `nativeReadRegion` above.
+    let array_result = unowned_env
+        .with_env(|env| {
+            let byte_array = jni::objects::JByteArray::new(env, rgb_data.len())?;
+            // SAFETY: `rgb_data` is a valid, fully-initialized `Vec<u8>` of
+            // exactly `rgb_data.len()` bytes; reinterpreting as `&[i8]` for
+            // `set_region` is a same-size, same-layout reborrow (JNI byte
+            // arrays are signed 8-bit), matching `nativeReadRegion`'s
+            // identical conversion.
+            let signed_slice = unsafe {
+                std::slice::from_raw_parts(rgb_data.as_ptr().cast::<i8>(), rgb_data.len())
+            };
+            byte_array.set_region(env, 0, signed_slice)?;
+            Ok::<_, jni::errors::Error>(byte_array.into_raw())
+        })
+        .into_outcome();
+
+    match array_result {
+        Outcome::Ok(raw) => raw,
+        _ => std::ptr::null_mut(),
+    }
+}
+
 /// JNI binding to get dataset band count.
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]

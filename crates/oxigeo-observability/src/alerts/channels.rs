@@ -1,11 +1,14 @@
 //! Notification channels for alert delivery
 
+#[cfg(feature = "http-exporter")]
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::AlertInstance;
+#[cfg(feature = "http-exporter")]
+use super::{AlertLevel, AlertState};
 use crate::error::Result;
-use super::{AlertInstance, AlertLevel, AlertState};
 
 /// Notification channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +95,7 @@ impl NotificationChannel {
 }
 
 /// Notification sender for dispatching alerts to channels.
+#[derive(Clone)]
 pub struct NotificationSender {
     channels: Vec<NotificationChannel>,
     #[cfg(feature = "http-exporter")]
@@ -114,11 +118,32 @@ impl NotificationSender {
     }
 
     /// Send an alert to all configured channels.
+    ///
+    /// Aggregates delivery failures rather than stopping at the first one: a
+    /// broken Slack webhook should not prevent PagerDuty from firing. If any
+    /// channel failed, returns `Err` describing every failure so a caller
+    /// can't mistake a partial (or total) delivery failure for success.
     pub async fn send(&self, alert: &AlertInstance) -> Result<()> {
+        let mut failures = Vec::new();
         for channel in &self.channels {
-            self.send_to_channel(alert, channel).await?;
+            if let Err(e) = self.send_to_channel(alert, channel).await {
+                failures.push(format!("{}: {e}", channel.channel_type()));
+            }
         }
-        Ok(())
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::error::ObservabilityError::AlertRoutingFailed(
+                format!(
+                    "{} of {} notification channel(s) failed for alert '{}': {}",
+                    failures.len(),
+                    self.channels.len(),
+                    alert.id,
+                    failures.join("; ")
+                ),
+            ))
+        }
     }
 
     /// Send an alert to a specific channel.
@@ -149,7 +174,8 @@ impl NotificationSender {
                 }
 
                 let payload = self.build_webhook_payload(alert);
-                request.json(&payload).send().await?;
+                let response = request.json(&payload).send().await?;
+                Self::check_delivery_status(response, "Webhook", url).await?;
             }
             #[cfg(feature = "http-exporter")]
             NotificationChannel::Slack {
@@ -158,7 +184,8 @@ impl NotificationSender {
                 username,
             } => {
                 let payload = self.build_slack_payload(alert, channel, username.as_deref());
-                self.client.post(webhook_url).json(&payload).send().await?;
+                let response = self.client.post(webhook_url).json(&payload).send().await?;
+                Self::check_delivery_status(response, "Slack", webhook_url).await?;
             }
             #[cfg(feature = "http-exporter")]
             NotificationChannel::PagerDuty {
@@ -169,12 +196,14 @@ impl NotificationSender {
                     .clone()
                     .unwrap_or_else(|| "https://events.pagerduty.com/v2/enqueue".to_string());
                 let payload = self.build_pagerduty_payload(alert, routing_key);
-                self.client.post(&url).json(&payload).send().await?;
+                let response = self.client.post(&url).json(&payload).send().await?;
+                Self::check_delivery_status(response, "PagerDuty", &url).await?;
             }
             #[cfg(feature = "http-exporter")]
             NotificationChannel::Teams { webhook_url } => {
                 let payload = self.build_teams_payload(alert);
-                self.client.post(webhook_url).json(&payload).send().await?;
+                let response = self.client.post(webhook_url).json(&payload).send().await?;
+                Self::check_delivery_status(response, "Teams", webhook_url).await?;
             }
             NotificationChannel::Console { log_level } => {
                 self.log_alert(alert, log_level);
@@ -201,20 +230,77 @@ impl NotificationSender {
                 team,
                 priority,
             } => {
-                let payload = self.build_opsgenie_payload(alert, api_key, team.as_deref(), priority.as_deref());
-                self.client
+                let payload = self.build_opsgenie_payload(
+                    alert,
+                    api_key,
+                    team.as_deref(),
+                    priority.as_deref(),
+                );
+                let response = self
+                    .client
                     .post("https://api.opsgenie.com/v2/alerts")
                     .header("Authorization", format!("GenieKey {}", api_key))
                     .json(&payload)
                     .send()
                     .await?;
+                Self::check_delivery_status(
+                    response,
+                    "OpsGenie",
+                    "https://api.opsgenie.com/v2/alerts",
+                )
+                .await?;
             }
             #[cfg(not(feature = "http-exporter"))]
-            _ => {}
+            _ => {
+                tracing::warn!(
+                    channel_type = channel.channel_type(),
+                    alert_id = %alert.id,
+                    "Notification NOT delivered: this build was compiled without the \
+                     'http-exporter' feature, so there is no transport (Webhook/Slack/\
+                     PagerDuty/Teams/OpsGenie) to send alerts through. Rebuild with the \
+                     'http-exporter' feature enabled to actually deliver this notification."
+                );
+                return Err(crate::error::ObservabilityError::ExporterFeatureDisabled(
+                    format!(
+                        "NotificationSender dropped a '{}' notification for alert '{}': this build \
+                     was compiled without the 'http-exporter' feature, so notifications cannot \
+                     be delivered",
+                        channel.channel_type(),
+                        alert.id
+                    ),
+                ));
+            }
         }
         Ok(())
     }
 
+    /// Inspect an HTTP response from a delivery attempt and turn a
+    /// non-success status into a real error instead of letting a 4xx/5xx
+    /// response masquerade as successful delivery.
+    #[cfg(feature = "http-exporter")]
+    async fn check_delivery_status(
+        response: reqwest::Response,
+        destination_kind: &str,
+        destination_url: &str,
+    ) -> Result<()> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
+
+        Err(crate::error::ObservabilityError::AlertRoutingFailed(
+            format!(
+                "{destination_kind} delivery to '{destination_url}' failed with HTTP status {status}: {body}"
+            ),
+        ))
+    }
+
+    #[cfg(feature = "http-exporter")]
     fn build_webhook_payload(&self, alert: &AlertInstance) -> serde_json::Value {
         serde_json::json!({
             "alert_id": alert.id,
@@ -231,6 +317,7 @@ impl NotificationSender {
         })
     }
 
+    #[cfg(feature = "http-exporter")]
     fn build_slack_payload(
         &self,
         alert: &AlertInstance,
@@ -275,6 +362,7 @@ impl NotificationSender {
         payload
     }
 
+    #[cfg(feature = "http-exporter")]
     fn build_pagerduty_payload(
         &self,
         alert: &AlertInstance,
@@ -310,6 +398,7 @@ impl NotificationSender {
         })
     }
 
+    #[cfg(feature = "http-exporter")]
     fn build_teams_payload(&self, alert: &AlertInstance) -> serde_json::Value {
         let theme_color = match alert.level {
             AlertLevel::Critical | AlertLevel::Page => "FF0000",
@@ -364,7 +453,7 @@ impl NotificationSender {
         priority: Option<&str>,
     ) -> serde_json::Value {
         let _ = api_key; // used in header, not body
-        let opsgenie_priority = priority.unwrap_or_else(|| match alert.level {
+        let opsgenie_priority = priority.unwrap_or(match alert.level {
             AlertLevel::Critical | AlertLevel::Page => "P1",
             AlertLevel::Error => "P2",
             AlertLevel::Warning => "P3",
@@ -392,5 +481,185 @@ impl NotificationSender {
 impl Default for NotificationSender {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alerts::rules::AlertRuleDefinition;
+
+    fn sample_alert() -> AlertInstance {
+        let rule = AlertRuleDefinition::new("test_rule").with_name("Test Rule");
+        AlertInstance::from_rule(&rule)
+    }
+
+    #[tokio::test]
+    async fn test_console_channel_always_succeeds() {
+        let mut sender = NotificationSender::new();
+        sender.add_channel(NotificationChannel::Console {
+            log_level: "info".to_string(),
+        });
+
+        let alert = sample_alert();
+        assert!(sender.send(&alert).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_email_channel_is_skipped_but_not_an_error() {
+        // Email is intentionally unsupported (no SMTP client); it must not
+        // silently claim success as if it were delivered *and* must not be
+        // conflated with the honest-error path used for
+        // Webhook/Slack/PagerDuty/Teams/OpsGenie when http-exporter is off.
+        let mut sender = NotificationSender::new();
+        sender.add_channel(NotificationChannel::Email {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            from: "alerts@example.com".to_string(),
+            to: vec!["oncall@example.com".to_string()],
+            username: None,
+            password: None,
+            use_tls: true,
+        });
+
+        let alert = sample_alert();
+        assert!(sender.send(&alert).await.is_ok());
+    }
+
+    #[cfg(not(feature = "http-exporter"))]
+    #[tokio::test]
+    async fn test_webhook_channel_without_http_exporter_errors_instead_of_dropping_silently() {
+        let mut sender = NotificationSender::new();
+        sender.add_channel(NotificationChannel::Webhook {
+            url: "https://example.invalid/webhook".to_string(),
+            method: "POST".to_string(),
+            headers: HashMap::new(),
+            auth_token: None,
+        });
+
+        let alert = sample_alert();
+        let result = sender.send(&alert).await;
+        assert!(
+            result.is_err(),
+            "send() must not silently report success when there is no transport \
+             (http-exporter feature disabled) to deliver notifications"
+        );
+    }
+
+    #[cfg(not(feature = "http-exporter"))]
+    #[tokio::test]
+    async fn test_slack_pagerduty_teams_opsgenie_without_http_exporter_all_error() {
+        for channel in [
+            NotificationChannel::Slack {
+                webhook_url: "https://hooks.slack.com/services/x".to_string(),
+                channel: "#alerts".to_string(),
+                username: None,
+            },
+            NotificationChannel::PagerDuty {
+                routing_key: "key".to_string(),
+                api_url: None,
+            },
+            NotificationChannel::Teams {
+                webhook_url: "https://outlook.office.com/webhook/x".to_string(),
+            },
+            NotificationChannel::OpsGenie {
+                api_key: "key".to_string(),
+                team: None,
+                priority: None,
+            },
+        ] {
+            let mut sender = NotificationSender::new();
+            let kind = channel.channel_type();
+            sender.add_channel(channel);
+            let alert = sample_alert();
+            let result = sender.send(&alert).await;
+            assert!(
+                result.is_err(),
+                "{kind} channel must not silently drop notifications when http-exporter is disabled"
+            );
+        }
+    }
+
+    #[cfg(feature = "http-exporter")]
+    fn spawn_mock_webhook(
+        status_line: &'static str,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock webhook");
+        let addr = listener.local_addr().expect("mock webhook local addr");
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                let mut buf = [0u8; 8192];
+                let mut received = Vec::new();
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => received.extend_from_slice(&buf[..n]),
+                        Err(_) => break,
+                    }
+                }
+                let text = String::from_utf8_lossy(&received).to_string();
+                let body = b"";
+                let response = format!("{status_line}\r\nContent-Length: {}\r\n\r\n", body.len());
+                let _ = stream.write_all(response.as_bytes());
+                let _ = tx.send(text);
+            }
+        });
+
+        (format!("http://{addr}/webhook"), rx)
+    }
+
+    #[cfg(feature = "http-exporter")]
+    #[tokio::test]
+    async fn test_webhook_delivers_successfully_with_http_exporter_enabled() {
+        let (url, rx) = spawn_mock_webhook("HTTP/1.1 200 OK");
+        let mut sender = NotificationSender::new();
+        sender.add_channel(NotificationChannel::Webhook {
+            url,
+            method: "POST".to_string(),
+            headers: HashMap::new(),
+            auth_token: None,
+        });
+
+        let alert = sample_alert();
+        sender
+            .send(&alert)
+            .await
+            .expect("send should succeed against a 200-returning mock webhook");
+
+        let received = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("mock webhook should have received a request");
+        assert!(received.starts_with("POST"));
+    }
+
+    #[cfg(feature = "http-exporter")]
+    #[tokio::test]
+    async fn test_webhook_non_success_status_is_reported_as_error() {
+        let (url, _rx) = spawn_mock_webhook("HTTP/1.1 503 Service Unavailable");
+        let mut sender = NotificationSender::new();
+        sender.add_channel(NotificationChannel::Webhook {
+            url,
+            method: "POST".to_string(),
+            headers: HashMap::new(),
+            auth_token: None,
+        });
+
+        let alert = sample_alert();
+        let result = sender.send(&alert).await;
+        assert!(
+            result.is_err(),
+            "a 503 response must not be reported as a successful delivery"
+        );
+        let message = result.expect_err("checked is_err above").to_string();
+        assert!(
+            message.contains("503"),
+            "error should mention status, got: {message}"
+        );
     }
 }

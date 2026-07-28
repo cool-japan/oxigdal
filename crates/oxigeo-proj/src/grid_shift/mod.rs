@@ -1,17 +1,31 @@
 //! Datum grid shift transformations.
 //!
-//! This module implements horizontal datum shifts using Helmert 7-parameter
-//! transformations and polynomial approximations.  No binary grid files are
-//! required; all parameters are hard-coded from published geodetic standards.
+//! This module offers two tiers of horizontal datum shift:
 //!
-//! # Available transformations
+//! 1. **Closed-form approximations** (the functions in this file) — Helmert
+//!    7-parameter / polynomial fits that need no external data. These are
+//!    convenient and self-contained but only ≈ ±1 m (OSTN15/RGF93) to ≈ ±10 m
+//!    (NADCON) accurate; see each function's own doc for its figure.
+//! 2. **Real NTv2 grid shifts** ([`ntv2::NtV2Grid`]) — the centimetre-accurate
+//!    path used by PROJ/GDAL for OSTN15/BETA2007/NADCON `.gsb` files. These are
+//!    now wired into the crate's higher-level APIs:
+//!    - a PROJ pipeline `+proj=hgridshift +grids=<name>` step, once the grid
+//!      is registered via [`crate::Pipeline::with_hgrid`]; and
+//!    - the EPSG-driven [`crate::Transformer`], via
+//!      [`crate::Transformer::with_hgrid`], which then prefers the loaded grid
+//!      over the generic `+towgs84=` Helmert shift for geographic→geographic
+//!      datum changes.
+//!
+//!    Use the approximations below only when a real grid file is unavailable.
+//!
+//! # Closed-form approximations
 //!
 //! | Function | From → To | Method |
 //! |---|---|---|
-//! | [`ostn15_approx`] | OSGB36 → ETRS89 | Helmert (OS pub. version) |
-//! | [`rgf93_approx`] | NTF → RGF93 | Helmert 7-param |
+//! | [`ostn15_approx`] | OSGB36 → ETRS89 | Helmert (OS pub. version), ≈ ±1 m |
+//! | [`rgf93_approx`] | NTF → RGF93 | Helmert 7-param, ≈ ±1 m |
 //! | [`dhdn_etrs89_helmert`] | DHDN → ETRS89 | Helmert 7-param |
-//! | [`nad27_nad83_poly`] | NAD27 → NAD83 | NADCON polynomial |
+//! | [`nad27_nad83_poly`] | NAD27 → NAD83 | NADCON polynomial, ≈ ±10 m |
 //! | [`helmert_3d`] | Generic 3-param | Translation-only Helmert |
 //! | [`helmert_7param`] | Generic 7-param | Full Helmert transformation |
 //!

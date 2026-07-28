@@ -23,10 +23,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-rs3gw = "0.2"
+oxigeo-rs3gw = "0.2.1"
 
 # Enable specific features
-oxigeo-rs3gw = { version = "0.2", features = ["async", "ml-cache", "dedup"] }
+oxigeo-rs3gw = { version = "0.2.1", features = ["async", "ml-cache", "dedup"] }
 ```
 
 ### Feature Flags

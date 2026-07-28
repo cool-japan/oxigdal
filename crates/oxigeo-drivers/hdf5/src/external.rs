@@ -454,12 +454,28 @@ impl ExternalFileManager {
         })?;
 
         let actual_offset = file.offset + offset;
+        let file_end = f.seek(SeekFrom::End(0)).map_err(|e| {
+            Hdf5Error::Io(std::io::Error::other(format!(
+                "Failed to determine external file length: {e}"
+            )))
+        })?;
         f.seek(SeekFrom::Start(actual_offset)).map_err(|e| {
             Hdf5Error::Io(std::io::Error::other(format!(
                 "Failed to seek to offset {}: {}",
                 actual_offset, e
             )))
         })?;
+
+        // `size` derives from an untrusted dataset/element-count header. Reject
+        // a request that cannot be satisfied by the external file before
+        // allocating, so a hostile header cannot trigger a huge speculative
+        // allocation (OOM / DoS) ahead of the doomed read.
+        if size as u64 > file_end.saturating_sub(actual_offset) {
+            return Err(Hdf5Error::InvalidFormat(format!(
+                "external read of {size} bytes at offset {actual_offset} exceeds \
+                 external file length {file_end}"
+            )));
+        }
 
         let mut buffer = vec![0u8; size];
         f.read_exact(&mut buffer).map_err(|e| {
@@ -529,9 +545,33 @@ impl ExternalFileManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A dataset header can claim an external element count far larger than the
+    /// backing file. `read_data` must reject such a request with a typed error
+    /// instead of allocating the claimed multi-gigabyte buffer.
+    #[test]
+    fn read_data_rejects_size_beyond_external_file() {
+        let dir = std::env::temp_dir().join(format!("oxigeo_hdf5_ext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let file_path = dir.join("payload.bin");
+        std::fs::write(&file_path, vec![0u8; 16]).expect("write payload");
+
+        let mut manager = ExternalFileManager::new(dir.clone());
+        let ext = ExternalFile::new(file_path.clone(), 0, 16);
+
+        // A request for a within-bounds slice still works.
+        assert!(manager.read_data(&ext, 0, 16).is_ok());
+
+        // A hostile ~4 GB request against a 16-byte file is rejected quickly.
+        let err = manager.read_data(&ext, 0, 4_000_000_000usize);
+        assert!(matches!(err, Err(Hdf5Error::InvalidFormat(_))));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_external_file_creation() {

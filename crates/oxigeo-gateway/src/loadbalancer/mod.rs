@@ -13,6 +13,7 @@
 
 pub mod advanced;
 pub mod health;
+pub mod probe;
 pub mod strategies;
 
 use crate::error::{GatewayError, Result};

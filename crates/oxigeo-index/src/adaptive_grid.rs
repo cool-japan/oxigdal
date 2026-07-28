@@ -313,6 +313,72 @@ impl<T> AdaptiveGrid<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Removal and update (requires `T: PartialEq`)
+// ---------------------------------------------------------------------------
+
+impl<T: PartialEq> AdaptiveGrid<T> {
+    /// Remove the first stored item whose bbox equals `bbox` **and** whose value
+    /// equals `value`, returning the removed value (or `None` if no such item
+    /// exists).
+    ///
+    /// The descent mirrors `insert_into`: at each node the item lives in
+    /// the single child that fully contains `bbox`, or — if no child does — in
+    /// the node's own straddling-items list. The node's own list is also checked
+    /// as a defensive fallback so an item is found regardless of which of those
+    /// two placements it took.
+    ///
+    /// Empty leaves are left in place (no merge-up is performed); this keeps
+    /// removal `O(depth)` and does not affect query correctness. To fully
+    /// re-tighten the tree after many removals, rebuild the index.
+    pub fn remove(&mut self, bbox: &Bbox2D, value: &T) -> Option<T> {
+        let removed = Self::remove_from(&mut self.root, bbox, value);
+        if removed.is_some() {
+            self.len -= 1;
+        }
+        removed
+    }
+
+    /// Move an existing item to a new bounding box.
+    ///
+    /// Removes the `(old_bbox, value)` pair and re-inserts `value` under
+    /// `new_bbox`. Returns `true` if the item existed and was moved, `false`
+    /// (leaving the grid unchanged) if no matching item was found.
+    pub fn update(&mut self, old_bbox: &Bbox2D, new_bbox: Bbox2D, value: T) -> bool {
+        if self.remove(old_bbox, &value).is_some() {
+            self.insert(new_bbox, value);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remove_from(node: &mut AdaptiveNode<T>, bbox: &Bbox2D, value: &T) -> Option<T> {
+        match node {
+            AdaptiveNode::Leaf { items, .. } => Self::remove_from_items(items, bbox, value),
+            AdaptiveNode::Internal {
+                items, children, ..
+            } => {
+                if let Some(i) = Self::which_child_fully_contains(children, bbox)
+                    && let Some(v) = Self::remove_from(&mut children[i], bbox, value)
+                {
+                    return Some(v);
+                }
+                // Fallback: the item may be pinned at this internal node because
+                // it straddles multiple children.
+                Self::remove_from_items(items, bbox, value)
+            }
+        }
+    }
+
+    fn remove_from_items(items: &mut Vec<(Bbox2D, T)>, bbox: &Bbox2D, value: &T) -> Option<T> {
+        items
+            .iter()
+            .position(|(b, v)| b == bbox && v == value)
+            .map(|pos| items.remove(pos).1)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Geometry helpers
 // ---------------------------------------------------------------------------
 
@@ -490,5 +556,67 @@ mod unit_tests {
         let world = Bbox2D::new(0.0, 0.0, 10.0, 10.0).expect("valid world");
         let grid: AdaptiveGrid<u32> = AdaptiveGrid::new(world, 0, 4);
         assert_eq!(grid.max_items_per_cell(), 1);
+    }
+
+    #[test]
+    fn remove_deletes_item_and_updates_len() {
+        let world = Bbox2D::new(0.0, 0.0, 100.0, 100.0).unwrap();
+        // Small per-cell budget forces subdivision so removal is exercised
+        // across an internal node's children.
+        let mut grid: AdaptiveGrid<u32> = AdaptiveGrid::new(world, 2, 6);
+        let a = Bbox2D::new(1.0, 1.0, 2.0, 2.0).unwrap();
+        let b = Bbox2D::new(3.0, 3.0, 4.0, 4.0).unwrap();
+        let c = Bbox2D::new(50.0, 50.0, 60.0, 60.0).unwrap();
+        grid.insert(a, 1);
+        grid.insert(b, 2);
+        grid.insert(c, 3);
+        assert_eq!(grid.len(), 3);
+
+        // Removing an existing item returns its value and shrinks the length.
+        assert_eq!(grid.remove(&b, &2), Some(2));
+        assert_eq!(grid.len(), 2);
+
+        // The removed item is no longer discoverable by search.
+        let hits = grid.search(Bbox2D::new(2.5, 2.5, 4.5, 4.5).unwrap());
+        assert!(!hits.contains(&&2));
+
+        // Removing again is a no-op returning None.
+        assert_eq!(grid.remove(&b, &2), None);
+        assert_eq!(grid.len(), 2);
+
+        // The surviving items are still present.
+        assert!(grid.search(a).contains(&&1));
+        assert!(grid.search(c).contains(&&3));
+    }
+
+    #[test]
+    fn remove_requires_matching_value() {
+        let world = Bbox2D::new(0.0, 0.0, 10.0, 10.0).unwrap();
+        let mut grid: AdaptiveGrid<u32> = AdaptiveGrid::new(world, 4, 4);
+        let bbox = Bbox2D::new(1.0, 1.0, 2.0, 2.0).unwrap();
+        grid.insert(bbox, 7);
+        // Same bbox but wrong value: nothing removed.
+        assert_eq!(grid.remove(&bbox, &8), None);
+        assert_eq!(grid.len(), 1);
+        assert_eq!(grid.remove(&bbox, &7), Some(7));
+        assert_eq!(grid.len(), 0);
+    }
+
+    #[test]
+    fn update_moves_item() {
+        let world = Bbox2D::new(0.0, 0.0, 100.0, 100.0).unwrap();
+        let mut grid: AdaptiveGrid<u32> = AdaptiveGrid::new(world, 4, 6);
+        let old = Bbox2D::new(1.0, 1.0, 2.0, 2.0).unwrap();
+        let new = Bbox2D::new(80.0, 80.0, 81.0, 81.0).unwrap();
+        grid.insert(old, 7);
+
+        assert!(grid.update(&old, new, 7));
+        assert_eq!(grid.len(), 1);
+        assert!(!grid.search(old).contains(&&7));
+        assert!(grid.search(new).contains(&&7));
+
+        // Updating a non-existent item leaves the grid unchanged.
+        assert!(!grid.update(&old, new, 999));
+        assert_eq!(grid.len(), 1);
     }
 }

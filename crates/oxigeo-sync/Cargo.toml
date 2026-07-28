@@ -15,35 +15,18 @@ categories = ["science", "data-structures", "network-programming"]
 
 [dependencies]
 # Core dependencies
-oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Async runtime
-tokio = { workspace = true }
-futures = { workspace = true }
-async-trait = { workspace = true }
-
 # Data structures
-bytes = { workspace = true }
-byteorder = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 
 # Serialization
 blake3 = { workspace = true }
 
-# Logging
-tracing = { workspace = true }
-
-# Time
-chrono = { workspace = true }
-
 # Additional utilities
-num-traits = { workspace = true }
-ahash = { workspace = true }
-crossbeam = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
@@ -62,6 +45,9 @@ doctest = false
 [[bench]]
 name = "sync_bench"
 harness = false
+
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

@@ -1,13 +1,13 @@
 # TODO: oxigeo-drivers/geojson
 
 > **Purpose:** GeoJSON (RFC 7946) driver for OxiGeo - Pure Rust vector data processing with streaming support
-> **Status (2026-05-16):** 8,357 Rust LoC (incl. tests) - 175 tests - 0 source-code stubs (mature crate; gaps are forward-looking features)
-> **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
+> **Status (2026-07-28):** 8,357 Rust LoC (incl. tests) - 189 tests (all-features) - 0 source-code stubs (mature crate; gaps are forward-looking features)
+> **Roadmap:** v0.1.7 - v0.2.1 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
 - [ ] Add TopoJSON read support (shared-arc topology, complementary format to GeoJSON)
-  - **Verified gap:** No TopoJSON module exists. `ls src/` shows `error.rs`, `reader.rs`, `types/`, `utils/`, `validation.rs`, `writer.rs` only. `rg -n "topojson|TopoJson" -g '*.rs' src/` returns no matches. The previous TODO entry "Add TopoJSON reading support (shared arc topology)" is genuine future work.
+  - **Re-verified 2026-07-28:** Still an open gap in this crate (`oxigeo-geojson`, `crates/oxigeo-drivers/geojson/`) — do not confuse with the separate `oxigeo-geojson-stream` crate (`crates/oxigeo-geojson/`), which did land a TopoJSON encoder. No TopoJSON module exists here. `ls src/` shows `error.rs`, `reader.rs`, `types/`, `utils/`, `validation.rs`, `writer.rs` only. `rg -n "topojson|TopoJson" -g '*.rs' src/` returns no matches. The previous TODO entry "Add TopoJSON reading support (shared arc topology)" is genuine future work.
   - **Goal:** Open a `.topojson` file, materialize features by dereferencing the shared `arcs` table and applying delta-encoded quantization.
   - **Design:** Per TopoJSON spec v3.0.0 (<https://github.com/topojson/topojson-specification/blob/master/README.md>): root has `type:"Topology"`, `arcs:[[[dx,dy],...],...]`, `bbox:[...]`, `transform:{scale,translate}`, `objects:{<name>:Geometry|GeometryCollection}`. Arcs are integer-delta-encoded; reverse: `point[i] = transform.scale * (sum of deltas) + transform.translate`. Geometry indices: `arcs:[1, 2, -3]` means follow arc 1 forward, arc 2 forward, arc 3 in reverse (one's complement). Output as our existing `Feature`/`FeatureCollection`.
   - **Files:** (new) `src/topojson/mod.rs`, (new) `src/topojson/reader.rs`, (new) `src/topojson/arc_decode.rs`, `src/lib.rs` (`pub mod topojson;`)
@@ -97,4 +97,4 @@
 - [x] Implement bounding box calculation and injection during write — `WriterConfig.write_bbox` / `compute_bbox`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (re-verified: all three High Priority gaps — TopoJSON, CRS reprojection, right-hand-rule winding enforcement — remain open in this crate; no source changes found since the 2026-05-16 audit)*

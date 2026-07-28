@@ -133,4 +133,24 @@ pub enum GpkgError {
     /// Error from the change tracking subsystem.
     #[error("change tracking error: {0}")]
     ChangeTrackingError(String),
+
+    /// [`crate::writer::builder::GeoPackageBuilder::build`] was asked to
+    /// write a GeoPackage whose `srs_id` is neither one of the three
+    /// OGC-mandated default SRS ids (-1, 0, 4326) nor a custom SRS registered
+    /// via `GeoPackageBuilder::add_custom_srs`. Writing anyway would produce
+    /// a file whose `gpkg_contents.srs_id` / `gpkg_geometry_columns.srs_id`
+    /// reference a `gpkg_spatial_ref_sys` row that does not exist, violating
+    /// the declared foreign key (OGC GeoPackage Requirement 11).
+    #[error(
+        "srs_id {0} is not a default SRS id (-1, 0, 4326) and was not registered via add_custom_srs"
+    )]
+    UnknownSrsId(i32),
+
+    /// [`crate::writer::builder::GeoPackageBuilder::add_custom_srs`] was
+    /// called with an `srs_id` that collides with an already-emitted row
+    /// (either a mandatory default SRS id, or a previously registered custom
+    /// SRS id) — writing both would produce a duplicate `gpkg_spatial_ref_sys`
+    /// primary key.
+    #[error("srs_id {0} is already in use by a default or previously registered custom SRS row")]
+    DuplicateSrsId(i32),
 }

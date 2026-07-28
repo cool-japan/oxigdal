@@ -10,7 +10,8 @@ use crate::epsg::CrsType;
 use crate::epsg::{CrsType, lookup_epsg};
 use crate::error::{Error, Result};
 use crate::wkt::WktParser;
-#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::{String, ToString};
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -79,7 +80,7 @@ impl Crs {
     /// Creates a CRS from an EPSG code (no_std version — always returns error).
     #[cfg(not(feature = "std"))]
     pub fn from_epsg(code: u32) -> Result<Self> {
-        Err(Error::unsupported_crs(alloc::format!(
+        Err(Error::unsupported_crs(format!(
             "EPSG:{} lookup requires std feature",
             code
         )))
@@ -706,7 +707,9 @@ impl Crs {
     }
 }
 
-#[cfg(test)]
+// These unit tests exercise std-only API (`Transformer`, `Crs::compound`,
+// `lookup_epsg`, …), so they are gated with the `std` feature.
+#[cfg(all(test, feature = "std"))]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;

@@ -1,7 +1,7 @@
 # TODO: oxigeo-compress
 
 > **Purpose:** Advanced compression codecs and auto-selection for geospatial data (LZ4, Zstd, Brotli, Snappy, DEFLATE, delta/RLE/dictionary, ZFP/SZ floating-point).
-> **Status (2026-05-16):** 4,471 Rust LoC · 91 tests · 3 real stubs
+> **Status (2026-07-28):** 4,471 Rust LoC · 168 tests · 1 real stub remaining (ZFP fixed-precision/fixed-accuracy still delegate to fixed-rate — see below); the Benchmarker placeholder and missing Blosc codec noted in the previous audit are both done.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
@@ -63,10 +63,11 @@
   - **Files:** `src/metadata.rs` (extend `CompressionMetadata`)
   - **Why deferred:** Benchmarker (Item 1) covers ad-hoc measurements; persistent metrics need a sink design.
 
-- [ ] Implement byte-shuffle and bit-shuffle filters as pre-compression transforms (split from Blosc)
-  - **Goal:** Standalone `ShuffleFilter::new(typesize)` usable outside of Blosc context.
-  - **Files:** `(new) src/codecs/shuffle.rs` (shared with Blosc Item 3)
-  - **Why deferred:** Folded into Item 3 (Blosc) above.
+- [ ] Bit-shuffle filter as a pre-compression transform (byte-shuffle already standalone)
+  - **Updated 2026-07-28 — byte-shuffle done, bit-shuffle still missing:** `src/codecs/shuffle.rs` exports standalone `byte_shuffle`/`byte_unshuffle`/`byte_shuffle_in_place` (usable independently of `BloscCodec`, per its own module doc example). No `bit_shuffle`/`bitshuffle` function exists anywhere in the crate.
+  - **Goal:** A `bit_shuffle`/`bit_unshuffle` pair alongside the existing byte-shuffle, for bit-level-packed integer data.
+  - **Files:** `src/codecs/shuffle.rs` (extend).
+  - **Why deferred:** Byte-shuffle covers the common Blosc use case; bit-shuffle is a smaller, separable follow-up.
 
 - [ ] Add adaptive codec selection using sample-based profiling
   - **Goal:** Test-compress a 16 KiB sample with 3 codecs in parallel, pick winner before full compression.
@@ -97,9 +98,8 @@
   - **Files:** `src/codecs/dictionary.rs` (extend; currently no training routine)
   - **Why deferred:** Zstd dictionary mode is the more interesting target; needs oxiarc-zstd CDict support.
 
-- [ ] Implement parallel decompression for multi-chunk data
-  - **Files:** `src/parallel.rs` (extend `ParallelCompressor`)
-  - **Why deferred:** Compression-side parallelism shipped; decompression added once chunked frame format (above) lands.
+- [x] Implement parallel decompression for multi-chunk data
+  - **Done (verified 2026-07-28):** `src/parallel.rs` — `ParallelCompressor::decompress_lz4`/`decompress_zstd` parse the block-header format written by their `compress_*` counterparts and decompress blocks via `rayon`'s `par_iter` (4 `par_iter` call sites in the file, covering both the compress and decompress paths for LZ4 and Zstd).
 
 ## Low Priority / Future (speculative — one-liners only)
 
@@ -122,4 +122,4 @@
 _No previous `[x]` items recorded._
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

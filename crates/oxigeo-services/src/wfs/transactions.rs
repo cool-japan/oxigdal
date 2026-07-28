@@ -4,7 +4,7 @@
 
 use crate::error::{ServiceError, ServiceResult};
 use crate::wfs::database::{CqlFilter, DatabaseSource};
-use crate::wfs::features::{create_legacy_database_source, feature_matches_filter};
+use crate::wfs::features::create_legacy_database_source;
 use crate::wfs::{FeatureSource, WfsState};
 use axum::{
     http::header,
@@ -193,15 +193,52 @@ enum SourceDispatch {
     Database(DatabaseSource),
 }
 
-/// Returns whether a feature satisfies a transaction filter.
+/// A transaction filter that has been parsed (compiled) up-front.
 ///
-/// A missing filter matches every feature (WFS-T applies the action to all
-/// features of the type); a present filter is evaluated with the shared simple
-/// CQL matcher.
-fn filter_matches(feature: &geojson::Feature, filter: Option<&str>) -> bool {
-    match filter {
-        None => true,
-        Some(expr) => feature_matches_filter(feature, expr),
+/// Compiling once per transaction means an unparseable CQL filter is rejected
+/// **before** any feature is mutated or removed, and the per-feature
+/// [`CompiledFilter::matches`] evaluation is then infallible. This is the
+/// security-critical guard that prevents an unparseable filter from silently
+/// degrading into a "match everything" mass Delete/Update/Replace.
+enum CompiledFilter {
+    /// No filter supplied: matches every feature (WFS-T applies to the whole
+    /// type). This only ever arises when the caller passes `None`; an
+    /// unparseable filter string never reaches this state.
+    All,
+    /// A parsed CQL expression evaluated per feature.
+    Expr(crate::ogc_features::CqlExpr),
+}
+
+impl CompiledFilter {
+    /// Compile an optional filter string, failing closed on parse errors.
+    fn compile(filter: Option<&str>) -> ServiceResult<Self> {
+        match filter {
+            None => Ok(Self::All),
+            Some(expr) => {
+                let parsed = crate::ogc_features::CqlParser::parse(expr).map_err(|e| {
+                    ServiceError::InvalidParameter(
+                        "FILTER".to_string(),
+                        format!("unparseable CQL filter '{expr}': {e}"),
+                    )
+                })?;
+                Ok(Self::Expr(parsed))
+            }
+        }
+    }
+
+    /// Evaluate the compiled filter against a feature (infallible).
+    fn matches(&self, feature: &geojson::Feature) -> bool {
+        match self {
+            Self::All => true,
+            Self::Expr(expr) => {
+                let properties = feature
+                    .properties
+                    .as_ref()
+                    .map(|p| serde_json::Value::Object(p.clone()))
+                    .unwrap_or(serde_json::Value::Null);
+                crate::ogc_features::CqlParser::evaluate(expr, &properties)
+            }
+        }
     }
 }
 
@@ -256,6 +293,8 @@ async fn update_features(
     filter: Option<&str>,
     properties: serde_json::Map<String, serde_json::Value>,
 ) -> ServiceResult<usize> {
+    // Fail closed on an unparseable filter before touching any feature.
+    let compiled = CompiledFilter::compile(filter)?;
     let dispatch = {
         let mut entry = state
             .feature_types
@@ -266,7 +305,7 @@ async fn update_features(
             FeatureSource::Memory(feats) => {
                 let mut count = 0;
                 for feature in feats.iter_mut() {
-                    if filter_matches(feature, filter) {
+                    if compiled.matches(feature) {
                         let props = feature.properties.get_or_insert_with(serde_json::Map::new);
                         for (key, value) in &properties {
                             props.insert(key.clone(), value.clone());
@@ -296,6 +335,8 @@ async fn delete_features(
     type_name: &str,
     filter: Option<&str>,
 ) -> ServiceResult<usize> {
+    // Fail closed on an unparseable filter before deleting anything.
+    let compiled = CompiledFilter::compile(filter)?;
     let dispatch = {
         let mut entry = state
             .feature_types
@@ -305,7 +346,7 @@ async fn delete_features(
         match &mut entry.source {
             FeatureSource::Memory(feats) => {
                 let before = feats.len();
-                feats.retain(|feature| !filter_matches(feature, filter));
+                feats.retain(|feature| !compiled.matches(feature));
                 return Ok(before - feats.len());
             }
             FeatureSource::File(path) => SourceDispatch::File(path.clone()),
@@ -329,6 +370,8 @@ async fn replace_features(
     filter: &str,
     feature: geojson::Feature,
 ) -> ServiceResult<usize> {
+    // Fail closed on an unparseable filter before replacing anything.
+    let compiled = CompiledFilter::compile(Some(filter))?;
     let dispatch = {
         let mut entry = state
             .feature_types
@@ -339,7 +382,7 @@ async fn replace_features(
             FeatureSource::Memory(feats) => {
                 let mut count = 0;
                 for existing in feats.iter_mut() {
-                    if feature_matches_filter(existing, filter) {
+                    if compiled.matches(existing) {
                         let mut replacement = feature.clone();
                         // Preserve the resource identity across a replace.
                         if replacement.id.is_none() {
@@ -423,13 +466,15 @@ async fn file_update(
     filter: Option<&str>,
     properties: &serde_json::Map<String, serde_json::Value>,
 ) -> ServiceResult<usize> {
+    // Fail closed on an unparseable filter before rewriting the file.
+    let compiled = CompiledFilter::compile(filter)?;
     let lock = file_lock_for(path);
     let _guard = lock.lock().await;
 
     let mut features = crate::wfs::features::load_features_from_file(path)?;
     let mut count = 0;
     for feature in features.iter_mut() {
-        if filter_matches(feature, filter) {
+        if compiled.matches(feature) {
             let props = feature.properties.get_or_insert_with(serde_json::Map::new);
             for (key, value) in properties {
                 props.insert(key.clone(), value.clone());
@@ -443,12 +488,14 @@ async fn file_update(
 
 /// Delete matching features from a file-backed source.
 async fn file_delete(path: &Path, filter: Option<&str>) -> ServiceResult<usize> {
+    // Fail closed on an unparseable filter before rewriting the file.
+    let compiled = CompiledFilter::compile(filter)?;
     let lock = file_lock_for(path);
     let _guard = lock.lock().await;
 
     let mut features = crate::wfs::features::load_features_from_file(path)?;
     let before = features.len();
-    features.retain(|feature| !filter_matches(feature, filter));
+    features.retain(|feature| !compiled.matches(feature));
     let removed = before - features.len();
     write_features_to_file(path, features)?;
     Ok(removed)
@@ -460,13 +507,15 @@ async fn file_replace(
     filter: &str,
     feature: &geojson::Feature,
 ) -> ServiceResult<usize> {
+    // Fail closed on an unparseable filter before rewriting the file.
+    let compiled = CompiledFilter::compile(Some(filter))?;
     let lock = file_lock_for(path);
     let _guard = lock.lock().await;
 
     let mut features = crate::wfs::features::load_features_from_file(path)?;
     let mut count = 0;
     for existing in features.iter_mut() {
-        if feature_matches_filter(existing, filter) {
+        if compiled.matches(existing) {
             let mut replacement = feature.clone();
             if replacement.id.is_none() {
                 replacement.id = existing.id.clone();
@@ -1132,6 +1181,74 @@ mod tests {
                 .iter()
                 .any(|f| feature_name(f).as_deref() == Some("b"))
         );
+    }
+
+    // ---- Fail-closed filter security regression tests ----
+
+    #[tokio::test]
+    async fn test_delete_neq_filter_only_deletes_matches() {
+        // `name <> 'a'` must delete only b (not a), and must NOT mass-delete.
+        let state = memory_state("layer", vec![sample_feature("a"), sample_feature("b")]);
+        let count = delete_features(&state, "layer", Some("name <> 'a'"))
+            .await
+            .expect("delete");
+        assert_eq!(count, 1, "only the non-'a' feature should be deleted");
+        let stored = memory_features(&state, "layer");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(feature_name(&stored[0]).as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_unparseable_filter_fails_closed() {
+        // An unparseable filter must be REJECTED (error), never treated as
+        // "match everything" — otherwise a targeted delete becomes a wipe.
+        let state = memory_state("layer", vec![sample_feature("a"), sample_feature("b")]);
+        let result = delete_features(&state, "layer", Some("<<< not valid cql >>>")).await;
+        assert!(result.is_err(), "unparseable filter must fail closed");
+        // Nothing must have been deleted.
+        let stored = memory_features(&state, "layer");
+        assert_eq!(stored.len(), 2, "no feature may be deleted on a bad filter");
+    }
+
+    #[tokio::test]
+    async fn test_update_unparseable_filter_fails_closed() {
+        let state = memory_state("layer", vec![sample_feature("a"), sample_feature("b")]);
+        let mut props = serde_json::Map::new();
+        props.insert("status".to_string(), serde_json::json!("x"));
+        let result = update_features(&state, "layer", Some("name ~~~ 'a'"), props).await;
+        assert!(result.is_err(), "unparseable filter must fail closed");
+        let stored = memory_features(&state, "layer");
+        // No feature should have gained a status property.
+        assert!(stored.iter().all(|f| {
+            f.properties
+                .as_ref()
+                .and_then(|p| p.get("status"))
+                .is_none()
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_unparseable_filter_fails_closed() {
+        let path = unique_geojson_path();
+        write_empty_collection(&path);
+        let state = file_state("layer", &path);
+        insert_features(
+            &state,
+            "layer",
+            vec![sample_feature("a"), sample_feature("b")],
+        )
+        .await
+        .expect("insert");
+
+        let result = delete_features(&state, "layer", Some("bogus !! filter")).await;
+        assert!(result.is_err(), "file-backed delete must fail closed");
+        let loaded = crate::wfs::features::load_features_from_file(&path).expect("load");
+        assert_eq!(
+            loaded.len(),
+            2,
+            "file features must be intact after bad filter"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     // ---- File transaction paths ----

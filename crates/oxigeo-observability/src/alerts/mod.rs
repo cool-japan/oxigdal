@@ -27,7 +27,7 @@
 //! #     fn get_metric(&self, _: &str) -> Option<f64> { Some(0.0) }
 //! #     fn get_metric_range(&self, _: &str, _: u64) -> Vec<oxigeo_observability::alerts::MetricDataPoint> { vec![] }
 //! # }
-//! let mut engine = AlertEngine::new(Arc::new(MockProvider));
+//! let engine = AlertEngine::new(Arc::new(MockProvider));
 //!
 //! // Define an alert rule
 //! let rule = AlertRuleDefinition::new("high_cpu_usage")
@@ -57,40 +57,41 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod rules;
-pub mod instance;
 pub mod channels;
-pub mod silence;
-pub mod history;
-pub mod grouping;
 pub mod evaluator;
+pub mod grouping;
+pub mod history;
+pub mod instance;
 pub mod manager;
+pub mod rules;
+pub mod silence;
 
 #[cfg(test)]
 mod tests;
 
 // Re-export main types
-pub use rules::{
-    AggregationFunction, AlertRuleDefinition, ConditionExpression, ThresholdOperator,
-};
-pub use instance::AlertInstance;
 pub use channels::{NotificationChannel, NotificationSender};
-pub use silence::{SilenceMatcher, SilenceManager, SilenceRule};
-pub use history::{AlertHistory, AlertHistoryEvent, AlertHistoryEventType};
-pub use grouping::{AlertGroup, AlertGrouper};
 pub use evaluator::{ConditionEvaluator, MetricDataPoint, MetricProvider};
+pub use grouping::{AlertGroup, AlertGrouper};
+pub use history::{AlertHistory, AlertHistoryEvent, AlertHistoryEventType};
+pub use instance::AlertInstance;
 pub use manager::AlertEngine;
+pub use rules::{AggregationFunction, AlertRuleDefinition, ConditionExpression, ThresholdOperator};
+pub use silence::{SilenceManager, SilenceMatcher, SilenceRule};
 
 // ============================================================================
 // Alert Level and State Types
 // ============================================================================
 
 /// Alert severity level with priority ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub enum AlertLevel {
     /// Informational alert - lowest priority.
     Info = 0,
     /// Warning alert - potential issue.
+    #[default]
     Warning = 1,
     /// Error alert - significant issue.
     Error = 2,
@@ -112,23 +113,20 @@ impl AlertLevel {
             Self::Page => "page",
         }
     }
-
-    /// Parse from string representation.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "info" | "informational" => Some(Self::Info),
-            "warning" | "warn" => Some(Self::Warning),
-            "error" | "err" => Some(Self::Error),
-            "critical" | "crit" => Some(Self::Critical),
-            "page" | "pager" => Some(Self::Page),
-            _ => None,
-        }
-    }
 }
 
-impl Default for AlertLevel {
-    fn default() -> Self {
-        Self::Warning
+impl std::str::FromStr for AlertLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "info" | "informational" => Ok(Self::Info),
+            "warning" | "warn" => Ok(Self::Warning),
+            "error" | "err" => Ok(Self::Error),
+            "critical" | "crit" => Ok(Self::Critical),
+            "page" | "pager" => Ok(Self::Page),
+            other => Err(format!("Invalid alert level: {other}")),
+        }
     }
 }
 

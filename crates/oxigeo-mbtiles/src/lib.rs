@@ -4,13 +4,17 @@
 //! MBTiles store ([`mbtiles`]), a tile archive builder ([`writer`]),
 //! geographic coordinate conversion utilities ([`bbox_util`]), and — when
 //! the `sqlite` cargo feature is enabled — a real SQLite-backed reader
-//! (`reader` module, feature-gated) for on-disk `.mbtiles` archives.
+//! (`reader` module) *and* writer (`sqlite_writer` module, exposing
+//! [`writer::MBTilesData::write_to_file`] /
+//! [`writer::MBTilesWriter::write_to_file`]) for on-disk `.mbtiles` archives.
 
 pub mod bbox_util;
 pub mod error;
 pub mod mbtiles;
 #[cfg(feature = "sqlite")]
 pub mod reader;
+#[cfg(feature = "sqlite")]
+pub mod sqlite_writer;
 pub mod tile_coords;
 pub mod validation;
 pub mod writer;

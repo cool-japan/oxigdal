@@ -1,6 +1,19 @@
 # OxiGeo Prometheus Alert Rules
 # Alerting rules for monitoring OxiGeo services
 # Author: COOLJAPAN OU (Team Kitasan)
+#
+# `oxigeo_server_alerts` and `business_alerts` below use metric names emitted
+# directly by `oxigeo-server` itself (see crates/oxigeo-server/src/metrics.rs).
+# `database_alerts` uses standard `postgres_exporter` metric names (pg_up,
+# pg_stat_*, pg_settings_*, pg_database_size_bytes) and only applies if this
+# deployment runs the optional `oxigeo-postgis` feature against a real
+# PostgreSQL instance with `postgres_exporter` attached to it -- OxiGeo does
+# not expose these itself. `system_alerts` uses standard `node_exporter`
+# metric names for whatever host runs oxigeo-server. There is no
+# `redis_alerts` group: OxiGeo has no Redis integration anywhere in the
+# codebase (`oxigeo-cache-advanced` does not depend on a Redis client), so a
+# `redis_up`/`redis_memory_*` rule group would alert on a target that can
+# never exist for a stock OxiGeo deployment.
 
 groups:
   - name: oxigeo_server_alerts
@@ -85,6 +98,10 @@ groups:
 
   - name: database_alerts
     interval: 30s
+    # Requires the optional `oxigeo-postgis` feature deployed against a real
+    # PostgreSQL instance, with `postgres_exporter` scraping that instance
+    # (see monitoring/prometheus.yml's `postgres` job). Not applicable to a
+    # deployment that doesn't use `oxigeo-postgis`.
     rules:
       # PostgreSQL down
       - alert: PostgreSQLDown
@@ -129,42 +146,6 @@ groups:
         annotations:
           summary: "Database storage is filling up"
           description: "Database storage usage is above 85% (current: {{ $value | humanizePercentage }})"
-
-  - name: redis_alerts
-    interval: 30s
-    rules:
-      # Redis down
-      - alert: RedisDown
-        expr: redis_up == 0
-        for: 1m
-        labels:
-          severity: critical
-          component: cache
-        annotations:
-          summary: "Redis is down"
-          description: "Redis cache is unreachable"
-
-      # High memory usage
-      - alert: RedisHighMemory
-        expr: (redis_memory_used_bytes / redis_memory_max_bytes) > 0.9
-        for: 5m
-        labels:
-          severity: warning
-          component: cache
-        annotations:
-          summary: "Redis memory usage is high"
-          description: "Redis memory usage is above 90% (current: {{ $value | humanizePercentage }})"
-
-      # Too many connected clients
-      - alert: RedisTooManyConnections
-        expr: redis_connected_clients > 100
-        for: 5m
-        labels:
-          severity: warning
-          component: cache
-        annotations:
-          summary: "Too many Redis connections"
-          description: "Redis has {{ $value }} connected clients"
 
   - name: system_alerts
     interval: 30s

@@ -327,12 +327,14 @@ fn fn_min(args: &[Value]) -> Result<Value> {
         });
     }
 
+    // Use NaN-aware `f64::min`, which returns the non-NaN operand. Raw `<`
+    // comparisons make the result depend on argument order because every
+    // comparison against NaN is false (min(NaN, 5) would give NaN but
+    // min(5, NaN) would give 5). This mirrors the raster-calculator front-end
+    // (raster/calculator/evaluator.rs) which folds with f64::min.
     let mut min_val = args[0].as_number()?;
     for arg in &args[1..] {
-        let val = arg.as_number()?;
-        if val < min_val {
-            min_val = val;
-        }
+        min_val = min_val.min(arg.as_number()?);
     }
     Ok(Value::Number(min_val))
 }
@@ -345,12 +347,11 @@ fn fn_max(args: &[Value]) -> Result<Value> {
         });
     }
 
+    // Use NaN-aware `f64::max` for order-independent NoData semantics, matching
+    // the raster-calculator front-end (see fn_min above).
     let mut max_val = args[0].as_number()?;
     for arg in &args[1..] {
-        let val = arg.as_number()?;
-        if val > max_val {
-            max_val = val;
-        }
+        max_val = max_val.max(arg.as_number()?);
     }
     Ok(Value::Number(max_val))
 }
@@ -751,6 +752,32 @@ mod tests {
         let max_result = fn_max(&args).expect("Should work");
         if let Value::Number(n) = max_result {
             assert!((n - 5.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_min_max_nan_order_independent() {
+        // NaN (the DSL NoData sentinel) must be skipped regardless of position,
+        // so min/max return the same finite result whether NaN comes first or last.
+        let nan_first = vec![Value::Number(f64::NAN), Value::Number(5.0)];
+        let nan_last = vec![Value::Number(5.0), Value::Number(f64::NAN)];
+
+        let min_a = fn_min(&nan_first).expect("min should work");
+        let min_b = fn_min(&nan_last).expect("min should work");
+        if let (Value::Number(a), Value::Number(b)) = (min_a, min_b) {
+            assert!(a.is_finite() && b.is_finite(), "NaN must not poison min");
+            assert!((a - 5.0).abs() < 1e-10 && (b - 5.0).abs() < 1e-10);
+        } else {
+            panic!("expected numbers");
+        }
+
+        let max_a = fn_max(&nan_first).expect("max should work");
+        let max_b = fn_max(&nan_last).expect("max should work");
+        if let (Value::Number(a), Value::Number(b)) = (max_a, max_b) {
+            assert!(a.is_finite() && b.is_finite(), "NaN must not poison max");
+            assert!((a - 5.0).abs() < 1e-10 && (b - 5.0).abs() < 1e-10);
+        } else {
+            panic!("expected numbers");
         }
     }
 

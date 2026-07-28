@@ -24,7 +24,6 @@ oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
 tracing = { workspace = true }
 encoding_rs = { workspace = true }
 

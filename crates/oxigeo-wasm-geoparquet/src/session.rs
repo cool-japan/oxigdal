@@ -10,7 +10,7 @@
 //!
 //! Implemented by WP C4 (GeoParquet Live lane); stub created by WP W0.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -28,6 +28,7 @@ use oxigeo_geoparquet::plan::{ColumnChunkRange, plan_pushdown};
 use oxigeo_geoparquet::predicate::AttributeFilter;
 use oxigeo_geoparquet::pushdown::execute_pushdown;
 
+use crate::chunk_cache::ChunkCache;
 use crate::coalesce::{ChunkRange, coalesce};
 use crate::convert::record_batches_to_geojson;
 use crate::error::GpqLiveError;
@@ -45,7 +46,8 @@ const AREA_COLUMN: &str = "area_in_meters";
 ///
 /// Fetched column chunks are memoised so tightening a filter or nudging the
 /// query box re-uses already-downloaded bytes; once the cache would exceed
-/// this many bytes the least-recently-inserted chunks are evicted.
+/// this many bytes the true least-recently-used chunk is evicted — see
+/// [`ChunkCache`] for the (natively unit-tested) eviction policy.
 const CHUNK_CACHE_CAP: usize = 256 * 1024 * 1024;
 
 /// A live handle to a remote GeoParquet file, exported to JavaScript.
@@ -62,8 +64,7 @@ pub struct RemoteGeoParquet {
     parquet_meta: Arc<ParquetMetaData>,
     geo: GeoParquetMetadata,
     geometry_column: String,
-    chunk_cache: BTreeMap<(usize, usize), Bytes>,
-    cache_bytes: usize,
+    chunk_cache: ChunkCache,
 }
 
 #[wasm_bindgen]
@@ -257,17 +258,21 @@ impl RemoteGeoParquet {
             .into());
         }
 
-        // Per-query accounting deltas snapshot the global fetch counters.
-        let bytes_before = fetch::bytes_fetched_total();
-        let requests_before = fetch::request_count_total();
+        // Per-query accounting accrues locally from this call's own fetches
+        // (see `fetch::FetchStats`), not by diffing the global counters —
+        // diffing would misreport under concurrent/interleaved queries since
+        // the global counters are shared by every session in the module.
+        let mut query_fetch_stats = fetch::FetchStats::default();
 
         // ── Partition plan ranges into cache hits vs misses ─────────────────
+        // `ChunkCache::get` itself records the hit as a use for LRU purposes,
+        // so no separate "touch" pass is needed.
         let mut query_chunks: HashMap<(usize, usize), Bytes> = HashMap::new();
         let mut missing: Vec<ChunkRange> = Vec::new();
         for range in &plan.ranges {
             let key = (range.row_group, range.leaf_column);
-            if let Some(bytes) = self.chunk_cache.get(&key) {
-                query_chunks.insert(key, bytes.clone());
+            if let Some(bytes) = self.chunk_cache.get(key) {
+                query_chunks.insert(key, bytes);
             } else {
                 missing.push(to_chunk_range(range));
             }
@@ -277,7 +282,9 @@ impl RemoteGeoParquet {
         let mut fetched: Vec<((usize, usize), Bytes)> = Vec::new();
         if !missing.is_empty() {
             let coalesced = coalesce(&missing);
-            let buffers = fetch_ranges(&self.url, &coalesced.fetches, DEFAULT_CONCURRENCY).await?;
+            let (buffers, stats) =
+                fetch_ranges(&self.url, &coalesced.fetches, DEFAULT_CONCURRENCY).await?;
+            query_fetch_stats.merge(stats);
             let segments = coalesced.segments(&buffers)?;
             let by_start: HashMap<u64, Bytes> =
                 segments.into_iter().map(|s| (s.start, s.data)).collect();
@@ -332,8 +339,8 @@ impl RemoteGeoParquet {
             self.cache_insert(key, data);
         }
 
-        let bytes_this_query = fetch::bytes_fetched_total().saturating_sub(bytes_before);
-        let requests_this_query = fetch::request_count_total().saturating_sub(requests_before);
+        let bytes_this_query = query_fetch_stats.bytes;
+        let requests_this_query = query_fetch_stats.requests;
         let elapsed_ms = js_sys::Date::now() - start_ms;
 
         let obj = Object::new();
@@ -387,7 +394,7 @@ impl RemoteGeoParquet {
         set(
             &obj,
             "cacheBytes",
-            &JsValue::from_f64(self.cache_bytes as f64),
+            &JsValue::from_f64(self.chunk_cache.bytes() as f64),
         );
         obj.into()
     }
@@ -422,8 +429,7 @@ impl RemoteGeoParquet {
             parquet_meta,
             geo,
             geometry_column,
-            chunk_cache: BTreeMap::new(),
-            cache_bytes: 0,
+            chunk_cache: ChunkCache::new(CHUNK_CACHE_CAP),
         })
     }
 
@@ -454,25 +460,10 @@ impl RemoteGeoParquet {
             .collect()
     }
 
-    /// Insert a fetched chunk into the cache, evicting until under the cap.
+    /// Insert a fetched chunk into the cache, evicting the least-recently-used
+    /// entry (by insertion or last access) until back under the cap.
     fn cache_insert(&mut self, key: (usize, usize), data: Bytes) {
-        let added = data.len();
-        if let Some(old) = self.chunk_cache.insert(key, data) {
-            self.cache_bytes = self.cache_bytes.saturating_sub(old.len());
-        }
-        self.cache_bytes += added;
-        // Evict other entries until back under the cap (never the just-added key).
-        while self.cache_bytes > CHUNK_CACHE_CAP {
-            let victim = self.chunk_cache.keys().find(|k| **k != key).copied();
-            match victim {
-                Some(v) => {
-                    if let Some(removed) = self.chunk_cache.remove(&v) {
-                        self.cache_bytes = self.cache_bytes.saturating_sub(removed.len());
-                    }
-                }
-                None => break,
-            }
-        }
+        self.chunk_cache.insert(key, data);
     }
 }
 

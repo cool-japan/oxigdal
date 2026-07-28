@@ -425,6 +425,19 @@ const TAG_MODEL_PIXEL_SCALE: u16 = 33550;
 const TAG_MODEL_TIEPOINT: u16 = 33922;
 const TAG_GEO_KEY_DIRECTORY: u16 = 34735;
 
+/// Upper bound on how far [`extract_tiff_info`] will extend its initial 8 KiB
+/// peek window to resolve out-of-line georeferencing tag values (see
+/// [`extract_tiff_info`] for why this extension is needed).
+///
+/// Real-world GeoTIFF georeferencing arrays (`ModelPixelScaleTag` = 24 bytes,
+/// `ModelTiepointTag` = 48 bytes, `GeoKeyDirectoryTag` = a few KiB even for
+/// directories with hundreds of keys) are always tiny, so 1 MiB is generous
+/// headroom. This also bounds worst-case I/O/memory for a hostile file that
+/// advertises a huge `GeoKeyDirectoryTag` count or offset — such files fall
+/// back to the existing "value out of reach" `None` behavior instead of
+/// forcing a multi-gigabyte read.
+const MAX_GEOREF_PEEK_BYTES: usize = 1024 * 1024;
+
 /// Read a u16 from `buf` at `offset` respecting byte order.
 fn tiff_read_u16(buf: &[u8], offset: usize, le: bool) -> Option<u16> {
     if offset + 2 > buf.len() {
@@ -613,7 +626,16 @@ pub(crate) fn extract_tiff_data_type(path: &Path) -> Option<oxigeo_core::types::
 
 /// Parse the first IFD of a TIFF file and extract basic metadata.
 ///
-/// Reads up to 8 KiB — enough for the IFD plus any small inline values.
+/// Reads an initial 8 KiB peek window, which covers the IFD entry list and
+/// any small inline tag values for the vast majority of files. Some
+/// georeferencing tag *values* (`ModelPixelScaleTag`, `ModelTiepointTag`,
+/// `GeoKeyDirectoryTag`) are stored out-of-line at a file offset recorded in
+/// the IFD entry rather than inline — for real-world rasters with many tags
+/// or strips (e.g. a striped GeoTIFF with `RowsPerStrip=1`, which pushes huge
+/// `StripOffsets`/`StripByteCounts` arrays ahead of the small geo-tag value
+/// arrays) that offset routinely lands past the initial 8 KiB window. When
+/// that happens, the peek buffer is extended with a second, bounded read
+/// (see [`MAX_GEOREF_PEEK_BYTES`]) so georeferencing is not silently dropped.
 ///
 /// Exposed as `pub(crate)` so that `lib.rs` can reuse this logic without
 /// duplicating it.
@@ -660,7 +682,8 @@ pub(crate) fn extract_tiff_info(path: &Path) -> Option<DatasetInfo> {
     let mut samples_per_pixel: u32 = 1;
     let mut pixel_scale_offset: Option<usize> = None;
     let mut tiepoint_offset: Option<usize> = None;
-    let mut _geo_keys_found = false;
+    // GeoKeyDirectory: (value offset into `buf`, number of SHORT entries).
+    let mut geo_key_dir: Option<(usize, usize)> = None;
 
     for i in 0..num_entries {
         let eo = entries_start + i * entry_size;
@@ -691,10 +714,46 @@ pub(crate) fn extract_tiff_info(path: &Path) -> Option<DatasetInfo> {
                 tiepoint_offset = Some(off);
             }
             TAG_GEO_KEY_DIRECTORY => {
-                _geo_keys_found = true;
+                // GeoKeyDirectory is a SHORT[] whose length (>4 bytes) forces
+                // out-of-line storage: the value field holds a file offset.
+                let (count, value_off) = if version == BIGTIFF_VERSION {
+                    (
+                        tiff_read_u64(&buf, eo + 4, le)? as usize,
+                        tiff_read_u64(&buf, eo + 12, le)? as usize,
+                    )
+                } else {
+                    (
+                        tiff_read_u32(&buf, eo + 4, le)? as usize,
+                        tiff_read_u32(&buf, eo + 8, le)? as usize,
+                    )
+                };
+                geo_key_dir = Some((value_off, count));
             }
             _ => {}
         }
+    }
+
+    // The scan above only guarantees the *IFD entries* are visible in the
+    // initial peek — the DOUBLE/SHORT arrays they point to (pixel scale,
+    // tiepoint, GeoKey directory) live out-of-line at those file offsets,
+    // which for real-world rasters can fall past the first 8 KiB (see the
+    // doc comment on this function). Extend `buf` with a bounded, best-effort
+    // read so those values aren't silently treated as absent; the file
+    // cursor is already positioned at `buf.len()` from the initial read, so
+    // this simply continues reading forward.
+    let mut required_end = buf.len();
+    if let Some(off) = pixel_scale_offset {
+        required_end = required_end.max(off.saturating_add(24));
+    }
+    if let Some(off) = tiepoint_offset {
+        required_end = required_end.max(off.saturating_add(48));
+    }
+    if let Some((off, count)) = geo_key_dir {
+        required_end = required_end.max(off.saturating_add(count.saturating_mul(2)));
+    }
+    if required_end > buf.len() && required_end <= MAX_GEOREF_PEEK_BYTES {
+        let extra_needed = (required_end - buf.len()) as u64;
+        let _ = (&mut file).take(extra_needed).read_to_end(&mut buf);
     }
 
     // Construct GeoTransform from ModelPixelScale + ModelTiepoint if both present.
@@ -709,12 +768,35 @@ pub(crate) fn extract_tiff_info(path: &Path) -> Option<DatasetInfo> {
             let origin_x = tiff_read_f64(&buf, tp_off + 24, le)?;
             let origin_y = tiff_read_f64(&buf, tp_off + 32, le)?;
             if scale_x.is_finite() && scale_y.is_finite() && scale_x > 0.0 && scale_y > 0.0 {
+                // `ModelPixelScaleTag`'s Y scale is always stored as a positive
+                // magnitude (GeoTIFF spec); `GeoTransform::north_up` expects a
+                // *negative* pixel_height for north-up rasters (Y increases
+                // downward in pixel space, upward in world space), matching
+                // the driver crate's `geokeys::extract_geo_transform`. Passing
+                // the raw positive value here previously flipped the Y axis,
+                // which would in turn have made the derived `bounds()` land on
+                // the wrong side of the origin.
                 Some(oxigeo_core::types::GeoTransform::north_up(
-                    origin_x, origin_y, scale_x, scale_y,
+                    origin_x, origin_y, scale_x, -scale_y,
                 ))
             } else {
                 None
             }
+        }
+        _ => None,
+    };
+
+    // Decode the GeoKeyDirectory (if any) into an `EPSG:<code>` CRS string.
+    let crs = geo_key_dir
+        .and_then(|(off, count)| decode_geokey_epsg(&buf, off, count, le))
+        .map(|code| format!("EPSG:{code}"));
+
+    // Derive the bounding box from the geotransform + raster dimensions,
+    // matching GDAL's `gdalinfo` "Corner Coordinates" derivation. Previously
+    // this was hardcoded to `None` even when a geotransform was available.
+    let bounds = match (&geotransform, width, height) {
+        (Some(gt), Some(w), Some(h)) if w > 0 && h > 0 => {
+            Some(gt.compute_bounds(u64::from(w), u64::from(h)))
         }
         _ => None,
     };
@@ -726,11 +808,90 @@ pub(crate) fn extract_tiff_info(path: &Path) -> Option<DatasetInfo> {
         height,
         band_count: samples_per_pixel,
         layer_count: 0,
-        crs: None,
+        crs,
         geotransform,
         feature_count: None,
-        bounds: None,
+        bounds,
     })
+}
+
+/// GeoTIFF GeoKey IDs we care about for CRS identification.
+const GEOKEY_GT_MODEL_TYPE: u16 = 1024;
+const GEOKEY_GEOGRAPHIC_TYPE: u16 = 2048;
+const GEOKEY_PROJECTED_CS_TYPE: u16 = 3072;
+/// GeoKey sentinel value meaning "user-defined" (no EPSG code available).
+const GEOKEY_USER_DEFINED: u16 = 32767;
+
+/// Decode an EPSG code from a GeoTIFF GeoKeyDirectory SHORT array.
+///
+/// The directory layout (GeoTIFF spec) is a `SHORT[]`:
+/// `[KeyDirectoryVersion, KeyRevision, MinorRevision, NumberOfKeys]` followed by
+/// `NumberOfKeys` entries of `[KeyID, TIFFTagLocation, Count, ValueOffset]`.
+/// When `TIFFTagLocation == 0`, `ValueOffset` holds the value inline — which is
+/// exactly how the EPSG code is stored for `ProjectedCSTypeGeoKey` (3072) and
+/// `GeographicTypeGeoKey` (2048).
+///
+/// Prefers the projected CRS code over the geographic one; returns `None` when
+/// neither is present, the code is user-defined (32767), or the buffer is too
+/// short to hold the declared entries.
+fn decode_geokey_epsg(buf: &[u8], value_off: usize, num_shorts: usize, le: bool) -> Option<u32> {
+    // Need at least the 4-short header.
+    if num_shorts < 4 {
+        return None;
+    }
+    // Bytes required for the whole directory.
+    let bytes_needed = value_off.checked_add(num_shorts.checked_mul(2)?)?;
+    if bytes_needed > buf.len() {
+        return None;
+    }
+
+    let read_short = |idx: usize| tiff_read_u16(buf, value_off + idx * 2, le);
+    let number_of_keys = read_short(3)? as usize;
+
+    let mut projected: Option<u16> = None;
+    let mut geographic: Option<u16> = None;
+    let mut model_type: Option<u16> = None;
+
+    for k in 0..number_of_keys {
+        let base = 4 + k * 4;
+        // Ensure the 4 shorts of this key entry are within the declared array.
+        if base + 4 > num_shorts {
+            break;
+        }
+        let key_id = read_short(base)?;
+        let tag_location = read_short(base + 1)?;
+        let value = read_short(base + 3)?;
+        // Only inline values (TIFFTagLocation == 0) carry a direct EPSG code.
+        if tag_location != 0 {
+            continue;
+        }
+        match key_id {
+            GEOKEY_GT_MODEL_TYPE => model_type = Some(value),
+            GEOKEY_PROJECTED_CS_TYPE => projected = Some(value),
+            GEOKEY_GEOGRAPHIC_TYPE => geographic = Some(value),
+            _ => {}
+        }
+    }
+
+    let valid = |code: u16| -> Option<u32> {
+        if code == 0 || code == GEOKEY_USER_DEFINED {
+            None
+        } else {
+            Some(u32::from(code))
+        }
+    };
+
+    // ModelType 2 == geographic; prefer the geographic key in that case.
+    // Otherwise prefer the projected code, then fall back to geographic.
+    if model_type == Some(2) {
+        geographic
+            .and_then(valid)
+            .or_else(|| projected.and_then(valid))
+    } else {
+        projected
+            .and_then(valid)
+            .or_else(|| geographic.and_then(valid))
+    }
 }
 
 // ─── GeoJSON lightweight sniffing ────────────────────────────────────────────
@@ -963,6 +1124,7 @@ fn map_format_to_opened(format: DatasetFormat, info: DatasetInfo) -> OpenedDatas
         DatasetFormat::PMTiles
         | DatasetFormat::MBTiles
         | DatasetFormat::Copc
+        | DatasetFormat::Las
         | DatasetFormat::Terrain
         | DatasetFormat::Unknown => OpenedDataset::Unknown(info),
     }
@@ -993,6 +1155,56 @@ mod tests {
     use super::*;
     use crate::magic::{HDF5_MAGIC, JP2_MAGIC};
     use std::io::Write;
+
+    // ── GeoKeyDirectory EPSG decode ──────────────────────────────────────────
+
+    /// Serialize a GeoKeyDirectory SHORT array (little-endian) into bytes at a
+    /// given `offset`, returning the full buffer.
+    fn make_geokey_buf(offset: usize, shorts: &[u16]) -> Vec<u8> {
+        let mut buf = vec![0u8; offset + shorts.len() * 2];
+        for (i, &s) in shorts.iter().enumerate() {
+            let b = s.to_le_bytes();
+            buf[offset + i * 2] = b[0];
+            buf[offset + i * 2 + 1] = b[1];
+        }
+        buf
+    }
+
+    #[test]
+    fn test_decode_geokey_projected_epsg() {
+        // Header: version 1, rev 1.0, 2 keys.
+        // Key 1: GTModelType (1024), loc 0, count 1, value 1 (projected).
+        // Key 2: ProjectedCSType (3072), loc 0, count 1, value 32633 (UTM 33N).
+        let shorts = [1u16, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633];
+        let buf = make_geokey_buf(16, &shorts);
+        assert_eq!(
+            decode_geokey_epsg(&buf, 16, shorts.len(), true),
+            Some(32633)
+        );
+    }
+
+    #[test]
+    fn test_decode_geokey_geographic_epsg() {
+        // GTModelType=2 (geographic), GeographicType (2048)=4326.
+        let shorts = [1u16, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326];
+        let buf = make_geokey_buf(0, &shorts);
+        assert_eq!(decode_geokey_epsg(&buf, 0, shorts.len(), true), Some(4326));
+    }
+
+    #[test]
+    fn test_decode_geokey_user_defined_is_none() {
+        // ProjectedCSType user-defined (32767) → no EPSG code.
+        let shorts = [1u16, 1, 0, 1, 3072, 0, 1, 32767];
+        let buf = make_geokey_buf(0, &shorts);
+        assert_eq!(decode_geokey_epsg(&buf, 0, shorts.len(), true), None);
+    }
+
+    #[test]
+    fn test_decode_geokey_truncated_is_none() {
+        // Declared 4 shorts but buffer only holds 3 → None, no panic.
+        let buf = make_geokey_buf(0, &[1u16, 1, 0]);
+        assert_eq!(decode_geokey_epsg(&buf, 0, 8, true), None);
+    }
 
     // ── helper: create a temp file with given bytes ──────────────────────────
     fn write_temp_file(name: &str, content: &[u8]) -> PathBuf {
@@ -1364,6 +1576,152 @@ mod tests {
             "pixel_width: {}",
             gt.pixel_width
         );
+    }
+
+    /// Build a TIFF whose georeferencing tag *values* (`ModelPixelScaleTag`,
+    /// `ModelTiepointTag`, `GeoKeyDirectoryTag`) are stored well past the
+    /// initial 8 KiB peek window used by [`extract_tiff_info`]. Real striped
+    /// GeoTIFFs with many rows per strip (e.g. `RowsPerStrip=1`) write large
+    /// out-of-line `StripOffsets`/`StripByteCounts` arrays that incidentally
+    /// push the small geo-tag value arrays past that window; this fixture
+    /// reproduces the same *shape* directly via padding, without needing a
+    /// multi-gigabyte source file.
+    ///
+    /// GeoKeys encode `GTModelTypeGeoKey`=1 (Projected) and
+    /// `ProjectedCSTypeGeoKey`=32721 (WGS 84 / UTM zone 21S — a
+    /// southern-hemisphere EPSG code), matching the reporter's `buenos.tif`.
+    fn build_geotiff_with_far_offset_georeferencing(width: u32, height: u32) -> Vec<u8> {
+        // Every out-of-line tag value array starts past the 8 KiB peek window,
+        // and is packed contiguously with the next.
+        let ps_offset: u32 = 9000;
+        let tp_offset: u32 = ps_offset + 24; // ModelPixelScale is 3 DOUBLEs
+        let geokey_offset: u32 = tp_offset + 48; // ModelTiepoint is 6 DOUBLEs
+
+        let mut buf: Vec<u8> = vec![0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+        let num_entries: u16 = 6;
+        buf.extend_from_slice(&num_entries.to_le_bytes());
+        // Tag 256: ImageWidth
+        buf.extend_from_slice(&256u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&width.to_le_bytes());
+        // Tag 257: ImageLength
+        buf.extend_from_slice(&257u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        // Tag 277: SamplesPerPixel
+        buf.extend_from_slice(&277u16.to_le_bytes());
+        buf.extend_from_slice(&3u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0x00, 0x00]);
+        // Tag 33550: ModelPixelScaleTag (DOUBLE, count=3, far offset)
+        buf.extend_from_slice(&33550u16.to_le_bytes());
+        buf.extend_from_slice(&12u16.to_le_bytes()); // DOUBLE type
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&ps_offset.to_le_bytes());
+        // Tag 33922: ModelTiepointTag (DOUBLE, count=6, far offset)
+        buf.extend_from_slice(&33922u16.to_le_bytes());
+        buf.extend_from_slice(&12u16.to_le_bytes()); // DOUBLE type
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(&tp_offset.to_le_bytes());
+        // Tag 34735: GeoKeyDirectoryTag (SHORT, count=12, far offset)
+        let geokey_shorts: u32 = 12; // 4-short header + 2 key entries * 4 shorts
+        buf.extend_from_slice(&34735u16.to_le_bytes());
+        buf.extend_from_slice(&3u16.to_le_bytes()); // SHORT type
+        buf.extend_from_slice(&geokey_shorts.to_le_bytes());
+        buf.extend_from_slice(&geokey_offset.to_le_bytes());
+        // Next IFD = 0
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // Pad past the peek window before any tag value data, standing in for
+        // the large out-of-line arrays a real striped GeoTIFF would have here.
+        while buf.len() < ps_offset as usize {
+            buf.push(0);
+        }
+        // ModelPixelScale: [ScaleX, ScaleY, 0.0] = [0.5, 0.5, 0.0]
+        buf.extend_from_slice(&0.5_f64.to_le_bytes());
+        buf.extend_from_slice(&0.5_f64.to_le_bytes());
+        buf.extend_from_slice(&0.0_f64.to_le_bytes());
+        // ModelTiepoint: [I, J, K, X, Y, Z] = [0, 0, 0, 369065.5, 6174601.0, 0]
+        buf.extend_from_slice(&0.0_f64.to_le_bytes());
+        buf.extend_from_slice(&0.0_f64.to_le_bytes());
+        buf.extend_from_slice(&0.0_f64.to_le_bytes());
+        buf.extend_from_slice(&369_065.5_f64.to_le_bytes());
+        buf.extend_from_slice(&6_174_601.0_f64.to_le_bytes());
+        buf.extend_from_slice(&0.0_f64.to_le_bytes());
+        // GeoKeyDirectory header [Version=1, Rev=1, MinorRev=0, NumKeys=2]
+        // followed by GTModelTypeGeoKey=1 (Projected) and
+        // ProjectedCSTypeGeoKey=32721 (WGS 84 / UTM zone 21S).
+        debug_assert_eq!(buf.len(), geokey_offset as usize);
+        for v in [1u16, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32721] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf
+    }
+
+    /// Regression test for issue #12: "Metadata missing when reading geotif"
+    ///
+    /// A real-world GeoTIFF (`buenos.tif`: 16738x18250 px, striped with
+    /// `RowsPerStrip=1`, EPSG:32721 = WGS 84 / UTM zone 21S) opened fine —
+    /// width/height/band_count were all correct — but `crs()`,
+    /// `geotransform()`, and `bounds()` all silently returned `None`, even
+    /// though `gdalinfo` proved the tags were present and well-formed.
+    ///
+    /// Root cause: `extract_tiff_info` reads only the first 8 KiB of the
+    /// file, then resolved `ModelPixelScaleTag`/`ModelTiepointTag`/
+    /// `GeoKeyDirectoryTag` *values* — which TIFF stores out-of-line at an
+    /// absolute file offset — by indexing directly into that 8 KiB buffer.
+    /// Any offset past 8 KiB (routine for real rasters with many strips or
+    /// tags) made the bounds check fail and the value was dropped as if
+    /// absent, while `bounds` was additionally hardcoded to `None`
+    /// unconditionally. This is unrelated to the EPSG code's hemisphere —
+    /// the same file with a northern-hemisphere zone would fail identically.
+    #[test]
+    fn test_issue_12_far_offset_georeferencing() {
+        let tiff = build_geotiff_with_far_offset_georeferencing(4, 4);
+        assert!(
+            tiff.len() > 8192,
+            "fixture must exceed the peek window to reproduce the bug"
+        );
+        let path = write_temp_file("test_issue_12_far_offsets.tif", &tiff);
+        let ds = open(&path).expect("open geotiff");
+        let info = ds.info().expect("info");
+
+        assert_eq!(info.width, Some(4));
+        assert_eq!(info.height, Some(4));
+
+        let crs = info.crs.as_deref().expect("CRS should be resolved");
+        assert_eq!(crs, "EPSG:32721", "southern-hemisphere UTM EPSG code");
+
+        let gt = info.geotransform.expect("geotransform should be resolved");
+        assert!(
+            (gt.origin_x - 369_065.5).abs() < 1e-6,
+            "origin_x: {}",
+            gt.origin_x
+        );
+        assert!(
+            (gt.origin_y - 6_174_601.0).abs() < 1e-6,
+            "origin_y: {}",
+            gt.origin_y
+        );
+        assert!(
+            (gt.pixel_width - 0.5).abs() < 1e-12,
+            "pixel_width: {}",
+            gt.pixel_width
+        );
+        assert!(
+            (gt.pixel_height - (-0.5)).abs() < 1e-12,
+            "pixel_height: {}",
+            gt.pixel_height
+        );
+
+        let bounds = info
+            .bounds
+            .expect("bounds should be derived from the geotransform");
+        assert!((bounds.min_x - 369_065.5).abs() < 1e-6);
+        assert!((bounds.max_y - 6_174_601.0).abs() < 1e-6);
     }
 
     #[test]

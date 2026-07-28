@@ -69,6 +69,9 @@ pub struct Point3D {
     pub green: Option<u16>,
     /// Blue channel colour value (present in formats 2, 3, 5, 7, 8).
     pub blue: Option<u16>,
+    /// Near-infrared channel value (present in formats 8 and 10 only), per
+    /// ASPRS LAS 1.4 R15 Point Data Record Format 8, Table 10.
+    pub nir: Option<u16>,
     /// Full-waveform packet data (present in formats 9 and 10 only).
     pub waveform: Option<WaveformPacket>,
 }
@@ -92,6 +95,7 @@ impl Point3D {
             red: None,
             green: None,
             blue: None,
+            nir: None,
             waveform: None,
         }
     }
@@ -123,6 +127,13 @@ impl Point3D {
     #[inline]
     pub fn with_gps_time(mut self, t: f64) -> Self {
         self.gps_time = Some(t);
+        self
+    }
+
+    /// Builder: set the near-infrared channel value.
+    #[inline]
+    pub fn with_nir(mut self, nir: u16) -> Self {
+        self.nir = Some(nir);
         self
     }
 

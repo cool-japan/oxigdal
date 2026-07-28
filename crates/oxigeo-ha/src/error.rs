@@ -15,7 +15,12 @@ pub enum HaError {
 
     /// Replication lag exceeded threshold.
     #[error("Replication lag exceeded: {lag_ms}ms > {threshold_ms}ms")]
-    ReplicationLagExceeded { lag_ms: u64, threshold_ms: u64 },
+    ReplicationLagExceeded {
+        /// Observed replication lag, in milliseconds.
+        lag_ms: u64,
+        /// Configured maximum allowed lag, in milliseconds.
+        threshold_ms: u64,
+    },
 
     /// Replication conflict detected.
     #[error("Replication conflict: {0}")]
@@ -27,7 +32,10 @@ pub enum HaError {
 
     /// Failover timeout.
     #[error("Failover timeout: operation took longer than {timeout_ms}ms")]
-    FailoverTimeout { timeout_ms: u64 },
+    FailoverTimeout {
+        /// Elapsed time before the failover was abandoned, in milliseconds.
+        timeout_ms: u64,
+    },
 
     /// Leader election failed.
     #[error("Leader election failed: {0}")]
@@ -67,7 +75,10 @@ pub enum HaError {
 
     /// Backup not found.
     #[error("Backup not found: {id}")]
-    BackupNotFound { id: String },
+    BackupNotFound {
+        /// Identifier of the missing backup.
+        id: String,
+    },
 
     /// Disaster recovery error.
     #[error("Disaster recovery error: {0}")]
@@ -83,11 +94,17 @@ pub enum HaError {
 
     /// Health check timeout.
     #[error("Health check timeout for {service}")]
-    HealthCheckTimeout { service: String },
+    HealthCheckTimeout {
+        /// Name of the service whose health check timed out.
+        service: String,
+    },
 
     /// Service unhealthy.
     #[error("Service unhealthy: {service}")]
-    ServiceUnhealthy { service: String },
+    ServiceUnhealthy {
+        /// Name of the unhealthy service.
+        service: String,
+    },
 
     /// Configuration error.
     #[error("Configuration error: {0}")]
@@ -127,7 +144,12 @@ pub enum HaError {
 
     /// Checksum mismatch.
     #[error("Checksum mismatch: expected {expected:x}, got {actual:x}")]
-    ChecksumMismatch { expected: u32, actual: u32 },
+    ChecksumMismatch {
+        /// Expected checksum value.
+        expected: u32,
+        /// Actual checksum value that was computed.
+        actual: u32,
+    },
 
     /// Not implemented.
     #[error("Not implemented: {0}")]

@@ -4,21 +4,38 @@
 [![Documentation](https://docs.rs/oxigeo-gateway/badge.svg)](https://docs.rs/oxigeo-gateway)
 [![License](https://img.shields.io/crates/l/oxigeo-gateway.svg)](LICENSE)
 
-Enterprise-grade API gateway for geospatial services with comprehensive features including rate limiting, authentication, GraphQL support, and WebSocket handling. Built in pure Rust for high performance and reliability.
+API gateway for geospatial services, built in **100% Pure Rust**. `oxigeo-gateway`
+provides a real [axum](https://github.com/tokio-rs/axum) 0.8 HTTP serving layer that
+binds the crate's components — rate limiting, JWT/API-key/session authentication with
+RBAC/MFA, a GraphQL endpoint (queries, mutations, subscriptions), WebSocket routing, API
+version negotiation, an in-house middleware chain, and a load-balanced reverse proxy — into
+one running service via [`GatewayServer`].
 
 ## Features
 
-- **Rate Limiting**: Multiple algorithms (token bucket, leaky bucket, fixed/sliding window) with memory and distributed Redis backends
-- **Authentication**: API keys, JWT tokens, OAuth2/OIDC integration, session management, and multi-factor authentication (MFA)
-- **API Versioning**: Support for multiple API versions with content negotiation, migration, and deprecation handling
-- **GraphQL Support**: Full GraphQL server with queries, mutations, subscriptions, and schema management
-- **WebSocket**: Real-time bidirectional communication with connection multiplexing and message routing
-- **Middleware Stack**: CORS, response compression (gzip/brotli), response caching, structured logging, and metrics collection
-- **Load Balancing**: Multiple strategies (round-robin, least connections, weighted) with health checks and circuit breaker patterns
-- **Request/Response Transformation**: Format adaptation and data transformation pipelines
-- **Authorization**: Role-based access control (RBAC) with fine-grained permission management
-- **Pure Rust**: 100% Pure Rust implementation with zero C/Fortran dependencies
-- **Error Handling**: Comprehensive error types with proper HTTP status codes and retry semantics
+- **HTTP serving layer**: [`GatewayServer`] / [`GatewayServerBuilder`] assemble an axum
+  router from a `GatewayConfig` plus optional backends, handlers, and components; serve on
+  an address or drive the `Router` directly in-process (handy for `tower` `oneshot` tests)
+- **Rate Limiting**: multiple algorithms (token bucket, leaky bucket, fixed/sliding window)
+  with memory and distributed Redis backends; the serving layer applies an atomic
+  `try_acquire` and emits `X-RateLimit-*` / `Retry-After` headers
+- **Authentication**: API keys, JWT, session management, OAuth2/OIDC (optional `oauth2`
+  feature), and multi-factor authentication (MFA); the layer authenticates when credentials
+  are present and can enforce a `require_auth` mode (`require_mfa` is honored)
+- **Authorization**: role-based access control (RBAC) with fine-grained permissions and a
+  `require_permission` route-group guard
+- **GraphQL**: `async-graphql`-backed endpoint with queries, mutations, and subscriptions
+  (subscriptions and the GraphiQL playground are each gated on config flags)
+- **WebSocket**: connection multiplexing and message routing with per-user connection caps
+  and ping keepalive
+- **Middleware chain**: CORS (with real `OPTIONS` preflight), response compression
+  (`Accept-Encoding` negotiated, gzip/brotli via `oxiarc`), LRU+TTL response caching,
+  structured logging, and metrics collection
+- **Load balancing & reverse proxy**: round-robin / least-connections / weighted strategies
+  with real health probing, circuit breaking, and `retry_attempts`-driven failover; the
+  fallback route streams upstream responses (HTTPS via the Pure-Rust OxiTLS stack)
+- **API Versioning**: URL-path / header / query negotiation with deprecation warnings
+- **Pure Rust**: no C/C++/Fortran in the default feature closure
 
 ## Installation
 
@@ -40,486 +57,217 @@ oxigeo-gateway = { version = "0.2", features = ["memory"] }
 oxigeo-gateway = { version = "0.2", features = ["redis"] }
 ```
 
+The optional `oauth2` feature enables the OAuth2 Authorization Code flow. It is **off by
+default** because its `reqwest`/`rustls-tls` backend pulls `ring` (C + assembly crypto),
+which would break the Pure-Rust-by-default guarantee; enable it explicitly when you need
+that flow.
+
 ## Quick Start
 
-### Basic Gateway Setup
+### Serve the gateway
 
 ```rust
-use oxigeo_gateway::{Gateway, GatewayConfig};
+use oxigeo_gateway::{GatewayConfig, GatewayServer};
+use oxigeo_gateway::loadbalancer::Backend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create default configuration
-    let config = GatewayConfig::default();
+    let server = GatewayServer::builder(GatewayConfig::default())
+        .with_backend(Backend::new("api".into(), "http://127.0.0.1:9000".into(), 1))
+        .build()?;
 
-    // Initialize gateway
-    let gateway = Gateway::new(config)?;
-
-    // Start listening on port 8080
-    gateway.serve("0.0.0.0:8080").await?;
-
+    // Binds and serves until ctrl-c / SIGTERM (graceful shutdown).
+    server.serve("0.0.0.0:8080").await?;
     Ok(())
 }
 ```
 
-### With Custom Configuration
+`Gateway::new(config)?.serve(addr).await` remains available and now delegates to the same
+axum-based `GatewayServer`.
+
+### Configure auth, rate limiting, and components
 
 ```rust
-use oxigeo_gateway::{Gateway, GatewayConfig};
+use std::sync::Arc;
+use oxigeo_gateway::{GatewayConfig, GatewayServer};
 use oxigeo_gateway::auth::AuthConfig;
 use oxigeo_gateway::rate_limit::RateLimitConfig;
+use oxigeo_gateway::loadbalancer::Backend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = GatewayConfig::default();
 
-    // Configure authentication
     config.auth = AuthConfig {
         enable_api_key: true,
         enable_jwt: true,
-        enable_oauth2: false,
         enable_session: true,
         require_mfa: false,
-        jwt_secret: Some("your-secret-key".to_string()),
+        jwt_secret: Some("your-secret-key-at-least-32-chars".to_string()),
         jwt_expiration: 3600,
         session_timeout: 1800,
         ..Default::default()
     };
-
-    // Configure rate limiting
-    config.rate_limit = RateLimitConfig {
-        enabled: true,
-        ..Default::default()
-    };
-
-    // Configure gateway limits
-    config.max_body_size = 50 * 1024 * 1024; // 50MB
-    config.request_timeout = 60;
+    config.rate_limit = RateLimitConfig { enabled: true, ..Default::default() };
+    config.max_body_size = 50 * 1024 * 1024; // 50 MB
+    config.request_timeout = 60;             // seconds
     config.enable_graphql = true;
     config.enable_websocket = true;
 
-    let gateway = Gateway::new(config)?;
-    gateway.serve("0.0.0.0:8080").await?;
+    let server = GatewayServer::builder(config)
+        .require_auth(true) // reject unauthenticated requests (except /health)
+        .with_backend(Backend::new("tiles".into(), "https://tiles.internal:8443".into(), 1))
+        .build()?;
 
+    server.serve("0.0.0.0:8080").await?;
     Ok(())
 }
 ```
 
-## Usage
-
-### Authentication
-
-#### API Key Authentication
+### In-process testing (no socket)
 
 ```rust
-use oxigeo_gateway::auth::api_key::ApiKeyAuthenticator;
+use oxigeo_gateway::{GatewayConfig, GatewayServer};
+use tower::ServiceExt; // for `oneshot`
+use axum::body::Body;
+use axum::http::Request;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let authenticator = ApiKeyAuthenticator::new();
-
-    // Generate a new API key for a user
-    let api_key = authenticator.generate_key(
-        "user123".to_string(),
-        "production-key".to_string(),
-        vec!["read".to_string(), "write".to_string()],
-    )?;
-
-    println!("API Key: {}", api_key);
-
-    // Authenticate with the key
-    let context = authenticator.authenticate(&api_key).await?;
-    println!("Authenticated as: {}", context.identity.user_id);
-
-    Ok(())
-}
+# async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+let router = GatewayServer::builder(GatewayConfig::default()).build()?.router();
+let response = router
+    .oneshot(Request::builder().uri("/health").body(Body::empty())?)
+    .await?;
+assert_eq!(response.status(), 200);
+# Ok(())
+# }
 ```
 
-#### JWT Authentication
+## Route Table
 
-```rust
-use oxigeo_gateway::auth::{jwt::JwtAuthenticator, Identity};
+| Method | Path               | Purpose                                                      |
+|--------|--------------------|--------------------------------------------------------------|
+| GET    | `/health`          | Liveness plus a per-backend health snapshot (auth-exempt)    |
+| GET    | `/gateway/metrics` | Aggregate request/response/error counters (JSON)             |
+| POST   | `/graphql`         | GraphQL queries and mutations (when `enable_graphql`)        |
+| GET    | `/graphql`         | GraphiQL playground (only when introspection is enabled)     |
+| *      | `/graphql/ws`      | GraphQL subscriptions (only when `enable_subscriptions`)     |
+| GET    | `/ws`              | WebSocket upgrade (only when `enable_websocket`)             |
+| *      | *(fallback)*       | Load-balanced reverse proxy to registered backends           |
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let secret = b"your-secret-key-at-least-32-chars";
-    let expiration = 3600; // 1 hour
+Effective layer order (outermost first): tracing → version negotiation → in-house
+middleware chain → authentication → rate limiting → request timeout → body-size limit →
+routes / fallback.
 
-    let authenticator = JwtAuthenticator::new(secret, expiration);
+## Builder Options
 
-    // Create identity
-    let mut identity = Identity::new("user456".to_string());
-    identity.roles.insert("admin".to_string());
+`GatewayServer::builder(config)` returns a `GatewayServerBuilder` with:
 
-    // Generate JWT token
-    let token = authenticator.create_token(&identity)?;
-    println!("JWT Token: {}", token);
+| Method | Effect |
+|--------|--------|
+| `with_backend(Backend)` | Register an upstream for the reverse-proxy fallback and health checks |
+| `require_auth(bool)` | Enforce authentication on every route except `/health` |
+| `with_rate_limiter(Arc<dyn RateLimiter>)` | Override the config-derived rate limiter |
+| `with_graphql_config(GraphQLConfig)` | Configure introspection, subscriptions, depth limits |
+| `with_ws_config(WebSocketConfig)` | Set per-user caps, message size, keepalive interval |
+| `with_ws_handler(route, Arc<dyn MessageHandler>)` | Register a WebSocket message handler |
+| `with_version_negotiator(VersionNegotiator)` | Enable API version negotiation |
+| `with_deprecation_manager(DeprecationManager)` | Emit deprecation `Warning` headers |
+| `with_transform_engine(TransformEngine)` | Apply request-side transformation before proxying |
+| `with_trusted_proxies(Vec<IpAddr>)` | Allowlist for `X-Forwarded-For` handling |
+| `build()` | Construct the `GatewayServer` (`Err` if `require_auth` but no auth method is configured) |
 
-    // Verify token
-    let context = authenticator.authenticate(&token).await?;
-    assert_eq!(context.identity.user_id, "user456");
+The `require_permission("perm")` guard (re-exported at the crate root) produces an axum
+layer for RBAC-protected route groups; it is not applied to any built-in route by default.
 
-    Ok(())
-}
-```
-
-#### OAuth2 Integration
-
-```rust
-use oxigeo_gateway::auth::{AuthConfig, oauth2::OAuth2Provider};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = AuthConfig {
-        enable_oauth2: true,
-        oauth2_client_id: Some("your-client-id".to_string()),
-        oauth2_client_secret: Some("your-client-secret".to_string()),
-        oauth2_auth_url: Some("https://provider.com/oauth/authorize".to_string()),
-        oauth2_token_url: Some("https://provider.com/oauth/token".to_string()),
-        ..Default::default()
-    };
-
-    // OAuth2 provider will handle redirect flow
-    let provider = OAuth2Provider::new(config)?;
-
-    Ok(())
-}
-```
-
-### Rate Limiting
-
-#### Token Bucket Algorithm
-
-```rust
-use oxigeo_gateway::rate_limit::{RateLimiter, Algorithm, TokenBucket, RateLimitKey};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let algorithm = TokenBucket::new(
-        100,  // capacity: 100 requests
-        10,   // refill_rate: 10 requests per second
-    );
-
-    let limiter = RateLimiter::new(algorithm);
-    let key = RateLimitKey::new("user123").with_resource("/api/users");
-
-    // Check if request is allowed
-    let decision = limiter.check(&key).await?;
-
-    match decision {
-        oxigeo_gateway::rate_limit::Decision::Allowed => {
-            println!("Request allowed");
-        }
-        oxigeo_gateway::rate_limit::Decision::Limited { retry_after, limit, current } => {
-            println!("Rate limited. Retry after {:?}", retry_after);
-            println!("Limit: {}, Current: {}", limit, current);
-        }
-    }
-
-    Ok(())
-}
-```
-
-#### Distributed Rate Limiting with Redis
-
-```rust
-use oxigeo_gateway::rate_limit::{
-    RateLimiter, Algorithm, TokenBucket, RedisStorage, RateLimitKey
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Requires "redis" feature
-    let redis_storage = RedisStorage::connect("redis://localhost:6379").await?;
-    let algorithm = TokenBucket::new(1000, 100);
-
-    let limiter = RateLimiter::with_storage(algorithm, redis_storage);
-    let key = RateLimitKey::new("org:acme").with_namespace("api-calls");
-
-    let decision = limiter.check(&key).await?;
-
-    Ok(())
-}
-```
-
-### GraphQL
-
-```rust
-use oxigeo_gateway::graphql::{GraphQLServer, Schema};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // GraphQL server with subscriptions support
-    let server = GraphQLServer::new()?;
-
-    // Server handles queries, mutations, and subscriptions
-    // Configure schema and resolvers for your geospatial data
-
-    Ok(())
-}
-```
-
-### WebSocket Support
-
-```rust
-use oxigeo_gateway::websocket::{WebSocketRouter, MessageHandler};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let router = WebSocketRouter::new();
-
-    // Register handlers for different message types
-    // Supports connection multiplexing and routing
-
-    Ok(())
-}
-```
-
-### Middleware
-
-```rust
-use oxigeo_gateway::middleware::{MiddlewareConfig, CompressionLevel};
-
-let mut middleware_config = MiddlewareConfig::default();
-
-// Enable CORS
-middleware_config.enable_cors = true;
-middleware_config.allowed_origins = vec!["https://example.com".to_string()];
-
-// Configure compression
-middleware_config.enable_compression = true;
-middleware_config.compression_level = CompressionLevel::Best;
-
-// Enable caching
-middleware_config.enable_caching = true;
-middleware_config.cache_ttl = 300; // 5 minutes
-
-// Enable metrics
-middleware_config.enable_metrics = true;
-middleware_config.enable_logging = true;
-```
-
-### Load Balancing
-
-```rust
-use oxigeo_gateway::loadbalancer::{LoadBalancer, Strategy, HealthChecker};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let backends = vec![
-        "http://backend1:8080".to_string(),
-        "http://backend2:8080".to_string(),
-        "http://backend3:8080".to_string(),
-    ];
-
-    let strategy = Strategy::RoundRobin;
-    let health_checker = HealthChecker::new(backends, strategy);
-
-    // Load balancer automatically routes requests to healthy backends
-    // Performs periodic health checks and circuit breaking
-
-    Ok(())
-}
-```
-
-### API Versioning
-
-```rust
-use oxigeo_gateway::versioning::{VersionNegotiator, VersionInfo};
-
-let negotiator = VersionNegotiator::new(vec![
-    VersionInfo::new("1.0".to_string()),
-    VersionInfo::new("2.0".to_string()),
-    VersionInfo::new("3.0".to_string()),
-]);
-
-// Automatically handles version negotiation from headers or URL path
-// Supports deprecation warnings and migration paths
-```
-
-## API Overview
-
-### Core Modules
+## Component Modules
 
 | Module | Description |
 |--------|-------------|
+| `server` | The axum serving layer (`GatewayServer`, `GatewayServerBuilder`, `require_permission`) |
 | `auth` | Authentication and authorization (API keys, JWT, OAuth2, sessions, MFA, RBAC) |
 | `rate_limit` | Rate limiting with multiple algorithms and storage backends |
-| `graphql` | GraphQL server with queries, mutations, subscriptions, and schema management |
-| `websocket` | WebSocket support with multiplexing and message routing |
-| `middleware` | HTTP middleware stack (CORS, compression, caching, logging, metrics) |
-| `loadbalancer` | Load balancing with health checks and circuit breaker |
-| `transform` | Request/response transformation and format adaptation |
-| `versioning` | API versioning, negotiation, migration, and deprecation |
-| `error` | Comprehensive error types and handling |
-
-### Authentication Submodules
-
-| Module | Description |
-|--------|-------------|
-| `auth::api_key` | API key generation and validation |
-| `auth::jwt` | JWT token creation and verification |
-| `auth::oauth2` | OAuth2/OIDC provider integration |
-| `auth::session` | Session management and tracking |
-| `auth::mfa` | Multi-factor authentication support |
-| `auth::permissions` | Fine-grained permission management |
-| `auth::rbac` | Role-based access control |
-
-### Rate Limiting Submodules
-
-| Module | Description |
-|--------|-------------|
-| `rate_limit::algorithms` | Token bucket, leaky bucket, fixed/sliding window |
-| `rate_limit::rules` | Rule engine for complex rate limiting policies |
-| `rate_limit::storage` | In-memory and Redis storage backends |
-
-## Configuration
-
-### GatewayConfig
-
-```rust
-pub struct GatewayConfig {
-    pub rate_limit: RateLimitConfig,
-    pub auth: AuthConfig,
-    pub loadbalancer: LoadBalancerConfig,
-    pub middleware: MiddlewareConfig,
-    pub max_body_size: usize,           // Default: 10MB
-    pub request_timeout: u64,           // Default: 30 seconds
-    pub enable_graphql: bool,           // Default: true
-    pub enable_websocket: bool,         // Default: true
-}
-```
+| `graphql` | GraphQL schema, context, and configuration |
+| `websocket` | WebSocket connection manager, router, and message handlers |
+| `middleware` | HTTP middleware chain (CORS, compression, caching, logging, metrics; plus `middleware::advanced`) |
+| `loadbalancer` | Backends, strategies, health checks, circuit breaker, and failover |
+| `transform` | Request/response transformation engine |
+| `versioning` | API version negotiation, migration, and deprecation |
+| `error` | `GatewayError` with HTTP status codes, retry semantics, and `IntoResponse` |
 
 ## Error Handling
 
-This library follows the "no unwrap" policy. All fallible operations return `Result<T, E>` with descriptive error types:
+This library follows the "no `unwrap()`" policy — all fallible operations return
+`Result<T, GatewayError>`. `GatewayError` implements `axum::response::IntoResponse`, so
+errors surfaced by the serving layer become well-formed HTTP responses:
 
 ```rust
-use oxigeo_gateway::{GatewayError, Result};
+use oxigeo_gateway::GatewayError;
 
-// GatewayError variants include:
-// - RateLimitExceeded { message, retry_after }
-// - AuthenticationFailed(String)
-// - AuthorizationFailed(String)
-// - InvalidApiKey
-// - TokenExpired
-// - InvalidToken(String)
-// - GraphQLError(String)
-// - WebSocketError(String)
-// - UnsupportedVersion { version, supported }
-// - BackendUnavailable(String)
-// - CircuitBreakerOpen(String)
-// - Timeout(String)
-// ... and more
-
-// Errors provide HTTP status codes and retry information
 let error = GatewayError::RateLimitExceeded {
     message: "Quota exceeded".to_string(),
     retry_after: Some(60),
 };
 
-let status = error.status_code(); // HTTP 429
-let retryable = error.is_retryable(); // true
-let retry_after = error.retry_after(); // Some(60)
+assert_eq!(error.status_code(), 429);   // HTTP 429 Too Many Requests
+assert!(error.is_retryable());
+assert_eq!(error.retry_after(), Some(60)); // -> Retry-After header
 ```
 
-## Performance
+## Honest Limitations
 
-The gateway is designed for high-performance, enterprise-scale deployments:
+The serving layer is real and tested, but a few capabilities are deliberately deferred to
+a future release (each has a safe, honest behavior today rather than a silent fake):
 
-- **Asynchronous**: Built on Tokio for non-blocking I/O
-- **Efficient Rate Limiting**: In-memory rate limiting with O(1) operations
-- **Distributed Support**: Optional Redis backend for distributed deployments
-- **Connection Pooling**: Manages backend connections efficiently
-- **Compression**: Automatic response compression (gzip/brotli)
-- **Caching**: Built-in response caching to reduce backend load
-
-### Benchmarks
-
-Run performance benchmarks with:
-
-```bash
-cargo bench --bench gateway_bench
-```
-
-Benchmark measurements on typical hardware:
-
-| Operation | Time |
-|-----------|------|
-| Rate limit check | <1µs |
-| API key validation | <10µs |
-| JWT verification | <100µs |
-| Request routing | <50µs |
-
-## Examples
-
-See the [tests](tests/) directory for integration examples:
-
-- `auth_test.rs` - Authentication and authorization examples
-- `graphql_test.rs` - GraphQL server integration
-- `middleware_test.rs` - Middleware stack usage
-- `websocket_test.rs` - WebSocket real-time communication
-
-## Documentation
-
-Full documentation is available at [docs.rs](https://docs.rs/oxigeo-gateway).
-
-View locally with:
-
-```bash
-cargo doc --open
-```
-
-## Testing
-
-Run the test suite:
-
-```bash
-# All tests
-cargo test --all-features
-
-# With specific features
-cargo test --features redis
-
-# Integration tests
-cargo test --test '*' -- --ignored
-```
+- **GraphQL resolvers serve demo / in-memory data** — there is no storage backend wired in
+  yet; the schema executes with an injected request context but returns example data.
+- **Buffered proxy requests and middleware hops** — the in-house middleware chain and the
+  reverse proxy buffer request bodies (bounded by `max_body_size`); proxy **responses**
+  stream through unbuffered.
+- **No WebSocket pass-through proxying** — `/ws` terminates at the gateway's own
+  `WebSocketManager`; upstream WebSocket connections are not proxied.
+- **No upstream keep-alive pooling** — each proxied request opens a fresh upstream
+  connection (`Connection: close` semantics).
+- **Response-side transformation is not wired** — the `TransformEngine` is applied to the
+  outbound (upstream-bound) request only; response transformation is available via
+  `ResponseTransformer` for embedders but is not invoked automatically.
 
 ## Pure Rust
 
-This library is 100% Pure Rust with no C/Fortran dependencies. All functionality works out of the box without external libraries or system dependencies.
+The default feature set is 100% Pure Rust with no C/C++/Fortran dependencies. HTTPS health
+probes and upstream connections use the Pure-Rust OxiTLS (rustls + RustCrypto) stack — no
+`ring`, OpenSSL, or system TLS. The only C-pulling path is the opt-in `oauth2` feature.
+
+## Testing
+
+```bash
+# All tests (381 unit/integration + 3 doctests)
+cargo test --all-features
+
+# With the Redis backend
+cargo test --features redis
+```
+
+## Documentation
+
+Full API documentation is available at [docs.rs](https://docs.rs/oxigeo-gateway). Build it
+locally with `cargo doc --open`.
 
 ## OxiGeo Ecosystem
 
-This project is part of the OxiGeo ecosystem for geospatial data processing:
+This crate is part of the OxiGeo ecosystem for geospatial data processing:
 
-- **OxiGeo-Core**: Core geospatial data structures and operations
-- **OxiGeo-Algorithms**: Geospatial algorithms and transformations
-- **OxiGeo-Drivers**: File format readers/writers (GeoTIFF, GeoJSON, Shapefile, etc.)
-- **OxiGeo-Server**: HTTP server for geospatial services
-- **OxiGeo-Cloud**: Cloud deployment support
-
-## Contributing
-
-Contributions are welcome! This project follows:
-
-- **No Unwrap Policy**: All fallible operations must use `Result` types
-- **No Warnings**: Code must compile without warnings
-- **Pure Rust**: No C/Fortran dependencies in default features
-- **File Size**: Source files should be kept under 2000 lines
-
-See contributing guidelines for more information.
+- **oxigeo-core** — core geospatial data structures and operations
+- **oxigeo-server** — OGC HTTP server (WMS/WFS)
+- **oxigeo-security** — encryption, hashing, RBAC/ABAC
+- **oxigeo-observability** — metrics, tracing, alerting
 
 ## License
 
 Licensed under the Apache License, Version 2.0.
 
-## Related Projects
-
-- [OxiGeo-Core](https://github.com/cool-japan/oxigeo-core) - Core geospatial library
-- [OxiGeo-Server](https://github.com/cool-japan/oxigeo-server) - HTTP server
-- [OxiGeo-CLI](https://github.com/cool-japan/oxigeo-cli) - Command-line tools
-
 ---
 
-Part of the [COOLJAPAN](https://github.com/cool-japan) ecosystem of pure Rust geospatial libraries and tools.
+Part of the [COOLJAPAN](https://github.com/cool-japan) ecosystem of pure Rust geospatial
+libraries and tools.
+</content>
+</invoke>

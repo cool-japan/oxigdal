@@ -51,13 +51,11 @@ web-sys = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 # Utilities
-uuid = { workspace = true }
+# `js` is needed so `uuid`'s RNG works on the `wasm32-unknown-unknown` target
+# (the `wasm` feature's actual target); a no-op on native targets.
+uuid = { workspace = true, features = ["js"] }
 dashmap = { workspace = true }
-parking_lot = { workspace = true }
 oxiarc-deflate = { workspace = true }
-
-# Internal dependencies
-oxigeo-core = { workspace = true, default-features = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }

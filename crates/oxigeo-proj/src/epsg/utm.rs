@@ -1,8 +1,6 @@
 //! UTM zone definitions for the EPSG database.
 
-#[cfg(not(feature = "std"))]
 use alloc::format;
-#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
 
 use super::types::{CrsType, EpsgDatabase, EpsgDefinition};

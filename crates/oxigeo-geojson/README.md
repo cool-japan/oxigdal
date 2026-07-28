@@ -9,7 +9,7 @@ Pure Rust streaming GeoJSON reader and writer for the
 - Streaming feature reader for memory-efficient processing of large files
 - Compact and pretty-print writer modes
 - Built-in validator with configurable severity levels
-- Feature filtering by property values (8 filter operators)
+- Feature filtering by property values (10 filter operators, including regex match/not-match)
 - CRS support via `GeoJsonCrs`
 
 ## Usage
@@ -36,7 +36,7 @@ let filter = FeatureFilter::new()
 
 ## Status
 
-- 148 tests passing, 0 failures
+- 451 tests passing, 0 failures (all-features)
 
 ## License
 

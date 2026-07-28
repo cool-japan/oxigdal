@@ -1,14 +1,14 @@
-//! SIMD-accelerated cost-distance and path analysis operations
+//! Cost-distance and path analysis operations
 //!
-//! This module provides high-performance implementations of distance and
-//! cost-distance calculations using SIMD instructions.
+//! This module provides implementations of distance and cost-distance
+//! calculations.
 //!
-//! # Performance
+//! # Implementation status
 //!
-//! Expected speedup over scalar implementations:
-//! - Euclidean distance: 3-5x (SIMD sqrt and arithmetic)
-//! - Manhattan distance: 4-6x (SIMD abs and addition)
-//! - Cost surface evaluation: 2-3x (SIMD neighbor processing)
+//! These routines are currently scalar (the distance loops chunk the data but
+//! run scalar bodies; the graph/propagation parts are inherently sequential).
+//! They do NOT yet contain hand-written SIMD intrinsics — hardware-vectorized
+//! kernels are planned future work. The functions are correct and unit-tested.
 //!
 //! # Supported Operations
 //!

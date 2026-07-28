@@ -1,37 +1,68 @@
 # OxiGeo TODO
 
-> Version: 0.2.0 (in development) | previous release: 0.1.7 (2026-07-20) | 76 crates | 16,232 tests passing (76 skipped), 0 failures | 409 doc tests | ~747K Rust SLoC | clippy clean (`--all-features --all-targets`)
+> Version: 0.2.1 (release-ready, 2026-07-28) | previous release: 0.2.0 (2026-07-20) | 75 crates | 17,723 tests passing (100 skipped), 0 failures | 416 doc tests | ~784K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
 
 ---
 
-## v0.2.0 — In Development (branch: 0.2.0, target: Q3 2026)
+## v0.2.1 — Production-Hardening Complete, Release-Ready 2026-07-28 (branch: 0.2.1)
+
+Workspace-wide multi-agent defect sweep across all 76 crates: **342 confirmed
+defects** (47 critical / 84 high / 83 medium / 33 low), **314 fixed** across 38
+crate lanes (~520 files), **79 honestly deferred** (each left with a safe typed-error
+path — see "Deferred from 0.2.1 hardening" below). Gates green: `cargo fmt --check`
+clean, `cargo clippy --workspace --all-features --all-targets` 0 warnings,
+`cargo nextest run --all-features` 17,723 passed / 0 failed / 100 skipped,
+`cargo deny check` passing. Full categorized list in CHANGELOG.md `[0.2.1]`.
+
+### Retired in 0.2.1
+- [x] **`oxigeo-kafka` retired as a project.** Crate deleted from the workspace; no
+  further releases; crates.io 0.0.1 and 0.2.0 yanked. It was the workspace's sole
+  mandatory C-toolchain dependency (`rdkafka-sys` → `cmake` → librdkafka), against the
+  Pure Rust Policy, at 4,831 lines (0.62% of ~778k) with **zero in-workspace reverse
+  dependencies**. The `kafka` features of `oxigeo-etl` and `oxigeo-workflow` and the
+  `rdkafka` workspace dependency went with it. Result: `cargo check --workspace
+  --all-features` no longer requires `cmake`. Kafka *metadata* enums in
+  `oxigeo-workflow` (`IntegrationType::Kafka`, `MessageQueueType::Kafka`) are pure Rust
+  and remain. See CHANGELOG.md `[0.2.1]` → Removed.
 
 ### Projections Expansion (100+ total)
-- [ ] Add 80+ new projections to reach 100+ total
-- [ ] Equidistant Conic, Sinusoidal, Mollweide, Robinson, Eckert IV/VI
-- [ ] Cassini-Soldner, Gauss-Kruger extended zones
+- [ ] **(partial)** 80+ new projections toward 100+ — native catalog grew to ~24
+  methods; the long tail (Van der Grinten, Winkel Tripel, Wagner, McBryde-Thomas, …)
+  is still reachable only via the external oxiproj PROJ-string engine
+- [x] Equidistant Conic, Sinusoidal, Mollweide, Robinson, Eckert IV/VI — native
+  forward/inverse + round-trip tests (`transform/conic.rs`, `transform/pseudocylindrical.rs`)
+- [x] Cassini-Soldner, Gauss-Kruger extended zones — `transform/cylindrical.rs` +
+  DHDN zone-3 test
 - [x] EPSG expansion to 500+ definitions (added 300+ extended definitions in oxigeo-proj/src/epsg/extended.rs)
-- [ ] Grid shift files: OSTN15 (UK), RGF93 (France), DHDN/ETRS89 (Germany)
+- [ ] **(partial)** Grid shift files OSTN15/RGF93/DHDN — a real NTv2 `.gsb` parser +
+  `GridRegistry`/`with_hgrid` loading path now exists (users supply real grid bytes);
+  bundled OSTN15/RGF93/DHDN data and automatic EPSG grid-operation selection are still
+  Helmert-parameter approximations, not shipped `.gsb` interpolation
 
 ### JPEG2000 Tier-2
-- [ ] Tier-2 packet decoder (layer/resolution/component/position progression)
-- [ ] Rate control and quality layers
-- [ ] ROI (Region of Interest) support
+- [ ] **(partial)** Tier-2 packet decoder (layer/resolution/component/position) —
+  real progression-order-driven packet demux (`tier2/{packet,progression,tile}.rs`)
+  now wired into the reader for single-quality-layer streams; multi-layer
+  (`num_layers>1`) is rejected with a typed `UnsupportedFeature`
+- [ ] Rate control and quality layers — `tier2/rate_control.rs` exists but is not yet
+  wired into reader/writer
+- [ ] ROI (Region of Interest) support — `tier2/roi.rs` exists but is not yet invoked
+  from the decode/encode path
 - [ ] JPEG2000 Part 2 extensions (JP2 boxes)
 
 ### GPU Expansion
-- [ ] Additional compute shaders for raster operations
-- [ ] GPU-accelerated reprojection
-- [ ] GPU raster algebra evaluation
-- [ ] Multi-GPU workload distribution improvements
-- [ ] WebGPU compute shader compilation for WASM
+- [x] Additional compute shaders for raster operations (reproject/raster_algebra/hillshade WGSL)
+- [x] GPU-accelerated reprojection (`oxigeo-gpu/src/reprojection.rs` + shader)
+- [x] GPU raster algebra evaluation (`oxigeo-gpu/src/algebra.rs` + shader)
+- [x] Multi-GPU workload distribution improvements (`oxigeo-gpu/src/multi_gpu.rs`)
+- [x] WebGPU compute shader compilation for WASM (compile-time `ShaderRegistry`)
 
 ### ML Pipeline Enhancements
-- [ ] ONNX model hot-reload
-- [ ] Inference caching with content-addressed storage
-- [ ] Batch prediction with adaptive batch sizing
-- [ ] Model versioning and A/B testing
-- [ ] Foundation model fine-tuning workflows
+- [x] ONNX model hot-reload (`oxigeo-ml/src/hot_reload.rs` — file-watch + atomic swap)
+- [x] Inference caching with content-addressed storage (SHA-256 key + LRU, `inference_cache.rs`)
+- [x] Batch prediction with adaptive batch sizing (`batch/dynamic.rs`)
+- [x] Model versioning and A/B testing (`model_versioning.rs` — deterministic traffic split)
+- [x] Foundation model fine-tuning workflows (`oxigeo-ml-foundation` transfer/fine-tuning strategies)
 
 ### Test Coverage Expansion — DONE, all targets exceeded as of 0.1.7
 (measured 2026-07-17 via `cargo test -p <crate> --all-features -- --list | grep -c ': test$'`)
@@ -43,17 +74,134 @@
 - [x] Target: 10,000+ total tests (workspace at ~16,775 tests as of 0.1.7 production-hardening, see header above)
 
 ### Format Driver Improvements
-- [ ] GeoTIFF: JPEG-in-TIFF decompression, LERC codec
-- [ ] GeoParquet: nested geometry encoding, partitioned datasets
-- [ ] Zarr v3: full sharding codec with partial chunk reads
-- [ ] GRIB2: template-based product definition expansion
-- [ ] NetCDF: CF conventions v1.11 full compliance
+- [x] GeoTIFF: JPEG-in-TIFF decompression, LERC codec (`jpeg_codec.rs`; `lerc_codec/lerc2.rs` real BitStuffer2 v1/v2/v3 decode)
+- [x] GeoParquet: nested geometry encoding, partitioned datasets (extended-WKB; Hive + spatial partitioning)
+- [ ] **(partial)** Zarr v3: full sharding codec with partial chunk reads — the
+  ZEP-0002 sharding codec (`sharding.rs`) is real, but `reader/v3.rs` still fetches the
+  entire shard file before extracting one inner chunk (no range-based partial fetch)
+- [x] GRIB2: template-based product definition expansion (`templates.rs`, PDT 0.0–0.48)
+- [x] NetCDF: CF conventions v1.11 full compliance (`cf_conventions/v1_11.rs`)
 
 ### API Ergonomics
 - [x] `oxigeo::open()` universal format detection — implemented (`crates/oxigeo/src/open.rs`: cloud-scheme → magic-byte → extension detection, returns `OpenedDataset`)
-- [ ] Builder pattern for all readers/writers
-- [ ] Streaming iterator API for large datasets
-- [ ] Unified error context with source file/line
+- [x] Builder pattern for all readers/writers (`crates/oxigeo/src/builder.rs` — `DatasetOpenBuilder`/`DatasetCreateBuilder`)
+- [x] Streaming iterator API for large datasets (`crates/oxigeo/src/streaming.rs` — `FeatureStream`/`TileStream`/`StreamingExt`)
+- [ ] **(partial)** Unified error context with source file/line — `ErrorContext`
+  (category/details/path/operation/parameters) exists, but it captures the dataset path,
+  not Rust `#[track_caller]`/`file!()`/`line!()` source locations
+
+---
+
+## Deferred from 0.2.1 hardening (roadmap → v0.3.0)
+
+The 79 deferred findings all have safe typed-error paths today — a loud
+`Unsupported*`/`NotImplemented`/`DecodingError`, never silent or fabricated data.
+Below is the de-duplicated, actionable synthesis plus the large cross-crate passes
+the Opus critic flagged.
+
+### Large cross-crate passes (do as single careful sweeps)
+- [ ] `#[non_exhaustive]` on the ~62 public error enums that lack it (semver stability;
+  reconcile every downstream match arm in one pass) + a `cargo-semver-checks` baseline
+- [ ] Library `println!`/`eprintln!` → `tracing` migration (~624 calls in lib src:
+  core 25, gpu 24, ml 11, …) + a lib-scoped `print_stdout`/`print_stderr` clippy lint
+- [ ] `include`/`exclude` in all 75 crate manifests to bound published tarballs
+  (0 of 75 currently declare them) + a `cargo publish --dry-run --list` size/content gate
+- [ ] Route header-driven allocation through a shared `oxigeo-core` `read_range`/bounded
+  helper (the 0.2.1 caps covered in-crate driver buffers only)
+- [ ] Sweep the remaining `oxigeo-drivers/*` parsers (jpeg2000, lerc, and the NTv2
+  `.gsb` parser — confirmed overflow via fuzz) for the same header-driven-allocation pattern
+
+### Format drivers
+- [ ] JPEG2000: multi-layer (`num_layers>1`) Tier-2 decode, custom/variable precinct
+  sizes, ROI (RGN/MaxShift), 9/7 irreversible (lossy) wavelet, GeoJP2 IFD→geotransform
+  extraction, and consolidation of the three divergent JP2 box parsers
+- [ ] GeoTIFF: LERC *encode* (BitStuffer2/Huffman), full old-style JPEG (`compression=6`)
+  TN2 reconstruction + `jpeg` on by default, pure-Rust LZMA (34925) / JPEG XL (50002) decoders
+- [ ] GRIB2: DRT 5.41 (PNG) and 5.42 (CCSDS AEC) decode; validate the rotated-grid
+  (GDT 3.1) nonzero-angle path against real vectors
+- [ ] **(partial)** HDF5/NetCDF: chunked/compressed write landed in 0.2.1 (the
+  `oxigeo-drivers/hdf5` writer no longer silently drops chunking/compression/fill-value
+  hints — honest errors for shapes `oxih5` cannot represent — and object-header parsing
+  is real, so `decode_chunk`/filter-pipeline/chunking are no longer dead code); still open:
+  big-endian source normalization, V2 object headers + Data Layout v4 chunk metadata, real
+  SWMR/VDS and write-side group symmetry + scale/offset auto-apply (the last three need
+  upstream oxih5/oxinetcdf changes)
+- [ ] FlatGeobuf: curved geometry types (CircularString/CompoundCurve/CurvePolygon/
+  MultiCurve/MultiSurface) via arc densification; a true streaming parser for large
+  standard (non-NDJSON) GeoJSON
+- [ ] GeoPackage: arbitrary-WKB + typed attribute columns + multi-page tables
+  (writer is currently 2-D point / fid+geom only); COPC: LAZ point formats 6–10
+  (LASzip contextual decoder) and full-waveform `.wdp` sample fetch
+
+### CRS & algorithms
+- [ ] Real NEON SIMD for the remaining 8 `_simd` algorithm files (projection/terrain/
+  focal/colorspace are naturally vectorizable; histogram/texture scatter and
+  cost-distance/hydrology graph are harder) — currently honest scalar with a status note
+
+### Server & OGC services
+- [ ] Mount `oxigeo-services` OGC endpoints (WFS/WCS/WPS/CSW/Features/Tiles) inside
+  `oxigeo-server` — needs a root workspace dependency + feature/coverage-source adapters
+- [ ] CQL2 spatial (`S_INTERSECTS`/…) and temporal (`T_AFTER`/…) predicates; consolidate
+  the two CQL implementations (`ogc_features::cql` vs `wfs/database::CqlFilter`)
+- [x] `oxigeo-gateway`: **serving layer DONE in 0.2.1.** The previously stubbed
+  `Gateway::serve()` (accepted TCP connections, no-op `handle_connection`) is now a real
+  axum 0.8 HTTP service via a new `GatewayServer`/`GatewayServerBuilder`. Routes:
+  `GET /health`, `GET /gateway/metrics`, `POST /graphql` (+ GraphiQL when introspection
+  enabled, `/graphql/ws` subscriptions when `enable_subscriptions`), `GET /ws` WebSocket
+  upgrade, and a load-balanced reverse-proxy fallback (streaming hyper 1 client, Pure-Rust
+  OxiTLS HTTPS upstreams, hop-by-hop stripping, `FailoverManager` retries honoring
+  `retry_attempts`, circuit breaking, per-attempt timeouts). Pipeline: query-free trace
+  spans, version negotiation + deprecation headers, in-house middleware chain (CORS +
+  `OPTIONS` preflight, real `Accept-Encoding` compression, real LRU+TTL response caching,
+  logging, metrics), JWT/API-key/session auth (+ `require_auth`/`require_mfa` enforced),
+  atomic rate limiting, body/timeout limits, and a `require_permission` RBAC route guard.
+  Honesty fixes: real `CachingMiddleware` (was a no-op), the orphaned 1,865-line
+  `middleware::advanced` module un-orphaned/compiling/tested, and `enable_subscriptions` /
+  `retry_attempts` / `require_mfa` / `enable_websocket` flags now actually enforced. Crate
+  tests: 266 → 381 (+ 3 doctests).
+  - v0.3.0+ follow-ups: WebSocket pass-through proxying; upstream keep-alive connection
+    pooling; response-side (upstream→client) transformation wiring (request-side only
+    today); GraphQL resolvers backed by real storage (currently serve demo/in-memory
+    data); middleware-chain hops and proxied requests are buffered (bounded by
+    `max_body_size`) while proxy responses stream
+
+### ML, cloud & connectors
+- [ ] ML: consolidate the duplicate model-versioning systems, re-enable the `temporal`
+  feature, harden DirectML COM `QueryInterface` (Windows-only), wire `FineTuningScheduler`
+  into `Trainer.train()`, and replace the batch-norm/bottleneck approximations
+- [ ] Azure/GCP data-plane ops left as typed `NotImplemented` (Monitor metric/diagnostic
+  ingestion, Cost alert/export, Synapse `execute_query`, ML `invoke_endpoint`, GCP cost
+  forecast/export) — each needs a per-region/data-plane endpoint the control-plane can't mint
+- [ ] OAuth2/SAS auto-refresh for S3/GCS/Azure backends (HttpBackend only today),
+  anonymous S3 (`AWS_NO_SIGN_REQUEST`), Python GCS/Azure per-call auth + `driver="VRT"`,
+  and credit-based backpressure + exactly-once (Kinesis/PubSub) wiring into the broker crates
+
+### Bindings & platform
+- [ ] `oxigeo-mobile`: Android `nativeReadTile` JNI export; build-verify iOS/Android objc
+  paths (no toolchain in CI); the Jupyter kernel is still a toy evaluator (honest error);
+  fix upstream `oxigeo-geotiff` `read_band(band)` ignoring its `band` argument
+- [ ] no_std reach: `oxigeo-core` serde_json/time conversions std-only under no_std+alloc
+  (needs a workspace `serde_json` alias); `oxigeo-offline` wasm-only build fails on an
+  unconditional `tokio::sync::RwLock`; WASM Component Model (wasip2) general CRS
+  transforms; RISC-V/Redox CI verification; Python 3.13 free-threaded testing;
+  `PowerManager` default `NoController` remains bookkeeping-only (needs vendor HAL)
+
+### Soundness, testing & supply-chain (Opus critic)
+- [ ] Commit a golden interop corpus of small GDAL/QGIS-produced files per format with
+  value assertions — every driver test currently round-trips only its own output
+- [ ] Add `# Safety` invariants to the 818 unsafe blocks (~123 documented) and add a
+  Miri/ASAN gate over the parser/SIMD/GPU/mmap paths
+- [ ] **(partial)** Fuzzing blind spots: 7 new libFuzzer targets landed in 0.2.1 (NetCDF,
+  HDF5 superblock/object-headers, VRT XML, GeoJSON, and more — 11 format/parser targets
+  total); still open: J2K-codestream/DBF/NTv2-grid targets, seeding the targets that ship
+  no corpus, and routing the confirmed upstream `oxih5` overflow panics to the oxih5
+  project
+- [ ] **(partial)** `deny.toml` (advisories + bans + licenses) is now committed and wired
+  into `cargo deny check`, and a 75-crate topological publish-order manifest is now in-repo
+  (both landed in 0.2.1); still open: a feature-powerset build (`cargo hack`), an all-crate
+  MSRV check, and assembling the above into one local release gate; make writers
+  reproducible (injectable deterministic clock for gpkg/hdf5/pmtiles timestamps); add
+  encoding/locale round-trip tests and byte-offset/field context to driver parser errors
 
 ---
 
@@ -324,7 +472,7 @@ silent corruption — but the full fix is architecturally larger than this campa
 ### Streaming v2
 - [ ] Backpressure-aware stream processing with credit-based flow control
 - [ ] Session window improvements with gap detection
-- [ ] Exactly-once semantics for Kafka/Kinesis/Pub/Sub
+- [ ] Exactly-once semantics for Kinesis/Pub/Sub (Kafka dropped — `oxigeo-kafka` retired in 0.2.1)
 - [ ] Stream-to-stream joins with temporal alignment
 - [ ] Checkpoint-based recovery with minimal replay
 
@@ -388,10 +536,13 @@ silent corruption — but the full fix is architecturally larger than this campa
 ## Ongoing / Cross-Cutting
 
 ### Dependency Maintenance
-- [ ] Replace unmaintained transitive deps: rustls-pemfile, sled/fxhash, evcxr/json, indicatif/number_prefix
+- [ ] **(partial)** Replace unmaintained transitive deps: `indicatif`'s `number_prefix`
+  dropped via the 0.2.1 `indicatif` 0.18 bump; still open: rustls-pemfile, sled/fxhash, evcxr/json
 - [ ] Track and patch security advisories within 48h
-- [ ] Keep Arrow ecosystem at latest stable (currently 58)
+- [ ] Keep Arrow ecosystem at latest stable (currently 59, bumped in 0.2.1)
 - [ ] Keep all COOLJAPAN deps (oxiarc-*, scirs2-core, oxiblas, oxicode, OxiFFT) at latest
+- [ ] `oxigeo-security`: remove unused `tempfile` dev-dependency (declared in `Cargo.toml`,
+  not referenced anywhere in the crate's source — missed by the 0.2.1 cargo-machete sweep)
 
 ### Code Quality
 - [ ] Maintain 0 clippy warnings, 0 rustdoc warnings
@@ -410,7 +561,7 @@ silent corruption — but the full fix is architecturally larger than this campa
 
 ---
 
-*Last updated: 2026-07-16*
+*Last updated: 2026-07-28*
 
 ## Stubs to implement (added 2026-06-12 by /cooljapan-stub-check)
 

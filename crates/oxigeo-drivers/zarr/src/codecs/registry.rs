@@ -36,6 +36,16 @@ impl CodecRegistry {
             .register("null", |_config| Ok(Box::new(NullCodec)))
             .ok();
 
+        // Register crc32c (Zarr v3 checksum codec). It is unconditionally
+        // available (no cargo feature gate) and is used by real arrays this
+        // crate writes, so the public registry must report it as supported --
+        // matching the internal `dispatch::build_codec_from_metadata` path.
+        registry
+            .register("crc32c", |_config| {
+                Ok(Box::new(super::crc32c::Crc32cCodec::new()) as Box<dyn Codec>)
+            })
+            .ok();
+
         // Register gzip
         #[cfg(feature = "gzip")]
         registry
@@ -280,6 +290,21 @@ mod tests {
         let compressed = codec.encode(data).expect("compress");
         let decompressed = codec.decode(&compressed).expect("decompress");
         assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn test_registry_reports_crc32c() {
+        // crc32c is a real, always-available codec used by shards this crate
+        // writes; the public registry must not wrongly report it as unknown.
+        let registry = CodecRegistry::with_defaults();
+        assert!(registry.has_codec("crc32c").expect("check codec"));
+
+        let codec = registry
+            .create("crc32c", &serde_json::json!({}))
+            .expect("create crc32c");
+        assert_eq!(codec.id(), "crc32c");
+        let encoded = codec.encode(b"payload").expect("encode");
+        assert_eq!(encoded.len(), b"payload".len() + 4);
     }
 
     #[test]

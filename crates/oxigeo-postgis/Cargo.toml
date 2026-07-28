@@ -21,7 +21,6 @@ rustls = ["dep:tokio-postgres-rustls"]
 # Core dependencies
 oxigeo-core = { workspace = true, default-features = true }
 thiserror.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 bytes.workspace = true
 byteorder.workspace = true
@@ -37,7 +36,6 @@ tokio-postgres-rustls = { workspace = true, optional = true }
 # Async runtime
 tokio.workspace = true
 futures.workspace = true
-async-trait.workspace = true
 
 # Logging
 tracing.workspace = true

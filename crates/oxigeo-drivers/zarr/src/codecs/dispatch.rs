@@ -5,8 +5,8 @@
 //! `zarr.json` file into a concrete [`Codec`] implementation. This module is
 //! the single source of truth for that mapping so the three call sites
 //! cannot drift out of sync, and so that a codec this crate does not
-//! actually implement (Blosc without the `blosc` feature, LZ4/zfp -- which
-//! have no dedicated [`CodecMetadata`] variant and therefore decode as
+//! actually implement (Blosc without the `blosc` feature, or `zfp` -- which
+//! has no dedicated [`CodecMetadata`] variant and therefore decodes as
 //! [`CodecMetadata::Generic`], etc.) is rejected with a typed error instead
 //! of silently falling back to an identity ("no-op") codec.
 //!
@@ -27,8 +27,8 @@ use crate::metadata::v3::CodecMetadata;
 /// this crate but its cargo feature is not compiled in, and
 /// [`CodecError::UnknownCodec`] for any codec metadata this crate does not
 /// implement at all -- including every [`CodecMetadata::Generic`] entry
-/// (unrecognised codec names, e.g. `lz4` or `zfp`, which have no dedicated
-/// enum variant and so parse as `Generic`).
+/// (unrecognised codec names, e.g. `zfp`, which has no dedicated enum variant
+/// and so parses as `Generic`).
 pub(crate) fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<dyn Codec>> {
     match metadata {
         CodecMetadata::Gzip { configuration } => {
@@ -58,6 +58,21 @@ pub(crate) fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<
                 let _ = configuration;
                 Err(ZarrError::Codec(CodecError::CodecNotAvailable {
                     codec: "zstd".to_string(),
+                }))
+            }
+        }
+        CodecMetadata::Lz4 { configuration } => {
+            #[cfg(feature = "lz4")]
+            {
+                use crate::codecs::lz4_codec::Lz4Codec;
+                let acceleration = configuration.as_ref().and_then(|c| c.acceleration);
+                Ok(Box::new(Lz4Codec::new(acceleration)?))
+            }
+            #[cfg(not(feature = "lz4"))]
+            {
+                let _ = configuration;
+                Err(ZarrError::Codec(CodecError::CodecNotAvailable {
+                    codec: "lz4".to_string(),
                 }))
             }
         }
@@ -100,9 +115,9 @@ pub(crate) fn build_codec_from_metadata(metadata: &CodecMetadata) -> Result<Box<
         // ShardWriter logic one layer up (see `crate::sharding`); the byte
         // pipeline treats it as identity here.
         CodecMetadata::ShardingIndexed { .. } => Ok(Box::new(NullCodec)),
-        // Any codec name this crate does not recognise, including codecs
-        // such as "lz4" or "zfp" that have no dedicated `CodecMetadata`
-        // variant and therefore deserialize into `Generic`.
+        // Any codec name this crate does not recognise, including codecs such
+        // as "zfp" that have no dedicated `CodecMetadata` variant and
+        // therefore deserialize into `Generic`.
         CodecMetadata::Generic => Err(ZarrError::Codec(CodecError::UnknownCodec {
             codec: "unknown (Generic)".to_string(),
         })),

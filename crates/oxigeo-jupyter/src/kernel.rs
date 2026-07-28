@@ -4,6 +4,7 @@
 //! with rich display and interactive features.
 
 use crate::Result;
+use oxigeo_core::types::RasterMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,6 +55,20 @@ pub enum Value {
     Dataset(String),
     /// Array data
     Array(Vec<f64>),
+    /// Loaded raster dataset: the source path plus metadata parsed from the
+    /// file at load time (CRS, geotransform, bands, data type, nodata, ...).
+    Raster(Box<RasterHandle>),
+}
+
+/// A raster dataset that has actually been opened and parsed via
+/// `oxigeo-geotiff`. Kept alongside the source path so that operations that
+/// need pixel data (e.g. `%stats`) can re-open the file and decode bands.
+#[derive(Debug, Clone)]
+pub struct RasterHandle {
+    /// Path the raster was loaded from
+    pub path: PathBuf,
+    /// Metadata parsed from the file when it was loaded
+    pub metadata: RasterMetadata,
 }
 
 /// Execution result
@@ -173,42 +188,209 @@ impl OxiGeoKernel {
         })
     }
 
-    /// Parse and execute code
+    /// Parse and execute code.
+    ///
+    /// This is **not** a general Rust interpreter. It recognizes exactly three
+    /// statement shapes:
+    ///
+    /// 1. `let name = <expr>` — variable assignment.
+    /// 2. `name` — echo a known variable's value.
+    /// 3. `<expr>` — evaluate and echo a scalar expression.
+    ///
+    /// Where `<expr>` is a string/integer/float/boolean literal, a known
+    /// variable name, or a single binary arithmetic operation (`a + b`,
+    /// `a - b`, `a * b`, `a / b`) between two such operands. Anything outside
+    /// this grammar — real Rust syntax, function/OxiGeo API calls, chained or
+    /// parenthesized arithmetic — is rejected with an honest
+    /// [`JupyterError::Kernel`] error rather than being silently ignored.
     fn parse_and_execute(&mut self, code: &str) -> Result<Option<HashMap<String, String>>> {
-        // Simple expression evaluation for demo
         let code = code.trim();
 
-        // Variable assignment: let name = value
-        if code.starts_with("let ")
-            && let Some((name, value)) = code.strip_prefix("let ").and_then(|s| s.split_once('='))
-        {
-            let name = name.trim().to_string();
-            let value_str = value.trim();
-
-            let val = if value_str.starts_with('"') && value_str.ends_with('"') {
-                Value::String(value_str.trim_matches('"').to_string())
-            } else if let Ok(i) = value_str.parse::<i64>() {
-                Value::Integer(i)
-            } else if let Ok(f) = value_str.parse::<f64>() {
-                Value::Float(f)
-            } else if value_str == "true" || value_str == "false" {
-                Value::Boolean(value_str == "true")
-            } else {
-                Value::String(value_str.to_string())
-            };
-
-            self.namespace.insert(name, val);
+        if code.is_empty() {
             return Ok(None);
         }
 
-        // Print variable value
+        // Variable assignment: let name = <expr>
+        if code.starts_with("let ")
+            && let Some((name, value)) = code.strip_prefix("let ").and_then(|s| s.split_once('='))
+        {
+            let name = name.trim();
+            if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                return Err(crate::JupyterError::Kernel(format!(
+                    "Invalid variable name in assignment: '{name}'"
+                )));
+            }
+            let value_str = value.trim();
+            let val = self.eval_simple_expr(value_str)?;
+            self.namespace.insert(name.to_string(), val);
+            return Ok(None);
+        }
+
+        // Bare variable echo
         if let Some(var) = self.namespace.get(code) {
             let mut output = HashMap::new();
-            output.insert("text/plain".to_string(), format!("{:?}", var));
+            output.insert("text/plain".to_string(), format!("{var:?}"));
             return Ok(Some(output));
         }
 
-        Ok(None)
+        // Scalar expression (literal or arithmetic over known variables)
+        let value = self.eval_simple_expr(code)?;
+        let mut output = HashMap::new();
+        output.insert("text/plain".to_string(), format!("{value:?}"));
+        Ok(Some(output))
+    }
+
+    /// Evaluates a scalar expression: a literal, a known variable, or a
+    /// single binary arithmetic operation between two such operands.
+    ///
+    /// This deliberately rejects (rather than silently mis-evaluates) any
+    /// expression with more than one top-level operator, since correctly
+    /// handling operator precedence and associativity would require a real
+    /// parser, which is out of scope for this demo evaluator.
+    fn eval_simple_expr(&self, expr: &str) -> Result<Value> {
+        let expr = expr.trim();
+
+        if expr.is_empty() {
+            return Err(crate::JupyterError::Kernel(
+                "Unsupported statement: empty expression".to_string(),
+            ));
+        }
+
+        // String literal
+        if expr.len() >= 2 && expr.starts_with('"') && expr.ends_with('"') {
+            return Ok(Value::String(expr[1..expr.len() - 1].to_string()));
+        }
+
+        // Boolean literal
+        if expr == "true" || expr == "false" {
+            return Ok(Value::Boolean(expr == "true"));
+        }
+
+        // Integer literal
+        if let Ok(i) = expr.parse::<i64>() {
+            return Ok(Value::Integer(i));
+        }
+
+        // Float literal
+        if let Ok(f) = expr.parse::<f64>() {
+            return Ok(Value::Float(f));
+        }
+
+        // Known variable
+        if let Some(v) = self.namespace.get(expr) {
+            return Ok(v.clone());
+        }
+
+        // Single binary arithmetic operation
+        let ops = Self::find_top_level_operators(expr);
+        match ops.len() {
+            0 => Err(crate::JupyterError::Kernel(format!(
+                "Unsupported statement: '{expr}'. This kernel evaluates \
+                 `let name = <expr>`, bare variable echoes, and single binary \
+                 arithmetic expressions (`a + b`, `a - b`, `a * b`, `a / b`) \
+                 over known variables/literals; it is not a full Rust \
+                 interpreter and this input matched none of those shapes."
+            ))),
+            1 => {
+                let (op_pos, op) = ops[0];
+                let lhs_str = expr[..op_pos].trim();
+                let rhs_str = expr[op_pos + op.len_utf8()..].trim();
+                if lhs_str.is_empty() || rhs_str.is_empty() {
+                    return Err(crate::JupyterError::Kernel(format!(
+                        "Unsupported statement: '{expr}' has an empty operand around '{op}'"
+                    )));
+                }
+                let lhs = self.eval_simple_expr(lhs_str)?;
+                let rhs = self.eval_simple_expr(rhs_str)?;
+                Self::apply_binary_op(&lhs, op, &rhs)
+            }
+            n => Err(crate::JupyterError::Kernel(format!(
+                "Unsupported statement: '{expr}' contains {n} operators; only a \
+                 single binary arithmetic operation (`a op b`) is supported, not \
+                 chained or parenthesized expressions"
+            ))),
+        }
+    }
+
+    /// Finds every top-level `+ - * /` operator in `expr`, skipping a
+    /// leading sign (index 0) and anything inside a `"..."` string literal.
+    fn find_top_level_operators(expr: &str) -> Vec<(usize, char)> {
+        let mut in_quotes = false;
+        let mut ops = Vec::new();
+        for (idx, (byte_pos, c)) in expr.char_indices().enumerate() {
+            if c == '"' {
+                in_quotes = !in_quotes;
+                continue;
+            }
+            if in_quotes || idx == 0 {
+                continue;
+            }
+            if matches!(c, '+' | '-' | '*' | '/') {
+                ops.push((byte_pos, c));
+            }
+        }
+        ops
+    }
+
+    /// Extracts the numeric value of an `Integer` or `Float`, or `None` for
+    /// any other variant.
+    fn as_f64(value: &Value) -> Option<f64> {
+        match value {
+            Value::Integer(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Applies a single binary arithmetic operator to two values. Integer +
+    /// Integer stays integer (with truncating division and a division-by-zero
+    /// error, matching Rust's own `i64` semantics); any other numeric
+    /// combination is promoted to `Float`. Non-numeric operands are an
+    /// honest error rather than a silently wrong result.
+    fn apply_binary_op(lhs: &Value, op: char, rhs: &Value) -> Result<Value> {
+        if let (Value::Integer(a), Value::Integer(b)) = (lhs, rhs) {
+            let (a, b) = (*a, *b);
+            return match op {
+                '+' => Ok(Value::Integer(a + b)),
+                '-' => Ok(Value::Integer(a - b)),
+                '*' => Ok(Value::Integer(a * b)),
+                '/' => {
+                    if b == 0 {
+                        Err(crate::JupyterError::Kernel(
+                            "Division by zero in integer expression".to_string(),
+                        ))
+                    } else {
+                        Ok(Value::Integer(a / b))
+                    }
+                }
+                _ => Err(crate::JupyterError::Kernel(format!(
+                    "Unsupported operator '{op}'"
+                ))),
+            };
+        }
+
+        match (Self::as_f64(lhs), Self::as_f64(rhs)) {
+            (Some(a), Some(b)) => match op {
+                '+' => Ok(Value::Float(a + b)),
+                '-' => Ok(Value::Float(a - b)),
+                '*' => Ok(Value::Float(a * b)),
+                '/' => {
+                    if b == 0.0 {
+                        Err(crate::JupyterError::Kernel(
+                            "Division by zero in floating-point expression".to_string(),
+                        ))
+                    } else {
+                        Ok(Value::Float(a / b))
+                    }
+                }
+                _ => Err(crate::JupyterError::Kernel(format!(
+                    "Unsupported operator '{op}'"
+                ))),
+            },
+            _ => Err(crate::JupyterError::Kernel(format!(
+                "Cannot apply operator '{op}' to non-numeric values: {lhs:?}, {rhs:?}"
+            ))),
+        }
     }
 
     /// Complete code
@@ -556,6 +738,108 @@ mod tests {
             let result = kernel.inspect(cmd, 0)?;
             assert!(result.found, "Help not found for {}", cmd);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_unsupported_statement_reports_error_not_silent_ok() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        // A real Rust expression this toy evaluator does not understand.
+        let result = kernel.execute("fn foo() -> i32 { 42 }")?;
+        assert_eq!(result.status, "error");
+        assert!(result.data.is_none());
+        let err = result
+            .error
+            .as_ref()
+            .ok_or_else(|| crate::JupyterError::Kernel("expected error info".to_string()))?;
+        assert_eq!(err.ename, "ExecutionError");
+        assert!(err.evalue.contains("Unsupported statement"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_variable_echo_is_an_honest_error() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        let result = kernel.execute("does_not_exist")?;
+        assert_eq!(result.status, "error");
+        Ok(())
+    }
+
+    #[test]
+    fn test_chained_arithmetic_is_rejected_not_miscomputed() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        kernel.execute("let a = 10")?;
+        kernel.execute("let b = 2")?;
+        kernel.execute("let c = 3")?;
+        // Ambiguous precedence/associativity across >1 operator: must error,
+        // never silently return a (possibly wrong) numeric answer.
+        let result = kernel.execute("a - b - c")?;
+        assert_eq!(result.status, "error");
+        Ok(())
+    }
+
+    #[test]
+    fn test_integer_arithmetic_addition() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        kernel.execute("let a = 10")?;
+        kernel.execute("let b = 32")?;
+        let result = kernel.execute("a + b")?;
+        assert_eq!(result.status, "ok");
+        let text = result
+            .data
+            .as_ref()
+            .and_then(|d| d.get("text/plain"))
+            .ok_or_else(|| crate::JupyterError::Kernel("expected output".to_string()))?;
+        assert_eq!(text, "Integer(42)");
+        Ok(())
+    }
+
+    #[test]
+    fn test_float_arithmetic_division() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        kernel.execute("let a = 10")?;
+        kernel.execute("let b = 4.0")?;
+        let result = kernel.execute("a / b")?;
+        assert_eq!(result.status, "ok");
+        let text = result
+            .data
+            .as_ref()
+            .and_then(|d| d.get("text/plain"))
+            .ok_or_else(|| crate::JupyterError::Kernel("expected output".to_string()))?;
+        assert_eq!(text, "Float(2.5)");
+        Ok(())
+    }
+
+    #[test]
+    fn test_integer_division_by_zero_is_an_error() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        kernel.execute("let a = 10")?;
+        kernel.execute("let b = 0")?;
+        let result = kernel.execute("a / b")?;
+        assert_eq!(result.status, "error");
+        Ok(())
+    }
+
+    #[test]
+    fn test_assign_arithmetic_expression_to_variable() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        kernel.execute("let a = 2")?;
+        kernel.execute("let b = 3")?;
+        kernel.execute("let c = a * b")?;
+        assert!(
+            matches!(kernel.namespace().get("c"), Some(Value::Integer(6))),
+            "Expected c = 6"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_arithmetic_on_non_numeric_value_is_an_error() -> Result<()> {
+        let mut kernel = OxiGeoKernel::new()?;
+        kernel.execute(r#"let a = "hello""#)?;
+        kernel.execute("let b = 1")?;
+        let result = kernel.execute("a + b")?;
+        assert_eq!(result.status, "error");
         Ok(())
     }
 }

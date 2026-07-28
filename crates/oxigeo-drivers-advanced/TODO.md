@@ -1,22 +1,13 @@
 # TODO: oxigeo-drivers-advanced
 
-> **Purpose:** Advanced format drivers for OxiGeo — JPEG2000 (JP2/J2K), GeoPackage (GPKG, SQLite-backed), KML/KMZ, GML — feature-gated for selective compile.
-> **Status (2026-05-16):** 4,570 LoC · 80 tests · 2 real stubs (`jp2/codestream.rs:273` JPEG2000 decoder placeholder returns gray fill; `gpkg/spatial_index.rs:85` RTree built with placeholder bounds).
+> **Purpose:** Advanced format drivers for OxiGeo — JPEG2000 (JP2/J2K), GeoPackage (GPKG, pure-Rust `oxisql-sqlite-compat`-backed), KML/KMZ, GML — feature-gated for selective compile.
+> **Status (2026-07-28):** 5,846 LoC · 156 tests all-features / 98 default-features · 0 real stubs (both `jp2/codestream.rs` gray-fill placeholder and `gpkg/spatial_index.rs` placeholder-bounds RTree confirmed closed — see Recently completed).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Real Pure-Rust JPEG2000 decoder
-  - **Verified gap:** `src/jp2/codestream.rs:272-296` — `/// Decode to raw image data (simplified). / /// This is a placeholder for a full JPEG2000 decoder. … / let data = vec![128u8; size]; // Gray image as placeholder / tracing::warn!("JPEG2000 decoding is simplified - returning placeholder data ({}x{}, {} components)", …);`
-  - **Goal:** Working JP2/J2K decoder in Pure Rust matching ISO/IEC 15444-1:2019 Part 1 (Annex A baseline): SIZ/COD/COC/QCD/QCC markers parsed, tile-parts assembled, DWT (CDF 9/7 lossy or CDF 5/3 lossless) inverse, EBCOT Tier-1 entropy decoder, dequantization, ICT/RCT colour-space inverse.
-  - **Design:** Phased implementation:
-    1. Marker parser (currently partial in `src/jp2/codestream.rs`) — finalize SIZ, COD, COC, QCD, QCC; expose `CodestreamHeader { num_components, decomposition_levels, code_block_width, code_block_height }` (lines 261-269 already populated with defaults; replace with parsed values from COD).
-    2. EBCOT Tier-1 MQ-coder decoder (~600 LoC; reference: Taubman 2000 "EBCOT: Embedded Block Coding with Optimized Truncation").
-    3. Inverse DWT — CDF 9/7 lifting (lossy) and CDF 5/3 lifting (lossless), per Annex F.3.
-    4. ICT inverse (Y'CbCr → R'G'B') per Annex G.1.
-  - **Files:** `crates/oxigeo-drivers-advanced/src/jp2/{codestream.rs, ebcot.rs (new), dwt.rs (new), color.rs (new)}`.
-  - **Tests:** (proposed) `test_jp2_decode_5x5_grayscale_synthetic`, `test_jp2_decode_lossless_5_3_dwt_roundtrip`, `test_jp2_decode_lossy_9_7_psnr_above_30db`, `test_jp2_decode_geojp2_uuid_box_preserves_geokeys`, `test_jp2_decode_corrupt_marker_returns_error`, `test_jp2_decode_known_geojp2_fixture_matches_opj_baseline`.
-  - **Risk:** Full decoder is multi-thousand-LoC; consider scoping to Profile-0 (simple JP2) for v0.2 and full Part-1 for v1.0. Cross-check output against `openjpeg` reference outputs (host-side only; never linked in Pure-Rust build).
-  - **Prerequisites:** None.
+- [x] Real Pure-Rust JPEG2000 decoder
+  - **Verified done:** the `vec![128u8; size]` gray-fill placeholder is gone from `src/jp2/codestream.rs`. The file now explicitly documents and tests against its removal: `codestream.rs:484` ("as opposed to the removed `vec![128u8; ...]` placeholder") and two tests asserting `"decoded data must not be the removed uniform gray placeholder"`. Real tier-1 EBCOT + inverse 5/3 DWT decoding is delegated to a new sibling workspace crate, `oxigeo-jpeg2000` (`Cargo.toml:36` `oxigeo-jpeg2000 = { workspace = true, optional = true }`, gated by the `jpeg2000` feature which **is** in `default`), with `codestream.rs` doc comments confirming: "Delegates the actual wavelet/EBCOT/tier-2 decoding to … pure-Rust JPEG2000 decode chain (tier-1 EBCOT, inverse 5/3 DWT … in `oxigeo-jpeg2000`".
+  - **Delta from original design:** the EBCOT/DWT/color-transform modules were NOT added directly under this crate's `src/jp2/` (no `ebcot.rs`/`dwt.rs`/`color.rs` here) — instead the heavy codec logic lives in the separate `oxigeo-jpeg2000` crate and this crate's `codestream.rs` is the JP2-container-format wiring/delegation layer. Scope (lossy 9/7 vs. lossless 5/3, Profile-0 vs. full Part-1) not independently re-verified in this audit — confirm against `oxigeo-jpeg2000`'s own TODO.md if precision claims matter for a release.
 
 - [x] GeoPackage RTree spatial index from real geometry bounds
   - Done: 2026-05-31 (Slice 28). Tests: 6 new (spatial_index_test) + 117 existing = 123 total.
@@ -44,29 +35,16 @@
   - **Risk:** WebP path requires the new lossless WebP encoder/decoder from the project (per project memory: "Implement lossless WebP encoding and integrate into image rendering pipeline" already landed).
   - **Prerequisites:** Workspace `image` crate version pin (already present).
 
-- [ ] KML Placemark geometry extraction into OxiGeo core types
-  - **Goal:** Parse KML `<Placemark>` blocks and emit `geo_types::Geometry` (Point, LineString, Polygon, MultiGeometry), preserving the `<name>`, `<description>`, and `<ExtendedData>` SimpleData/Data fields as a property map.
-  - **Design:** Extend the existing `quick-xml` SAX-mode walker in `src/kml/`; on `</Placemark>`, emit a `KmlFeature { geom: Geometry, properties: HashMap<String, JsonValue> }`. Per OGC KML 2.3 §10.1.
-  - **Files:** `crates/oxigeo-drivers-advanced/src/kml/parser.rs` (extend), `src/kml/types.rs` (define `KmlFeature`).
-  - **Tests:** (proposed) `test_kml_point_placemark_lat_lng`, `test_kml_linestring_coords_parsed`, `test_kml_polygon_with_inner_ring`, `test_kml_multigeometry`, `test_kml_extended_data_typed`, `test_kml_namespace_kml_v2_2_compatible`.
-  - **Risk:** KML coordinates are `lon,lat,alt` (not `lat,lon`) — explicit doc + test.
-  - **Prerequisites:** None.
+- [x] KML Placemark geometry extraction into OxiGeo core types
+  - **Verified done:** `src/kml/features.rs` defines `Placemark { name: Option<String>, description: Option<String>, geometry: Option<Geometry>, style_url: Option<String>, extended_data: Vec<(String, String)> }` (derives `Serialize`/`Deserialize`), and `src/kml/parser.rs::parse_placemark` is a real `quick-xml` SAX-mode walker wired from `read_kml` in `src/kml/mod.rs:152`.
+  - **Delta from original design:** the property bag is `Placemark.extended_data: Vec<(String, String)>`, not a separate `KmlFeature { geom, properties: HashMap<String, JsonValue> }` wrapper type as sketched — geometry and metadata live directly on `Placemark`. Typed (non-string) ExtendedData and explicit lon/lat-order regression tests not independently re-verified in this audit.
 
-- [ ] KMZ archive reading
-  - **Goal:** Treat `.kmz` as an OxiARC-compatible ZIP container, extract the first `*.kml` file via `oxiarc-archive`, then route to the KML parser (Item 5).
-  - **Design:** `read_kmz(path) -> KmlDocument` uses `oxiarc_archive::ZipReader::open(path)`; iterates entries; reads the first non-directory entry whose name ends in `.kml` (KMZ convention: `doc.kml` at archive root); decompresses to `Vec<u8>`; passes to `kml::read_kml`.
-  - **Files:** `crates/oxigeo-drivers-advanced/src/kmz/mod.rs` (extend).
-  - **Tests:** (proposed) `test_kmz_reads_doc_kml_at_root`, `test_kmz_reads_first_kml_if_no_doc_kml`, `test_kmz_resolves_relative_image_assets`, `test_kmz_corrupted_archive_errors`.
-  - **Risk:** COOLJAPAN Pure-Rust policy: must use `oxiarc-archive`, never `zip` crate. (`Cargo.toml:31` already only uses `oxiarc-*`.)
-  - **Prerequisites:** Item 5.
+- [x] KMZ archive reading
+  - **Verified done:** `src/kmz/mod.rs` provides `read_kmz`, `read_kmz_file`, `write_kmz`, `write_kmz_file`, built on `oxiarc_archive::zip::{ZipReader, ZipWriter}` (`use oxiarc_archive::zip::{ZipCompressionLevel, ZipReader, ZipWriter};`) — confirms the COOLJAPAN Pure-Rust policy requirement (never the `zip` crate) is honored.
 
-- [ ] GML geometry parsing (gml:Point, gml:Polygon, etc.)
-  - **Goal:** Parse OGC GML 3.2 geometries — `gml:Point`, `gml:LineString`, `gml:Polygon` (`gml:exterior`/`gml:interior` rings), `gml:MultiSurface`, `gml:MultiCurve`, `gml:MultiPoint` — into `geo_types::Geometry`.
-  - **Design:** SAX walker in `src/gml/parser.rs`; track namespace (`gml = "http://www.opengis.net/gml/3.2"`); on `</gml:Polygon>`, assemble exterior ring + interior rings from accumulated `gml:posList` or `gml:coordinates` text. Default axis order: GML 3.2 declares **lat, lon** for EPSG geographic CRSes — handle via `srsName` lookup.
-  - **Files:** `crates/oxigeo-drivers-advanced/src/gml/parser.rs` (extend).
-  - **Tests:** (proposed) `test_gml_point_lat_lon_swap_when_geographic_crs`, `test_gml_polygon_exterior_only`, `test_gml_polygon_with_holes`, `test_gml_multisurface_aggregates_polygons`, `test_gml_unknown_geometry_returns_error`, `test_gml_3_2_namespace_required`.
-  - **Risk:** GML axis-order confusion — explicit test for `urn:ogc:def:crs:EPSG::4326` swap.
-  - **Prerequisites:** None.
+- [x] GML geometry parsing (gml:Point, gml:Polygon, etc.) — PARTIAL
+  - **Verified done:** `src/gml/geometry.rs` + `src/gml/parser.rs` real SAX-mode parser handles `gml:Point`/`GmlPoint` (2D and `with_z` 3D), `gml:LineString`/`GmlLineString`, and `gml:Polygon`/`GmlPolygon` with `exterior`/`interior` (and legacy `outerBoundaryIs`/`innerBoundaryIs`) rings, `posList`/`coordinates` text parsing, and `srsDimension` honored whether declared on the geometry or directly on `posList`. 7 tests in `parser.rs`, 3 each in `geometry.rs`/`features.rs`/`writer.rs`.
+  - **Gap remaining:** no evidence found of the GML-3.2-declares-lat/lon axis-order swap for geographic CRSes (`rg "axis|lat.*lon|EPSG::4326|urn:ogc" src/gml/` — no matches), and `gml:MultiSurface`/`gml:MultiCurve`/`gml:MultiPoint` aggregation was not confirmed. Leaving the Medium-priority "GML namespace-aware parsing for complex feature types" item below open covers the remaining Multi*/axis-order work.
 
 ## Medium Priority
 - [ ] KML style/icon extraction and mapping (StyleMap, IconStyle).
@@ -106,10 +84,10 @@
 
 ## Cross-crate dependencies
 - **Blocks:** oxigeo (umbrella streaming), oxigeo-services (driver coverage).
-- **Blocked by:** `oxiarc-archive` (KMZ), `rusqlite` 0.37 pin (GeoPackage), workspace `image` crate.
+- **Blocked by:** `oxiarc-archive` (KMZ), `oxisql-sqlite-compat` (GeoPackage — migrated off `rusqlite`, no C dependency), workspace `image` crate.
 
 ## Recently completed (verbatim)
 *(No `[x]` entries on previous TODO.)*
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28 (status line refreshed: 80→156/98 tests, LoC 4,570→5,846, date bumped; JPEG2000 decoder, KML Placemark extraction, KMZ reading, and GML geometry parsing all re-verified against source and flipped to done — JPEG2000 and GML noted as delegated-to-sibling-crate / partial respectively; GeoPackage confirmed migrated from `rusqlite` to pure-Rust `oxisql-sqlite-compat`, correcting both the README's "GeoPackage format support (default)" claim — it is opt-in, not default — and this file's stale `rusqlite` cross-crate-dependency line)*

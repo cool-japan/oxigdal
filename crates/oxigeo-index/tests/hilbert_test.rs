@@ -2,6 +2,8 @@
 //!
 //! All coordinates are deterministic — no `rand` dependency is used.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo_index::rtree::hilbert::compute_hilbert_value as compute_hilbert_value_direct;
 use oxigeo_index::{Bbox2D, HilbertRTree, RTree, compute_hilbert_value};
 

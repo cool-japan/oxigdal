@@ -49,19 +49,20 @@ impl Dataset {
                 let metadata = reader.metadata().clone();
                 let band_count = metadata.band_count as usize;
 
-                let mut bands = Vec::with_capacity(band_count);
-                for i in 0..band_count {
-                    let band_data = reader.read_band(0, i).to_napi()?;
-                    let band_buffer = RasterBuffer::new(
-                        band_data,
-                        metadata.width,
-                        metadata.height,
-                        metadata.data_type,
-                        metadata.nodata,
-                    )
-                    .to_napi()?;
-                    bands.push(band_buffer);
-                }
+                // The underlying reader returns the whole image in its on-disk
+                // (band-interleaved-by-pixel / chunky) layout regardless of the
+                // band index, so read it once and deinterleave into per-band
+                // buffers here. This is the inverse of `interleave_bands` used
+                // on save, and is what makes multi-band GeoTIFFs round-trip.
+                let interleaved = reader.read_band(0, 0).to_napi()?;
+                let bands = Self::deinterleave_bands(
+                    &interleaved,
+                    metadata.width,
+                    metadata.height,
+                    band_count,
+                    metadata.data_type,
+                    metadata.nodata,
+                )?;
 
                 Ok(Self {
                     metadata,
@@ -412,11 +413,16 @@ impl Dataset {
                     oxigeo_geotiff::writer::GeoTiffWriter::create(&path, config, options)
                         .to_napi()?;
 
-                // Write all bands as a single interleaved buffer
-                // For now, write each band separately
-                for band in &self.bands {
-                    writer.write(band.as_bytes()).to_napi()?;
-                }
+                // The GeoTIFF writer expects a single, fully band-interleaved
+                // (BIP: band-interleaved-by-pixel) buffer covering every band,
+                // and validates the total length against
+                // width * height * bytes_per_sample * band_count. Calling
+                // `write` once per band (with only a single band's bytes) fails
+                // that check for multi-band rasters and rewrites the TIFF header
+                // on every call. Instead, interleave all bands up front and
+                // write exactly once.
+                let interleaved = self.interleave_bands()?;
+                writer.write(&interleaved).to_napi()?;
 
                 Ok(())
             }
@@ -426,6 +432,119 @@ impl Dataset {
             }
             .into()),
         }
+    }
+
+    /// Builds a single band-interleaved-by-pixel (BIP) byte buffer spanning
+    /// every band, in the layout the GeoTIFF writer expects.
+    ///
+    /// For each pixel (in row-major order) the `bytes_per_sample` bytes of
+    /// every band are emitted consecutively, i.e. `[b0_p0, b1_p0, ..., b0_p1,
+    /// b1_p1, ...]`. This mirrors the interleaving logic used by the Python
+    /// bindings and is required for `band_count > 1`; for a single band it is a
+    /// straight copy of that band's bytes.
+    fn interleave_bands(&self) -> Result<Vec<u8>> {
+        let bytes_per_sample = self.metadata.data_type.size_bytes();
+        let pixel_count = (self.metadata.width as usize) * (self.metadata.height as usize);
+        let expected_band_len = pixel_count * bytes_per_sample;
+
+        // Every band buffer must match the dataset dimensions/type exactly, or
+        // the interleaved slicing below would read past the end of a band.
+        for (index, band) in self.bands.iter().enumerate() {
+            let band_len = band.as_bytes().len();
+            if band_len != expected_band_len {
+                return Err(NodeError {
+                    code: "BAND_SIZE_MISMATCH".to_string(),
+                    message: format!(
+                        "Band {} has {} bytes, expected {} ({}x{} x {} bytes/sample)",
+                        index,
+                        band_len,
+                        expected_band_len,
+                        self.metadata.width,
+                        self.metadata.height,
+                        bytes_per_sample
+                    ),
+                }
+                .into());
+            }
+        }
+
+        // Fast path: a single band is already in the required layout.
+        if self.bands.len() == 1 {
+            return Ok(self.bands[0].as_bytes().to_vec());
+        }
+
+        let band_count = self.bands.len();
+        let mut interleaved = vec![0u8; pixel_count * band_count * bytes_per_sample];
+        for (band_index, band) in self.bands.iter().enumerate() {
+            let band_bytes = band.as_bytes();
+            for pixel in 0..pixel_count {
+                let src = pixel * bytes_per_sample;
+                let dst = (pixel * band_count + band_index) * bytes_per_sample;
+                interleaved[dst..dst + bytes_per_sample]
+                    .copy_from_slice(&band_bytes[src..src + bytes_per_sample]);
+            }
+        }
+
+        Ok(interleaved)
+    }
+
+    /// Splits a single band-interleaved-by-pixel (BIP) byte buffer into one
+    /// contiguous (band-sequential) buffer per band.
+    ///
+    /// This is the inverse of [`Self::interleave_bands`]. The input is expected
+    /// to contain `width * height * bytes_per_sample * band_count` bytes with
+    /// each pixel's samples stored consecutively; band `b` is gathered by taking
+    /// the `b`-th sample of every pixel.
+    fn deinterleave_bands(
+        interleaved: &[u8],
+        width: u64,
+        height: u64,
+        band_count: usize,
+        data_type: RasterDataType,
+        nodata: NoDataValue,
+    ) -> Result<Vec<RasterBuffer>> {
+        let bytes_per_sample = data_type.size_bytes();
+        let pixel_count = (width as usize) * (height as usize);
+        let expected = pixel_count * bytes_per_sample * band_count;
+
+        if interleaved.len() != expected {
+            return Err(NodeError {
+                code: "FORMAT_ERROR".to_string(),
+                message: format!(
+                    "Interleaved raster has {} bytes, expected {} ({}x{} x {} bands x {} bytes/sample)",
+                    interleaved.len(),
+                    expected,
+                    width,
+                    height,
+                    band_count,
+                    bytes_per_sample
+                ),
+            }
+            .into());
+        }
+
+        let mut bands = Vec::with_capacity(band_count);
+        for band_index in 0..band_count {
+            // Fast path: a single band is already band-sequential.
+            let band_bytes = if band_count == 1 {
+                interleaved.to_vec()
+            } else {
+                let mut buf = vec![0u8; pixel_count * bytes_per_sample];
+                for pixel in 0..pixel_count {
+                    let src = (pixel * band_count + band_index) * bytes_per_sample;
+                    let dst = pixel * bytes_per_sample;
+                    buf[dst..dst + bytes_per_sample]
+                        .copy_from_slice(&interleaved[src..src + bytes_per_sample]);
+                }
+                buf
+            };
+
+            let buffer =
+                RasterBuffer::new(band_bytes, width, height, data_type, nodata).to_napi()?;
+            bands.push(buffer);
+        }
+
+        Ok(bands)
     }
 
     /// Gets metadata as a JavaScript object
@@ -449,6 +568,29 @@ impl Dataset {
         Self {
             metadata: self.metadata.clone(),
             bands: self.bands.clone(),
+            file_path: self.file_path.clone(),
+        }
+    }
+
+    /// Borrows the underlying per-band pixel buffers (crate-internal).
+    ///
+    /// Used by the parallel-processing helpers in `async_ops` which need direct
+    /// read access to each band's pixels.
+    pub(crate) fn bands(&self) -> &[RasterBuffer] {
+        &self.bands
+    }
+
+    /// Builds a new dataset that shares this dataset's metadata/geo-referencing
+    /// but carries a freshly computed set of band buffers (crate-internal).
+    ///
+    /// The number of supplied bands must match the existing band count so that
+    /// the metadata stays consistent with the pixel data.
+    pub(crate) fn with_bands(&self, bands: Vec<RasterBuffer>) -> Self {
+        let mut metadata = self.metadata.clone();
+        metadata.band_count = bands.len() as u32;
+        Self {
+            metadata,
+            bands,
             file_path: self.file_path.clone(),
         }
     }
@@ -573,6 +715,108 @@ fn format_data_type(dtype: RasterDataType) -> String {
 #[napi]
 pub fn open_raster(path: String) -> Result<Dataset> {
     Dataset::open(path)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Builds a unique temp path for a test artifact, scoped to the OS temp dir
+    /// so nothing is hard-coded and parallel test runs don't collide.
+    fn temp_tif(tag: &str) -> String {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("oxigeo_node_{tag}_{nanos}.tif"));
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn interleave_single_band_is_a_straight_copy() {
+        let mut ds = Dataset::create(3, 2, 1, "uint8".to_string()).expect("create");
+        let mut buf = BufferWrapper::new(3, 2, "uint8".to_string()).expect("buffer");
+        for y in 0..2 {
+            for x in 0..3 {
+                buf.set_pixel(x, y, (x + y * 3) as f64).expect("set");
+            }
+        }
+        ds.write_band(0, &buf).expect("write_band");
+        let interleaved = ds.interleave_bands().expect("interleave");
+        assert_eq!(interleaved, ds.bands[0].as_bytes());
+    }
+
+    #[test]
+    fn interleave_two_bands_is_band_interleaved_by_pixel() {
+        let mut ds = Dataset::create(2, 1, 2, "uint8".to_string()).expect("create");
+        let mut b0 = BufferWrapper::new(2, 1, "uint8".to_string()).expect("b0");
+        let mut b1 = BufferWrapper::new(2, 1, "uint8".to_string()).expect("b1");
+        b0.set_pixel(0, 0, 10.0).expect("set");
+        b0.set_pixel(1, 0, 11.0).expect("set");
+        b1.set_pixel(0, 0, 20.0).expect("set");
+        b1.set_pixel(1, 0, 21.0).expect("set");
+        ds.write_band(0, &b0).expect("write b0");
+        ds.write_band(1, &b1).expect("write b1");
+
+        let interleaved = ds.interleave_bands().expect("interleave");
+        // BIP layout for 2 pixels x 2 bands (uint8): b0p0, b1p0, b0p1, b1p1.
+        assert_eq!(interleaved, vec![10u8, 20u8, 11u8, 21u8]);
+    }
+
+    #[test]
+    fn save_and_reopen_multiband_geotiff_roundtrips() {
+        let width = 8u32;
+        let height = 6u32;
+        let mut ds = Dataset::create(width, height, 3, "uint8".to_string()).expect("create");
+
+        // Distinct, per-band gradients so a band/offset mixup would be caught.
+        for band in 0..3u32 {
+            let mut buf = BufferWrapper::new(width, height, "uint8".to_string()).expect("buffer");
+            for y in 0..height {
+                for x in 0..width {
+                    let value = (band * 40 + x + y) % 256;
+                    buf.set_pixel(x, y, value as f64).expect("set");
+                }
+            }
+            ds.write_band(band, &buf).expect("write_band");
+        }
+
+        let path = temp_tif("multiband");
+        ds.save(path.clone()).expect("save multi-band geotiff");
+
+        let reopened = Dataset::open(path.clone()).expect("reopen");
+        assert_eq!(reopened.band_count(), 3);
+        assert_eq!(reopened.width(), width);
+        assert_eq!(reopened.height(), height);
+
+        for band in 0..3u32 {
+            let read = reopened.read_band(band).expect("read_band");
+            for y in 0..height {
+                for x in 0..width {
+                    let expected = ((band * 40 + x + y) % 256) as f64;
+                    let actual = read.get_pixel(x, y).expect("get_pixel");
+                    assert!(
+                        (actual - expected).abs() < f64::EPSILON,
+                        "band {band} pixel ({x},{y}): expected {expected}, got {actual}"
+                    );
+                }
+            }
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn interleave_rejects_wrong_size_band() {
+        // Manufacture an inconsistent dataset: metadata says 2x2 but a band is
+        // the wrong length. `with_bands` keeps metadata, so build via fields.
+        let mut ds = Dataset::create(2, 2, 1, "uint8".to_string()).expect("create");
+        ds.bands[0] = RasterBuffer::zeros(3, 3, RasterDataType::UInt8);
+        let err = ds.interleave_bands();
+        assert!(err.is_err(), "mismatched band length must be rejected");
+    }
 }
 
 /// Creates a new raster dataset (convenience function)

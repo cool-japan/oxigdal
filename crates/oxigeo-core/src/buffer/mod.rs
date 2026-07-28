@@ -76,6 +76,8 @@ use core::fmt;
 #[cfg(not(feature = "std"))]
 use crate::compat::*;
 use crate::error::{OxiGeoError, Result};
+#[cfg(not(feature = "std"))]
+use crate::math::FloatExt;
 use crate::types::{NoDataValue, RasterDataType};
 
 mod band_iterator;

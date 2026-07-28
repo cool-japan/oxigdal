@@ -1,5 +1,7 @@
 //! Integration tests for `oxigeo-index`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo_index::{Bbox2D, GridIndex, IndexError, RTree, SpatialQuery};
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ use crate::executor::scan::RecordBatch;
 use crate::parser::ast::{Expr, JoinType};
 
 // Submodules
+mod builder;
 mod expression;
 mod hash_join;
 mod nested_loop;

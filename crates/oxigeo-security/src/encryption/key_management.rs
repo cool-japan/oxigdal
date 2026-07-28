@@ -1,12 +1,28 @@
 //! Key management and rotation.
 
-use crate::encryption::{AtRestEncryptor, EncryptionAlgorithm};
+use crate::encryption::{AtRestEncryptor, EncryptedData, EncryptionAlgorithm};
 use crate::error::{Result, SecurityError};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// A single persisted key entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedKey {
+    key_id: String,
+    key: Vec<u8>,
+    metadata: KeyMetadata,
+}
+
+/// A serializable snapshot of the whole keystore, used for encrypted persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KeystoreSnapshot {
+    current_key_id: Option<String>,
+    keys: Vec<PersistedKey>,
+}
 
 /// Key metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +77,12 @@ impl KeyMetadata {
 }
 
 /// Key manager for storing and rotating encryption keys.
+///
+/// By default keys live only in memory: a process restart loses every key generated via
+/// [`KeyManager::generate_key`]/[`KeyManager::rotate_key`] (and any data encrypted under
+/// them). For durability, persist the keystore with [`KeyManager::save_to_file`] (each key is
+/// encrypted under a caller-supplied master key / KEK — which may itself come from an external
+/// KMS) and restore it with [`KeyManager::load_from_file`].
 pub struct KeyManager {
     keys: Arc<DashMap<String, (Vec<u8>, KeyMetadata)>>,
     current_key_id: Arc<parking_lot::RwLock<Option<String>>>,
@@ -232,6 +254,69 @@ impl KeyManager {
         AtRestEncryptor::new(metadata.algorithm, key, key_id)
     }
 
+    /// Persist the keystore to `path`, envelope-encrypted under `master_key`.
+    ///
+    /// The full set of managed keys (plus which one is current) is serialized and then
+    /// encrypted with AES-256-GCM under `master_key`, so the file at rest never contains
+    /// plaintext key material. `master_key` must be 32 bytes; it is the KEK and should be
+    /// sourced from a secure location (an external KMS, an HSM, or an operator secret) rather
+    /// than stored alongside the file.
+    pub fn save_to_file(&self, path: impl AsRef<Path>, master_key: &[u8]) -> Result<()> {
+        let snapshot = KeystoreSnapshot {
+            current_key_id: self.current_key_id.read().clone(),
+            keys: self
+                .keys
+                .iter()
+                .map(|entry| PersistedKey {
+                    key_id: entry.key().clone(),
+                    key: entry.value().0.clone(),
+                    metadata: entry.value().1.clone(),
+                })
+                .collect(),
+        };
+
+        let plaintext = serde_json::to_vec(&snapshot)?;
+        let encryptor = AtRestEncryptor::new(
+            EncryptionAlgorithm::Aes256Gcm,
+            master_key.to_vec(),
+            "keystore-master".to_string(),
+        )?;
+        let encrypted = encryptor.encrypt(&plaintext, None)?;
+        let serialized = serde_json::to_vec(&encrypted)?;
+
+        std::fs::write(path.as_ref(), serialized)
+            .map_err(|e| SecurityError::key_management(format!("failed to write keystore: {e}")))?;
+        Ok(())
+    }
+
+    /// Load a keystore previously written by [`Self::save_to_file`], decrypting it with
+    /// `master_key`.
+    ///
+    /// Existing in-memory keys are replaced by the loaded set. An incorrect `master_key`, a
+    /// tampered file, or a corrupt file yields a typed error rather than silently losing keys.
+    pub fn load_from_file(&self, path: impl AsRef<Path>, master_key: &[u8]) -> Result<()> {
+        let serialized = std::fs::read(path.as_ref())
+            .map_err(|e| SecurityError::key_management(format!("failed to read keystore: {e}")))?;
+        let encrypted: EncryptedData = serde_json::from_slice(&serialized)?;
+
+        let encryptor = AtRestEncryptor::new(
+            EncryptionAlgorithm::Aes256Gcm,
+            master_key.to_vec(),
+            "keystore-master".to_string(),
+        )?;
+        let plaintext = encryptor.decrypt(&encrypted)?;
+        let snapshot: KeystoreSnapshot = serde_json::from_slice(&plaintext)?;
+
+        self.keys.clear();
+        for persisted in snapshot.keys {
+            self.keys
+                .insert(persisted.key_id, (persisted.key, persisted.metadata));
+        }
+        *self.current_key_id.write() = snapshot.current_key_id;
+
+        Ok(())
+    }
+
     /// Get the number of keys.
     pub fn key_count(&self) -> usize {
         self.keys.len()
@@ -332,6 +417,63 @@ mod tests {
         // Can delete non-current key
         assert!(manager.delete_key(&key_id2).is_ok());
         assert_eq!(manager.key_count(), 1);
+    }
+
+    #[test]
+    fn test_save_and_load_roundtrip() {
+        let manager = KeyManager::new();
+        let key_id = manager
+            .generate_key(EncryptionAlgorithm::Aes256Gcm, Some(365))
+            .expect("generate");
+        let (original_key, _) = manager.get_key(&key_id).expect("get");
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("oxigeo_keystore_test_{}.enc", std::process::id()));
+        let master_key = [7u8; 32];
+
+        manager
+            .save_to_file(&path, &master_key)
+            .expect("save should succeed");
+
+        // A fresh manager (simulating a process restart) loads the persisted keys.
+        let restored = KeyManager::new();
+        assert_eq!(restored.key_count(), 0);
+        restored
+            .load_from_file(&path, &master_key)
+            .expect("load should succeed");
+
+        assert_eq!(restored.key_count(), 1);
+        let (loaded_key, _) = restored.get_key(&key_id).expect("loaded key present");
+        assert_eq!(
+            loaded_key, original_key,
+            "key material must survive persistence"
+        );
+
+        let (current_id, _, _) = restored.get_current_key().expect("current key restored");
+        assert_eq!(current_id, key_id);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_with_wrong_master_key_errors() {
+        let manager = KeyManager::new();
+        manager
+            .generate_key(EncryptionAlgorithm::Aes256Gcm, Some(365))
+            .expect("generate");
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("oxigeo_keystore_badkey_{}.enc", std::process::id()));
+        manager.save_to_file(&path, &[1u8; 32]).expect("save");
+
+        let restored = KeyManager::new();
+        let result = restored.load_from_file(&path, &[2u8; 32]);
+        assert!(
+            result.is_err(),
+            "wrong master key must fail, not silently lose keys"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

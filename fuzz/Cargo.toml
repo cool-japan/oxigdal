@@ -21,6 +21,16 @@ oxigeo-gpkg = { path = "../crates/oxigeo-gpkg" }
 oxigeo-mbtiles = { path = "../crates/oxigeo-mbtiles", features = ["sqlite"] }
 oxigeo-pmtiles = { path = "../crates/oxigeo-pmtiles" }
 oxigeo-copc = { path = "../crates/oxigeo-copc" }
+oxigeo-vrt = { path = "../crates/oxigeo-drivers/vrt" }
+oxigeo-geojson-stream = { path = "../crates/oxigeo-geojson" }
+oxigeo-proj = { path = "../crates/oxigeo-proj" }
+oxigeo-hdf5 = { path = "../crates/oxigeo-drivers/hdf5" }
+# Real Pure-Rust NetCDF-4/HDF5 engines, fuzzed directly (in-memory
+# `open_from_bytes` constructors, documented upstream as intended "for
+# testing and fuzzing") rather than through `oxigeo-netcdf`'s path-based
+# `NetCdfReader::open`, which has no in-memory entry point.
+oxinetcdf = "0.2.2"
+oxih5 = "0.2.2"
 
 # Prevent this crate from being included in normal workspace builds
 [workspace]
@@ -94,5 +104,47 @@ doc = false
 [[bin]]
 name = "fuzz_copc_header"
 path = "fuzz_targets/fuzz_copc_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_netcdf_bytes"
+path = "fuzz_targets/fuzz_netcdf_bytes.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_hdf5_bytes"
+path = "fuzz_targets/fuzz_hdf5_bytes.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_vrt_xml"
+path = "fuzz_targets/fuzz_vrt_xml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_geojson_parse"
+path = "fuzz_targets/fuzz_geojson_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jp2_codestream"
+path = "fuzz_targets/fuzz_jp2_codestream.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dbf_records"
+path = "fuzz_targets/fuzz_dbf_records.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ntv2_grid"
+path = "fuzz_targets/fuzz_ntv2_grid.rs"
 test = false
 doc = false

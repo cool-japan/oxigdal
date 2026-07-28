@@ -2,6 +2,7 @@
 
 use super::RecoveryConfig;
 use crate::error::{HaError, HaResult};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,23 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
 use uuid::Uuid;
+
+/// Applies a single WAL entry back into the live store during replay.
+///
+/// Point-in-time recovery replays committed WAL entries in order. The concrete
+/// application of an entry's payload to the storage engine is intentionally
+/// injected through this trait so the HA crate stays storage-agnostic: an
+/// embedding application supplies the real applier that decodes
+/// [`WalEntry::data`] and mutates its dataset. Recovery fails loudly (a typed
+/// error) when no applier is configured rather than fabricating a replay count.
+#[async_trait]
+pub trait WalApplier: Send + Sync {
+    /// Durably apply a replayed WAL `entry` to the local store.
+    ///
+    /// Implementations MUST return an error if the entry cannot be applied so
+    /// the recovery driver aborts instead of reporting a false success.
+    async fn apply(&self, entry: &WalEntry) -> HaResult<()>;
+}
 
 /// WAL entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]

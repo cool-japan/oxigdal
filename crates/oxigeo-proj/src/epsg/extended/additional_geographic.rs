@@ -1,6 +1,7 @@
 //! Additional geographic CRS registrations (modern realizations such as ITRF, JGD2011, GDA2020).
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::ToString;
 
 pub(super) fn register_additional_geographic(db: &mut EpsgDatabase) {
     let geographic_crs: &[(u32, &str, &str, &str, &str)] = &[

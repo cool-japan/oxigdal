@@ -1,5 +1,7 @@
 //! Integration tests for distributed processing.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use arrow::array::{Float64Array, Int32Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;

@@ -74,7 +74,7 @@ impl VoxelKey {
 /// | offset      | u64   | Byte offset from file start to the data     |
 /// | byte_count  | i32   | `-1` = page pointer, `0` = empty, `>0` = point data |
 /// | point_count | i32   | Number of point records in this chunk        |
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HierarchyEntry {
     /// Octree voxel key.
     pub key: VoxelKey,
@@ -205,9 +205,24 @@ pub fn node_bounds(key: &VoxelKey, info: &CopcInfo) -> BoundingBox3D {
 
 /// Collect all hierarchy entries whose octree nodes intersect `query_bbox`.
 ///
+/// This is a compatibility alias for [`query_hierarchy_with_page_pointers`]:
+/// the two functions used to carry independent (but byte-for-byte identical)
+/// implementations, which was pure duplicate maintenance surface with no
+/// production caller — [`crate::copc_reader`] only ever called
+/// `query_hierarchy_with_page_pointers`. `query_hierarchy` now delegates
+/// directly rather than duplicating the traversal logic, while keeping this
+/// name available since it is `pub` crate API that external callers may
+/// already depend on.
+///
 /// Traverses the hierarchy by loading pages from the file data on demand.
 /// Returns entries that have point data (`byte_count > 0`) and whose spatial
-/// bounds overlap the query.
+/// bounds overlap the query. Page pointer entries (`byte_count == -1`) are
+/// followed using `point_count` as the child page's byte length, per the
+/// COPC 1.0 specification's hierarchy page-pointer encoding (see the
+/// module-level reference: <https://copc.io/copc-specification-1.0.pdf>,
+/// sections 3.2-3.3 — an entry with `pointCount == -1` is itself a page, and
+/// its `offset`/`pointCount` fields are repurposed to give the child page's
+/// file offset and byte size respectively).
 ///
 /// # Parameters
 /// - `file_data` -- the complete COPC file bytes
@@ -226,63 +241,23 @@ pub fn query_hierarchy(
     root_page_size: u64,
     query_bbox: &BoundingBox3D,
 ) -> Result<Vec<HierarchyEntry>, CopcError> {
-    let mut result: Vec<HierarchyEntry> = Vec::new();
-
-    // Stack-based iterative traversal of hierarchy pages.
-    let mut page_stack: Vec<(u64, u64)> = vec![(root_page_offset, root_page_size)];
-
-    // Guard against pathological recursion/loops.
-    let max_pages = 10_000;
-    let mut pages_visited = 0_usize;
-
-    while let Some((page_offset, page_size)) = page_stack.pop() {
-        pages_visited += 1;
-        if pages_visited > max_pages {
-            return Err(CopcError::InvalidFormat(
-                "Hierarchy traversal exceeded maximum page count (possible cycle)".into(),
-            ));
-        }
-
-        let off = page_offset as usize;
-        let sz = page_size as usize;
-        if off + sz > file_data.len() {
-            return Err(CopcError::InvalidFormat(format!(
-                "Hierarchy page at offset {off} + size {sz} exceeds file length {}",
-                file_data.len()
-            )));
-        }
-
-        let page_data = &file_data[off..off + sz];
-        let entries = parse_hierarchy_page(page_data)?;
-
-        for entry in entries {
-            let entry_bounds = node_bounds(&entry.key, info);
-
-            if !entry_bounds.intersects_3d(query_bbox) {
-                continue;
-            }
-
-            if entry.is_page_pointer() {
-                // Follow page pointer.  Per COPC 1.0 spec, when byte_count == -1
-                // the child page byte length is stored in `point_count`.
-                let child_size = entry.point_count.unsigned_abs() as u64;
-                page_stack.push((entry.offset, child_size));
-            } else if entry.has_point_data() {
-                result.push(entry);
-            }
-            // Empty nodes (byte_count == 0) are silently skipped.
-        }
-    }
-
-    Ok(result)
+    query_hierarchy_with_page_pointers(
+        file_data,
+        info,
+        root_page_offset,
+        root_page_size,
+        query_bbox,
+    )
 }
 
-/// Variant of [`query_hierarchy`] that handles page pointers using the
-/// `point_count` field as the child page size in bytes.
+/// Traverse a COPC hierarchy and collect every entry whose octree node
+/// intersects `query_bbox`, following page-pointer entries using the
+/// `point_count` field as the child page's byte length.
 ///
 /// This matches the COPC 1.0 specification where page pointer entries have
 /// `byte_count == -1` and the child page byte length is stored in
-/// `point_count`.
+/// `point_count`. See [`query_hierarchy`] (a compatibility alias for this
+/// function) for full parameter/error documentation.
 pub fn query_hierarchy_with_page_pointers(
     file_data: &[u8],
     info: &CopcInfo,
@@ -685,10 +660,18 @@ mod tests {
 
     #[test]
     fn test_query_hierarchy_page_pointer_traversal() {
+        // Per the COPC 1.0 specification (<https://copc.io/copc-specification-1.0.pdf>,
+        // sections 3.2-3.3): a hierarchy entry with `byte_count == -1` is
+        // itself a page pointer rather than a data entry. For a page-pointer
+        // entry, `offset` gives the child page's byte offset in the file and
+        // `point_count` (repurposed) gives the child page's byte size --
+        // *not* a point count. This is exactly what `HierarchyEntry::
+        // is_page_pointer` / the traversal loop in
+        // `query_hierarchy_with_page_pointers` implements.
         let info = make_copc_info();
 
-        // Root page contains a page pointer to a child page
-        // Child page contains a data entry
+        // Root page (offset 0, one 32-byte entry): a page pointer whose child
+        // page lives at offset 32 and is 32 bytes long (one entry).
         let page_pointer = HierarchyEntry {
             key: VoxelKey {
                 depth: 1,
@@ -696,11 +679,12 @@ mod tests {
                 y: 0,
                 z: 0,
             },
-            offset: 32, // child page starts right after root page
-            byte_count: -1,
-            point_count: 0,
+            offset: 32,      // child page starts right after the root page
+            byte_count: -1,  // sentinel: this entry is a page pointer
+            point_count: 32, // child page byte size (not a point count)
         };
 
+        // Child page (offset 32, one 32-byte entry): a real data entry.
         let data_entry = HierarchyEntry {
             key: VoxelKey {
                 depth: 2,
@@ -717,66 +701,55 @@ mod tests {
         file_data.extend_from_slice(&page_pointer.to_bytes()); // root page at offset 0
         file_data.extend_from_slice(&data_entry.to_bytes()); // child page at offset 32
 
-        // The page pointer has byte_count == -1, so |byte_count| = 1 which is not
-        // a valid page size. For page pointers the offset points to a page and the
-        // actual page size should be derivable. Let's adjust: when byte_count == -1
-        // we use the absolute value (1) as the page size -- but 1 byte is not
-        // a multiple of 32. We need to re-think the page pointer size.
-        //
-        // Actually in real COPC files the page pointer's "offset" field points
-        // to the start of the child page and the actual page size is determined
-        // by reading entries until the page boundary.
-        //
-        // For this test, let's put the child page size as 32 somewhere accessible.
-        // In real COPC, the page pointer byte_count is -1 and we need to know the
-        // page size from a different VLR or from the structure.
-        //
-        // Looking at the COPC spec more carefully: page pointers have
-        // byte_count == -1. The child page size is NOT stored in the entry itself;
-        // it must be inferred or stored as metadata elsewhere. For the implementation,
-        // we should store page sizes separately.
-        //
-        // However, examining popular COPC implementations (PDAL, copc-lib), page
-        // pointers actually store the PAGE SIZE in the offset field as u64, and the
-        // point_count field (i32) may be repurposed. Let me adjust the implementation.
-        //
-        // After reviewing the spec again: the page pointer entry stores:
-        //   - offset = byte offset to child page
-        //   - byte_count = -1 (sentinel)
-        //   - point_count = number of entries in child page (actually, byte size / 32)
-        //
-        // Actually the COPC 1.0 spec says for page pointers:
-        //   byte_count = -1 means "this entry is a pointer to a child hierarchy page"
-        //   offset = byte offset to child page data
-        //   point_count = byte size of child page
-        //
-        // Let me use that convention.
+        let query = BoundingBox3D::new(0.0, 0.0, 0.0, 30.0, 30.0, 30.0).expect("valid query bbox");
 
-        // OK, let me redo this properly.
-        // Re-building: page_pointer.point_count stores the child page byte size.
-        let page_pointer_v2 = HierarchyEntry {
+        let results = query_hierarchy_with_page_pointers(&file_data, &info, 0, 32, &query)
+            .expect("should traverse page pointer");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].point_count, 30);
+    }
+
+    /// [`query_hierarchy`] is a compatibility alias for
+    /// [`query_hierarchy_with_page_pointers`] -- confirm it actually
+    /// delegates rather than drifting into a second, divergent
+    /// implementation of the same traversal.
+    #[test]
+    fn test_query_hierarchy_alias_matches_page_pointer_variant() {
+        let info = make_copc_info();
+
+        let page_pointer = HierarchyEntry {
             key: VoxelKey {
                 depth: 1,
                 x: 0,
                 y: 0,
                 z: 0,
             },
-            offset: 32, // child page at offset 32
+            offset: 32,
             byte_count: -1,
-            point_count: 32, // child page size in bytes
+            point_count: 32,
         };
-
-        let mut file_data_v2 = Vec::new();
-        file_data_v2.extend_from_slice(&page_pointer_v2.to_bytes());
-        file_data_v2.extend_from_slice(&data_entry.to_bytes());
+        let data_entry = HierarchyEntry {
+            key: VoxelKey {
+                depth: 2,
+                x: 0,
+                y: 0,
+                z: 0,
+            },
+            offset: 1000,
+            byte_count: 300,
+            point_count: 30,
+        };
+        let mut file_data = Vec::new();
+        file_data.extend_from_slice(&page_pointer.to_bytes());
+        file_data.extend_from_slice(&data_entry.to_bytes());
 
         let query = BoundingBox3D::new(0.0, 0.0, 0.0, 30.0, 30.0, 30.0).expect("valid query bbox");
 
-        // For this test, use a custom query that calls through with the adjusted page size
-        let results = query_hierarchy_with_page_pointers(&file_data_v2, &info, 0, 32, &query)
-            .expect("should traverse page pointer");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].point_count, 30);
+        let via_alias =
+            query_hierarchy(&file_data, &info, 0, 32, &query).expect("alias should succeed");
+        let via_direct = query_hierarchy_with_page_pointers(&file_data, &info, 0, 32, &query)
+            .expect("direct call should succeed");
+        assert_eq!(via_alias, via_direct);
     }
 
     #[test]

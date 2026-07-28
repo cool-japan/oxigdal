@@ -16,9 +16,9 @@
 //!
 //! The ETL framework consists of several key components:
 //!
-//! - **Sources**: Data inputs (files, HTTP, S3, STAC, Kafka, PostGIS)
+//! - **Sources**: Data inputs (files, HTTP, S3, STAC, PostGIS)
 //! - **Transforms**: Data transformations (map, filter, window, join, etc.)
-//! - **Sinks**: Data outputs (files, S3, PostGIS, Kafka)
+//! - **Sinks**: Data outputs (files, S3, PostGIS)
 //! - **Pipeline**: Fluent API for composing ETL workflows
 //! - **Stream**: Async stream processing with backpressure
 //! - **Scheduler**: Task scheduling and execution
@@ -65,13 +65,15 @@
 //! # Feature Flags
 //!
 //! - `std` (default): Enable standard library support
-//! - `kafka`: Enable Kafka source and sink
 //! - `postgres`: Enable PostgreSQL/PostGIS support
 //! - `s3`: Enable Amazon S3 support
 //! - `stac`: Enable STAC catalog support
 //! - `http`: Enable HTTP source support
 //! - `scheduler`: Enable cron-based scheduling
 //! - `all`: Enable all optional features
+//!
+//! The `kafka` feature (Kafka source and sink) was **removed in 0.2.1** together
+//! with the retired `oxigeo-kafka` crate; see the workspace CHANGELOG.
 
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -108,11 +110,6 @@ pub mod prelude {
     pub use crate::source::{FileSource, Source};
     pub use crate::stream::{StreamConfig, StreamItem, StreamProcessor};
     pub use crate::transform::Transform;
-
-    #[cfg(feature = "kafka")]
-    pub use crate::sink::KafkaSink;
-    #[cfg(feature = "kafka")]
-    pub use crate::source::KafkaSource;
 
     #[cfg(feature = "postgres")]
     pub use crate::sink::PostGisSink;

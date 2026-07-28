@@ -1,7 +1,20 @@
-//! GPU acceleration for ML inference
+//! GPU backend **detection** for ML inference.
 //!
-//! This module provides GPU acceleration support across multiple backends
-//! including CUDA, ROCm, DirectML, Vulkan, and WebGPU.
+//! # Scope
+//!
+//! This module discovers and enumerates GPU backends — CUDA, ROCm, DirectML,
+//! Vulkan, Metal, OpenCL and WebGPU — via dynamic-library / API probing. It
+//! answers "which GPUs are present and available?" ([`GpuBackend::detect_all`],
+//! [`list_devices`], [`select_device`]).
+//!
+//! **It does not itself execute inference on a GPU.** Detecting or selecting a
+//! backend here does not change how [`crate::inference::InferenceEngine`] runs a
+//! model — CPU is always used unless the ONNX backend was compiled with the
+//! `gpu` feature (which routes CUDA execution through `oxionnx`). Treat this
+//! module as capability discovery and device selection, feeding a
+//! [`GpuConfig`] you can record on an [`crate::inference::InferenceConfig`];
+//! wiring a detected backend into the actual execution provider is handled by
+//! the ONNX backend's compile-time features, not by this module at runtime.
 //!
 //! # Safety
 //!
@@ -47,6 +60,20 @@ impl GpuBackend {
         }
     }
 
+    /// Every backend variant, in detection-preference order.
+    #[must_use]
+    pub fn all() -> [GpuBackend; 7] {
+        [
+            Self::Cuda,
+            Self::Rocm,
+            Self::Metal,
+            Self::Vulkan,
+            Self::DirectMl,
+            Self::OpenCl,
+            Self::WebGpu,
+        ]
+    }
+
     /// Checks if the backend is available on the current platform
     #[must_use]
     pub fn is_available(&self) -> bool {
@@ -59,6 +86,19 @@ impl GpuBackend {
             Self::Metal => check_metal_available(),
             Self::OpenCl => check_opencl_available(),
         }
+    }
+
+    /// Detects every GPU backend that is currently available on this machine.
+    ///
+    /// This probes each backend's availability (via dynamic library / API
+    /// presence) and returns the ones that are usable. It performs **detection
+    /// only** — it does not load any model or change how inference is executed.
+    #[must_use]
+    pub fn detect_all() -> Vec<GpuBackend> {
+        Self::all()
+            .into_iter()
+            .filter(GpuBackend::is_available)
+            .collect()
     }
 }
 
@@ -80,7 +120,18 @@ pub struct GpuDevice {
 }
 
 impl GpuDevice {
-    /// Returns memory utilization percentage
+    /// Returns `true` when the device reported real memory sizes.
+    ///
+    /// Some backends (notably WebGPU, whose limits require an async query)
+    /// cannot report memory synchronously and leave `total_memory` /
+    /// `free_memory` at `0`, meaning **unknown** rather than "zero capacity".
+    /// Use this to distinguish the two before doing numeric capacity checks.
+    #[must_use]
+    pub fn is_memory_known(&self) -> bool {
+        self.total_memory > 0
+    }
+
+    /// Returns memory utilization percentage, or `None` when memory is unknown.
     #[must_use]
     pub fn memory_utilization(&self) -> f32 {
         if self.total_memory > 0 {
@@ -91,9 +142,19 @@ impl GpuDevice {
         }
     }
 
-    /// Checks if the device has sufficient free memory
+    /// Checks if the device has sufficient free memory for `required_bytes`.
+    ///
+    /// When the device's memory is **unknown** (see [`is_memory_known`]) this
+    /// returns `true` rather than falsely reporting the device as having zero
+    /// capacity — callers that need a hard guarantee should first check
+    /// [`is_memory_known`].
+    ///
+    /// [`is_memory_known`]: Self::is_memory_known
     #[must_use]
     pub fn has_sufficient_memory(&self, required_bytes: usize) -> bool {
+        if !self.is_memory_known() {
+            return true;
+        }
         self.free_memory >= required_bytes
     }
 }
@@ -155,6 +216,12 @@ impl GpuConfigBuilder {
         self
     }
 
+    /// Sets the preferred GPU backend (alias for [`backend`](Self::backend)).
+    #[must_use]
+    pub fn preferred_backend(self, backend: GpuBackend) -> Self {
+        self.backend(backend)
+    }
+
     /// Sets the device ID
     #[must_use]
     pub fn device_id(mut self, id: usize) -> Self {
@@ -213,13 +280,17 @@ pub fn list_devices() -> Result<Vec<GpuDevice>> {
 
     let mut devices = Vec::new();
 
-    // Try each backend
+    // Try every backend that has a real enumeration path. OpenCL and WebGPU are
+    // included here — omitting them made `--features opencl`/`webgpu` devices
+    // undiscoverable even when present and available.
     for backend in &[
         GpuBackend::Cuda,
         GpuBackend::Rocm,
         GpuBackend::Metal,
         GpuBackend::Vulkan,
         GpuBackend::DirectMl,
+        GpuBackend::OpenCl,
+        GpuBackend::WebGpu,
     ] {
         if backend.is_available() {
             devices.extend(list_devices_for_backend(*backend)?);
@@ -1182,13 +1253,24 @@ fn directml_enumerate_devices_impl() -> Result<Vec<GpuDevice>> {
         }));
     }
 
-    // IDXGIFactory1 vtable offsets (simplified)
-    // EnumAdapters1 is at offset 7 in the vtable
+    // IDXGIFactory1 vtable layout (COM interface-inheritance chain):
+    //   IUnknown:       QueryInterface/AddRef/Release           = 0,1,2
+    //   IDXGIObject:    SetPrivateData/.../GetParent            = 3..=6
+    //   IDXGIFactory:   EnumAdapters/MakeWindowAssociation/...  = 7..=11
+    //   IDXGIFactory1:  EnumAdapters1/IsCurrent                 = 12,13
+    //
+    // `EnumAdapters1` (which returns an `IDXGIAdapter1`, required for the
+    // `GetDesc1` call below) is at offset **12** — NOT 7. Offset 7 is the base
+    // `IDXGIFactory::EnumAdapters`, which returns a plain `IDXGIAdapter` and
+    // would make the subsequent `GetDesc1` dispatch invalid on strict DXGI
+    // implementations.
+    const ENUM_ADAPTERS1_VTABLE_INDEX: usize = 12;
     type EnumAdapters1Fn = unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HResult;
 
     let vtable = unsafe { *(factory as *const *const c_void) };
-    let enum_adapters1: EnumAdapters1Fn =
-        unsafe { std::mem::transmute(*((vtable as *const *const c_void).offset(7))) };
+    let enum_adapters1: EnumAdapters1Fn = unsafe {
+        std::mem::transmute(*((vtable as *const *const c_void).add(ENUM_ADAPTERS1_VTABLE_INDEX)))
+    };
 
     let mut devices = Vec::new();
     let mut adapter_index = 0u32;
@@ -1645,6 +1727,27 @@ mod tests {
         };
 
         assert_eq!(device.memory_utilization(), 0.0);
-        assert!(!device.has_sufficient_memory(1));
+        // A device reporting 0 bytes means memory is *unknown* (e.g. WebGPU,
+        // whose limits require an async query), NOT zero capacity. It must be
+        // distinguishable via `is_memory_known`, and capacity checks treat an
+        // unknown device as sufficient rather than falsely rejecting it.
+        assert!(!device.is_memory_known());
+        assert!(device.has_sufficient_memory(1));
+    }
+
+    #[test]
+    fn test_known_memory_device_capacity_check() {
+        let device = GpuDevice {
+            id: 0,
+            name: "Known Memory Device".to_string(),
+            total_memory: 1024,
+            free_memory: 512,
+            compute_capability: "8.0".to_string(),
+            backend: GpuBackend::Cuda,
+        };
+
+        assert!(device.is_memory_known());
+        assert!(device.has_sufficient_memory(512));
+        assert!(!device.has_sufficient_memory(1024));
     }
 }

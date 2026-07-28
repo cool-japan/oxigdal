@@ -1,11 +1,11 @@
 # TODO: oxigeo-offline
 
 > **Purpose:** Offline-first data management with sync queue, conflict resolution, and optimistic updates for OxiGeo (SQLite native + IndexedDB WASM; merge strategies; retry; optimistic updates).
-> **Status (2026-05-16):** 6,296 Rust LoC · 73 tests · 1 real-stub site (conflict.rs:125 ancestor lookup)
+> **Status (2026-07-28):** 7,759 Rust LoC · 98 tests (all-features and default-features; 0 failed) · 0 known real-code stub sites
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
-- [ ] Real three-way merge: implement version-history lookup for `find_common_ancestor`
+- [x] Real three-way merge: implement version-history lookup for `find_common_ancestor`
   - **Verified gap:** `src/conflict.rs:125` — `/// Find common ancestor (placeholder for now)` and body `fn find_common_ancestor(&self, _local: &Record, _remote: &Record) -> Result<Option<Record>> { // In a real implementation, this would query the history / // For now, we don't have version history / Ok(None) }`.
   - **Goal:** Three-way merge (`MergeStrategy::ThreeWayMerge`, declared in `src/merge.rs`) actually has a base version to merge against — today it silently falls through because ancestor is always `None`. Required for non-trivial conflict resolution (Mens 2002).
   - **Design:** Add a `record_versions` table to SQLite backend (`storage/sqlite.rs`) — schema `(record_id, version, parent_version, updated_at, payload)`. On each write, append a row. `find_common_ancestor(local, remote)` does an SQL `WITH RECURSIVE` walk from `local.parent_version` and from `remote.parent_version` until intersecting; LCA = lowest-`version` common row. Mirror in IndexedDB backend (`storage/indexeddb.rs`) using a secondary object store.
@@ -13,6 +13,7 @@
   - **Tests:** (proposed) `test_lca_linear_history`, `test_lca_diamond_concurrent_branches`, `test_lca_disjoint_returns_none`, `test_threeway_merge_uses_ancestor`.
   - **Risk:** Storage migration — bump schema-version + write migration; protect existing-data path with tests.
   - **Prerequisites:** None.
+  - **Done:** (verified 2026-07-28) Implemented with a pluggable `AncestorStore` trait (new `src/history.rs`) instead of the SQLite `WITH RECURSIVE` design sketched above: `InMemoryAncestorStore` (`DashMap<RecordId, BTreeMap<u64, Record>>`, capped at `DEFAULT_MAX_VERSIONS_PER_RECORD = 64` per record id, oldest evicted first) records each confirmed version via `AncestorStore::record_version`; `ConflictDetector::with_ancestor_store` (`src/conflict.rs:54`) attaches it. `find_common_ancestor` (`src/conflict.rs:162-173`) now looks up the nearest recorded version at or before `min(local.version, remote.version) - 1` instead of always returning `None`, and still honestly returns `None` when no store is attached or nothing qualifies. Tests: `test_ancestor_store_supplies_real_base`, `test_no_ancestor_store_configured_returns_none` (`src/conflict.rs`), plus 6 unit tests in `src/history.rs`. Note: durable SQLite/IndexedDB-backed history (the schema-migration design above) was not built — `InMemoryAncestorStore` is in-process only and does not survive restarts; a caller wanting durable history must implement `AncestorStore` itself.
 
 - [ ] Connectivity-detection (online/offline state transitions)
   - **Verified gap:** `src/lib.rs:21` doc claims "Background sync: Automatic sync when connectivity is restored" but `src/sync.rs` `SyncEngine::sync` only checks `remote.ping().await?` lazily — no event-stream of `Online`/`Offline` transitions.
@@ -102,4 +103,4 @@
 - (None — existing TODO.md had no `[x]` items.)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

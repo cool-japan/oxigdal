@@ -53,6 +53,41 @@ impl LayerFreezer {
             .collect()
     }
 
+    /// Builds a per-layer learning-rate vector: `base_learning_rate` for
+    /// trainable layers and `0.0` for frozen layers.
+    ///
+    /// The result has one entry per layer (`0..total_layers`) and is intended
+    /// to be passed to a backend's layer-wise optimizer step
+    /// (`MLBackend::optimizer_step_layerwise`), so freezing is applied to a real
+    /// model's weights (frozen layers receive a zero step and do not change).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `num_layers` does not match the freezer's configured
+    /// layer count.
+    pub fn layer_learning_rates(
+        &self,
+        base_learning_rate: f32,
+        num_layers: usize,
+    ) -> Result<Vec<f32>> {
+        if num_layers != self.total_layers {
+            return Err(Error::invalid_parameter(
+                "num_layers",
+                num_layers,
+                format!("freezer was built for {} layers", self.total_layers),
+            ));
+        }
+        Ok((0..self.total_layers)
+            .map(|i| {
+                if self.is_layer_frozen(i) {
+                    0.0
+                } else {
+                    base_learning_rate
+                }
+            })
+            .collect())
+    }
+
     /// Unfreezes all layers.
     pub fn unfreeze_all(&mut self) {
         self.config.frozen_layers = Some(Vec::new());
@@ -89,6 +124,21 @@ mod tests {
 
         let trainable = freezer.trainable_layer_indices();
         assert_eq!(trainable, vec![3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn test_layer_learning_rates_bridge() {
+        let config = FreezingConfig::freeze_first_n(3);
+        let freezer = LayerFreezer::new(config, 5).expect("Failed to create layer freezer");
+
+        let lrs = freezer
+            .layer_learning_rates(0.01, 5)
+            .expect("layer lrs failed");
+        // Layers 0..3 frozen -> 0.0; layers 3,4 trainable -> base lr.
+        assert_eq!(lrs, vec![0.0, 0.0, 0.0, 0.01, 0.01]);
+
+        // Mismatched layer count must error.
+        assert!(freezer.layer_learning_rates(0.01, 4).is_err());
     }
 
     #[test]

@@ -113,13 +113,15 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
         // Create a sync queue for data uploads
         let mut upload_queue = SyncQueue::new("uploads");
 
-        // Add an operation to the queue
+        // Add an operation to the queue. `/api/upload` is the endpoint the
+        // service worker's background-sync handler will POST to when it
+        // replays this operation (see templates/service-worker.js).
         let operation = QueuedOperation::new(
             "upload-1",
             "upload-geojson",
+            "/api/upload",
             serde_json::json!({
                 "file": "data.geojson",
-                "destination": "/api/upload"
             }),
         );
 

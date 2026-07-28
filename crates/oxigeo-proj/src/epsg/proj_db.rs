@@ -267,7 +267,13 @@ impl ProjDb {
             let name: String = row
                 .try_get_by_index::<String>(0)
                 .map_err(|e| ProjError::ProjDbError(e.to_string()))?;
-            let kind: String = row.try_get_by_index::<String>(1).unwrap_or_default();
+            // The CRS-kind column drives `build_proj_string`; a decode failure
+            // here would silently manufacture a plain-geographic PROJ string
+            // for what may be a projected/geocentric/vertical CRS. Propagate
+            // the error instead of defaulting to "".
+            let kind: String = row
+                .try_get_by_index::<String>(1)
+                .map_err(|e| ProjError::ProjDbError(e.to_string()))?;
             let deprecated_int: i64 = row.try_get_by_index::<i64>(2).unwrap_or(0);
             let area: Option<String> = row.try_get_by_index::<Option<String>>(3).unwrap_or(None);
             let proj_string = build_proj_string(&kind);
@@ -311,7 +317,9 @@ impl ProjDb {
             let name: String = row
                 .try_get_by_index::<String>(0)
                 .map_err(|e| ProjError::ProjDbError(e.to_string()))?;
-            let kind: String = row.try_get_by_index::<String>(1).unwrap_or_default();
+            let kind: String = row
+                .try_get_by_index::<String>(1)
+                .map_err(|e| ProjError::ProjDbError(e.to_string()))?;
             let dep: i64 = row.try_get_by_index::<i64>(2).unwrap_or(0);
             let area: Option<String> = row.try_get_by_index::<Option<String>>(3).unwrap_or(None);
             return Ok(Some(ProjDbEntry {
@@ -340,7 +348,9 @@ impl ProjDb {
             let name: String = row
                 .try_get_by_index::<String>(0)
                 .map_err(|e| ProjError::ProjDbError(e.to_string()))?;
-            let kind: String = row.try_get_by_index::<String>(1).unwrap_or_default();
+            let kind: String = row
+                .try_get_by_index::<String>(1)
+                .map_err(|e| ProjError::ProjDbError(e.to_string()))?;
             let dep: i64 = row.try_get_by_index::<i64>(2).unwrap_or(0);
             let area: Option<String> = row.try_get_by_index::<Option<String>>(3).unwrap_or(None);
             Ok(Some(ProjDbEntry {

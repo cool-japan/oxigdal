@@ -12,9 +12,11 @@ use oxigeo_geotiff::{
 };
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::array::{buffer_to_numpy, data_type_to_numpy_dtype};
+use crate::remote::{AnySource, MemoryDataSource};
 
 /// Configuration for creating a new dataset
 #[derive(Debug, Clone)]
@@ -29,6 +31,11 @@ pub struct DatasetCreateConfig {
     pub compress: Option<String>,
     pub tiled: bool,
     pub blocksize: u32,
+    /// Whether to generate reduced-resolution overviews. Real, wired-up
+    /// behavior for the `driver="COG"` option (a Cloud-Optimized GeoTIFF is,
+    /// at minimum, a tiled GeoTIFF with overviews): see
+    /// `core_ops::create_raster`.
+    pub overviews: bool,
 }
 
 impl DatasetCreateConfig {
@@ -44,6 +51,7 @@ impl DatasetCreateConfig {
             compress: None,
             tiled: false,
             blocksize: 256,
+            overviews: false,
         }
     }
 
@@ -193,19 +201,70 @@ pub struct Dataset {
     pending_bands: Vec<PendingBandData>,
     /// Writer configuration for write mode
     writer_config: Option<WriterConfig>,
+    /// When `Some`, this dataset was opened from a remote URL (s3://, gs://,
+    /// az://, http(s)://) and its full body has already been fetched into
+    /// memory; reads go through `AnySource::Memory` instead of touching the
+    /// filesystem.
+    remote_bytes: Option<Vec<u8>>,
 }
 
 impl Dataset {
-    /// Opens a dataset from the given path
+    /// Opens a dataset from the given path.
+    ///
+    /// Local filesystem paths only; equivalent to
+    /// `open_with_driver_options(path, mode, None, &HashMap::new())`. Kept as
+    /// a convenience entry point for `oxigeo.open()`, which takes no
+    /// driver/options arguments.
     pub fn open(path: &str, mode: &str) -> PyResult<Self> {
+        Self::open_with_driver_options(path, mode, None, &HashMap::new())
+    }
+
+    /// Opens a dataset, honoring an explicit `driver` hint and driver/cloud
+    /// `options`.
+    ///
+    /// For remote URLs (`s3://`, `gs://`/`gcs://`, `az://`/`azure://`,
+    /// `http://`/`https://`) this performs a real fetch of the object body
+    /// via `oxigeo-cloud` (when built with the `cloud` feature) -- `options`
+    /// keys such as `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/
+    /// `AWS_ENDPOINT_URL` (S3) or `HTTP_BEARER_TOKEN`/`HEADER_*` (HTTP) are
+    /// honored; see `crate::remote` for the full list. Without the `cloud`
+    /// feature, remote URLs raise a clear typed error instead of a
+    /// misleading `FileNotFoundError`/generic `IOError`.
+    pub fn open_with_driver_options(
+        path: &str,
+        mode: &str,
+        driver: Option<&str>,
+        options: &HashMap<String, String>,
+    ) -> PyResult<Self> {
+        if let Some(drv) = driver
+            && drv == "VRT"
+        {
+            return Err(crate::remote::unsupported_driver_error(drv));
+        }
+
+        if let Some(scheme) = crate::remote::classify_remote_url(path) {
+            let bytes = crate::remote::fetch_remote_bytes(path, scheme, options)?;
+
+            let mut ds = Self {
+                path: PathBuf::from(path),
+                metadata: None,
+                mode: mode.to_string(),
+                pending_bands: Vec::new(),
+                writer_config: None,
+                remote_bytes: Some(bytes),
+            };
+
+            if mode == "r" || mode == "r+" {
+                ds.load_metadata()?;
+            }
+
+            return Ok(ds);
+        }
+
         let path_buf = PathBuf::from(path);
 
         // Check if file exists for read mode
-        if mode == "r"
-            && !path_buf.exists()
-            && !path.starts_with("http://")
-            && !path.starts_with("https://")
-        {
+        if mode == "r" && !path_buf.exists() {
             return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
                 "File not found: {}",
                 path
@@ -218,6 +277,7 @@ impl Dataset {
             mode: mode.to_string(),
             pending_bands: Vec::new(),
             writer_config: None,
+            remote_bytes: None,
         };
 
         // For read mode, load metadata immediately if file exists
@@ -226,6 +286,31 @@ impl Dataset {
         }
 
         Ok(ds)
+    }
+
+    /// Opens the underlying byte source for this dataset: an in-memory
+    /// buffer for remote datasets (already fetched by `open_with_driver_options`),
+    /// or the local file otherwise.
+    fn open_source(&self) -> PyResult<AnySource> {
+        if let Some(bytes) = &self.remote_bytes {
+            return Ok(AnySource::Memory(MemoryDataSource::new(bytes.clone())));
+        }
+
+        if !self.path.exists() {
+            return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                "File not found: {}",
+                self.path.display()
+            )));
+        }
+
+        let source = FileDataSource::open(&self.path).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!(
+                "Failed to open file '{}': {}",
+                self.path.display(),
+                e
+            ))
+        })?;
+        Ok(AnySource::File(source))
     }
 
     /// Opens a dataset with creation parameters for write mode
@@ -275,7 +360,11 @@ impl Dataset {
         let mut writer_config =
             WriterConfig::new(config.width, config.height, config.bands as u16, data_type)
                 .with_compression(compression)
-                .with_nodata(nodata_value);
+                .with_nodata(nodata_value)
+                .with_overviews(
+                    config.overviews,
+                    oxigeo_geotiff::OverviewResampling::Average,
+                );
 
         if config.tiled {
             writer_config = writer_config.with_tile_size(config.blocksize, config.blocksize);
@@ -294,25 +383,14 @@ impl Dataset {
             mode: "w".to_string(),
             pending_bands: Vec::new(),
             writer_config: Some(writer_config),
+            remote_bytes: None,
         })
     }
 
-    /// Loads metadata from the file using GeoTIFF reader
+    /// Loads metadata from the file (or in-memory remote buffer) using the
+    /// GeoTIFF reader.
     fn load_metadata(&mut self) -> PyResult<()> {
-        if !self.path.exists() {
-            return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
-                "File not found: {}",
-                self.path.display()
-            )));
-        }
-
-        let source = FileDataSource::open(&self.path).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!(
-                "Failed to open file '{}': {}",
-                self.path.display(),
-                e
-            ))
-        })?;
+        let source = self.open_source()?;
 
         let reader = GeoTiffReader::open(source).map_err(|e| {
             pyo3::exceptions::PyIOError::new_err(format!(
@@ -337,15 +415,9 @@ impl Dataset {
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Failed to load metadata"))
     }
 
-    /// Reads raw band data from a GeoTIFF file
+    /// Reads raw band data from a GeoTIFF file (or in-memory remote buffer)
     fn read_band_data(&self, band: u32) -> PyResult<(Vec<f64>, u64, u64, RasterDataType)> {
-        let source = FileDataSource::open(&self.path).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!(
-                "Failed to open file '{}': {}",
-                self.path.display(),
-                e
-            ))
-        })?;
+        let source = self.open_source()?;
 
         let reader = GeoTiffReader::open(source).map_err(|e| {
             pyo3::exceptions::PyIOError::new_err(format!(
@@ -628,9 +700,12 @@ impl Dataset {
         let height = metadata.height;
         let data_type = metadata.data_type;
 
-        // Try to read actual data from file. The decode is blocking I/O plus a
-        // full pixel-by-pixel copy, so release the GIL while it runs.
-        if self.path.exists() && (self.mode == "r" || self.mode == "r+") {
+        // Try to read actual data from file (or already-fetched remote
+        // buffer). The decode is blocking I/O plus a full pixel-by-pixel
+        // copy, so release the GIL while it runs.
+        if (self.remote_bytes.is_some() || self.path.exists())
+            && (self.mode == "r" || self.mode == "r+")
+        {
             let read_result = py.detach(|| self.read_band_data(band));
             match read_result {
                 Ok((values, w, _h, _dt)) => {
@@ -1020,6 +1095,7 @@ mod tests {
             mode: "r".to_string(),
             pending_bands: Vec::new(),
             writer_config: None,
+            remote_bytes: None,
         };
         assert_eq!(ds.path, test_path);
         assert_eq!(ds.mode, "r");
@@ -1034,6 +1110,7 @@ mod tests {
             mode: "r".to_string(),
             pending_bands: Vec::new(),
             writer_config: None,
+            remote_bytes: None,
         };
         let repr = ds.__repr__();
         assert!(repr.contains("oxigeo_test.tif"));

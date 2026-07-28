@@ -8,28 +8,36 @@
 //! - TimescaleDB for time-series geospatial data
 //! - Cassandra/ScyllaDB for distributed spatial data storage
 //!
+//! # Features
+//!
+//! The default feature set is **100% Pure Rust**: `postgres`, `sqlite` and
+//! `clickhouse`. The `mysql`, `mongodb` and `cassandra` connectors pull
+//! non-Pure-Rust C/asm dependencies (libz-sys, ring, aws-lc-sys respectively)
+//! and are therefore **opt-in** — enable them explicitly, e.g.
+//! `features = ["mysql"]`.
+//!
 //! # Examples
 //!
-//! ## MySQL
+//! ## SQLite (pure Rust, enabled by default)
 //!
 //! ```no_run
+//! use oxigeo_db_connectors::sqlite::SqliteConnector;
+//!
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let connector = SqliteConnector::memory()?;
+//! assert!(connector.health_check()?);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## MySQL (opt-in `mysql` feature)
+//!
+//! ```ignore
 //! use oxigeo_db_connectors::mysql::{MySqlConfig, MySqlConnector};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = MySqlConfig::default();
 //! let connector = MySqlConnector::new(config)?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## MongoDB
-//!
-//! ```no_run
-//! use oxigeo_db_connectors::mongodb::{MongoDbConfig, MongoDbConnector};
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let config = MongoDbConfig::default();
-//! let connector = MongoDbConnector::new(config).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -47,6 +55,7 @@ pub mod error;
 pub mod mongodb;
 #[cfg(feature = "mysql")]
 pub mod mysql;
+pub(crate) mod sql;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 #[cfg(feature = "postgres")]

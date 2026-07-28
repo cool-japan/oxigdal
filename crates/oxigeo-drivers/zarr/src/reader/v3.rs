@@ -5,7 +5,7 @@
 
 use crate::codecs::CodecChain;
 use crate::codecs::dispatch::build_codec_from_metadata;
-use crate::error::{Result, ZarrError};
+use crate::error::{Result, StorageError, ZarrError};
 use crate::metadata::v3::{ArrayMetadataV3, CodecMetadata, ShardingConfig};
 use crate::sharding::{IndexLocation, ShardReader};
 use crate::storage::{Store, StoreKey};
@@ -133,10 +133,15 @@ impl<S: Store> ZarrV3Reader<S> {
         let chunk_key = self.build_chunk_key(coords)?;
         let encoded_data = match self.store.get(&StoreKey::new(chunk_key)) {
             Ok(data) => data,
-            Err(_) => {
-                // Chunk doesn't exist, return fill value
+            // Only a genuinely absent chunk yields the fill value. Every other
+            // storage failure (network, permission, throttling, corrupted
+            // backend response) must propagate -- silently returning fill data
+            // for a transient I/O error is data corruption for any consumer
+            // that cannot tell the difference.
+            Err(ZarrError::Storage(StorageError::KeyNotFound { .. })) => {
                 return self.create_fill_chunk();
             }
+            Err(e) => return Err(e),
         };
 
         // Apply storage transformers (decode)
@@ -399,15 +404,7 @@ impl<S: Store> ZarrV3Reader<S> {
             .map(|(&c, &n)| c % n)
             .collect();
 
-        // Fetch the shard file from storage
         let shard_key = self.build_chunk_key(&shard_coords)?;
-        let shard_bytes = match self.store.get(&StoreKey::new(shard_key)) {
-            Ok(data) => data,
-            Err(_) => return self.create_fill_chunk(),
-        };
-
-        // Apply storage transformers to shard bytes
-        let transformed = self.transformers.decode(shard_bytes)?;
 
         // Build codec chains for inner chunks and index
         let (chunk_codec, index_codec) = crate::sharding::parse_sharding_config(shard_config)?;
@@ -417,6 +414,45 @@ impl<S: Store> ZarrV3Reader<S> {
             .as_deref()
             .and_then(|loc| IndexLocation::from_str(loc).ok())
             .unwrap_or_default();
+
+        // Cloud-efficient fast path: when there are no storage transformers
+        // (which would require the whole shard object to decode), read only
+        // the shard's fixed-size index and then only the one inner chunk via
+        // storage byte-range reads, instead of downloading the whole shard.
+        if self.transformers.is_empty() {
+            let key = StoreKey::new(shard_key);
+            return match crate::sharding::read_inner_chunk_ranged(
+                self.store.as_ref(),
+                &key,
+                &inner_coords,
+                chunks_per_shard,
+                &chunk_codec,
+                &index_codec,
+                index_location,
+            ) {
+                Ok(Some(data)) => Ok(data),
+                Ok(None) => self.create_fill_chunk(),
+                // A genuinely absent shard yields fill values; every other
+                // storage error must propagate.
+                Err(ZarrError::Storage(StorageError::KeyNotFound { .. })) => {
+                    self.create_fill_chunk()
+                }
+                Err(e) => Err(e),
+            };
+        }
+
+        // Slow path: storage transformers (e.g. encryption) require the whole
+        // shard object before the index can be parsed.
+        let shard_bytes = match self.store.get(&StoreKey::new(shard_key)) {
+            Ok(data) => data,
+            Err(ZarrError::Storage(StorageError::KeyNotFound { .. })) => {
+                return self.create_fill_chunk();
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Apply storage transformers to shard bytes
+        let transformed = self.transformers.decode(shard_bytes)?;
 
         // Create shard reader (parses the index footer/header)
         let shard_reader = ShardReader::new(
@@ -495,6 +531,61 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 mod tests {
     use super::*;
     use crate::storage::memory::MemoryStore;
+
+    /// A store that serves metadata normally but fails every *chunk* read with
+    /// a transient network error (not KeyNotFound), used to prove the reader
+    /// propagates real I/O failures instead of masking them as fill values.
+    struct ChunkFaultStore {
+        inner: MemoryStore,
+    }
+
+    impl crate::storage::Store for ChunkFaultStore {
+        fn exists(&self, key: &StoreKey) -> Result<bool> {
+            self.inner.exists(key)
+        }
+        fn get(&self, key: &StoreKey) -> Result<Vec<u8>> {
+            if key.as_str().ends_with("zarr.json") {
+                self.inner.get(key)
+            } else {
+                Err(ZarrError::Storage(StorageError::Network {
+                    message: "simulated transient failure".to_string(),
+                }))
+            }
+        }
+        fn set(&mut self, key: &StoreKey, value: &[u8]) -> Result<()> {
+            self.inner.set(key, value)
+        }
+        fn delete(&mut self, key: &StoreKey) -> Result<()> {
+            self.inner.delete(key)
+        }
+        fn list_prefix(&self, prefix: &StoreKey) -> Result<Vec<StoreKey>> {
+            self.inner.list_prefix(prefix)
+        }
+    }
+
+    #[test]
+    fn test_read_chunk_propagates_storage_error_not_fill() {
+        let mut inner = MemoryStore::new();
+        let metadata = ArrayMetadataV3::new(vec![4], vec![2], "float32");
+        let metadata_json = serde_json::to_vec(&metadata).expect("serialize");
+        inner
+            .set(&StoreKey::new("arr/zarr.json".to_string()), &metadata_json)
+            .expect("set meta");
+
+        let store = ChunkFaultStore { inner };
+        let reader = ZarrV3Reader::new(store, "arr").expect("create reader");
+
+        // The chunk read must surface the network error, NOT silently return a
+        // plausible-looking fill chunk.
+        let result = reader.read_chunk(&[0]);
+        assert!(
+            matches!(
+                result,
+                Err(ZarrError::Storage(StorageError::Network { .. }))
+            ),
+            "expected the transient storage error to propagate, got {result:?}"
+        );
+    }
 
     #[test]
     fn test_build_chunk_key_default() {

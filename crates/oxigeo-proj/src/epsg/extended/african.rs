@@ -1,6 +1,7 @@
 //! African national grid CRS registrations.
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::ToString;
 
 pub(super) fn register_african_grids(db: &mut EpsgDatabase) {
     let african_grids: &[(u32, &str, &str, &str, &str)] = &[

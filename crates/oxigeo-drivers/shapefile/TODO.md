@@ -1,7 +1,7 @@
 # TODO: oxigeo-drivers/shapefile
 
 > **Purpose:** Shapefile (ESRI) driver for OxiGeo - Pure Rust GDAL reimplementation
-> **Status (2026-05-16):** 8,774 Rust LoC (incl. tests) - 110 tests - 0 source-code stubs (mature; ESRI tech doc fully covered)
+> **Status (2026-07-28):** 7,312 Rust LoC (incl. tests) - 137 tests - 0 source-code stubs (mature; ESRI tech doc fully covered)
 > **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
@@ -95,4 +95,4 @@
 - [x] Implement attribute filtering during read (SQL-like WHERE clause)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

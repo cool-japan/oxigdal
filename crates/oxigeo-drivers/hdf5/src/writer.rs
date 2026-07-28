@@ -7,16 +7,24 @@
 //! retired.
 //!
 //! `oxih5`'s writer covers a real but bounded surface: root-level datasets
-//! (`i32`/`i64`/`f32`/`f64`/`u8`, or zero-filled fixed-size numeric datatypes),
-//! single-level sub-groups, `f64`/`i32` datasets inside sub-groups, string root
-//! attributes, and `string`/`f64`/`i64`/`i32` scalar attributes on datasets.
+//! (`i32`/`i64`/`f32`/`f64`/`u8`, or zero-/fill-value-filled fixed-size numeric
+//! datatypes), root-level **chunked** datasets (via `DatasetProperties::with_chunks`,
+//! written through `oxih5::FileWriter::create_dataset_unlimited` as a single
+//! whole-array chunk — `oxih5` stores the initial data as one raw-data-chunk
+//! B-tree entry, so `chunk_dims` must equal the dataset's `dims` exactly; a
+//! smaller chunk shape would silently drop every element outside the first
+//! chunk on read and is rejected instead), single-level sub-groups, `f64`/`i32`
+//! datasets inside sub-groups, string root attributes, and
+//! `string`/`f64`/`i64`/`i32` scalar attributes on datasets.
 //! Anything beyond that (nested groups, sub-group attributes, non-string root
-//! attributes, unsupported element types) returns a typed error at
+//! attributes, unsupported element types, chunked or partitioned-chunk-shape
+//! datasets inside sub-groups, and **any compression filter** — `oxih5` has no
+//! compression support at all) returns a typed error at
 //! [`Hdf5Writer::finalize`] rather than silently degrading.
 
 use crate::attribute::{Attribute, AttributeValue};
 use crate::convert;
-use crate::dataset::{Dataset, DatasetProperties};
+use crate::dataset::{CompressionFilter, Dataset, DatasetProperties, LayoutType};
 use crate::datatype::Datatype;
 use crate::error::{Hdf5Error, Result};
 use crate::group::{Group, ObjectRef, ObjectType, PathUtils};
@@ -376,75 +384,147 @@ fn path_first_segment(path: &str) -> String {
         .to_string()
 }
 
-/// Write a root-level dataset (with data, or zero-filled) into the `FileWriter`.
+/// Resolve the byte content a dataset should be written with: its real data if
+/// set, otherwise a buffer filled with the dataset's `fill_value` (repeated
+/// once per element) if one was configured via
+/// [`DatasetProperties::with_fill_value`], otherwise zeros — matching HDF5's
+/// own default-fill semantics.
+fn resolve_dataset_bytes(ds: &Dataset) -> Vec<u8> {
+    if let Some(bytes) = ds.data() {
+        return bytes.to_vec();
+    }
+    let elem_size = ds.datatype().size();
+    let n = ds.len();
+    match ds.properties().fill_value() {
+        Some(fill) if elem_size > 0 && fill.len() == elem_size => {
+            let mut buf = Vec::with_capacity(n * elem_size);
+            for _ in 0..n {
+                buf.extend_from_slice(fill);
+            }
+            buf
+        }
+        _ => vec![0u8; n * elem_size],
+    }
+}
+
+/// Write a root-level dataset (real data, fill-value-filled, or zero-filled;
+/// contiguous or chunked) into the `FileWriter`.
 fn write_root_dataset(fw: &mut FileWriter, name: &str, ds: &Dataset) -> Result<()> {
-    let dims = ds.dims();
-    match ds.data() {
-        Some(bytes) => match ds.datatype() {
-            Datatype::Int32 => {
-                let v = bytes_to_i32(bytes);
-                fw.write_dataset_i32(name, &v, dims)
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            Datatype::Int64 => {
-                let v = bytes_to_i64(bytes);
-                fw.write_dataset_i64(name, &v, dims)
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            Datatype::Float32 => {
-                let v = bytes_to_f32(bytes);
-                fw.write_dataset_f32(name, &v, dims)
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            Datatype::Float64 => {
-                let v = bytes_to_f64(bytes);
-                fw.write_dataset_f64(name, &v, dims)
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            Datatype::UInt8 => {
-                fw.write_dataset_u8(name, bytes, dims)
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            other => {
-                return Err(Hdf5Error::feature_not_available(format!(
-                    "writing dataset '{name}' with data of type {} — the real HDF5 writer supports i32, i64, f32, f64, u8",
-                    other.name()
-                )));
-            }
-        },
-        None => {
-            let dtype = convert::to_oxih5_dtype(ds.datatype())?;
-            fw.create_dataset(name, dims, &dtype)
+    let props = ds.properties();
+
+    // Compression is never honored by the real writer (oxih5 has no
+    // compression support at all) — fail loud rather than silently emitting
+    // an uncompressed dataset when the caller explicitly asked for one.
+    if !matches!(props.compression(), CompressionFilter::None) {
+        return Err(Hdf5Error::feature_not_available(format!(
+            "compressed HDF5 writing for dataset '{name}' ({:?}) — oxih5 has no compression support",
+            props.compression()
+        )));
+    }
+
+    let dims = ds.dims().to_vec();
+    let bytes = resolve_dataset_bytes(ds);
+
+    if props.layout() == LayoutType::Chunked {
+        let chunk_dims = props.chunk_dims().ok_or_else(|| {
+            Hdf5Error::internal(format!(
+                "dataset '{name}' has Chunked layout but no chunk dimensions"
+            ))
+        })?;
+        // `oxih5`'s chunked writer stores the initial data as a *single* raw
+        // data chunk (one B-tree v1 type-1 leaf entry at offset [0, 0, ...]).
+        // If the caller's chunk shape is smaller than the dataset shape in any
+        // dimension, only that first chunk's worth of elements would actually
+        // land in the file's B-tree; every other logical chunk has no B-tree
+        // entry at all and a conformant reader silently returns the fill
+        // value (zero) for it — i.e. real data would be silently dropped.
+        // Fail loud instead of writing a file that looks chunked but drops
+        // everything past the first chunk on read.
+        if chunk_dims != dims.as_slice() {
+            return Err(Hdf5Error::feature_not_available(format!(
+                "chunked dataset '{name}' with chunk_dims {chunk_dims:?} != dataset dims {dims:?} — \
+                 oxih5's writer only supports a single whole-array chunk (chunk_dims must equal dims); \
+                 partitioned multi-chunk writes are not supported and would silently drop data on read"
+            )));
+        }
+        let dtype = convert::to_oxih5_dtype(ds.datatype())?;
+        fw.create_dataset_unlimited(name, &dims, chunk_dims, &dtype, &bytes)
+            .map_err(convert::map_oxih5_err)?;
+        return Ok(());
+    }
+
+    match ds.datatype() {
+        Datatype::Int32 => {
+            let v = bytes_to_i32(&bytes);
+            fw.write_dataset_i32(name, &v, &dims)
                 .map_err(convert::map_oxih5_err)?;
+        }
+        Datatype::Int64 => {
+            let v = bytes_to_i64(&bytes);
+            fw.write_dataset_i64(name, &v, &dims)
+                .map_err(convert::map_oxih5_err)?;
+        }
+        Datatype::Float32 => {
+            let v = bytes_to_f32(&bytes);
+            fw.write_dataset_f32(name, &v, &dims)
+                .map_err(convert::map_oxih5_err)?;
+        }
+        Datatype::Float64 => {
+            let v = bytes_to_f64(&bytes);
+            fw.write_dataset_f64(name, &v, &dims)
+                .map_err(convert::map_oxih5_err)?;
+        }
+        Datatype::UInt8 => {
+            fw.write_dataset_u8(name, &bytes, &dims)
+                .map_err(convert::map_oxih5_err)?;
+        }
+        other => {
+            return Err(Hdf5Error::feature_not_available(format!(
+                "writing dataset '{name}' of type {} — the real HDF5 writer supports i32, i64, f32, f64, u8",
+                other.name()
+            )));
         }
     }
     Ok(())
 }
 
 /// Write a dataset inside a single-level sub-group into the `FileWriter`.
+///
+/// The real writer supports only contiguous, uncompressed `f64`/`i32`
+/// datasets inside sub-groups; chunked layout and compression at this nesting
+/// level are not supported by `oxih5` and fail loud.
 fn write_group_dataset(fw: &mut FileWriter, group: &str, name: &str, ds: &Dataset) -> Result<()> {
-    match ds.data() {
-        Some(bytes) => match ds.datatype() {
-            Datatype::Float64 => {
-                let v = bytes_to_f64(bytes);
-                fw.write_group_dataset_f64(group, name, &v, ds.dims())
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            Datatype::Int32 => {
-                let v = bytes_to_i32(bytes);
-                fw.write_group_dataset_i32(group, name, &v, ds.dims())
-                    .map_err(convert::map_oxih5_err)?;
-            }
-            other => {
-                return Err(Hdf5Error::feature_not_available(format!(
-                    "dataset '{name}' in group '{group}' of type {} — the real HDF5 writer supports f64 and i32 in sub-groups",
-                    other.name()
-                )));
-            }
-        },
-        None => {
+    let props = ds.properties();
+
+    if !matches!(props.compression(), CompressionFilter::None) {
+        return Err(Hdf5Error::feature_not_available(format!(
+            "compressed HDF5 writing for dataset '{name}' in group '{group}' — oxih5 has no compression support"
+        )));
+    }
+    if props.layout() == LayoutType::Chunked {
+        return Err(Hdf5Error::feature_not_available(format!(
+            "chunked layout for dataset '{name}' in group '{group}' — the real HDF5 writer only supports chunked datasets at root level"
+        )));
+    }
+
+    let bytes = resolve_dataset_bytes(ds);
+    let dims = ds.dims().to_vec();
+
+    match ds.datatype() {
+        Datatype::Float64 => {
+            let v = bytes_to_f64(&bytes);
+            fw.write_group_dataset_f64(group, name, &v, &dims)
+                .map_err(convert::map_oxih5_err)?;
+        }
+        Datatype::Int32 => {
+            let v = bytes_to_i32(&bytes);
+            fw.write_group_dataset_i32(group, name, &v, &dims)
+                .map_err(convert::map_oxih5_err)?;
+        }
+        other => {
             return Err(Hdf5Error::feature_not_available(format!(
-                "zero-filled dataset '{name}' in group '{group}' is not supported by the real HDF5 writer (write its data)"
+                "dataset '{name}' in group '{group}' of type {} — the real HDF5 writer supports f64 and i32 in sub-groups",
+                other.name()
             )));
         }
     }
@@ -691,6 +771,112 @@ mod tests {
             .expect("buffer attr");
         let result = writer.finalize();
         assert!(matches!(result, Err(Hdf5Error::FeatureNotAvailable { .. })));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A chunked (uncompressed) root dataset whose chunk shape equals its full
+    /// dataset shape (the only shape `oxih5`'s single-chunk writer can honor
+    /// without silently dropping data) must be written as a real HDF5 chunked
+    /// layout, and round-trip its values through `oxih5`'s own reader.
+    #[test]
+    fn test_chunked_dataset_writes_real_chunked_layout() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_hdf5_writer_chunked.h5");
+
+        {
+            let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
+            let props = DatasetProperties::new().with_chunks(vec![4, 2]);
+            writer
+                .create_dataset("/chunked", Datatype::Float64, vec![4, 2], props)
+                .expect("create chunked dataset");
+            let data: Vec<f64> = (0..8).map(|i| i as f64).collect();
+            writer
+                .write_f64("/chunked", &data)
+                .expect("write chunked data");
+            writer.finalize().expect("finalize");
+        }
+
+        let file = oxih5::open(&path).expect("oxih5 open");
+        let ds = file.dataset("chunked").expect("dataset chunked");
+        assert_eq!(ds.shape, vec![4, 2]);
+        let values = ds.as_f64().expect("as_f64");
+        assert_eq!(values, (0..8).map(|i| i as f64).collect::<Vec<_>>());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A chunk shape smaller than the dataset shape would silently drop data
+    /// past the first chunk on read (oxih5's writer only stores a single
+    /// whole-array chunk) — `finalize()` must fail loud rather than emit a
+    /// file that looks chunked but loses data.
+    #[test]
+    fn test_partitioned_chunk_shape_fails_loud() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_hdf5_writer_partitioned_chunk.h5");
+
+        let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
+        let props = DatasetProperties::new().with_chunks(vec![2, 2]);
+        writer
+            .create_dataset("/chunked", Datatype::Float64, vec![4, 2], props)
+            .expect("create chunked dataset");
+        writer
+            .write_f64("/chunked", &(0..8).map(|i| i as f64).collect::<Vec<_>>())
+            .expect("write chunked data");
+
+        let result = writer.finalize();
+        assert!(matches!(result, Err(Hdf5Error::FeatureNotAvailable { .. })));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Requesting GZIP compression must fail loud at `finalize()` — `oxih5`
+    /// has no compression support and the write must not silently degrade to
+    /// an uncompressed dataset.
+    #[test]
+    fn test_compressed_dataset_fails_loud() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_hdf5_writer_compressed_fails.h5");
+
+        let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
+        let props = DatasetProperties::new()
+            .with_chunks(vec![2, 2])
+            .with_gzip(6);
+        writer
+            .create_dataset("/data", Datatype::Float64, vec![4, 2], props)
+            .expect("create dataset");
+        writer
+            .write_f64("/data", &(0..8).map(|i| i as f64).collect::<Vec<_>>())
+            .expect("write data");
+
+        let result = writer.finalize();
+        assert!(matches!(result, Err(Hdf5Error::FeatureNotAvailable { .. })));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A zero-filled (no explicit data) root dataset with a configured
+    /// `fill_value` must be written with that fill value, not plain zeros.
+    #[test]
+    fn test_fill_value_is_honored_for_zero_filled_dataset() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oxigeo_hdf5_writer_fill_value.h5");
+
+        {
+            let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
+            let fill: Vec<u8> = 42i32.to_le_bytes().to_vec();
+            let props = DatasetProperties::new().with_fill_value(fill);
+            writer
+                .create_dataset("/filled", Datatype::Int32, vec![5], props)
+                .expect("create dataset");
+            // No write_i32 call: data stays unset, so the fill value applies.
+            writer.finalize().expect("finalize");
+        }
+
+        let file = oxih5::open(&path).expect("oxih5 open");
+        let ds = file.dataset("filled").expect("dataset filled");
+        let values = ds.as_i32().expect("as_i32");
+        assert_eq!(values, vec![42, 42, 42, 42, 42]);
 
         let _ = std::fs::remove_file(&path);
     }

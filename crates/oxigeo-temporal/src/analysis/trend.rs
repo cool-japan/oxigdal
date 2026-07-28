@@ -99,13 +99,9 @@ impl TrendAnalyzer {
         let mut slope = Array3::zeros((height, width, n_bands));
         let mut intercept = Array3::zeros((height, width, n_bands));
 
-        // Collect time indices
-        let times: Vec<f64> = (0..ts.len()).map(|i| i as f64).collect();
-        let n = times.len() as f64;
-        let sum_t: f64 = times.iter().sum();
-        let sum_t2: f64 = times.iter().map(|&t| t * t).sum();
-
-        // Compute OLS for each pixel
+        // Compute OLS for each pixel over its NaN-filtered valid observations.
+        // Cloud-masked / missing dates carry NaN; without filtering a single
+        // NaN would poison the whole pixel's regression.
         #[cfg(feature = "parallel")]
         {
             use std::sync::Mutex;
@@ -115,15 +111,10 @@ impl TrendAnalyzer {
             (0..height).into_par_iter().for_each(|i| {
                 for j in 0..width {
                     for k in 0..n_bands {
-                        let values = ts.extract_pixel_timeseries(i, j, k).ok();
-                        if let Some(values) = values {
-                            let sum_y: f64 = values.iter().copied().sum();
-                            let sum_ty: f64 =
-                                times.iter().zip(values.iter()).map(|(t, y)| t * y).sum();
-
-                            let slope_val =
-                                (n * sum_ty - sum_t * sum_y) / (n * sum_t2 - sum_t * sum_t);
-                            let intercept_val = (sum_y - slope_val * sum_t) / n;
+                        if let Ok(values) = ts.extract_pixel_timeseries(i, j, k) {
+                            let pairs = Self::valid_pairs(&values);
+                            let (slope_val, intercept_val) =
+                                Self::ols_from_pairs(&pairs).unwrap_or((f64::NAN, f64::NAN));
 
                             if let Ok(mut s) = slope_mutex.lock() {
                                 s[[i, j, k]] = slope_val;
@@ -143,11 +134,9 @@ impl TrendAnalyzer {
                 for j in 0..width {
                     for k in 0..n_bands {
                         let values = ts.extract_pixel_timeseries(i, j, k)?;
-                        let sum_y: f64 = values.iter().sum();
-                        let sum_ty: f64 = times.iter().zip(values.iter()).map(|(t, y)| t * y).sum();
-
-                        let slope_val = (n * sum_ty - sum_t * sum_y) / (n * sum_t2 - sum_t * sum_t);
-                        let intercept_val = (sum_y - slope_val * sum_t) / n;
+                        let pairs = Self::valid_pairs(&values);
+                        let (slope_val, intercept_val) =
+                            Self::ols_from_pairs(&pairs).unwrap_or((f64::NAN, f64::NAN));
 
                         slope[[i, j, k]] = slope_val;
                         intercept[[i, j, k]] = intercept_val;
@@ -178,60 +167,61 @@ impl TrendAnalyzer {
         let mut intercept = Array3::zeros((height, width, n_bands));
         let mut pvalue = Array3::zeros((height, width, n_bands));
 
-        let n = ts.len();
-
         for i in 0..height {
             for j in 0..width {
                 for k in 0..n_bands {
                     let values = ts.extract_pixel_timeseries(i, j, k)?;
 
-                    // Calculate Mann-Kendall S statistic
+                    // Use only valid (non-NaN) observations, preserving each
+                    // observation's original time index so temporal spacing is
+                    // respected in Sen's slope.
+                    let pairs = Self::valid_pairs(&values);
+                    let n_valid = pairs.len();
+
+                    // Mann-Kendall needs a meaningful sample; if too few valid
+                    // observations survive cloud masking, report undefined
+                    // rather than a fabricated significant/insignificant result.
+                    if n_valid < 4 {
+                        slope[[i, j, k]] = f64::NAN;
+                        intercept[[i, j, k]] = f64::NAN;
+                        pvalue[[i, j, k]] = f64::NAN;
+                        continue;
+                    }
+
+                    // Calculate Mann-Kendall S statistic over valid values.
                     let mut s = 0i32;
-                    for m in 0..n {
-                        for l in (m + 1)..n {
-                            s += Self::sign(values[l] - values[m]);
+                    for m in 0..n_valid {
+                        for l in (m + 1)..n_valid {
+                            s += Self::sign(pairs[l].1 - pairs[m].1);
                         }
                     }
 
-                    // Calculate variance
-                    let var_s = (n * (n - 1) * (2 * n + 5)) as f64 / 18.0;
+                    // Variance with the standard tie correction.
+                    let var_s = Self::mann_kendall_variance(&pairs);
+                    let std_s = var_s.sqrt();
 
-                    // Calculate Z-score
-                    let z = if s > 0 {
-                        (s as f64 - 1.0) / var_s.sqrt()
+                    // Calculate Z-score (continuity-corrected).
+                    let z = if std_s <= 0.0 {
+                        0.0
+                    } else if s > 0 {
+                        (s as f64 - 1.0) / std_s
                     } else if s < 0 {
-                        (s as f64 + 1.0) / var_s.sqrt()
+                        (s as f64 + 1.0) / std_s
                     } else {
                         0.0
                     };
 
-                    // Calculate p-value (two-tailed test)
+                    // Calculate p-value (two-tailed test).
                     let p = 2.0 * (1.0 - Self::normal_cdf(z.abs()));
 
-                    // Calculate Sen's slope for magnitude
-                    let mut slopes = Vec::new();
-                    for m in 0..n {
-                        for l in (m + 1)..n {
-                            if l != m {
-                                slopes.push((values[l] - values[m]) / ((l - m) as f64));
-                            }
-                        }
-                    }
-                    slopes.sort_by(|a: &f64, b: &f64| {
-                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    let median_slope = if slopes.len() % 2 == 0 {
-                        (slopes[slopes.len() / 2 - 1] + slopes[slopes.len() / 2]) / 2.0
-                    } else {
-                        slopes[slopes.len() / 2]
-                    };
+                    // Sen's slope, using actual time-index differences.
+                    let median_slope = Self::median_pairwise_slope(&pairs).unwrap_or(f64::NAN);
 
                     slope[[i, j, k]] = median_slope;
                     pvalue[[i, j, k]] = p;
 
-                    // Compute intercept
-                    let median_intercept = Self::compute_intercept(&values, median_slope);
-                    intercept[[i, j, k]] = median_intercept;
+                    // Compute intercept from valid pairs.
+                    intercept[[i, j, k]] = Self::compute_intercept_pairs(&pairs, median_slope);
                 }
             }
         }
@@ -262,30 +252,21 @@ impl TrendAnalyzer {
                 for k in 0..n_bands {
                     let values = ts.extract_pixel_timeseries(i, j, k)?;
 
-                    // Compute all pairwise slopes
-                    let mut slopes = Vec::new();
-                    for m in 0..values.len() {
-                        for n in (m + 1)..values.len() {
-                            let slope_mn = (values[n] - values[m]) / ((n - m) as f64);
-                            slopes.push(slope_mn);
-                        }
+                    // Use only valid observations, preserving original time
+                    // indices so pairwise-slope denominators reflect true
+                    // temporal spacing rather than compacted positions.
+                    let pairs = Self::valid_pairs(&values);
+                    if pairs.len() < 2 {
+                        slope[[i, j, k]] = f64::NAN;
+                        intercept[[i, j, k]] = f64::NAN;
+                        continue;
                     }
 
-                    // Median slope
-                    slopes.sort_by(|a: &f64, b: &f64| {
-                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    let median_slope = if slopes.len() % 2 == 0 {
-                        (slopes[slopes.len() / 2 - 1] + slopes[slopes.len() / 2]) / 2.0
-                    } else {
-                        slopes[slopes.len() / 2]
-                    };
-
+                    let median_slope = Self::median_pairwise_slope(&pairs).unwrap_or(f64::NAN);
                     slope[[i, j, k]] = median_slope;
 
-                    // Compute intercept as median of (y - slope * x)
-                    let median_intercept = Self::compute_intercept(&values, median_slope);
-                    intercept[[i, j, k]] = median_intercept;
+                    // Compute intercept as median of (y - slope * t).
+                    intercept[[i, j, k]] = Self::compute_intercept_pairs(&pairs, median_slope);
                 }
             }
         }
@@ -319,19 +300,111 @@ impl TrendAnalyzer {
         direction
     }
 
-    /// Compute intercept from values and slope
-    fn compute_intercept(values: &[f64], slope: f64) -> f64 {
-        let mut intercepts: Vec<f64> = values
+    /// Collect `(time_index, value)` pairs, skipping NaN observations.
+    ///
+    /// The time index is the observation's original position in the series, so
+    /// downstream slope estimators respect the true temporal spacing across
+    /// masked gaps.
+    fn valid_pairs(values: &[f64]) -> Vec<(f64, f64)> {
+        values
             .iter()
             .enumerate()
-            .map(|(idx, &y)| y - slope * idx as f64)
-            .collect();
+            .filter_map(|(t, &v)| {
+                if v.is_nan() {
+                    None
+                } else {
+                    Some((t as f64, v))
+                }
+            })
+            .collect()
+    }
 
-        intercepts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        if intercepts.len().is_multiple_of(2) {
-            (intercepts[intercepts.len() / 2 - 1] + intercepts[intercepts.len() / 2]) / 2.0
+    /// Ordinary least-squares regression from valid `(time, value)` pairs.
+    ///
+    /// Returns `None` when there are fewer than two points or the design is
+    /// degenerate (all identical time indices).
+    fn ols_from_pairs(pairs: &[(f64, f64)]) -> Option<(f64, f64)> {
+        let n = pairs.len();
+        if n < 2 {
+            return None;
+        }
+        let n_f = n as f64;
+        let sum_t: f64 = pairs.iter().map(|(t, _)| *t).sum();
+        let sum_t2: f64 = pairs.iter().map(|(t, _)| t * t).sum();
+        let sum_y: f64 = pairs.iter().map(|(_, y)| *y).sum();
+        let sum_ty: f64 = pairs.iter().map(|(t, y)| t * y).sum();
+        let denom = n_f * sum_t2 - sum_t * sum_t;
+        if denom.abs() < f64::EPSILON {
+            return None;
+        }
+        let slope = (n_f * sum_ty - sum_t * sum_y) / denom;
+        let intercept = (sum_y - slope * sum_t) / n_f;
+        Some((slope, intercept))
+    }
+
+    /// Median of all pairwise slopes `(y_l - y_m) / (t_l - t_m)` (Sen's slope).
+    ///
+    /// Returns `None` if no pair with a non-zero time difference exists.
+    fn median_pairwise_slope(pairs: &[(f64, f64)]) -> Option<f64> {
+        let mut slopes = Vec::new();
+        for m in 0..pairs.len() {
+            for l in (m + 1)..pairs.len() {
+                let dt = pairs[l].0 - pairs[m].0;
+                if dt != 0.0 {
+                    slopes.push((pairs[l].1 - pairs[m].1) / dt);
+                }
+            }
+        }
+        if slopes.is_empty() {
+            return None;
+        }
+        slopes.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = slopes.len() / 2;
+        Some(if slopes.len() % 2 == 0 {
+            (slopes[mid - 1] + slopes[mid]) / 2.0
         } else {
-            intercepts[intercepts.len() / 2]
+            slopes[mid]
+        })
+    }
+
+    /// Mann-Kendall variance of S with the standard tied-value correction
+    /// (Kendall 1975 / Gilbert 1987):
+    /// `Var(S) = [ n(n-1)(2n+5) - Σ t_p(t_p-1)(2t_p+5) ] / 18`,
+    /// summed over each group of `t_p` tied observations.
+    fn mann_kendall_variance(pairs: &[(f64, f64)]) -> f64 {
+        use std::collections::HashMap;
+
+        let n = pairs.len();
+        let base = (n * (n - 1) * (2 * n + 5)) as f64;
+
+        // Group by exact value (bit pattern), normalising -0.0 to 0.0.
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        for &(_, v) in pairs {
+            let key = if v == 0.0 { 0u64 } else { v.to_bits() };
+            *counts.entry(key).or_insert(0) += 1;
+        }
+
+        let tie_term: f64 = counts
+            .values()
+            .filter(|&&t| t > 1)
+            .map(|&t| (t * (t - 1) * (2 * t + 5)) as f64)
+            .sum();
+
+        ((base - tie_term) / 18.0).max(0.0)
+    }
+
+    /// Median intercept `median(y - slope * t)` from valid `(time, value)` pairs.
+    fn compute_intercept_pairs(pairs: &[(f64, f64)], slope: f64) -> f64 {
+        if pairs.is_empty() {
+            return f64::NAN;
+        }
+        let mut intercepts: Vec<f64> = pairs.iter().map(|(t, y)| y - slope * t).collect();
+        intercepts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = intercepts.len() / 2;
+        if intercepts.len().is_multiple_of(2) {
+            (intercepts[mid - 1] + intercepts[mid]) / 2.0
+        } else {
+            intercepts[mid]
         }
     }
 
@@ -372,6 +445,7 @@ impl TrendAnalyzer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::timeseries::{TemporalMetadata, TimeSeriesRaster};
@@ -431,5 +505,98 @@ mod tests {
         assert!(result.slope[[0, 0, 0]] > 0.0);
         assert_eq!(result.direction[[0, 0, 0]], 1);
         assert!(result.pvalue.is_some());
+    }
+
+    /// Build a 1x1x1 time series from a slice of per-timestep values.
+    fn ts_from(values: &[f64]) -> TimeSeriesRaster {
+        let mut ts = TimeSeriesRaster::new();
+        for (i, &v) in values.iter().enumerate() {
+            let dt = DateTime::from_timestamp(1640995200 + i as i64 * 86400, 0).expect("valid");
+            let date = NaiveDate::from_ymd_opt(2022, 1, 1 + i as u32).expect("valid");
+            let metadata = TemporalMetadata::new(dt, date);
+            ts.add_raster(metadata, Array3::from_elem((1, 1, 1), v))
+                .expect("should add");
+        }
+        ts
+    }
+
+    #[test]
+    fn test_linear_trend_ignores_nan_gaps() {
+        // A perfectly linear series y = 2t with a single cloud-masked gap.
+        // Without NaN filtering the whole pixel would become NaN; with
+        // filtering the slope must still recover ~2.0.
+        let values = vec![0.0, 2.0, f64::NAN, 6.0, 8.0, 10.0, f64::NAN, 14.0];
+        let ts = ts_from(&values);
+        let result = TrendAnalyzer::analyze(&ts, TrendMethod::Linear).expect("analyze");
+        let slope = result.slope[[0, 0, 0]];
+        assert!(slope.is_finite(), "slope must be finite, got {slope}");
+        assert!(
+            (slope - 2.0).abs() < 1e-9,
+            "slope should recover 2.0, got {slope}"
+        );
+    }
+
+    #[test]
+    fn test_sens_slope_ignores_nan_gaps() {
+        let values = vec![0.0, 3.0, f64::NAN, 9.0, 12.0, f64::NAN, 18.0];
+        let ts = ts_from(&values);
+        let result = TrendAnalyzer::analyze(&ts, TrendMethod::SensSlope).expect("analyze");
+        let slope = result.slope[[0, 0, 0]];
+        assert!(slope.is_finite(), "slope must be finite, got {slope}");
+        assert!(
+            (slope - 3.0).abs() < 1e-9,
+            "slope should recover 3.0, got {slope}"
+        );
+    }
+
+    #[test]
+    fn test_mann_kendall_ignores_nan_gaps() {
+        let values = vec![1.0, 2.0, f64::NAN, 4.0, 5.0, 6.0, f64::NAN, 8.0];
+        let ts = ts_from(&values);
+        let result = TrendAnalyzer::analyze(&ts, TrendMethod::MannKendall).expect("analyze");
+        let slope = result.slope[[0, 0, 0]];
+        let p = result.pvalue.as_ref().expect("pvalue")[[0, 0, 0]];
+        assert!(slope.is_finite(), "slope must be finite, got {slope}");
+        assert!(slope > 0.0, "increasing trend expected, got {slope}");
+        assert!(p.is_finite(), "p-value must be finite, got {p}");
+    }
+
+    #[test]
+    fn test_mann_kendall_too_few_valid_is_nan() {
+        // Only 3 valid observations survive: MK is undefined (needs >= 4).
+        let values = vec![1.0, f64::NAN, f64::NAN, 4.0, f64::NAN, 6.0];
+        let ts = ts_from(&values);
+        let result = TrendAnalyzer::analyze(&ts, TrendMethod::MannKendall).expect("analyze");
+        assert!(result.slope[[0, 0, 0]].is_nan());
+        assert!(result.pvalue.as_ref().expect("pvalue")[[0, 0, 0]].is_nan());
+    }
+
+    #[test]
+    fn test_mann_kendall_variance_tie_correction() {
+        // No ties: variance equals the untied formula.
+        let distinct: Vec<(f64, f64)> = (0..6).map(|i| (i as f64, i as f64)).collect();
+        let n = distinct.len();
+        let untied = (n * (n - 1) * (2 * n + 5)) as f64 / 18.0;
+        let var_distinct = TrendAnalyzer::mann_kendall_variance(&distinct);
+        assert!((var_distinct - untied).abs() < 1e-9);
+
+        // With a tied group of 3 equal values, variance must be strictly lower
+        // than the untied formula by the tie-correction term.
+        let tied: Vec<(f64, f64)> = vec![
+            (0.0, 5.0),
+            (1.0, 5.0),
+            (2.0, 5.0),
+            (3.0, 1.0),
+            (4.0, 2.0),
+            (5.0, 3.0),
+        ];
+        let var_tied = TrendAnalyzer::mann_kendall_variance(&tied);
+        // Expected tie term for t_p = 3: 3*2*11 = 66.
+        let expected = (untied * 18.0 - 66.0) / 18.0;
+        assert!(
+            (var_tied - expected).abs() < 1e-9,
+            "tie-corrected variance mismatch: got {var_tied}, expected {expected}"
+        );
+        assert!(var_tied < untied, "tie correction must reduce variance");
     }
 }

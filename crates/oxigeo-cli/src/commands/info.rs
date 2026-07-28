@@ -618,7 +618,10 @@ fn read_gpkg_info(args: &InfoArgs) -> Result<GpkgInfo> {
         .with_context(|| "Failed to load gpkg_contents")?;
 
     let srs_map = read_gpkg_srs_map(&gp);
-    let geom_columns = multi_geom::load_all_geometry_columns(&gp).unwrap_or_default();
+    // Propagate a genuine gpkg_geometry_columns scan failure (e.g. a corrupt
+    // B-tree) instead of silently reporting every layer as geometry-less.
+    let geom_columns = multi_geom::load_all_geometry_columns(&gp)
+        .with_context(|| "Failed to load gpkg_geometry_columns")?;
 
     let mut layers = Vec::with_capacity(gp.contents.len());
     for content in &gp.contents {

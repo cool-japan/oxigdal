@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::auth::Credentials;
 use crate::error::{AzureError, CloudError, Result};
 use crate::retry::{RetryConfig, RetryExecutor};
+use oxigeo_core::io::ByteRange;
 
 use super::CloudStorageBackend;
 
@@ -262,6 +263,79 @@ impl CloudStorageBackend for AzureBlobBackend {
                 Ok(Bytes::from(data))
             })
             .await
+    }
+
+    async fn get_range(&self, key: &str, range: ByteRange) -> Result<Bytes> {
+        use futures::StreamExt;
+
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let mut executor = RetryExecutor::new(self.retry_config.clone());
+        let start = range.start;
+        let end = range.end;
+
+        executor
+            .execute(|| async {
+                let blob_name = self.full_blob_name(key);
+                tracing::debug!(
+                    "Getting blob range {}..{} of {}/{}/{}",
+                    start,
+                    end,
+                    self.account_name,
+                    self.container,
+                    blob_name
+                );
+
+                let builder = self.client_builder()?;
+                let blob_client = builder
+                    .blob_service_client()
+                    .container_client(&self.container)
+                    .blob_client(&blob_name);
+
+                // `GetBlobBuilder::range` takes `impl Into<azure_core::request_options::Range>`.
+                // We can't name that type directly (see `is_not_found` doc
+                // comment above: `azure_storage_blobs` 0.21 pulls in its own
+                // private `azure_core` 0.21, distinct from this workspace's
+                // `azure_core` 1.0), but a plain `std::ops::Range<u64>`
+                // implements `Into<Range>` for that crate, so we pass one
+                // directly without ever naming the target type.
+                let mut stream = blob_client.get().range(start..end).into_stream();
+
+                let mut data = Vec::with_capacity((end - start) as usize);
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| {
+                        let msg = format!("{e}");
+                        if Self::is_not_found(&msg) {
+                            CloudError::Azure(AzureError::BlobNotFound {
+                                blob: format!("{}/{}", self.container, blob_name),
+                            })
+                        } else {
+                            CloudError::Azure(AzureError::Sdk {
+                                message: format!(
+                                    "Failed to get byte range {}..{} of blob '{}/{}/{}': {e}",
+                                    start, end, self.account_name, self.container, blob_name
+                                ),
+                            })
+                        }
+                    })?;
+
+                    let body = chunk.data.collect().await.map_err(|e| {
+                        CloudError::Azure(AzureError::Sdk {
+                            message: format!("Failed to read ranged blob body: {e}"),
+                        })
+                    })?;
+                    data.extend_from_slice(&body);
+                }
+
+                Ok(Bytes::from(data))
+            })
+            .await
+    }
+
+    fn supports_native_range_reads(&self) -> bool {
+        true
     }
 
     async fn put(&self, key: &str, data: &[u8]) -> Result<()> {

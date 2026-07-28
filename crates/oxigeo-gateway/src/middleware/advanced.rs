@@ -11,15 +11,13 @@
 //! - Cache control header management
 
 use super::{Middleware, Request, Response};
-use crate::error::{GatewayError, Result};
+use crate::error::Result;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::io::{Read as IoRead, Write as IoWrite};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use uuid::Uuid;
 
 // ============================================================================
@@ -102,10 +100,10 @@ impl RequestIdMiddleware {
 
     /// Extracts request ID from headers or generates a new one.
     pub fn get_or_generate(&self, headers: &HashMap<String, String>) -> String {
-        if let Some(id) = headers.get(&self.config.header_name) {
-            if !id.is_empty() {
-                return id.clone();
-            }
+        if let Some(id) = headers.get(&self.config.header_name)
+            && !id.is_empty()
+        {
+            return id.clone();
         }
 
         if self.config.generate_if_missing {
@@ -145,9 +143,7 @@ impl Middleware for RequestIdMiddleware {
                 .cloned()
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| self.generate_id());
-            response
-                .headers
-                .insert(self.config.header_name.clone(), id);
+            response.headers.insert(self.config.header_name.clone(), id);
         }
         Ok(())
     }
@@ -247,9 +243,12 @@ impl EnhancedLoggingMiddleware {
         headers
             .iter()
             .map(|(k, v)| {
-                let value = if self.config.redacted_headers.iter().any(|h| {
-                    h.eq_ignore_ascii_case(k)
-                }) {
+                let value = if self
+                    .config
+                    .redacted_headers
+                    .iter()
+                    .any(|h| h.eq_ignore_ascii_case(k))
+                {
                     "[REDACTED]".to_string()
                 } else {
                     v.clone()
@@ -380,10 +379,17 @@ impl Middleware for EnhancedLoggingMiddleware {
             .as_ref()
             .map(|(_, t)| t.path.clone())
             .unwrap_or_default();
+        // Prefer the request ID captured at request start (stored alongside the timing) so the
+        // completion log line is guaranteed to carry the exact id recorded on the way in; fall
+        // back to the header-derived id only when no timing was tracked.
+        let logged_request_id = timing
+            .as_ref()
+            .map(|(_, t)| t.request_id.clone())
+            .unwrap_or_else(|| request_id.clone());
 
         if is_error || is_slow {
             tracing::warn!(
-                request_id = %request_id,
+                request_id = %logged_request_id,
                 method = %method,
                 path = %path,
                 status = response.status,
@@ -394,7 +400,7 @@ impl Middleware for EnhancedLoggingMiddleware {
             );
         } else {
             tracing::info!(
-                request_id = %request_id,
+                request_id = %logged_request_id,
                 method = %method,
                 path = %path,
                 status = response.status,
@@ -432,10 +438,10 @@ pub struct TimeoutConfig {
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
-            default_timeout_ms: 30000,        // 30 seconds
-            read_timeout_ms: 10000,           // 10 seconds
-            write_timeout_ms: 10000,          // 10 seconds
-            upstream_timeout_ms: 25000,       // 25 seconds
+            default_timeout_ms: 30000,  // 30 seconds
+            read_timeout_ms: 10000,     // 10 seconds
+            write_timeout_ms: 10000,    // 10 seconds
+            upstream_timeout_ms: 25000, // 25 seconds
             adaptive_timeouts: true,
             streaming_multiplier: 3.0,
         }
@@ -560,10 +566,9 @@ impl Middleware for TimeoutMiddleware {
         request
             .headers
             .insert("X-Timeout-Ms".to_string(), timeout_ms.to_string());
-        request.headers.insert(
-            "X-Deadline".to_string(),
-            deadline.to_rfc3339(),
-        );
+        request
+            .headers
+            .insert("X-Deadline".to_string(), deadline.to_rfc3339());
 
         Ok(())
     }
@@ -577,15 +582,15 @@ impl Middleware for TimeoutMiddleware {
             .cloned()
             .unwrap_or_default();
 
-        if let Some((_, info)) = self.active_timeouts.remove(&request_id) {
-            if Utc::now() > info.deadline {
-                self.timeout_count.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(
-                    request_id = %request_id,
-                    timeout_ms = info.timeout_ms,
-                    "Request exceeded timeout"
-                );
-            }
+        if let Some((_, info)) = self.active_timeouts.remove(&request_id)
+            && Utc::now() > info.deadline
+        {
+            self.timeout_count.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                request_id = %request_id,
+                timeout_ms = info.timeout_ms,
+                "Request exceeded timeout"
+            );
         }
 
         Ok(())
@@ -735,31 +740,27 @@ impl ErrorHandlingMiddleware {
                 });
                 serde_json::to_vec(&json).unwrap_or_default()
             }
-            ErrorFormat::Xml => {
-                format!(
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
+            ErrorFormat::Xml => format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
 <error>
     <status>{}</status>
     <message>{}</message>
     <code>{}</code>
     <timestamp>{}</timestamp>
 </error>"#,
-                    status,
-                    sanitized_message,
-                    error_code.unwrap_or("UNKNOWN_ERROR"),
-                    Utc::now().to_rfc3339()
-                )
-                .into_bytes()
-            }
-            ErrorFormat::PlainText => {
-                format!(
-                    "Error {}: {} ({})",
-                    status,
-                    sanitized_message,
-                    error_code.unwrap_or("UNKNOWN_ERROR")
-                )
-                .into_bytes()
-            }
+                status,
+                sanitized_message,
+                error_code.unwrap_or("UNKNOWN_ERROR"),
+                Utc::now().to_rfc3339()
+            )
+            .into_bytes(),
+            ErrorFormat::PlainText => format!(
+                "Error {}: {} ({})",
+                status,
+                sanitized_message,
+                error_code.unwrap_or("UNKNOWN_ERROR")
+            )
+            .into_bytes(),
             ErrorFormat::Html => {
                 if let Some(template) = self.config.custom_error_pages.get(&status) {
                     template
@@ -788,7 +789,17 @@ impl ErrorHandlingMiddleware {
     fn sanitize_message(&self, message: &str) -> String {
         // Remove potential sensitive information
         let sanitized = message
-            .replace(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace() && c != '.' && c != ',' && c != ':' && c != '-', "")
+            .replace(
+                |c: char| {
+                    !c.is_ascii_alphanumeric()
+                        && !c.is_ascii_whitespace()
+                        && c != '.'
+                        && c != ','
+                        && c != ':'
+                        && c != '-'
+                },
+                "",
+            )
             .trim()
             .to_string();
 
@@ -867,9 +878,8 @@ impl Middleware for ErrorHandlingMiddleware {
 // ============================================================================
 
 /// Histogram bucket boundaries for latency tracking (in milliseconds).
-pub const DEFAULT_LATENCY_BUCKETS: [u64; 12] = [
-    1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000,
-];
+pub const DEFAULT_LATENCY_BUCKETS: [u64; 12] =
+    [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
 
 /// Enhanced metrics configuration.
 #[derive(Debug, Clone)]
@@ -1271,9 +1281,10 @@ impl CacheControlMiddleware {
 
     /// Finds matching cache rule for a path.
     pub fn find_rule(&self, path: &str) -> Option<&CacheRule> {
-        self.config.rules.iter().find(|rule| {
-            self.match_pattern(&rule.path_pattern, path)
-        })
+        self.config
+            .rules
+            .iter()
+            .find(|rule| self.match_pattern(&rule.path_pattern, path))
     }
 
     /// Simple glob pattern matching.
@@ -1282,8 +1293,7 @@ impl CacheControlMiddleware {
             return true;
         }
 
-        if pattern.ends_with("/*") {
-            let prefix = &pattern[..pattern.len() - 2];
+        if let Some(prefix) = pattern.strip_suffix("/*") {
             return path.starts_with(prefix);
         }
 
@@ -1387,7 +1397,11 @@ impl Middleware for CacheControlMiddleware {
 
     async fn after_response(&self, request: &Request, response: &mut Response) -> Result<()> {
         // Skip cache headers for non-cacheable status codes
-        if !self.config.cacheable_status_codes.contains(&response.status) {
+        if !self
+            .config
+            .cacheable_status_codes
+            .contains(&response.status)
+        {
             return Ok(());
         }
 
@@ -1528,6 +1542,7 @@ impl Default for AdvancedMiddlewareBuilder {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1669,8 +1684,7 @@ mod tests {
     fn test_error_format_json() {
         let middleware = ErrorHandlingMiddleware::default();
         let body = middleware.format_error(404, "Not Found", Some("NOT_FOUND"));
-        let json: serde_json::Value =
-            serde_json::from_slice(&body).expect("valid json");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json");
 
         assert_eq!(json["error"]["status"], 404);
         assert_eq!(json["error"]["code"], "NOT_FOUND");

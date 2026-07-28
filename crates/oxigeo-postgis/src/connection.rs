@@ -3,7 +3,10 @@
 //! This module provides connection pooling and management for PostgreSQL/PostGIS databases.
 
 use crate::error::{ConnectionError, PostGisError, Result};
-use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use deadpool_postgres::{
+    Config, ManagerConfig, Pool, PoolConfig as DeadpoolPoolConfig, RecyclingMethod, Runtime,
+    Timeouts,
+};
 use std::time::Duration;
 use tokio_postgres::NoTls;
 use tracing::{debug, warn};
@@ -273,6 +276,20 @@ impl ConnectionPool {
             recycling_method: pool_config.recycling_method,
         });
 
+        // Transfer the caller's pool sizing / timeout settings into deadpool's
+        // own `PoolConfig`. Without this, `create_pool` silently falls back to
+        // deadpool's built-in default `max_size` (`cpu_count * 4`) and no wait
+        // timeout, so `PoolConfig::max_size`/`timeout` would be accepted by our
+        // public API but never take effect.
+        pg_config.pool = Some(DeadpoolPoolConfig {
+            max_size: pool_config.max_size,
+            timeouts: Timeouts {
+                wait: Some(pool_config.timeout),
+                ..Timeouts::default()
+            },
+            ..DeadpoolPoolConfig::default()
+        });
+
         let pool = pg_config
             .create_pool(Some(Runtime::Tokio1), NoTls)
             .map_err(|e| ConnectionError::PoolError {
@@ -486,5 +503,33 @@ mod tests {
 
         assert_eq!(config.max_size, 32);
         assert_eq!(config.timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_pool_config_is_applied_to_created_pool() {
+        // Regression test: a custom `max_size` must actually reach deadpool's
+        // pool, not be silently discarded in favour of deadpool's default.
+        // `create_pool` does not open any connection, so this runs offline.
+        let config = ConnectionConfig::new("test_db");
+        let pool_config = PoolConfig::new()
+            .max_size(7)
+            .timeout(Duration::from_secs(12));
+
+        let pool = ConnectionPool::with_pool_config(config, pool_config)
+            .expect("pool creation should succeed without connecting");
+
+        assert_eq!(
+            pool.status().max_size,
+            7,
+            "configured max_size must be honoured by the underlying pool"
+        );
+    }
+
+    #[test]
+    fn test_default_pool_size_is_honoured() {
+        let config = ConnectionConfig::new("test_db");
+        let pool = ConnectionPool::new(config).expect("pool creation failed");
+        // PoolConfig::default().max_size == 16
+        assert_eq!(pool.status().max_size, 16);
     }
 }

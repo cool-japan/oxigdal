@@ -205,6 +205,7 @@ impl RasterKernel {
         }
 
         // Submit commands
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed raster kernel on {} elements", num_elements);
@@ -403,6 +404,7 @@ impl UnaryKernel {
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed unary kernel on {} elements", num_elements);
@@ -612,6 +614,7 @@ impl ScalarKernel {
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed scalar kernel on {} elements", num_elements);

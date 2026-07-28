@@ -66,14 +66,13 @@ google-cloud-auth = { workspace = true, optional = true }
 google-cloud-gax = { workspace = true, optional = true }
 
 # HTTP
-reqwest = { workspace = true, optional = true, features = ["stream", "json"] }
+reqwest = { workspace = true, optional = true, features = ["stream", "json", "form"] }
 
 # Caching
 lru = { workspace = true, optional = true }
 dashmap = { workspace = true, optional = true }
 
 # Crypto for auth
-hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 # Compression

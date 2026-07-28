@@ -5,6 +5,8 @@
 //! product definition, data representation, and data.
 
 pub mod decoder;
+#[cfg(feature = "jpeg2000")]
+pub mod jpeg2000;
 pub mod section1;
 pub mod section3;
 pub mod section4;
@@ -66,7 +68,7 @@ pub use decoder::{
 };
 pub use section1::IdentificationSection;
 pub use section3::GridDefinitionSection;
-pub use section4::ProductDefinitionSection;
+pub use section4::{EnsembleInfo, ProductDefinitionSection, StatisticalProcessInfo, TimeRangeSpec};
 pub use section5::DataRepresentationSection;
 pub use section7::DataSection;
 
@@ -219,8 +221,33 @@ impl Grib2Message {
         self.product_definition.forecast_time
     }
 
-    /// Get valid time
+    /// Returns `true` if this message carries a statistically-processed field
+    /// accumulated/averaged/etc. over a time interval (PDT 4.8) rather than an
+    /// instantaneous value (PDT 4.0/4.1).
+    pub fn is_time_interval(&self) -> bool {
+        self.product_definition.is_time_interval()
+    }
+
+    /// End of the overall statistical time interval, for time-interval
+    /// products (PDT 4.8). `None` for instantaneous fields.
+    pub fn interval_end_time(&self) -> Option<chrono::NaiveDateTime> {
+        self.product_definition
+            .statistical_process
+            .as_ref()
+            .and_then(|s| s.interval_end_time())
+    }
+
+    /// Get valid time.
+    ///
+    /// For an instantaneous field (PDT 4.0/4.1) this is the reference time
+    /// advanced by the forecast offset. For a statistically-processed field
+    /// over a time interval (PDT 4.8) the valid time is the *end* of the
+    /// overall time interval, so accumulated/averaged quantities are not
+    /// mis-reported at the start of their accumulation window.
     pub fn valid_time(&self) -> Option<chrono::NaiveDateTime> {
+        if let Some(end) = self.interval_end_time() {
+            return Some(end);
+        }
         let ref_time = self.reference_time()?;
         Some(ref_time + chrono::Duration::hours(self.forecast_offset_hours() as i64))
     }
@@ -239,7 +266,142 @@ impl Grib2Message {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    /// Wraps a section payload with its 5-octet GRIB2 header (length + number).
+    fn framed_section(number: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(payload.len() + 5);
+        out.extend_from_slice(&((payload.len() + 5) as u32).to_be_bytes());
+        out.push(number);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// Builds a full GRIB2 message body (sections 1, 3, 4, given section 5, and
+    /// a section 7 payload) with `num_points` grid points, so the decoder can
+    /// be exercised end-to-end on a chosen Data Representation Template.
+    fn message_with_drt(
+        num_points: u32,
+        section5_payload: &[u8],
+        section7_payload: &[u8],
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+
+        // Section 1: Identification.
+        let mut s1 = Vec::new();
+        s1.extend_from_slice(&0u16.to_be_bytes()); // center
+        s1.extend_from_slice(&0u16.to_be_bytes()); // subcenter
+        s1.push(2); // master table version
+        s1.push(0); // local table version
+        s1.push(1); // significance of reference time
+        s1.extend_from_slice(&2024u16.to_be_bytes()); // year
+        s1.push(1); // month
+        s1.push(1); // day
+        s1.push(0); // hour
+        s1.push(0); // minute
+        s1.push(0); // second
+        s1.push(0); // production status
+        s1.push(0); // type of data
+        data.extend_from_slice(&framed_section(1, &s1));
+
+        // Section 3: Grid Definition (GDT 3.0, all-zero body is fine; the grid
+        // point count comes from the section's num_points field).
+        let mut s3 = Vec::new();
+        s3.push(0); // source
+        s3.extend_from_slice(&num_points.to_be_bytes());
+        s3.push(0);
+        s3.push(0);
+        s3.extend_from_slice(&0u16.to_be_bytes()); // template 3.0
+        s3.extend_from_slice(&[0u8; 58]); // regular lat/lon body
+        data.extend_from_slice(&framed_section(3, &s3));
+
+        // Section 4: Product Definition (PDT 4.0).
+        let mut s4 = Vec::new();
+        s4.extend_from_slice(&0u16.to_be_bytes()); // num_coordinates
+        s4.extend_from_slice(&0u16.to_be_bytes()); // template 4.0
+        s4.extend_from_slice(&[0u8; 25]); // PDT 4.0 body (first + second surface)
+        data.extend_from_slice(&framed_section(4, &s4));
+
+        // Section 5: caller-supplied.
+        data.extend_from_slice(&framed_section(5, section5_payload));
+
+        // Section 7: caller-supplied packed/encoded data.
+        data.extend_from_slice(&framed_section(7, section7_payload));
+
+        data
+    }
+
+    /// DRT 5.4 IEEE 32-bit floating-point data must round-trip the raw
+    /// big-endian f32 values in Section 7 unchanged (no R/E/D scaling).
+    #[test]
+    fn test_decode_ieee_float32_roundtrip() {
+        let mut s5 = Vec::new();
+        s5.extend_from_slice(&3u32.to_be_bytes()); // num_data_points
+        s5.extend_from_slice(&4u16.to_be_bytes()); // template 5.4
+        s5.push(1); // precision code: IEEE 32-bit
+
+        let values = [1.5f32, -273.15, 42.0];
+        let mut s7 = Vec::new();
+        for v in values {
+            s7.extend_from_slice(&v.to_be_bytes());
+        }
+
+        let msg = message_with_drt(3, &s5, &s7);
+        let parsed = Grib2Message::from_bytes(&msg, 0).expect("parse IEEE message");
+        let decoded = parsed.decode_data().expect("decode IEEE data");
+        assert_eq!(decoded.len(), 3);
+        for (got, want) in decoded.iter().zip(values.iter()) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+
+    /// DRT 5.40 (JPEG2000): a codestream that is not a valid J2K stream must
+    /// return a typed decoding error — never a silent simple-packing
+    /// mis-unpack producing plausible-but-wrong values.
+    #[cfg(feature = "jpeg2000")]
+    #[test]
+    fn test_decode_jpeg2000_invalid_codestream_errors() {
+        let mut s5 = Vec::new();
+        s5.extend_from_slice(&4u32.to_be_bytes()); // num_data_points
+        s5.extend_from_slice(&40u16.to_be_bytes()); // template 5.40
+        s5.extend_from_slice(&0.0f32.to_be_bytes()); // reference value
+        s5.extend_from_slice(&0u16.to_be_bytes()); // binary scale
+        s5.extend_from_slice(&0u16.to_be_bytes()); // decimal scale
+        s5.push(16); // bits per value
+
+        // Section 7: bytes that are NOT a JPEG2000 codestream.
+        let s7 = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33];
+
+        let msg = message_with_drt(4, &s5, &s7);
+        let parsed = Grib2Message::from_bytes(&msg, 0).expect("parse 5.40 message");
+        let result = parsed.decode_data();
+        assert!(
+            result.is_err(),
+            "invalid JPEG2000 codestream must error, not silently mis-unpack"
+        );
+    }
+
+    /// DRT 5.41 (PNG) is not implemented and must fail with a typed error
+    /// rather than mis-unpacking the compressed payload as simple packing.
+    #[test]
+    fn test_decode_png_template_errors() {
+        let mut s5 = Vec::new();
+        s5.extend_from_slice(&4u32.to_be_bytes()); // num_data_points
+        s5.extend_from_slice(&41u16.to_be_bytes()); // template 5.41
+        s5.extend_from_slice(&0.0f32.to_be_bytes()); // reference value
+        s5.extend_from_slice(&0u16.to_be_bytes()); // binary scale
+        s5.extend_from_slice(&0u16.to_be_bytes()); // decimal scale
+        s5.push(8); // bits per value
+
+        let s7 = vec![0x89, b'P', b'N', b'G', 0, 0, 0, 0];
+        let msg = message_with_drt(4, &s5, &s7);
+        let parsed = Grib2Message::from_bytes(&msg, 0).expect("parse 5.41 message");
+        assert!(matches!(
+            parsed.decode_data(),
+            Err(GribError::UnsupportedPacking(_))
+        ));
+    }
 
     #[test]
     fn test_level_type() {
@@ -330,9 +492,9 @@ mod tests {
         section4.extend_from_slice(&0u16.to_be_bytes()); // template 4.0
         // Fixed-size PDT 4.0 body: category/number/process/background/
         // analysis(5) + hours_cutoff(2) + minutes_cutoff(1) + time_unit(1)
-        // + forecast_time(4) + surface_type(1) + scale_factor(1) +
-        // scaled_value(4) = 19 octets.
-        section4.extend_from_slice(&[0u8; 19]);
+        // + forecast_time(4) + first surface [type(1) + scale(1) + value(4)]
+        // + second surface [type(1) + scale(1) + value(4)] = 25 octets.
+        section4.extend_from_slice(&[0u8; 25]);
         data.extend_from_slice(&((section4.len() + 5) as u32).to_be_bytes());
         data.push(4);
         data.extend_from_slice(&section4);

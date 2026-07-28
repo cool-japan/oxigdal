@@ -1,11 +1,11 @@
 # TODO: oxigeo-query
 
 > **Purpose:** SQL-like query language + cost-based optimizer + parallel executor for geospatial data; sqlparser-based parser, custom AST, rstar index integration.
-> **Status (2026-05-16):** 10,329 LoC (src) · 118 tests (75 inline + 43 in tests/) · 1 critical eval gap
+> **Status (2026-07-28):** 10,398 LoC (src) · 185 tests · 0 critical eval gaps (spatial predicates now evaluate real geometry; index-driven scan wiring and GROUP BY spatial aggregates remain open — see below)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Implement `Expr::Function` evaluation in the filter executor (currently unreachable for any spatial WHERE clause).
+- [x] Implement `Expr::Function` evaluation in the filter executor (currently unreachable for any spatial WHERE clause).
   - **Verified gap:** `src/executor/filter.rs:144-154` —
     ```rust
     _ => Err(QueryError::unsupported(
@@ -94,4 +94,4 @@
 *No prior `[x]` entries — slate was empty.*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

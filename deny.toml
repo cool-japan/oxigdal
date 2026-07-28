@@ -1,0 +1,226 @@
+# cargo-deny configuration for OxiGeo.
+#
+# Encodes COOLJAPAN release-engineering policy:
+#   - licenses: an explicit allow-list, derived from the actual license mix
+#     found in the resolved dependency graph (see THIRD_PARTY.md for the
+#     full breakdown and how it was generated).
+#   - bans: the COOLJAPAN-forbidden crates (C/C++ BLAS, C-bound compression,
+#     non-pure-Rust SQLite/FFT/serialization). Crates that are transitively
+#     unavoidable through an accepted upstream path (e.g. `png -> flate2 ->
+#     miniz_oxide`) are scoped with `wrappers` rather than hard-denied, so
+#     `cargo deny check` reflects reality instead of failing on day one.
+#   - advisories: mirrors the accepted-ignore list already maintained in
+#     `.cargo/audit.toml` (keep both files in sync when either changes).
+#
+# Run with:
+#   cargo install cargo-deny   # if not already installed
+#   cargo deny check                # everything below
+#   cargo deny check licenses
+#   cargo deny check bans
+#   cargo deny check advisories
+#
+# No GitHub Actions workflow wraps this (per COOLJAPAN CI policy, only
+# pypi-publish.yml / npm-publish.yml are permitted workflow files) --
+# this is a local/manual pre-release gate.
+
+[graph]
+# Consider every target this workspace actually ships for (native, wasm32,
+# embedded no_std) rather than just the host triple.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+# Deliberately NOT `all-features = true`: that would force-enable every
+# workspace crate's non-default, policy-excluded features too (mysql/
+# mongodb/cassandra on oxigeo-db-connectors, s3/azure-blob/gcs/http/oauth2
+# on oxigeo-cloud, oauth2 on oxigeo-gateway, http-sync on oxigeo-edge,
+# profiling on oxigeo-bench, file-watch on oxigeo-dev-tools, ...) and pull
+# in exactly the C/FFI-heavy dependency chains (aws-lc-sys, ring,
+# libz-sys, notify's inotify/kqueue bindings) those features are
+# intentionally gated behind. Checking the *default*-feature-per-crate
+# graph (still across every target above) matches what this workspace
+# actually ships out of the box; enabling a non-default feature is an
+# explicit, individually-reviewed opt-in the consumer takes on themselves.
+
+[licenses]
+version = 2
+# Allow-list assembled from the license mix cargo-metadata actually reports
+# for this workspace (see THIRD_PARTY.md "Snapshot" table). An expression
+# using `OR` (e.g. `MIT OR Apache-2.0`) is satisfied if any one listed
+# license is on this list; an expression using `AND` requires every
+# component to be listed (see the IJG/Unicode-3.0 entries below, which
+# exist ONLY to satisfy `AND` clauses on top of MIT/Apache-2.0, e.g.
+# `jpeg-encoder`'s `(MIT OR Apache-2.0) AND IJG`).
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    # Weak / file-level copyleft, accepted -- see THIRD_PARTY.md "Copyleft"
+    # section for exactly which crates carry this and why it doesn't trigger
+    # a source-availability obligation on this project's own code (MPL-2.0:
+    # cbindgen, colored, ascii_utils, fast_chemail).
+    #
+    # CDDL-1.0 (inferno, transitive of the optional pprof/profiling path) was
+    # removed from this list in the 0.2.1 pass: pprof is no longer reachable
+    # under the default-feature graph cargo-deny checks here (`oxigeo-bench`
+    # gates it behind its non-default `profiling` feature; the only remaining
+    # unconditional edge is oxigeo-algorithms's *dev*-dependency on pprof,
+    # which this workspace's default-feature graph check doesn't traverse).
+    # `cargo tree -i inferno --all-features` still shows it as reachable when
+    # every feature is force-enabled, so it isn't gone from the workspace --
+    # just no longer part of the closure this specific check covers. If a
+    # future change makes pprof reachable by default again, re-add
+    # "CDDL-1.0" here.
+    "MPL-2.0",
+    # Other permissive licenses present in the graph.
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+    # AND-clause components only (never the sole license of a crate here).
+    "IJG",
+]
+# `r-efi` (no_std UEFI protocol bindings, reachable on some embedded targets)
+# lists `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; we consume it under MIT or
+# Apache-2.0 and never invoke the LGPL option, so LGPL-2.1-or-later is
+# intentionally NOT on the allow list above -- if a future dependency ever
+# makes LGPL the ONLY option, this should fail loudly rather than silently
+# pass.
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+# `warn`, not `deny`: the only wildcard hits in this workspace are three
+# intra-workspace dev-dependencies declared as bare `path = "../..."` with
+# no `version =`: `oxigeo-copc` (in oxigeo-3d), `oxigeo-algorithms` (in
+# oxigeo-dev-tools), and `oxigeo-geojson` (in oxigeo-qc). That absence is
+# intentional, not an oversight -- see each Cargo.toml's inline comment and
+# scripts/gen-publish-order.py's header ("dev-dependencies are excluded
+# [from the publish graph], since `cargo publish` never needs those
+# already registered"): Cargo drops path-only dev-dependencies from the
+# packaged manifest entirely, so they never need to resolve against
+# crates.io. Adding an explicit `version =` (e.g. switching to
+# `.workspace = true`, which already carries `version = "0.2.1"` for all
+# three in `[workspace.dependencies]`) would flip that -- Cargo would keep
+# the dependency in the packaged manifest and require `0.2.1` to already
+# be live on crates.io when the *dependent* crate is publish-verified,
+# before this release has published anything. That would reintroduce
+# exactly the failure the path-only form was written to avoid, so instead
+# of pinning a version, `allow-wildcard-paths` below tells cargo-deny these
+# specific, understood, dev-only path wildcards are fine -- it does not
+# affect a bare `"*"` registry-version wildcard, which this workspace has
+# none of.
+wildcards = "warn"
+allow-wildcard-paths = true
+deny = [
+    # --- Pure Rust Policy: banned BLAS / FFT / serialization / SQLite ---
+    # Use oxiblas instead of any OpenBLAS C binding.
+    { name = "openblas-src" },
+    # Use OxiFFT instead of rustfft.
+    { name = "rustfft" },
+    # Use oxicode instead of bincode.
+    { name = "bincode" },
+    # Use oxisql-* (oxisql-sqlite-compat) instead of rusqlite / raw libsqlite3.
+    { name = "rusqlite" },
+    { name = "libsqlite3-sys" },
+
+    # --- Pure Rust Policy: C-bound compression, replaced by oxiarc-* ---
+    # None of these currently appear anywhere in the resolved graph (direct
+    # or transitive) as of this file's authoring; listed with no `wrappers`
+    # so they hard-fail the moment anything (even transitively) pulls them
+    # in, rather than silently reappearing.
+    { name = "zip" },
+    { name = "zstd" },
+    { name = "zstd-sys" },
+    { name = "bzip2" },
+    { name = "bzip2-sys" },
+    { name = "lz4" },
+    { name = "lz4-sys" },
+    { name = "tar" },
+    { name = "brotli-sys" },
+
+    # `flate2` is banned as a *direct* dependency (none of this workspace's
+    # crates depend on it directly -- verified via `cargo tree -e normal -i
+    # flate2`). It is an accepted transitive of the `png`/`tiff` image
+    # codecs (`png -> flate2`, `tiff -> flate2`), which are themselves only
+    # reachable through the `image` crate (raster preview / thumbnail
+    # encoding, e.g. `oxigeo-server`'s WMS `GetMap` PNG output). Scoping via
+    # `wrappers` means: allowed when pulled in by these specific crates,
+    # denied if anything else (including a workspace crate directly) starts
+    # depending on it.
+    { name = "flate2", wrappers = ["png", "tiff"] },
+
+    # `miniz_oxide` is banned as a *direct* dependency (COOLJAPAN Pure Rust
+    # Policy). It is an accepted transitive of `flate2`'s pure-Rust backend
+    # (`flate2 -> miniz_oxide`, itself already scoped above), of `png`
+    # (which also compresses/decompresses directly via `miniz_oxide` on its
+    # own newer versions, not only through `flate2`), of `exr` (via
+    # `image`'s OpenEXR support), and of `backtrace` (via the optional,
+    # non-default `pprof` profiling path in `oxigeo-bench`/`oxigeo-dev-tools`
+    # -- see `.cargo/audit.toml`'s RUSTSEC-2026-0194/0195 notes for the same
+    # `pprof`/`inferno` reachability). Same `wrappers` scoping as `flate2`.
+    { name = "miniz_oxide", wrappers = ["flate2", "png", "exr", "backtrace"] },
+
+    # `snap` (pure-Rust Snappy, despite the policy-list name match on
+    # "snap" -- this is NOT a C library binding) is an accepted transitive
+    # of the upstream `parquet` crate's built-in Snappy codec
+    # (`oxigeo-geoparquet`'s `snappy` feature forwards to `parquet/snap`;
+    # see that crate's Cargo.toml for the full pure-Rust-codec rationale).
+    { name = "snap", wrappers = ["parquet"] },
+
+    # The upstream `brotli` crate (Dropbox's pure-Rust port, NOT a C
+    # `libbrotli` binding) is likewise an accepted transitive of `parquet`'s
+    # `brotli` feature. Kept denied-with-wrapper rather than allowed
+    # outright so any *new* direct use anywhere in the workspace must route
+    # through `oxiarc-brotli` instead, per COOLJAPAN policy.
+    { name = "brotli", wrappers = ["parquet"] },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Pruned from 15 -> 7 entries in the 0.2.1 release pass (2026-07-21): the
+# other 8 IDs no longer matched anything in the current Cargo.lock
+# (`cargo deny check` reported them as `advisory-not-detected`) -- either
+# the pinned crate was bumped past the patched version, or it no longer
+# appears in the dependency graph at all. Every ID below was re-verified
+# against the current Cargo.lock: each still matches an installed version,
+# and each is a transitive dependency with either no fixed version
+# available at all, or no fixed version reachable within this workspace's
+# current semver constraints.
+#
+# NOTE: `.cargo/audit.toml` still carries all 15 as of this writing --
+# left untouched deliberately (out of scope for this pass). It will report
+# the same 8 as stale on its next `cargo audit` run and should be pruned
+# to match in a follow-up so the two files stay in sync, per the original
+# intent below.
+#
+# Keep this list and .cargo/audit.toml in sync -- if you re-add a
+# dependency that reintroduces one of the six IDs `.cargo/audit.toml`'s
+# header notes as *removed* (RUSTSEC-2026-0044/0048/0178/0179/0180/0173),
+# re-add the corresponding entry to both files instead of just this one.
+ignore = [
+    "RUSTSEC-2025-0057", # fxhash (use-after-free) -- transitive via sled/mqtt
+    "RUSTSEC-2024-0384", # instant (unmaintained) -- transitive via sled/azure_core
+    "RUSTSEC-2024-0436", # paste (unsound) -- transitive via nalgebra/scirs2
+    "RUSTSEC-2025-0134", # rustls-pemfile (unmaintained) -- transitive via tonic/rumqttc
+    "RUSTSEC-2023-0071", # rsa (Marvin Attack timing side-channel) -- no fixed version exists
+    "RUSTSEC-2026-0195", # quick-xml (unbounded namespace-decl allocation DoS) -- transitive via pprof/inferno, azure_core
+    "RUSTSEC-2026-0194", # quick-xml (quadratic-runtime duplicate-attribute-name DoS) -- transitive via pprof/inferno, azure_core
+]

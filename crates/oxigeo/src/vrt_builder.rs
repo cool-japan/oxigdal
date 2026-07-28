@@ -113,7 +113,20 @@ pub fn build_vrt(sources: &[&Path], output_path: &Path, options: VrtOptions) -> 
     let total_width = ((union_bbox.max_x - union_bbox.min_x) / pixel_size).ceil() as u32;
     let total_height = ((union_bbox.max_y - union_bbox.min_y) / pixel_size).ceil() as u32;
 
-    let band_count: u32 = source_metas.iter().map(|m| m.band_count).max().unwrap_or(1);
+    // Output band count depends on the compositing mode:
+    // - separate_bands: every source contributes its own distinct output bands,
+    //   so the total is the *sum* of per-source band counts.
+    // - overlapping (default): sources are stacked, so the output has as many
+    //   bands as the source with the most bands (the MAX).
+    let band_count: u32 = if options.separate_bands {
+        source_metas
+            .iter()
+            .map(|m| m.band_count)
+            .sum::<u32>()
+            .max(1)
+    } else {
+        source_metas.iter().map(|m| m.band_count).max().unwrap_or(1)
+    };
 
     // Write the VRT XML.
     let xml = generate_vrt_xml(
@@ -357,10 +370,49 @@ fn generate_vrt_xml(
         xml.push_str("</SRS>\n");
     }
 
+    // Assign, per output band, the list of `(source_index, source_local_band)`
+    // pairs that feed it.
+    //
+    // - separate_bands: each output band is fed by exactly ONE (source, local
+    //   band) — the sources' bands are concatenated, never composited.
+    // - overlapping (default): output band N is composited from every source
+    //   that actually *has* a band N.  Sources with fewer than N bands are
+    //   skipped, so we never emit a `<SourceBand>` index a source does not
+    //   possess (which would produce an unreadable VRT).
+    let assignments: Vec<Vec<(usize, u32)>> = if options.separate_bands {
+        let mut per_band = Vec::new();
+        for (si, meta) in metas.iter().enumerate() {
+            for local_band in 1..=meta.band_count {
+                per_band.push(vec![(si, local_band)]);
+            }
+        }
+        if per_band.is_empty() {
+            per_band.push(Vec::new());
+        }
+        per_band
+    } else {
+        (1..=band_count)
+            .map(|b| {
+                metas
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| b <= m.band_count)
+                    .map(|(si, _)| (si, b))
+                    .collect()
+            })
+            .collect()
+    };
+
     // Emit VRTRasterBand elements
-    for band_idx in 1..=band_count {
-        let dt_str = metas
+    for (band0, sources_for_band) in assignments.iter().enumerate() {
+        let band_idx = (band0 as u32) + 1;
+
+        // Data type: for separate bands use the contributing source's type;
+        // otherwise fall back to the first source (overlapping bands share type).
+        let dt_str = sources_for_band
             .first()
+            .and_then(|&(si, _)| metas.get(si))
+            .or_else(|| metas.first())
             .map(|m| gdal_dtype_str(&m.data_type_str))
             .unwrap_or("Float32");
 
@@ -377,8 +429,12 @@ fn generate_vrt_xml(
             xml.push_str("</NoDataValue>\n");
         }
 
-        // Simple sources
-        for (meta, src_path) in metas.iter().zip(sources.iter()) {
+        // Simple sources feeding this output band.
+        for &(src_idx, source_band) in sources_for_band {
+            let (meta, src_path) = match (metas.get(src_idx), sources.get(src_idx)) {
+                (Some(m), Some(p)) => (m, p),
+                _ => continue,
+            };
             // Offset in output pixels for this source.
             let dst_off_x = ((meta.origin_x - bbox.min_x) / pixel_size).round() as i64;
             let dst_off_y = ((bbox.max_y - meta.max_y()) / pixel_size).round() as i64;
@@ -392,7 +448,7 @@ fn generate_vrt_xml(
             xml.push_str(&src_path_str);
             xml.push_str("</SourceFilename>\n");
             xml.push_str("      <SourceBand>");
-            xml.push_str(&band_idx.to_string());
+            xml.push_str(&source_band.to_string());
             xml.push_str("</SourceBand>\n");
 
             // SrcRect: full source extent
@@ -446,5 +502,76 @@ impl Dataset {
         options: VrtOptions,
     ) -> Result<Dataset> {
         build_vrt(sources, output_path, options)
+    }
+}
+
+#[cfg(all(test, feature = "geotiff"))]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::builder::{DatasetCreateBuilder, OutputFormat};
+    use oxigeo_core::types::RasterDataType;
+
+    fn write_nband_geotiff(path: &Path, bands: u32) {
+        let mut writer = DatasetCreateBuilder::new(path, OutputFormat::GeoTiff)
+            .create()
+            .expect("create writer");
+        writer.set_dimensions(2, 2, bands).expect("dims");
+        writer.set_data_type(RasterDataType::UInt8);
+        writer.set_geo_transform(GeoTransform::north_up(0.0, 2.0, 1.0, 1.0));
+        let data: Vec<u8> = vec![0u8; (2 * 2 * bands) as usize];
+        writer.write_all_bands(&data).expect("write bands");
+        writer.finalize().expect("finalize");
+    }
+
+    #[test]
+    fn test_vrt_overlap_skips_missing_bands() {
+        let dir = std::env::temp_dir();
+        let src_rgb = dir.join("vrt_overlap_rgb.tif");
+        let src_gray = dir.join("vrt_overlap_gray.tif");
+        let out = dir.join("vrt_overlap_out.vrt");
+        write_nband_geotiff(&src_rgb, 3);
+        write_nband_geotiff(&src_gray, 1);
+
+        let sources: Vec<&Path> = vec![src_rgb.as_path(), src_gray.as_path()];
+        let ds = build_vrt(&sources, &out, VrtOptions::default()).expect("build vrt");
+        // Overlap mode: output band count is the MAX (3).
+        assert_eq!(ds.band_count(), 3);
+
+        let xml = std::fs::read_to_string(&out).expect("read vrt");
+        // The 1-band grayscale source must appear in exactly ONE SimpleSource
+        // (feeding band 1 only) — never referenced for bands 2/3 which it lacks.
+        let gray_name = src_gray.file_name().and_then(|n| n.to_str()).expect("name");
+        let gray_refs = xml.matches(gray_name).count();
+        assert_eq!(
+            gray_refs, 1,
+            "1-band source must feed only band 1, got {gray_refs} references"
+        );
+    }
+
+    #[test]
+    fn test_vrt_separate_bands_sums_band_count() {
+        let dir = std::env::temp_dir();
+        let src_rgb = dir.join("vrt_sep_rgb.tif");
+        let src_gray = dir.join("vrt_sep_gray.tif");
+        let out = dir.join("vrt_sep_out.vrt");
+        write_nband_geotiff(&src_rgb, 3);
+        write_nband_geotiff(&src_gray, 1);
+
+        let sources: Vec<&Path> = vec![src_rgb.as_path(), src_gray.as_path()];
+        let options = VrtOptions {
+            separate_bands: true,
+            ..VrtOptions::default()
+        };
+        let ds = build_vrt(&sources, &out, options).expect("build vrt");
+        // Separate mode: output band count is the SUM (3 + 1 = 4).
+        assert_eq!(ds.band_count(), 4);
+
+        let xml = std::fs::read_to_string(&out).expect("read vrt");
+        assert_eq!(
+            xml.matches("<VRTRasterBand").count(),
+            4,
+            "separate_bands should emit one VRTRasterBand per source band"
+        );
     }
 }

@@ -167,8 +167,8 @@ impl TileServer {
             .route("/", get(home_handler))
             // Health check
             .route("/health", get(health_handler))
-            // Cache stats
-            .route("/stats", get(stats_handler))
+            // Cache stats (reads the real, shared TileCache statistics)
+            .route("/stats", get(stats_handler).with_state(self.cache.clone()))
             // WMS endpoints
             .route("/wms", get(get_map).with_state(wms_state.clone()))
             .route(
@@ -262,6 +262,7 @@ impl TileServer {
 
         let app_future = async {
             axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
                 .await
                 .map_err(|e| ServerError::Http(e.to_string()))
         };
@@ -286,6 +287,7 @@ impl TileServer {
 
             let metrics_future = async {
                 axum::serve(metrics_listener, metrics_app)
+                    .with_graceful_shutdown(shutdown_signal())
                     .await
                     .map_err(|e| ServerError::Http(e.to_string()))
             };
@@ -419,20 +421,66 @@ async fn health_handler() -> Response {
 }
 
 /// Cache statistics handler
-async fn stats_handler() -> Response {
-    // This is a placeholder - in a real implementation, we'd need to access the cache
-    // through shared state
-    let stats = serde_json::json!({
+///
+/// Reports the real hit/miss/eviction/expiration counters, disk I/O counts,
+/// entry count and memory usage from the shared [`TileCache`].
+async fn stats_handler(axum::extract::State(cache): axum::extract::State<TileCache>) -> Response {
+    let stats = cache.stats();
+
+    let body = serde_json::json!({
         "status": "ok",
-        "message": "Cache statistics endpoint - requires state injection"
+        "hits": stats.hits,
+        "misses": stats.misses,
+        "hit_rate": stats.hit_rate(),
+        "entry_count": stats.entry_count,
+        "total_size_bytes": stats.total_size,
+        "avg_entry_size_bytes": stats.avg_entry_size(),
+        "evictions": stats.evictions,
+        "expirations": stats.expirations,
+        "disk_reads": stats.disk_reads,
+        "disk_writes": stats.disk_writes,
+        "put_failures": stats.put_failures,
     });
 
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string_pretty(&stats).unwrap_or_default(),
+        serde_json::to_string_pretty(&body).unwrap_or_default(),
     )
         .into_response()
+}
+
+/// Build the shutdown-signal future used for graceful shutdown.
+///
+/// Resolves when the process receives SIGINT (ctrl-c) or, on Unix, SIGTERM
+/// (sent by container orchestrators such as Kubernetes during a rollout). This
+/// lets in-flight requests drain instead of being hard-killed mid-response.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to install ctrl-c handler: {}", e);
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => error!("Failed to install SIGTERM handler: {}", e),
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("Shutdown signal received; draining in-flight requests");
 }
 
 #[cfg(test)]

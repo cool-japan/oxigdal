@@ -28,7 +28,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-vrt = "0.2.0"
+oxigeo-vrt = "0.2.1"
 ```
 
 ### Feature Flags
@@ -40,7 +40,7 @@ Example with async support:
 
 ```toml
 [dependencies]
-oxigeo-vrt = { version = "0.2.0", features = ["async"] }
+oxigeo-vrt = { version = "0.2.1", features = ["async"] }
 ```
 
 ## Quick Start

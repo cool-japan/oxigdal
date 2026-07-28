@@ -291,8 +291,10 @@ const TRANSVERSE_MERCATOR_WKT: &str = concat!(
 ///
 /// When the `netcdf` feature is enabled, calls into the real
 /// `oxigeo_netcdf::NetCdfReader` and assembles a complete
-/// [`ExtractedMetadata`]. Without the feature, a path-only stub is
-/// returned (preserving legacy behaviour).
+/// [`ExtractedMetadata`]. Without the feature, [`NetCdfCfExtractor::extract`]
+/// returns [`MetadataError::Unsupported`] rather than a metadata-poor
+/// success value, so that callers cannot mistake "the `netcdf` feature is
+/// disabled" for "this file genuinely has no CF metadata".
 pub struct NetCdfCfExtractor;
 
 impl NetCdfCfExtractor {
@@ -301,7 +303,11 @@ impl NetCdfCfExtractor {
     /// # Errors
     ///
     /// Returns [`MetadataError::ExtractionError`] when the file cannot
-    /// be opened or the NetCDF reader rejects it.
+    /// be opened or the NetCDF reader rejects it. Returns
+    /// [`MetadataError::Unsupported`] when this crate was built without the
+    /// `netcdf` feature (in which case no NetCDF file, valid or not, can be
+    /// read at all -- this is never returned as a false-successful,
+    /// near-empty [`ExtractedMetadata`]).
     pub fn extract<P: AsRef<Path>>(path: P) -> Result<ExtractedMetadata> {
         let path_ref = path.as_ref();
         let path_str = path_ref.to_string_lossy().to_string();
@@ -319,13 +325,12 @@ impl NetCdfCfExtractor {
 
         #[cfg(not(feature = "netcdf"))]
         {
-            let mut attributes = std::collections::HashMap::new();
-            attributes.insert("file_path".to_string(), path_str);
-            Ok(ExtractedMetadata {
-                format: Some("NetCDF".to_string()),
-                attributes,
-                ..Default::default()
-            })
+            Err(MetadataError::Unsupported(format!(
+                "NetCDF extraction not available for '{}': enable the 'netcdf' feature \
+                 (oxigeo-metadata was built without it, so no CF metadata can be read -- \
+                 this is not the same as the file having no metadata)",
+                path_str
+            )))
         }
     }
 }
@@ -334,7 +339,13 @@ impl NetCdfCfExtractor {
 /// both shim traits, plus a file path string for the attributes map.
 ///
 /// Public to the crate so the real-dataset wrapper and tests can both
-/// exercise the end-to-end shape of the result.
+/// exercise the end-to-end shape of the result. Only reachable when the
+/// `netcdf` feature enables its sole production caller
+/// ([`NetCdfCfExtractor::extract`]'s real-reader branch) or under `cfg(test)`
+/// (which exercises it directly against an in-memory fake); cfg-gated the
+/// same way so a `netcdf`-less, non-test build does not carry genuinely dead
+/// code.
+#[cfg(any(feature = "netcdf", test))]
 pub(crate) fn build_extracted_metadata<D: HasAttributes + HasVariables + ?Sized>(
     ds: &D,
     path_str: &str,
@@ -552,6 +563,21 @@ mod tests {
         }
     }
 
+    // No variables/coordinate axes: exercises `build_extracted_metadata`'s
+    // bbox/temporal_extent/crs = None paths without requiring the `netcdf`
+    // feature or a real reader.
+    impl HasVariables for InModuleFake {
+        fn variable_names(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn variable_attribute_string(&self, _var: &str, _attr: &str) -> Option<String> {
+            None
+        }
+        fn variable_min_max(&self, _var: &str) -> Option<(f64, f64)> {
+            None
+        }
+    }
+
     #[test]
     fn parse_cf_time_units_days_since() {
         let parsed = parse_cf_time_units("days since 2000-01-01");
@@ -571,5 +597,64 @@ mod tests {
         let g = extract_cf_globals(&ds);
         assert!(g.title.is_none());
         assert!(g.conventions.is_none());
+    }
+
+    /// `build_extracted_metadata` is the shared assembly path used by the real
+    /// `netcdf`-feature reader; it is pure logic over the trait shims and does
+    /// not itself require the `netcdf` feature, so it is exercised directly
+    /// here against an in-memory fake.
+    #[test]
+    fn build_extracted_metadata_assembles_globals_and_file_path() {
+        let mut ds = InModuleFake::default();
+        ds.attrs
+            .insert("title".to_string(), "Test Dataset".to_string());
+        ds.attrs
+            .insert("keywords".to_string(), "ocean, temperature".to_string());
+        ds.attrs
+            .insert("institution".to_string(), "OxiGeo Test Lab".to_string());
+
+        let metadata = build_extracted_metadata(&ds, "/data/sample.nc");
+
+        assert_eq!(metadata.format.as_deref(), Some("NetCDF"));
+        assert_eq!(metadata.title.as_deref(), Some("Test Dataset"));
+        assert_eq!(
+            metadata.attributes.get("file_path").map(String::as_str),
+            Some("/data/sample.nc")
+        );
+        assert_eq!(
+            metadata.attributes.get("institution").map(String::as_str),
+            Some("OxiGeo Test Lab")
+        );
+        assert_eq!(
+            metadata.keywords,
+            vec!["ocean".to_string(), "temperature".to_string()]
+        );
+        // No coordinate variables in the fake -> no bbox/temporal extent/crs.
+        assert!(metadata.bbox.is_none());
+        assert!(metadata.temporal_extent.is_none());
+        assert!(metadata.crs.is_none());
+    }
+
+    /// Without the `netcdf` feature, `NetCdfCfExtractor::extract` must return a
+    /// typed error rather than a near-empty "successful" [`ExtractedMetadata`]
+    /// that is indistinguishable from a genuinely metadata-poor file -- for
+    /// *any* input path, valid NetCDF or not, since the file is never opened.
+    #[cfg(not(feature = "netcdf"))]
+    #[test]
+    fn extract_without_netcdf_feature_returns_unsupported_error() {
+        let result = NetCdfCfExtractor::extract("/nonexistent/does-not-matter.nc");
+        match result {
+            Err(MetadataError::Unsupported(msg)) => {
+                assert!(
+                    msg.contains("netcdf"),
+                    "message should name the feature: {msg}"
+                );
+            }
+            Err(other) => panic!("expected MetadataError::Unsupported, got: {other:?}"),
+            Ok(_) => panic!(
+                "extract() must not silently succeed with a hollow result when the \
+                 'netcdf' feature is disabled"
+            ),
+        }
     }
 }

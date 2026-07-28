@@ -97,7 +97,11 @@ impl HttpReader {
                 )
             })?;
 
-            self.index = Some(PackedRTree::read(&mut cursor, feature_count)?);
+            self.index = Some(PackedRTree::read(
+                &mut cursor,
+                feature_count,
+                self.header.index_node_size,
+            )?);
         }
 
         // Record features offset
@@ -269,7 +273,11 @@ impl AsyncHttpReader {
                 )
             })?;
 
-            self.index = Some(PackedRTree::read(&mut cursor, feature_count)?);
+            self.index = Some(PackedRTree::read(
+                &mut cursor,
+                feature_count,
+                self.header.index_node_size,
+            )?);
         }
 
         self.features_offset = cursor.position();

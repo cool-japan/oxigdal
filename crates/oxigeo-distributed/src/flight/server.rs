@@ -4,6 +4,8 @@
 //! between nodes using zero-copy transfers.
 
 use crate::error::{DistributedError, Result};
+use crate::flight::wire::{self, EXECUTE_TASK_ACTION, ExecuteTaskResponse};
+use crate::worker::Worker;
 use arrow::record_batch::RecordBatch;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
@@ -27,6 +29,9 @@ pub struct FlightServer {
     auth_tokens: Arc<RwLock<HashMap<String, String>>>,
     /// Enable authentication.
     enable_auth: bool,
+    /// Optional worker that executes `execute_task` actions dispatched by a
+    /// coordinator. Without it, `execute_task` is refused with `unimplemented`.
+    task_executor: Option<Arc<Worker>>,
 }
 
 impl FlightServer {
@@ -36,6 +41,7 @@ impl FlightServer {
             data_store: Arc::new(RwLock::new(HashMap::new())),
             auth_tokens: Arc::new(RwLock::new(HashMap::new())),
             enable_auth: false,
+            task_executor: None,
         }
     }
 
@@ -43,6 +49,60 @@ impl FlightServer {
     pub fn with_auth(mut self) -> Self {
         self.enable_auth = true;
         self
+    }
+
+    /// Attach a [`Worker`] so this server can execute tasks dispatched by a
+    /// coordinator through the [`EXECUTE_TASK_ACTION`] Flight action.
+    ///
+    /// This is what turns a bare data-transport Flight server into a real
+    /// worker endpoint: the coordinator ships a serialized `Task` (plus its
+    /// input partition), the attached worker runs it, and the result batch is
+    /// streamed back in the same response.
+    pub fn with_worker(mut self, worker: Arc<Worker>) -> Self {
+        self.task_executor = Some(worker);
+        self
+    }
+
+    /// Execute a dispatched task with the attached worker and produce the wire
+    /// response body. Returns `unimplemented` when no worker is attached.
+    async fn handle_execute_task(
+        &self,
+        body: bytes::Bytes,
+    ) -> std::result::Result<arrow_flight::Result, tonic::Status> {
+        let worker = self.task_executor.as_ref().ok_or_else(|| {
+            tonic::Status::unimplemented(
+                "this Flight server has no worker attached; call FlightServer::with_worker",
+            )
+        })?;
+
+        let (task, input) = wire::decode_execute_request(&body)
+            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+
+        // A batch operation needs its input partition; a missing one is a
+        // client-side contract violation, surfaced honestly rather than run on an
+        // empty batch.
+        let input = input.ok_or_else(|| {
+            tonic::Status::invalid_argument("execute_task requires an input record batch")
+        })?;
+
+        let task_result = worker
+            .execute_task(task, Arc::new(input))
+            .await
+            .map_err(|e| tonic::Status::internal(format!("worker execution error: {e}")))?;
+
+        let output = task_result.data.as_ref().map(|b| b.as_ref().clone());
+        let response = ExecuteTaskResponse {
+            success: task_result.is_success(),
+            error: task_result.error.clone(),
+            execution_time_ms: task_result.execution_time_ms,
+            num_rows: output.as_ref().map(|b| b.num_rows()).unwrap_or(0),
+            has_output: output.is_some(),
+        };
+
+        let body = wire::encode_execute_response(&response, output.as_ref())
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        Ok(arrow_flight::Result { body })
     }
 
     /// Store data with a ticket.
@@ -425,6 +485,11 @@ impl FlightService for FlightServer {
                 let stream = stream::once(async { Ok(result) });
                 Ok(Response::new(Box::pin(stream)))
             }
+            EXECUTE_TASK_ACTION => {
+                let result = self.handle_execute_task(action.body).await?;
+                let stream = stream::once(async move { Ok(result) });
+                Ok(Response::new(Box::pin(stream)))
+            }
             _ => Err(tonic::Status::unimplemented(format!(
                 "Action not implemented: {}",
                 action.r#type
@@ -447,6 +512,10 @@ impl FlightService for FlightServer {
             ActionType {
                 r#type: "remove_ticket".to_string(),
                 description: "Remove a ticket from the server".to_string(),
+            },
+            ActionType {
+                r#type: EXECUTE_TASK_ACTION.to_string(),
+                description: "Execute a dispatched task and return its result batch".to_string(),
             },
         ];
 
@@ -734,6 +803,101 @@ mod tests {
         let result = FlightService::do_action(&server, bearer_request(action, "token123")).await;
         assert!(result.is_ok());
         assert!(server.get_data("t1")?.is_none());
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn collect_action(
+        response: Response<
+            Pin<
+                Box<
+                    dyn Stream<Item = std::result::Result<arrow_flight::Result, tonic::Status>>
+                        + Send,
+                >,
+            >,
+        >,
+    ) -> Vec<Bytes> {
+        let mut stream = response.into_inner();
+        let mut out = Vec::new();
+        while let Some(item) = stream.next().await {
+            if let Ok(res) = item {
+                out.push(res.body);
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_action_runs_worker_end_to_end()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::flight::wire;
+        use crate::task::{PartitionId, Task, TaskId, TaskOperation};
+        use crate::worker::{Worker, WorkerConfig};
+
+        // A Flight server backed by a real worker.
+        let worker = Arc::new(Worker::new(WorkerConfig::new("w-exec".to_string())));
+        let server = FlightServer::new().with_worker(worker);
+
+        // Dispatch a Filter task over the execute_task action with an input batch
+        // of 5 rows; the filter keeps the 3 rows with value > 2.
+        let task = Task::new(
+            TaskId(11),
+            PartitionId(0),
+            TaskOperation::Filter {
+                expression: "value > 2".to_string(),
+            },
+        );
+        let input = create_test_batch()?;
+        let body = wire::encode_execute_request(&task, Some(input.as_ref()))?;
+
+        let action = Action {
+            r#type: wire::EXECUTE_TASK_ACTION.to_string(),
+            body,
+        };
+        let response = FlightService::do_action(&server, Request::new(action)).await?;
+        let payloads = collect_action(response).await;
+
+        let payload = payloads
+            .first()
+            .ok_or_else(|| Box::<dyn std::error::Error>::from("no response payload"))?;
+        let (meta, output) = wire::decode_execute_response(payload)?;
+
+        assert!(meta.success, "the dispatched task must actually run");
+        assert!(meta.has_output);
+        let output = output.ok_or_else(|| Box::<dyn std::error::Error>::from("missing output"))?;
+        assert_eq!(
+            output.num_rows(),
+            3,
+            "filter must really execute on the worker"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_action_without_worker_is_unimplemented()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::flight::wire;
+        use crate::task::{PartitionId, Task, TaskId, TaskOperation};
+
+        // No worker attached -> execute_task must be refused loudly.
+        let server = FlightServer::new();
+        let task = Task::new(
+            TaskId(1),
+            PartitionId(0),
+            TaskOperation::Filter {
+                expression: "value > 2".to_string(),
+            },
+        );
+        let body = wire::encode_execute_request(&task, Some(create_test_batch()?.as_ref()))?;
+        let action = Action {
+            r#type: wire::EXECUTE_TASK_ACTION.to_string(),
+            body,
+        };
+        let result = FlightService::do_action(&server, Request::new(action)).await;
+        assert_eq!(
+            result.err().map(|s| s.code()),
+            Some(tonic::Code::Unimplemented)
+        );
         Ok(())
     }
 

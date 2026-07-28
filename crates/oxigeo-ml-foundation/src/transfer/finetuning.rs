@@ -56,6 +56,32 @@ impl FineTuningScheduler {
         }
     }
 
+    /// Builds the per-layer learning-rate vector for the current epoch.
+    ///
+    /// The result has one entry per layer (`0..total_layers`) and can be passed
+    /// directly to a backend's layer-wise optimizer step
+    /// (`MLBackend::optimizer_step_layerwise`); a value of `0.0` freezes the
+    /// corresponding layer for this step. This is the bridge that applies the
+    /// scheduler's bookkeeping to a real model's weights.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `num_layers` does not match the layer count the
+    /// scheduler was configured with, so a mismatched model cannot be trained
+    /// against the wrong schedule.
+    pub fn layer_learning_rates(&self, num_layers: usize) -> Result<Vec<f32>> {
+        if num_layers != self.total_layers {
+            return Err(Error::invalid_parameter(
+                "num_layers",
+                num_layers,
+                format!("scheduler was built for {} layers", self.total_layers),
+            ));
+        }
+        Ok((0..self.total_layers)
+            .map(|i| self.get_layer_lr(i) as f32)
+            .collect())
+    }
+
     /// Gets the layer index to unfreeze at the current epoch for gradual unfreezing.
     fn get_unfreeze_schedule(&self) -> usize {
         if self.current_epoch < self.config.epochs_before_unfreeze {
@@ -97,6 +123,22 @@ mod tests {
 
         scheduler.step();
         assert_eq!(scheduler.current_epoch(), 1);
+    }
+
+    #[test]
+    fn test_layer_learning_rates_bridge() {
+        let config = FineTuningConfig::fine_tune_all(1e-3);
+        let scheduler = FineTuningScheduler::new(config, 4).expect("Failed to create scheduler");
+
+        let lrs = scheduler.layer_learning_rates(4).expect("layer lrs failed");
+        assert_eq!(lrs.len(), 4);
+        // fine_tune_all applies the base LR uniformly.
+        for lr in lrs {
+            assert!((lr - 1e-3).abs() < 1e-9);
+        }
+
+        // Mismatched layer count must error.
+        assert!(scheduler.layer_learning_rates(5).is_err());
     }
 
     #[test]

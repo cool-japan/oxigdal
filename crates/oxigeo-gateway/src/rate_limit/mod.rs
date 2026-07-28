@@ -9,7 +9,46 @@ pub mod storage;
 
 use crate::error::Result;
 use async_trait::async_trait;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Default number of lock stripes used to serialize the check+record pair per key.
+pub(crate) const DEFAULT_LOCK_STRIPES: usize = 4096;
+
+/// Fixed-size set of async mutexes used to make the rate-limit `check`+`record` pair
+/// atomic for a given key.
+///
+/// A striped design bounds memory (one small mutex per stripe, never one-per-key that
+/// grows without limit) while still serializing all operations that hash to the same
+/// stripe. Two distinct keys may occasionally share a stripe (a hash collision), which
+/// only causes them to serialize against each other -- it never admits the TOCTOU race,
+/// so correctness is preserved and the only cost is rare, harmless extra contention.
+pub(crate) struct StripedLocks {
+    stripes: Vec<tokio::sync::Mutex<()>>,
+}
+
+impl StripedLocks {
+    pub(crate) fn new(stripes: usize) -> Self {
+        let count = stripes.max(1);
+        Self {
+            stripes: (0..count).map(|_| tokio::sync::Mutex::new(())).collect(),
+        }
+    }
+
+    fn index(&self, key: &str) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.stripes.len()
+    }
+
+    /// Acquires the stripe guarding `key`. Held across the whole check+record sequence so
+    /// no other caller for the same key can interleave between the read and the write.
+    pub(crate) async fn lock(&self, key: &str) -> tokio::sync::MutexGuard<'_, ()> {
+        let idx = self.index(key);
+        self.stripes[idx].lock().await
+    }
+}
 
 pub use algorithms::{Algorithm, FixedWindow, LeakyBucket, SlidingWindow, TokenBucket};
 pub use rules::{RateLimitRule, RuleEngine};
@@ -87,10 +126,30 @@ impl RateLimitKey {
 #[async_trait]
 pub trait RateLimiter: Send + Sync {
     /// Checks if request is allowed.
+    ///
+    /// This is a read-only probe. On its own it is subject to a check-then-record race
+    /// under concurrency; prefer [`RateLimiter::try_acquire`], which performs the check
+    /// and the record as one atomic operation.
     async fn check(&self, key: &RateLimitKey) -> Result<Decision>;
 
     /// Records request.
     async fn record(&self, key: &RateLimitKey) -> Result<()>;
+
+    /// Atomically decides whether a request is allowed and, if so, records it as consumed.
+    ///
+    /// Unlike calling [`RateLimiter::check`] followed by [`RateLimiter::record`] as two
+    /// independent steps, this method guarantees that no other caller for the same key can
+    /// interleave between the decision and the accounting, so at most `limit` requests are
+    /// ever admitted within a window even under heavy concurrency (closing the TOCTOU
+    /// bypass). Implementations that cannot provide this guarantee fall back to the default
+    /// non-atomic sequence below.
+    async fn try_acquire(&self, key: &RateLimitKey) -> Result<Decision> {
+        let decision = self.check(key).await?;
+        if matches!(decision, Decision::Allowed) {
+            self.record(key).await?;
+        }
+        Ok(decision)
+    }
 
     /// Resets rate limit for key.
     async fn reset(&self, key: &RateLimitKey) -> Result<()>;
@@ -105,6 +164,7 @@ pub struct StandardRateLimiter<S: Storage, A: Algorithm> {
     algorithm: A,
     limit: u64,
     window: Duration,
+    locks: Arc<StripedLocks>,
 }
 
 impl<S: Storage, A: Algorithm> StandardRateLimiter<S, A> {
@@ -115,6 +175,7 @@ impl<S: Storage, A: Algorithm> StandardRateLimiter<S, A> {
             algorithm,
             limit,
             window,
+            locks: Arc::new(StripedLocks::new(DEFAULT_LOCK_STRIPES)),
         }
     }
 
@@ -155,6 +216,34 @@ impl<S: Storage, A: Algorithm> RateLimiter for StandardRateLimiter<S, A> {
         self.algorithm
             .record(&self.storage, &storage_key, self.limit, self.window)
             .await
+    }
+
+    async fn try_acquire(&self, key: &RateLimitKey) -> Result<Decision> {
+        let storage_key = key.to_key();
+
+        // Hold the per-key stripe for the whole check+record sequence so concurrent callers
+        // for the same key cannot each observe the same pre-increment state and independently
+        // decide `Allowed` before any of them writes back.
+        let _guard = self.locks.lock(&storage_key).await;
+
+        let allowed = self
+            .algorithm
+            .check(&self.storage, &storage_key, self.limit, self.window)
+            .await?;
+
+        if allowed {
+            self.algorithm
+                .record(&self.storage, &storage_key, self.limit, self.window)
+                .await?;
+            Ok(Decision::Allowed)
+        } else {
+            let current = self.storage.get(&storage_key).await?.unwrap_or(0);
+            Ok(Decision::Limited {
+                retry_after: self.window,
+                limit: self.limit,
+                current,
+            })
+        }
     }
 
     async fn count(&self, key: &RateLimitKey) -> Result<u64> {
@@ -315,5 +404,59 @@ mod tests {
         // First request should be allowed
         let decision = limiter.check(&key).await.ok().unwrap_or(Decision::Allowed);
         assert_eq!(decision, Decision::Allowed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_try_acquire_is_atomic_under_concurrency() {
+        use crate::rate_limit::FixedWindow;
+
+        // A hard limit of 5 in a wide window. We fire 200 concurrent `try_acquire` calls at
+        // the same key; a correct atomic implementation must admit AT MOST `limit` of them.
+        let limit = 5u64;
+        let limiter = Arc::new(StandardRateLimiter::new(
+            MemoryStorage::new(),
+            FixedWindow,
+            limit,
+            Duration::from_secs(600),
+        ));
+
+        let mut handles = Vec::new();
+        for _ in 0..200 {
+            let limiter = Arc::clone(&limiter);
+            handles.push(tokio::spawn(async move {
+                let key = RateLimitKey::new("hot_key");
+                matches!(
+                    limiter
+                        .try_acquire(&key)
+                        .await
+                        .unwrap_or(Decision::Limited {
+                            retry_after: Duration::from_secs(0),
+                            limit: 0,
+                            current: 0,
+                        }),
+                    Decision::Allowed
+                )
+            }));
+        }
+
+        let mut allowed = 0u64;
+        for handle in handles {
+            if handle.await.unwrap_or(false) {
+                allowed += 1;
+            }
+        }
+
+        // The whole point of the fix: never more than `limit` admitted, even though 200
+        // callers raced. A non-atomic check+record would over-admit here.
+        assert!(
+            allowed <= limit,
+            "atomic try_acquire admitted {allowed} requests but the limit was {limit}"
+        );
+        // And it must admit exactly `limit` (it should not spuriously reject any of the first
+        // `limit` requests).
+        assert_eq!(
+            allowed, limit,
+            "expected exactly {limit} admitted, got {allowed}"
+        );
     }
 }

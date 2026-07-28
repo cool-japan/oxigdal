@@ -326,6 +326,36 @@ impl GeoParquetReader {
         &self.geometry_column
     }
 
+    /// Computes the dataset's spatial extent `(xmin, ymin, xmax, ymax)` from the
+    /// GeoParquet 1.1 `covering.bbox` column statistics, without decoding any
+    /// geometry.
+    ///
+    /// Returns the union of every row group's covering bbox, or `None` when the
+    /// file carries no covering columns (or none of them expose min/max
+    /// statistics).  This is the cheap, metadata-only path used by
+    /// [`crate::partitioning::PartitionedDataset::discover`] to populate each
+    /// partition's spatial extent.
+    pub fn covering_extent(&self) -> Option<(f64, f64, f64, f64)> {
+        let schema_descr = self.parquet_metadata.file_metadata().schema_descr();
+        let bbox_cols = crate::covering::BboxColumns::detect_with_covering(
+            schema_descr,
+            &self.geometry_column,
+            &self.metadata,
+        )?;
+
+        let mut acc: Option<(f64, f64, f64, f64)> = None;
+        for i in 0..self.num_row_groups() {
+            let rg = self.parquet_metadata.row_group(i);
+            if let Some((xmin, ymin, xmax, ymax)) = bbox_cols.row_group_bbox(rg) {
+                acc = Some(match acc {
+                    None => (xmin, ymin, xmax, ymax),
+                    Some(a) => (a.0.min(xmin), a.1.min(ymin), a.2.max(xmax), a.3.max(ymax)),
+                });
+            }
+        }
+        acc
+    }
+
     // ── Row-level spatial filtering ────────────────────────────────────────────
 
     /// Reads all rows whose geometry intersects `bbox` at the **row level**.

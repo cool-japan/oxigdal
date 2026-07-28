@@ -150,6 +150,12 @@ impl ConditionExpression {
     }
 
     /// Create a NOT condition.
+    ///
+    /// This is an associated constructor that wraps `condition` in a
+    /// [`ConditionExpression::Not`], keeping the `and`/`or`/`not` builder trio
+    /// symmetric. It is deliberately not `std::ops::Not` (which negates `self`),
+    /// so the `should_implement_trait` lint is a false positive here.
+    #[allow(clippy::should_implement_trait)]
     pub fn not(condition: ConditionExpression) -> Self {
         Self::Not(Box::new(condition))
     }

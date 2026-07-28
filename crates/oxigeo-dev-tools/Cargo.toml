@@ -25,7 +25,6 @@ oxigeo-geotiff.workspace = true
 
 # Error handling
 thiserror.workspace = true
-anyhow.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -43,24 +42,9 @@ comfy-table.workspace = true
 
 # File watching (optional — notify links to C inotify/kqueue; enable with feature "file-watch")
 notify = { workspace = true, optional = true }
-walkdir.workspace = true
-
-# Benchmarking
-criterion.workspace = true
-
-# Profiling
-pprof.workspace = true
 
 # Testing utilities
-proptest.workspace = true
 tempfile.workspace = true
-
-# Diff
-diff.workspace = true
-
-# Utilities
-num-traits.workspace = true
-bytes.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -85,8 +69,14 @@ oxigeo-algorithms = { path = "../oxigeo-algorithms", default-features = false, f
 [lints]
 workspace = true
 
+# `all-features = true` would also turn on `file-watch`, which pulls `notify`
+# (C inotify/kqueue on the relevant target families) -- see the Pure Rust
+# Policy note on the `file-watch` feature above, which keeps it out of
+# `default` for the same reason. Excluding it here keeps the docs.rs build on
+# the same Pure-Rust closure as the default feature set (mirrors the pattern
+# in oxigeo-cloud-enhanced).
 [package.metadata.docs.rs]
-all-features = true
+features = []
 rustdoc-args = ["--cfg", "docsrs"]
 
 [[test]]

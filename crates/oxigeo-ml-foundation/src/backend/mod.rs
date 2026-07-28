@@ -40,20 +40,25 @@ use crate::error::Result;
 #[cfg(feature = "ml")]
 pub mod layers;
 
+// Concrete trainable backend built from real scirs2-neural leaf layers.
+#[cfg(feature = "ml")]
+pub mod neural_backend;
+
+#[cfg(feature = "ml")]
+pub use neural_backend::NeuralBackend;
+
 // Pure-Rust ONNX model export (protobuf writer) for UNet / ResNet architectures.
 #[cfg(feature = "onnx")]
 pub mod onnx_export;
 
 // NOTE: the former `scirs2_backend` (scirs2-neural forward-only) and
 // `autograd_backend` (scirs2-autograd trainable) modules were removed: they had
-// drifted irrecoverably against the current scirs2 APIs (the redesigned
-// `VariableEnvironment`/`Context` variable-access surface, the missing
-// `tensor_ops::upsample2d`, the now-generic `layers::ConvBlock`, and renamed
-// `UNetConfig` fields), so re-enabling them was blocked by upstream API gaps
-// rather than a local edit. The supported, fully-tested path for serializing a
-// model architecture is [`onnx_export`]; [`layers`] provides forward-pass
-// building blocks. Trainable backends will return once the scirs2-autograd
-// variable/upsample surface stabilizes.
+// drifted irrecoverably against the current scirs2 APIs. They are superseded by
+// [`neural_backend::NeuralBackend`], which composes scirs2-neural leaf layers
+// (whose `backward`/`update` implement real gradient computation) into a module
+// tree with explicit gradient routing, so the full [`crate::training`] machinery
+// can actually train a model. [`onnx_export`] serializes a model architecture
+// from its config; [`layers`] provides forward-pass building blocks.
 
 /// Trait for ML backend implementations
 ///
@@ -90,6 +95,30 @@ pub trait MLBackend: Send + Sync {
     ///
     /// * `learning_rate` - Learning rate for parameter update
     fn optimizer_step(&mut self, learning_rate: f32) -> Result<()>;
+
+    /// Number of independently addressable top-level layers, i.e. the
+    /// granularity at which [`Self::optimizer_step_layerwise`] applies distinct
+    /// learning rates. Backends without layer-wise support report `1`.
+    fn num_layers(&self) -> usize {
+        1
+    }
+
+    /// Update parameters using a distinct learning rate per top-level layer.
+    ///
+    /// `layer_lrs` must have exactly [`Self::num_layers`] entries. A learning
+    /// rate of `0.0` freezes the corresponding layer for this step (its
+    /// parameters are left unchanged), which is how transfer-learning layer
+    /// freezing / gradual unfreezing is applied to a real model.
+    ///
+    /// The default implementation returns an error: a backend must opt in to
+    /// layer-wise updates rather than silently collapsing them to a uniform
+    /// step.
+    fn optimizer_step_layerwise(&mut self, layer_lrs: &[f32]) -> Result<()> {
+        let _ = layer_lrs;
+        Err(crate::Error::NotImplemented(
+            "this backend does not support layer-wise optimizer steps".to_string(),
+        ))
+    }
 
     /// Zero out all gradients
     fn zero_grad(&mut self) -> Result<()>;
@@ -158,12 +187,11 @@ impl BackendFactory {
     ///
     /// Initialized scirs2 backend ready for training
     pub fn create_unet(
-        _config: &crate::models::unet::UNetConfig,
-        _backend_config: &BackendConfig,
+        config: &crate::models::unet::UNetConfig,
+        backend_config: &BackendConfig,
     ) -> Result<Box<dyn MLBackend>> {
-        Err(crate::Error::NotImplemented(
-            "UNet backend awaiting scirs2 API stabilization".to_string(),
-        ))
+        let backend = NeuralBackend::unet(config, backend_config)?;
+        Ok(Box::new(backend))
     }
 
     /// Create scirs2 backend from ResNet configuration
@@ -177,12 +205,11 @@ impl BackendFactory {
     ///
     /// Initialized scirs2 backend ready for training
     pub fn create_resnet(
-        _config: &crate::models::resnet::ResNetConfig,
-        _backend_config: &BackendConfig,
+        config: &crate::models::resnet::ResNetConfig,
+        backend_config: &BackendConfig,
     ) -> Result<Box<dyn MLBackend>> {
-        Err(crate::Error::NotImplemented(
-            "ResNet backend awaiting scirs2 API stabilization".to_string(),
-        ))
+        let backend = NeuralBackend::resnet(config, backend_config)?;
+        Ok(Box::new(backend))
     }
 }
 

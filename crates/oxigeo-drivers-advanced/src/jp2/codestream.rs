@@ -214,12 +214,59 @@ impl CodestreamDecoder {
             return Err(Error::jpeg2000("Missing SIZ marker"));
         }
 
-        let header = self.parse_siz_segment(&mut cursor)?;
+        let mut header = self.parse_siz_segment(&mut cursor)?;
+
+        // Continue scanning the main header for the COD marker so the exposed
+        // decomposition-level / code-block fields reflect the real file values
+        // instead of hardcoded defaults.
+        Self::parse_cod_into(&mut cursor, &mut header)?;
+
         self.header = Some(header);
 
         self.header
             .as_ref()
             .ok_or_else(|| Error::jpeg2000("No header"))
+    }
+
+    /// Scan main-header markers following SIZ for the COD marker and populate
+    /// `header.decomposition_levels` / `code_block_width` / `code_block_height`
+    /// from its SPcod fields. Stops at SOT/SOD/EOC (start of tile data). A
+    /// missing COD leaves the pre-initialised defaults unchanged.
+    fn parse_cod_into<R: Read>(reader: &mut R, header: &mut CodestreamHeader) -> Result<()> {
+        loop {
+            let marker = match reader.read_u16::<BigEndian>() {
+                Ok(m) => m,
+                // Ran out of main-header bytes before any tile marker; keep defaults.
+                Err(_) => return Ok(()),
+            };
+            match Marker::from_u16(marker) {
+                Some(Marker::Sot) | Some(Marker::Sod) | Some(Marker::Eoc) => return Ok(()),
+                Some(Marker::Cod) => {
+                    let length = reader.read_u16::<BigEndian>()?;
+                    if length < 12 {
+                        return Err(Error::jpeg2000("Invalid COD segment length"));
+                    }
+                    let _scod = reader.read_u8()?;
+                    let _progression = reader.read_u8()?;
+                    let _num_layers = reader.read_u16::<BigEndian>()?;
+                    let _mct = reader.read_u8()?;
+                    // SPcod: decomposition levels, then code-block size exponents.
+                    header.decomposition_levels = reader.read_u8()?;
+                    header.code_block_width = reader.read_u8()?;
+                    header.code_block_height = reader.read_u8()?;
+                    return Ok(());
+                }
+                _ => {
+                    // Any other marker segment: skip by its declared length.
+                    let length = reader.read_u16::<BigEndian>()?;
+                    if length < 2 {
+                        return Err(Error::jpeg2000("Invalid marker segment length"));
+                    }
+                    let mut skip = vec![0u8; (length - 2) as usize];
+                    reader.read_exact(&mut skip)?;
+                }
+            }
+        }
     }
 
     /// Parse SIZ marker segment.
@@ -264,9 +311,11 @@ impl CodestreamDecoder {
             tile_y_offset,
             num_components,
             components,
-            decomposition_levels: 5, // Default, should be parsed from COD
-            code_block_width: 6,     // Default (2^6 = 64)
-            code_block_height: 6,    // Default
+            // Initialised to common defaults; overwritten with the real values
+            // by `parse_cod_into` when a COD marker is present in the main header.
+            decomposition_levels: 5,
+            code_block_width: 6,
+            code_block_height: 6,
         })
     }
 
@@ -496,6 +545,19 @@ mod tests {
         data.extend_from_slice(&[0xFF, 0xD9]);
 
         data
+    }
+
+    #[test]
+    fn test_header_reflects_real_cod_values_not_hardcoded_defaults() {
+        // The COD in build_minimal_j2k declares 0 decomposition levels and
+        // code-block exponents of 0 — the header must expose those, not the old
+        // hardcoded 5 / 6 / 6 defaults.
+        let codestream = build_minimal_j2k(4, 4, 1);
+        let mut decoder = CodestreamDecoder::new(codestream);
+        let header = decoder.parse_header().expect("parse header");
+        assert_eq!(header.decomposition_levels, 0);
+        assert_eq!(header.code_block_width, 0);
+        assert_eq!(header.code_block_height, 0);
     }
 
     #[test]

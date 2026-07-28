@@ -121,8 +121,8 @@ impl Dataset {
         })?;
         let reader = GeoTiffReader::open(source)?;
 
-        let width = reader.width();
-        let height = reader.height();
+        let src_width = reader.width();
+        let src_height = reader.height();
         let band_count: u16 = u16::try_from(reader.band_count()).unwrap_or(1);
         let data_type = reader
             .data_type()
@@ -152,7 +152,33 @@ impl Dataset {
         // bytes_per_sample`, chunky). Looping over `band_count` would append that
         // full image `band_count` times and trip the writers' length validation,
         // breaking every multi-band conversion.
-        let all_band_data: Vec<u8> = reader.read_band(0, 0)?;
+        let full_band_data: Vec<u8> = reader.read_band(0, 0)?;
+
+        // Honour any clip window recorded by `Dataset::clip`: crop the pixel
+        // buffer to the window and use the clipped dimensions + geo-transform
+        // (already adjusted on `self.info()`), so `clip().convert()` writes the
+        // cropped raster instead of silently emitting the full original.
+        let (all_band_data, width, height) = match self.clip_window() {
+            Some(window) => {
+                let full_w = u32::try_from(src_width).map_err(|_| OxiGeoError::Internal {
+                    message: format!("raster width {src_width} exceeds u32 for clip"),
+                })?;
+                let full_h = u32::try_from(src_height).map_err(|_| OxiGeoError::Internal {
+                    message: format!("raster height {src_height} exceeds u32 for clip"),
+                })?;
+                let cropped =
+                    crate::crop_interleaved(&full_band_data, full_w, full_h, window).ok_or_else(
+                        || OxiGeoError::Internal {
+                            message: format!(
+                                "clip window [{},{} {}×{}] does not fit source raster {full_w}×{full_h}",
+                                window.col, window.row, window.width, window.height
+                            ),
+                        },
+                    )?;
+                (cropped, u64::from(window.width), u64::from(window.height))
+            }
+            None => (full_band_data, src_width, src_height),
+        };
 
         if options.cog {
             // COG path: tiling is mandatory; default to 256 × 256 when not specified.
@@ -500,16 +526,38 @@ fn infer_shapefile_schema(
         dbf::{FieldDescriptor, FieldType},
     };
 
-    let shape_type = features
-        .iter()
-        .find_map(|f| f.geometry.as_ref())
-        .map(|g| match g {
-            GjGeom::Point(_) | GjGeom::MultiPoint(_) => ShapeType::Point,
-            GjGeom::LineString(_) | GjGeom::MultiLineString(_) => ShapeType::PolyLine,
-            GjGeom::Polygon(_) | GjGeom::MultiPolygon(_) => ShapeType::Polygon,
-            GjGeom::GeometryCollection(_) => ShapeType::Point,
-        })
-        .unwrap_or(ShapeType::Point);
+    // Map a GeoJSON geometry to the Shapefile ShapeType it belongs to.
+    let geom_shape_type = |g: &GjGeom| match g {
+        GjGeom::Point(_) | GjGeom::MultiPoint(_) => ShapeType::Point,
+        GjGeom::LineString(_) | GjGeom::MultiLineString(_) => ShapeType::PolyLine,
+        GjGeom::Polygon(_) | GjGeom::MultiPolygon(_) => ShapeType::Polygon,
+        GjGeom::GeometryCollection(_) => ShapeType::Point,
+    };
+
+    // A Shapefile stores exactly ONE geometry type. Validate that every feature
+    // with a geometry maps to the same ShapeType up front; a mixed-geometry
+    // FeatureCollection (which GeoJSON permits but Shapefile does not) must be
+    // rejected rather than silently written into a structurally inconsistent
+    // .shp file under the first feature's type.
+    let mut shape_type: Option<ShapeType> = None;
+    for feature in features {
+        if let Some(g) = feature.geometry.as_ref() {
+            let st = geom_shape_type(g);
+            match shape_type {
+                None => shape_type = Some(st),
+                Some(existing) if existing != st => {
+                    return Err(OxiGeoError::NotSupported {
+                        operation: format!(
+                            "GeoJSON→Shapefile: mixed geometry types in one FeatureCollection \
+                             ({existing:?} and {st:?}); a Shapefile holds a single geometry type"
+                        ),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    let shape_type = shape_type.unwrap_or(ShapeType::Point);
 
     // Scan properties for field names and widths; max field name is 10 chars.
     let mut widths: std::collections::HashMap<String, u8> = std::collections::HashMap::new();
@@ -556,4 +604,53 @@ fn infer_shapefile_schema(
     descriptors.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok((shape_type, descriptors))
+}
+
+#[cfg(all(test, feature = "geojson", feature = "shapefile"))]
+#[allow(clippy::expect_used)]
+mod tests {
+    use crate::{ConversionOptions, Dataset, DatasetFormat};
+    use std::io::Write;
+
+    fn write_temp(name: &str, content: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(content).expect("write");
+        path
+    }
+
+    #[test]
+    fn test_mixed_geometry_geojson_to_shapefile_errors() {
+        // A FeatureCollection mixing Point and Polygon — legal GeoJSON, illegal
+        // Shapefile. Conversion must error instead of silently writing a
+        // structurally inconsistent .shp.
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{}},
+            {"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]},"properties":{}}
+        ]}"#;
+        let path = write_temp("convert_mixed_geom.geojson", content);
+        let ds = Dataset::open(path.to_str().expect("path")).expect("open");
+        let out = std::env::temp_dir().join("convert_mixed_geom_out.shp");
+        let result = ds.convert(&out, DatasetFormat::Shapefile, ConversionOptions::default());
+        assert!(
+            result.is_err(),
+            "mixed-geometry FeatureCollection must not convert to a Shapefile"
+        );
+    }
+
+    #[test]
+    fn test_uniform_geometry_geojson_to_shapefile_ok() {
+        let content = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"n":"a"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1,1]},"properties":{"n":"b"}}
+        ]}"#;
+        let path = write_temp("convert_uniform_geom.geojson", content);
+        let ds = Dataset::open(path.to_str().expect("path")).expect("open");
+        let out = std::env::temp_dir().join("convert_uniform_geom_out.shp");
+        let result = ds.convert(&out, DatasetFormat::Shapefile, ConversionOptions::default());
+        assert!(
+            result.is_ok(),
+            "uniform Point features should convert: {result:?}"
+        );
+    }
 }

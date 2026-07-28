@@ -119,6 +119,47 @@ pub struct RotatedLatLonGrid {
     pub angle: f64,
 }
 
+impl RotatedLatLonGrid {
+    /// Get total number of grid points
+    pub fn num_points(&self) -> usize {
+        self.base.num_points()
+    }
+
+    /// Returns the true geographic `(latitude, longitude)` in degrees of grid
+    /// point `(i, j)`.
+    ///
+    /// The base grid supplies the point's coordinates in the *rotated* system;
+    /// this method un-rotates them back to geographic coordinates given the
+    /// rotated south pole `(lat_south_pole, lon_south_pole)` and the angle of
+    /// rotation about the new polar axis (WMO GDT 3.1). The standard
+    /// Z-Y'-Z'' spherical rotation is used; for the common `angle == 0` case
+    /// this reduces to the classic two-angle un-rotation used by eccodes.
+    pub fn coordinates(&self, i: u32, j: u32) -> Result<(f64, f64)> {
+        let (rlat_deg, rlon_deg) = self.base.coordinates(i, j)?;
+        // Angle of rotation acts about the rotated polar axis: apply it as a
+        // longitude offset in the rotated frame before un-rotating.
+        let rlon = (rlon_deg - self.angle).to_radians();
+        let rlat = rlat_deg.to_radians();
+
+        let theta = -(90.0 + self.lat_south_pole).to_radians();
+        let phi = -self.lon_south_pole.to_radians();
+
+        // Rotated-frame unit vector.
+        let x = rlon.cos() * rlat.cos();
+        let y = rlon.sin() * rlat.cos();
+        let z = rlat.sin();
+
+        // Inverse rotation (Y then Z) into the geographic frame.
+        let x2 = theta.cos() * phi.cos() * x + phi.sin() * y + theta.sin() * phi.cos() * z;
+        let y2 = -theta.cos() * phi.sin() * x + phi.cos() * y - theta.sin() * phi.sin() * z;
+        let z2 = -theta.sin() * x + theta.cos() * z;
+
+        let lat = z2.clamp(-1.0, 1.0).asin().to_degrees();
+        let lon = normalize_longitude(y2.atan2(x2).to_degrees());
+        Ok((lat, lon))
+    }
+}
+
 /// Lambert Conformal Conic projection grid
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LambertConformalGrid {
@@ -144,6 +185,8 @@ pub struct LambertConformalGrid {
     pub lat_south_pole: f64,
     /// Longitude of southern pole (degrees)
     pub lon_south_pole: f64,
+    /// Radius of the (spherical) Earth in metres, used by the projection math.
+    pub earth_radius_m: f64,
     /// Scanning mode
     pub scan_mode: ScanMode,
 }
@@ -153,6 +196,93 @@ impl LambertConformalGrid {
     pub fn num_points(&self) -> usize {
         (self.nx as usize) * (self.ny as usize)
     }
+
+    /// Returns the `(latitude, longitude)` in degrees of grid point `(i, j)`.
+    ///
+    /// Implements the spherical Lambert Conformal Conic inverse projection
+    /// (WMO Manual on Codes Vol. I.2, GDT 3.30 / standard secant-cone map
+    /// projection formulas). The grid is regular in projected metres; the
+    /// first grid point `(0, 0)` maps back to `(la1, lo1)`.
+    pub fn coordinates(&self, i: u32, j: u32) -> Result<(f64, f64)> {
+        if i >= self.nx || j >= self.ny {
+            return Err(GribError::OutOfRange(format!(
+                "index ({i}, {j}) out of range ({}x{})",
+                self.nx, self.ny
+            )));
+        }
+        let a = self.earth_radius_m;
+        let phi1 = self.latin1.to_radians();
+        let phi2 = self.latin2.to_radians();
+        let lo_v = self.lov.to_radians();
+
+        // Cone constant n.
+        let n = if (phi1 - phi2).abs() < 1e-12 {
+            phi1.sin()
+        } else {
+            (phi1.cos() / phi2.cos()).ln() / ((cone_t(phi2)).ln() - (cone_t(phi1)).ln())
+        };
+        if n.abs() < 1e-12 {
+            return Err(GribError::CoordinateError(
+                "Lambert conformal: degenerate cone constant".to_string(),
+            ));
+        }
+        let f = phi1.cos() * cone_t(phi1).powf(n) / n;
+        // rho at the first grid point and at the LaD reference (use latin1 as
+        // the y origin reference — GRIB defines the grid relative to La1/Lo1).
+        let rho1 = a * f / cone_t(self.la1.to_radians()).powf(n);
+        let theta1 = n * (self.lo1.to_radians() - lo_v);
+        let x1 = rho1 * theta1.sin();
+        let y1 = -rho1 * theta1.cos();
+
+        let x = x1 + self.signed_i(i) * self.dx;
+        let y = y1 + self.signed_j(j) * self.dy;
+
+        let rho = n.signum() * (x * x + y * y).sqrt();
+        if rho.abs() < 1e-12 {
+            // At the projection pole longitude is undefined; return LoV.
+            let lat = if n > 0.0 { 90.0 } else { -90.0 };
+            return Ok((lat, self.lov));
+        }
+        let theta = x.atan2(-y);
+        let lat = 2.0 * ((a * f / rho).powf(1.0 / n)).atan() - std::f64::consts::FRAC_PI_2;
+        let lon = lo_v + theta / n;
+        Ok((lat.to_degrees(), normalize_longitude(lon.to_degrees())))
+    }
+
+    fn signed_i(&self, i: u32) -> f64 {
+        if self.scan_mode.i_positive {
+            i as f64
+        } else {
+            -(i as f64)
+        }
+    }
+
+    fn signed_j(&self, j: u32) -> f64 {
+        // In projected grids the +j scan direction increases y (northward).
+        if self.scan_mode.j_positive {
+            j as f64
+        } else {
+            -(j as f64)
+        }
+    }
+}
+
+/// `tan(pi/4 + phi/2)`, the recurring Lambert/Mercator conformal factor.
+#[inline]
+fn cone_t(phi: f64) -> f64 {
+    (std::f64::consts::FRAC_PI_4 + phi / 2.0).tan()
+}
+
+/// Normalizes a longitude in degrees to the `[-180, 180]` range.
+#[inline]
+fn normalize_longitude(mut lon: f64) -> f64 {
+    while lon > 180.0 {
+        lon -= 360.0;
+    }
+    while lon < -180.0 {
+        lon += 360.0;
+    }
+    lon
 }
 
 /// Mercator projection grid
@@ -176,6 +306,8 @@ pub struct MercatorGrid {
     pub di: f64,
     /// Y-direction grid length (m)
     pub dj: f64,
+    /// Radius of the (spherical) Earth in metres, used by the projection math.
+    pub earth_radius_m: f64,
     /// Scanning mode
     pub scan_mode: ScanMode,
 }
@@ -184,6 +316,49 @@ impl MercatorGrid {
     /// Get total number of grid points
     pub fn num_points(&self) -> usize {
         (self.ni as usize) * (self.nj as usize)
+    }
+
+    /// Returns the `(latitude, longitude)` in degrees of grid point `(i, j)`.
+    ///
+    /// Implements the spherical Mercator inverse projection with true-scale
+    /// latitude `latin` (WMO GDT 3.10). Longitude is uniform in `i`; latitude
+    /// is recovered from the projected `y` coordinate. The first grid point
+    /// `(0, 0)` maps back to `(la1, lo1)`.
+    pub fn coordinates(&self, i: u32, j: u32) -> Result<(f64, f64)> {
+        if i >= self.ni || j >= self.nj {
+            return Err(GribError::OutOfRange(format!(
+                "index ({i}, {j}) out of range ({}x{})",
+                self.ni, self.nj
+            )));
+        }
+        let a = self.earth_radius_m;
+        let cos_latin = self.latin.to_radians().cos();
+        if cos_latin.abs() < 1e-12 {
+            return Err(GribError::CoordinateError(
+                "Mercator: true-scale latitude too close to a pole".to_string(),
+            ));
+        }
+        let scale = a * cos_latin;
+
+        // Projected coordinates of the first grid point.
+        let y1 = scale * cone_t(self.la1.to_radians()).ln();
+        let lon1 = self.lo1.to_radians();
+
+        let di_signed = if self.scan_mode.i_positive {
+            i as f64
+        } else {
+            -(i as f64)
+        };
+        let dj_signed = if self.scan_mode.j_positive {
+            j as f64
+        } else {
+            -(j as f64)
+        };
+
+        let lon = lon1 + di_signed * self.di / scale;
+        let y = y1 + dj_signed * self.dj;
+        let lat = 2.0 * (y / scale).exp().atan() - std::f64::consts::FRAC_PI_2;
+        Ok((lat.to_degrees(), normalize_longitude(lon.to_degrees())))
     }
 }
 
@@ -204,8 +379,13 @@ pub struct PolarStereographicGrid {
     pub dx: f64,
     /// Y-direction grid length (m)
     pub dy: f64,
+    /// Latitude at which the grid lengths dx/dy are specified (true-scale
+    /// latitude, degrees). GRIB2 historically uses 60° for the standard grids.
+    pub lad: f64,
     /// Projection center flag (0 = North Pole, 1 = South Pole)
     pub projection_center: u8,
+    /// Radius of the (spherical) Earth in metres, used by the projection math.
+    pub earth_radius_m: f64,
     /// Scanning mode
     pub scan_mode: ScanMode,
 }
@@ -218,7 +398,73 @@ impl PolarStereographicGrid {
 
     /// Check if projection is centered on North Pole
     pub fn is_north_pole(&self) -> bool {
-        self.projection_center == 0
+        self.projection_center & 0x80 == 0
+    }
+
+    /// Returns the `(latitude, longitude)` in degrees of grid point `(i, j)`.
+    ///
+    /// Implements the spherical polar-stereographic inverse projection with
+    /// true-scale latitude `lad` (WMO GDT 3.20). The first grid point `(0, 0)`
+    /// maps back to `(la1, lo1)`.
+    pub fn coordinates(&self, i: u32, j: u32) -> Result<(f64, f64)> {
+        if i >= self.nx || j >= self.ny {
+            return Err(GribError::OutOfRange(format!(
+                "index ({i}, {j}) out of range ({}x{})",
+                self.nx, self.ny
+            )));
+        }
+        let a = self.earth_radius_m;
+        let north = self.is_north_pole();
+        // Hemisphere sign: +1 for north, -1 for south.
+        let hemi = if north { 1.0 } else { -1.0 };
+        // Scale factor at the pole for a true-scale latitude `lad`.
+        let phi_c = self.lad.to_radians().abs();
+        let k0 = (1.0 + phi_c.sin()) / 2.0;
+        let lov = self.lov.to_radians();
+
+        // rho as a function of latitude (measured from the projection pole).
+        let rho_of_lat = |lat_deg: f64| -> f64 {
+            let lat = lat_deg.to_radians();
+            // Colatitude from the projection pole.
+            let t = (std::f64::consts::FRAC_PI_4 - hemi * lat / 2.0).tan();
+            2.0 * a * k0 * t
+        };
+
+        // Projected coordinates of the first grid point.
+        let rho1 = rho_of_lat(self.la1);
+        let ang1 = self.lo1.to_radians() - lov;
+        let (x1, y1) = if north {
+            (rho1 * ang1.sin(), -rho1 * ang1.cos())
+        } else {
+            (rho1 * ang1.sin(), rho1 * ang1.cos())
+        };
+
+        let di_signed = if self.scan_mode.i_positive {
+            i as f64
+        } else {
+            -(i as f64)
+        };
+        let dj_signed = if self.scan_mode.j_positive {
+            j as f64
+        } else {
+            -(j as f64)
+        };
+        let x = x1 + di_signed * self.dx;
+        let y = y1 + dj_signed * self.dy;
+
+        let rho = (x * x + y * y).sqrt();
+        if rho < 1e-9 {
+            let lat = if north { 90.0 } else { -90.0 };
+            return Ok((lat, self.lov));
+        }
+        let c = 2.0 * (rho / (2.0 * a * k0)).atan();
+        let lat = hemi * (std::f64::consts::FRAC_PI_2 - c);
+        let lon = if north {
+            lov + x.atan2(-y)
+        } else {
+            lov + x.atan2(y)
+        };
+        Ok((lat.to_degrees(), normalize_longitude(lon.to_degrees())))
     }
 }
 
@@ -250,6 +496,123 @@ impl GaussianGrid {
     pub fn num_points(&self) -> usize {
         (self.ni as usize) * (self.nj as usize)
     }
+
+    /// Longitude (degrees) of column `i`, normalized to `[-180, 180]`.
+    pub fn longitude(&self, i: u32) -> Result<f64> {
+        if i >= self.ni {
+            return Err(GribError::OutOfRange(format!(
+                "i index {i} out of range [0, {})",
+                self.ni
+            )));
+        }
+        let lon = if self.scan_mode.i_positive {
+            self.lo1 + (i as f64) * self.di
+        } else {
+            self.lo1 - (i as f64) * self.di
+        };
+        Ok(normalize_longitude(lon))
+    }
+
+    /// Latitude (degrees) of row `j`.
+    ///
+    /// The row latitudes are the Gaussian latitudes: the arcsines of the roots
+    /// of the Legendre polynomial `P_{2N}` (a global Gaussian grid has
+    /// `nj = 2N` rows). They are ordered north-to-south when the grid scans
+    /// with `j_positive == false` (the GRIB default), matching `la1` at the
+    /// northern edge.
+    pub fn latitude(&self, j: u32) -> Result<f64> {
+        if j >= self.nj {
+            return Err(GribError::OutOfRange(format!(
+                "j index {j} out of range [0, {})",
+                self.nj
+            )));
+        }
+        let lats = gaussian_latitudes(self.nj as usize);
+        // `gaussian_latitudes` returns north-to-south (descending). If the grid
+        // scans south-to-north, reverse the row order.
+        let idx = if self.scan_mode.j_positive {
+            self.nj as usize - 1 - j as usize
+        } else {
+            j as usize
+        };
+        lats.get(idx)
+            .copied()
+            .ok_or_else(|| GribError::OutOfRange(format!("gaussian latitude row {j} unavailable")))
+    }
+
+    /// Returns the `(latitude, longitude)` in degrees of grid point `(i, j)`.
+    pub fn coordinates(&self, i: u32, j: u32) -> Result<(f64, f64)> {
+        Ok((self.latitude(j)?, self.longitude(i)?))
+    }
+}
+
+/// Computes the `n` Gaussian latitudes (in degrees) ordered north-to-south.
+///
+/// The Gaussian latitudes are `asin(x_k)` where `x_k` are the roots of the
+/// Legendre polynomial `P_n`. Each root is found by Newton-Raphson from the
+/// standard initial guess `cos(pi*(k+0.75)/(n+0.5))`, which converges
+/// quadratically and to full `f64` precision in a handful of iterations.
+fn gaussian_latitudes(n: usize) -> Vec<f64> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut roots = Vec::with_capacity(n);
+    // Roots are symmetric; compute the positive half and mirror.
+    let half = n.div_ceil(2);
+    for k in 0..half {
+        // Initial guess for the (k+1)-th root (descending in x).
+        let mut x = (std::f64::consts::PI * (k as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        for _ in 0..100 {
+            let (p, dp) = legendre_p_and_deriv(n, x);
+            let dx = -p / dp;
+            x += dx;
+            if dx.abs() < 1e-15 {
+                break;
+            }
+        }
+        roots.push(x);
+    }
+    // `roots` holds the largest positive roots first (descending). Build the
+    // full descending list by mirroring: [+roots..., (0 if odd), -roots...].
+    let mut all = Vec::with_capacity(n);
+    for &r in &roots {
+        all.push(r);
+    }
+    // Mirror negatives (skip the central root for odd n, already included).
+    let start = if n % 2 == 1 { half - 1 } else { half };
+    for k in (0..start).rev() {
+        all.push(-roots[k]);
+    }
+    all.truncate(n);
+    all.into_iter().map(|x| x.asin().to_degrees()).collect()
+}
+
+/// Evaluates the Legendre polynomial `P_n(x)` and its derivative `P_n'(x)` via
+/// the standard three-term recurrence.
+fn legendre_p_and_deriv(n: usize, x: f64) -> (f64, f64) {
+    // P_0 = 1, P_1 = x.
+    let mut p_prev = 1.0f64;
+    let mut p_curr = x;
+    if n == 0 {
+        return (1.0, 0.0);
+    }
+    if n == 1 {
+        return (x, 1.0);
+    }
+    for k in 2..=n {
+        let kf = k as f64;
+        let p_next = ((2.0 * kf - 1.0) * x * p_curr - (kf - 1.0) * p_prev) / kf;
+        p_prev = p_curr;
+        p_curr = p_next;
+    }
+    // Derivative: P_n'(x) = n (x P_n - P_{n-1}) / (x^2 - 1).
+    let denom = x * x - 1.0;
+    let deriv = if denom.abs() < 1e-14 {
+        0.0
+    } else {
+        n as f64 * (x * p_curr - p_prev) / denom
+    };
+    (p_curr, deriv)
 }
 
 /// Space view perspective or orthographic grid

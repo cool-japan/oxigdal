@@ -1,6 +1,7 @@
 //! OxiGeo API Gateway
 //!
-//! Enterprise-grade API gateway with comprehensive features for geospatial services.
+//! Enterprise-grade API gateway for geospatial services, built on a real axum 0.8 HTTP
+//! serving layer that wires together every component below.
 //!
 //! # Features
 //!
@@ -12,6 +13,19 @@
 //! - **Middleware**: CORS, compression, caching, logging, metrics
 //! - **Load Balancing**: Multiple strategies with health checks and circuit breaker
 //! - **Transformation**: Request/response transformation and format adaptation
+//! - **Serving Layer**: [`GatewayServer`] binds the above into an axum router
+//!
+//! # Routes
+//!
+//! | Method | Path               | Purpose                                            |
+//! |--------|--------------------|----------------------------------------------------|
+//! | GET    | `/health`          | Liveness plus a per-backend health snapshot        |
+//! | GET    | `/gateway/metrics` | Aggregate request/response/error counters (JSON)   |
+//! | POST   | `/graphql`         | GraphQL queries and mutations (when enabled)       |
+//! | GET    | `/graphql`         | GraphiQL playground (when introspection is enabled) |
+//! | *      | `/graphql/ws`      | GraphQL subscriptions (when subscriptions enabled) |
+//! | GET    | `/ws`              | WebSocket upgrade (when WebSockets are enabled)     |
+//! | *      | *(fallback)*       | Load-balanced reverse proxy to registered backends |
 //!
 //! # Example
 //!
@@ -26,6 +40,24 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! For finer control (backends, custom handlers, versioning, transformation), build a
+//! [`GatewayServer`] directly:
+//!
+//! ```no_run
+//! use oxigeo_gateway::{GatewayConfig, GatewayServer};
+//! use oxigeo_gateway::loadbalancer::Backend;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let server = GatewayServer::builder(GatewayConfig::default())
+//!         .with_backend(Backend::new("api".into(), "http://127.0.0.1:9000".into(), 1))
+//!         .require_auth(false)
+//!         .build()?;
+//!     server.serve("0.0.0.0:8080").await?;
+//!     Ok(())
+//! }
+//! ```
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::panic)]
@@ -36,15 +68,15 @@ pub mod graphql;
 pub mod loadbalancer;
 pub mod middleware;
 pub mod rate_limit;
+pub mod server;
 pub mod transform;
 pub mod versioning;
 pub mod websocket;
 
 pub use error::{GatewayError, Result};
+pub use server::{GatewayServer, GatewayServerBuilder};
 
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
 
 /// Gateway configuration.
 #[derive(Debug, Clone)]
@@ -96,42 +128,17 @@ impl Gateway {
     }
 
     /// Starts the gateway server on the given address.
+    ///
+    /// Delegates to the axum-based [`GatewayServer`], which serves the full route table
+    /// (health, metrics, GraphQL, WebSocket and the load-balanced reverse-proxy fallback)
+    /// with the configured rate limiting, authentication and middleware. Serves until a
+    /// shutdown signal (ctrl-c / SIGTERM) is received.
     pub async fn serve(self, addr: &str) -> Result<()> {
-        let addr: SocketAddr = addr
-            .parse()
-            .map_err(|e| GatewayError::ConfigError(format!("Invalid address: {}", e)))?;
-
-        let listener = TcpListener::bind(addr)
+        GatewayServer::builder((*self.config).clone())
+            .build()?
+            .serve(addr)
             .await
-            .map_err(|e| GatewayError::InternalError(format!("Failed to bind: {}", e)))?;
-
-        tracing::info!("Gateway listening on {}", addr);
-
-        loop {
-            let (socket, remote_addr) = listener
-                .accept()
-                .await
-                .map_err(|e| GatewayError::InternalError(format!("Accept error: {}", e)))?;
-
-            tracing::debug!("Accepted connection from {}", remote_addr);
-
-            // Handle connection in a separate task
-            let config = Arc::clone(&self.config);
-            tokio::spawn(async move {
-                if let Err(e) = handle_connection(socket, config).await {
-                    tracing::error!("Connection error: {}", e);
-                }
-            });
-        }
     }
-}
-
-async fn handle_connection(
-    _socket: tokio::net::TcpStream,
-    _config: Arc<GatewayConfig>,
-) -> Result<()> {
-    // Connection handling implementation
-    Ok(())
 }
 
 #[cfg(test)]

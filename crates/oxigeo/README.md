@@ -9,12 +9,13 @@
 
 Umbrella crate for OxiGeo — open any supported geospatial format with a single
 `Dataset::open()` call, just like `GDALOpen()`. Backed by **76 workspace crates**
-and ~747,000 SLoC of production Rust, it covers 17 format drivers, full CRS
+and ~789,000 SLoC of production Rust, it covers 17 format drivers, full CRS
 transformations, SIMD algorithms, cloud-native I/O, GPU acceleration, enterprise
 security, and bindings for Python, Node.js, WASM, iOS, and Android. First released
-as v0.1.0 on 2026-02-22; now at **v0.2.0**, in development under the OxiGeo name
-(v0.1.7 production-hardening validation complete 2026-07-20, not yet published to
-crates.io).
+as v0.1.0 on 2026-02-22; now at **v0.2.1**, a production-hardening release under
+the OxiGeo name (v0.2.0 published 2026-07-20 as the first OxiGeo release —
+rename-only, functionally identical to v0.1.7, the final release published the
+same day under the OxiGDAL name).
 
 ## Quick Start
 
@@ -78,7 +79,7 @@ OxiGeo is a workspace of **76 crates** organized across:
 | Cloud & storage | `oxigeo-cloud`, `-cloud-enhanced`, `-drivers-advanced`, `-compress`, `-cache-advanced`, `-rs3gw` |
 | Domain modules | `oxigeo-3d`, `-terrain`, `-temporal`, `-analytics`, `-sensors`, `-metadata`, `-stac`, `-query` |
 | Enterprise infra | `oxigeo-server`, `-gateway`, `-security`, `-observability`, `-workflow`, `-distributed`, `-cluster`, `-ha` |
-| Streaming & IoT | `oxigeo-streaming`, `-kafka`, `-kinesis`, `-pubsub`, `-mqtt`, `-websocket`, `-etl`, `-sync` |
+| Streaming & IoT | `oxigeo-streaming`, `-kinesis`, `-pubsub`, `-mqtt`, `-websocket`, `-etl`, `-sync` (`-kafka` retired in 0.2.1) |
 | Platform bindings | `oxigeo-wasm`, `-pwa`, `-offline`, `-node`, `-python`, `-jupyter`, `-mobile`, `-mobile-enhanced`, `-embedded`, `-edge` |
 | GPU & ML | `oxigeo-gpu`, `-gpu-advanced`, `-ml`, `-ml-foundation` |
 | DB connectors | `oxigeo-postgis`, `-db-connectors` |

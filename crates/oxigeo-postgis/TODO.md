@@ -1,7 +1,7 @@
 # TODO: oxigeo-postgis
 
 > **Purpose:** PostgreSQL/PostGIS client — async connection pool (deadpool-postgres), spatial query builder, OGC WKB codec, batch writer.
-> **Status (2026-05-16):** 3,949 LoC (src) · 49 tests (all inline; integration tests deferred) · 1 false-COPY stub
+> **Status (2026-07-28):** 4,787 LoC (src) · 80 tests (all-features and default-features; 0 failed; inline + `tests/copy_binary_test.rs`) · 0 known real-code stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -30,7 +30,7 @@
   - **Done:** 2026-05-22 (Slice 27). New `src/copy_binary.rs` (~235 LoC): DB-free `CopyBinaryEncoder` — 11-byte `PGCOPY\n\xff\r\n\0` signature + 8 zero header bytes; `begin_row(i16)`, `write_field_bytes` (i32 BE length prefix), `write_null` (i32 BE -1), `finish` (i16 BE -1 trailer); all integers big-endian. `ewkb_from_wkb(wkb, srid)` sets the `0x20000000` SRID flag on the geometry-type word and inserts the i32 SRID (respecting the WKB byte-order byte). `PostGisWriter::flush` rewritten (+117/-8): builds the explicit-column `COPY ... FROM STDIN WITH (FORMAT binary)`, streams the `CopyBinaryEncoder` payload through `tokio_postgres::CopyInSink<bytes::Bytes>`; on ANY COPY error logs `tracing::warn!` and falls back to the verbatim per-row `flush_via_inserts` (no data loss). `flush` public signature byte-for-byte unchanged. `lib.rs` +2 re-export lines. `WkbEncoder` confirmed to support both plain WKB and EWKB (`with_srid`); the slice uses plain WKB + `ewkb_from_wkb` for the explicit, unit-testable path. No Cargo.toml change (`bytes` already a workspace dep; `tokio-postgres` `copy_in` available by default).
   - **Tests:** 10 in `crates/oxigeo-postgis/tests/copy_binary_test.rs` — 9 active byte-layout encoder tests (signature, header flags, field count, length prefix BE, null, trailer, multi-row, EWKB SRID flag, EWKB Point round trip) + 1 `#[ignore]` live-DB round-trip needing PostgreSQL+PostGIS. Build + clippy clean; 9 pass, 1 skipped.
 
-- [ ] Verify and document that `WkbEncoder` writes EWKB (with SRID flag), not plain WKB.
+- [x] Verify and document that `WkbEncoder` writes EWKB (with SRID flag), not plain WKB.
   - **Verified gap:** `src/wkb.rs:42-57` declares `WkbGeometryType { Point=1, ..., GeometryCollection=7 }` and `from_code` at line 61-73 masks with `code & 0xFF` and decodes the **base** code only. The doc comment at `src/wkb.rs:1-5` says "PostGIS uses Extended WKB (EWKB) which includes SRID information" — but the encoder side needs spot-checking that bit 0x20000000 (`EWKB_SRID_FLAG`) is set and the SRID is written when present. Read of lines 1-80 confirms only the base 7 codes exist as variants.
   - **Goal:** `WkbEncoder` always emits EWKB-compliant byte stream when an SRID is provided. Decoder reads either plain WKB or EWKB transparently.
   - **Design:** EWKB type code = `base_type | 0x20000000 (SRID)` (also `0x80000000` for Z, `0x40000000` for M). After header, write `i32 LE srid` when SRID flag set. Update `WkbDecoder` symmetrically; `from_code` should already mask but verify all three top bits.
@@ -38,6 +38,7 @@
   - **Tests:** (proposed) `test_ewkb_point_srid_4326_roundtrip`, `test_ewkb_z_geometry_roundtrip`, `test_ewkb_zm_geometry_roundtrip`, `test_plain_wkb_decode_no_srid`.
   - **Risk:** Hidden encoder bug would corrupt PostGIS data silently; existing tests may pass on plain WKB even when SRID expected.
   - **Prerequisites:** None.
+  - **Done:** (verified 2026-07-28) `src/wkb.rs:125-127` defines `SRID_FLAG = 0x2000_0000`, `Z_FLAG = 0x8000_0000`, `M_FLAG = 0x4000_0000` exactly per the design above. `WkbEncoder::write_header` (`src/wkb.rs:179-215`) OR's in `SRID_FLAG` whenever `self.srid.is_some()` (set via `WkbEncoder::with_srid`), and `Z_FLAG`/`M_FLAG` per-geometry, then writes the SRID as a little-endian `i32` immediately after the type code; every `encode_*` method (`encode_point`, `encode_linestring`, `encode_polygon`, `encode_multipoint`, `encode_multilinestring`, `encode_multipolygon`, `encode_geometrycollection`) routes through it. `WkbDecoder` reads the same three flags symmetrically (`src/wkb.rs:468-474`: `has_srid`/`has_z`/`has_m`) and decodes the SRID when present. Roundtrip covered by `test_wkb_with_srid` (`src/wkb.rs:814-825`). Not done: the four specific proposed test names above were not added verbatim (existing coverage is `test_wkb_with_srid` rather than the `test_ewkb_*`-named tests), and there is no standalone doc-comment callout stating this explicitly beyond the module doc already at `src/wkb.rs:1-5`.
 
 - [ ] Connection-pool health monitoring with automatic reconnection on broken connections.
   - **Verified gap:** `src/connection.rs` configures `deadpool_postgres::Pool` with `RecyclingMethod::Fast` (or similar — confirm at runtime), but exposes no background watchdog that detects `BrokenPipe` / server restart and pre-warms a fresh connection set.
@@ -96,4 +97,4 @@
 *No prior `[x]` entries — slate was empty.*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

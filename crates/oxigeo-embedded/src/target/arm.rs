@@ -213,12 +213,26 @@ pub mod cache {
     }
 
     /// Clean data cache for the specified address range (no-op on non-ARM)
+    ///
+    /// # Safety
+    ///
+    /// The caller must pass an address range that is valid to operate on. This
+    /// non-ARM stub performs no cache operation, but the signature stays
+    /// `unsafe` to match the ARM implementation so callers need not `cfg` their
+    /// call sites.
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     pub unsafe fn clean_dcache(_addr: usize, _size: usize) -> Result<()> {
         Ok(())
     }
 
     /// Invalidate data cache for the specified address range (no-op on non-ARM)
+    ///
+    /// # Safety
+    ///
+    /// The caller must pass an address range that is valid to operate on. This
+    /// non-ARM stub performs no cache operation, but the signature stays
+    /// `unsafe` to match the ARM implementation so callers need not `cfg` their
+    /// call sites.
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     pub unsafe fn invalidate_dcache(_addr: usize, _size: usize) -> Result<()> {
         Ok(())

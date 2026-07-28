@@ -20,7 +20,7 @@ Advanced geospatial analytics for enterprise workflows — part of the [OxiGeo](
 
 ```toml
 [dependencies]
-oxigeo-analytics = "0.2.0"
+oxigeo-analytics = "0.2.1"
 ```
 
 ## Usage

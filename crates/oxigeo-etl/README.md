@@ -21,7 +21,6 @@ Data inputs from various sources:
 - **File**: Local file system (GeoTIFF, GeoJSON, etc.)
 - **HTTP/S3**: Streaming from HTTP endpoints and S3
 - **STAC**: STAC catalog integration (optional feature)
-- **Kafka**: Real-time streaming (optional feature)
 - **PostGIS**: PostgreSQL/PostGIS database (optional feature)
 - **Custom**: User-defined sources
 
@@ -40,7 +39,6 @@ Data outputs to various destinations:
 - **File**: Local file system
 - **S3/Azure/GCS**: Cloud storage (optional features)
 - **PostGIS**: PostgreSQL/PostGIS database (optional feature)
-- **Kafka**: Message streaming (optional feature)
 - **Custom**: User-defined sinks
 
 ### Pipeline
@@ -186,13 +184,16 @@ scheduler.start().await?;
 ## Feature Flags
 
 - `std` (default): Enable standard library support
-- `kafka`: Enable Kafka source and sink
 - `postgres`: Enable PostgreSQL/PostGIS support
 - `s3`: Enable Amazon S3 support
 - `stac`: Enable STAC catalog support
 - `http`: Enable HTTP source support
 - `scheduler`: Enable cron-based scheduling
 - `all`: Enable all optional features
+
+The `kafka` feature (Kafka source and sink) was **removed in 0.2.1** together with the
+retired `oxigeo-kafka` crate: `rdkafka-sys` required a C toolchain (cmake/librdkafka),
+against the COOLJAPAN Pure Rust Policy. See the workspace CHANGELOG for details.
 
 ## Performance
 

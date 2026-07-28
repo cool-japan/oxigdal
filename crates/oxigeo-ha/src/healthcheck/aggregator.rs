@@ -77,14 +77,26 @@ impl Default for HealthCheckAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::healthcheck::checks::LivenessCheck;
+    use crate::healthcheck::checks::{LivenessCheck, LivenessSignal};
+    use chrono::Duration;
 
     #[tokio::test]
     async fn test_aggregator() {
         let mut aggregator = HealthCheckAggregator::new();
 
-        let check1 = Arc::new(LivenessCheck::new("check1".to_string()));
-        let check2 = Arc::new(LivenessCheck::new("check2".to_string()));
+        // Two live, freshly-beating signals → both report Healthy.
+        let signal1 = LivenessSignal::new();
+        let signal2 = LivenessSignal::new();
+        let check1 = Arc::new(LivenessCheck::new(
+            "check1".to_string(),
+            signal1,
+            Duration::seconds(5),
+        ));
+        let check2 = Arc::new(LivenessCheck::new(
+            "check2".to_string(),
+            signal2,
+            Duration::seconds(5),
+        ));
 
         aggregator.register(check1);
         aggregator.register(check2);

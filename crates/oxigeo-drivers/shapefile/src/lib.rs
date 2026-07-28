@@ -162,6 +162,7 @@ extern crate std;
 pub mod dbf;
 pub mod error;
 pub mod filter;
+pub(crate) mod polygon_rings;
 pub mod reader;
 pub mod shp;
 pub mod shx;

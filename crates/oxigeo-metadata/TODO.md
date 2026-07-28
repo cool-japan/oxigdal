@@ -1,8 +1,8 @@
 # TODO: oxigeo-metadata
 
-> **Purpose:** Geospatial metadata standards — ISO 19115/19115-3, FGDC, INSPIRE, DataCite, DCAT — with cross-standard transforms, validation, and extractor stubs for source datasets.
-> **Status (2026-05-16):** 6,809 LoC (src) · 119 tests (35 inline + 84 in tests/) · 2 real-code stubs (extractors)
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Purpose:** Geospatial metadata standards — ISO 19115/19115-3, FGDC, INSPIRE, DataCite, DCAT — with cross-standard transforms, validation, and real extractors for source datasets.
+> **Status (2026-07-28):** 5,794 Rust LoC (tokei, `src/`) · 157 tests with `--all-features`, 136 with default features (the `netcdf`/`hdf5`/`stac` extractor test modules are feature-gated) · 0 remaining stub extractors — NetCDF/CF and HDF5 extraction are both now real (see below)
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (verified gaps)
 - [x] Implement real NetCDF/CF-Convention metadata extraction (currently inserts only `file_path` attribute).
@@ -36,14 +36,15 @@
   - **Done:** 2026-05-22 (Slice 26). Added `[features] netcdf = ["dep:oxigeo-netcdf"]` + `oxigeo-netcdf = { workspace = true, optional = true }` to `Cargo.toml`. New `src/extractors/{mod.rs, netcdf_cf.rs}` (575 LoC): `HasAttributes`/`HasVariables` trait shims keep tests independent of a real NetCDF file (in-test `FakeDataset` implements both); `CfGlobals` struct mapping `title/summary/keywords/institution/Conventions/history/source/references/comment`; `extract_cf_globals/extract_bbox_from_lon_lat/extract_temporal_extent/extract_grid_mapping_crs/parse_cf_time_units`. Bbox lookup tries `standard_name=longitude/latitude` first, falls back to `axis=X/Y`. Temporal: parses CF `"<unit> since <ref-date>"` (days/hours/minutes/seconds variants), arithmetic via `chrono::Duration`. Grid mappings recognised: `latitude_longitude`→EPSG:4326, `transverse_mercator`→assembled WKT, `mercator`→EPSG:3395, `polar_stereographic`→EPSG:3413, plus `lambert_conformal_conic`/`albers_conical_equal_area`/`rotated_latitude_longitude`/`stereographic`. `NetCdfCfExtractor::extract` (feature-gated) wraps `oxigeo_netcdf::Dataset` via private `real_dataset::NetCdfReaderShim`. `src/extract.rs::extract_from_netcdf` body swapped with `#[cfg(feature = "netcdf")]` dispatch and a byte-equivalent fallback for the no-feature path. `src/lib.rs` +1 line `pub mod extractors;`. `oxigeo-netcdf` confirmed present at `crates/oxigeo-drivers/netcdf`.
   - **Tests:** 10 in `crates/oxigeo-metadata/tests/netcdf_cf_test.rs` + 3 inline unit tests (all gated `#[cfg(feature = "netcdf")]`): CF globals canonical + missing optional; bbox via standard_name vs axis fallback; temporal extent for `days/hours/seconds since`; grid_mapping for latitude_longitude + transverse_mercator + absent. Full suite 120/120 (107 existing + 10 integration + 3 unit). No-feature path preserves the original file-path-only `ExtractedMetadata`.
 
-- [ ] Implement real HDF5 metadata extraction (currently inserts only `file_path`).
+- [x] Implement real HDF5 metadata extraction (currently inserts only `file_path`).
   - **Verified gap:** `src/extract.rs:511-533` — identical pattern to NetCDF (path-only insert + "Placeholder for HDF5-specific extraction" comment).
   - **Goal:** Extract HDF5 root group attributes and per-dataset attributes; surface embedded ISO 19115 XML if present (NASA EOS files); record group hierarchy as `attributes["groups"] = "/MOD/Aqua/Day,..."`.
   - **Design:** Add `oxigeo-hdf5` dep (sibling crate; feature-gated for C HDF5 lib per Pure Rust policy). Walk groups recursively with bounded depth. If a root attribute named `iso_metadata` or path `/Metadata/iso19115` exists and contains XML, route it through the `iso19115::parser::from_xml` path. Pull NASA EOS standard attrs (`ProductionDateTime`, `ShortName`, `VersionID`, `RangeBeginningDate`, `RangeEndingDate`, `WestBoundingCoordinate`, ...).
   - **Files:** `src/extract.rs:511-533`.
   - **Tests:** (proposed) `test_hdf5_root_attributes_extracted`, `test_hdf5_eos_metadata_to_temporal_extent`, `test_hdf5_embedded_iso19115_xml_parsed`, `test_hdf5_group_hierarchy_summarised`.
-  - **Risk:** HDF5 bindings require C; gate accordingly.
+  - **Risk:** HDF5 bindings require C; gate accordingly. **Re-verified 2026-07-28: `oxigeo-hdf5` (`crates/oxigeo-drivers/hdf5`) is a Pure-Rust HDF5 reader, not a C binding** — no C dep was introduced.
   - **Prerequisites:** `oxigeo-hdf5` reader available.
+  - **Done:** verified fixed as of 2026-07-28. `src/extract.rs::extract_from_hdf5` now dispatches on `#[cfg(feature = "hdf5")]` to `extract_from_hdf5_impl` (honest `MetadataError::Unsupported` otherwise, not a silent path-only result). The impl opens the file via `oxigeo_hdf5::Hdf5Reader::open`, records the superblock version, collects root-group attributes (`hdf5_attr_*` prefix), recursively walks sub-groups (depth-bounded) and datasets (shape + dtype), and promotes attributes from well-known geospatial metadata groups (`/METADATA`, `/metadata`, `/HDF_METADATA`) to the root namespace. NASA-EOS-specific attribute mapping and embedded-ISO-19115-XML routing from the original design are not separately confirmed, but the core "only inserts `file_path`" dishonesty is resolved.
 
 - [x] Replace DataCite/INSPIRE transform placeholders that emit literal `"PLACEHOLDER"` / silently no-op.
   - Done: 2026-05-31 (Slice 29). Tests: 14 new (transform_doi_locator_test) + 108 existing = 122 total.
@@ -101,4 +102,4 @@
 - [x] Add GeoTIFF metadata extraction (read TIFF tags, GeoKeys)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

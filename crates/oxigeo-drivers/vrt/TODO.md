@@ -1,7 +1,7 @@
 # TODO: oxigeo-drivers/vrt
 
 > **Purpose:** VRT (Virtual Raster) driver for OxiGeo - Pure Rust GDAL reimplementation
-> **Status (2026-05-16):** 4,889 Rust LoC (incl. tests) - 64 tests - 0 source-code stubs (mature; lazy reading, pixel functions, mosaic compositing all wired)
+> **Status (2026-07-28):** 5,145 Rust LoC (incl. tests) - 72 tests - 0 source-code stubs (mature; lazy reading, pixel functions, mosaic compositing all wired)
 > **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
@@ -111,4 +111,4 @@ _(Previous TODO.md had no `[x]` entries. The previous "Implement lazy tile readi
 - [x] Pixel function evaluation on source bands — `PixelFunction` struct (`src/band.rs`, re-exported `src/lib.rs:138`) plus `VrtReader::apply_pixel_function` at `src/reader.rs:243`; verified 2026-05-16.
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

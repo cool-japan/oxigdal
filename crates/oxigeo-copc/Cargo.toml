@@ -23,7 +23,6 @@ laz-encoder = []
 
 [dependencies]
 thiserror = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 

@@ -1,18 +1,13 @@
 # TODO: oxigeo-dev-tools
 
 > **Purpose:** Developer utilities for OxiGeo — file inspection, profiling, benchmarking, debugging, test data generation, validation.
-> **Status (2026-05-16):** 2,353 LoC · 43 tests · 1 real-code stub (GeoTIFF generator)
+> **Status (2026-07-28):** 1,879 LoC · 186 tests (all-features and default-features equal) · 0 real-code stubs (GeoTIFF generator stub closed)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace `FileGenerator::generate_geotiff` stub with a real GeoTIFF writer
-  - **Verified gap:** `src/generator.rs:226-230` — `pub fn generate_geotiff(_path: &Path, _width: usize, _height: usize) -> Result<()> { // Placeholder - would need actual GeoTIFF writer Ok(()) }`.
-  - **Goal:** Emit a valid GeoTIFF file for testing — `width × height × 1 band`, `Float32`, identity georef (1 m/px), EPSG:4326. Accept optional pattern (`RasterPattern` enum, already in same file).
-  - **Design:** Use `oxigeo-geotiff` writer (workspace already has 460 tests). Build `RasterData<f32>` from `DataGenerator::generate_raster(...)` results, set minimal `GeoKey` entries (`GTModelTypeGeoKey=ModelTypeGeographic`, `GeographicTypeGeoKey=4326`, `GTRasterTypeGeoKey=RasterPixelIsArea`), write `.tif`. Extend signature: `generate_geotiff(path, width, height, pattern: RasterPattern)`.
-  - **Files:** `src/generator.rs:225-230` (rewrite body), add `oxigeo-geotiff.workspace = true` to `Cargo.toml`.
-  - **Tests:** *(proposed)* `test_generate_geotiff_writes_valid_file`, `test_generate_geotiff_with_flat_pattern_uniform_pixels`, `test_generate_geotiff_extension_tif`, `test_generate_geotiff_roundtrip_read_back`.
-  - **Risk:** Circular dep — `oxigeo-dev-tools` would depend on `oxigeo-geotiff`, but other crates may use dev-tools in their dev-deps. Keep this dep behind a `geotiff` Cargo feature.
-  - **Prerequisites:** None.
+- [x] Replace `FileGenerator::generate_geotiff` stub with a real GeoTIFF writer
+  - **Verified done:** `src/generator.rs:263-311` — `generate_geotiff(path, width, height)` now builds a real Float32 gradient raster, a north-up WGS84 `GeoTransform`, and writes it via `oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig}` with LZW compression and an EPSG:4326 code — no placeholder/gray-fill remains. `Cargo.toml` carries `oxigeo-geotiff.workspace = true` unconditionally (not behind a separate `geotiff` feature as originally sketched). Covered by `test_generate_geotiff_creates_nonempty_file` and `test_generate_geotiff_rejects_zero_dimensions` (`src/generator.rs:500,534`).
+  - **Note:** shipped without the `pattern: RasterPattern` parameter the original design sketch proposed — always a linear gradient. COG compliance / round-trip-read-back / flat-pattern-specific tests were not added; revisit if a caller needs configurable patterns.
 
 - [ ] Implement COG (Cloud-Optimized GeoTIFF) compliance validator
   - **Goal:** Given a GeoTIFF path, verify it satisfies COG spec v1.1: IFD ordered first (smallest tile size), tiled (not stripped), tile-size ≥ 256, overviews present (≥1 zoom level), overview ordering parent → children, RFC 1942/2483 directives. Output as `ValidationResult`.
@@ -109,4 +104,4 @@
 - [x] DevToolsError variants with `#[from]` IO/serde/oxigeo-core conversions — `src/lib.rs:49-82`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: 43→186 tests, LoC 2,353→1,879, date bumped; `generate_geotiff` confirmed implemented via source read and flipped to done; COG validator, GeoTIFF tag inspector, benchmarker percentiles, and debugger raster visualization all re-checked and confirmed still absent — left open)*

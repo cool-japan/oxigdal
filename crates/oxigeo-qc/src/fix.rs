@@ -88,7 +88,6 @@ pub enum FixType {
 
 /// Topology fixer.
 pub struct TopologyFixer {
-    #[allow(dead_code)]
     strategy: FixStrategy,
     tolerance: f64,
 }
@@ -108,6 +107,31 @@ impl TopologyFixer {
     pub const fn with_tolerance(mut self, tolerance: f64) -> Self {
         self.tolerance = tolerance;
         self
+    }
+
+    /// Whether the configured strategy permits dropping an entire feature
+    /// (or its polygon) when it cannot be repaired into a valid geometry
+    /// (e.g. an exterior ring with fewer than 4 points after fixing).
+    ///
+    /// Only [`FixStrategy::Aggressive`] allows this: [`FixStrategy::Conservative`]
+    /// promises "no data loss" and [`FixStrategy::Moderate`] only permits
+    /// pruning interior rings/points (see [`Self::allows_interior_ring_pruning`]),
+    /// not removing whole features.
+    const fn allows_feature_removal(&self) -> bool {
+        matches!(self.strategy, FixStrategy::Aggressive)
+    }
+
+    /// Whether the configured strategy permits dropping a degenerate
+    /// interior ring (hole) that has fewer than 4 points after fixing.
+    ///
+    /// [`FixStrategy::Moderate`] and [`FixStrategy::Aggressive`] both allow
+    /// this ("minimal data modification" / "may modify data significantly");
+    /// [`FixStrategy::Conservative`] retains the ring unmodified instead.
+    const fn allows_interior_ring_pruning(&self) -> bool {
+        matches!(
+            self.strategy,
+            FixStrategy::Moderate | FixStrategy::Aggressive
+        )
     }
 
     /// Fixes topology issues in a feature collection.
@@ -258,7 +282,31 @@ impl TopologyFixer {
 
         // Check if polygon is valid after fixes
         if exterior.coords.len() < 4 {
-            return Ok(None); // Polygon too small
+            if self.allows_feature_removal() {
+                return Ok(None); // Polygon too small; Aggressive may drop it
+            }
+
+            // Conservative/Moderate must not silently lose the whole
+            // feature: retain the (still under-sized) exterior unmodified
+            // and report the problem instead.
+            operations.push(FixOperation {
+                feature_id: None,
+                fix_type: FixType::FixInvalidGeometry,
+                description: format!(
+                    "Exterior ring has only {} point(s) after fixing (a valid ring needs >= 4); \
+                     FixStrategy::{:?} retains it rather than removing the feature",
+                    exterior.coords.len(),
+                    self.strategy
+                ),
+            });
+
+            return Ok(Some((
+                Polygon {
+                    exterior,
+                    interiors: polygon.interiors.clone(),
+                },
+                operations,
+            )));
         }
 
         // Fix interior rings (holes)
@@ -267,6 +315,19 @@ impl TopologyFixer {
             if let Ok((fixed_interior, interior_ops)) = self.fix_linestring(interior) {
                 operations.extend(interior_ops);
                 if fixed_interior.coords.len() >= 4 {
+                    fixed_interiors.push(fixed_interior);
+                } else if self.allows_interior_ring_pruning() {
+                    operations.push(FixOperation {
+                        feature_id: None,
+                        fix_type: FixType::RemoveSliver,
+                        description: format!(
+                            "Removed interior ring with only {} point(s) after fixing (needs >= 4)",
+                            fixed_interior.coords.len()
+                        ),
+                    });
+                } else {
+                    // Conservative: keep the degenerate ring rather than
+                    // losing data.
                     fixed_interiors.push(fixed_interior);
                 }
             }
@@ -526,5 +587,130 @@ mod tests {
 
         assert!(fixer.coords_equal(&c1, &c2));
         assert!(!fixer.coords_equal(&c1, &c3));
+    }
+
+    /// A degenerate polygon whose exterior collapses to fewer than 4 points
+    /// after duplicate-vertex removal (all points are the same location).
+    fn degenerate_polygon() -> Polygon {
+        Polygon {
+            exterior: LineString {
+                coords: vec![
+                    Coordinate::new_2d(0.0, 0.0),
+                    Coordinate::new_2d(0.0, 0.0),
+                    Coordinate::new_2d(0.0, 0.0),
+                ],
+            },
+            interiors: vec![],
+        }
+    }
+
+    #[test]
+    fn test_conservative_strategy_never_removes_degenerate_polygon() {
+        let fixer = TopologyFixer::new(FixStrategy::Conservative);
+        let polygon = degenerate_polygon();
+
+        let result = fixer
+            .fix_polygon(&polygon)
+            .expect("fix_polygon should not error");
+        assert!(
+            result.is_some(),
+            "FixStrategy::Conservative must never drop a feature/polygon (no data loss), \
+             even when it cannot be repaired into a valid ring"
+        );
+        let (fixed, ops) = result.expect("checked is_some above");
+        // The under-sized exterior is retained unmodified, not silently
+        // padded/discarded.
+        assert!(fixed.exterior.coords.len() < 4);
+        assert!(
+            ops.iter()
+                .any(|op| op.fix_type == FixType::FixInvalidGeometry),
+            "the unfixable condition must still be reported"
+        );
+    }
+
+    #[test]
+    fn test_moderate_strategy_also_never_removes_degenerate_polygon() {
+        let fixer = TopologyFixer::new(FixStrategy::Moderate);
+        let polygon = degenerate_polygon();
+
+        let result = fixer
+            .fix_polygon(&polygon)
+            .expect("fix_polygon should not error");
+        assert!(
+            result.is_some(),
+            "FixStrategy::Moderate only allows interior-ring/point pruning, not feature removal"
+        );
+    }
+
+    #[test]
+    fn test_aggressive_strategy_removes_degenerate_polygon() {
+        let fixer = TopologyFixer::new(FixStrategy::Aggressive);
+        let polygon = degenerate_polygon();
+
+        let result = fixer
+            .fix_polygon(&polygon)
+            .expect("fix_polygon should not error");
+        assert!(
+            result.is_none(),
+            "FixStrategy::Aggressive is documented to allow removing unfixable features"
+        );
+    }
+
+    /// A polygon with a valid exterior but a degenerate interior ring (hole)
+    /// that collapses to fewer than 4 points after fixing.
+    fn polygon_with_degenerate_hole() -> Polygon {
+        Polygon {
+            exterior: LineString {
+                coords: vec![
+                    Coordinate::new_2d(0.0, 0.0),
+                    Coordinate::new_2d(10.0, 0.0),
+                    Coordinate::new_2d(10.0, 10.0),
+                    Coordinate::new_2d(0.0, 10.0),
+                    Coordinate::new_2d(0.0, 0.0),
+                ],
+            },
+            interiors: vec![LineString {
+                coords: vec![
+                    Coordinate::new_2d(5.0, 5.0),
+                    Coordinate::new_2d(5.0, 5.0),
+                    Coordinate::new_2d(5.0, 5.0),
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_conservative_strategy_keeps_degenerate_interior_ring() {
+        let fixer = TopologyFixer::new(FixStrategy::Conservative);
+        let polygon = polygon_with_degenerate_hole();
+
+        let (fixed, _ops) = fixer
+            .fix_polygon(&polygon)
+            .expect("fix_polygon should not error")
+            .expect("valid exterior should not cause feature removal");
+
+        assert_eq!(
+            fixed.interiors.len(),
+            1,
+            "Conservative must retain the degenerate interior ring instead of pruning it"
+        );
+    }
+
+    #[test]
+    fn test_moderate_strategy_prunes_degenerate_interior_ring() {
+        let fixer = TopologyFixer::new(FixStrategy::Moderate);
+        let polygon = polygon_with_degenerate_hole();
+
+        let (fixed, ops) = fixer
+            .fix_polygon(&polygon)
+            .expect("fix_polygon should not error")
+            .expect("valid exterior should not cause feature removal");
+
+        assert_eq!(
+            fixed.interiors.len(),
+            0,
+            "Moderate is documented to allow interior-ring pruning"
+        );
+        assert!(ops.iter().any(|op| op.fix_type == FixType::RemoveSliver));
     }
 }

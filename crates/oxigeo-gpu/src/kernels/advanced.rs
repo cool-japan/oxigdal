@@ -170,6 +170,7 @@ impl TerrainKernel {
             cpass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed terrain analysis: {:?}", self.op);
@@ -405,6 +406,7 @@ impl MorphologicalKernel {
             cpass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed morphological operation: {:?}", self.op);
@@ -639,6 +641,7 @@ impl EdgeDetectionKernel {
             cpass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Executed edge detection: {:?}", self.method);

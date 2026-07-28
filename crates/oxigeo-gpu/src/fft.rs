@@ -470,6 +470,7 @@ impl Fft1d {
         encoder.copy_buffer_to_buffer(&real_buf, 0, &staging_real, 0, aligned_buf_size);
         encoder.copy_buffer_to_buffer(&imag_buf, 0, &staging_imag, 0, aligned_buf_size);
 
+        ctx.check_device_lost()?;
         ctx.queue().submit(Some(encoder.finish()));
 
         // Map before poll: poll drives both submit completion and map callbacks.

@@ -1,0 +1,69 @@
+OxiGeo
+Copyright 2026 COOLJAPAN OU (Team Kitasan)
+
+This product includes software developed by COOLJAPAN OU (Team Kitasan)
+and is licensed under the Apache License, Version 2.0 (the "License");
+you may not use this product except in compliance with the License. You
+may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+See the LICENSE file distributed with this project for the full text of
+the License, and THIRD_PARTY.md for a summary of the third-party Rust
+crates this project depends on and their license terms.
+
+================================================================================
+EPSG geodetic parameter dataset
+================================================================================
+
+The `oxigeo-proj` crate embeds coordinate reference system (CRS) definitions
+(coordinate systems, datums, ellipsoids, coordinate operations and their
+parameters) derived from the EPSG Geodetic Parameter Dataset. The EPSG
+Dataset is maintained by the International Association of Oil & Gas
+Producers (IOGP) Geomatics Committee.
+
+In accordance with the EPSG dataset's terms of use, the following
+attribution is provided:
+
+    Uses the EPSG Geodetic Parameter Dataset, ©International Association
+    of Oil & Gas Producers (IOGP), reproduced/derived with permission
+    under the terms of use published by IOGP at https://epsg.org/.
+
+The values embedded in `oxigeo-proj` (CRS/datum/ellipsoid/operation
+parameters, e.g. `crates/oxigeo-proj/src/epsg/`) are derived facts drawn
+from the public EPSG registry (https://epsg.org/); no EPSG software or
+copyrighted database files are redistributed, and the surrounding Rust
+implementation is original work of this project licensed under
+Apache-2.0. EPSG® and the EPSG dataset remain the property of IOGP.
+
+================================================================================
+Vendored third-party component: pathfinder_simd
+================================================================================
+
+`vendor/pathfinder_simd/` contains a vendored, lightly-patched copy of the
+`pathfinder_simd` crate (version 0.5.6), originally published to
+crates.io and developed as part of the Servo project's Pathfinder
+rasterizer.
+
+    Upstream project: pathfinder_simd (part of servo/pathfinder)
+    Upstream repository: https://github.com/servo/pathfinder
+    Upstream author: Patrick Walton <pcwalton@mimiga.net>
+    Upstream license: MIT OR Apache-2.0 (dual-licensed; this project
+                       elects to use it under the terms of the Apache
+                       License, Version 2.0, consistent with the rest of
+                       this repository)
+
+This vendored copy is unmodified from upstream except for six intrinsic
+renames in `src/arm/mod.rs` (`simd_minimum_number_nsz` ->
+`simd_fmin`, `simd_maximum_number_nsz` -> `simd_fmax`) required to build
+against current nightly Rust after upstream's `*_number_nsz` intrinsic
+names were removed/renamed; see `vendor/pathfinder_simd/README.md` for
+details. It is pulled in transitively (via `criterion`'s HTML report
+feature and via `plotters`/`font-kit` from `oxigeo-jupyter`) and is
+intended as an interim patch pending removal once those transitive paths
+no longer require it.
+
+================================================================================
+
+For the full list of direct and transitive open-source dependencies used
+by this workspace and a summary of their licenses, see THIRD_PARTY.md.

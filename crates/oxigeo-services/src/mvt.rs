@@ -404,6 +404,78 @@ pub fn polygon_ring_geometry(coords: &[(i32, i32)]) -> Vec<i32> {
     cmds
 }
 
+/// Twice the signed area of a ring in tile pixel space (surveyor's formula).
+///
+/// In MVT tile coordinates the origin is top-left and `y` increases downward,
+/// so a **clockwise** ring (as drawn on screen) yields a **positive** value.
+/// Per the MVT 2.1 spec exterior rings must be clockwise (positive) and
+/// interior rings counter-clockwise (negative).
+fn signed_area_2x(ring: &[(i32, i32)]) -> i64 {
+    let n = ring.len();
+    if n < 3 {
+        return 0;
+    }
+    let mut sum: i64 = 0;
+    for i in 0..n {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % n];
+        sum += (x1 as i64) * (y2 as i64) - (x2 as i64) * (y1 as i64);
+    }
+    sum
+}
+
+/// Encode a multi-ring polygon geometry (exterior ring plus optional holes,
+/// or several exterior/hole groups for a MultiPolygon).
+///
+/// `rings` is a list of `(pixel_ring, is_exterior)` pairs in tile pixel space.
+/// Each ring:
+/// - has its closing/duplicate final vertex removed (ClosePath re-closes it),
+/// - is re-oriented to satisfy MVT winding (exterior clockwise, holes
+///   counter-clockwise),
+/// - is emitted as `MoveTo, LineTo…, ClosePath`.
+///
+/// Crucially the delta cursor is carried **continuously** across rings: after a
+/// `ClosePath` the cursor remains at the last drawn vertex, so the next ring's
+/// `MoveTo` is delta-encoded relative to it (as the MVT spec requires).
+/// Degenerate rings (fewer than 3 distinct vertices) are skipped.
+pub fn polygon_rings_geometry(rings: &[(Vec<(i32, i32)>, bool)]) -> Vec<i32> {
+    let mut cmds = Vec::new();
+    let mut cursor = (0i32, 0i32);
+
+    for (ring, is_exterior) in rings {
+        // Drop an explicit closing vertex if present.
+        let mut pts: Vec<(i32, i32)> = ring.clone();
+        if pts.len() >= 2 && pts[0] == pts[pts.len() - 1] {
+            pts.pop();
+        }
+        if pts.len() < 3 {
+            continue;
+        }
+
+        // Enforce winding: exterior clockwise (area > 0), hole CCW (area < 0).
+        let area = signed_area_2x(&pts);
+        let needs_reverse = if *is_exterior { area < 0 } else { area > 0 };
+        if needs_reverse {
+            pts.reverse();
+        }
+
+        let (fx, fy) = pts[0];
+        cmds.extend_from_slice(&move_to(fx - cursor.0, fy - cursor.1));
+        cursor = (fx, fy);
+
+        let mut deltas = Vec::with_capacity(pts.len() - 1);
+        for &(x, y) in &pts[1..] {
+            deltas.push((x - cursor.0, y - cursor.1));
+            cursor = (x, y);
+        }
+        cmds.extend_from_slice(&line_to(&deltas));
+        cmds.extend_from_slice(&close_path());
+        // ClosePath leaves the cursor at the last LineTo vertex.
+    }
+
+    cmds
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MVT tile
 // ─────────────────────────────────────────────────────────────────────────────
@@ -574,27 +646,202 @@ impl MvtLayerBuilder {
         Ok(())
     }
 
-    /// Add a polygon feature from a sequence of WGS84 ring coordinates.
+    /// Add a simple polygon feature from a single WGS84 exterior ring.
+    ///
+    /// For polygons with holes use [`MvtLayerBuilder::add_polygon_with_holes`];
+    /// for MultiPolygons use [`MvtLayerBuilder::add_multipolygon`].
     pub fn add_polygon(
         &mut self,
         ring: &[(f64, f64)],
         id: Option<u64>,
         properties: &[(&str, MvtValue)],
     ) -> Result<(), ServiceError> {
-        if ring.len() < 3 {
+        self.add_polygon_with_holes(ring, &[], id, properties)
+    }
+
+    /// Add a polygon feature with an exterior ring and zero or more hole rings.
+    ///
+    /// Rings are given in WGS84. Winding order is normalized automatically to
+    /// satisfy the MVT specification (exterior clockwise, holes
+    /// counter-clockwise in tile space), so callers need not pre-orient them.
+    pub fn add_polygon_with_holes(
+        &mut self,
+        exterior: &[(f64, f64)],
+        holes: &[&[(f64, f64)]],
+        id: Option<u64>,
+        properties: &[(&str, MvtValue)],
+    ) -> Result<(), ServiceError> {
+        if exterior.len() < 3 {
             return Err(ServiceError::InvalidParameter(
-                "ring".into(),
-                "polygon ring must have at least 3 coordinates".into(),
+                "exterior".into(),
+                "polygon exterior ring must have at least 3 coordinates".into(),
             ));
         }
 
-        let pixel_coords: Vec<(i32, i32)> = ring
-            .iter()
-            .map(|&(lon, lat)| scale_to_tile(lon, lat, self.tile_bbox, self.layer.extent))
-            .collect();
-        let deltas = delta_encode(&pixel_coords);
-        let geom = polygon_ring_geometry(&deltas);
+        let mut rings: Vec<(Vec<(i32, i32)>, bool)> = Vec::with_capacity(1 + holes.len());
+        rings.push((self.ring_to_pixels(exterior), true));
+        for hole in holes {
+            if hole.len() < 3 {
+                return Err(ServiceError::InvalidParameter(
+                    "hole".into(),
+                    "polygon hole ring must have at least 3 coordinates".into(),
+                ));
+            }
+            rings.push((self.ring_to_pixels(hole), false));
+        }
 
+        let geom = polygon_rings_geometry(&rings);
+        self.push_polygon_feature(id, properties, geom);
+        Ok(())
+    }
+
+    /// Add a MultiPolygon feature.
+    ///
+    /// Each polygon is `[exterior, hole0, hole1, …]` in WGS84 (the first ring is
+    /// the exterior, the remaining rings are holes). All rings are emitted into
+    /// a single MVT feature with continuous cursor/delta encoding and
+    /// normalized winding, so a conformant decoder reconstructs each polygon.
+    pub fn add_multipolygon(
+        &mut self,
+        polygons: &[Vec<Vec<(f64, f64)>>],
+        id: Option<u64>,
+        properties: &[(&str, MvtValue)],
+    ) -> Result<(), ServiceError> {
+        if polygons.is_empty() {
+            return Err(ServiceError::InvalidParameter(
+                "polygons".into(),
+                "multipolygon must contain at least one polygon".into(),
+            ));
+        }
+
+        let mut rings: Vec<(Vec<(i32, i32)>, bool)> = Vec::new();
+        for polygon in polygons {
+            let mut ring_iter = polygon.iter();
+            let exterior = ring_iter.next().ok_or_else(|| {
+                ServiceError::InvalidParameter(
+                    "polygon".into(),
+                    "multipolygon member must have an exterior ring".into(),
+                )
+            })?;
+            if exterior.len() < 3 {
+                return Err(ServiceError::InvalidParameter(
+                    "exterior".into(),
+                    "polygon exterior ring must have at least 3 coordinates".into(),
+                ));
+            }
+            rings.push((self.ring_to_pixels(exterior), true));
+            for hole in ring_iter {
+                if hole.len() < 3 {
+                    return Err(ServiceError::InvalidParameter(
+                        "hole".into(),
+                        "polygon hole ring must have at least 3 coordinates".into(),
+                    ));
+                }
+                rings.push((self.ring_to_pixels(hole), false));
+            }
+        }
+
+        let geom = polygon_rings_geometry(&rings);
+        self.push_polygon_feature(id, properties, geom);
+        Ok(())
+    }
+
+    /// Add a feature from a GeoJSON geometry, dispatching on its type.
+    ///
+    /// Supports Point, MultiPoint, LineString, MultiLineString, Polygon and
+    /// MultiPolygon. Unsupported geometry types (e.g. GeometryCollection)
+    /// return an error rather than being silently dropped.
+    pub fn add_geojson_geometry(
+        &mut self,
+        geometry: &geojson::Geometry,
+        id: Option<u64>,
+        properties: &[(&str, MvtValue)],
+    ) -> Result<(), ServiceError> {
+        use geojson::GeometryValue;
+
+        let to_coords = |ring: &[geojson::Position]| -> Vec<(f64, f64)> {
+            ring.iter()
+                .filter_map(|p| {
+                    let s = p.as_slice();
+                    if s.len() >= 2 {
+                        Some((s[0], s[1]))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        match &geometry.value {
+            GeometryValue::Point { coordinates } => {
+                let s = coordinates.as_slice();
+                if s.len() < 2 {
+                    return Err(ServiceError::InvalidParameter(
+                        "coordinates".into(),
+                        "point requires at least 2 ordinates".into(),
+                    ));
+                }
+                self.add_point(s[0], s[1], id, properties)
+            }
+            GeometryValue::MultiPoint { coordinates } => {
+                for coord in coordinates {
+                    let s = coord.as_slice();
+                    if s.len() >= 2 {
+                        self.add_point(s[0], s[1], id, properties)?;
+                    }
+                }
+                Ok(())
+            }
+            GeometryValue::LineString { coordinates } => {
+                let coords = to_coords(coordinates);
+                self.add_linestring(&coords, id, properties)
+            }
+            GeometryValue::MultiLineString { coordinates } => {
+                for line in coordinates {
+                    let coords = to_coords(line);
+                    self.add_linestring(&coords, id, properties)?;
+                }
+                Ok(())
+            }
+            GeometryValue::Polygon { coordinates } => {
+                let rings: Vec<Vec<(f64, f64)>> =
+                    coordinates.iter().map(|r| to_coords(r)).collect();
+                let exterior = rings.first().ok_or_else(|| {
+                    ServiceError::InvalidParameter(
+                        "coordinates".into(),
+                        "polygon requires an exterior ring".into(),
+                    )
+                })?;
+                let holes: Vec<&[(f64, f64)]> = rings[1..].iter().map(|r| r.as_slice()).collect();
+                self.add_polygon_with_holes(exterior, &holes, id, properties)
+            }
+            GeometryValue::MultiPolygon { coordinates } => {
+                let polygons: Vec<Vec<Vec<(f64, f64)>>> = coordinates
+                    .iter()
+                    .map(|poly| poly.iter().map(|r| to_coords(r)).collect())
+                    .collect();
+                self.add_multipolygon(&polygons, id, properties)
+            }
+            GeometryValue::GeometryCollection { .. } => Err(ServiceError::UnsupportedFormat(
+                "GeometryCollection cannot be encoded as a single MVT feature".into(),
+            )),
+        }
+    }
+
+    /// Scale a WGS84 ring to tile pixel coordinates.
+    fn ring_to_pixels(&self, ring: &[(f64, f64)]) -> Vec<(i32, i32)> {
+        ring.iter()
+            .map(|&(lon, lat)| scale_to_tile(lon, lat, self.tile_bbox, self.layer.extent))
+            .collect()
+    }
+
+    /// Append a polygon feature with the given pre-encoded geometry commands.
+    fn push_polygon_feature(
+        &mut self,
+        id: Option<u64>,
+        properties: &[(&str, MvtValue)],
+        geometry: Vec<i32>,
+    ) {
         let mut tags = Vec::with_capacity(properties.len() * 2);
         for (key, value) in properties {
             let ki = self.layer.key_index(key);
@@ -602,20 +849,97 @@ impl MvtLayerBuilder {
             tags.push(ki);
             tags.push(vi);
         }
-
         self.layer.add_feature(MvtFeature {
             id,
             geometry_type: MvtGeometryType::Polygon,
-            geometry: geom,
+            geometry,
             tags,
         });
-        Ok(())
+    }
+
+    /// Add a whole GeoJSON feature, mapping its JSON properties to MVT tags.
+    ///
+    /// Property values are converted as: string → String, integer → Int,
+    /// float → Double, bool → Bool. Null and nested (array/object) properties
+    /// are skipped (MVT tag values must be scalars). The feature's numeric
+    /// `id` (if any and parseable) is preserved.
+    pub fn add_geojson_feature(&mut self, feature: &geojson::Feature) -> Result<(), ServiceError> {
+        let geometry = feature.geometry.as_ref().ok_or_else(|| {
+            ServiceError::InvalidParameter(
+                "feature".into(),
+                "feature has no geometry to encode".into(),
+            )
+        })?;
+
+        // Convert scalar properties to owned (key, MvtValue) pairs.
+        let mut owned: Vec<(String, MvtValue)> = Vec::new();
+        if let Some(props) = &feature.properties {
+            for (key, value) in props {
+                let mvt_value = match value {
+                    serde_json::Value::String(s) => Some(MvtValue::String(s.clone())),
+                    serde_json::Value::Bool(b) => Some(MvtValue::Bool(*b)),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            Some(MvtValue::Int(i))
+                        } else {
+                            n.as_f64().map(MvtValue::Double)
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(v) = mvt_value {
+                    owned.push((key.clone(), v));
+                }
+            }
+        }
+        let properties: Vec<(&str, MvtValue)> =
+            owned.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+
+        let id = match &feature.id {
+            Some(geojson::feature::Id::Number(n)) => n.as_u64(),
+            Some(geojson::feature::Id::String(s)) => s.parse::<u64>().ok(),
+            None => None,
+        };
+
+        self.add_geojson_geometry(geometry, id, &properties)
     }
 
     /// Consume the builder and return the completed layer.
     pub fn build(self) -> MvtLayer {
         self.layer
     }
+}
+
+/// Build a complete single-layer MVT tile from GeoJSON features.
+///
+/// This is the dataset-backed entry point that a vector-tile HTTP handler
+/// invokes: it takes the features that fall within `tile_bbox` (in WGS84
+/// `[west, south, east, north]` degrees), encodes each into the named layer,
+/// and returns the binary `application/vnd.mapbox-vector-tile` payload.
+///
+/// Features whose geometry cannot be represented as a single MVT feature (e.g.
+/// GeometryCollection) are skipped rather than aborting the whole tile.
+pub fn build_tile_from_features(
+    layer_name: &str,
+    tile_bbox: [f64; 4],
+    extent: u32,
+    features: &[geojson::Feature],
+) -> Result<Vec<u8>, ServiceError> {
+    let mut builder = MvtLayerBuilder::new(layer_name, tile_bbox, extent);
+    for feature in features {
+        // Skip features with no/unsupported geometry so one bad feature does
+        // not poison the entire tile.
+        match builder.add_geojson_feature(feature) {
+            Ok(()) => {}
+            Err(ServiceError::UnsupportedFormat(_)) | Err(ServiceError::InvalidParameter(_, _)) => {
+                continue;
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    let mut tile = MvtTile::new();
+    tile.add_layer(builder.build());
+    Ok(tile.encode())
 }
 
 #[cfg(test)]
@@ -1123,5 +1447,128 @@ mod tests {
         let enc = v.encode();
         // tag(1 byte) + 8 bytes = 9 bytes minimum
         assert!(enc.len() >= 9);
+    }
+
+    // ── multi-ring polygon geometry ──────────────────────────────────────────
+
+    /// Count the MoveTo commands in a geometry command stream.
+    fn count_move_to(cmds: &[i32]) -> usize {
+        let mut count = 0;
+        let mut i = 0;
+        while i < cmds.len() {
+            let cmd = cmds[i];
+            let id = cmd & 0x7;
+            let cnt = (cmd >> 3) as usize;
+            match id {
+                1 => {
+                    // MoveTo: cnt pairs
+                    count += 1;
+                    i += 1 + cnt * 2;
+                }
+                2 => {
+                    // LineTo: cnt pairs
+                    i += 1 + cnt * 2;
+                }
+                7 => {
+                    // ClosePath: no args
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn polygon_with_hole_emits_two_move_to() {
+        // Exterior 10x10 square, interior 2..4 square (a hole).
+        let exterior = vec![(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)];
+        let hole = vec![(2, 2), (2, 4), (4, 4), (4, 2), (2, 2)];
+        let rings = vec![(exterior, true), (hole, false)];
+        let geom = polygon_rings_geometry(&rings);
+        // Two rings → two MoveTo commands, single feature.
+        assert_eq!(count_move_to(&geom), 2);
+    }
+
+    #[test]
+    fn polygon_rings_normalize_winding() {
+        // Exterior given counter-clockwise (area < 0); encoder must reverse it
+        // so the emitted ring is clockwise (positive area).
+        let ccw_exterior = vec![(0, 0), (0, 10), (10, 10), (10, 0), (0, 0)];
+        assert!(signed_area_2x(&ccw_exterior[..ccw_exterior.len() - 1]) < 0);
+        let rings = vec![(ccw_exterior, true)];
+        let geom = polygon_rings_geometry(&rings);
+        assert_eq!(count_move_to(&geom), 1);
+        assert!(!geom.is_empty());
+    }
+
+    #[test]
+    fn multipolygon_builder_encodes_multiple_exteriors() {
+        let mut builder = MvtLayerBuilder::new("layer", [0.0, 0.0, 10.0, 10.0], 4096);
+        let poly_a = vec![vec![
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+            (0.0, 0.0),
+        ]];
+        let poly_b = vec![vec![
+            (6.0, 6.0),
+            (9.0, 6.0),
+            (9.0, 9.0),
+            (6.0, 9.0),
+            (6.0, 6.0),
+        ]];
+        let polygons = vec![poly_a, poly_b];
+        builder
+            .add_multipolygon(&polygons, Some(1), &[])
+            .expect("add multipolygon");
+        let layer = builder.build();
+        assert_eq!(layer.feature_count(), 1);
+        assert_eq!(layer.features[0].geometry_type, MvtGeometryType::Polygon);
+        // Two exterior rings → two MoveTo commands in the single feature.
+        assert_eq!(count_move_to(&layer.features[0].geometry), 2);
+    }
+
+    #[test]
+    fn polygon_with_holes_builder_roundtrips_through_tile() {
+        let mut builder = MvtLayerBuilder::new("holes", [0.0, 0.0, 10.0, 10.0], 4096);
+        let exterior = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let hole = [(3.0, 3.0), (6.0, 3.0), (6.0, 6.0), (3.0, 6.0)];
+        let holes: Vec<&[(f64, f64)]> = vec![&hole];
+        builder
+            .add_polygon_with_holes(&exterior, &holes, Some(7), &[("k", MvtValue::Int(1))])
+            .expect("add polygon with holes");
+        let layer = builder.build();
+        let mut tile = MvtTile::new();
+        tile.add_layer(layer);
+        let encoded = tile.encode();
+        assert!(!encoded.is_empty());
+        assert_eq!(tile.total_feature_count(), 1);
+    }
+
+    #[test]
+    fn build_tile_from_geojson_features_encodes_polygon() {
+        let feature: geojson::Feature = serde_json::from_value(serde_json::json!({
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0,0],[10,0],[10,10],[0,10],[0,0]]]
+            },
+            "properties": {"name": "square", "pop": 42}
+        }))
+        .expect("parse feature");
+        let tile = build_tile_from_features("parcels", [0.0, 0.0, 10.0, 10.0], 4096, &[feature])
+            .expect("build tile");
+        assert!(!tile.is_empty());
+    }
+
+    #[test]
+    fn add_geojson_geometry_rejects_geometry_collection() {
+        let mut builder = MvtLayerBuilder::new("layer", [0.0, 0.0, 10.0, 10.0], 4096);
+        let geom = geojson::Geometry::new(geojson::GeometryValue::GeometryCollection {
+            geometries: Vec::new(),
+        });
+        assert!(builder.add_geojson_geometry(&geom, None, &[]).is_err());
     }
 }

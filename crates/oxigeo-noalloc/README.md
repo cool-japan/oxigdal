@@ -38,7 +38,7 @@ assert!((moved.x - 10.0).abs() < 1e-10);
 
 ## Status
 
-- 59 tests passing, 0 failures
+- 136 tests passing, 0 failures
 
 ## License
 

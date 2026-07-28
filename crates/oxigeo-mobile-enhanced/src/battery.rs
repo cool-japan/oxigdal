@@ -208,6 +208,156 @@ impl BatteryState {
     }
 }
 
+/// A real, backend-sourced battery reading.
+#[cfg(feature = "battery-aware")]
+struct RealBatteryReading {
+    percentage: f32,
+    charging: ChargingState,
+    temperature: Option<f32>,
+}
+
+/// Query the current platform's real battery backend, if any exists.
+///
+/// Returns `None` when no backend is implemented for the current
+/// `target_os`, or when the backend is implemented but reports that no
+/// battery is present / readable (e.g. a desktop without a supported sysfs
+/// layout). Callers must treat `None` as "unknown", never substitute a
+/// plausible-looking constant.
+#[cfg(feature = "battery-aware")]
+fn real_battery_reading() -> Option<RealBatteryReading> {
+    #[cfg(target_os = "ios")]
+    {
+        ios_battery_reading()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        linux_sysfs_battery_reading()
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "linux", target_os = "android")))]
+    {
+        None
+    }
+}
+
+/// Read real battery state from the Linux/Android kernel `sysfs`
+/// `power_supply` class (`/sys/class/power_supply/<name>/{type,capacity,status,temp}`).
+///
+/// This is the standard interface on desktop/embedded Linux and is
+/// world-readable on stock (non-hardened) Android without any special
+/// permission, so the same code path serves both targets. Returns `None` if
+/// the directory does not exist, contains no `type == "Battery"` entry, or
+/// the `capacity` file cannot be parsed.
+#[cfg(all(
+    feature = "battery-aware",
+    any(target_os = "linux", target_os = "android")
+))]
+fn linux_sysfs_battery_reading() -> Option<RealBatteryReading> {
+    let base = std::path::Path::new("/sys/class/power_supply");
+    let entries = std::fs::read_dir(base).ok()?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        let kind = match std::fs::read_to_string(path.join("type")) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        if kind.trim() != "Battery" {
+            continue;
+        }
+
+        let percentage = match std::fs::read_to_string(path.join("capacity"))
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+        {
+            Some(p) => p,
+            // A power-supply node named as a battery but missing/unparseable
+            // `capacity` cannot yield a real reading; try the next node
+            // rather than fabricating one.
+            None => continue,
+        };
+
+        let charging = std::fs::read_to_string(path.join("status"))
+            .ok()
+            .map(|s| match s.trim() {
+                "Charging" => ChargingState::Charging,
+                "Full" => ChargingState::FullyCharged,
+                "Discharging" | "Not charging" => ChargingState::Discharging,
+                _ => ChargingState::Unknown,
+            })
+            .unwrap_or(ChargingState::Unknown);
+
+        // Linux sysfs reports battery temperature in tenths of a degree C.
+        let temperature = std::fs::read_to_string(path.join("temp"))
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .map(|tenths_celsius| tenths_celsius / 10.0);
+
+        return Some(RealBatteryReading {
+            percentage,
+            charging,
+            temperature,
+        });
+    }
+
+    None
+}
+
+/// Read real battery state on iOS via `UIDevice.currentDevice` through the
+/// Objective-C runtime (`objc` crate's `msg_send!`).
+///
+/// Enables `UIDevice.batteryMonitoringEnabled` on first use (required for
+/// `batteryLevel`/`batteryState` to report real values instead of `-1.0`
+/// /`.unknown`), then reads both properties. Returns `None` if the device
+/// class cannot be resolved or monitoring reports no usable level.
+#[cfg(all(feature = "battery-aware", target_os = "ios"))]
+#[allow(unsafe_code)]
+fn ios_battery_reading() -> Option<RealBatteryReading> {
+    use objc::runtime::{BOOL, Object, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    // SAFETY: `UIDevice` is a well-known Foundation/UIKit singleton class
+    // available in every iOS process; `currentDevice` returns an autoreleased
+    // (but effectively immortal, process-lifetime) singleton instance, so no
+    // extra retain/release bookkeeping is required for these read-only
+    // property accesses.
+    unsafe {
+        let device_class = class!(UIDevice);
+        let device: *mut Object = msg_send![device_class, currentDevice];
+        if device.is_null() {
+            return None;
+        }
+
+        let enable_monitoring: BOOL = YES;
+        let _: () = msg_send![device, setBatteryMonitoringEnabled: enable_monitoring];
+
+        let level: f32 = msg_send![device, batteryLevel];
+        // UIDevice reports -1.0 when battery monitoring is unavailable.
+        if level < 0.0 {
+            return None;
+        }
+
+        // UIDeviceBatteryState: unknown = 0, unplugged = 1, charging = 2, full = 3.
+        let raw_state: i64 = msg_send![device, batteryState];
+        let charging = match raw_state {
+            2 => ChargingState::Charging,
+            3 => ChargingState::FullyCharged,
+            1 => ChargingState::Discharging,
+            _ => ChargingState::Unknown,
+        };
+
+        Some(RealBatteryReading {
+            percentage: level * 100.0,
+            charging,
+            // Exact battery temperature in Celsius has no public UIKit API;
+            // report honestly as unknown rather than inventing a value.
+            temperature: None,
+        })
+    }
+}
+
 /// Battery monitoring service
 pub struct BatteryMonitor {
     state: Arc<RwLock<Option<BatteryState>>>,
@@ -237,25 +387,48 @@ impl BatteryMonitor {
         }
     }
 
-    /// Refresh battery state
+    /// Refresh battery state.
+    ///
+    /// Queries **real** device battery state where a backend is available:
+    /// - iOS (`target_os = "ios"`): `UIDevice.currentDevice` `batteryLevel` /
+    ///   `batteryState` via the Objective-C runtime (`objc` crate).
+    /// - Linux and Android (`target_os = "linux"` / `"android"`): the kernel
+    ///   `/sys/class/power_supply/<name>/{capacity,status,temp}` sysfs
+    ///   interface (world-readable on stock Android without extra
+    ///   permissions, and the standard interface on desktop/embedded Linux).
+    ///
+    /// On platforms with none of the above (e.g. macOS/Windows desktop
+    /// hosts, which is where most CI/dev runs of this crate happen), or when
+    /// the real backend reports no battery present, this returns
+    /// [`MobileError::BatteryReadError`] rather than fabricating a plausible
+    /// reading, so callers never silently act on fake battery data.
     pub fn refresh(&self) -> Result<()> {
         #[cfg(feature = "battery-aware")]
         {
             let mut sys = self.sys.write();
             sys.refresh_all();
+            drop(sys);
 
-            // Note: sysinfo doesn't provide battery info directly
-            // In a real implementation, we would use platform-specific APIs
-            // For now, we'll create a mock state
-            let percentage = 75.0; // Mock value
-            let level = BatteryLevel::from_percentage(percentage);
+            let reading = real_battery_reading().ok_or_else(|| {
+                MobileError::BatteryReadError(
+                    "no real battery backend is available on this platform (only iOS \
+                     UIDevice and Linux/Android sysfs power_supply are implemented), or no \
+                     battery is present"
+                        .to_string(),
+                )
+            })?;
+
+            let level = BatteryLevel::from_percentage(reading.percentage);
 
             let state = BatteryState {
                 level,
-                charging: ChargingState::Discharging,
-                percentage,
-                time_remaining: Some(Duration::from_secs(3600 * 4)),
-                temperature: Some(35.0),
+                charging: reading.charging,
+                percentage: reading.percentage,
+                // Estimated time-remaining is not exposed by any of the
+                // real backends implemented here; report honestly as
+                // unknown rather than fabricating a duration.
+                time_remaining: None,
+                temperature: reading.temperature,
                 timestamp: Instant::now(),
             };
 
@@ -496,5 +669,79 @@ mod tests {
             timestamp: Instant::now(),
         };
         assert!(!state.is_overheating());
+    }
+
+    /// Verifies the critical fix: `refresh()` no longer fabricates a fixed
+    /// `75% / Discharging / 4h / 35C` state. On a platform with no real
+    /// battery backend implemented (this dev/CI host is macOS or Windows,
+    /// neither of which has one), it must surface an honest error instead of
+    /// silently returning mock data.
+    #[cfg(all(
+        feature = "battery-aware",
+        not(any(target_os = "linux", target_os = "android", target_os = "ios"))
+    ))]
+    #[test]
+    fn test_refresh_returns_honest_error_on_unsupported_platform() {
+        let monitor = BatteryMonitor::new().expect("monitor construction must not fail");
+        let result = monitor.refresh();
+        assert!(
+            result.is_err(),
+            "refresh() must not fabricate battery data on a platform with no real backend"
+        );
+        // The old mock values must never leak into current_state() either.
+        let state_result = monitor.current_state();
+        assert!(state_result.is_err());
+    }
+
+    /// On Linux/Android, if a real `sysfs` battery is present, `refresh()`
+    /// must report its actual percentage (not the old hardcoded `75.0`).
+    /// If no battery node exists (e.g. a desktop/server without one, or a
+    /// sandboxed CI container), the honest-error path is exercised instead --
+    /// both are acceptable, but a silently fabricated `75.0` is not.
+    #[cfg(all(
+        feature = "battery-aware",
+        any(target_os = "linux", target_os = "android")
+    ))]
+    #[test]
+    fn test_refresh_uses_real_sysfs_battery_when_present() {
+        let monitor = BatteryMonitor::new().expect("monitor construction must not fail");
+        match monitor.refresh() {
+            Ok(()) => {
+                let state = monitor
+                    .current_state()
+                    .expect("state must be available after successful refresh");
+                assert!(
+                    (0.0..=100.0).contains(&state.percentage),
+                    "real battery percentage must be a valid 0-100 reading, got {}",
+                    state.percentage
+                );
+                // time_remaining is honestly unknown for the sysfs backend.
+                assert!(state.time_remaining.is_none());
+            }
+            Err(_) => {
+                // No real battery node on this host (e.g. a headless CI
+                // container) -- acceptable as long as it's an honest error,
+                // which `Err` already establishes.
+            }
+        }
+    }
+
+    /// The `linux_sysfs_battery_reading` parser must never invent a
+    /// percentage when `/sys/class/power_supply` has no `Battery`-typed
+    /// entry -- confirmed directly against the real host filesystem rather
+    /// than a mock, since this helper takes no path parameter to inject a
+    /// fixture.
+    #[cfg(all(
+        feature = "battery-aware",
+        any(target_os = "linux", target_os = "android")
+    ))]
+    #[test]
+    fn test_linux_sysfs_battery_reading_is_none_or_valid() {
+        match linux_sysfs_battery_reading() {
+            None => {}
+            Some(reading) => {
+                assert!((0.0..=100.0).contains(&reading.percentage));
+            }
+        }
     }
 }

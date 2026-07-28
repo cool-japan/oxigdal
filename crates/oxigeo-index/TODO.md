@@ -1,8 +1,8 @@
 # TODO: oxigeo-index
 
 > **Purpose:** Pure-Rust spatial index (R-tree) for OxiGeo vector data.
-> **Status (2026-05-16):** 3,719 Rust LoC · 186 tests · 0 real stubs
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 8,358 Rust LoC (tokei, `src/`) · 460 tests all-features / 446 default-features, 0 failed · 0 real stubs · `no_std` regression across ~20 modules (see Low Priority item below)
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (next slice — verified gaps)
 
@@ -32,6 +32,7 @@
   - **Goal:** Filter R-tree hits by exact geometry predicate.
   - **Files:** `src/operations.rs` (extend)
   - **Why deferred:** Pushes geometry logic into index crate; better to expose a callback or let callers use `oxigeo-algorithms::vector::intersects`.
+  - **Re-verified 2026-07-28:** the underlying primitive now exists — `src/polygon_boolean.rs::polygon_intersection(a, b) -> BooleanResult` (real Sutherland-Hodgman clip) and `polygons_intersect_bbox_test(a, b) -> bool` were added since this item was written (see the "Implement polygon union, intersection, and difference" item below, completed 2026-05-19). Callers can already compose `RTree::search` + `polygon_intersection`/`polygons_intersect_bbox_test` by hand; what's still missing is the dedicated "filter R-tree hits by exact geometry predicate" convenience wrapper this item describes, so it remains open.
 
 - [x] Implement Visvalingam-Whyatt simplification as alternative to Douglas-Peucker (completed 2026-05-17)
   - **Done:** `src/operations.rs` extended (+381 LoC, now 855 total). `simplify_visvalingam(coords, min_effective_area) -> Vec<(f64,f64)>` and `simplify_visvalingam_to_count(coords, target_count) -> Vec<(f64,f64)>`. Algorithm: min-heap with lazy invalidation via version counters (`VwState` doubly-linked list, `VwHeapEntry` using `f64::to_bits()` as `u64` for Ord without external dep). Monotonicity rule: neighbour areas clamped to `max(new_area, removed_area)` ensuring non-decreasing removal sequence for correct `_to_count` semantics. Closed ring detection (first==last within epsilon); seam preserved. Re-exported from `src/lib.rs`.
@@ -82,7 +83,12 @@
 - [x] Implement minimum bounding circle (smallest enclosing circle) for point sets (completed 2026-05-19).
   - **Done:** New `src/bounding_circle.rs` (~400 LoC). `BoundingCircle { center_x, center_y, radius }` with `empty()`, `from_point(p)`, `from_two(a,b)` (diameter circle), `from_three(a,b,c) -> Option<Self>` (circumscribed circle, None if |signed_area| < 1e-12). `contains_point` with epsilon `1e-10`. `contains_point_strict`. `intersects_bbox` via closest-point-on-rect clamp. `area()`, `diameter()`. `smallest_enclosing_circle(points) -> BoundingCircle` — iterative Welzl O(n expected) with Knuth MMIX LCG shuffle (seed `0x12345678`) for determinism. `smallest_enclosing_circle_from_bboxes` flattens 4 corners per bbox. Private helpers: `circle_from_boundary` (0/1/2/3 support points), `lcg_shuffle` (MMIX constants `a=6364136223846793005, c=1442695040888963407`). Re-exported from `lib.rs`.
   - **Tests added (16 in `tests/bounding_circle_test.rs` + inline):** test_bounding_circle_empty_radius_zero, test_circle_from_point_radius_zero, test_circle_from_two_midpoint_and_half_dist, test_circle_from_three_equilateral_circumcenter, test_circle_from_three_collinear_returns_none, test_circle_contains_center, test_circle_contains_boundary_within_epsilon, test_circle_does_not_contain_far_point, test_circle_intersects_bbox_overlap/no_overlap, test_smallest_enclosing_circle_empty/single/two_points/unit_square, test_smallest_enclosing_circle_contains_all_100_random_points, test_smallest_enclosing_circle_from_bboxes. Total: 413 tests pass.
-- [ ] Add no_std support for `GridIndex` (currently only `RTree` and operations support no_std).
+- [ ] Fix the crate-wide `no_std` regression (re-verified 2026-07-28: broader than originally scoped)
+  - **Verified gap:** `cargo build -p oxigeo-index --no-default-features` currently fails with 210 errors across 21 files — not just `GridIndex` as originally noted here. Root cause is unqualified `use std::collections::{HashMap, HashSet, BinaryHeap}` / `use std::cmp::Reverse` / `use std::f64::consts::PI` (needs `core::f64::consts::PI`) plus a few bare `vec!`/`Vec` uses missing `alloc::vec`/`alloc::vec::Vec` imports, in every module added since the original no_std baseline: `grid_index.rs`, `adaptive_grid.rs`, `bounding_circle.rs`, `operations.rs` (top-k `BinaryHeap`), `spatial_hash.rs`, `sweep/bentley_ottmann.rs`, `clustering/dbscan.rs`, `delaunay.rs`, `voronoi.rs`, `streaming_rtree.rs`, `polygon_boolean.rs`, `rtree/hilbert.rs`, `rtree3d/{mod,node,knn,bulk}.rs`. The originally-clean `rtree/mod.rs`/`rtree/node.rs`/`rtree/serial.rs`/`validation.rs` also now fail transitively (cascading from the above) or via their own unguarded `std::` imports.
+  - **Goal:** `cargo build -p oxigeo-index --no-default-features` succeeds again, restoring the README's `no_std` (with `alloc`) claim for the whole public surface, not just the original R-tree core.
+  - **Design:** Gate each `std::collections::{HashMap,HashSet,BinaryHeap}` behind `hashbrown`/`alloc::collections::BinaryHeap` (already the pattern used in the untouched no_std-clean modules); replace `std::cmp::Reverse`/`std::f64::consts::PI` with `core::` equivalents; add missing `alloc::vec::Vec`/`alloc::vec` imports. Re-run `cargo build --no-default-features` iteratively per file until clean, then add a CI check so it can't regress silently again.
+  - **Files:** the 21 files listed above.
+  - **Prerequisites:** None.
 - [x] Implement line intersection sweep-line algorithm for efficient batch intersection detection (completed 2026-05-17).
   - **Done:** New `src/sweep/mod.rs` + `src/sweep/bentley_ottmann.rs` (~540 LoC). `Segment { idx: usize, p0: (f64,f64), p1: (f64,f64) }` — idx is caller-assigned identifier; p0 normalized to left endpoint. `IntersectionPoint { x, y, seg_a, seg_b }` — always `seg_a < seg_b`, each pair reported once. `find_all_intersections(segments: &[Segment]) -> Vec<IntersectionPoint>` — Bentley-Ottmann: events batched by x (Insert < Cross < Remove order); status = `Vec<usize>` sorted by `y_at_x` recomputed on demand with `OrdF64` total-order wrapper. Vertical segments handled by scanning entire status for active segments in y-range. Private `segment_intersect` parametric helper (determinant epsilon `1e-10`). Dedup via `HashSet<(usize,usize)>` for both reported and scheduled pairs. Collinear-overlap reporting deferred (documented). Re-exported from `lib.rs`.
   - **Tests added (15):** test_sweep_empty_input_returns_empty, test_sweep_two_parallel_lines_no_intersection, test_sweep_two_crossing_lines_finds_one_point, test_sweep_t_junction_finds_endpoint_intersection, test_sweep_vertical_segments_handled, test_sweep_horizontal_segments_handled, test_sweep_dense_grid_finds_intersections, test_sweep_reports_each_pair_exactly_once_with_a_lt_b, test_sweep_matches_brute_force_on_random_50_segments, plus 6 additional. Total: 338 tests pass.
@@ -100,4 +106,4 @@
 - [x] Add serialization/deserialization for RTree (completed 2026-04-19, part of I1 R-tree enhancements)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

@@ -7,6 +7,11 @@ dependencies.
 ## Features
 
 - In-memory MBTiles store (`MBTiles`, `MBTilesMetadata`)
+- Real, on-disk `.mbtiles` file I/O (feature `sqlite`) via the Pure-Rust
+  [`oxisql-sqlite-compat`](https://crates.io/crates/oxisql-sqlite-compat) engine (no C/FFI,
+  no `libsqlite3`) -- read archives produced by `tippecanoe`/`mb-util`/QGIS, and write a
+  spec-conformant MBTiles 1.3 archive (`metadata` + `tiles` tables, unique tile index)
+- MBTiles 1.3 metadata compliance validator (`MBTilesMetadata::validate`)
 - Tile archive builder with TMS and XYZ scheme support
 - Lazy `TileRangeIter` for bbox-to-tile enumeration
 - Per-zoom statistics aggregation (`TileStatsAggregator`)
@@ -29,7 +34,7 @@ println!("Bbox: {:?}", bbox);
 
 ## Status
 
-- 123 tests passing, 0 failures
+- 157 tests passing, 0 failures
 
 ## License
 

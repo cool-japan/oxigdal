@@ -12,7 +12,7 @@ A pure Rust implementation of ESRI Shapefile format support for the OxiGeo ecosy
 - **Pure Rust Implementation** - Zero C/C++/Fortran dependencies; works everywhere Rust compiles
 - **Complete File Format Support** - Reads and writes all three core files (.shp geometry, .dbf attributes, .shx spatial index)
 - **14 Geometry Types** - Point, PointZ, PointM, PolyLine, PolyLineZ, PolyLineM, Polygon, PolygonZ, PolygonM, MultiPoint, MultiPointZ, MultiPointM, MultiPatch, and Null types
-- **All DBF Field Types** - Character, Number, Logical, Date, and Float fields with proper encoding
+- **All DBF Field Types** - Character, Number, Logical, Date, and Float fields with proper encoding, plus Memo (dBase IV `.dbt`) long-text dereferencing
 - **Spatial Indexing** - SHX file support for fast random access to records
 - **Round-Trip Compatibility** - Read → modify → write workflow without data loss
 - **No Unsafe** - Sound error handling with comprehensive `Result<T>` types; no `unwrap()` or `panic!()` in production code
@@ -26,14 +26,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-shapefile = "0.2"
+oxigeo-shapefile = "0.2.1"
 ```
 
 ### Optional Features
 
 ```toml
 [dependencies]
-oxigeo-shapefile = { version = "0.2", features = ["async", "arrow"] }
+oxigeo-shapefile = { version = "0.2.1", features = ["async", "arrow"] }
 ```
 
 - **`std`** (default) - Standard library support
@@ -284,6 +284,7 @@ match read_safely("data.shp") {
 | Float | Double-precision floating point | 20 digits |
 | Logical | Boolean (Y/N) | 1 byte |
 | Date | Calendar dates (YYYYMMDD) | 8 bytes |
+| Memo | Long text dereferenced from a sibling `.dbt` file (dBase IV) | Unbounded (block-chained) |
 
 ## File Format Details
 
@@ -448,11 +449,10 @@ This library strictly adheres to COOLJAPAN ecosystem standards:
 
 ## Limitations
 
-- Point geometry conversion to OxiGeo is fully supported
-- PolyLine, Polygon, and MultiPoint parsing is implemented, conversion pending
+- Point, PolyLine, Polygon, and MultiPoint geometry conversion to OxiGeo core types is fully implemented, including ESRI-conformant reconstruction of multi-part polygons (ring winding — clockwise exteriors, counter-clockwise holes — with containment-based hole assignment, emitting `MultiPolygon` for multiple exteriors instead of merging rings)
 - MultiPatch (3D surfaces) has limited support
-- No support for memo fields (.dbt files)
-- No support for extended .prj (projection) parsing beyond reading
+- CRS reprojection during read/write is not implemented (`.prj` is read and written, but coordinates are not transformed between CRSs)
+- Writer requires callers to declare each field's `FieldType`/width explicitly (no auto-detection from Rust values yet)
 - Single-threaded design (async feature for I/O only)
 
 ## References

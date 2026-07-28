@@ -434,6 +434,7 @@ impl StorageTextureKernel {
             compute_pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 
+        ctx.check_device_lost()?;
         ctx.queue().submit(std::iter::once(encoder.finish()));
 
         trace!(
@@ -517,6 +518,7 @@ pub fn read_texture_to_vec_f32(
         },
     );
 
+    ctx.check_device_lost()?;
     ctx.queue().submit(std::iter::once(encoder.finish()));
 
     // Map and read the staging buffer (blocking via pollster).

@@ -41,14 +41,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-streaming = "0.2.0"
+oxigeo-streaming = "0.2.1"
 ```
 
 For the persistent LSM key-value state backend (Pure-Rust, via OxiStore/fjall):
 
 ```toml
 [dependencies]
-oxigeo-streaming = { version = "0.2.0", features = ["kv-store"] }
+oxigeo-streaming = { version = "0.2.1", features = ["kv-store"] }
 ```
 
 ## Usage

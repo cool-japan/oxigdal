@@ -273,14 +273,14 @@ The mobile SDK is optimized for:
 
 - Maximum dataset size depends on available device memory
 - Some operations may be slower on older devices
-- Mobile-native exposure of all 11 format drivers still expanding (v0.2.0)
+- Mobile-native exposure of all 11 format drivers still expanding (as of v0.2.1)
 
 ## Roadmap
 
 | Release | Feature |
 |---------|--------|
 | **v0.1.0** (released) | GeoTIFF/COG, GeoJSON, Shapefile, PROJ, raster algorithms, offline sync |
-| **v0.2.0** (Q2 2026) | HDF5, NetCDF, Zarr mobile bindings; write support expansion; 3D terrain |
+| **v0.2.0/v0.2.1** (released) | HDF5, NetCDF, Zarr mobile bindings; write support expansion; 3D terrain (per-item completion not independently re-verified in this pass) |
 | **v0.3.0** (Q3 2026) | Real-time GPS integration, streaming from cloud storage, background tile generation |
 
 ## Contributing

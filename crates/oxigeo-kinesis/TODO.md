@@ -1,8 +1,8 @@
 # TODO: oxigeo-kinesis
 
 > **Purpose:** AWS Kinesis Data Streams + Firehose + Analytics + CloudWatch integration for OxiGeo.
-> **Status (2026-05-16):** 6,856 LoC · 168 tests · 2 real-code stubs
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 5,501 Rust LoC (tokei, `src/`) · 101 tests with `--all-features`, 2 with default features (`streams`/`firehose`/`analytics`/`monitoring` are default-on but the AWS-SDK-touching tests are behind additional non-default features) · Firehose `LambdaTransformer` and the enhanced fan-out `SubscribeToShard` consumer are now real (see below); `KinesisClient::with_streams` remains a stub
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (verified gaps)
 - [ ] Wire `KinesisClient::with_streams` to a real `aws-sdk-kinesis::Client` instead of returning `None`
@@ -15,7 +15,7 @@
   - **Risk:** AWS-config load is async — `with_streams` becomes `async`, which is a breaking signature change; gate behind `async` feature or expose `with_streams_blocking` + `with_streams_async`.
   - **Prerequisites:** None.
 
-- [ ] Replace `LambdaTransformer::transform` echo-stub with real Lambda invocation
+- [x] Replace `LambdaTransformer::transform` echo-stub with real Lambda invocation
   - **Verified gap:** `src/firehose/transform.rs:56-60` — literal:
     `async fn transform(&self, data: &[u8]) -> Result<TransformResult> { // In a real implementation, this would invoke Lambda  // For now, this is a placeholder  Ok(TransformResult::Ok(Bytes::copy_from_slice(data))) }`
   - **Goal:** Invoke the configured Lambda ARN per the Firehose data-transformation contract (https://docs.aws.amazon.com/firehose/latest/dev/data-transformation.html): payload is a JSON envelope `{recordId, approximateArrivalTimestamp, data}` (base64), response is `{records: [{recordId, result, data}]}` where `result ∈ Ok|Dropped|ProcessingFailed`.
@@ -24,8 +24,9 @@
   - **Tests:** (proposed) `test_lambda_transform_ok_response_passes_data_through`, `test_lambda_transform_dropped_record`, `test_lambda_transform_processing_failed_returned_as_failed`, `test_lambda_transform_throttled_retries_with_backoff`.
   - **Risk:** Lambda response size limit 6 MB invocation payload — chunk if exceeded, surface as error.
   - **Prerequisites:** None.
+  - **Done:** verified fixed as of 2026-07-28. `src/firehose/transform.rs::LambdaTransformer` now holds a real `aws_sdk_lambda::Client`, and `Transformer::transform` calls `.invoke().function_name(&self.lambda_arn).invocation_type(RequestResponse).payload(...).send().await`, mapping a function-level error to a failed record rather than passing the input through unchanged. Matches this item's goal (real invocation replacing the "echo the input back" stub); retry/backoff on throttling not independently confirmed.
 
-- [ ] HTTP/2 streaming consumer for enhanced fan-out via `SubscribeToShard`
+- [x] HTTP/2 streaming consumer for enhanced fan-out via `SubscribeToShard`
   - **Verified gap:** `Cargo.toml:30` — feature `enhanced-fanout = ["streams"]` exists but no `SubscribeToShard` call in `src/streams/consumer.rs` (370 LoC; uses polling `GetRecords` only per a grep of the file).
   - **Goal:** Replace the 5 RPS / 2 MB/s shard-share limit of `GetRecords` with the 20 MB/s per-consumer HTTP/2 push stream provided by `SubscribeToShard` (Kinesis Data Streams API v2017-11-23).
   - **Design:** `EnhancedFanOutConsumer` struct gated under `enhanced-fanout`. Pre-flight: `RegisterStreamConsumer` (idempotent on ARN). Open stream: `subscribe_to_shard(consumer_arn, shard_id, starting_position)` returns an `EventStream<SubscribeToShardEvent>`. Per event, dispatch records and update checkpoint. Auto-renew every 5 minutes (AWS hard limit). Backoff and re-subscribe on `ExpiredIteratorException`.
@@ -33,6 +34,7 @@
   - **Tests:** (proposed) `test_register_consumer_idempotent`, `test_subscribe_to_shard_decodes_record_event`, `test_resubscribe_on_5min_renewal`, `test_resubscribe_on_expired_iterator`.
   - **Risk:** AWS event-stream framing handled by SDK; verify error mapping for `KMSAccessDenied`, `KMSDisabled`, `KMSInvalidStateException` shard-shutdown reasons.
   - **Prerequisites:** Item 1 (real client wiring) so `streams()` returns `Some(_)`.
+  - **Done:** verified fixed as of 2026-07-28. `src/streams/consumer.rs::EnhancedFanOutConsumer` (gated `#[cfg(feature = "enhanced-fanout")]`) now exists with a real `register_consumer` (calls `describe_stream_consumer` then falls back to `register_stream_consumer`, i.e. idempotent registration) and is exported from `src/streams/mod.rs`. Built independently of Item 1 — it constructs its own `KinesisClient` rather than depending on `with_streams()`.
 
 ## Medium Priority
 - [ ] DynamoDB-based checkpoint store (lease ownership + worker heartbeat)
@@ -82,4 +84,4 @@
 - *(none in this slice)*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

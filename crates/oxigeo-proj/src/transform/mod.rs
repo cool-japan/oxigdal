@@ -18,6 +18,8 @@ pub mod conic;
 #[cfg(feature = "std")]
 pub mod cylindrical;
 #[cfg(feature = "std")]
+mod datum_shift;
+#[cfg(feature = "std")]
 pub mod pseudocylindrical;
 #[cfg(feature = "std")]
 pub mod simd;
@@ -27,21 +29,10 @@ use crate::area_of_use::area_of_use_for_epsg;
 #[cfg(feature = "std")]
 use crate::crs::{Crs, CrsSource};
 use crate::error::{Error, Result};
-#[cfg(not(feature = "std"))]
 use alloc::format;
 use core::fmt;
 #[cfg(feature = "std")]
 use std::sync::Mutex;
-
-#[cfg(feature = "std")]
-thread_local! {
-    /// Per-thread cache of `oxiproj::Transformer` objects keyed by
-    /// `(src_proj_string, tgt_proj_string)`.  Avoids rebuilding the
-    /// transformation pipeline on every call to `transform_impl`.
-    static OXI_TRANSFORMER_CACHE: std::cell::RefCell<
-        std::collections::HashMap<(String, String), oxiproj::Transformer>
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
-}
 
 #[cfg(feature = "std")]
 use crate::proj_string::ProjString;
@@ -282,6 +273,28 @@ pub struct AreaOfUseWarning {
     pub north: f64,
 }
 
+/// A diagnostic record describing a compound-CRS vertical conversion whose
+/// required orthometric↔ellipsoidal height correction was **skipped** because
+/// no geoid model was attached to the [`Transformer`].
+///
+/// Produced by [`Transformer::transform_3d`] and retrieved via
+/// [`Transformer::last_vertical_warning`]. Its presence means the returned
+/// `z` was passed through unchanged and may be wrong by the local geoid
+/// undulation `N` (globally up to ≈ ±100 m). Attach a geoid with
+/// [`Transformer::with_geoid`] to perform the correction.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerticalDatumWarning {
+    /// Longitude of the point whose height was left uncorrected (degrees).
+    pub lon: f64,
+    /// Latitude of the point whose height was left uncorrected (degrees).
+    pub lat: f64,
+    /// Source vertical datum name (as declared by the source compound CRS).
+    pub source_vertical: String,
+    /// Target vertical datum name (as declared by the target compound CRS).
+    pub target_vertical: String,
+}
+
 /// Coordinate transformer that handles transformations between CRS.
 #[cfg(feature = "std")]
 pub struct Transformer {
@@ -290,6 +303,14 @@ pub struct Transformer {
     /// OxiProj source and target CRS pair used to build a transformer on demand.
     /// `None` when the transformation is an identity (same CRS, compound, or engineering).
     oxi_crs_pair: Option<(oxiproj::Crs, oxiproj::Crs)>,
+    /// The **built** OxiProj transformer, constructed once in [`Transformer::new`]
+    /// and stored here (behind the `Transformer`, which is shared as
+    /// `Arc<Transformer>` by [`TransformerCache`]). Storing the engine on the
+    /// struct — rather than in a per-thread cache — means that cloning and
+    /// sharing an `Arc<Transformer>` across threads reuses this already-built
+    /// pipeline instead of paying for a fresh `oxiproj::Transformer::new` on
+    /// each thread's first call. `Some` iff `oxi_crs_pair` is `Some`.
+    oxi_transformer: Option<oxiproj::Transformer>,
     /// When `true` (the default), `transform` rejects points that lie outside
     /// the source CRS's declared area of use by returning
     /// [`Error::OutOfAreaOfUse`].  When `false`, the check is skipped and the
@@ -321,6 +342,17 @@ pub struct Transformer {
     /// kinds (e.g. orthometric ↔ ellipsoidal).  When `None`, the compound
     /// vertical branch falls through silently (back-compatible behaviour).
     geoid: Option<std::sync::Arc<crate::geoid::GeoidGrid>>,
+    /// Most recent diagnostic recorded when a compound-CRS vertical correction
+    /// was required but skipped for lack of an attached geoid. Stored in a
+    /// `Mutex` (like [`Transformer::last_warning`]) so `transform_3d` can take
+    /// `&self` while still recording state and remain `Sync`.
+    last_vertical_warning: Mutex<Option<VerticalDatumWarning>>,
+    /// Optional horizontal NTv2 grid preferred over the generic `+towgs84=`
+    /// Helmert shift for geographic→geographic datum changes (e.g. OSGB36 →
+    /// ETRS89 via OSTN15/BETA2007). `(grid, inverse)`: when `inverse` is true
+    /// the grid's inverse transform is applied. Attached via
+    /// [`Transformer::with_hgrid`]; `None` by default.
+    hgrid: Option<(std::sync::Arc<crate::grid_shift::NtV2Grid>, bool)>,
 }
 
 #[cfg(feature = "std")]
@@ -349,33 +381,28 @@ impl Transformer {
         // an opaque WKT-conversion error.
         let either_engineering = source_crs.is_engineering() || target_crs.is_engineering();
 
-        let oxi_crs_pair =
+        let (oxi_crs_pair, oxi_transformer) =
             if is_compound || either_engineering || source_crs.is_equivalent(&target_crs) {
-                None
+                (None, None)
             } else {
                 let oxi_src = crs_to_oxi(&source_crs)?;
                 let oxi_tgt = crs_to_oxi(&target_crs)?;
-                // Build once, both to validate that the transformer can be
-                // constructed (errors surface here rather than being deferred
-                // to the first `.transform()` call) AND to prime this
-                // thread's `OXI_TRANSFORMER_CACHE` (used by `transform_impl`)
-                // with the already-built instance. Without this, every
-                // freshly constructed `Transformer` paid for a second,
-                // redundant `oxiproj::Transformer::new` on its very first
-                // `.transform()` call.
-                let validated = oxiproj::Transformer::new(oxi_src.clone(), oxi_tgt.clone())
+                // Build the OxiProj transformer exactly once, here. This both
+                // validates that the pipeline can be constructed (errors
+                // surface at construction rather than on the first
+                // `.transform()` call) and stores the built engine on the
+                // struct so that sharing an `Arc<Transformer>` across threads
+                // reuses it — no per-thread rebuild.
+                let built = oxiproj::Transformer::new(oxi_src.clone(), oxi_tgt.clone())
                     .map_err(crate::error::Error::from)?;
-                let cache_key = (oxi_crs_key(&oxi_src), oxi_crs_key(&oxi_tgt));
-                OXI_TRANSFORMER_CACHE.with(|cell| {
-                    cell.borrow_mut().entry(cache_key).or_insert(validated);
-                });
-                Some((oxi_src, oxi_tgt))
+                (Some((oxi_src, oxi_tgt)), Some(built))
             };
 
         Ok(Self {
             source_crs,
             target_crs,
             oxi_crs_pair,
+            oxi_transformer,
             strict: true,
             area_of_use_check: AreaOfUseCheck::default(),
             last_warning: Mutex::new(None),
@@ -383,7 +410,70 @@ impl Transformer {
             target_epoch: None,
             itrf_params: None,
             geoid: None,
+            last_vertical_warning: Mutex::new(None),
+            hgrid: None,
         })
+    }
+
+    /// Attaches a horizontal NTv2 grid to be used **instead of** the generic
+    /// `+towgs84=` Helmert shift when transforming between two **geographic**
+    /// CRS.
+    ///
+    /// This is how a caller opts into the centimetre-accurate national grid
+    /// transforms (OSTN15/BETA2007-style `.gsb` files) that a plain Helmert
+    /// `+towgs84=` cannot reach: load the grid with
+    /// [`NtV2Grid::from_bytes`](crate::NtV2Grid::from_bytes) and hand it here.
+    /// When set, [`transform`](Self::transform) applies the grid (forward, or
+    /// inverse when `inverse` is `true`) to the lon/lat pair and skips the
+    /// OxiProj pipeline entirely. The grid is ignored for projected CRS (whose
+    /// `x`/`y` are eastings/northings, not degrees).
+    ///
+    /// Returns the transformer by value so the call may be chained.
+    pub fn with_hgrid(
+        mut self,
+        grid: std::sync::Arc<crate::grid_shift::NtV2Grid>,
+        inverse: bool,
+    ) -> Self {
+        self.hgrid = Some((grid, inverse));
+        self
+    }
+
+    /// Returns the attached horizontal grid and its inverse flag, if any.
+    pub fn hgrid(&self) -> Option<(&std::sync::Arc<crate::grid_shift::NtV2Grid>, bool)> {
+        self.hgrid.as_ref().map(|(g, inv)| (g, *inv))
+    }
+
+    /// Returns the most recent [`VerticalDatumWarning`] recorded by
+    /// [`transform_3d`](Self::transform_3d) when a required compound-CRS
+    /// orthometric↔ellipsoidal height correction was skipped because no geoid
+    /// was attached.
+    ///
+    /// Returns `None` if no such condition has occurred (including the normal
+    /// case where a geoid *was* attached and the correction was applied).
+    pub fn last_vertical_warning(&self) -> Option<VerticalDatumWarning> {
+        self.last_vertical_warning
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Clears any previously-recorded vertical-datum warning.
+    pub fn clear_vertical_warning(&self) {
+        if let Ok(mut slot) = self.last_vertical_warning.lock() {
+            *slot = None;
+        }
+    }
+
+    /// Records a vertical-datum warning (internal helper).
+    fn record_vertical_warning(&self, lon: f64, lat: f64, src_v: &Crs, dst_v: &Crs) {
+        if let Ok(mut slot) = self.last_vertical_warning.lock() {
+            *slot = Some(VerticalDatumWarning {
+                lon,
+                lat,
+                source_vertical: src_v.name().unwrap_or("").to_string(),
+                target_vertical: dst_v.name().unwrap_or("").to_string(),
+            });
+        }
     }
 
     /// Attaches a geoid model to this transformer.
@@ -661,6 +751,28 @@ impl Transformer {
             ));
         }
 
+        // Prefer an attached NTv2 grid over the generic Helmert shift when both
+        // CRS are geographic (so x/y really are lon/lat degrees). This is the
+        // path that delivers OSTN15/BETA2007-grade accuracy for national datum
+        // changes such as OSGB36 → ETRS89.
+        if let Some((grid, inverse)) = &self.hgrid
+            && self.source_crs.is_geographic()
+            && self.target_crs.is_geographic()
+        {
+            let (lon, lat) = if *inverse {
+                grid.inverse_transform(coord.x, coord.y)?
+            } else {
+                grid.transform(coord.x, coord.y)?
+            };
+            let result = Coordinate::new(lon, lat);
+            if !result.is_valid() {
+                return Err(Error::transformation_error(
+                    "Grid-shifted transformation resulted in non-finite values",
+                ));
+            }
+            return Ok(result);
+        }
+
         // Perform transformation using OxiProj
         self.transform_impl(coord)
     }
@@ -799,10 +911,14 @@ impl Transformer {
             //   2. Otherwise classify each vertical CRS and, if an undulation
             //      shift is required AND a geoid model is attached, apply it.
             //   3. When the shift is required but no geoid is attached, fall
-            //      through silently with z unchanged.  This preserves the
-            //      pre-Slice-14 contract that `transform_3d` does not fail in
-            //      the default (no-geoid) configuration; callers that need a
-            //      hard guarantee should attach a geoid via `with_geoid`.
+            //      through with z unchanged BUT record a
+            //      [`VerticalDatumWarning`] (retrievable via
+            //      `last_vertical_warning`).  This preserves the contract that
+            //      `transform_3d` does not fail in the default (no-geoid)
+            //      configuration, while giving callers a runtime signal that
+            //      the height was left uncorrected — instead of the previous
+            //      wholly-silent fall-through.  Callers needing a hard
+            //      guarantee should attach a geoid via `with_geoid`.
             let z = if src_v.is_equivalent(dst_v) {
                 coord.z
             } else {
@@ -822,7 +938,14 @@ impl Transformer {
                         VerticalDatumKind::Orthometric,
                         Some(grid),
                     ) => grid.ellipsoidal_to_orthometric(coord.y, coord.x, coord.z),
-                    // Any other case: passthrough (back-compat behaviour).
+                    // Correction required (orthometric↔ellipsoidal) but no
+                    // geoid attached: record a diagnostic, then pass z through.
+                    (VerticalDatumKind::Orthometric, VerticalDatumKind::Ellipsoidal, None)
+                    | (VerticalDatumKind::Ellipsoidal, VerticalDatumKind::Orthometric, None) => {
+                        self.record_vertical_warning(coord.x, coord.y, src_v, dst_v);
+                        coord.z
+                    }
+                    // Any other case (same kind, or unclassifiable): passthrough.
                     _ => coord.z,
                 }
             };
@@ -851,7 +974,7 @@ impl Transformer {
             && self.target_crs.is_geographic()
             && let (Some(src_datum), Some(dst_datum)) =
                 (self.source_crs.datum(), self.target_crs.datum())
-            && let Some(shift) = known_horizontal_datum_shift(src_datum, dst_datum)
+            && let Some(shift) = datum_shift::known_horizontal_datum_shift(src_datum, dst_datum)
         {
             let lat_rad = coord.y.to_radians();
             let lon_rad = coord.x.to_radians();
@@ -1205,37 +1328,17 @@ impl Transformer {
 
     /// Internal implementation of coordinate transformation using OxiProj.
     ///
-    /// The underlying [`oxiproj::Transformer`] is cached per thread keyed by
-    /// the (src, tgt) CRS identifier pair, so subsequent calls for the same
-    /// CRS pair reuse the already-built pipeline without re-initialisation.
+    /// Uses the [`oxiproj::Transformer`] built once in [`Transformer::new`] and
+    /// stored on the struct, so every call — from any thread sharing this
+    /// `Arc<Transformer>` — reuses the same pipeline with no rebuild.
     fn transform_impl(&self, coord: &Coordinate) -> Result<Coordinate> {
-        match &self.oxi_crs_pair {
-            Some((oxi_src, oxi_tgt)) => {
-                let src_key = oxi_crs_key(oxi_src);
-                let tgt_key = oxi_crs_key(oxi_tgt);
-                let cache_key = (src_key, tgt_key);
-
+        match &self.oxi_transformer {
+            Some(t) => {
                 let oxi_coord = oxiproj::Coordinate {
                     x: coord.x,
                     y: coord.y,
                 };
-
-                let out = OXI_TRANSFORMER_CACHE.with(|cell| -> Result<oxiproj::Coordinate> {
-                    let mut map = cell.borrow_mut();
-                    // Use entry API to build the transformer only on first use for
-                    // this (src, tgt) key, then call transform on the cached value.
-                    let entry = map.entry(cache_key);
-                    let t = match entry {
-                        std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-                        std::collections::hash_map::Entry::Vacant(v) => {
-                            let transformer =
-                                oxiproj::Transformer::new(oxi_src.clone(), oxi_tgt.clone())
-                                    .map_err(crate::error::Error::from)?;
-                            v.insert(transformer)
-                        }
-                    };
-                    t.transform(&oxi_coord).map_err(crate::error::Error::from)
-                })?;
+                let out = t.transform(&oxi_coord).map_err(crate::error::Error::from)?;
 
                 let result = Coordinate { x: out.x, y: out.y };
                 if !result.is_valid() {
@@ -1248,92 +1351,6 @@ impl Transformer {
             None => Ok(*coord),
         }
     }
-}
-
-/// A known 7-parameter Helmert datum-shift preset, together with the
-/// source/target reference ellipsoids the preset's ECEF rotation and
-/// translation were fitted against. Used by [`Transformer::transform_3d`]'s
-/// general (non-compound, non-ITRF) 3-D fallback to compute a
-/// height-consistent horizontal datum shift.
-#[cfg(feature = "std")]
-struct HorizontalDatumShift {
-    params: crate::datum_transform::BursaWolfParams,
-    source_ellipsoid: crate::datum_transform::Ellipsoid,
-    target_ellipsoid: crate::datum_transform::Ellipsoid,
-}
-
-/// Looks up a known, published Bursa-Wolf datum-shift preset for the given
-/// `(source_datum, target_datum)` name pair (case-insensitive), matching
-/// either the forward ("named datum → WGS84") or inverse ("WGS84 → named
-/// datum") direction.
-///
-/// This intentionally covers only the small set of named datums this crate
-/// already ships hard-coded EPSG transformation parameters for
-/// ([`crate::datum_transform::BursaWolfParams::nad27_to_wgs84_conus`],
-/// `ed50_to_wgs84`, `tokyo_to_wgs84`, `osgb36_to_wgs84`). Unknown or
-/// unrecognised datum name pairs return `None`, in which case
-/// [`Transformer::transform_3d`] falls back to a documented
-/// height-preserving passthrough.
-#[cfg(feature = "std")]
-fn known_horizontal_datum_shift(
-    source_datum: &str,
-    target_datum: &str,
-) -> Option<HorizontalDatumShift> {
-    use crate::datum_transform::{BursaWolfParams, Ellipsoid};
-
-    /// `(non-WGS84 datum name as it appears in the EPSG registry `datum`
-    /// field, that datum's reference ellipsoid, the "named datum → WGS84"
-    /// preset constructor)`.
-    type DatumPreset = (&'static str, Ellipsoid, fn() -> BursaWolfParams);
-
-    let src = source_datum.to_ascii_uppercase();
-    let tgt = target_datum.to_ascii_uppercase();
-
-    let presets: [DatumPreset; 4] = [
-        (
-            "NAD27",
-            Ellipsoid::CLARKE1866,
-            BursaWolfParams::nad27_to_wgs84_conus,
-        ),
-        (
-            "ED50",
-            Ellipsoid::INTERNATIONAL,
-            BursaWolfParams::ed50_to_wgs84,
-        ),
-        ("TOKYO", Ellipsoid::BESSEL, BursaWolfParams::tokyo_to_wgs84),
-        ("OSGB36", Ellipsoid::AIRY, BursaWolfParams::osgb36_to_wgs84),
-    ];
-
-    for (name, ellipsoid, preset_fn) in presets {
-        if src == name && tgt == "WGS84" {
-            return Some(HorizontalDatumShift {
-                params: preset_fn(),
-                source_ellipsoid: ellipsoid,
-                target_ellipsoid: Ellipsoid::WGS84,
-            });
-        }
-        if tgt == name && src == "WGS84" {
-            return Some(HorizontalDatumShift {
-                params: preset_fn().inverse(),
-                source_ellipsoid: Ellipsoid::WGS84,
-                target_ellipsoid: ellipsoid,
-            });
-        }
-    }
-
-    None
-}
-
-/// Returns a stable string key for an [`oxiproj::Crs`] suitable for use as
-/// a cache key.  Tries the EPSG code first (cheap, stable), then falls back
-/// to the PROJ string representation.
-#[cfg(feature = "std")]
-fn oxi_crs_key(crs: &oxiproj::Crs) -> String {
-    if let Some(code) = crs.epsg_code() {
-        return format!("epsg:{code}");
-    }
-    crs.to_proj_string()
-        .unwrap_or_else(|_| crs.name().unwrap_or("unknown").to_string())
 }
 
 /// Converts an [`oxigeo_proj::Crs`] to an [`oxiproj::Crs`] for use with the
@@ -1515,7 +1532,9 @@ pub fn transform_epsg(
     transformer.transform(coord)
 }
 
-#[cfg(test)]
+// These unit tests exercise std-only API (`Transformer`, `Crs::compound`,
+// `lookup_epsg`, …), so they are gated with the `std` feature.
+#[cfg(all(test, feature = "std"))]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
@@ -1836,6 +1855,10 @@ mod tests {
             "z must pass through when no geoid attached"
         );
     }
+
+    // Cross-thread reuse and vertical-datum-warning tests live in
+    // `tests/transformer_grid_thread.rs` (public-API only) to keep this file
+    // under the 2000-line refactoring limit.
 
     #[test]
     fn test_transform_3d_simple_non_compound_crs_unaffected() {

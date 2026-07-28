@@ -25,12 +25,6 @@ async-trait = { workspace = true }
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-bytes = { workspace = true }
-
-# Distributed computing
-tonic = { workspace = true }
-prost = { workspace = true }
-arrow-flight = { workspace = true }
 
 # Concurrency
 dashmap = { workspace = true }
@@ -48,12 +42,6 @@ lru = { workspace = true }
 oxiarc-zstd = { workspace = true }
 oxiarc-lz4 = { workspace = true }
 oxiarc-snappy = { workspace = true }
-
-# System info
-sysinfo = { workspace = true }
-
-# Hashing
-ahash.workspace = true
 
 # System
 num_cpus = { workspace = true }

@@ -1,14 +1,14 @@
-// build.rs for oxigeo-python
-//
-// When the `extension-module` feature is enabled AND we are building a test
-// binary (rather than the cdylib extension), the linker needs to resolve
-// Python symbols explicitly.  Without this, `cargo nextest --all-features`
-// fails because pyo3's extension-module mode suppresses the `-lpython3.x`
-// linker argument (by design: the .so is loaded by an already-running
-// Python interpreter that supplies those symbols at runtime).
-//
-// This build script detects when `extension-module` is active and emits
-// the correct linker flags to link against Python.
+//! build.rs for oxigeo-python
+//!
+//! When the `extension-module` feature is enabled AND we are building a test
+//! binary (rather than the cdylib extension), the linker needs to resolve
+//! Python symbols explicitly.  Without this, `cargo nextest --all-features`
+//! fails because pyo3's extension-module mode suppresses the `-lpython3.x`
+//! linker argument (by design: the .so is loaded by an already-running
+//! Python interpreter that supplies those symbols at runtime).
+//!
+//! This build script detects when `extension-module` is active and emits
+//! the correct linker flags to link against Python.
 
 use std::process::Command;
 

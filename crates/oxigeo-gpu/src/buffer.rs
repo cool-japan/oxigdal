@@ -364,6 +364,7 @@ impl<T: Pod> GpuBuffer<T> {
         let size = Self::calculate_size(self.len)?;
         encoder.copy_buffer_to_buffer(&source.buffer, 0, &self.buffer, 0, size);
 
+        self.context.check_device_lost()?;
         self.context.queue().submit(Some(encoder.finish()));
 
         debug!("Copied {} elements between GPU buffers", self.len);
@@ -596,8 +597,11 @@ mod tests {
         }
     }
 
+    // No `#[ignore]`: the body self-gates on `GpuContext::new()` (no-op without
+    // a GPU) yet performs real read-back assertions when hardware is present, so
+    // it should run on GPU-equipped runners rather than being unconditionally
+    // skipped.
     #[tokio::test]
-    #[ignore]
     async fn test_gpu_buffer_write_read() {
         if let Ok(context) = GpuContext::new().await {
             let data: Vec<f32> = (0..100).map(|i| i as f32).collect();

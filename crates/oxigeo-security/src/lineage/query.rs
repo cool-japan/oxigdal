@@ -105,14 +105,23 @@ impl LineageQuery {
         Ok(false)
     }
 
-    /// Find all nodes matching a filter.
+    /// Find all nodes matching the query's configured filters.
+    ///
+    /// Iterates every node in the underlying [`LineageGraph`] and returns those that satisfy
+    /// all of the query's [`QueryFilter`]s (an empty filter set matches every node). When a
+    /// `max_depth` is set it is interpreted as a cap on the number of returned nodes, mirroring
+    /// the truncation behaviour of [`Self::ancestors`]/[`Self::descendants`].
     pub fn find_nodes(&self) -> Result<Vec<LineageNode>> {
-        // Get all nodes by iterating through entity index
-        let nodes = Vec::new();
+        let mut nodes: Vec<LineageNode> = self
+            .graph
+            .all_nodes()
+            .into_iter()
+            .filter(|node| self.apply_filters(node))
+            .collect();
 
-        // This is a simplification - in a real implementation,
-        // we would need a way to iterate all nodes efficiently
-        // For now, this shows the API design
+        if let Some(max_depth) = self.max_depth {
+            nodes.truncate(max_depth);
+        }
 
         Ok(nodes)
     }
@@ -235,6 +244,43 @@ mod tests {
 
         let filter = QueryFilter::Metadata("format".to_string(), "PNG".to_string());
         assert!(!filter.matches(&node));
+    }
+
+    #[test]
+    fn test_find_nodes_applies_filters_and_iterates_all() {
+        let graph = Arc::new(LineageGraph::new());
+
+        graph
+            .add_node(LineageNode::new(NodeType::Dataset, "ds-a".to_string()))
+            .expect("add node");
+        graph
+            .add_node(LineageNode::new(NodeType::Dataset, "ds-b".to_string()))
+            .expect("add node");
+        graph
+            .add_node(LineageNode::new(NodeType::Operation, "op-1".to_string()))
+            .expect("add node");
+
+        // No filters -> every node is returned (proves real iteration, not an empty stub).
+        let all = LineageQuery::new(Arc::clone(&graph))
+            .find_nodes()
+            .expect("find_nodes");
+        assert_eq!(all.len(), 3);
+
+        // Filtered by node type -> only the two datasets.
+        let datasets = LineageQuery::new(Arc::clone(&graph))
+            .filter(QueryFilter::NodeType(NodeType::Dataset))
+            .find_nodes()
+            .expect("find_nodes");
+        assert_eq!(datasets.len(), 2);
+        assert!(datasets.iter().all(|n| n.node_type == NodeType::Dataset));
+
+        // Filtered by an entity pattern that matches exactly one node.
+        let matched = LineageQuery::new(Arc::clone(&graph))
+            .filter(QueryFilter::EntityIdPattern("ds-a".to_string()))
+            .find_nodes()
+            .expect("find_nodes");
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].entity_id, "ds-a");
     }
 
     #[test]

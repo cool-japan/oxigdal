@@ -14,7 +14,8 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::functions::{
-    HDF5_SIGNATURE, compress_deflate, decompress_deflate, fletcher32, shuffle_data, unshuffle_data,
+    HDF5_SIGNATURE, compress_deflate, decompress_deflate, fletcher32, jenkins_lookup3_hashlittle,
+    shuffle_data, unshuffle_data,
 };
 
 /// HDF5 superblock version for format detection
@@ -590,6 +591,37 @@ pub struct Nc4Reader {
     /// Variable info cache
     variable_info: HashMap<String, Nc4VariableInfo>,
 }
+/// Reject a declared byte-buffer size that exceeds what the remaining input
+/// could possibly provide.
+///
+/// A malformed or hostile HDF5/NetCDF-4 header can carry an arbitrary
+/// `data_size`/chunk-size field. Allocating `vec![0u8; size]` from that field
+/// before the (necessarily doomed) `read_exact` lets a tiny file trigger a
+/// multi-gigabyte speculative allocation (OOM / denial of service). This guard
+/// caps the request against the bytes actually left in the stream — the
+/// tightest correct bound for a buffer filled directly from that stream. The
+/// caller must have positioned `reader` at the point the buffer is read from.
+fn check_alloc_within_stream<R: Read + Seek>(reader: &mut R, requested: usize) -> Result<()> {
+    let cur = reader
+        .stream_position()
+        .map_err(|e| NetCdfError::Io(e.to_string()))?;
+    let end = reader
+        .seek(SeekFrom::End(0))
+        .map_err(|e| NetCdfError::Io(e.to_string()))?;
+    reader
+        .seek(SeekFrom::Start(cur))
+        .map_err(|e| NetCdfError::Io(e.to_string()))?;
+    let remaining = end.saturating_sub(cur);
+    if requested as u64 > remaining {
+        return Err(NetCdfError::InvalidFormat(format!(
+            "declared data size ({requested} bytes) exceeds remaining input \
+             ({remaining} bytes); refusing to allocate (possible malformed or \
+             hostile header)"
+        )));
+    }
+    Ok(())
+}
+
 impl Nc4Reader {
     /// Open a NetCDF-4 file for reading.
     ///
@@ -672,7 +704,9 @@ impl Nc4Reader {
         self.reader
             .seek(SeekFrom::Start(info.data_offset))
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
-        let mut raw_data = vec![0u8; info.data_size as usize];
+        let byte_len = info.data_size as usize;
+        check_alloc_within_stream(&mut self.reader, byte_len)?;
+        let mut raw_data = vec![0u8; byte_len];
         self.reader
             .read_exact(&mut raw_data)
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
@@ -700,7 +734,9 @@ impl Nc4Reader {
         self.reader
             .seek(SeekFrom::Start(info.data_offset))
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
-        let mut raw_data = vec![0u8; info.data_size as usize];
+        let byte_len = info.data_size as usize;
+        check_alloc_within_stream(&mut self.reader, byte_len)?;
+        let mut raw_data = vec![0u8; byte_len];
         self.reader
             .read_exact(&mut raw_data)
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
@@ -728,7 +764,9 @@ impl Nc4Reader {
         self.reader
             .seek(SeekFrom::Start(info.data_offset))
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
-        let mut raw_data = vec![0u8; info.data_size as usize];
+        let byte_len = info.data_size as usize;
+        check_alloc_within_stream(&mut self.reader, byte_len)?;
+        let mut raw_data = vec![0u8; byte_len];
         self.reader
             .read_exact(&mut raw_data)
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
@@ -770,7 +808,12 @@ impl Nc4Reader {
             .map_err(|e| NetCdfError::Io(e.to_string()))?;
         let element_size = info.data_type().size();
         let chunk_elements: usize = chunk_info.dims.iter().product();
-        let chunk_size = chunk_elements * element_size;
+        let chunk_size = chunk_elements.checked_mul(element_size).ok_or_else(|| {
+            NetCdfError::InvalidFormat(
+                "chunk dimensions overflow usize when multiplied by element size".to_string(),
+            )
+        })?;
+        check_alloc_within_stream(&mut self.reader, chunk_size)?;
         let mut data = vec![0u8; chunk_size];
         self.reader
             .read_exact(&mut data)
@@ -950,40 +993,61 @@ impl Nc4Writer {
         self.in_define_mode = false;
         Ok(())
     }
-    /// Write HDF5 superblock
+    /// Write HDF5 superblock.
+    ///
+    /// The V2/V3 superblock ends with a 4-byte checksum covering every
+    /// preceding byte of the superblock (the real HDF5 spec's Jenkins
+    /// lookup3 `hashlittle`, `initval = 0` — see
+    /// `oxigeo_hdf5::superblock_v2::validate_superblock_checksum` for the
+    /// reader-side counterpart this must agree with). The superblock is
+    /// therefore built into a local buffer first so the checksum can be
+    /// computed over the real bytes before anything is written to disk,
+    /// rather than writing a placeholder value.
     fn write_superblock(&mut self) -> Result<()> {
-        self.writer
-            .write_all(&HDF5_SIGNATURE)
-            .map_err(|e| NetCdfError::Io(e.to_string()))?;
-        self.current_offset += 8;
         match self.superblock_version {
             Hdf5SuperblockVersion::V2 | Hdf5SuperblockVersion::V3 => {
-                self.writer
-                    .write_u8(2)
-                    .map_err(|e| NetCdfError::Io(e.to_string()))?;
-                self.writer
-                    .write_u8(self.offset_size)
-                    .map_err(|e| NetCdfError::Io(e.to_string()))?;
-                self.writer
-                    .write_u8(self.length_size)
-                    .map_err(|e| NetCdfError::Io(e.to_string()))?;
-                self.writer
-                    .write_u8(0)
-                    .map_err(|e| NetCdfError::Io(e.to_string()))?;
-                self.write_offset(0)?;
-                self.write_offset(u64::MAX)?;
-                self.write_offset(0)?;
+                let mut buf: Vec<u8> = Vec::with_capacity(48);
+                buf.extend_from_slice(&HDF5_SIGNATURE);
+                buf.push(2); // superblock version
+                buf.push(self.offset_size);
+                buf.push(self.length_size);
+                buf.push(0); // file consistency flags
+                Self::push_offset(&mut buf, self.offset_size, 0)?; // base address
+                Self::push_offset(&mut buf, self.offset_size, u64::MAX)?; // superblock extension address (undefined)
+                Self::push_offset(&mut buf, self.offset_size, 0)?; // end-of-file address
                 let root_group_offset = 48u64;
-                self.write_offset(root_group_offset)?;
+                Self::push_offset(&mut buf, self.offset_size, root_group_offset)?; // root group object header address
+
+                let checksum = jenkins_lookup3_hashlittle(&buf, 0);
+                buf.extend_from_slice(&checksum.to_le_bytes());
+
                 self.writer
-                    .write_u32::<LittleEndian>(0)
+                    .write_all(&buf)
                     .map_err(|e| NetCdfError::Io(e.to_string()))?;
-                self.current_offset = 48;
+                self.current_offset = buf.len() as u64;
             }
             _ => {
                 return Err(NetCdfError::InvalidFormat(
                     "Only superblock version 2/3 supported for writing".to_string(),
                 ));
+            }
+        }
+        Ok(())
+    }
+    /// Append an offset/length value to `buf` in the given `size` (1/2/4/8
+    /// bytes, little-endian) — the buffer-based counterpart of
+    /// [`Nc4Writer::write_offset`], used while building the superblock so its
+    /// checksum can be computed before any bytes reach the file.
+    fn push_offset(buf: &mut Vec<u8>, size: u8, value: u64) -> Result<()> {
+        match size {
+            1 => buf.push(value as u8),
+            2 => buf.extend_from_slice(&(value as u16).to_le_bytes()),
+            4 => buf.extend_from_slice(&(value as u32).to_le_bytes()),
+            8 => buf.extend_from_slice(&value.to_le_bytes()),
+            _ => {
+                return Err(NetCdfError::InvalidFormat(format!(
+                    "Invalid offset size: {size}"
+                )));
             }
         }
         Ok(())
@@ -1234,6 +1298,41 @@ impl CompressionFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn alloc_guard_accepts_size_within_stream() {
+        // 64 bytes of input; a request for exactly what remains must be allowed.
+        let mut cur = Cursor::new(vec![0u8; 64]);
+        assert!(check_alloc_within_stream(&mut cur, 64).is_ok());
+        assert!(check_alloc_within_stream(&mut cur, 10).is_ok());
+        // The guard must leave the cursor position untouched.
+        assert_eq!(cur.position(), 0);
+    }
+
+    #[test]
+    fn alloc_guard_rejects_oversized_header_quickly() {
+        // A tiny 8-byte input whose header claims a multi-gigabyte payload must
+        // be rejected before any allocation, not OOM.
+        let mut cur = Cursor::new(vec![0u8; 8]);
+        let huge = 4_000_000_000usize; // ~4 GB
+        let err = check_alloc_within_stream(&mut cur, huge);
+        assert!(matches!(err, Err(NetCdfError::InvalidFormat(_))));
+        // usize::MAX (as would come from a hostile u64 data_size) is rejected.
+        assert!(check_alloc_within_stream(&mut cur, usize::MAX).is_err());
+        // Cursor position preserved even on the rejection path.
+        assert_eq!(cur.position(), 0);
+    }
+
+    #[test]
+    fn alloc_guard_respects_current_position() {
+        let mut cur = Cursor::new(vec![0u8; 64]);
+        cur.set_position(50);
+        // Only 14 bytes remain from here.
+        assert!(check_alloc_within_stream(&mut cur, 14).is_ok());
+        assert!(check_alloc_within_stream(&mut cur, 15).is_err());
+        assert_eq!(cur.position(), 50);
+    }
 
     /// Build a minimal but structurally valid HDF5 version-0 superblock so that
     /// [`Hdf5Superblock::parse`] succeeds. Offsets/lengths are 8 bytes.
@@ -1284,6 +1383,47 @@ mod tests {
 
         assert!(!Nc4Reader::is_netcdf4(&temp_file));
         assert!(Nc4Reader::open(&temp_file).is_err());
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    /// `Nc4Writer::write_superblock` must write a *real* Jenkins lookup3
+    /// checksum over the preceding superblock bytes, not a hardcoded zero —
+    /// regression test for the silent-corruption bug where every produced
+    /// v2/v3 superblock had an invalid checksum field.
+    #[test]
+    fn test_nc4_writer_superblock_checksum_is_real_not_hardcoded_zero() {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!(
+            "oxigeo_nc4_superblock_checksum_{}.nc4",
+            std::process::id()
+        ));
+
+        {
+            let writer = Nc4Writer::create(&temp_file).expect("create writer");
+            writer.close().expect("close writer");
+        }
+
+        let bytes = std::fs::read(&temp_file).expect("read back written file");
+        // Superblock V2/V3 layout (8-byte offsets/lengths, as `Nc4Writer`
+        // defaults to): 8 (signature) + 1 (version) + 1 (offset size) +
+        // 1 (length size) + 1 (flags) + 4*8 (base/ext/eof/root addresses)
+        // = 44 bytes of payload, followed by the 4-byte checksum at [44..48].
+        assert!(bytes.len() >= 48, "file too short for a v2/v3 superblock");
+        let payload = &bytes[..44];
+        let stored_checksum = u32::from_le_bytes([bytes[44], bytes[45], bytes[46], bytes[47]]);
+        let computed_checksum = jenkins_lookup3_hashlittle(payload, 0);
+
+        assert_ne!(
+            stored_checksum, 0,
+            "checksum must not be the old hardcoded-zero placeholder \
+             (this would only coincidentally pass if the real hash were 0)"
+        );
+        assert_eq!(
+            stored_checksum, computed_checksum,
+            "stored superblock checksum must equal the real Jenkins lookup3 hash \
+             of the preceding bytes"
+        );
 
         let _ = std::fs::remove_file(&temp_file);
     }

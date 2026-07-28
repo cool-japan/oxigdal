@@ -1,7 +1,7 @@
 # TODO: oxigeo-websocket
 
 > **Purpose:** Real-time WebSocket communication (raw `tokio-tungstenite`) for OxiGeo — broadcasting, pub/sub, live tile/feature updates.
-> **Status (2026-05-16):** 7,223 LoC · 248 tests · 1 real-code stub
+> **Status (2026-07-28):** 7,533 LoC · 128 tests · 1 real-code stub
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -15,14 +15,9 @@
   - **Risk:** Dateline crossing (bbox `[170, -10, -170, 10]`) — document expected wrap-around behaviour.
   - **Prerequisites:** None.
 
-- [ ] Add per-connection authentication on the WebSocket upgrade (JWT / API-key validation)
-  - **Verified gap:** `src/server/ws_server.rs:118-142` per the `grep` output — server calls `accept_async(stream)` immediately after `listener.accept().await`, no headers inspected. Quote from inspection: `match listener.accept().await { ... let ws_stream = accept_async(stream).await ... }`.
-  - **Goal:** Reject the WebSocket handshake (HTTP 401) when `Authorization: Bearer <jwt>` or `Sec-WebSocket-Protocol: ws-api-key.<key>` is absent or invalid, per RFC 6455 §4.2 (server may abort with HTTP error before upgrade).
-  - **Design:** Replace `accept_async(stream)` with `tokio_tungstenite::accept_hdr_async(stream, callback)`; callback inspects request headers, validates JWT via `jsonwebtoken` (workspace) or `oxigeo-auth` if available, and returns `Err(Response::builder().status(401).body(Some("unauthorized")).build())` on failure. Add `ServerConfig::auth: AuthMode { None | Jwt(SecretKey) | ApiKey(HashSet<String>) }`.
-  - **Files:** `src/server/ws_server.rs:108-145` (handler); `src/server/mod.rs` (config surface).
-  - **Tests:** (proposed) `test_unauthorized_handshake_returns_401`, `test_valid_jwt_proceeds_to_upgrade`, `test_expired_jwt_rejected`, `test_api_key_subprotocol_recognised`.
-  - **Risk:** JWT verification adds a key-management surface; document via `ServerConfig::auth` docstring that callers own key rotation.
-  - **Prerequisites:** None.
+- [x] Add per-connection authentication on the WebSocket upgrade (bearer-token validation)
+  - **Done:** 2026-07-21 (0.2.1 production campaign). Implemented as a static bearer-token/role registry rather than JWT (simpler, no external key-management surface): `handle_connection` (`src/server/ws_server.rs`) now calls `accept_hdr_async(stream, callback)`; the callback extracts a token from `Authorization: Bearer <token>` (`token_from_authorization`) or a `?token=` query parameter (`token_from_query`), calls `AuthConfig::authenticate` (`src/server/auth.rs`), and returns HTTP 401 with a reason body before the upgrade completes on missing/invalid token. Open mode (`AuthConfig::open()`, the default) grants every handshake an anonymous `Role::Admin` principal, preserving prior no-auth behavior; `AuthConfig::with_token` / `add_token` register accepted tokens once auth is enabled, and `AuthPrincipal::authorize(required_role)` gates role-sensitive operations. Tests in `src/server/auth.rs`: `test_open_mode_grants_admin`, `test_token_validation`, `test_authorize`, `test_token_extractors`.
+  - **Original gap (resolved):** `src/server/ws_server.rs:118-142` used to call `accept_async(stream)` immediately after `listener.accept().await` with no header inspection.
 
 ## Medium Priority
 - [ ] Heartbeat with stale-connection cleanup (ping/pong + idle timeout)
@@ -69,7 +64,7 @@
 - **Sibling:** oxigeo-ws (axum-based; this crate is raw tokio-tungstenite — keep both, do not duplicate functionality between them)
 
 ## Recently completed (verbatim)
-- *(none in this slice)*
+- [x] Per-connection bearer-token authentication on the WebSocket upgrade — `src/server/ws_server.rs`, `src/server/auth.rs`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

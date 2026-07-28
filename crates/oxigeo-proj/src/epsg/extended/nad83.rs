@@ -4,6 +4,7 @@
 //! plus modern NAD83(2011) zones (EPSG 6355-6419).
 
 use super::super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use alloc::string::ToString;
 
 pub(super) fn register_nad83_state_planes(db: &mut EpsgDatabase) {
     // NAD83 SPCS — major US state plane zones (Lambert / Transverse Mercator)

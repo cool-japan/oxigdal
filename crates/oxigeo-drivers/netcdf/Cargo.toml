@@ -40,11 +40,8 @@ async = ["oxigeo-core/async", "dep:tokio"]
 oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
-num-traits = { workspace = true }
 
 # Pure Rust NetCDF-4 (HDF5) reader/writer atop oxih5 — the real NetCDF-4 backend.
 oxinetcdf = { workspace = true }
@@ -61,14 +58,17 @@ oxiarc-deflate = { workspace = true }
 # Async
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
 
-# Date/time support for CF conventions
-chrono = { workspace = true, optional = true, features = ["serde"] }
-
 [dev-dependencies]
 proptest = { workspace = true }
 tempfile = { workspace = true }
 approx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+# Used directly in tests to build low-level fixtures (e.g. real HDF5
+# sub-groups) that oxinetcdf's higher-level NcFileWriter can't express yet.
+oxih5 = { workspace = true }
+# Names the `Dataspace` enum (not re-exported by oxih5/oxinetcdf) so tests can
+# build padded-attribute fixtures directly.
+oxih5-core = { workspace = true }
 
 [lints]
 workspace = true

@@ -27,8 +27,6 @@ webp = ["dep:image-webp"]
 oxigeo-core = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-bytes = { workspace = true }
-serde = { workspace = true }
 tracing = { workspace = true }
 
 # Compression

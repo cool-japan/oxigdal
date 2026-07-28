@@ -11,7 +11,7 @@
 
 use oxigeo_proj::{
     Coordinate, LambertConformalConic, Mollweide, Robinson, Sinusoidal, Transformer,
-    TransverseMercator, available_epsg_codes, contains_epsg,
+    TransformerCache, TransverseMercator, available_epsg_codes, contains_epsg,
 };
 use proptest::prelude::*;
 
@@ -70,15 +70,32 @@ fn utm_central_meridian(zone: u32) -> f64 {
     -183.0 + (zone as f64) * 6.0
 }
 
+/// Shared cache for the two fixed EPSG pairs `prop_webmercator_roundtrip`
+/// transforms between on every proptest case.
+///
+/// The pair is invariant across all ~256 generated cases, but
+/// `Transformer::from_epsg` is expensive under the `proj-db` feature (each
+/// call resolves the CRS via `oxiproj::Crs::from_epsg`, which opens a real
+/// SQLite-backed PROJ database — see `oxigeo_proj::TransformerCache`'s module
+/// doc, which names exactly this "same EPSG pair, repeated" workload as its
+/// intended use case). Building both `Transformer`s once here, and reusing
+/// them (or fetching the cached `Arc`) for the rest of the run, mirrors the
+/// pattern already used in production by `GLOBAL_TRANSFORMER_CACHE` in
+/// `crates/oxigeo-proj/src/transform/mod.rs`.
+static WEBMERCATOR_TRANSFORMERS: once_cell::sync::Lazy<TransformerCache> =
+    once_cell::sync::Lazy::new(|| TransformerCache::new(2));
+
 // ── Proptest macros ───────────────────────────────────────────────────────────
 
 proptest! {
     /// WebMercator forward→inverse round-trip for WGS84 geographic coordinates.
-    /// Uses Transformer::from_epsg(4326, 3857) then from_epsg(3857, 4326).
+    /// Uses the shared `WEBMERCATOR_TRANSFORMERS` cache to fetch the (4326,
+    /// 3857) and (3857, 4326) `Transformer`s, built once for the whole test
+    /// run instead of once per proptest case.
     #[test]
     fn prop_webmercator_roundtrip((lat, lon) in webmercator_latlon()) {
-        let fwd = Transformer::from_epsg(4326, 3857);
-        let inv = Transformer::from_epsg(3857, 4326);
+        let fwd = WEBMERCATOR_TRANSFORMERS.get_or_build(4326, 3857);
+        let inv = WEBMERCATOR_TRANSFORMERS.get_or_build(3857, 4326);
 
         let (fwd_t, inv_t) = match (fwd, inv) {
             (Ok(f), Ok(i)) => (f, i),

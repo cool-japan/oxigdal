@@ -1,27 +1,17 @@
 # TODO: oxigeo-distributed
 
 > **Purpose:** Distributed processing capabilities for OxiGeo using Apache Arrow Flight (coordinator/worker/Flight RPC; spatial/hash/range partitioning; shuffle).
-> **Status (2026-05-16):** 3,933 Rust LoC · 38 tests · 0 literal-stub markers — gaps are feature-completeness items advertised in `lib.rs //!` doc that have no wired path.
+> **Status (2026-07-28):** 3,830 Rust LoC · 84 tests (all-features and default-features equal) · 0 literal-stub markers — gaps are feature-completeness items advertised in `lib.rs //!` doc that have no wired path.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (next slice — verified gaps)
-- [ ] Wire `Coordinator` task scheduling to **real** Flight clients on workers (cross-process tasks)
-  - **Verified gap:** `src/coordinator.rs:1-100` is in-process only — `submit_task` enqueues into a `TaskScheduler` (`task.rs`). No call to `crate::flight::FlightClient` to send the task descriptor to a `Worker` over gRPC. `FlightClient` (`src/flight/client.rs:1-80`) is implemented but never invoked from `Coordinator`.
-  - **Goal:** `Coordinator::submit_task` looks up the assigned `WorkerInfo`, opens (or reuses) a `FlightClient` to that address, sends a `DoAction` request carrying the serialized `Task`, awaits `TaskResult` (or streams partial results via `DoGet`).
-  - **Design:** Use Arrow Flight `do_action` (`Action { type: "submit_task", body: serde_json::to_vec(&task)? }`) → worker `do_action` returns ack ticket → `do_get(ticket)` streams `RecordBatch` results back. Worker side dispatches into `Worker::execute_task` (worker.rs).
-  - **Files:** `src/coordinator.rs` (`send_task_to_worker` method, ~120 LoC); `src/worker.rs` (`do_action` handler wiring); `src/flight/server.rs` (`do_action` impl, already a trait stub).
-  - **Tests:** (proposed) `test_coordinator_submits_task_to_worker_over_flight`, `test_worker_returns_recordbatch_result`, `test_task_failure_propagates_to_coordinator`.
-  - **Risk:** `serde_json` for task envelope is a temporary hack — migrate to oxicode once schema stabilizes.
-  - **Prerequisites:** None.
+- [x] Wire `Coordinator` task scheduling to **real** Flight clients on workers (cross-process tasks)
+  - **Verified done:** `src/coordinator.rs` now has `dispatch_task_to_worker(&self, task, worker_id, input: Arc<RecordBatch>) -> Result<TaskResult>` (doc'd as "the end-to-end glue between the three formerly-disconnected components"). It resolves the worker's address, records the assignment, then opens a real `crate::flight::FlightClient::new(address).await?` and calls `client.execute_task(&task, Some(input.as_ref())).await?`, feeding the real response back into `TaskResult::success`/`failure`. Not `serde_json` — uses the typed Flight `execute_task` action directly.
+  - **Delta from original design:** method name is `dispatch_task_to_worker`, not `send_task_to_worker`; driven explicitly by the caller with an input `RecordBatch` rather than being called transparently from inside `submit_task`.
 
-- [ ] Coordinator failure-detection + worker re-assignment (heartbeat timeout path)
-  - **Verified gap:** `WorkerInfo::is_timed_out(timeout: Duration)` exists at `src/coordinator.rs:98` but no scheduler loop calls it; `CoordinatorConfig::worker_timeout_secs` (line 26) is wired into config but never enforced.
-  - **Goal:** Coordinator spawns a watchdog `tokio::task` that, every `worker_timeout_secs / 3`, marks timed-out workers `Offline` and re-queues their in-flight tasks for redistribution.
-  - **Design:** Watchdog reads `RwLock<HashMap<String, WorkerInfo>>`, filters `is_timed_out(timeout)`, marks offline, walks `TaskScheduler`'s `running` map for tasks assigned to dead worker, returns them to `pending` with `retry_count += 1` (respecting `max_retries`).
-  - **Files:** `src/coordinator.rs` (~90 LoC).
-  - **Tests:** (proposed) `test_watchdog_marks_dead_worker_offline`, `test_watchdog_requeues_in_flight_tasks`, `test_watchdog_respects_max_retries`.
-  - **Risk:** Race between heartbeat arrival and timeout window; use `Instant::elapsed()` lazily.
-  - **Prerequisites:** Task submission over Flight (above).
+- [x] Coordinator failure-detection + worker re-assignment (heartbeat timeout path) — PARTIAL
+  - **Verified done:** `src/coordinator.rs::check_worker_timeouts(&self) -> Result<Vec<String>>` reads `worker_timeout_secs` from config, filters workers via `WorkerInfo::is_timed_out(timeout)`, then for each timed-out worker calls `reassign_worker_tasks` (marks its in-flight tasks failed for retry via the scheduler) followed by `remove_worker`. This is real, exercised logic, not a declared-but-unused field.
+  - **Gap remaining:** `check_worker_timeouts` is a public method a caller must invoke periodically — there is no self-spawned `tokio::task` watchdog loop inside `Coordinator` calling it automatically every `worker_timeout_secs / 3`. No `tokio::spawn` exists anywhere in `coordinator.rs`. A production deployment must drive this externally (e.g. from the embedding service's own scheduler).
 
 - [ ] Locality-aware partition assignment (today's `Coordinator` is location-blind)
   - **Verified gap:** `src/partition.rs` defines `SpatialExtent`, `TilePartitioner`, `HashPartitioner`, etc., but `Coordinator::submit_task` has no `Partition → WorkerInfo` mapping function that prefers workers whose `WorkerInfo.address` matches the partition's storage locality.
@@ -103,4 +93,4 @@
 - (None — existing TODO.md had no `[x]` items.)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: 38→84 tests, LoC 3,933→3,830, date bumped; Flight task dispatch and worker-timeout reassignment confirmed real and flipped to done — the latter marked PARTIAL since it still needs an external caller to poll it, no self-spawned watchdog task; locality-aware assignment, network shuffle, and spill-to-disk re-checked and confirmed still absent — left open)*

@@ -6,9 +6,13 @@
 /// `min_x <= max_x` and `min_y <= max_y`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bbox2D {
+    /// Minimum X coordinate.
     pub min_x: f64,
+    /// Minimum Y coordinate.
     pub min_y: f64,
+    /// Maximum X coordinate.
     pub max_x: f64,
+    /// Maximum Y coordinate.
     pub max_y: f64,
 }
 

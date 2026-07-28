@@ -6,6 +6,12 @@
 #[cfg(feature = "blosc")]
 pub mod blosc;
 
+// `blosc2_codec` is a Pure-Rust building block (shuffle + a sub-compressor
+// wrapper) that does NOT emit a c-blosc2-compatible frame and is deliberately
+// not wired into the v3 codec dispatcher (a `zarr.json` declaring `blosc2`
+// is rejected as an unknown codec). Hidden from public docs so it cannot be
+// mistaken for a spec-conformant Blosc2 implementation.
+#[doc(hidden)]
 pub mod blosc2_codec;
 
 pub mod crc32c;
@@ -21,6 +27,10 @@ pub mod zstd_codec;
 #[cfg(feature = "lz4")]
 pub mod lz4_codec;
 
+// `zfp_codec` is a Pure-Rust lossy floating-point quantiser. It is NOT the
+// ZFP bitstream format and is not wired into the v3 codec dispatcher; hidden
+// from public docs so it cannot be mistaken for a spec-conformant ZFP codec.
+#[doc(hidden)]
 pub mod zfp_codec;
 
 pub mod registry;
@@ -307,6 +317,50 @@ impl CodecChain {
             data = codec.decode(&data)?;
         }
         Ok(data)
+    }
+
+    /// Returns the encoded byte length this chain produces for a
+    /// *content-independent, length-deterministic* input of exactly `raw_len`
+    /// bytes, or `None` if the chain's output length depends on the input
+    /// *content* rather than only its length.
+    ///
+    /// This is the mechanism the Zarr v3 sharding reader uses to locate a
+    /// shard's fixed-size index without a stored length field: an identity
+    /// (`bytes`/`endian`) chain returns `raw_len`, a `crc32c` chain returns
+    /// `raw_len + 4`, but a compressive chain (`gzip`/`zstd`/`blosc`) returns
+    /// `None` because its encoded length cannot be derived from the input
+    /// length alone. The reader turns that `None` into a typed error rather
+    /// than mis-slicing the index.
+    ///
+    /// The probe encodes three distinct fixed-length buffers (all-zero,
+    /// pseudo-random, all-ones). A length-additive codec produces identical
+    /// output lengths for all three; a compressor does not (random data does
+    /// not compress to the same size as a constant run), so the mismatch is
+    /// detected reliably.
+    #[must_use]
+    pub fn deterministic_encoded_len(&self, raw_len: usize) -> Option<usize> {
+        if self.codecs.is_empty() {
+            return Some(raw_len);
+        }
+
+        let zeros = vec![0u8; raw_len];
+        let ones = vec![0xFFu8; raw_len];
+        let mut pseudo = Vec::with_capacity(raw_len);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..raw_len {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            pseudo.push((state >> 24) as u8);
+        }
+
+        let a = self.encode(zeros).ok()?;
+        let b = self.encode(pseudo).ok()?;
+        let c = self.encode(ones).ok()?;
+
+        if a.len() == b.len() && b.len() == c.len() {
+            Some(a.len())
+        } else {
+            None
+        }
     }
 }
 

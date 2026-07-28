@@ -18,7 +18,6 @@ categories = ["science", "visualization", "development-tools"]
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-algorithms = { workspace = true, default-features = true }
 oxigeo-geotiff.workspace = true
-oxigeo-geojson.workspace = true
 
 # Jupyter kernel (optional: evcxr pulls in pathfinder_simd which requires
 # nightly ARM intrinsics; gate behind feature so default publish builds pass)
@@ -26,8 +25,6 @@ evcxr = { workspace = true, optional = true }
 
 # Visualization
 plotters.workspace = true
-plotters-backend.workspace = true
-image.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -36,18 +33,12 @@ base64.workspace = true
 
 # Error handling
 thiserror.workspace = true
-anyhow.workspace = true
 
 # Display and formatting
 comfy-table.workspace = true
-colored.workspace = true
 
 # Async support
 tokio = { workspace = true, optional = true }
-
-# Utilities
-num-traits.workspace = true
-chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

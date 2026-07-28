@@ -33,14 +33,16 @@
 //! assert!((h_ellip - h_ortho - undulation_m).abs() < 1e-9);
 //! ```
 
+// Reading a grid from disk is inherently std-only, so `Path`, `Error` and
+// `format!` are used exclusively by `load_egm_grid` below and stay gated with it.
 #[cfg(feature = "std")]
 use std::path::Path;
 
+#[cfg(feature = "std")]
 use crate::error::Error;
 
-#[cfg(not(feature = "std"))]
+#[cfg(feature = "std")]
 use alloc::format;
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
@@ -424,6 +426,7 @@ pub fn classify_vertical_datum(description: &str) -> VerticalDatumKind {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use alloc::format;
 
     #[test]
     fn test_geoid_model_display_name() {

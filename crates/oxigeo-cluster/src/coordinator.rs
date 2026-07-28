@@ -5,7 +5,10 @@
 //! health check aggregation.
 
 use crate::error::{ClusterError, Result};
-use crate::transport::{NodeTransport, UnconfiguredTransport, VoteRequest, VoteResponse};
+use crate::transport::{
+    HeartbeatRequest, HeartbeatResponse, NodeTransport, UnconfiguredTransport, VoteRequest,
+    VoteResponse,
+};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -649,28 +652,149 @@ impl ClusterCoordinator {
         Ok(())
     }
 
-    /// Send heartbeats as leader.
+    /// Send heartbeats to every follower over the transport.
+    ///
+    /// Each known member is contacted in parallel with a [`HeartbeatRequest`]
+    /// carrying the leader's current term. Only heartbeats that a follower
+    /// actually acknowledges are counted in `heartbeats_sent` and reflected in
+    /// that follower's [`FollowerState::last_heartbeat`]; unreachable followers
+    /// (transport error or timeout) are left untouched so the health checker can
+    /// still notice them. If any follower reports a strictly higher term, the
+    /// leader steps down — a stale leader must not keep asserting authority.
     async fn send_leader_heartbeats(&self) -> Result<()> {
-        let state = self.inner.state.read().clone();
+        let (role, term) = {
+            let state = self.inner.state.read();
+            (state.role, state.term)
+        };
 
-        if state.role != NodeRole::Leader {
+        if role != NodeRole::Leader {
             return Ok(());
         }
 
-        // In real implementation, send heartbeats to all followers
-        // For now, just update timestamp
+        let leader_id = self.inner.node_id;
 
-        let mut leader_state = self.inner.leader_state.write();
-        leader_state.last_heartbeat_sent = Some(Instant::now());
+        // Snapshot every known peer and its address.
+        let peers: Vec<(NodeId, String)> = self
+            .inner
+            .members
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().address.clone()))
+            .collect();
 
-        self.inner
-            .stats
-            .heartbeats_sent
-            .fetch_add(1, Ordering::Relaxed);
+        let timeout = self.inner.config.heartbeat_interval;
 
-        debug!("Sent leader heartbeats");
+        let requests = peers.into_iter().map(|(peer, address)| {
+            let transport = Arc::clone(&self.inner.transport);
+            let request = HeartbeatRequest { term, leader_id };
+            async move {
+                let outcome = tokio::time::timeout(
+                    timeout,
+                    transport.send_heartbeat(peer, &address, request),
+                )
+                .await;
+                (peer, outcome)
+            }
+        });
+
+        let responses = futures::future::join_all(requests).await;
+
+        let now = Instant::now();
+        let mut acked_peers: Vec<NodeId> = Vec::new();
+        let mut highest_term = term;
+
+        for (peer, outcome) in responses {
+            match outcome {
+                Ok(Ok(response)) => {
+                    if response.term > highest_term {
+                        highest_term = response.term;
+                    }
+                    if response.success && response.term <= term {
+                        acked_peers.push(peer);
+                    }
+                }
+                Ok(Err(e)) => warn!("Heartbeat to {} failed: {}", peer, e),
+                Err(_) => warn!("Heartbeat to {} timed out", peer),
+            }
+        }
+
+        // A follower on a newer term means this leader is stale: step down and
+        // send no further heartbeats this round.
+        if highest_term > term {
+            warn!(
+                "Observed higher term {} while heartbeating for term {}; stepping down",
+                highest_term, term
+            );
+            self.step_down(highest_term);
+            return Ok(());
+        }
+
+        let acked = acked_peers.len();
+
+        {
+            let mut leader_state = self.inner.leader_state.write();
+            leader_state.last_heartbeat_sent = Some(now);
+            for peer in acked_peers {
+                if let Some(follower) = leader_state.followers.get_mut(&peer) {
+                    follower.last_heartbeat = now;
+                    follower.acked_term = term;
+                    follower.healthy = true;
+                }
+            }
+        }
+
+        if acked > 0 {
+            self.inner
+                .stats
+                .heartbeats_sent
+                .fetch_add(acked as u64, Ordering::Relaxed);
+        }
+
+        debug!("Delivered {} leader heartbeats", acked);
 
         Ok(())
+    }
+
+    /// Handle an incoming leader heartbeat (callee/follower side).
+    ///
+    /// A real network transport dispatches received [`HeartbeatRequest`] RPCs
+    /// here. A heartbeat whose term is at least as new as this node's own term
+    /// resets the election timer by stamping `last_leader_heartbeat`, records the
+    /// sender as the current leader, and (adopting a newer term if necessary)
+    /// forces this node back to [`NodeRole::Follower`]. A stale heartbeat (older
+    /// term) is rejected so the sender can discover it must step down.
+    pub fn handle_heartbeat(&self, request: HeartbeatRequest) -> HeartbeatResponse {
+        let mut state = self.inner.state.write();
+
+        // Reject a leader that is behind our current term.
+        if request.term < state.term {
+            return HeartbeatResponse {
+                term: state.term,
+                success: false,
+            };
+        }
+
+        // Adopt a newer term if the leader is ahead.
+        if request.term > state.term {
+            state.term = request.term;
+            self.inner
+                .stats
+                .term_changes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Accept the leader's authority: reset the election timer and revert to
+        // follower. This is the write to `last_leader_heartbeat` that
+        // `should_start_election` reads, and its absence was what previously made
+        // followers re-run elections forever.
+        state.role = NodeRole::Follower;
+        state.leader = Some(request.leader_id);
+        state.election_in_progress = false;
+        state.last_leader_heartbeat = Some(Instant::now());
+
+        HeartbeatResponse {
+            term: state.term,
+            success: true,
+        }
     }
 
     /// Check member health.
@@ -886,6 +1010,24 @@ mod tests {
             }
             Ok(handler.handle_vote_request(request))
         }
+
+        async fn send_heartbeat(
+            &self,
+            peer: NodeId,
+            _peer_address: &str,
+            request: HeartbeatRequest,
+        ) -> Result<HeartbeatResponse> {
+            let (peer_group, handler) = self
+                .net
+                .lookup(peer)
+                .ok_or_else(|| ClusterError::NetworkError(format!("unknown peer {peer}")))?;
+            if peer_group != self.group {
+                return Err(ClusterError::NetworkError(format!(
+                    "partitioned from {peer}"
+                )));
+            }
+            Ok(handler.handle_heartbeat(request))
+        }
     }
 
     fn make_member(node_id: NodeId) -> ClusterMember {
@@ -1009,6 +1151,122 @@ mod tests {
             stats.elections, 0,
             "election must be skipped when below min_cluster_size"
         );
+    }
+
+    #[tokio::test]
+    async fn test_leader_heartbeats_reach_followers_and_suppress_elections() {
+        let config = CoordinatorConfig {
+            min_cluster_size: 3,
+            ..Default::default()
+        };
+        let coords = build_cluster(&[0, 0, 0], config);
+
+        // Elect coords[0] as leader.
+        coords[0]
+            .start_election()
+            .await
+            .expect("election should run");
+        assert!(coords[0].is_leader());
+
+        // Before any heartbeat, followers have no recorded leader heartbeat and
+        // would therefore start an election.
+        for follower in &coords[1..] {
+            assert!(
+                follower.inner.state.read().last_leader_heartbeat.is_none(),
+                "follower must not have a leader heartbeat before one is sent"
+            );
+            assert!(
+                follower.should_start_election(),
+                "follower without a heartbeat should want to start an election"
+            );
+        }
+
+        // The leader actually sends heartbeats over the transport.
+        coords[0]
+            .send_leader_heartbeats()
+            .await
+            .expect("heartbeats should be sent");
+
+        // Every follower now has a fresh leader heartbeat and no longer wants an
+        // election — the exact behaviour that was previously missing.
+        for follower in &coords[1..] {
+            let state = follower.inner.state.read();
+            assert!(
+                state.last_leader_heartbeat.is_some(),
+                "heartbeat must have reached the follower"
+            );
+            assert_eq!(state.leader, Some(coords[0].node_id()));
+            assert_eq!(state.role, NodeRole::Follower);
+            drop(state);
+            assert!(
+                !follower.should_start_election(),
+                "a freshly-heartbeated follower must not start an election"
+            );
+        }
+
+        // The counter now reflects genuine per-follower delivery (2 followers).
+        let stats = coords[0].get_statistics();
+        assert_eq!(
+            stats.heartbeats_sent, 2,
+            "heartbeats_sent must count real acknowledged deliveries"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unconfigured_transport_delivers_no_heartbeats() {
+        // A leader on the default (unconfigured) transport cannot reach peers, so
+        // no heartbeat is ever delivered and the counter stays at zero.
+        let config = CoordinatorConfig {
+            min_cluster_size: 1,
+            ..Default::default()
+        };
+        let coord = ClusterCoordinator::new(config);
+        coord.register_member(make_member(NodeId::new())).ok();
+        coord.become_leader(1).expect("become leader");
+
+        coord
+            .send_leader_heartbeats()
+            .await
+            .expect("call should succeed even when peers are unreachable");
+
+        assert_eq!(
+            coord.get_statistics().heartbeats_sent,
+            0,
+            "no heartbeat can be delivered without a real transport"
+        );
+    }
+
+    #[test]
+    fn test_handle_heartbeat_resets_election_timer_and_rejects_stale() {
+        let coord = ClusterCoordinator::with_defaults();
+        let leader = NodeId::new();
+
+        // A heartbeat for a newer term is accepted, adopts the term, and records
+        // the leader + heartbeat timestamp.
+        let resp = coord.handle_heartbeat(HeartbeatRequest {
+            term: 5,
+            leader_id: leader,
+        });
+        assert!(resp.success);
+        assert_eq!(resp.term, 5);
+        {
+            let state = coord.inner.state.read();
+            assert_eq!(state.leader, Some(leader));
+            assert_eq!(state.role, NodeRole::Follower);
+            assert!(state.last_leader_heartbeat.is_some());
+        }
+        assert!(!coord.should_start_election());
+
+        // A stale heartbeat (older term) is rejected and does not overwrite the
+        // recorded leader.
+        let other = NodeId::new();
+        let resp = coord.handle_heartbeat(HeartbeatRequest {
+            term: 3,
+            leader_id: other,
+        });
+        assert!(!resp.success);
+        assert_eq!(resp.term, 5);
+        assert_eq!(coord.inner.state.read().leader, Some(leader));
     }
 
     #[test]

@@ -492,17 +492,32 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
                         Jpeg2000Error::CodestreamError(format!("Read TNsot: {}", e))
                     })?;
 
+                    // psot counts from the SOT marker (0xFF90); we've consumed
+                    // 2 (marker) + lsot bytes, so recover the SOT start offset.
+                    let cur_pos = cursor.position() as usize;
+                    let sot_start = cur_pos.saturating_sub(usize::from(lsot)).saturating_sub(2);
+                    // Exclusive end of *this* tile-part's data. `Psot == 0` means
+                    // "extends to the end of the codestream" (only legal for the
+                    // last tile-part), so bound by the whole codestream length.
+                    let tile_part_end = if psot > 0 {
+                        (sot_start + psot as usize).min(codestream.len())
+                    } else {
+                        codestream.len()
+                    };
+
                     if u32::from(isot) != tile_index {
                         if psot > 0 {
-                            // psot counts from the SOT marker (0xFF90); we've consumed:
-                            // 2 (marker) + lsot bytes. Compute SOT start position.
-                            let cur_pos = cursor.position() as usize;
-                            let sot_start =
-                                cur_pos.saturating_sub(usize::from(lsot)).saturating_sub(2);
-                            let tile_end = sot_start + psot as usize;
-                            cursor.set_position(tile_end as u64);
+                            cursor.set_position(tile_part_end as u64);
+                            continue;
                         }
-                        continue;
+                        // A zero-length tile-part before the requested tile leaves
+                        // no way to locate a following SOT; fail loud rather than
+                        // return another tile's bytes.
+                        return Err(Jpeg2000Error::CodestreamError(format!(
+                            "Tile {} not found: encountered a tile-part with unknown \
+                             length (Psot=0) for tile {} first",
+                            tile_index, isot
+                        )));
                     }
 
                     // Tile found — now parse tile-part header markers until SOD
@@ -515,11 +530,22 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
                         })?;
                         match inner {
                             0xFF93 => {
-                                // SOD — packet data starts here
+                                // SOD — packet data starts here. Bound the returned
+                                // slice by this tile-part's own end (Psot-derived),
+                                // never the end of the whole codestream, so multi-tile
+                                // streams don't bleed one tile's bytes into the next.
                                 let sod_pos = cursor.position() as usize;
-                                let final_end = codestream.len().saturating_sub(2);
-                                let end = final_end.min(codestream.len());
-                                return Ok(codestream[sod_pos..end].to_vec());
+                                let mut end = tile_part_end.min(codestream.len());
+                                // Strip a trailing EOC (0xFFD9) if the slice runs to
+                                // the very end of the codestream (Psot == 0 case).
+                                if end >= sod_pos + 2
+                                    && codestream[end - 2] == 0xFF
+                                    && codestream[end - 1] == 0xD9
+                                {
+                                    end -= 2;
+                                }
+                                let start = sod_pos.min(end);
+                                return Ok(codestream[start..end].to_vec());
                             }
                             0xFFD9 => {
                                 return Ok(Vec::new());
@@ -572,7 +598,7 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
     /// contribution bytes are sliced and fed to Tier-1 EBCOT, rather than
     /// splitting the SOD byte range by naive even division.  RCT is applied
     /// afterwards when MCT is enabled.
-    fn decode_tile_to_components(&self, _tile_x: u32, _tile_y: u32) -> Result<Vec<Vec<i32>>> {
+    fn decode_tile_to_components(&self, tile_x: u32, tile_y: u32) -> Result<Vec<Vec<i32>>> {
         let image_size = self
             .image_size
             .as_ref()
@@ -581,6 +607,17 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
             .coding_style
             .as_ref()
             .ok_or_else(|| Jpeg2000Error::CodestreamError("No coding style".to_string()))?;
+
+        // Raster tile index (row-major): tile-parts are addressed by this Isot.
+        let num_tiles_x = image_size.num_tiles_x();
+        let num_tiles_y = image_size.num_tiles_y();
+        if tile_x >= num_tiles_x || tile_y >= num_tiles_y {
+            return Err(Jpeg2000Error::InvalidTile(format!(
+                "Tile ({}, {}) out of bounds ({}x{} tiles)",
+                tile_x, tile_y, num_tiles_x, num_tiles_y
+            )));
+        }
+        let tile_index = tile_y * num_tiles_x + tile_x;
 
         // Only the reversible 5/3 reconstruction path is implemented; fail loud
         // (rather than mis-reconstruct) for the 9/7 irreversible transform.
@@ -597,7 +634,7 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
         let cbw = coding_style.code_block_width_px();
         let cbh = coding_style.code_block_height_px();
 
-        let tile_data = self.find_tile_bitstream(0)?;
+        let tile_data = self.find_tile_bitstream(tile_index)?;
 
         let mut comp_inputs = Vec::with_capacity(num_components);
         for comp in 0..num_components {
@@ -647,17 +684,41 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
     }
 
     /// Decode image to RGB
+    ///
+    /// Decodes **every** tile of the image and composites each tile's samples at
+    /// its correct pixel offset in the output raster (multi-tile geospatial
+    /// rasters are the common case), rather than assuming a single tile spans
+    /// the whole image.
     pub fn decode_rgb(&mut self) -> Result<Vec<u8>> {
         let width = self.width()? as usize;
         let height = self.height()? as usize;
         let num_components = self.num_components()? as usize;
 
+        // Never fabricate pixel data: if the codestream was never stored (e.g.
+        // headers were only partially parsed) this is a programming/parse error,
+        // not a gray image.
         if self.raw_codestream.is_none() {
-            tracing::warn!("decode_rgb called before parse_headers; returning neutral gray");
-            return Ok(vec![128u8; width * height * 3]);
+            return Err(Jpeg2000Error::CodestreamError(
+                "decode_rgb called before the codestream was parsed \
+                 (call parse_headers first)"
+                    .to_string(),
+            ));
         }
 
-        let component_samples = self.decode_tile_to_components(0, 0)?;
+        let (num_tiles_x, num_tiles_y, tile_width, tile_height, tile_x_offset, tile_y_offset) = {
+            let s = self
+                .image_size
+                .as_ref()
+                .ok_or_else(|| Jpeg2000Error::InvalidImageHeader("No image size".to_string()))?;
+            (
+                s.num_tiles_x(),
+                s.num_tiles_y(),
+                s.tile_width as usize,
+                s.tile_height as usize,
+                s.tile_x_offset as usize,
+                s.tile_y_offset as usize,
+            )
+        };
 
         let precision = self
             .image_size
@@ -672,26 +733,32 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
             .map(|c| c.is_signed)
             .unwrap_or(false);
 
-        let shifted: Vec<Vec<u8>> = component_samples
-            .iter()
-            .map(|comp| crate::color::level_shift(comp, precision, is_signed))
-            .collect();
+        let mut rgb = vec![128u8; width * height * 3];
 
-        let num_pixels = width * height;
-        let mut rgb = vec![128u8; num_pixels * 3];
+        for ty in 0..num_tiles_y {
+            for tx in 0..num_tiles_x {
+                let component_samples = self.decode_tile_to_components(tx, ty)?;
+                let shifted: Vec<Vec<u8>> = component_samples
+                    .iter()
+                    .map(|comp| crate::color::level_shift(comp, precision, is_signed))
+                    .collect();
 
-        if num_components >= 3 && shifted.len() >= 3 {
-            for i in 0..num_pixels {
-                rgb[i * 3] = shifted[0].get(i).copied().unwrap_or(128);
-                rgb[i * 3 + 1] = shifted[1].get(i).copied().unwrap_or(128);
-                rgb[i * 3 + 2] = shifted[2].get(i).copied().unwrap_or(128);
-            }
-        } else if !shifted.is_empty() {
-            for i in 0..num_pixels {
-                let gray = shifted[0].get(i).copied().unwrap_or(128);
-                rgb[i * 3] = gray;
-                rgb[i * 3 + 1] = gray;
-                rgb[i * 3 + 2] = gray;
+                let ox = (tile_x_offset + tx as usize * tile_width).min(width);
+                let oy = (tile_y_offset + ty as usize * tile_height).min(height);
+                let tx1 = (tile_x_offset + (tx as usize + 1) * tile_width).min(width);
+                let ty1 = (tile_y_offset + (ty as usize + 1) * tile_height).min(height);
+
+                place_tile_samples(
+                    &mut rgb,
+                    width,
+                    &shifted,
+                    num_components,
+                    tile_width,
+                    ox,
+                    oy,
+                    tx1,
+                    ty1,
+                );
             }
         }
 
@@ -731,13 +798,11 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
         }
 
         if self.raw_codestream.is_none() {
-            let image_size = self
-                .image_size
-                .as_ref()
-                .ok_or_else(|| Jpeg2000Error::InvalidImageHeader("No image size".to_string()))?;
-            let tile_width = image_size.tile_width as usize;
-            let tile_height = image_size.tile_height as usize;
-            return Ok(vec![128u8; tile_width * tile_height * 3]);
+            return Err(Jpeg2000Error::CodestreamError(
+                "decode_tile called before the codestream was parsed \
+                 (call parse_headers first)"
+                    .to_string(),
+            ));
         }
 
         let component_samples = self.decode_tile_to_components(tile_x, tile_y)?;
@@ -918,19 +983,34 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
             .unwrap_or(0)
     }
 
-    /// Decode image progressively up to specified quality layer
+    /// Decode image and record the requested quality layer.
     ///
-    /// This method allows decoding only the first N quality layers, enabling
-    /// faster decoding at lower quality levels. Quality layers are ordered
-    /// from lowest (0) to highest quality.
+    /// # Current behaviour (important)
+    ///
+    /// This method performs a **full-quality decode of the whole codestream on
+    /// every call** and returns real pixel data. It does *not* yet provide a
+    /// speed or bandwidth benefit for lower `max_layer` values: true
+    /// layer-limited decoding (including only the packets for layers
+    /// `0..=max_layer`) depends on the multi-layer Tier-2 packet path, which is
+    /// not yet wired into the main decode pipeline (single-layer streams are the
+    /// only ones the Tier-2 demultiplexer currently accepts). `max_layer` is
+    /// validated against the available layer count and recorded as the
+    /// caller-requested layer in the progressive state, but the returned image
+    /// is always the full-quality decode.
+    ///
+    /// The output is therefore always *correct* (never a lower-fidelity
+    /// approximation); only the performance contract of partial decoding is
+    /// pending. Callers relying on a fast low-quality preview should treat this
+    /// as a full decode for now.
     ///
     /// # Arguments
     ///
-    /// * `max_layer` - Maximum quality layer to decode (0-based index)
+    /// * `max_layer` - Requested maximum quality layer (0-based index); must be
+    ///   less than [`Self::num_quality_layers`].
     ///
     /// # Returns
     ///
-    /// RGB image data decoded up to the specified quality layer
+    /// Full-quality RGB image data.
     pub fn decode_quality_layers(&mut self, max_layer: u16) -> Result<Vec<u8>> {
         let width = self.width()? as usize;
         let height = self.height()? as usize;
@@ -980,10 +1060,13 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
         Ok(rgb)
     }
 
-    /// Decode image progressively with automatic layer progression
+    /// Decode image progressively with automatic layer progression.
     ///
-    /// Returns an iterator that yields increasingly refined versions of the image,
-    /// one for each quality layer.
+    /// Returns an iterator that yields one image per quality layer. Note that,
+    /// as documented on [`Self::decode_quality_layers`], each yielded image is
+    /// currently a full-quality decode (layer-limited Tier-2 decoding is a
+    /// pending enhancement), so the iterator yields `num_layers` identical
+    /// full-quality frames rather than progressively refined ones.
     pub fn decode_progressive(&mut self) -> Result<ProgressiveDecoder<'_, R>> {
         let num_layers = self.num_quality_layers();
 
@@ -1220,8 +1303,10 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
 
     /// Decode region using tile indices
     ///
-    /// This is a lower-level method that decodes a region by specifying
-    /// the exact tiles to decode.
+    /// This is a lower-level method that decodes **only** the explicitly listed
+    /// tiles (a real partial-decode benefit) and composites them into the output
+    /// raster, then crops out the requested region. Pixels of the region that
+    /// fall outside the supplied tiles are left as neutral gray (128).
     pub fn decode_region_from_tiles(
         &mut self,
         tiles: &[(u32, u32)],
@@ -1230,16 +1315,164 @@ impl<R: Read + Seek> Jpeg2000Reader<R> {
         region_width: u32,
         region_height: u32,
     ) -> Result<Vec<u8>> {
+        if tiles.is_empty() {
+            return Err(Jpeg2000Error::InvalidTile(
+                "decode_region_from_tiles called with an empty tile list".to_string(),
+            ));
+        }
+
+        let image_width = self.width()?;
+        let image_height = self.height()?;
+        if region_x + region_width > image_width || region_y + region_height > image_height {
+            return Err(Jpeg2000Error::InvalidDimension(format!(
+                "Region {}x{} at ({},{}) exceeds image bounds {}x{}",
+                region_width, region_height, region_x, region_y, image_width, image_height
+            )));
+        }
+
+        if self.raw_codestream.is_none() {
+            return Err(Jpeg2000Error::CodestreamError(
+                "decode_region_from_tiles called before the codestream was parsed".to_string(),
+            ));
+        }
+
         tracing::info!(
-            "Decoding {} tiles for region {}x{} at ({},{})",
-            tiles.len(), // tile count logged for diagnostics
+            "Decoding {} explicit tile(s) for region {}x{} at ({},{})",
+            tiles.len(),
             region_width,
             region_height,
             region_x,
             region_y
         );
 
-        self.decode_region(region_x, region_y, region_width, region_height)
+        let (num_tiles_x, num_tiles_y, tile_width, tile_height, tile_x_offset, tile_y_offset) = {
+            let s = self
+                .image_size
+                .as_ref()
+                .ok_or_else(|| Jpeg2000Error::InvalidImageHeader("No image size".to_string()))?;
+            (
+                s.num_tiles_x(),
+                s.num_tiles_y(),
+                s.tile_width as usize,
+                s.tile_height as usize,
+                s.tile_x_offset as usize,
+                s.tile_y_offset as usize,
+            )
+        };
+
+        let precision = self
+            .image_size
+            .as_ref()
+            .and_then(|s| s.components.first())
+            .map(|c| c.precision)
+            .unwrap_or(8);
+        let is_signed = self
+            .image_size
+            .as_ref()
+            .and_then(|s| s.components.first())
+            .map(|c| c.is_signed)
+            .unwrap_or(false);
+        let num_components = self.num_components()? as usize;
+
+        let full_width = image_width as usize;
+        let full_height = image_height as usize;
+        let mut canvas = vec![128u8; full_width * full_height * 3];
+
+        for &(tx, ty) in tiles {
+            if tx >= num_tiles_x || ty >= num_tiles_y {
+                return Err(Jpeg2000Error::InvalidTile(format!(
+                    "Tile ({}, {}) out of bounds ({}x{} tiles)",
+                    tx, ty, num_tiles_x, num_tiles_y
+                )));
+            }
+            let component_samples = self.decode_tile_to_components(tx, ty)?;
+            let shifted: Vec<Vec<u8>> = component_samples
+                .iter()
+                .map(|comp| crate::color::level_shift(comp, precision, is_signed))
+                .collect();
+
+            let ox = (tile_x_offset + tx as usize * tile_width).min(full_width);
+            let oy = (tile_y_offset + ty as usize * tile_height).min(full_height);
+            let tx1 = (tile_x_offset + (tx as usize + 1) * tile_width).min(full_width);
+            let ty1 = (tile_y_offset + (ty as usize + 1) * tile_height).min(full_height);
+
+            place_tile_samples(
+                &mut canvas,
+                full_width,
+                &shifted,
+                num_components,
+                tile_width,
+                ox,
+                oy,
+                tx1,
+                ty1,
+            );
+        }
+
+        // Crop the requested region out of the composited canvas.
+        let x_usize = region_x as usize;
+        let y_usize = region_y as usize;
+        let width_usize = (region_width as usize).min(full_width.saturating_sub(x_usize));
+        let height_usize = (region_height as usize).min(full_height.saturating_sub(y_usize));
+        if width_usize == 0 || height_usize == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut region = vec![0u8; width_usize * height_usize * 3];
+        for row in 0..height_usize {
+            let src_row = y_usize + row;
+            let src_start = (src_row * full_width + x_usize) * 3;
+            let dst_start = row * width_usize * 3;
+            let copy_len = width_usize * 3;
+            let src_end = (src_start + copy_len).min(canvas.len());
+            if src_start < canvas.len() {
+                let actual_copy = src_end - src_start;
+                region[dst_start..dst_start + actual_copy]
+                    .copy_from_slice(&canvas[src_start..src_end]);
+            }
+        }
+
+        Ok(region)
+    }
+}
+
+/// Composite one decoded tile's level-shifted component samples into the RGB
+/// output raster.
+///
+/// `canvas` is the full-image RGB buffer (`out_w` pixels wide). The tile
+/// occupies output pixels `[ox, tx1) × [oy, ty1)`; within the tile's own sample
+/// buffers (`shifted`, one per component, each `tile_width`-strided) the local
+/// coordinate is `(px - ox, py - oy)`.
+#[allow(clippy::too_many_arguments)]
+fn place_tile_samples(
+    canvas: &mut [u8],
+    out_w: usize,
+    shifted: &[Vec<u8>],
+    num_components: usize,
+    tile_width: usize,
+    ox: usize,
+    oy: usize,
+    tx1: usize,
+    ty1: usize,
+) {
+    for py in oy..ty1 {
+        for px in ox..tx1 {
+            let local_idx = (py - oy) * tile_width + (px - ox);
+            let dst = (py * out_w + px) * 3;
+            if dst + 2 >= canvas.len() {
+                continue;
+            }
+            if num_components >= 3 && shifted.len() >= 3 {
+                canvas[dst] = shifted[0].get(local_idx).copied().unwrap_or(128);
+                canvas[dst + 1] = shifted[1].get(local_idx).copied().unwrap_or(128);
+                canvas[dst + 2] = shifted[2].get(local_idx).copied().unwrap_or(128);
+            } else if !shifted.is_empty() {
+                let gray = shifted[0].get(local_idx).copied().unwrap_or(128);
+                canvas[dst] = gray;
+                canvas[dst + 1] = gray;
+                canvas[dst + 2] = gray;
+            }
+        }
     }
 }
 
@@ -1489,6 +1722,128 @@ mod tests {
         assert_eq!(rgb.len(), 4 * 4 * 3);
     }
 
+    /// Build a two-tile (2×1) raw J2K codestream. Image is 8×4 with 4×4 tiles,
+    /// so tile 0 covers x∈[0,4) and tile 1 covers x∈[4,8). Each tile-part carries
+    /// a distinctive, correctly `Psot`-bounded SOD payload so bleed across tile
+    /// boundaries is detectable.
+    fn build_two_tile_j2k(tile0_data: &[u8], tile1_data: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&[0xFF, 0x4F]); // SOC
+
+        // SIZ (Lsiz = 41), 8×4 image, 4×4 tiles, 1 component.
+        out.extend_from_slice(&[0xFF, 0x51]);
+        out.extend_from_slice(&[0x00, 0x29]);
+        out.extend_from_slice(&[0x00, 0x00]); // Rsiz
+        out.extend_from_slice(&8u32.to_be_bytes()); // Xsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // Ysiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // XOsiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // YOsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // XTsiz
+        out.extend_from_slice(&4u32.to_be_bytes()); // YTsiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // XTOsiz
+        out.extend_from_slice(&0u32.to_be_bytes()); // YTOsiz
+        out.extend_from_slice(&1u16.to_be_bytes()); // Csiz
+        out.push(0x07); // Ssiz: 8-bit unsigned
+        out.push(0x01); // XRsiz
+        out.push(0x01); // YRsiz
+
+        // COD (Lcod = 12), LRCP, 1 layer, no levels, 5/3.
+        out.extend_from_slice(&[0xFF, 0x52]);
+        out.extend_from_slice(&[0x00, 0x0C]);
+        out.push(0x00);
+        out.push(0x00);
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x01);
+
+        // QCD (Lqcd = 4), no quantization.
+        out.extend_from_slice(&[0xFF, 0x5C]);
+        out.extend_from_slice(&[0x00, 0x04]);
+        out.push(0x00);
+        out.push(0x00);
+
+        // Tile-part 0: SOT(12) + SOD(2) + data. Psot = 14 + data.len().
+        out.extend_from_slice(&[0xFF, 0x90]);
+        out.extend_from_slice(&10u16.to_be_bytes()); // Lsot
+        out.extend_from_slice(&0u16.to_be_bytes()); // Isot = 0
+        out.extend_from_slice(&((14 + tile0_data.len()) as u32).to_be_bytes()); // Psot
+        out.push(0x00); // TPsot
+        out.push(0x01); // TNsot
+        out.extend_from_slice(&[0xFF, 0x93]); // SOD
+        out.extend_from_slice(tile0_data);
+
+        // Tile-part 1.
+        out.extend_from_slice(&[0xFF, 0x90]);
+        out.extend_from_slice(&10u16.to_be_bytes());
+        out.extend_from_slice(&1u16.to_be_bytes()); // Isot = 1
+        out.extend_from_slice(&((14 + tile1_data.len()) as u32).to_be_bytes()); // Psot
+        out.push(0x00);
+        out.push(0x01);
+        out.extend_from_slice(&[0xFF, 0x93]); // SOD
+        out.extend_from_slice(tile1_data);
+
+        out.extend_from_slice(&[0xFF, 0xD9]); // EOC
+        out
+    }
+
+    #[test]
+    fn test_find_tile_bitstream_bounds_per_tile() {
+        // Regression: each tile's returned bitstream must be bounded by its own
+        // Psot, never bleed to the end of the whole codestream.
+        let tile0 = [0xAAu8, 0xBB, 0xCC];
+        let tile1 = [0x11u8, 0x22];
+        let data = build_two_tile_j2k(&tile0, &tile1);
+        let mut reader = Jpeg2000Reader::new(Cursor::new(data)).expect("reader creation failed");
+        reader.parse_headers().expect("parse_headers failed");
+
+        assert_eq!(reader.image_size.as_ref().map(|s| s.num_tiles()), Some(2));
+
+        let b0 = reader.find_tile_bitstream(0).expect("tile 0 bitstream");
+        let b1 = reader.find_tile_bitstream(1).expect("tile 1 bitstream");
+        assert_eq!(b0, tile0, "tile 0 must not include tile 1's bytes");
+        assert_eq!(b1, tile1, "tile 1 must return exactly its own bytes");
+    }
+
+    #[test]
+    fn test_decode_rgb_two_tiles_full_size() {
+        // Multi-tile decode must compose the full 8×4 raster (not a single tile).
+        let data = build_two_tile_j2k(&[], &[]);
+        let mut reader = Jpeg2000Reader::new(Cursor::new(data)).expect("reader creation failed");
+        reader.parse_headers().expect("parse_headers failed");
+        let rgb = reader.decode_rgb().expect("decode_rgb failed");
+        assert_eq!(rgb.len(), 8 * 4 * 3);
+    }
+
+    #[test]
+    fn test_decode_rgb_without_codestream_errors_not_gray() {
+        // Regression: decode must never fabricate a flat-gray Ok when the
+        // codestream was never parsed.
+        let mut reader = Jpeg2000Reader::new(Cursor::new(vec![
+            0xFF, 0x4F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]))
+        .expect("reader creation failed");
+        reader.image_size = Some(ImageSize {
+            width: 8,
+            height: 8,
+            x_offset: 0,
+            y_offset: 0,
+            tile_width: 8,
+            tile_height: 8,
+            tile_x_offset: 0,
+            tile_y_offset: 0,
+            num_components: 1,
+            components: vec![],
+        });
+        assert!(matches!(
+            reader.decode_rgb(),
+            Err(Jpeg2000Error::CodestreamError(_))
+        ));
+    }
+
     /// Find the byte offset of a two-byte marker in a codestream.
     fn find_marker(data: &[u8], marker: u16) -> Option<usize> {
         let hi = (marker >> 8) as u8;
@@ -1569,21 +1924,24 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_unsupported_progression_rejected() {
-        // CPRL progression is not supported: must fail loud, not mis-slice.
-        let mut data = build_minimal_j2k_4x4_grayscale();
-        let cod = find_marker(&data, 0xFF52).expect("COD marker present");
-        // Progression order is 1 byte after COD marker + Lcod + Scod.
-        data[cod + 5] = 0x04; // CPRL
+    fn test_decode_all_progression_orders_single_layer() {
+        // Every progression order must decode for a single-layer stream (they
+        // share the ProgressionIterator); none should spuriously reject.
+        for order in 0u8..=4 {
+            let mut data = build_minimal_j2k_4x4_grayscale();
+            let cod = find_marker(&data, 0xFF52).expect("COD marker present");
+            // Progression order is 1 byte after COD marker + Lcod + Scod.
+            data[cod + 5] = order;
 
-        let mut reader = Jpeg2000Reader::new(Cursor::new(data)).expect("reader creation failed");
-        reader.parse_headers().expect("parse_headers failed");
+            let mut reader =
+                Jpeg2000Reader::new(Cursor::new(data)).expect("reader creation failed");
+            reader.parse_headers().expect("parse_headers failed");
 
-        let result = reader.decode_rgb();
-        assert!(
-            matches!(result, Err(Jpeg2000Error::UnsupportedFeature(_))),
-            "unsupported progression must return UnsupportedFeature"
-        );
+            let rgb = reader
+                .decode_rgb()
+                .unwrap_or_else(|e| panic!("progression {order} must decode, got {e:?}"));
+            assert_eq!(rgb.len(), 4 * 4 * 3);
+        }
     }
 
     #[test]
@@ -1714,15 +2072,16 @@ mod tests {
             components: vec![],
         });
 
-        // Valid region should work (though it will return placeholder data)
+        // An in-bounds region no longer fabricates placeholder pixels: without a
+        // parsed codestream, decoding must return a typed error, never fake data.
         let result = reader.decode_region(0, 0, 128, 128);
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(Jpeg2000Error::CodestreamError(_))));
 
-        // Region exceeding width should fail
+        // Region exceeding width should fail at bounds validation
         let result = reader.decode_region(200, 0, 100, 128);
         assert!(result.is_err());
 
-        // Region exceeding height should fail
+        // Region exceeding height should fail at bounds validation
         let result = reader.decode_region(0, 200, 128, 100);
         assert!(result.is_err());
     }
@@ -1805,19 +2164,17 @@ mod tests {
             has_eph: false,
         });
 
-        // Decode at full resolution (level 0)
-        let result = reader.decode_region_at_resolution(0, 0, 128, 128, 0);
-        assert!(result.is_ok());
-        let data = result.expect("data");
-        assert_eq!(data.len(), 128 * 128 * 3);
+        // Full/half resolution decodes without a parsed codestream must error
+        // (no fabricated placeholder), while the scale-factor bounds math still
+        // runs first.
+        assert!(
+            reader
+                .decode_region_at_resolution(0, 0, 128, 128, 0)
+                .is_err()
+        );
+        assert!(reader.decode_region_at_resolution(0, 0, 64, 64, 1).is_err());
 
-        // Decode at half resolution (level 1)
-        let result = reader.decode_region_at_resolution(0, 0, 64, 64, 1);
-        assert!(result.is_ok());
-        let data = result.expect("data");
-        assert_eq!(data.len(), 64 * 64 * 3);
-
-        // Invalid resolution level should fail
+        // Invalid resolution level should fail at validation
         let result = reader.decode_region_at_resolution(0, 0, 64, 64, 10);
         assert!(result.is_err());
     }

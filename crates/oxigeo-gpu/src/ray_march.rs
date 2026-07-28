@@ -402,6 +402,7 @@ impl DemRayMarcher {
         encoder.copy_buffer_to_buffer(&shaded_buf, 0, &shaded_staging, 0, out_aligned);
         encoder.copy_buffer_to_buffer(&depth_buf, 0, &depth_staging, 0, out_aligned);
 
+        self.ctx.check_device_lost()?;
         queue.submit(Some(encoder.finish()));
 
         // Map before poll: poll drives both submit completion and map callbacks.

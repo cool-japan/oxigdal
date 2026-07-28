@@ -1,7 +1,7 @@
 # TODO: oxigeo-observability
 
 > **Purpose:** OpenTelemetry-based observability — distributed tracing, metrics, logs, anomaly detection, SLO/alerting — for OxiGeo.
-> **Status (2026-05-16):** 20,096 LoC (src) · 157 tests (141 inline + 16 in tests/) · 0 real-code stubs
+> **Status (2026-07-28):** 20,096 LoC (src) · 165 tests (all-features) / 161 tests (default-features), 0 failed · health-check aggregation and alert-routing webhooks (Slack/PagerDuty/generic) now real; StatsD/InfluxDB/CloudWatch exporters still format-only (data is computed then discarded, never transmitted)
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -23,7 +23,8 @@
   - **Risk:** Verify `tracing/distributed/` directory is not already wired — file scan shows trait shells (`baggagemetadata_traits.rs`, `otelheaderinjector_traits.rs`, `baggagemanager_traits.rs`, `alwaysonsampler_traits.rs`) but no concrete propagator impl visible from `lib.rs` re-exports.
   - **Prerequisites:** None.
 
-- [ ] Health-check endpoint with dependency status (PostGIS, S3, Redis...).
+- [x] Health-check endpoint with dependency status (PostGIS, S3, Redis...).
+  - **Resolved (2026-07-28):** `src/health.rs` (flat module, not a `src/health/` directory as originally sketched) has `HealthCheckManager::check_all()`/`get_status()` aggregating registered `HealthCheck` impls into a structured, `Serialize`/`Deserialize` `HealthStatus { status, checks: Vec<CheckResult>, checked_at }` — shaped differently than the `{service, dependencies: Vec<DependencyHealth>}` sketch below but functionally equivalent. Concrete dependency probes exist as `DatabaseHealthCheck`/`CacheHealthCheck`/`DiskSpaceHealthCheck`, each delegating to an injected `ConnectivityChecker` trait object; when no checker is wired in, they honestly report `Unhealthy` rather than fabricating success.
   - **Goal:** `HealthCheckManager::aggregate()` returns structured `HealthStatus { service, dependencies: Vec<DependencyHealth> }` JSON suitable for `/health` probe.
   - **Design:** Existing `src/health` module returns `HealthStatus`; extend with `Dependency { name, kind: enum, status, latency_ms, last_check }`. Concrete probes: HTTP (via reqwest), TCP (tokio), database ping (via crate-specific adapters). Optional dependency probes feature-flagged.
   - **Files:** `src/health/mod.rs` and new `src/health/dependencies.rs`.
@@ -47,13 +48,16 @@
 - [ ] Multi-window SLO burn-rate alerting (Google SRE workbook §5).
   - **Files:** `src/slo/` (exists; needs window-pair calculator).
 
-- [ ] Alert routing webhook layer (PagerDuty Events API v2, Slack incoming webhook, generic JSON).
+- [x] Alert routing webhook layer (PagerDuty Events API v2, Slack incoming webhook, generic JSON).
+  - **Resolved (2026-07-28):** `Router::send_to_destination` (`src/alerting/routing.rs:119`, behind the `http-exporter` feature) does real `self.client.post(...).json(...).send().await` calls with delivery-status checking for `Destination::Webhook` (generic JSON), `Destination::Slack` (incoming webhook), and `Destination::PagerDuty` (Events API v2 payload shape). `Destination::Email` is honestly unimplemented (logs a warning that direct SMTP isn't supported rather than pretending to send).
   - **Files:** `src/alerting/` (alerting framework exists; concrete senders needed).
 
 - [ ] StatsD line-protocol exporter.
+  - **Verified (2026-07-28):** `src/exporters/statsd.rs` already exists and `StatsdExporter::export` correctly formats StatsD line-protocol messages (`name:value|c`/`|g`/`|h`/`|ms`/`|d`) — but the formatted `_message` is never sent anywhere; the loop body ends with `// In production, send via UDP to StatsD` and the variable is discarded. Still a real gap (no UDP transport wired), just further along than "file doesn't exist yet".
   - **Files:** New `src/exporters/statsd.rs`.
 
 - [ ] InfluxDB line-protocol exporter.
+  - **Verified (2026-07-28):** `src/exporters/influxdb.rs` already exists and `InfluxDbExporter::export` correctly builds InfluxDB line-protocol strings (including tags/fields/timestamp) into a `lines` vec — but `lines` is built and then discarded; the loop is followed by `// In production, POST to InfluxDB` with no actual HTTP call, despite a `reqwest::Client` field (behind `http-exporter`) sitting unused. Still a real gap (transport not wired).
   - **Files:** New `src/exporters/influxdb.rs`.
 
 - [ ] Flamegraph profiling integration (existing `src/profiling/`).
@@ -63,7 +67,7 @@
 - [ ] Log sampling for high-throughput operations (rate-based + adaptive).
 
 ## Low Priority / Future (one-liners)
-- [ ] CloudWatch Embedded Metrics Format exporter.
+- [ ] CloudWatch Embedded Metrics Format exporter. _(Verified 2026-07-28: `src/exporters/cloudwatch.rs` exists but `CloudWatchExporter::export` is an explicit placeholder — `_metrics` parameter unused, body is just `// Placeholder for CloudWatch integration` / `Ok(())`. No AWS SDK call.)_
 - [ ] Jaeger-compatible export via OTLP (post RUSTSEC-2025-0123; see Cargo.toml note).
 - [ ] Custom Grafana plugin for geospatial map metric visualization.
 - [ ] Per-operation cost attribution (cloud resource tracking).
@@ -78,4 +82,4 @@
 *No prior `[x]` entries — slate was empty.*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

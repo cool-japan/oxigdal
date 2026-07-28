@@ -156,9 +156,21 @@ impl VrtReader {
                 &mut data,
             )?;
         } else {
-            // Composite data from all contributing sources (no pixel function)
+            // Composite data from all contributing sources (no pixel function).
+            // A per-pixel coverage mask records which output pixels have already
+            // been written so `FirstValid` preserves a genuine zero-valued pixel
+            // from an earlier source instead of inferring "unwritten" from a
+            // zero byte pattern.
+            let pixel_count = (window.x_size * window.y_size) as usize;
+            let mut coverage = vec![false; pixel_count];
             for source in &contributing_sources {
-                self.read_source_contribution(source, &window, vrt_band.data_type, &mut data)?;
+                self.read_source_contribution(
+                    source,
+                    &window,
+                    vrt_band.data_type,
+                    &mut data,
+                    &mut coverage,
+                )?;
             }
         }
 
@@ -188,6 +200,7 @@ impl VrtReader {
         dst_window: &PixelRect,
         data_type: RasterDataType,
         output: &mut [u8],
+        coverage: &mut [bool],
     ) -> Result<()> {
         let source_dst_rect = source
             .dst_rect()
@@ -234,7 +247,7 @@ impl VrtReader {
             data_type,
         );
         self.compositor
-            .composite(source_data.as_bytes(), output, &params)?;
+            .composite(source_data.as_bytes(), output, coverage, &params)?;
 
         Ok(())
     }
@@ -513,6 +526,15 @@ impl VrtReader {
 pub struct SourceDataset {
     /// GeoTIFF reader (for now, only GeoTIFF sources are supported)
     geotiff: Option<GeoTiffReader<FileDataSource>>,
+    /// Cache of already-decoded full bands, keyed by 1-based band index.
+    ///
+    /// Windowed reads extract a sub-rectangle from the full decoded band. Without
+    /// this cache every `read_window` call re-decoded the entire band from disk;
+    /// caching the decoded bytes (shared via `Arc`) means repeated windowed reads
+    /// of the same source band decode it at most once. The open file handle was
+    /// already cached by the reader's LRU `source_cache`; this caches the decoded
+    /// pixels too.
+    band_cache: std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Vec<u8>>>>,
 }
 
 impl SourceDataset {
@@ -526,6 +548,7 @@ impl SourceDataset {
             Ok(source) => match GeoTiffReader::open(source) {
                 Ok(reader) => Ok(Self {
                     geotiff: Some(reader),
+                    band_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
                 }),
                 Err(e) => Err(VrtError::source_error(
                     path.as_ref().display().to_string(),
@@ -539,17 +562,37 @@ impl SourceDataset {
         }
     }
 
+    /// Returns the fully-decoded band, decoding and caching it on first access.
+    fn decoded_band(
+        &self,
+        geotiff: &GeoTiffReader<FileDataSource>,
+        band: usize,
+    ) -> Result<std::sync::Arc<Vec<u8>>> {
+        if let Ok(cache) = self.band_cache.lock()
+            && let Some(cached) = cache.get(&band)
+        {
+            return Ok(cached.clone());
+        }
+
+        let decoded = geotiff
+            .read_band(0, band - 1)
+            .map_err(|e| VrtError::source_error("source", format!("Failed to read band: {}", e)))?;
+        let shared = std::sync::Arc::new(decoded);
+
+        if let Ok(mut cache) = self.band_cache.lock() {
+            cache.insert(band, shared.clone());
+        }
+        Ok(shared)
+    }
+
     /// Reads a window from the source dataset
     ///
     /// # Errors
     /// Returns an error if reading fails
     pub fn read_window(&self, band: usize, window: PixelRect) -> Result<RasterBuffer> {
         if let Some(ref geotiff) = self.geotiff {
-            // For now, we read the full band and extract the window
-            // A more efficient implementation would read only the necessary tiles
-            let full_band = geotiff.read_band(0, band - 1).map_err(|e| {
-                VrtError::source_error("source", format!("Failed to read band: {}", e))
-            })?;
+            // Decode the band once and reuse it for subsequent windowed reads.
+            let full_band = self.decoded_band(geotiff, band)?;
 
             // Extract window
             let width = geotiff.width() as usize;

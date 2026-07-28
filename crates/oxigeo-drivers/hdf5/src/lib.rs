@@ -28,9 +28,12 @@
 //!
 //! [`Hdf5Writer`] accumulates groups, datasets, and attributes and, on
 //! [`Hdf5Writer::finalize`], emits a real HDF5 file through `oxih5`'s writer.
-//! Constructs beyond `oxih5`'s writer surface (nested groups, sub-group
-//! attributes, chunked/compressed layouts, non-string root attributes) return a
-//! typed error rather than silently degrading.
+//! Root-level chunked datasets (`DatasetProperties::with_chunks`) are written
+//! as real chunked (unlimited-first-dimension) HDF5 layouts. Constructs beyond
+//! `oxih5`'s writer surface (nested groups, sub-group attributes, chunked
+//! datasets inside sub-groups, **any** compression filter — `oxih5` has no
+//! compression support at all, non-string root attributes) return a typed
+//! error rather than silently degrading.
 //!
 //! ## Feature Flags
 //!
@@ -137,19 +140,28 @@
 //! # Ok::<(), oxigeo_hdf5::error::Hdf5Error>(())
 //! ```
 //!
-//! # Example - Chunked Dataset with Compression
+//! # Example - Chunked Dataset (real HDF5 chunked layout, no compression)
+//!
+//! `oxih5`'s writer has no compression support at all, so requesting
+//! `with_gzip`/`with_compression` (anything but `CompressionFilter::None`)
+//! makes [`Hdf5Writer::finalize`] fail loud with
+//! `Hdf5Error::FeatureNotAvailable` rather than silently writing an
+//! uncompressed file. Chunking alone (`with_chunks`, no compression) is
+//! written as a real chunked HDF5 layout, but only as a single whole-array
+//! chunk — `chunk_dims` must equal the dataset's full `dims` (a smaller,
+//! partitioned chunk shape is rejected rather than silently dropping data
+//! outside the first chunk on read).
 //!
 //! ```ignore
 //! use oxigeo_hdf5::{Hdf5Writer, Hdf5Version};
 //! use oxigeo_hdf5::datatype::Datatype;
-//! use oxigeo_hdf5::dataset::{DatasetProperties, CompressionFilter};
+//! use oxigeo_hdf5::dataset::DatasetProperties;
 //!
-//! let mut writer = Hdf5Writer::create("compressed.h5", Hdf5Version::V10)?;
+//! let mut writer = Hdf5Writer::create("chunked.h5", Hdf5Version::V10)?;
 //!
-//! // Create compressed dataset with chunking
+//! // Create a chunked (uncompressed) dataset — chunk_dims == dims.
 //! let properties = DatasetProperties::new()
-//!     .with_chunks(vec![10, 20])        // 10x20 chunks
-//!     .with_gzip(6);                     // GZIP compression level 6
+//!     .with_chunks(vec![1000, 2000]);
 //!
 //! writer.create_dataset(
 //!     "/data",
@@ -204,6 +216,7 @@ pub mod error;
 pub mod external;
 pub mod filters;
 pub mod group;
+mod object_header;
 pub mod reader;
 pub mod superblock_v2;
 pub mod swmr;

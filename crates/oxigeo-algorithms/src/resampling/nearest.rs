@@ -236,41 +236,13 @@ impl NearestResampler {
     }
 }
 
-#[cfg(feature = "simd")]
-mod simd_impl {
-    //! SIMD-accelerated nearest neighbor resampling
-    //!
-    //! While nearest neighbor doesn't benefit as much from SIMD as interpolation methods,
-    //! we can still vectorize the coordinate calculation and memory access patterns.
-
-    use super::*;
-
-    impl NearestResampler {
-        /// SIMD-accelerated resampling (when available)
-        ///
-        /// This uses platform-specific SIMD instructions to process multiple pixels
-        /// at once. Falls back to scalar implementation if SIMD is not available.
-        #[cfg(target_arch = "x86_64")]
-        pub fn resample_simd(
-            &self,
-            src: &RasterBuffer,
-            dst_width: u64,
-            dst_height: u64,
-        ) -> Result<RasterBuffer> {
-            // For nearest neighbor, SIMD doesn't provide huge benefits
-            // since we're just copying values. The main optimization is
-            // vectorizing the coordinate calculations.
-            //
-            // In a production implementation, we would:
-            // 1. Vectorize the scale_x/scale_y calculations
-            // 2. Use gather instructions for non-contiguous memory access
-            // 3. Batch pixel copies when possible
-            //
-            // For now, fall back to scalar
-            self.resample(src, dst_width, dst_height)
-        }
-    }
-}
+// NOTE: A previous `simd_impl` module exposed a `resample_simd` method whose
+// doc promised SIMD acceleration but whose body silently delegated to the scalar
+// `resample`. It was dead (no call sites anywhere in the workspace) and
+// misleading, so it was removed. Genuine hardware-vectorized resampling kernels
+// (`nearest_f32`, `bilinear_f32`, `bicubic_f32` behind real AVX2/NEON intrinsics
+// with scalar-parity tests) live in `crate::simd::resampling`; use those when a
+// vectorized fast path is required.
 
 #[cfg(test)]
 mod tests {

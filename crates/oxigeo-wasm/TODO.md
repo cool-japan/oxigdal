@@ -1,18 +1,13 @@
 # TODO: oxigeo-wasm
 
 > **Purpose:** WebAssembly bindings for browser-based COG viewing, tile streaming, and image processing.
-> **Status (2026-05-17):** 17,977 LoC · 407 #[test]/#[wasm_bindgen_test] attributes (403 pass / 3 skipped per MEMORY) · 5 real-code stubs (excluding tests/).
+> **Status (2026-07-28):** 24,569 LoC · 520 tests (0 failed) · 2 real-code stubs remain (`ScopedTimer::drop` placeholder timestamp; `WkbProjection::from_epsg` placeholder WKT) — the `MemoryTracker` and `ViewportTransform`-shear stubs from the prior audit are now implemented (see below).
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace `MemoryTracker::record_current` placeholder with `performance.memory` JS heap probe
-  - **Verified gap:** `src/profiler.rs:430-432` — `// In WASM, we can't easily get memory info without performance.memory API` / `// For now, use a placeholder` / `let snapshot = MemorySnapshot::new(timestamp, 0);`
-  - **Goal:** Real `usedJSHeapSize` / `totalJSHeapSize` capture so the profiler reports non-zero browser memory deltas; gracefully fall back to wasm linear memory page count via `wasm_bindgen::memory().buffer().byte_length()` when `performance.memory` is unavailable (Firefox/Safari).
-  - **Design:** Use `js_sys::Reflect::get` on `web_sys::window().performance()` (the `Performance` interface only exposes `memory` in Chromium); when present, read `usedJSHeapSize`. Otherwise read the wasm memory size via `wasm_bindgen::memory()`. Always cache the last good value in `MemoryTracker` so consumers can correlate across browsers.
-  - **Files:** `crates/oxigeo-wasm/src/profiler.rs` (replace placeholder block); `crates/oxigeo-wasm/src/wasm_memory.rs` (extend with `current_heap_bytes()` helper).
-  - **Tests:** (proposed) `test_memory_tracker_records_nonzero_in_chromium` (gated `wasm_bindgen_test`), `test_memory_tracker_fallback_returns_wasm_memory_size`, `test_memory_tracker_records_two_snapshots_delta`.
-  - **Risk:** `performance.memory` is non-standard; never deny tracking when missing. Numbers are JS-engine specific and not comparable across browsers — document.
-  - **Prerequisites:** None.
+- [x] Replace `MemoryTracker::record_current` placeholder with `performance.memory` JS heap probe
+  - **Done:** 2026-07-20 (0.2.0 release cycle). `MemoryTracker::record_current` (`src/profiler.rs`) now calls `read_heap_used_bytes()`, which prefers `window.performance.memory.usedJSHeapSize` via `js_heap_used_bytes()` (reached through raw `js_sys::Reflect::get` property access since `web_sys::Performance` doesn't expose the Chromium-only `memory` field), and falls back to the byte length of the module's own `WebAssembly.Memory` buffer via `wasm_bindgen::memory()` when unavailable (Firefox/Safari/workers). Non-`wasm32` targets keep `heap_used = 0` (nothing to introspect natively). No JS-engine comparability claims are made — numbers stay source-tagged by construction.
+  - **Original gap (resolved):** `src/profiler.rs:430-432` used to read `// In WASM, we can't easily get memory info without performance.memory API` / `// For now, use a placeholder` / `let snapshot = MemorySnapshot::new(timestamp, 0);`.
 
 - [ ] Replace `ScopedTimer::drop` placeholder timestamp with `js_sys::Date::now()`
   - **Verified gap:** `src/profiler.rs:622-624` — `// Get current time (in a real WASM environment, use js_sys::Date::now())` / `let current_time = self.start_time; // Placeholder`
@@ -23,14 +18,9 @@
   - **Risk:** `Date::now()` jumps backwards on NTP correction — prefer `performance.now()` for any monotonic comparisons in downstream code.
   - **Prerequisites:** None.
 
-- [ ] Restore full affine transform in `ViewportTransform::new` (shx/shy honored)
-  - **Verified gap:** `src/rendering.rs:271-272` — `pub const fn new(sx: f64, _shy: f64, _shx: f64, sy: f64, tx: f64, ty: f64) -> Self {` / `// Simplified: ignores shear components for now`
-  - **Goal:** Honor the shear components of the 2×3 affine matrix `[[sx, shx, tx], [shy, sy, ty]]` so rotated/sheared overlays render correctly. Today the API accepts the parameters but silently discards them, which is a silent-correctness bug.
-  - **Design:** Replace the field-level decomposition (tx/ty/sx/sy/rotation) with a `[f64; 6]` matrix (matches Canvas 2D `setTransform` argument order: a, b, c, d, e, f). Re-derive `rotation()` for callers via `atan2(b, a)`. Make `new` non-const if needed; provide `identity()` / `translate()` / `scale()` / `rotate()` constructors and a `compose()` for general affines. Keep the existing field-getter API stable.
-  - **Files:** `crates/oxigeo-wasm/src/rendering.rs` (ViewportTransform struct + impl).
-  - **Tests:** (proposed) `test_viewport_transform_shear_x_only`, `test_viewport_transform_full_affine_composition_associative`, `test_viewport_transform_identity_then_rotate_matches_rotate`, `test_viewport_transform_canvas2d_setTransform_argument_order`.
-  - **Risk:** Public API field signature changes — restrict to internal callers + add a `#[deprecated]` note on legacy `rotation` field.
-  - **Prerequisites:** None.
+- [x] Restore full affine transform in `ViewportTransform::new` (shx/shy honored)
+  - **Done:** 2026-07-20 (0.2.0 release cycle). `ViewportTransform` (`src/rendering.rs`) now stores and applies the full `[sx, shy, shx, sy, tx, ty]` affine (CSS/SVG `matrix()` argument order); `apply()` computes `x_sheared = x + shx*y`, `y_sheared = y + shy*x` before scale/translate instead of discarding the shear fields. Rotated/sheared overlays render correctly.
+  - **Original gap (resolved):** `src/rendering.rs:271-272` used to read `pub const fn new(sx: f64, _shy: f64, _shx: f64, sy: f64, tx: f64, ty: f64) -> Self {` / `// Simplified: ignores shear components for now`.
 
 - [ ] Wire `WkbProjection::from_epsg` placeholder WKT to a real EPSG→WKT2 lookup
   - **Verified gap:** `src/component/projection.rs:96-97` — `/// Only a small set of well-known codes are pre-populated; others receive` / `/// a placeholder WKT.  For full WKT, use an external PROJ/WKT database.`
@@ -106,7 +96,8 @@
 - **Blocked by:** oxigeo-proj (EPSG→WKT2 table generation for projection item), oxigeo-geotiff (remote tile reader trait).
 
 ## Recently completed (verbatim)
-- (no `[x]` entries in prior TODO.md — see `crates/oxigeo-wasm/README.md` and MEMORY.md for the 403-tests-passing milestone)
+- [x] `MemoryTracker::record_current` real `performance.memory`/wasm-linear-memory heap probe — `src/profiler.rs`
+- [x] `ViewportTransform::new` full affine with shx/shy shear honored — `src/rendering.rs`
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

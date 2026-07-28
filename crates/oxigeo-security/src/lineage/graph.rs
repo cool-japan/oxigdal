@@ -70,6 +70,16 @@ impl LineageGraph {
         graph.node_weight(*idx).cloned()
     }
 
+    /// Get every node currently in the graph.
+    ///
+    /// Iterates the underlying directed graph's node weights directly, so it reflects the
+    /// full set of nodes regardless of how they were connected. Used by
+    /// [`crate::lineage::query::LineageQuery::find_nodes`] to evaluate filters against all nodes.
+    pub fn all_nodes(&self) -> Vec<LineageNode> {
+        let graph = self.graph.read();
+        graph.node_weights().cloned().collect()
+    }
+
     /// Get nodes by entity ID.
     pub fn get_nodes_by_entity(&self, entity_id: &str) -> Vec<LineageNode> {
         let node_ids = match self.entity_index.get(entity_id) {

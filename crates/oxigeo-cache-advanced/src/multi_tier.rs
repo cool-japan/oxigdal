@@ -13,7 +13,10 @@
 
 use crate::compression::{AdaptiveCompressor, CompressedData, CompressionCodec, DataType};
 use crate::error::{CacheError, Result};
-use crate::eviction::{EvictionPolicy, LruEviction};
+use crate::eviction::{
+    ArcEviction, CostAwareEviction, EvictionPolicy, EvictionPolicyType, LfuEviction, LruEviction,
+    TtlEviction, WTinyLfuEviction,
+};
 use crate::{CacheConfig, CacheStats};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -27,6 +30,43 @@ use tokio::sync::RwLock;
 
 /// Cache key type
 pub type CacheKey = String;
+
+/// Assumed average cached-item size (bytes) used to translate a byte-oriented
+/// tier capacity into the item-count capacity that capacity-aware eviction
+/// policies (W-TinyLFU, ARC) size their segments from.
+const ESTIMATED_AVG_ITEM_SIZE: usize = 4096;
+
+/// Default TTL applied by the TTL eviction policy when selected for a tier.
+const DEFAULT_TTL_SECONDS: i64 = 3600;
+
+/// Estimate the number of items a tier of `max_size` bytes can hold, for policies
+/// that need an item-count capacity to size their internal segments.
+fn estimate_item_capacity(max_size: usize) -> usize {
+    (max_size / ESTIMATED_AVG_ITEM_SIZE).max(16)
+}
+
+/// Build the boxed eviction policy a tier should use for the given
+/// [`EvictionPolicyType`], sizing capacity-aware policies from `max_size`.
+///
+/// This is the seam that makes the crate's Window-TinyLFU policy (and ARC, LFU,
+/// TTL, cost-aware) actually reachable from the real multi-tier cache instead of
+/// every tier being hardcoded to plain LRU.
+fn build_eviction_policy(
+    policy: EvictionPolicyType,
+    max_size: usize,
+) -> Box<dyn EvictionPolicy<CacheKey>> {
+    let item_capacity = estimate_item_capacity(max_size);
+    match policy {
+        EvictionPolicyType::Lru => Box::new(LruEviction::new()),
+        EvictionPolicyType::Lfu => Box::new(LfuEviction::new()),
+        EvictionPolicyType::Arc => Box::new(ArcEviction::new(item_capacity)),
+        EvictionPolicyType::Ttl => Box::new(TtlEviction::new(chrono::Duration::seconds(
+            DEFAULT_TTL_SECONDS,
+        ))),
+        EvictionPolicyType::CostAware => Box::new(CostAwareEviction::new()),
+        EvictionPolicyType::WTinyLfu => Box::new(WTinyLfuEviction::new(item_capacity)),
+    }
+}
 
 /// Cache value with metadata
 #[derive(Debug, Clone)]
@@ -126,15 +166,31 @@ pub struct L1MemoryTier {
 }
 
 impl L1MemoryTier {
-    /// Create new L1 memory tier
+    /// Create new L1 memory tier using the default LRU eviction policy.
     pub fn new(max_size: usize) -> Self {
+        Self::with_policy(max_size, EvictionPolicyType::Lru)
+    }
+
+    /// Create a new L1 memory tier using the given eviction policy.
+    ///
+    /// Passing [`EvictionPolicyType::WTinyLfu`] wires the crate's Window-TinyLFU
+    /// admission policy into this tier instead of plain LRU.
+    pub fn with_policy(max_size: usize, policy: EvictionPolicyType) -> Self {
         Self {
             cache: Arc::new(DashMap::new()),
             max_size,
             current_size: Arc::new(RwLock::new(0)),
-            eviction: Arc::new(RwLock::new(Box::new(LruEviction::new()))),
+            eviction: Arc::new(RwLock::new(build_eviction_policy(policy, max_size))),
             stats: Arc::new(RwLock::new(CacheStats::new())),
         }
+    }
+
+    /// The eviction policy this tier is actually using.
+    ///
+    /// Confirms which concrete policy was wired in (e.g. Window-TinyLFU rather
+    /// than the LRU default), rather than assuming it from configuration.
+    pub async fn eviction_policy_type(&self) -> EvictionPolicyType {
+        self.eviction.read().await.policy_type()
     }
 
     /// Evict items until we have enough space
@@ -283,8 +339,17 @@ pub struct L2DiskTier {
 }
 
 impl L2DiskTier {
-    /// Create new L2 disk tier
+    /// Create new L2 disk tier using the default LRU eviction policy.
     pub async fn new(cache_dir: PathBuf, max_size: usize) -> Result<Self> {
+        Self::with_policy(cache_dir, max_size, EvictionPolicyType::Lru).await
+    }
+
+    /// Create a new L2 disk tier using the given eviction policy.
+    pub async fn with_policy(
+        cache_dir: PathBuf,
+        max_size: usize,
+        policy: EvictionPolicyType,
+    ) -> Result<Self> {
         // Create cache directory
         fs::create_dir_all(&cache_dir).await?;
 
@@ -293,7 +358,7 @@ impl L2DiskTier {
             max_size,
             index: Arc::new(DashMap::new()),
             current_size: Arc::new(RwLock::new(0)),
-            eviction: Arc::new(RwLock::new(Box::new(LruEviction::new()))),
+            eviction: Arc::new(RwLock::new(build_eviction_policy(policy, max_size))),
             compressor: Arc::new(RwLock::new(AdaptiveCompressor::new())),
             stats: Arc::new(RwLock::new(CacheStats::new())),
         };
@@ -569,12 +634,16 @@ pub struct MultiTierCache {
 impl MultiTierCache {
     /// Create new multi-tier cache
     pub async fn new(config: CacheConfig) -> Result<Self> {
-        let l1 = Arc::new(L1MemoryTier::new(config.l1_size)) as Arc<dyn CacheTier>;
+        let policy = config.eviction_policy;
+        let l1 = Arc::new(L1MemoryTier::with_policy(config.l1_size, policy)) as Arc<dyn CacheTier>;
 
         let l2 = if config.l2_size > 0 {
             if let Some(cache_dir) = &config.cache_dir {
                 let l2_dir = cache_dir.join("l2");
-                Some(Arc::new(L2DiskTier::new(l2_dir, config.l2_size).await?) as Arc<dyn CacheTier>)
+                Some(
+                    Arc::new(L2DiskTier::with_policy(l2_dir, config.l2_size, policy).await?)
+                        as Arc<dyn CacheTier>,
+                )
             } else {
                 None
             }
@@ -781,6 +850,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_l1_tier_uses_wtinylfu_when_selected() {
+        // The wiring under test: selecting W-TinyLFU must actually install the
+        // W-TinyLFU policy in the tier, not fall back to LRU.
+        let lru_tier = L1MemoryTier::new(1024 * 1024);
+        assert_eq!(
+            lru_tier.eviction_policy_type().await,
+            EvictionPolicyType::Lru
+        );
+
+        let wtiny_tier = L1MemoryTier::with_policy(1024 * 1024, EvictionPolicyType::WTinyLfu);
+        assert_eq!(
+            wtiny_tier.eviction_policy_type().await,
+            EvictionPolicyType::WTinyLfu,
+            "W-TinyLFU must be the tier's real eviction policy"
+        );
+
+        // And it must still function as a cache with genuine eviction.
+        let small = L1MemoryTier::with_policy(100, EvictionPolicyType::WTinyLfu);
+        for i in 0..6 {
+            let v = CacheValue::new(Bytes::from("x".repeat(40)), DataType::Binary);
+            small
+                .put(format!("k{i}"), v)
+                .await
+                .expect("put should succeed");
+        }
+        assert!(
+            small.stats().await.evictions > 0,
+            "W-TinyLFU tier must actually evict under memory pressure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multi_tier_cache_honors_wtinylfu_config() {
+        let temp_dir = std::env::temp_dir().join("oxigeo_cache_wtinylfu_test");
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let config = CacheConfig {
+            l1_size: 1024,
+            l2_size: 4096,
+            l3_size: 0,
+            enable_compression: true,
+            enable_prefetch: false,
+            enable_distributed: false,
+            cache_dir: Some(temp_dir.clone()),
+            eviction_policy: EvictionPolicyType::WTinyLfu,
+        };
+
+        let cache = MultiTierCache::new(config)
+            .await
+            .expect("cache creation failed");
+
+        let key = "wtinylfu_key".to_string();
+        let value = CacheValue::new(Bytes::from("payload"), DataType::Text);
+        cache.put(key.clone(), value).await.expect("put failed");
+        assert!(cache.get(&key).await.expect("get failed").is_some());
+
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[tokio::test]
     async fn test_multi_tier_cache() {
         let temp_dir = std::env::temp_dir().join("oxigeo_cache_test");
         let config = CacheConfig {
@@ -791,6 +919,7 @@ mod tests {
             enable_prefetch: false,
             enable_distributed: false,
             cache_dir: Some(temp_dir.clone()),
+            eviction_policy: EvictionPolicyType::Lru,
         };
 
         let cache = MultiTierCache::new(config)

@@ -6,7 +6,7 @@
 //! # Features
 //!
 //! - **Multi-backend Support**: Local, S3, MinIO, GCS, Azure
-//! - **High Performance**: Zero-copy operations, ML-based caching, deduplication
+//! - **High Performance**: Zero-copy operations, heuristic read-ahead caching, deduplication
 //! - **Cloud-Optimized**: Optimized for COG (Cloud-Optimized GeoTIFF) and Zarr access
 //! - **Pure Rust**: No C/C++ dependencies (COOLJAPAN Policy compliant)
 //! - **Security**: Optional encryption-at-rest with AES-256-GCM

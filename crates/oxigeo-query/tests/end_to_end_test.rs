@@ -1,4 +1,5 @@
 //! End-to-end integration tests.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use oxigeo_query::executor::scan::{
     ColumnData, DataType, Field, MemoryDataSource, RecordBatch, Schema,
@@ -226,6 +227,131 @@ fn test_optimizer_integration() -> Result<()> {
 
     // Constant folding should have happened
     assert!(explain.total_cost.total() >= 0.0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_projection_prunes_columns() -> Result<()> {
+    let (schema, batches) = create_test_dataset()?;
+    let source = Arc::new(MemoryDataSource::new(schema, batches));
+
+    let mut engine = QueryEngine::new();
+    engine.register_data_source("students".to_string(), source);
+
+    // Source has 4 columns (id, name, age, score); a concrete projection list
+    // must return exactly the two requested columns, in order.
+    let sql = "SELECT name, age FROM students";
+    let results = engine.execute_sql(sql).await?;
+
+    assert!(!results.is_empty());
+    let batch = &results[0];
+    assert_eq!(batch.columns.len(), 2);
+    assert_eq!(batch.schema.fields[0].name, "name");
+    assert_eq!(batch.schema.fields[1].name, "age");
+    assert_eq!(batch.num_rows, 10);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_projection_alias() -> Result<()> {
+    let (schema, batches) = create_test_dataset()?;
+    let source = Arc::new(MemoryDataSource::new(schema, batches));
+
+    let mut engine = QueryEngine::new();
+    engine.register_data_source("students".to_string(), source);
+
+    let sql = "SELECT age AS years FROM students";
+    let results = engine.execute_sql(sql).await?;
+
+    let batch = &results[0];
+    assert_eq!(batch.columns.len(), 1);
+    assert_eq!(batch.schema.fields[0].name, "years");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_having_filters_groups() -> Result<()> {
+    // Dataset with a repeating group column so HAVING can prune groups.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("dept".to_string(), DataType::String, false),
+        Field::new("salary".to_string(), DataType::Int64, false),
+    ]));
+    let columns = vec![
+        ColumnData::String(vec![
+            Some("eng".to_string()),
+            Some("eng".to_string()),
+            Some("eng".to_string()),
+            Some("sales".to_string()),
+            Some("sales".to_string()),
+            Some("hr".to_string()),
+        ]),
+        ColumnData::Int64(vec![
+            Some(100),
+            Some(110),
+            Some(120),
+            Some(90),
+            Some(95),
+            Some(80),
+        ]),
+    ];
+    let batch = RecordBatch::new(schema.clone(), columns, 6)?;
+    let source = Arc::new(MemoryDataSource::new(schema, vec![batch]));
+
+    let mut engine = QueryEngine::new();
+    engine.register_data_source("emp".to_string(), source);
+
+    // eng has 3 rows, sales 2, hr 1. HAVING COUNT(*) > 2 keeps only "eng".
+    let sql = "SELECT dept, COUNT(*) FROM emp GROUP BY dept HAVING COUNT(*) > 2";
+    let results = engine.execute_sql(sql).await?;
+
+    assert!(!results.is_empty());
+    let total_rows: usize = results.iter().map(|b| b.num_rows).sum();
+    assert_eq!(total_rows, 1, "only the 'eng' group should survive HAVING");
+
+    // Output columns are the group key + the visible aggregate (no hidden col).
+    assert_eq!(results[0].columns.len(), 2);
+    let ColumnData::String(dept) = &results[0].columns[0] else {
+        panic!("group key should be a String column");
+    };
+    assert_eq!(dept[0].as_deref(), Some("eng"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_having_on_uncomputed_aggregate() -> Result<()> {
+    // HAVING references SUM(salary), which is NOT in the SELECT projection, so
+    // it must be computed as a hidden aggregate and then dropped from output.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("dept".to_string(), DataType::String, false),
+        Field::new("salary".to_string(), DataType::Int64, false),
+    ]));
+    let columns = vec![
+        ColumnData::String(vec![
+            Some("eng".to_string()),
+            Some("eng".to_string()),
+            Some("sales".to_string()),
+        ]),
+        ColumnData::Int64(vec![Some(100), Some(120), Some(50)]),
+    ];
+    let batch = RecordBatch::new(schema.clone(), columns, 3)?;
+    let source = Arc::new(MemoryDataSource::new(schema, vec![batch]));
+
+    let mut engine = QueryEngine::new();
+    engine.register_data_source("emp".to_string(), source);
+
+    // eng SUM=220, sales SUM=50. HAVING SUM(salary) > 100 keeps only "eng".
+    let sql = "SELECT dept FROM emp GROUP BY dept HAVING SUM(salary) > 100";
+    let results = engine.execute_sql(sql).await?;
+
+    let total_rows: usize = results.iter().map(|b| b.num_rows).sum();
+    assert_eq!(total_rows, 1);
+    // Only the projected group key column is present; the hidden SUM is dropped.
+    assert_eq!(results[0].columns.len(), 1);
+    assert_eq!(results[0].schema.fields[0].name, "dept");
 
     Ok(())
 }

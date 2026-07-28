@@ -1,19 +1,14 @@
 # TODO: oxigeo-drivers/flatgeobuf
 
 > **Purpose:** FlatGeobuf driver for OxiGeo - Pure Rust GDAL reimplementation
-> **Status (2026-05-16):** 3,417 Rust LoC (incl. tests) - 107 tests - 0 source-code stubs (only one placeholder test stub)
+> **Status (2026-07-28):** 3,323 Rust LoC (src) - 132 tests all-features / 127 default-features - 0 source-code stubs
 > **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
-- [ ] Add async HTTP range-request reader for cloud-hosted FlatGeobuf
-  - **Verified gap:** `src/http.rs:18` declares `HttpReader { client: reqwest::blocking::Client, ... }` (blocking only); test stub at `src/http.rs:461` is `// Placeholder for future implementation`. The crate's `async` feature exists in `Cargo.toml:19` and `AsyncFlatGeobufReader` re-export at `src/lib.rs:31` (for file-based async), but no `AsyncHttpReader` over `reqwest::Client`.
-  - **Goal:** Open a `.fgb` URL, parse header + R-tree via async byte-range requests, then async-stream features matching a bbox without downloading the full file.
-  - **Design:** Mirror the existing sync `HttpReader::initialize` (HEAD + first 1 MiB ranges; spec at FlatGeobuf §3.4) but on `reqwest::Client` (no `::blocking`). Concurrent range requests for R-tree leaf-driven feature offsets via `futures::stream::FuturesUnordered`. Spec: FlatGeobuf v3 binary layout per <https://github.com/flatgeobuf/flatgeobuf/blob/master/src/cpp/README.md>.
-  - **Files:** (new) `src/http_async.rs`, `src/lib.rs` (re-export `AsyncHttpReader` under `#[cfg(feature = "http")]`)
-  - **Tests:** (proposed) `test_async_http_reader_header_only`, `test_async_http_bbox_query_concurrent_chunks`, `test_async_http_404_propagates_error`, `test_async_http_partial_index_fetch`
-  - **Risk:** Server lacks `Content-Range` support; mitigation: detect via HEAD `Accept-Ranges: bytes` header and fail clearly.
-  - **Prerequisites:** None.
+- [x] Add async HTTP range-request reader for cloud-hosted FlatGeobuf
+  - **Verified done:** `src/http.rs:213` now defines `pub struct AsyncHttpReader { url, client: reqwest::Client, header, geometry_codec, index: Option<PackedRTree>, features_offset }` (real non-blocking `reqwest::Client`, not `::blocking::Client`), gated `#[cfg(all(feature = "http", feature = "async"))]`. `AsyncHttpReader::new` (`:225`) builds the client and calls `initialize()` (`:242`), which range-fetches the first 1 MiB, verifies the magic bytes, parses the size-prefixed header FlatBuffer, and — when `header.has_index` — parses the packed R-tree, matching the sync reader's approach but on the async client. `query_bbox` (`:325`) is async.
+  - **Not independently re-verified:** whether R-tree-leaf-driven feature range requests are issued concurrently via `FuturesUnordered` as originally sketched, vs. sequentially — re-check `query_bbox`'s body if concurrency matters for a performance claim.
 
 - [ ] Add CRS reprojection during read/write via `oxigeo-proj`
   - **Verified gap:** `src/header.rs` defines `CrsInfo` (re-exported at `src/lib.rs:26`). No reprojection helper. `rg -n "reproject|transform.*crs|to_crs|from_crs" -g '*.rs' src/` returns no matches.
@@ -99,4 +94,4 @@ _(Note from 2026-05-16 audit: R-tree spatial index querying is also implemented 
 - [x] Feature-level random access via spatial index offsets — `FlatGeobufReader::seek_feature` (`src/reader.rs:232`); verified by audit on 2026-05-16.
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28 (status line refreshed: 107→132/127 tests, LoC 3,417→3,323 (src-only via tokei, previous figure included tests), date bumped; async HTTP range-request reader confirmed real and flipped to done; CRS reprojection and streaming/spill writer re-checked and confirmed still absent — left open)*

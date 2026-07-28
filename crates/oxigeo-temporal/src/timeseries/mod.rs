@@ -16,6 +16,47 @@ pub mod datacube;
 pub use collection::*;
 pub use datacube::*;
 
+/// Loads raster data for a lazily-referenced [`TemporalRasterEntry`].
+///
+/// The temporal crate is format-agnostic: rather than hard-coding a GeoTIFF or
+/// NetCDF reader (and pulling those heavy dependencies into every consumer),
+/// lazy entries created via [`TemporalRasterEntry::new_lazy`] /
+/// [`TimeSeriesRaster::add_raster_lazy`] are resolved through a caller-supplied
+/// loader. The loader receives the entry's stored `source_path` and returns the
+/// decoded `(height, width, bands)` array.
+///
+/// Any closure `Fn(&str) -> Result<Array3<f64>>` implements this trait, so a
+/// caller can wire in `oxigeo-geotiff`, `oxigeo-zarr`, or any other reader
+/// without this crate depending on it:
+///
+/// ```
+/// use oxigeo_temporal::timeseries::RasterLoader;
+/// use oxigeo_temporal::error::Result;
+/// use scirs2_core::ndarray::Array3;
+///
+/// let loader = |path: &str| -> Result<Array3<f64>> {
+///     // ... decode `path` with your format reader ...
+///     Ok(Array3::zeros((2, 2, 1)))
+/// };
+/// let _ = RasterLoader::load(&loader, "scene.tif");
+/// ```
+pub trait RasterLoader {
+    /// Decode the raster stored at `source_path` into an `(h, w, bands)` array.
+    ///
+    /// # Errors
+    /// Returns an error if the source cannot be read or decoded.
+    fn load(&self, source_path: &str) -> Result<Array3<f64>>;
+}
+
+impl<F> RasterLoader for F
+where
+    F: Fn(&str) -> Result<Array3<f64>>,
+{
+    fn load(&self, source_path: &str) -> Result<Array3<f64>> {
+        (self)(source_path)
+    }
+}
+
 /// Temporal resolution for time series
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TemporalResolution {
@@ -160,7 +201,12 @@ impl TemporalRasterEntry {
         }
     }
 
-    /// Create new entry with lazy loading
+    /// Create new entry with lazy loading.
+    ///
+    /// The data is not read until [`Self::load_data`] / [`Self::ensure_loaded`]
+    /// is called with a [`RasterLoader`] that knows how to decode
+    /// `source_path`. Until then the entry holds no pixel data and
+    /// pixel-extraction APIs will report that the data is not yet loaded.
     #[must_use]
     pub fn new_lazy(metadata: TemporalMetadata, source_path: String) -> Self {
         Self {
@@ -174,6 +220,51 @@ impl TemporalRasterEntry {
     #[must_use]
     pub fn is_loaded(&self) -> bool {
         self.data.is_some()
+    }
+
+    /// Ensure the entry's raster data is loaded, decoding it via `loader` from
+    /// the stored `source_path` if it is not already in memory.
+    ///
+    /// Returns a reference to the loaded data. This is idempotent: if the data
+    /// is already present, `loader` is not invoked.
+    ///
+    /// # Errors
+    /// Returns an error if the entry is lazy but has no `source_path`, or if the
+    /// loader fails to decode the source.
+    pub fn ensure_loaded(&mut self, loader: &dyn RasterLoader) -> Result<&Array3<f64>> {
+        if self.data.is_none() {
+            let path = self.source_path.as_deref().ok_or_else(|| {
+                TemporalError::invalid_input("Lazy raster entry has no source_path to load from")
+            })?;
+            let array = loader.load(path)?;
+            self.data = Some(array);
+        }
+        // `data` is guaranteed `Some` here.
+        self.data
+            .as_ref()
+            .ok_or_else(|| TemporalError::invalid_input("Raster data unexpectedly missing"))
+    }
+
+    /// Load (or reload) the entry's raster data via `loader`, replacing any
+    /// existing in-memory data.
+    ///
+    /// # Errors
+    /// Returns an error if the entry has no `source_path` or the loader fails.
+    pub fn load_data(&mut self, loader: &dyn RasterLoader) -> Result<()> {
+        let path = self.source_path.as_deref().ok_or_else(|| {
+            TemporalError::invalid_input("Lazy raster entry has no source_path to load from")
+        })?;
+        self.data = Some(loader.load(path)?);
+        Ok(())
+    }
+
+    /// Drop the in-memory raster data, keeping the metadata and `source_path`
+    /// so the entry can be reloaded later. No-op if the entry has no
+    /// `source_path` to reload from (to avoid losing the only copy of the data).
+    pub fn unload(&mut self) {
+        if self.source_path.is_some() {
+            self.data = None;
+        }
     }
 
     /// Get data dimensions (if loaded)
@@ -273,6 +364,50 @@ impl TimeSeriesRaster {
 
         debug!("Added lazy raster at timestamp {}", timestamp_key);
         Ok(())
+    }
+
+    /// Load all lazily-referenced entries using the supplied [`RasterLoader`].
+    ///
+    /// Entries that already hold in-memory data are left untouched. After a
+    /// successful call every entry has its data resolved, so pixel-extraction
+    /// APIs (e.g. [`Self::extract_pixel_timeseries`]) will succeed. If the
+    /// collection has an expected shape, each loaded raster is validated
+    /// against it.
+    ///
+    /// # Errors
+    /// Returns an error on the first entry that fails to load or whose loaded
+    /// shape does not match the collection's expected shape.
+    pub fn load_all(&mut self, loader: &dyn RasterLoader) -> Result<usize> {
+        let expected = self.expected_shape;
+        let mut loaded = 0usize;
+
+        for entry in self.entries.values_mut() {
+            if entry.is_loaded() {
+                continue;
+            }
+            let data = entry.ensure_loaded(loader)?;
+            if let Some((exp_h, exp_w, exp_b)) = expected {
+                let shape = data.shape();
+                if shape[0] != exp_h || shape[1] != exp_w || shape[2] != exp_b {
+                    return Err(TemporalError::dimension_mismatch(
+                        format!("{exp_h}x{exp_w}x{exp_b}"),
+                        format!("{}x{}x{}", shape[0], shape[1], shape[2]),
+                    ));
+                }
+            }
+            loaded += 1;
+        }
+
+        // Adopt an expected shape from the first loaded entry if none was set.
+        if self.expected_shape.is_none()
+            && let Some(entry) = self.entries.values().next()
+            && let Some(shape) = entry.shape()
+        {
+            self.expected_shape = Some(shape);
+        }
+
+        debug!("Loaded {loaded} lazy raster entries");
+        Ok(loaded)
     }
 
     /// Get the number of rasters in the time series
@@ -526,7 +661,10 @@ impl TimeSeriesRaster {
 
         for entry in self.entries.values() {
             let data = entry.data.as_ref().ok_or_else(|| {
-                TemporalError::invalid_input("Data not loaded. Call load_data() first")
+                TemporalError::invalid_input(
+                    "Raster data not loaded. Call TimeSeriesRaster::load_all (or \
+                     TemporalRasterEntry::load_data) with a RasterLoader first",
+                )
             })?;
 
             // Validate bounds
@@ -725,4 +863,98 @@ pub struct TimeSeriesStats {
     pub resolution: Option<TemporalResolution>,
     /// Average cloud cover
     pub avg_cloud_cover: Option<f32>,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod lazy_loading_tests {
+    use super::*;
+
+    fn meta(day: u32) -> TemporalMetadata {
+        let date = NaiveDate::from_ymd_opt(2024, 1, day).expect("valid date");
+        let ndt = date.and_hms_opt(0, 0, 0).expect("valid time");
+        let ts = DateTime::from_naive_utc_and_offset(ndt, Utc);
+        TemporalMetadata::new(ts, date)
+    }
+
+    #[test]
+    fn test_lazy_entry_loads_via_loader() {
+        let mut ts = TimeSeriesRaster::with_shape(1, 1, 1);
+        ts.add_raster_lazy(meta(1), "scene_1".to_string()).unwrap();
+        ts.add_raster_lazy(meta(2), "scene_2".to_string()).unwrap();
+
+        // Before loading, pixel extraction must fail (data not loaded).
+        assert!(ts.extract_pixel_timeseries(0, 0, 0).is_err());
+
+        // A loader that maps a source path to a deterministic value.
+        let loader = |path: &str| -> Result<Array3<f64>> {
+            let v = match path {
+                "scene_1" => 1.0,
+                "scene_2" => 2.0,
+                other => {
+                    return Err(TemporalError::invalid_input(format!(
+                        "unknown source {other}"
+                    )));
+                }
+            };
+            Ok(Array3::from_elem((1, 1, 1), v))
+        };
+
+        let loaded = ts.load_all(&loader).unwrap();
+        assert_eq!(loaded, 2, "both lazy entries should have loaded");
+
+        // Now extraction works and returns the loaded values in time order.
+        let series = ts.extract_pixel_timeseries(0, 0, 0).unwrap();
+        assert_eq!(series, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_load_all_idempotent_and_shape_validated() {
+        let mut ts = TimeSeriesRaster::with_shape(2, 2, 1);
+        ts.add_raster_lazy(meta(1), "ok".to_string()).unwrap();
+
+        let good = |_: &str| -> Result<Array3<f64>> { Ok(Array3::zeros((2, 2, 1))) };
+        assert_eq!(ts.load_all(&good).unwrap(), 1);
+        // Second call is a no-op (already loaded).
+        assert_eq!(ts.load_all(&good).unwrap(), 0);
+
+        // A loader returning the wrong shape must be rejected.
+        let mut ts2 = TimeSeriesRaster::with_shape(2, 2, 1);
+        ts2.add_raster_lazy(meta(1), "bad".to_string()).unwrap();
+        let bad = |_: &str| -> Result<Array3<f64>> { Ok(Array3::zeros((3, 3, 1))) };
+        assert!(ts2.load_all(&bad).is_err());
+    }
+
+    #[test]
+    fn test_ensure_loaded_and_unload_roundtrip() {
+        let mut entry = TemporalRasterEntry::new_lazy(meta(1), "src".to_string());
+        assert!(!entry.is_loaded());
+
+        let loader = |_: &str| -> Result<Array3<f64>> { Ok(Array3::from_elem((1, 1, 1), 7.0)) };
+        {
+            let data = entry.ensure_loaded(&loader).unwrap();
+            assert_eq!(data[[0, 0, 0]], 7.0);
+        }
+        assert!(entry.is_loaded());
+
+        // Unload keeps source_path so it can be reloaded.
+        entry.unload();
+        assert!(!entry.is_loaded());
+        entry.load_data(&loader).unwrap();
+        assert!(entry.is_loaded());
+    }
+
+    #[test]
+    fn test_load_data_without_source_path_errors() {
+        // A loaded (non-lazy) entry with no source_path cannot be reloaded.
+        let mut entry = TemporalRasterEntry::new_loaded(meta(1), Array3::from_elem((1, 1, 1), 1.0));
+        entry.unload(); // no-op: has no source_path
+        assert!(entry.is_loaded(), "unload must not drop the only copy");
+
+        let loader = |_: &str| -> Result<Array3<f64>> { Ok(Array3::zeros((1, 1, 1))) };
+        let mut lazy_no_path =
+            TemporalRasterEntry::new_loaded(meta(2), Array3::from_elem((1, 1, 1), 1.0));
+        lazy_no_path.data = None; // simulate missing data without a source_path
+        assert!(lazy_no_path.load_data(&loader).is_err());
+    }
 }

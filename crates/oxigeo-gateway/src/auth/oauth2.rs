@@ -10,8 +10,8 @@ use crate::error::{GatewayError, Result};
 use dashmap::DashMap;
 use oauth2::basic::BasicClient;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, EndpointNotSet, EndpointSet, RedirectUrl,
-    RefreshToken, TokenResponse, TokenUrl,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, TokenResponse, TokenUrl,
 };
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -33,6 +33,10 @@ pub struct OAuth2Authenticator {
     oauth_client: ConfiguredOAuth2Client,
     http_client: oauth2::reqwest::Client,
     tokens: Arc<DashMap<String, OAuth2Token>>,
+    /// PKCE (RFC 7636) code verifiers awaiting their authorization-code exchange, keyed by
+    /// the `state` parameter. Populated by [`OAuth2Authenticator::get_authorization_url`] and
+    /// consumed by [`OAuth2Authenticator::exchange_code`].
+    pkce_verifiers: Arc<DashMap<String, String>>,
 }
 
 /// OAuth2 token information.
@@ -86,6 +90,7 @@ impl OAuth2Authenticator {
             oauth_client,
             http_client,
             tokens: Arc::new(DashMap::new()),
+            pkce_verifiers: Arc::new(DashMap::new()),
         })
     }
 
@@ -99,14 +104,24 @@ impl OAuth2Authenticator {
         self
     }
 
-    /// Gets the authorization URL for OAuth2 flow.
+    /// Gets the authorization URL for the OAuth2 flow, with PKCE (RFC 7636).
+    ///
+    /// Generates a fresh `code_verifier`/`code_challenge` (S256) pair, remembers the verifier
+    /// keyed by `state`, and includes `code_challenge`/`code_challenge_method=S256` in the
+    /// returned URL. The matching verifier is sent automatically by [`Self::exchange_code`],
+    /// protecting public/native/SPA clients against authorization-code interception.
     pub fn get_authorization_url(&self, redirect_uri: &str, state: &str) -> String {
+        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        self.pkce_verifiers
+            .insert(state.to_string(), verifier.secret().clone());
+
         format!(
-            "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
+            "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
             self.auth_url,
             urlencoding::encode(&self.client_id),
             urlencoding::encode(redirect_uri),
-            urlencoding::encode(state)
+            urlencoding::encode(state),
+            urlencoding::encode(challenge.as_str()),
         )
     }
 
@@ -116,15 +131,32 @@ impl OAuth2Authenticator {
     /// 4.1.3). The IdP validates `code`/`redirect_uri`/client credentials; on any failure
     /// (invalid code, mismatched redirect_uri, network error, malformed response) this
     /// returns an error instead of minting a token.
-    pub async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<OAuth2Token> {
+    pub async fn exchange_code(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        state: &str,
+    ) -> Result<OAuth2Token> {
         let redirect = RedirectUrl::new(redirect_uri.to_string()).map_err(|error| {
             GatewayError::InvalidRequest(format!("invalid OAuth2 redirect_uri: {error}"))
         })?;
 
-        let token_response = self
+        // Attach the PKCE verifier remembered for this `state` (if get_authorization_url was
+        // used). Removing it makes the verifier single-use.
+        let pkce_verifier = self
+            .pkce_verifiers
+            .remove(state)
+            .map(|(_, secret)| PkceCodeVerifier::new(secret));
+
+        let mut request = self
             .oauth_client
             .exchange_code(AuthorizationCode::new(code.to_string()))
-            .set_redirect_uri(Cow::Owned(redirect))
+            .set_redirect_uri(Cow::Owned(redirect));
+        if let Some(verifier) = pkce_verifier {
+            request = request.set_pkce_verifier(verifier);
+        }
+
+        let token_response = request
             .request_async(&self.http_client)
             .await
             .map_err(|error| {
@@ -494,6 +526,24 @@ mod tests {
         assert!(url.contains("client_id=test_client_id"));
         assert!(url.contains("redirect_uri="));
         assert!(url.contains("state=random_state"));
+        // PKCE (RFC 7636) must be present for public-client protection.
+        assert!(url.contains("code_challenge="));
+        assert!(url.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn test_pkce_verifier_is_stored_per_state() {
+        let auth = OAuth2Authenticator::new(
+            "test_client_id",
+            "test_client_secret",
+            "https://auth.example.com/oauth/authorize",
+            "https://auth.example.com/oauth/token",
+        )
+        .expect("build authenticator");
+
+        let _ = auth.get_authorization_url("https://example.com/callback", "state-xyz");
+        // A verifier must be remembered for the state so exchange_code can present it.
+        assert!(auth.pkce_verifiers.contains_key("state-xyz"));
     }
 
     #[tokio::test]
@@ -505,7 +555,11 @@ mod tests {
         let auth = create_test_authenticator(&idp).await;
 
         let result = auth
-            .exchange_code("whatever-code", "https://example.com/callback")
+            .exchange_code(
+                "whatever-code",
+                "https://example.com/callback",
+                "test-state",
+            )
             .await;
 
         assert!(result.is_err());
@@ -530,7 +584,7 @@ mod tests {
         .expect("build authenticator");
 
         let result = auth
-            .exchange_code("test_code", "https://example.com/callback")
+            .exchange_code("test_code", "https://example.com/callback", "test-state")
             .await;
 
         assert!(result.is_err());
@@ -546,7 +600,7 @@ mod tests {
         let auth = create_test_authenticator(&idp).await;
 
         let token = auth
-            .exchange_code("test_code", "https://example.com/callback")
+            .exchange_code("test_code", "https://example.com/callback", "test-state")
             .await
             .expect("exchange should succeed against a well-formed mock IdP");
 
@@ -567,7 +621,7 @@ mod tests {
         let auth = create_test_authenticator(&idp).await;
 
         let token = auth
-            .exchange_code("test_code", "https://example.com/callback")
+            .exchange_code("test_code", "https://example.com/callback", "test-state")
             .await
             .expect("exchange should succeed");
 
@@ -592,7 +646,7 @@ mod tests {
         let auth = create_test_authenticator(&idp).await;
 
         let token = auth
-            .exchange_code("test_code", "https://example.com/callback")
+            .exchange_code("test_code", "https://example.com/callback", "test-state")
             .await
             .expect("exchange should succeed");
 
@@ -639,7 +693,7 @@ mod tests {
         let auth = create_test_authenticator(&idp).await;
 
         let token = auth
-            .exchange_code("test_code", "https://example.com/callback")
+            .exchange_code("test_code", "https://example.com/callback", "test-state")
             .await
             .expect("exchange should succeed");
 

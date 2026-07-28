@@ -1,6 +1,18 @@
 # OxiGeo Driver Guide
 
-This guide provides detailed documentation for each geospatial data format driver supported by OxiGeo.
+OxiGeo exposes **16 format drivers** through `oxigeo::Dataset::open()` (see the
+root [README's Format Support table](../README.md#format-support) for the
+full list and read/write/async/cloud matrix), plus separate KML/KMZ
+(`oxigeo-drivers-advanced`) and TopoJSON-writer (`oxigeo-geojson`) support
+that ships outside the `Dataset::open()` registry.
+
+This guide currently provides **in-depth, worked-example documentation for 5
+of those 16 drivers** (GeoTIFF/COG, GeoJSON, GeoParquet, Zarr, FlatGeobuf) —
+the highest-traffic formats. The remaining 11 drivers are covered by a
+[Quick Reference](#quick-reference-remaining-drivers) below (crate, status,
+and pointers to their own rustdoc/examples/tests) rather than a full worked
+walkthrough; expanding each to the same depth as the five below is tracked
+as follow-up work.
 
 ## Table of Contents
 
@@ -9,6 +21,7 @@ This guide provides detailed documentation for each geospatial data format drive
 3. [GeoParquet Driver](#geoparquet-driver)
 4. [Zarr Driver](#zarr-driver)
 5. [FlatGeobuf Driver](#flatgeobuf-driver)
+6. [Quick Reference: Remaining Drivers](#quick-reference-remaining-drivers)
 
 ---
 
@@ -713,6 +726,37 @@ fn write_flatgeobuf() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ---
+
+## Quick Reference: Remaining Drivers
+
+The 11 drivers below are real, tested, and wired into
+`oxigeo::Dataset::open()` exactly like the five documented in depth above —
+they just don't have a full worked-example section in this guide yet. Each
+crate ships its own `README.md`, `tests/`, and (where present) `examples/`
+directory with real, compiling usage code; `cargo doc -p <crate> --open`
+also renders the full rustdoc API reference.
+
+| Driver | Crate | Read | Write | Notes |
+|--------|-------|------|-------|-------|
+| Shapefile | `oxigeo-shapefile` | ✅ | ✅ | SHP/SHX/DBF, full attribute table support |
+| NetCDF | `oxigeo-netcdf` | ✅ | partial | Pure-Rust `oxinetcdf`; CF conventions, unlimited dims; root group only |
+| HDF5 | `oxigeo-hdf5` | ✅ | partial | Pure-Rust `oxih5`; v0-superblock read fully, v2/v3 open but yield an empty tree (best-effort) |
+| GRIB1/GRIB2 | `oxigeo-grib` | ✅ | — | Meteorological parameter/level tables |
+| JPEG2000 | `oxigeo-jpeg2000` | ✅ | — | Wavelet DWT, full EBCOT tier-1 decoder (MQ coder, 3-pass) |
+| VRT | `oxigeo-vrt` | ✅ | ✅ | Band math, source mosaicking, on-the-fly processing |
+| GeoPackage | `oxigeo-gpkg` | ✅ | partial | SQLite-based; write supports point feature tables only (single-page B-tree) |
+| PMTiles v3 | `oxigeo-pmtiles` | ✅ | ✅ | Hilbert curve, single-file tile archive |
+| MBTiles | `oxigeo-mbtiles` | ✅ | ✅ | Tile storage, TMS/XYZ schemes |
+| COPC | `oxigeo-copc` | ✅ | — | Cloud Optimized Point Cloud (LAS 1.4, octree spatial index) |
+| LAS/LAZ | `oxigeo-copc` | ✅ | — | Plain (non-COPC) point clouds, read via the same reader as COPC |
+
+Additional format support that ships outside the `Dataset::open()` driver
+registry entirely (so not counted among the 16 above):
+
+| Format | Crate | Read | Write |
+|--------|-------|------|-------|
+| KML / KMZ | `oxigeo-drivers-advanced` | ✅ | ✅ |
+| TopoJSON | `oxigeo-geojson` (streaming module) | — | ✅ |
 
 ## Performance Comparison
 

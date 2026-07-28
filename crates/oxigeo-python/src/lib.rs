@@ -44,6 +44,7 @@ mod dataset;
 mod error;
 mod expression;
 mod raster;
+mod remote;
 mod vector;
 
 use pyo3::prelude::*;
@@ -95,7 +96,7 @@ fn open(py: Python<'_>, path: &str, mode: &str) -> PyResult<Dataset> {
 ///
 /// Example:
 ///     >>> oxigeo.version()
-///     '0.2.0'
+///     '0.2.1'
 #[pyfunction]
 fn version() -> &'static str {
     oxigeo_core::VERSION

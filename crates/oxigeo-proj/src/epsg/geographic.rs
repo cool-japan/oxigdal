@@ -1,8 +1,5 @@
 //! Geographic CRS definitions (EPSG 4xxx codes and similar).
 
-#[cfg(not(feature = "std"))]
-use alloc::format;
-#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
 
 use super::types::{CrsType, EpsgDatabase, EpsgDefinition};

@@ -32,9 +32,6 @@ oxigeo-proj = { workspace = true, optional = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 
-# Numeric operations
-num-traits.workspace = true
-
 # Geodesic computations (Karney's algorithm, Pure Rust)
 geographiclib-rs = { workspace = true }
 

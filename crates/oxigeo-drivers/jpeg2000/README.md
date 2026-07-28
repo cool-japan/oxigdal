@@ -62,13 +62,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Limitations
 
-This is a reference implementation with simplified decoding for common cases. Full JPEG2000 compliance requires extensive additional work, particularly for:
+Decoding is real (full EBCOT tier-1 entropy decoding, wavelet inverse transform, and
+multi-component transform all run end-to-end -- `decode_rgb`/`decode_rgba` return actual
+decoded pixels, not a flat-gray placeholder), and ROI (region of interest) markers are
+parsed and honored. What is still missing for full JPEG2000 compliance:
 
-- Complete tier-1 EBCOT decoder
-- All progression orders
-- Region of interest (ROI)
-- Complex quantization modes
+- **No encoding/write support** -- this crate is decode-only; there is no `Jpeg2000Writer`
+- Complex quantization modes beyond the common cases
+- GeoJP2 / GMLJP2 georeferencing metadata boxes (no `ModelTiepoint`/`GeoKeyDirectory` extraction)
 - JPX (JPEG2000 Part 2) extensions
+- SIMD-optimized wavelet transforms and parallel tile decoding (see Performance below)
 
 For production use with complex JPEG2000 files, consider this a starting point that may need enhancement.
 
@@ -90,8 +93,8 @@ For high-performance applications, additional optimization work is recommended.
 
 | Release | Feature |
 |---------|---------|
-| **v0.2.0** (Q2 2026) | Complete tier-1 EBCOT decoder, SIMD-optimized wavelet transforms, parallel tile decoding, memory-mapped large file support |
-| **v0.3.0** (Q3 2026) | Encoding / write support, progressive quality decoding, region-of-interest decoding, JPX (Part 2) features |
+| **v0.2.0/v0.2.1** (shipped) | Full tier-1 EBCOT decoder wired into `decode_rgb`/`decode_rgba`; multi-tile decode correctness (per-tile `Psot` bounds + correct pixel offset compositing); `jp2h` box recursion so `ihdr`/`colr` are read from spec-conformant `.jp2` files; progressive quality-layer decoding; ROI decoding |
+| **v0.3.0** (planned) | Encoding / write support (`Jpeg2000Writer`, J2K + JP2 container), GeoJP2 metadata box, SIMD-optimized wavelet transforms, parallel tile decoding, memory-mapped large file support |
 
 ## License
 

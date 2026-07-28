@@ -6,6 +6,18 @@
 //! The algorithm allocates coding passes from code blocks into quality layers
 //! by choosing the distortion-rate slope threshold that minimises distortion
 //! for a given total byte budget.
+//!
+//! # Status: encoder-side infrastructure (no current caller)
+//!
+//! This crate currently ships a JPEG2000 **decoder**, not an encoder. The
+//! [`RateController`] and its helpers are the rate-allocation building blocks a
+//! future Tier-1/Tier-2 *encoder* would drive with real per-code-block
+//! distortion/byte-cost slope data; there is presently no code path in this
+//! crate that constructs a [`RateController`] from an encode pipeline. The
+//! types are unit-tested in isolation and re-exported so an encoder (in this or
+//! a dependent crate) can consume them, but they are not part of any shipped
+//! encode feature yet. Treat this module as staged infrastructure, not a
+//! delivered rate-control capability.
 
 use crate::error::{Jpeg2000Error, Result};
 

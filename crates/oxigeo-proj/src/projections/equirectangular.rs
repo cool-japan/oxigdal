@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn test_equirectangular_pole_lat_ts() {
         // lat_ts = 90° should fail (cos = 0)
-        let lat_ts = std::f64::consts::FRAC_PI_2;
+        let lat_ts = core::f64::consts::FRAC_PI_2;
         assert!(equirectangular_inverse(1000.0, 1000.0, 0.0, lat_ts, R).is_err());
     }
 }

@@ -6,6 +6,22 @@
 use crate::error::{QcIssue, QcResult, Severity};
 use oxigeo_core::buffer::{BufferStatistics, RasterBuffer};
 
+/// Median of a slice of `f64` values (not modified in place; the slice is
+/// copied and sorted internally). Returns `0.0` for an empty slice.
+fn median_of(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted: Vec<f64> = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
 /// Result of raster consistency analysis.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConsistencyResult {
@@ -586,11 +602,143 @@ impl ConsistencyChecker {
         })
     }
 
-    /// Detects seamline artifacts.
-    fn detect_seamline_artifacts(&self, _buffer: &RasterBuffer) -> QcResult<Vec<SeamlineArtifact>> {
-        // Simplified implementation - full implementation would use edge detection
-        // and color difference analysis
-        Ok(Vec::new())
+    /// Detects seamline artifacts: full-height/full-width lines of
+    /// coordinated intensity discontinuity, the signature of two mosaicked
+    /// source tiles meeting at an arbitrary boundary.
+    ///
+    /// Unlike [`Self::detect_block_artifacts`] (which only samples the
+    /// periodic `block_size` grid characteristic of block-based compression
+    /// artifacts), a mosaic seam can occur at *any* column or row, so every
+    /// interior column and row is scanned using the same discontinuity
+    /// metric ([`Self::calculate_vertical_discontinuity`] /
+    /// [`Self::calculate_horizontal_discontinuity`]). A column/row is
+    /// flagged as a seamline candidate when its discontinuity is a robust
+    /// statistical outlier (via median + MAD, which tolerates the normal
+    /// texture noise present in most rasters) relative to every other
+    /// column/row in the same scan, and additionally exceeds the configured
+    /// absolute `artifact_threshold` so a near-uniform image cannot trigger
+    /// on float noise alone. Adjacent flagged positions are merged into a
+    /// single seamline segment.
+    fn detect_seamline_artifacts(&self, buffer: &RasterBuffer) -> QcResult<Vec<SeamlineArtifact>> {
+        let width = buffer.width();
+        let height = buffer.height();
+        let mut artifacts = Vec::new();
+
+        if width > 2 {
+            let magnitudes: Vec<f64> = (1..width)
+                .map(|x| self.calculate_vertical_discontinuity(buffer, x))
+                .collect::<QcResult<Vec<_>>>()?;
+            artifacts.extend(Self::find_seamlines_from_magnitudes(
+                &magnitudes,
+                1,
+                self.config.artifact_threshold,
+                |start_pos, end_pos| SeamlineArtifact {
+                    start_x: start_pos,
+                    start_y: 0,
+                    end_x: end_pos,
+                    end_y: height.saturating_sub(1),
+                    severity: Severity::Info, // overwritten below
+                    avg_difference: 0.0,      // overwritten below
+                },
+            ));
+        }
+
+        if height > 2 {
+            let magnitudes: Vec<f64> = (1..height)
+                .map(|y| self.calculate_horizontal_discontinuity(buffer, y))
+                .collect::<QcResult<Vec<_>>>()?;
+            artifacts.extend(Self::find_seamlines_from_magnitudes(
+                &magnitudes,
+                1,
+                self.config.artifact_threshold,
+                |start_pos, end_pos| SeamlineArtifact {
+                    start_x: 0,
+                    start_y: start_pos,
+                    end_x: width.saturating_sub(1),
+                    end_y: end_pos,
+                    severity: Severity::Info, // overwritten below
+                    avg_difference: 0.0,      // overwritten below
+                },
+            ));
+        }
+
+        Ok(artifacts)
+    }
+
+    /// Robust outlier scan over a 1-D array of discontinuity magnitudes
+    /// (one entry per scanned column or row), merging adjacent flagged
+    /// positions into single seamline segments.
+    ///
+    /// `make_artifact(start_pos, end_pos)` builds a [`SeamlineArtifact`] with
+    /// the caller's choice of axis layout (vertical vs. horizontal); its
+    /// `severity`/`avg_difference` placeholders are overwritten with the
+    /// real computed values before being returned.
+    fn find_seamlines_from_magnitudes(
+        magnitudes: &[f64],
+        index_offset: u64,
+        artifact_threshold: f64,
+        make_artifact: impl Fn(u64, u64) -> SeamlineArtifact,
+    ) -> Vec<SeamlineArtifact> {
+        if magnitudes.is_empty() {
+            return Vec::new();
+        }
+
+        let median = median_of(magnitudes);
+        let abs_devs: Vec<f64> = magnitudes.iter().map(|m| (m - median).abs()).collect();
+        // Scale MAD by the standard consistency constant so it estimates a
+        // normal-distribution standard deviation (same convention used by
+        // `MadDetector` in oxigeo-observability's anomaly module).
+        let robust_std = (median_of(&abs_devs) * 1.4826).max(1e-9);
+
+        const SEAMLINE_ROBUST_Z_THRESHOLD: f64 = 4.0;
+
+        let mut flagged: Vec<usize> = magnitudes
+            .iter()
+            .enumerate()
+            .filter(|&(_, &m)| {
+                let z = (m - median) / robust_std;
+                z > SEAMLINE_ROBUST_Z_THRESHOLD && m > artifact_threshold
+            })
+            .map(|(i, _)| i)
+            .collect();
+        flagged.sort_unstable();
+
+        let mut artifacts = Vec::new();
+        let mut i = 0;
+        while i < flagged.len() {
+            let start_idx = flagged[i];
+            let mut end_idx = start_idx;
+            let mut sum = magnitudes[start_idx];
+            let mut count = 1u64;
+
+            while i + 1 < flagged.len() && flagged[i + 1] == end_idx + 1 {
+                i += 1;
+                end_idx = flagged[i];
+                sum += magnitudes[end_idx];
+                count += 1;
+            }
+
+            let avg_difference = sum / count as f64;
+            let severity = if avg_difference > 0.5 {
+                Severity::Major
+            } else if avg_difference > 0.3 {
+                Severity::Minor
+            } else {
+                Severity::Warning
+            };
+
+            let start_pos = index_offset + start_idx as u64;
+            let end_pos = index_offset + end_idx as u64;
+
+            let mut artifact = make_artifact(start_pos, end_pos);
+            artifact.severity = severity;
+            artifact.avg_difference = avg_difference;
+            artifacts.push(artifact);
+
+            i += 1;
+        }
+
+        artifacts
     }
 
     /// Assesses compression quality.
@@ -656,17 +804,50 @@ impl ConsistencyChecker {
     }
 
     /// Estimates noise level.
+    /// Estimates noise level using local 3x3-neighborhood variance,
+    /// stratified-sampled across the raster.
+    ///
+    /// Samples are laid out on a roughly square grid spanning the full
+    /// interior of the raster (excluding the 1px border needed for the 3x3
+    /// neighborhood), instead of recomputing the identical fixed off-center
+    /// patch on every iteration (the previous bug: `x`/`y` were derived only
+    /// from `buffer.width()`/`buffer.height()`/`sample_size`, never from the
+    /// loop index, so every one of up to 100 iterations sampled the exact
+    /// same 3x3 neighborhood).
     fn estimate_noise_level(&self, buffer: &RasterBuffer) -> QcResult<f64> {
-        // Simplified noise estimation using local variance
-        let sample_size = 100u64.min(buffer.width()).min(buffer.height());
+        let width = buffer.width();
+        let height = buffer.height();
+
+        // Need at least a 3x3 interior (a 1px border on every side) to
+        // sample a full neighborhood from.
+        if width < 3 || height < 3 {
+            return Ok(0.0);
+        }
+
+        let interior_width = width - 2;
+        let interior_height = height - 2;
+        let sample_size = 100u64
+            .min(interior_width.saturating_mul(interior_height))
+            .max(1);
+
+        // Roughly square sampling grid covering the whole interior.
+        let cols = (sample_size as f64).sqrt().ceil().max(1.0) as u64;
+        let rows = sample_size.div_ceil(cols).max(1);
+
         let mut variance_sum = 0.0;
         let mut sample_count = 0u64;
 
-        for _ in 0..sample_size {
-            let x = (buffer.width() / 2).saturating_sub(sample_size / 2);
-            let y = (buffer.height() / 2).saturating_sub(sample_size / 2);
+        'sampling: for row in 0..rows {
+            for col in 0..cols {
+                if sample_count >= sample_size {
+                    break 'sampling;
+                }
 
-            if x > 0 && y > 0 && x < buffer.width() - 1 && y < buffer.height() - 1 {
+                // Distinct cell-center coordinates per (row, col), spread
+                // across the full interior instead of a single fixed point.
+                let x = 1 + (col * interior_width / cols).min(interior_width.saturating_sub(1));
+                let y = 1 + (row * interior_height / rows).min(interior_height.saturating_sub(1));
+
                 let center = buffer.get_pixel(x, y)?;
                 let mut local_sum = 0.0;
                 let mut local_count = 0u64;
@@ -763,5 +944,110 @@ mod tests {
 
         assert_eq!(quality.assessment, CompressionAssessment::Excellent);
         assert!(quality.quality_score > 0.9);
+    }
+
+    #[test]
+    fn test_detect_seamline_artifacts_finds_a_real_vertical_seam() {
+        // Build a 60x60 image where columns [0, 30) are a constant low value
+        // and columns [30, 60) are a constant, very different high value --
+        // a textbook mosaic seam at x=30. Small texture noise elsewhere in
+        // each half should not itself be mistaken for the seam.
+        let width = 60u64;
+        let height = 60u64;
+        let mut buffer = RasterBuffer::zeros(width, height, RasterDataType::Float32);
+
+        for y in 0..height {
+            for x in 0..width {
+                let base = if x < 30 { 10.0 } else { 200.0 };
+                // Deterministic tiny texture noise so all columns aren't
+                // *perfectly* uniform (which would make every discontinuity
+                // exactly 0.0 except at the seam -- still a valid case, but
+                // this is closer to a realistic raster).
+                let noise = ((x * 7 + y * 13) % 3) as f64 * 0.01;
+                buffer
+                    .set_pixel(x, y, base + noise)
+                    .expect("set_pixel should succeed for in-bounds coordinates");
+            }
+        }
+
+        let checker = ConsistencyChecker::new();
+        let artifacts = checker
+            .detect_seamline_artifacts(&buffer)
+            .expect("seamline detection should succeed");
+
+        assert!(
+            !artifacts.is_empty(),
+            "a genuine 10x-magnitude vertical seam at x=30 must be detected, not silently \
+             reported as zero artifacts"
+        );
+        assert!(
+            artifacts.iter().any(|a| a.start_x <= 30 && a.end_x >= 30),
+            "detected seamline(s) should include the actual seam column (x=30), got: {artifacts:?}"
+        );
+    }
+
+    #[test]
+    fn test_detect_seamline_artifacts_reports_none_for_uniform_image() {
+        // A perfectly uniform image has zero discontinuity everywhere, so
+        // there is genuinely nothing to flag as an outlier.
+        let buffer = RasterBuffer::zeros(50, 50, RasterDataType::Float32);
+        let checker = ConsistencyChecker::new();
+        let artifacts = checker
+            .detect_seamline_artifacts(&buffer)
+            .expect("seamline detection should succeed");
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn test_estimate_noise_level_samples_vary_across_the_image() {
+        // Build an image whose left half is perfectly uniform (zero local
+        // variance) and whose right half has strong per-pixel noise. If
+        // estimate_noise_level always sampled the same fixed off-center
+        // patch (the previous bug), this would be indistinguishable from an
+        // image that is uniform (or noisy) everywhere. With real spatial
+        // sampling, the measured noise level must be strictly greater than
+        // sampling only the uniform half would produce.
+        let width = 80u64;
+        let height = 80u64;
+        let mut noisy_buffer = RasterBuffer::zeros(width, height, RasterDataType::Float32);
+        let mut uniform_buffer = RasterBuffer::zeros(width, height, RasterDataType::Float32);
+
+        for y in 0..height {
+            for x in 0..width {
+                uniform_buffer
+                    .set_pixel(x, y, 42.0)
+                    .expect("set_pixel should succeed");
+
+                let value = if x < width / 2 {
+                    42.0
+                } else {
+                    // Deterministic high-amplitude "noise" pattern.
+                    42.0 + if (x + y) % 2 == 0 { 50.0 } else { -50.0 }
+                };
+                noisy_buffer
+                    .set_pixel(x, y, value)
+                    .expect("set_pixel should succeed");
+            }
+        }
+
+        let checker = ConsistencyChecker::new();
+        let uniform_noise = checker
+            .estimate_noise_level(&uniform_buffer)
+            .expect("noise estimation should succeed");
+        let mixed_noise = checker
+            .estimate_noise_level(&noisy_buffer)
+            .expect("noise estimation should succeed");
+
+        assert_eq!(
+            uniform_noise, 0.0,
+            "a perfectly uniform image must measure zero noise"
+        );
+        assert!(
+            mixed_noise > uniform_noise,
+            "an image with a genuinely noisy half must measure more noise than a uniform image; \
+             got mixed={mixed_noise}, uniform={uniform_noise} -- if sampling always hit the same \
+             fixed patch, these could be indistinguishable depending on which half that patch \
+             fell in"
+        );
     }
 }

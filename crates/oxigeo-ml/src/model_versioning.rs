@@ -18,9 +18,21 @@ use crate::error::MlError;
 
 /// Semantic version for a model.
 ///
-/// Versions are ordered lexicographically: `(major, minor, patch)`.  The
-/// optional `tag` field is purely informational and does not affect ordering.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Ordering follows [semver](https://semver.org) precedence rules:
+///
+/// 1. The numeric triple `(major, minor, patch)` is compared first.
+/// 2. When the triples are equal, a version **without** a tag (a final release)
+///    has *higher* precedence than one carrying a pre-release/build `tag`. This
+///    matches semver — `1.0.0 > 1.0.0-canary` — and means [`ModelRegistry::
+///    get_latest`] never prefers an experimental tagged build over an
+///    untagged release with the same numeric version.
+/// 3. When both versions carry a tag, the tags are compared lexicographically
+///    (ASCII order), again matching semver pre-release ordering.
+///
+/// The manual [`Ord`]/[`PartialOrd`] impls are kept consistent with the derived
+/// [`Eq`]/[`Hash`]: `a.cmp(b) == Ordering::Equal` iff every field (including the
+/// tag) is equal, so distinct tags remain distinct registry entries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelVersion {
     /// Breaking changes
     pub major: u32,
@@ -30,6 +42,32 @@ pub struct ModelVersion {
     pub patch: u32,
     /// Optional pre-release or build tag (e.g. `"alpha"`, `"prod"`)
     pub tag: Option<String>,
+}
+
+impl Ord for ModelVersion {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        // Numeric triple first.
+        match (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch)) {
+            Ordering::Equal => {}
+            non_eq => return non_eq,
+        }
+        // Equal triple: apply semver pre-release precedence. A missing tag
+        // (final release) outranks any present tag; two present tags compare
+        // lexicographically.
+        match (&self.tag, &other.tag) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(a), Some(b)) => a.cmp(b),
+        }
+    }
+}
+
+impl PartialOrd for ModelVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl ModelVersion {
@@ -476,15 +514,54 @@ mod tests {
     }
 
     #[test]
-    fn test_version_tag_does_not_affect_ordering() {
-        // Two versions differing only in tag should be equal by Ord
-        let a = v(1, 0, 0).with_tag("alpha");
-        let b = v(1, 0, 0).with_tag("beta");
-        // tag is part of the struct so they will not be Ord-equal unless tag
-        // is excluded from derive — but our Ord is derived and tag is a field.
-        // Test that the numeric part dominates:
-        assert!(v(1, 0, 0) < v(1, 0, 1));
-        // a and b have the same numeric triple so should be equal in that dimension
-        let _ = (a, b); // just ensure they compile
+    fn test_numeric_triple_dominates_tag() {
+        // A larger numeric triple always wins regardless of tags.
+        assert!(v(1, 0, 0).with_tag("zzz") < v(1, 0, 1));
+        assert!(v(1, 0, 0) < v(1, 0, 1).with_tag("aaa"));
+    }
+
+    #[test]
+    fn test_untagged_release_outranks_tagged_same_triple() {
+        // semver: 1.0.0 > 1.0.0-canary (a final release beats a pre-release).
+        let release = v(1, 0, 0);
+        let canary = v(1, 0, 0).with_tag("canary");
+        assert!(
+            release > canary,
+            "untagged release must outrank tagged build"
+        );
+        assert!(canary < release);
+        // Ordering must be consistent with equality: distinct tags are never Equal.
+        assert_ne!(release.cmp(&canary), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_two_tags_compare_lexicographically() {
+        let alpha = v(1, 0, 0).with_tag("alpha");
+        let beta = v(1, 0, 0).with_tag("beta");
+        assert!(alpha < beta, "alpha < beta by ASCII tag order");
+    }
+
+    #[test]
+    fn test_ord_consistent_with_eq() {
+        let a = v(1, 0, 0).with_tag("x");
+        let b = v(1, 0, 0).with_tag("x");
+        assert_eq!(a, b);
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_get_latest_prefers_untagged_release_over_canary() {
+        // Registering a canary build and then the final release must make the
+        // final release the "latest", not the experimental tagged build.
+        let mut reg = ModelRegistry::new();
+        reg.register(meta("unet", v(1, 0, 0).with_tag("canary")));
+        reg.register(meta("unet", v(1, 0, 0)));
+
+        let latest = reg.get_latest("unet").expect("should exist");
+        assert_eq!(latest.version, v(1, 0, 0));
+        assert!(
+            latest.version.tag.is_none(),
+            "latest must be the untagged release"
+        );
     }
 }

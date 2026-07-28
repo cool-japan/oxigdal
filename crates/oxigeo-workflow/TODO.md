@@ -1,7 +1,7 @@
 # TODO: oxigeo-workflow
 
 > **Purpose:** DAG-based workflow engine — orchestrates geospatial processing pipelines with cycle detection, retries, timeouts, scheduling.
-> **Status (2026-05-16):** 20,632 LoC · 197 tests · 4 real-code stubs (scheduler persistence, Temporal/Airflow/Prefect import, external HMAC)
+> **Status (2026-07-28):** 22,405 LoC · 213 tests · 1 real-code stub remains (Airflow import) — scheduler persistence, external HMAC, and Prefect/Temporal import (round-trip of this crate's own generated format) from the prior audit are now implemented.
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -19,12 +19,13 @@
   - Done: 2026-05-31 (Slice 29). Tests: 9 new (webhook_hmac_test) + 174 existing = 183 total.
   - Real `hmac::Hmac<Sha256>` (RustCrypto 0.13/0.11). `hex_encode` → `hmac_sha256_hex`; uppercase normalization; RFC 4231 KAT pinned. Also fixed orphaned `pub mod external;` in `integrations/mod.rs`.
 
-- [ ] Implement workflow import for Airflow, Prefect, Temporal
-  - **Verified gap:** `src/integrations/airflow.rs:62` — `"Import from Airflow not yet implemented"`; `src/integrations/prefect.rs:45` — `"Import from Prefect not yet implemented"`; `src/integrations/temporal.rs:65` — `"Import from Temporal not yet implemented"`; `src/integrations/temporal.rs:27` — `go_code.push_str("    // TODO: Implement activity logic\n");` (TODO emitted into exported Go).
-  - **Goal:** Each `import_workflow` parses the source dialect (Python AST for Airflow/Prefect, Go AST for Temporal) and constructs a `WorkflowDefinition` with equivalent tasks + dependency edges.
-  - **Design:** Out-of-scope for parsing native Python/Go in Rust. Instead, accept the dialect's JSON serialization: Airflow exports DAGs as JSON via `airflow dags show --output json`; Prefect via `prefect flow inspect`; Temporal via its query API. Parse JSON → walk task/dep tree → emit `TaskNode` + `add_dependency`. Document the JSON contract per dialect.
-  - **Files:** `src/integrations/airflow.rs:60-65` (replace stub), `src/integrations/prefect.rs:43-48`, `src/integrations/temporal.rs:61-67`, `src/integrations/temporal.rs:27` (replace TODO comment with parameterized activity stub generator).
-  - **Tests:** *(proposed)* `test_airflow_import_simple_dag_json`, `test_prefect_import_with_dependencies`, `test_temporal_import_workflow_signature`, `test_airflow_import_malformed_json_errors`.
+- [ ] Implement workflow import for Airflow (Prefect + Temporal done)
+  - **Partially done 2026-07-21 (0.2.1 production campaign):** `PrefectIntegration::import_workflow` and `TemporalIntegration::import_workflow` are now real. Both round-trip this crate's own `export_workflow` output: they check for a `GENERATED_MARKER` header comment + the `workflow_id`/`workflow_name` (Temporal) metadata comments + per-task decorator/function markers (`@task(name='task_{N}')` / `func Task{N}Activity`) via regex, then rebuild a sequential `WorkflowDefinition` (`task-0 -> task-1 -> ...`). Arbitrary hand-written Prefect/Temporal source is explicitly rejected with a descriptive `WorkflowError::Integration` rather than silently misparsed — this is a documented round-trip contract, not a general Python/Go parser. The `temporal.rs:27` `// TODO: Implement activity logic` placeholder is also gone: exported Go now emits a real `exec.Command(...)` body when a task has a `command` (see `TaskNode::command`), else an honest "no command configured, original config: {...}" placeholder body (mirrors the same pattern in `airflow.rs`/`prefect.rs` export).
+  - **Remaining gap:** `src/integrations/airflow.rs` `import_workflow` is still `Err(WorkflowError::integration("airflow", "Import from Airflow not yet implemented"))` — only Airflow import remains unimplemented.
+  - **Goal:** `AirflowIntegration::import_workflow` parses Airflow-dialect input and constructs an equivalent `WorkflowDefinition`, either via the same self-export round-trip scoping used for Prefect/Temporal (simplest, consistent) or the JSON-contract approach originally sketched below.
+  - **Design (original JSON-contract sketch, still applicable):** Accept Airflow's JSON serialization (`airflow dags show --output json`); parse JSON → walk task/dep tree → emit `TaskNode` + `add_dependency`. Document the JSON contract.
+  - **Files:** `src/integrations/airflow.rs` (replace stub only — `prefect.rs`/`temporal.rs` already done).
+  - **Tests:** *(proposed)* `test_airflow_import_round_trips_own_export` (if self-export scoping is chosen) or `test_airflow_import_simple_dag_json` + `test_airflow_import_malformed_json_errors` (if JSON-contract scoping is chosen).
   - **Risk:** Python-side AST → JSON converters are not stable across Airflow versions; document tested versions in rustdoc and pin one schema.
   - **Prerequisites:** None.
 
@@ -91,4 +92,4 @@
 - [x] Resource requirements struct (CPU cores, memory MB, GPU flag, disk MB, custom map) — `src/dag/graph.rs:56-69`
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

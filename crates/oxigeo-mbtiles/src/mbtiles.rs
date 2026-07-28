@@ -166,12 +166,76 @@ impl MBTilesMetadata {
     pub fn extras(&self) -> &HashMap<String, String> {
         &self.extras
     }
+
+    /// Flatten this metadata back into `(name, value)` rows suitable for
+    /// insertion into an MBTiles `metadata` table.
+    ///
+    /// This is the inverse of [`Self::from_map`] / [`Self::from_map_strict`]:
+    /// every canonical field that is `Some` is emitted under its MBTiles 1.3
+    /// key, followed by every `extras` entry verbatim. Row order is
+    /// deterministic (canonical fields first in a fixed order, then extras
+    /// sorted by key) so callers get reproducible output.
+    pub fn to_rows(&self) -> Vec<(String, String)> {
+        let mut rows = Vec::new();
+
+        if let Some(name) = &self.name {
+            rows.push(("name".to_string(), name.clone()));
+        }
+        if let Some(format) = &self.format {
+            rows.push(("format".to_string(), format.as_metadata_str().into_owned()));
+        }
+        if let Some(bounds) = &self.bounds {
+            rows.push((
+                "bounds".to_string(),
+                format!("{},{},{},{}", bounds[0], bounds[1], bounds[2], bounds[3]),
+            ));
+        }
+        if let Some(center) = &self.center {
+            rows.push((
+                "center".to_string(),
+                format!("{},{},{}", center[0], center[1], center[2]),
+            ));
+        }
+        if let Some(minzoom) = &self.minzoom {
+            rows.push(("minzoom".to_string(), minzoom.to_string()));
+        }
+        if let Some(maxzoom) = &self.maxzoom {
+            rows.push(("maxzoom".to_string(), maxzoom.to_string()));
+        }
+        if let Some(attribution) = &self.attribution {
+            rows.push(("attribution".to_string(), attribution.clone()));
+        }
+        if let Some(description) = &self.description {
+            rows.push(("description".to_string(), description.clone()));
+        }
+        if let Some(tile_type) = &self.tile_type {
+            rows.push(("type".to_string(), tile_type.clone()));
+        }
+        if let Some(version) = &self.version {
+            rows.push(("version".to_string(), version.clone()));
+        }
+        if let Some(json) = &self.json {
+            rows.push(("json".to_string(), json.clone()));
+        }
+
+        let mut extra_keys: Vec<&String> = self.extras.keys().collect();
+        extra_keys.sort();
+        for key in extra_keys {
+            rows.push((key.clone(), self.extras[key].clone()));
+        }
+
+        rows
+    }
 }
 
 /// In-memory MBTiles tile store.
 ///
-/// In production use this would delegate to a SQLite backend; here it
-/// provides a pure-Rust, dependency-free store suitable for testing.
+/// A pure-Rust, dependency-free in-memory representation of an MBTiles tile
+/// set. To persist an archive to a real on-disk SQLite `.mbtiles` file, build
+/// an [`crate::writer::MBTilesData`] via [`crate::writer::MBTilesWriter`] and
+/// call [`crate::writer::MBTilesData::write_to_file`] (requires the `sqlite`
+/// cargo feature). [`MBTilesReader`](crate::reader::MBTilesReader) reads such
+/// files back (also `sqlite`-gated).
 #[derive(Debug, Default)]
 pub struct MBTiles {
     /// Tileset metadata.

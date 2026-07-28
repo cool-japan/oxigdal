@@ -28,7 +28,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-security = "0.2.0"
+oxigeo-security = "0.2.1"
 ```
 
 ## Quick Start

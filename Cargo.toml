@@ -60,7 +60,6 @@ members = [
     "crates/oxigeo-kinesis",
     "crates/oxigeo-mqtt",
     "crates/oxigeo-streaming",
-    "crates/oxigeo-kafka",
     "crates/oxigeo-mobile-enhanced",
     "crates/oxigeo-edge",
     "crates/oxigeo-offline",
@@ -153,8 +152,6 @@ default-members = [
     "crates/oxigeo-kinesis",
     "crates/oxigeo-mqtt",
     "crates/oxigeo-streaming",
-    # oxigeo-kafka excluded from default build: rdkafka-sys (C FFI) violates Pure Rust Policy.
-    # Build explicitly with: cargo build -p oxigeo-kafka
     "crates/oxigeo-mobile-enhanced",
     "crates/oxigeo-edge",
     # oxigeo-offline excluded from default build: previously used rusqlite; now uses oxisql-sqlite-compat (Pure Rust).
@@ -173,7 +170,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.95"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -284,12 +281,16 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # COOLJAPAN ecosystem
-scirs2-core = "0.6.1"
+scirs2-core = "0.6.4"
 # numrs2 = { version = "0.1", optional = true }
 # oxiblas = { version = "0.1", optional = true }
 oxicode = "0.2.4"
-oxih5 = "0.2.0"
-oxinetcdf = "0.2.0"
+oxih5 = "0.2.2"
+# oxih5-core is oxih5's own foundation crate (kept in lockstep with oxih5);
+# needed directly only to name the `Dataspace` enum when building `Attribute`
+# fixtures in driver unit tests.
+oxih5-core = "0.2.2"
+oxinetcdf = "0.2.2"
 
 # OxiProj — Pure-Rust cartographic library (COOLJAPAN)
 # `epsg` is deliberately NOT enabled at the workspace level: it pulls `oxiproj-db`
@@ -337,7 +338,9 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", 
 aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 
 # Messaging
-rdkafka = { version = "0.39", default-features = false, features = ["tokio"] }
+# NOTE: `rdkafka` was removed in 0.2.1 together with the retired `oxigeo-kafka`
+# crate — it was the workspace's only mandatory C-toolchain dependency
+# (rdkafka-sys -> cmake -> librdkafka), against the Pure Rust Policy.
 rumqttc = { version = "0.25", default-features = false }
 # NOTE: sled 0.34.7 has unmaintained deps (RUSTSEC-2025-0057 fxhash, RUSTSEC-2024-0384 instant)
 # Low risk: optional features, stable code. Consider redb for future major version.
@@ -367,88 +370,87 @@ serde-wasm-bindgen = "0.6"
 # default-features = false so no_std/alloc-only consumers (oxigeo-embedded) can select
 # the lean `alloc`-only surface (Cargo hard-errors on member-level `default-features = false`
 # otherwise). Other consumers re-enable defaults with `default-features = true` in their manifests.
-oxigeo-core = { path = "crates/oxigeo-core", version = "0.2.0", default-features = false }
+oxigeo-core = { path = "crates/oxigeo-core", version = "0.2.1", default-features = false }
 # default-features = false so wasm consumers can select the lean `std`-only surface
 # (Cargo hard-errors on member-level `default-features = false` otherwise).
 # Native consumers re-enable defaults with `default-features = true` in their manifests.
-oxigeo-algorithms = { path = "crates/oxigeo-algorithms", version = "0.2.0", default-features = false }
-oxigeo-proj = { path = "crates/oxigeo-proj", version = "0.2.0" }
-oxigeo-qc = { path = "crates/oxigeo-qc", version = "0.2.0" }
+oxigeo-algorithms = { path = "crates/oxigeo-algorithms", version = "0.2.1", default-features = false }
+oxigeo-proj = { path = "crates/oxigeo-proj", version = "0.2.1" }
+oxigeo-qc = { path = "crates/oxigeo-qc", version = "0.2.1" }
 
 # Driver crates
-oxigeo-geotiff = { path = "crates/oxigeo-drivers/geotiff", version = "0.2.0" }
-oxigeo-geojson = { path = "crates/oxigeo-drivers/geojson", version = "0.2.0" }
-oxigeo-geojson-stream = { path = "crates/oxigeo-geojson", version = "0.2.0" }
-oxigeo-zarr = { path = "crates/oxigeo-drivers/zarr", version = "0.2.0" }
-oxigeo-flatgeobuf = { path = "crates/oxigeo-drivers/flatgeobuf", version = "0.2.0" }
-oxigeo-shapefile = { path = "crates/oxigeo-drivers/shapefile", version = "0.2.0" }
-oxigeo-netcdf = { path = "crates/oxigeo-drivers/netcdf", version = "0.2.0" }
-oxigeo-geoparquet = { path = "crates/oxigeo-drivers/geoparquet", version = "0.2.0" }
-oxigeo-hdf5 = { path = "crates/oxigeo-drivers/hdf5", version = "0.2.0" }
-oxigeo-vrt = { path = "crates/oxigeo-drivers/vrt", version = "0.2.0" }
-oxigeo-grib = { path = "crates/oxigeo-drivers/grib", version = "0.2.0" }
-oxigeo-jpeg2000 = { path = "crates/oxigeo-drivers/jpeg2000", version = "0.2.0" }
+oxigeo-geotiff = { path = "crates/oxigeo-drivers/geotiff", version = "0.2.1" }
+oxigeo-geojson = { path = "crates/oxigeo-drivers/geojson", version = "0.2.1" }
+oxigeo-geojson-stream = { path = "crates/oxigeo-geojson", version = "0.2.1" }
+oxigeo-zarr = { path = "crates/oxigeo-drivers/zarr", version = "0.2.1" }
+oxigeo-flatgeobuf = { path = "crates/oxigeo-drivers/flatgeobuf", version = "0.2.1" }
+oxigeo-shapefile = { path = "crates/oxigeo-drivers/shapefile", version = "0.2.1" }
+oxigeo-netcdf = { path = "crates/oxigeo-drivers/netcdf", version = "0.2.1" }
+oxigeo-geoparquet = { path = "crates/oxigeo-drivers/geoparquet", version = "0.2.1" }
+oxigeo-hdf5 = { path = "crates/oxigeo-drivers/hdf5", version = "0.2.1" }
+oxigeo-vrt = { path = "crates/oxigeo-drivers/vrt", version = "0.2.1" }
+oxigeo-grib = { path = "crates/oxigeo-drivers/grib", version = "0.2.1" }
+oxigeo-jpeg2000 = { path = "crates/oxigeo-drivers/jpeg2000", version = "0.2.1" }
 
 # Feature-specific crates
-oxigeo-wasm = { path = "crates/oxigeo-wasm", version = "0.2.0" }
-oxigeo-wasm-geoparquet = { path = "crates/oxigeo-wasm-geoparquet", version = "0.2.0" }
-oxigeo-mobile = { path = "crates/oxigeo-mobile", version = "0.2.0" }
-oxigeo-cloud = { path = "crates/oxigeo-cloud", version = "0.2.0" }
-oxigeo-3d = { path = "crates/oxigeo-3d", version = "0.2.0" }
-oxigeo-server = { path = "crates/oxigeo-server", version = "0.2.0" }
-oxigeo-postgis = { path = "crates/oxigeo-postgis", version = "0.2.0" }
-oxigeo-analytics = { path = "crates/oxigeo-analytics", version = "0.2.0" }
-oxigeo-temporal = { path = "crates/oxigeo-temporal", version = "0.2.0" }
-oxigeo-terrain = { path = "crates/oxigeo-terrain", version = "0.2.0" }
-oxigeo-rs3gw = { path = "crates/oxigeo-rs3gw", version = "0.2.0" }
-oxigeo-distributed = { path = "crates/oxigeo-distributed", version = "0.2.0" }
-oxigeo-python = { path = "crates/oxigeo-python", version = "0.2.0" }
-oxigeo-stac = { path = "crates/oxigeo-stac", version = "0.2.0" }
-oxigeo-ml = { path = "crates/oxigeo-ml", version = "0.2.0" }
-oxigeo-ml-foundation = { path = "crates/oxigeo-ml-foundation", version = "0.2.0" }
-oxigeo-metadata = { path = "crates/oxigeo-metadata", version = "0.2.0" }
-oxigeo-sensors = { path = "crates/oxigeo-sensors", version = "0.2.0" }
-oxigeo-gpu = { path = "crates/oxigeo-gpu", version = "0.2.0" }
-oxigeo-gpu-advanced = { path = "crates/oxigeo-gpu-advanced", version = "0.2.0" }
-oxigeo-bench = { path = "crates/oxigeo-bench", version = "0.2.0" }
-oxigeo-ws = { path = "crates/oxigeo-ws", version = "0.2.0" }
-oxigeo-websocket = { path = "crates/oxigeo-websocket", version = "0.2.0" }
-oxigeo-etl = { path = "crates/oxigeo-etl", version = "0.2.0" }
-oxigeo-services = { path = "crates/oxigeo-services", version = "0.2.0" }
-oxigeo-cache-advanced = { path = "crates/oxigeo-cache-advanced", version = "0.2.0" }
-oxigeo-cluster = { path = "crates/oxigeo-cluster", version = "0.2.0" }
-oxigeo-query = { path = "crates/oxigeo-query", version = "0.2.0" }
-oxigeo-compress = { path = "crates/oxigeo-compress", version = "0.2.0" }
-oxigeo-observability = { path = "crates/oxigeo-observability", version = "0.2.0" }
+oxigeo-wasm = { path = "crates/oxigeo-wasm", version = "0.2.1" }
+oxigeo-wasm-geoparquet = { path = "crates/oxigeo-wasm-geoparquet", version = "0.2.1" }
+oxigeo-mobile = { path = "crates/oxigeo-mobile", version = "0.2.1" }
+oxigeo-cloud = { path = "crates/oxigeo-cloud", version = "0.2.1" }
+oxigeo-3d = { path = "crates/oxigeo-3d", version = "0.2.1" }
+oxigeo-server = { path = "crates/oxigeo-server", version = "0.2.1" }
+oxigeo-postgis = { path = "crates/oxigeo-postgis", version = "0.2.1" }
+oxigeo-analytics = { path = "crates/oxigeo-analytics", version = "0.2.1" }
+oxigeo-temporal = { path = "crates/oxigeo-temporal", version = "0.2.1" }
+oxigeo-terrain = { path = "crates/oxigeo-terrain", version = "0.2.1" }
+oxigeo-rs3gw = { path = "crates/oxigeo-rs3gw", version = "0.2.1" }
+oxigeo-distributed = { path = "crates/oxigeo-distributed", version = "0.2.1" }
+oxigeo-python = { path = "crates/oxigeo-python", version = "0.2.1" }
+oxigeo-stac = { path = "crates/oxigeo-stac", version = "0.2.1" }
+oxigeo-ml = { path = "crates/oxigeo-ml", version = "0.2.1" }
+oxigeo-ml-foundation = { path = "crates/oxigeo-ml-foundation", version = "0.2.1" }
+oxigeo-metadata = { path = "crates/oxigeo-metadata", version = "0.2.1" }
+oxigeo-sensors = { path = "crates/oxigeo-sensors", version = "0.2.1" }
+oxigeo-gpu = { path = "crates/oxigeo-gpu", version = "0.2.1" }
+oxigeo-gpu-advanced = { path = "crates/oxigeo-gpu-advanced", version = "0.2.1" }
+oxigeo-bench = { path = "crates/oxigeo-bench", version = "0.2.1" }
+oxigeo-ws = { path = "crates/oxigeo-ws", version = "0.2.1" }
+oxigeo-websocket = { path = "crates/oxigeo-websocket", version = "0.2.1" }
+oxigeo-etl = { path = "crates/oxigeo-etl", version = "0.2.1" }
+oxigeo-services = { path = "crates/oxigeo-services", version = "0.2.1" }
+oxigeo-cache-advanced = { path = "crates/oxigeo-cache-advanced", version = "0.2.1" }
+oxigeo-cluster = { path = "crates/oxigeo-cluster", version = "0.2.1" }
+oxigeo-query = { path = "crates/oxigeo-query", version = "0.2.1" }
+oxigeo-compress = { path = "crates/oxigeo-compress", version = "0.2.1" }
+oxigeo-observability = { path = "crates/oxigeo-observability", version = "0.2.1" }
 # default-features = false so the wasm crate can consume the lean `attestation`-only
 # surface (default enterprise/tls pull tokio & friends, which are wasm-RED).
-oxigeo-security = { path = "crates/oxigeo-security", version = "0.2.0", default-features = false }
-oxigeo-ha = { path = "crates/oxigeo-ha", version = "0.2.0" }
-oxigeo-gateway = { path = "crates/oxigeo-gateway", version = "0.2.0" }
-oxigeo-workflow = { path = "crates/oxigeo-workflow", version = "0.2.0" }
-oxigeo-cloud-enhanced = { path = "crates/oxigeo-cloud-enhanced", version = "0.2.0" }
-oxigeo-db-connectors = { path = "crates/oxigeo-db-connectors", version = "0.2.0" }
-oxigeo-drivers-advanced = { path = "crates/oxigeo-drivers-advanced", version = "0.2.0" }
-oxigeo-jupyter = { path = "crates/oxigeo-jupyter", version = "0.2.0" }
-oxigeo-dev-tools = { path = "crates/oxigeo-dev-tools", version = "0.2.0" }
-oxigeo-kinesis = { path = "crates/oxigeo-kinesis", version = "0.2.0" }
-oxigeo-mqtt = { path = "crates/oxigeo-mqtt", version = "0.2.0" }
-oxigeo-pubsub = { path = "crates/oxigeo-pubsub", version = "0.2.0" }
-oxigeo-streaming = { path = "crates/oxigeo-streaming", version = "0.2.0" }
-oxigeo-kafka = { path = "crates/oxigeo-kafka", version = "0.2.0" }
-oxigeo-mobile-enhanced = { path = "crates/oxigeo-mobile-enhanced", version = "0.2.0" }
-oxigeo-pwa = { path = "crates/oxigeo-pwa", version = "0.2.0" }
-oxigeo-sync = { path = "crates/oxigeo-sync", version = "0.2.0" }
-oxigeo-edge = { path = "crates/oxigeo-edge", version = "0.2.0" }
-oxigeo-offline = { path = "crates/oxigeo-offline", version = "0.2.0" }
-oxigeo-embedded = { path = "crates/oxigeo-embedded", version = "0.2.0" }
-oxigeo-node = { path = "crates/oxigeo-node", version = "0.2.0" }
-oxigeo-gpkg = { path = "crates/oxigeo-gpkg", version = "0.2.0" }
-oxigeo-mbtiles = { path = "crates/oxigeo-mbtiles", version = "0.2.0" }
-oxigeo-copc = { path = "crates/oxigeo-copc", version = "0.2.0" }
-oxigeo-pmtiles = { path = "crates/oxigeo-pmtiles", version = "0.2.0" }
-oxigeo-noalloc = { path = "crates/oxigeo-noalloc", version = "0.2.0" }
-oxigeo-index = { path = "crates/oxigeo-index", version = "0.2.0" }
+oxigeo-security = { path = "crates/oxigeo-security", version = "0.2.1", default-features = false }
+oxigeo-ha = { path = "crates/oxigeo-ha", version = "0.2.1" }
+oxigeo-gateway = { path = "crates/oxigeo-gateway", version = "0.2.1" }
+oxigeo-workflow = { path = "crates/oxigeo-workflow", version = "0.2.1" }
+oxigeo-cloud-enhanced = { path = "crates/oxigeo-cloud-enhanced", version = "0.2.1" }
+oxigeo-db-connectors = { path = "crates/oxigeo-db-connectors", version = "0.2.1" }
+oxigeo-drivers-advanced = { path = "crates/oxigeo-drivers-advanced", version = "0.2.1" }
+oxigeo-jupyter = { path = "crates/oxigeo-jupyter", version = "0.2.1" }
+oxigeo-dev-tools = { path = "crates/oxigeo-dev-tools", version = "0.2.1" }
+oxigeo-kinesis = { path = "crates/oxigeo-kinesis", version = "0.2.1" }
+oxigeo-mqtt = { path = "crates/oxigeo-mqtt", version = "0.2.1" }
+oxigeo-pubsub = { path = "crates/oxigeo-pubsub", version = "0.2.1" }
+oxigeo-streaming = { path = "crates/oxigeo-streaming", version = "0.2.1" }
+oxigeo-mobile-enhanced = { path = "crates/oxigeo-mobile-enhanced", version = "0.2.1" }
+oxigeo-pwa = { path = "crates/oxigeo-pwa", version = "0.2.1" }
+oxigeo-sync = { path = "crates/oxigeo-sync", version = "0.2.1" }
+oxigeo-edge = { path = "crates/oxigeo-edge", version = "0.2.1" }
+oxigeo-offline = { path = "crates/oxigeo-offline", version = "0.2.1" }
+oxigeo-embedded = { path = "crates/oxigeo-embedded", version = "0.2.1" }
+oxigeo-node = { path = "crates/oxigeo-node", version = "0.2.1" }
+oxigeo-gpkg = { path = "crates/oxigeo-gpkg", version = "0.2.1" }
+oxigeo-mbtiles = { path = "crates/oxigeo-mbtiles", version = "0.2.1" }
+oxigeo-copc = { path = "crates/oxigeo-copc", version = "0.2.1" }
+oxigeo-pmtiles = { path = "crates/oxigeo-pmtiles", version = "0.2.1" }
+oxigeo-noalloc = { path = "crates/oxigeo-noalloc", version = "0.2.1" }
+oxigeo-index = { path = "crates/oxigeo-index", version = "0.2.1" }
 
 # Node.js bindings dependencies
 napi = "3"
@@ -494,7 +496,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Web framework dependencies (for oxigeo-server)
 axum = "0.8"
 tower = { version = "0.5", features = ["util", "timeout", "load-shed", "limit"] }
-tower-http = { version = "0.7", features = ["fs", "trace", "cors", "compression-br", "compression-gzip", "compression-deflate"] }
+# Compression features intentionally omitted: they pull in `async-compression`
+# -> `flate2`/`brotli`/`miniz_oxide` (all banned by the COOLJAPAN Pure Rust
+# Policy) with zero usage in the workspace (no `CompressionLayer` anywhere; only
+# `cors`/`trace` are used). If HTTP compression is ever needed, wire it through
+# the `oxiarc-*` codecs instead of tower-http's C/impure backends.
+tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
 hyper = { version = "1", features = ["full"] }
 http = "1"
 http-body-util = "0.1"
@@ -512,7 +519,7 @@ clap_complete = "4"
 encase = "0.12"
 glam = { version = "0.33", features = ["bytemuck"] }
 naga = { version = "30", features = ["wgsl-in", "wgsl-out"] }
-pollster = "0.4"
+pollster = "1.0"
 wgpu = { version = "30", default-features = false, features = ["wgsl", "metal"] }
 
 # 3D/Point cloud
@@ -520,9 +527,9 @@ gltf = { version = "1", features = ["import"] }
 gltf-json = "1"
 delaunator = "1"
 rstar = "0.13"
-las = "0.9"
+las = "0.10"
 laz = { version = "0.12", default-features = false }
-base64 = "0.22"
+base64 = "0.23"
 
 # Crypto (for optional features)
 getrandom = "0.4"
@@ -534,7 +541,7 @@ aes-gcm = "0.11"
 chacha20poly1305 = "0.11"
 # ed25519-dalek internally uses sha2 0.10 (accepted duplicate major vs workspace sha2 0.11).
 # No `asm`/`fast` features: `fast` only adds big basepoint tables we don't need.
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
 webpki-roots = "1.0"
 
 # OxiTLS — pure-Rust TLS stack
@@ -550,14 +557,14 @@ oauth2 = { version = "5", default-features = false }
 azure_storage = "0.21"
 azure_storage_blobs = "0.21"
 azure_storage_datalake = "0.21"
-azure_core = "1.0"
+azure_core = "1.1"
 azure_identity = "1.0"
 # Google Cloud SDK - using latest stable versions (reduces tonic/axum duplication)
 google-cloud-storage = "1"  # Upgraded from 0.22
 google-cloud-auth = "1"     # Upgraded from 0.18
 google-cloud-gax = "1"      # Paginator traits (ItemPaginator) for gcs feature
 google-cloud-bigquery = "0.15"
-google-cloud-pubsub = "1.1"  # Upgraded from 0.29 to use latest tonic/axum
+google-cloud-pubsub = "1.2"  # Upgraded from 0.29 to use latest tonic/axum
 
 # AWS extended SDK
 aws-sdk-athena = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
@@ -583,14 +590,14 @@ numpy = "0.29"
 pyo3-build-config = "0.29"
 
 # SciRS2 AI/ML subcrates - Pure Rust (COOLJAPAN compliant)
-scirs2-neural = "0.6.1"
-scirs2-autograd = "0.6.1"
-scirs2-optimize = "0.6.1"
-scirs2-datasets = "0.6.1"
-scirs2-metrics = "0.6.1"
-scirs2-linalg = "0.6.1"
-scirs2-vision = "0.6.1"
-scirs2-series = "0.6.1"
+scirs2-neural = "0.6.4"
+scirs2-autograd = "0.6.4"
+scirs2-optimize = "0.6.4"
+scirs2-datasets = "0.6.4"
+scirs2-metrics = "0.6.4"
+scirs2-linalg = "0.6.4"
+scirs2-vision = "0.6.4"
+scirs2-series = "0.6.4"
 
 # PostgreSQL
 tokio-postgres = "0.7"
@@ -621,15 +628,20 @@ opentelemetry-stdout = { version = "0.32", features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.32", features = ["metrics", "trace", "grpc-tonic"] }
 tracing-opentelemetry = "0.33"
 prometheus = "0.14"
-statrs = "0.18"
+statrs = "0.19"
 
 # Gateway dependencies
 async-graphql = "7"
 async-graphql-axum = "7"
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 rustls = { version = "0.23", default-features = false }
 rustls-pemfile = "2"  # RUSTSEC-2025-0134: Unmaintained (archived Aug 2025). Waiting for upstream (tonic, rumqttc) to migrate to rustls-pki-types 1.9+
-tokio-tungstenite = "0.29"
+# tokio-rustls for real HTTPS load-balancer health-check probes (oxigeo-gateway).
+# default-features = false so it NEVER pulls the `ring` crypto provider (Pure Rust
+# Policy); the gateway supplies the provider via oxitls-adapter-rustls-rustcrypto and
+# layers features = ["tls12"] on top in its own manifest.
+tokio-rustls = { version = "0.26", default-features = false }
+tokio-tungstenite = "0.30"
 redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 governor = "0.10"
 
@@ -656,7 +668,6 @@ diff = "0.1"
 
 # Projection libraries
 proj4rs = "0.1"
-proj = { version = "0.31", default-features = false }
 
 # Python bindings runtime
 pyo3 = { version = "0.29", default-features = false }

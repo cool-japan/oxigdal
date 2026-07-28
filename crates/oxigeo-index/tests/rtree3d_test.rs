@@ -1,5 +1,7 @@
 //! Integration tests for the 3D R-tree (`RTree3D`) and `Bbox3D`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use oxigeo_index::{Bbox3D, RTree3D};
 
 // ---------------------------------------------------------------------------

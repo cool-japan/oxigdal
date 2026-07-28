@@ -9,6 +9,8 @@ pub mod provider;
 pub mod pyramid;
 
 pub use cache::{TileCache, TileCacheConfig};
-pub use protocol::{TileCoordinate, TileProtocol, TileRequest, TileResponse};
-pub use provider::{TileProvider, TileSource};
+pub use protocol::{
+    FileSystemTileProtocol, TileCoordinate, TileProtocol, TileRequest, TileResponse,
+};
+pub use provider::{TileGenerator, TileProvider, TileSource};
 pub use pyramid::{TileMatrix, TilePyramid, ZoomLevel};

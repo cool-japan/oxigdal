@@ -25,20 +25,20 @@ This crate provides enhanced cloud platform integrations beyond basic storage, i
 ### Azure Integration
 
 - **Data Lake Gen2**: Hierarchical namespace storage with ACLs
-- **Synapse Analytics**: SQL and Spark analytics
-- **Azure ML**: Training jobs, model deployment, and batch inference
-- **Azure Monitor**: Metrics, logs, and alerts
+- **Synapse Analytics**: SQL/Spark pool management (ARM), Spark jobs (Livy), and pipelines. Dedicated-SQL query execution speaks the TDS wire protocol and is out of scope for this REST client, so `execute_query` returns a typed `NotImplemented` error rather than a silent empty result.
+- **Azure ML**: Compute/model/endpoint/job management via the v2 control-plane REST API. Online/batch scoring (data-plane) returns `NotImplemented`.
+- **Azure Monitor**: Metrics, Log Analytics queries, metric alerts, action groups, activity log, and diagnostic settings (custom-metric ingestion returns `NotImplemented`)
 - **Managed Identity**: Authentication and authorization
-- **Cost Management**: Budgets, forecasts, and recommendations
+- **Cost Management**: Cost queries, forecasts, usage details, budgets, and Advisor recommendations (real REST). Cost alerts / exports that require information not present in the call return `NotImplemented`.
 
 ### GCP Integration
 
 - **BigQuery GIS**: SQL queries with geospatial functions
-- **Dataflow**: Pipeline management and execution
-- **Vertex AI**: Model training, deployment, and predictions
+- **Dataflow**: Template/flex-template launch, job status/list/metrics, cancel/drain (real Dataflow v1b3 REST)
+- **Vertex AI**: Model upload, endpoint create/deploy, prediction, training pipelines, batch prediction (real aiplatform REST with long-running-operation polling)
 - **Cloud Monitoring**: Metrics, alerts, and uptime checks
 - **Workload Identity**: Service account management and IAM
-- **Cost Management**: Budgets, billing exports, and recommendations
+- **Cost Management**: BigQuery-billing-export cost queries, Cloud Billing budgets, and Recommender/CUD recommendations (real REST). Storage-cost analysis, forecasting, and billing-export configuration return `NotImplemented`.
 
 ## Example Usage
 

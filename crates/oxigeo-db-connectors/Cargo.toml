@@ -14,35 +14,39 @@ categories = ["database", "science"]
 description = "Database connectors for OxiGeo (MySQL, SQLite, MongoDB, ClickHouse, TimescaleDB, Cassandra)"
 
 [features]
-default = ["postgres", "mysql", "mongodb", "clickhouse", "cassandra"]
+# COOLJAPAN Pure Rust Policy: the DEFAULT feature set must stay 100% Pure Rust.
+# `mysql` (libz-sys, C), `mongodb` (ring, hand-written asm) and `cassandra`
+# (aws-lc-sys via scylla's rustls-023, C/asm) all pull non-Pure-Rust C/asm
+# crates, so they are opt-in only. `postgres`, `sqlite` and `clickhouse` stay on
+# a pure-Rust dependency closure and are the default surface (matching the
+# docs.rs feature list below).
+default = ["postgres", "sqlite", "clickhouse"]
 # SQLite uses pure-Rust oxisql-sqlite-compat (limbo engine) - COOLJAPAN Pure Rust Policy
 sqlite = ["dep:oxisql-sqlite-compat", "dep:oxisql-core"]
-postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
-mysql = ["dep:mysql_async"]
-mongodb = ["dep:mongodb", "dep:bson"]
-clickhouse = ["dep:clickhouse"]
-cassandra = ["dep:scylla"]
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:tokio"]
+mysql = ["dep:mysql_async", "dep:tokio"]
+mongodb = ["dep:mongodb", "dep:bson", "dep:tokio"]
+clickhouse = ["dep:clickhouse", "dep:tokio"]
+cassandra = ["dep:scylla", "dep:tokio"]
 
 [dependencies]
 # Workspace dependencies
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+# `tokio` is only needed by the network-backed connectors (postgres/mysql/
+# mongodb/clickhouse/cassandra); it is gated behind those features so the
+# pure-Rust, blocking `sqlite` backend can build without pulling in the tokio
+# runtime (useful for wasm32 / no-runtime consumers).
+tokio = { workspace = true, optional = true }
 futures.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-bytes.workspace = true
 byteorder.workspace = true
 url.workspace = true
 geojson.workspace = true
 geo-types.workspace = true
 geo.workspace = true
-tracing.workspace = true
-
-# Internal dependencies
-oxigeo-core = { workspace = true, default-features = true }
-oxigeo-postgis.workspace = true
 
 # MySQL/MariaDB
 # SECURITY NOTE: mysql_async 0.36.1 uses lru 0.14.0 (RUSTSEC-2026-0002: unsound IterMut)
@@ -67,10 +71,6 @@ scylla = { workspace = true, features = ["rustls-023"], optional = true }
 # PostgreSQL/TimescaleDB
 tokio-postgres = { workspace = true, features = ["with-chrono-0_4"], optional = true }
 deadpool-postgres = { workspace = true, optional = true }
-
-# Connection pooling
-deadpool.workspace = true
-bb8.workspace = true
 
 # WKB/WKT support
 wkt.workspace = true

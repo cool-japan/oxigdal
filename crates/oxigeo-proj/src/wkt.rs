@@ -6,11 +6,8 @@
 use crate::error::{Error, Result};
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap as HashMap;
-#[cfg(not(feature = "std"))]
 use alloc::format;
-#[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::collections::HashMap;
@@ -728,6 +725,10 @@ impl WktParser {
 }
 
 /// Extract the datum name from a WKT string by finding `DATUM["<name>"`.
+///
+/// Gated with its sole caller, [`WktParser::parse_crs`], which builds a
+/// `crate::crs_registry::CrsDefinition` and is therefore std-only.
+#[cfg(feature = "std")]
 fn extract_datum_name(wkt: &str) -> Option<String> {
     let idx = wkt.find("DATUM[\"").or_else(|| wkt.find("DATUM [\""))?;
     let after = &wkt[idx..];

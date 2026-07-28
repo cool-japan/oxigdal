@@ -30,6 +30,7 @@
 
 pub mod builtin;
 pub mod capabilities;
+pub mod geometry;
 pub mod processes;
 
 use crate::error::{ServiceError, ServiceResult};

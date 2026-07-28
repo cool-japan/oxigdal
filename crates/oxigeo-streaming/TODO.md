@@ -1,7 +1,7 @@
 # TODO: oxigeo-streaming
 
 > **Purpose:** Real-time data processing and streaming pipelines for OxiGeo — windowing, watermarking, transformations, stateful operators, cloud object-store I/O.
-> **Status (2026-05-16):** 17,383 LoC · 617 tests · 2 real-code stubs
+> **Status (2026-07-28):** 17,276 LoC · 458 tests (all-features; 446 with default-features only) · 0 real-code stubs
 > **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
 
 ## High Priority (verified gaps)
@@ -24,9 +24,12 @@
   - **Why deferred:** Pure test-coverage gap, not a functional one.
 
 - [ ] Exactly-once semantics via transactional checkpointing on `CheckpointBarrier`
-  - **Goal:** Bring `src/v2/checkpoint.rs` (21.8 KB) from snapshot-only to two-phase commit aligned with sinks (Kafka transactions, Kinesis idempotent writes).
+  - **Goal:** Bring `src/v2/checkpoint.rs` (21.8 KB) from snapshot-only to two-phase commit aligned with sinks (Kinesis idempotent writes).
   - **Files:** `src/v2/checkpoint.rs`, `src/state/checkpoint.rs`.
-  - **Why deferred:** Depends on sink-side transactional API surface in oxigeo-kafka / oxigeo-kinesis.
+  - **Why deferred:** Depends on sink-side transactional API surface in oxigeo-kinesis.
+  - **Scope note:** Kafka transactions are out of scope — `oxigeo-kafka` was **retired in
+    0.2.1** (rdkafka-sys C toolchain vs. Pure Rust Policy) and there is no in-workspace
+    Kafka sink to align with.
 
 - [ ] Watermark propagation across multi-stream joins
   - **Goal:** `src/v2/stream_join.rs` (16.2 KB) computes per-side watermarks but does not propagate combined low-watermark to the merged output operator.
@@ -66,10 +69,10 @@
 
 ## Cross-crate dependencies
 - **Blocks:** oxigeo-services (real-time event push)
-- **Blocked by:** oxigeo-kafka (transactional sink), oxigeo-kinesis (cloud source/sink)
+- **Blocked by:** oxigeo-kinesis (cloud source/sink). *(`oxigeo-kafka` was retired in 0.2.1 — no longer a dependency or a blocker.)*
 
 ## Recently completed (verbatim)
 - *(none in this slice)*
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

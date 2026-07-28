@@ -6,6 +6,7 @@
 use crate::context::{GpuContext, GpuContextConfig};
 use crate::error::{GpuError, GpuResult};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 use wgpu::{Adapter, AdapterInfo, Backend, Backends, BufferUsages, Instance, PollType};
@@ -46,7 +47,15 @@ pub struct GpuDeviceInfo {
     pub adapter_info: AdapterInfo,
     /// Backend type.
     pub backend: Backend,
-    /// Estimated VRAM in bytes (if available).
+    /// Coarse VRAM estimate in bytes, derived from the adapter's device type
+    /// bucket (discrete/integrated/virtual) — **not** a measured figure.
+    ///
+    /// wgpu does not expose real adapter memory portably, so this is a rough
+    /// per-category heuristic (`MultiGpuManager::estimate_vram_coarse`).  Do
+    /// not treat it as the true VRAM of a specific card: two different discrete
+    /// GPUs will report the same value.  Callers making VRAM-budget decisions
+    /// (e.g. tile sizing) should treat this as a conservative lower-bound hint,
+    /// not ground truth.
     pub vram_bytes: Option<u64>,
     /// Device is currently active.
     pub active: bool,
@@ -72,6 +81,9 @@ pub struct MultiGpuManager {
     config: MultiGpuConfig,
     /// Load balancing state.
     load_state: Arc<Mutex<LoadBalanceState>>,
+    /// Monotonic counter used for round-robin device selection when load
+    /// balancing is disabled.  Incremented on every `select_device()` call.
+    round_robin: AtomicUsize,
 }
 
 impl MultiGpuManager {
@@ -87,6 +99,7 @@ impl MultiGpuManager {
             device_info: Vec::new(),
             config: MultiGpuConfig::default(),
             load_state: Arc::new(Mutex::new(LoadBalanceState::new(0))),
+            round_robin: AtomicUsize::new(0),
         }
     }
 }
@@ -209,6 +222,7 @@ impl MultiGpuManager {
             device_info,
             config,
             load_state,
+            round_robin: AtomicUsize::new(0),
         })
     }
 
@@ -238,16 +252,38 @@ impl MultiGpuManager {
     }
 
     /// Select a device based on load balancing strategy.
+    ///
+    /// When `auto_load_balance` is enabled, the device with the minimum
+    /// estimated workload is chosen.  When it is disabled, a true round-robin
+    /// rotation across all enumerated devices is used (driven by an atomic
+    /// counter) so that every GPU receives work rather than always dispatching
+    /// to device 0.
     pub fn select_device(&self) -> usize {
+        let num_devices = self.devices.len();
+        if num_devices == 0 {
+            return 0;
+        }
+
         if !self.config.auto_load_balance {
-            // Round-robin without load balancing (use simple counter)
-            return 0; // Simplified for now
+            // Round-robin without load balancing: advance the shared atomic
+            // counter and wrap by the device count.
+            return self.next_round_robin(num_devices);
         }
 
         self.load_state
             .lock()
             .map(|state| state.select_device())
             .unwrap_or(0)
+    }
+
+    /// Advance the round-robin counter and return the next device index in
+    /// `0..num_devices`.  Factored out so the rotation logic can be unit
+    /// tested without a physical GPU.
+    fn next_round_robin(&self, num_devices: usize) -> usize {
+        if num_devices == 0 {
+            return 0;
+        }
+        self.round_robin.fetch_add(1, Ordering::Relaxed) % num_devices
     }
 
     /// Dispatch work to a device with load balancing.
@@ -376,8 +412,9 @@ impl MultiGpuManager {
         let adapter_info = adapter.get_info();
         let backend = adapter_info.backend;
 
-        // Estimate VRAM (not directly available in WGPU)
-        let vram_bytes = Self::estimate_vram(&adapter_info);
+        // Coarse VRAM estimate (real per-adapter memory is not portably
+        // exposed by wgpu; this is a device-type bucket heuristic).
+        let vram_bytes = Self::estimate_vram_coarse(&adapter_info);
 
         let config = GpuContextConfig::default().with_label(format!("GPU {}", index));
 
@@ -394,7 +431,13 @@ impl MultiGpuManager {
         Ok((context, info))
     }
 
-    fn estimate_vram(adapter_info: &AdapterInfo) -> Option<u64> {
+    /// Coarse VRAM estimate based purely on the adapter device-type bucket.
+    ///
+    /// This is **not** a measurement: wgpu does not portably expose per-adapter
+    /// dedicated memory, so every discrete GPU maps to the same figure. It
+    /// serves only as a conservative fallback hint for VRAM-budget code. When a
+    /// backend-specific memory query becomes available it should supersede this.
+    fn estimate_vram_coarse(adapter_info: &AdapterInfo) -> Option<u64> {
         // This is a rough estimation based on device type
         match adapter_info.device_type {
             wgpu::DeviceType::DiscreteGpu => Some(8 * 1024 * 1024 * 1024), // 8 GB
@@ -618,6 +661,7 @@ impl InterGpuTransfer {
                 label: Some("gather_copy_encoder"),
             });
             encoder.copy_buffer_to_buffer(&src_buffer, 0, &staging, 0, size_bytes);
+            ctx.check_device_lost()?;
             wgpu_queue.submit(std::iter::once(encoder.finish()));
 
             // Step 3 – poll the device until the copy submission completes.
@@ -929,6 +973,26 @@ mod tests {
                 "strategy {strategy:?} must return an empty distribution with zero devices"
             );
         }
+    }
+
+    #[test]
+    fn test_round_robin_cycles_through_all_devices() {
+        // With load balancing disabled, repeated selection must visit every
+        // device index in turn and wrap around — not stick on device 0.
+        let manager = MultiGpuManager::new_empty_for_testing();
+        let num_devices = 3;
+
+        let seq: Vec<usize> = (0..7)
+            .map(|_| manager.next_round_robin(num_devices))
+            .collect();
+        assert_eq!(seq, vec![0, 1, 2, 0, 1, 2, 0]);
+    }
+
+    #[test]
+    fn test_round_robin_zero_devices_returns_zero() {
+        let manager = MultiGpuManager::new_empty_for_testing();
+        assert_eq!(manager.next_round_robin(0), 0);
+        assert_eq!(manager.next_round_robin(0), 0);
     }
 
     #[test]

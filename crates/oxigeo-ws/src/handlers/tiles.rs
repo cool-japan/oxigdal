@@ -1,6 +1,6 @@
 //! Tile streaming handler.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::protocol::Message;
 use crate::stream::{BackpressureController, DeltaEncoder, TileData};
 use crate::subscription::SubscriptionManager;
@@ -8,6 +8,15 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+
+/// A pluggable source of encoded map tiles.
+///
+/// This is the integration point between the WebSocket tile-streaming layer and
+/// a concrete tile renderer (for example an `oxigeo-server` raster tile pipeline
+/// or a vector-tile / MVT builder). Given a tile coordinate it returns the fully
+/// encoded [`TileData`] (bytes + MIME type). Tile rendering is CPU-bound, so the
+/// callback is synchronous and invoked from the async streaming path.
+pub type TileGenerator = Arc<dyn Fn(u32, u32, u8) -> Result<TileData> + Send + Sync>;
 
 /// Tile streaming handler.
 pub struct TileHandler {
@@ -21,10 +30,16 @@ pub struct TileHandler {
     backpressure: Arc<DashMap<String, BackpressureController>>,
     /// Enable delta encoding
     enable_delta: bool,
+    /// Optional real tile source used for viewport/prefetch generation
+    tile_source: Option<TileGenerator>,
 }
 
 impl TileHandler {
     /// Create a new tile handler.
+    ///
+    /// No tile source is configured by default; call [`TileHandler::with_tile_source`]
+    /// or [`TileHandler::set_tile_source`] to wire a real tile renderer before using
+    /// [`TileHandler::generate_viewport_tiles`] / [`TileHandler::prefetch_tiles`].
     pub fn new(subscriptions: Arc<SubscriptionManager>) -> Self {
         Self {
             subscriptions,
@@ -32,7 +47,26 @@ impl TileHandler {
             delta_encoder: Arc::new(DeltaEncoder::new()),
             backpressure: Arc::new(DashMap::new()),
             enable_delta: true,
+            tile_source: None,
         }
+    }
+
+    /// Attach a real tile source (builder style).
+    #[must_use]
+    pub fn with_tile_source(mut self, source: TileGenerator) -> Self {
+        self.tile_source = Some(source);
+        self
+    }
+
+    /// Attach or replace the real tile source.
+    pub fn set_tile_source(&mut self, source: TileGenerator) {
+        self.tile_source = Some(source);
+    }
+
+    /// Whether a real tile source has been configured.
+    #[must_use]
+    pub fn has_tile_source(&self) -> bool {
+        self.tile_source.is_some()
     }
 
     /// Register a client sender.
@@ -111,24 +145,32 @@ impl TileHandler {
         Ok(total_sent)
     }
 
-    /// Generate tiles for a viewport.
+    /// Generate tiles for a viewport using the configured tile source.
+    ///
+    /// Returns [`Error::NotFound`] when no tile source has been wired, rather
+    /// than emitting fabricated placeholder bytes. Individual tile failures are
+    /// logged and skipped so a single bad tile does not abort the whole viewport.
     pub async fn generate_viewport_tiles(&self, bbox: [f64; 4], zoom: u8) -> Result<Vec<TileData>> {
         // Convert bbox to tile coordinates
         let tiles = Self::bbox_to_tiles(bbox, zoom);
 
-        // Generate tiles (placeholder - would integrate with actual tile generation)
-        let mut tile_data = Vec::new();
+        let source = self.tile_source.as_ref().ok_or_else(|| {
+            Error::NotFound(
+                "no tile source configured; call TileHandler::set_tile_source to \
+                 wire a real tile renderer before generating viewport tiles"
+                    .to_string(),
+            )
+        })?;
+
+        let mut tile_data = Vec::with_capacity(tiles.len());
 
         for (x, y) in tiles {
-            // This would call actual tile generation from OxiGeo
-            let data = vec![0u8; 256]; // Placeholder
-            tile_data.push(TileData::new(
-                x,
-                y,
-                zoom,
-                data,
-                "application/x-protobuf".to_string(),
-            ));
+            match source(x, y, zoom) {
+                Ok(tile) => tile_data.push(tile),
+                Err(e) => {
+                    warn!("Tile source failed for ({}, {}, z={}): {}", x, y, zoom, e);
+                }
+            }
         }
 
         Ok(tile_data)
@@ -264,5 +306,42 @@ mod tests {
 
         assert_eq!(handler.delta_cache_size(), 0);
         assert!(handler.enable_delta);
+        assert!(!handler.has_tile_source());
+    }
+
+    #[tokio::test]
+    async fn test_generate_viewport_tiles_without_source_errors() {
+        let subscriptions = Arc::new(SubscriptionManager::new());
+        let handler = TileHandler::new(subscriptions);
+
+        // Without a configured source we must surface an honest error, never
+        // fabricated placeholder tiles.
+        let result = handler
+            .generate_viewport_tiles([-180.0, -85.0, 180.0, 85.0], 0)
+            .await;
+        assert!(matches!(result, Err(Error::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_generate_viewport_tiles_with_source() {
+        let subscriptions = Arc::new(SubscriptionManager::new());
+        let source: TileGenerator = Arc::new(|x, y, z| {
+            // A trivial but real generator: encode the coordinate into the bytes
+            // so we can assert the returned data is genuinely per-tile content.
+            let data = vec![x as u8, y as u8, z, 0xAB];
+            Ok(TileData::new(x, y, z, data, "image/png".to_string()))
+        });
+        let handler = TileHandler::new(subscriptions).with_tile_source(source);
+        assert!(handler.has_tile_source());
+
+        let tiles = handler
+            .generate_viewport_tiles([-180.0, -85.0, 180.0, 85.0], 0)
+            .await
+            .expect("generation should succeed with a source");
+
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].coords(), (0, 0, 0));
+        assert_eq!(tiles[0].mime_type, "image/png");
+        assert_eq!(tiles[0].data.to_vec(), vec![0u8, 0u8, 0u8, 0xABu8]);
     }
 }

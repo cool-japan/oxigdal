@@ -100,6 +100,13 @@ pub struct CacheConfig {
     pub enable_distributed: bool,
     /// Cache directory for disk-based tiers
     pub cache_dir: Option<std::path::PathBuf>,
+    /// Eviction policy used by the in-memory (L1) and disk (L2) tiers.
+    ///
+    /// Defaults to [`EvictionPolicyType::Lru`]. Set this to
+    /// [`EvictionPolicyType::WTinyLfu`] to drive the multi-tier cache with the
+    /// crate's Window-TinyLFU admission policy instead of plain LRU.
+    #[serde(default)]
+    pub eviction_policy: EvictionPolicyType,
 }
 
 impl Default for CacheConfig {
@@ -112,6 +119,7 @@ impl Default for CacheConfig {
             enable_prefetch: true,
             enable_distributed: false,
             cache_dir: None,
+            eviction_policy: EvictionPolicyType::Lru,
         }
     }
 }

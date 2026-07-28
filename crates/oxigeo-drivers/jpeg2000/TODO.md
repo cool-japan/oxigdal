@@ -1,8 +1,8 @@
 # TODO: oxigeo-drivers/jpeg2000
 
 > **Purpose:** Pure Rust JPEG2000 (JP2/J2K) driver for OxiGeo - JP2 box parsing and JPEG2000 codestream decoding
-> **Status (2026-05-16):** 12,821 Rust LoC (incl. tests) - 332 tests - 1 high-impact real stub
-> **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
+> **Status (2026-07-28):** 10,149 Rust LoC (tokei, `src/`) - 364 tests (all-features and default-features), 0 failed - 0 high-impact real stubs (EBCOT wiring re-verified real; encoding/writer and GeoJP2 remain genuinely unimplemented, tracked below)
+> **Roadmap:** v0.1.7 - v0.2.0 - v0.2.1 (current) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
@@ -14,6 +14,7 @@
   - **Tests:** (proposed) `test_decode_rgb_synthetic_2x2_lossless`, `test_decode_rgb_synthetic_8x8_53_wavelet`, `test_decode_rgb_irreversible_97_wavelet`, `test_decode_rgba_with_opacity_channel`, `test_decode_round_trip_against_known_reference`
   - **Risk:** ISO 15444-1 conformance corner cases (e.g., progression orders, partial code-blocks, ROI maxshift) hard to validate without reference vectors; mitigate by checking against OpenJPEG-produced fixtures.
   - **Prerequisites:** None - all helper modules exist.
+  - **Re-verified 2026-07-28:** confirmed still real — `decode_rgb`'s `vec![128u8; ...]` allocations (`src/reader.rs:736,841,1379`) are pre-fill buffer initialization that the per-tile `decode_tile_to_components` loop immediately overwrites, not a fallback path; test assertions at `src/reader.rs:2075-2090` and `:2155-2175` explicitly guard against the old "fabricates placeholder pixels" behavior. Since this item was completed, two further CRITICAL correctness bugs in the same decode path were found and fixed in the 0.2.1 production-hardening campaign (see root `CHANGELOG.md` [0.2.1]): multi-tile decode now bounds each tile's bitstream by its own `Psot` and composites it at its real pixel offset (previously every tile silently returned tile 0's data), and the JP2 box parser now recurses into `jp2h` so `ihdr`/`colr` are actually read from spec-conformant `.jp2` files.
 
 - [ ] Implement JPEG2000 encoding pipeline (J2K codestream and JP2 container)
   - **Verified gap:** No writer exists. `src/lib.rs` re-exports only `Jpeg2000Reader`, `ProgressiveDecoder`. No `Jpeg2000Writer` type. Module list (`box_reader`, `codestream`, `color`, `error`, `jp2_boxes`, `metadata`, `reader`, `tier1`, `tier2`, `wavelet`) has no `writer`.
@@ -93,4 +94,4 @@
 - [x] ROI decoding support (spatial regions and resolution levels)
 
 ---
-*Last audited: 2026-05-16*
+*Last audited: 2026-07-28*

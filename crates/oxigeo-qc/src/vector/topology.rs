@@ -3,7 +3,7 @@
 //! This module provides quality control checks for vector topology,
 //! including error detection, invalid geometry identification, and repair suggestions.
 
-use crate::error::{QcIssue, QcResult, Severity};
+use crate::error::{QcError, QcIssue, QcResult, Severity};
 use crate::vector::violations::{TopologyOptions, TopologyViolation};
 use oxigeo_algorithms::vector::{
     SegmentIntersection, intersect_polygons, intersect_segment_segment,
@@ -600,10 +600,22 @@ impl TopologyChecker {
         Ok(duplicates)
     }
 
-    /// Creates a hash representation of a geometry (simplified).
+    /// Creates a canonical structural-equality key for a geometry, used to
+    /// detect duplicate features regardless of vertex start point, ring
+    /// winding direction, or line digitization direction.
+    ///
+    /// Previously this hashed `format!("{:?}", geometry)` (the `Debug`
+    /// output), which is sensitive to exact vertex order: two features
+    /// representing the identical polygon but whose rings started at a
+    /// different vertex, or that differed only in winding direction (both
+    /// common after round-tripping through different tools/CRS transforms),
+    /// produced different strings and were never reported as duplicates.
+    /// [`canonical_geometry_key`] normalizes all of that before hashing.
     fn hash_geometry(&self, geometry: &Geometry) -> QcResult<String> {
-        // Simplified implementation - real version would use proper geometry hashing
-        Ok(format!("{:?}", geometry))
+        Ok(canonical_geometry_key(
+            geometry,
+            self.config.coordinate_tolerance,
+        ))
     }
 
     /// Finds sliver polygons.
@@ -727,9 +739,45 @@ impl TopologyChecker {
     }
 
     /// Checks topology rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QcError::InvalidConfiguration`] if `self.config.topology_rules`
+    /// contains a [`TopologyRule`] variant this engine does not (yet) enforce
+    /// ([`TopologyRule::MustBeCoveredBy`], [`TopologyRule::BoundaryMustBeCoveredBy`],
+    /// [`TopologyRule::MustBeInside`], [`TopologyRule::PointsMustBeCoveredByLine`]).
+    /// These four rules are inherently cross-feature-class checks (e.g. "this
+    /// polygon layer must be covered by that boundary layer"), which the
+    /// current single-`FeatureCollection` API has no way to express; rather
+    /// than silently no-op validating a rule the caller explicitly asked
+    /// for, this rejects the configuration up front so the gap is visible
+    /// immediately instead of at audit time.
     fn check_topology_rules(&self, features: &FeatureCollection) -> QcResult<Vec<RuleViolation>> {
+        if let Some(unsupported) = self
+            .config
+            .topology_rules
+            .iter()
+            .find(|rule| !is_topology_rule_enforced(rule))
+        {
+            return Err(QcError::InvalidConfiguration(format!(
+                "TopologyRule::{unsupported:?} is not enforced by this engine (it requires \
+                 cross-feature-class coverage/containment checks the current single-collection \
+                 API cannot express); remove it from TopologyConfig::topology_rules or restrict \
+                 to the supported rules (MustNotOverlap, MustNotHaveGaps, MustNotCross, \
+                 MustNotSelfOverlap)"
+            )));
+        }
+
         let options = TopologyOptions {
             tolerance: self.config.coordinate_tolerance,
+            detect_overlaps: self
+                .config
+                .topology_rules
+                .contains(&TopologyRule::MustNotOverlap),
+            detect_crossings: self
+                .config
+                .topology_rules
+                .contains(&TopologyRule::MustNotCross),
             detect_gaps: self
                 .config
                 .topology_rules
@@ -747,6 +795,21 @@ impl TopologyChecker {
 
         Ok(rule_violations)
     }
+}
+
+/// Whether `rule` is actually enforced by [`check_topology_rules`] (the
+/// free function) / [`TopologyChecker::check_topology_rules`] (the method).
+///
+/// See the method's doc comment for why the four coverage/containment rules
+/// are not (yet) enforced.
+const fn is_topology_rule_enforced(rule: &TopologyRule) -> bool {
+    matches!(
+        rule,
+        TopologyRule::MustNotOverlap
+            | TopologyRule::MustNotHaveGaps
+            | TopologyRule::MustNotCross
+            | TopologyRule::MustNotSelfOverlap
+    )
 }
 
 impl Default for TopologyChecker {
@@ -776,9 +839,213 @@ fn signed_area(coords: &[Coordinate]) -> f64 {
     sum / 2.0
 }
 
+/// Rounds a coordinate's X/Y components to a grid of size `tolerance` (or a
+/// small fixed epsilon if `tolerance` is not a positive finite number), then
+/// formats each component with enough decimal digits to be exact for that
+/// grid. This absorbs floating-point noise well below `tolerance` so nearly
+/// (but not bit-for-bit) identical coordinates hash identically.
+fn canonical_coord(coord: &Coordinate, tolerance: f64) -> (String, String) {
+    let grid = if tolerance.is_finite() && tolerance > 0.0 {
+        tolerance
+    } else {
+        1e-9
+    };
+    // Round -0.0 to 0.0 so a coordinate that lands exactly on the snapping
+    // grid at zero doesn't produce a different string than its positive
+    // counterpart.
+    let snap = |v: f64| -> f64 {
+        let snapped = (v / grid).round() * grid;
+        // Normalize -0.0 to 0.0 (bitwise, to avoid a float equality
+        // comparison) so a coordinate landing exactly on the snapping grid
+        // at zero doesn't hash differently from its positive counterpart.
+        if snapped.to_bits() == (-0.0f64).to_bits() {
+            0.0
+        } else {
+            snapped
+        }
+    };
+    (
+        format!("{:.12}", snap(coord.x)),
+        format!("{:.12}", snap(coord.y)),
+    )
+}
+
+/// Canonicalizes a (possibly closed) ring for duplicate-detection hashing:
+/// drops the redundant closing point, forces a consistent (CCW) winding
+/// direction, and rotates the vertex list to start at the
+/// lexicographically-smallest rounded coordinate. Two rings that describe
+/// the identical polygon but started at a different vertex, or differ only
+/// in winding direction, canonicalize identically.
+fn canonical_ring(coords: &[Coordinate], tolerance: f64) -> Vec<(String, String)> {
+    if coords.is_empty() {
+        return Vec::new();
+    }
+
+    let mut open: Vec<Coordinate> = coords.to_vec();
+    if open.len() > 1 {
+        let first = open[0];
+        let last = open[open.len() - 1];
+        let close_eps = if tolerance.is_finite() && tolerance > 0.0 {
+            tolerance
+        } else {
+            1e-9
+        };
+        if (first.x - last.x).abs() < close_eps && (first.y - last.y).abs() < close_eps {
+            open.pop();
+        }
+    }
+    if open.is_empty() {
+        return Vec::new();
+    }
+
+    // Force a consistent winding direction (CCW / positive signed area) so
+    // exterior-vs-hole conventions and accidental reversals don't produce
+    // different keys for the same shape.
+    if signed_area(&open) < 0.0 {
+        open.reverse();
+    }
+
+    let rounded: Vec<(String, String)> =
+        open.iter().map(|c| canonical_coord(c, tolerance)).collect();
+    let start = rounded
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.cmp(b))
+        .map_or(0, |(i, _)| i);
+
+    let mut canonical = Vec::with_capacity(rounded.len());
+    canonical.extend_from_slice(&rounded[start..]);
+    canonical.extend_from_slice(&rounded[..start]);
+    canonical
+}
+
+/// Renders a canonicalized ring (see [`canonical_ring`]) as a single string.
+fn ring_key(ring: &[(String, String)]) -> String {
+    ring.iter()
+        .map(|(x, y)| format!("{x} {y}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Builds a canonical structural-equality key for any [`Geometry`], suitable
+/// for duplicate-feature detection. See [`canonical_ring`] for the
+/// polygon-ring normalization rules; `LineString`s are normalized so that
+/// digitizing the same line in either direction produces the same key;
+/// multi-geometries and geometry collections sort their normalized parts so
+/// part ordering doesn't matter either.
+fn canonical_geometry_key(geometry: &Geometry, tolerance: f64) -> String {
+    match geometry {
+        Geometry::Point(point) => {
+            let (x, y) = canonical_coord(&point.coord, tolerance);
+            format!("POINT({x} {y})")
+        }
+        Geometry::LineString(linestring) => canonical_linestring_key(linestring, tolerance),
+        Geometry::Polygon(polygon) => canonical_polygon_key(polygon, tolerance),
+        Geometry::MultiPoint(multipoint) => {
+            let mut points: Vec<String> = multipoint
+                .points
+                .iter()
+                .map(|p| {
+                    let (x, y) = canonical_coord(&p.coord, tolerance);
+                    format!("{x} {y}")
+                })
+                .collect();
+            points.sort();
+            format!("MULTIPOINT({})", points.join(","))
+        }
+        Geometry::MultiLineString(multilinestring) => {
+            let mut lines: Vec<String> = multilinestring
+                .line_strings
+                .iter()
+                .map(|ls| canonical_linestring_key(ls, tolerance))
+                .collect();
+            lines.sort();
+            format!("MULTILINESTRING({})", lines.join(";"))
+        }
+        Geometry::MultiPolygon(multipolygon) => {
+            let mut polys: Vec<String> = multipolygon
+                .polygons
+                .iter()
+                .map(|p| canonical_polygon_key(p, tolerance))
+                .collect();
+            polys.sort();
+            format!("MULTIPOLYGON({})", polys.join(";"))
+        }
+        Geometry::GeometryCollection(collection) => {
+            let mut geoms: Vec<String> = collection
+                .geometries
+                .iter()
+                .map(|g| canonical_geometry_key(g, tolerance))
+                .collect();
+            geoms.sort();
+            format!("GEOMETRYCOLLECTION({})", geoms.join(";"))
+        }
+    }
+}
+
+/// Canonical key for a `LineString`: rounds coordinates, then picks
+/// whichever of the forward/reversed vertex sequences sorts first, so the
+/// same line digitized in either direction hashes identically.
+fn canonical_linestring_key(linestring: &LineString, tolerance: f64) -> String {
+    let forward: Vec<(String, String)> = linestring
+        .coords
+        .iter()
+        .map(|c| canonical_coord(c, tolerance))
+        .collect();
+    let mut backward = forward.clone();
+    backward.reverse();
+    let chosen = if backward < forward {
+        backward
+    } else {
+        forward
+    };
+    format!("LINESTRING({})", ring_key(&chosen))
+}
+
+/// Canonical key for a `Polygon`: canonicalizes the exterior ring and every
+/// interior ring (see [`canonical_ring`]), then sorts the interior rings so
+/// hole ordering doesn't affect the key.
+fn canonical_polygon_key(polygon: &Polygon, tolerance: f64) -> String {
+    let exterior = canonical_ring(&polygon.exterior.coords, tolerance);
+    let mut interiors: Vec<String> = polygon
+        .interiors
+        .iter()
+        .map(|ring| ring_key(&canonical_ring(&ring.coords, tolerance)))
+        .collect();
+    interiors.sort();
+    format!("POLYGON({};[{}])", ring_key(&exterior), interiors.join(";"))
+}
+
 /// Returns the bounding box of a polygon exterior as `Option<Bbox2D>`.
 fn polygon_bbox(polygon: &Polygon) -> Option<Bbox2D> {
     let coords = &polygon.exterior.coords;
+    if coords.is_empty() {
+        return None;
+    }
+    let mut min_x = coords[0].x;
+    let mut min_y = coords[0].y;
+    let mut max_x = coords[0].x;
+    let mut max_y = coords[0].y;
+    for c in coords.iter().skip(1) {
+        if c.x < min_x {
+            min_x = c.x;
+        }
+        if c.y < min_y {
+            min_y = c.y;
+        }
+        if c.x > max_x {
+            max_x = c.x;
+        }
+        if c.y > max_y {
+            max_y = c.y;
+        }
+    }
+    Bbox2D::new(min_x, min_y, max_x, max_y)
+}
+
+/// Returns the bounding box of a `LineString` as `Option<Bbox2D>`.
+fn linestring_bbox(linestring: &LineString) -> Option<Bbox2D> {
+    let coords = &linestring.coords;
     if coords.is_empty() {
         return None;
     }
@@ -884,8 +1151,12 @@ pub fn has_self_intersection(linestring: &LineString) -> Option<Vec<(usize, usiz
 /// - **R2** Polygon ring orientation (shoelace signed-area)
 /// - **R3** Ring closure (first == last within tolerance)
 /// - **R4** Polygon ring self-intersection
-/// - **R6** Overlap between polygons (STRtree pre-filter + boundary crossing check)
+/// - **R6** Overlap between polygons (STRtree pre-filter + boundary crossing check;
+///   opt-out via `options.detect_overlaps`, default `true`)
 /// - **R5** Gap detection (opt-in via `options.detect_gaps`)
+/// - **R8** Crossing between distinct `LineString` features (STRtree
+///   pre-filter + segment intersection check; opt-out via
+///   `options.detect_crossings`, default `true`)
 pub fn check_topology_rules(
     features: &FeatureCollection,
     options: &TopologyOptions,
@@ -896,6 +1167,10 @@ pub fn check_topology_rules(
     // We use the feature's position in the collection as its numeric id when the
     // feature has no explicit integer id.
     let mut polygons_with_ids: Vec<(u64, &Polygon)> = Vec::new();
+    // Collect all standalone LineString features for cross-feature crossing
+    // detection (R8) -- distinct from the per-geometry self-intersection
+    // check (R1) below, which only looks within a single LineString.
+    let mut linestrings_with_ids: Vec<(u64, &LineString)> = Vec::new();
 
     for (idx, feature) in features.features.iter().enumerate() {
         let feature_id = feature_id_as_u64(&feature.id, idx);
@@ -913,6 +1188,7 @@ pub fn check_topology_rules(
                         segments: segs,
                     });
                 }
+                linestrings_with_ids.push((feature_id, ls));
             }
             Geometry::Polygon(polygon) => {
                 // R3 — exterior ring closure
@@ -1024,8 +1300,17 @@ pub fn check_topology_rules(
         }
     }
 
-    // R6 — Overlap detection using STRtree spatial pre-filter
-    violations.extend(detect_overlaps(&polygons_with_ids));
+    // R6 — Overlap detection using STRtree spatial pre-filter (opt-out via
+    // options.detect_overlaps, default true)
+    if options.detect_overlaps {
+        violations.extend(detect_overlaps(&polygons_with_ids));
+    }
+
+    // R8 — Crossing detection between distinct LineString features
+    // (opt-out via options.detect_crossings, default true)
+    if options.detect_crossings {
+        violations.extend(detect_line_crossings(&linestrings_with_ids));
+    }
 
     // R5 — Gap detection (opt-in, expensive)
     if options.detect_gaps {
@@ -1146,6 +1431,66 @@ fn compute_overlap_area(poly_a: &Polygon, poly_b: &Polygon, bbox_a: &Bbox2D) -> 
         None => return 0.0,
     };
     bbox_intersection_area(bbox_a, &bbox_b)
+}
+
+/// Detect crossing pairs of distinct `LineString` features (R8, the
+/// [`TopologyRule::MustNotCross`] rule) using an R-tree spatial pre-filter,
+/// mirroring [`detect_overlaps`]'s approach for polygons.
+///
+/// This is deliberately a separate check from R1 (`has_self_intersection`,
+/// [`TopologyRule::MustNotSelfOverlap`]): R1 looks for a single geometry
+/// crossing itself, while this looks for two *different* features' segments
+/// crossing each other.
+fn detect_line_crossings(linestrings: &[(u64, &LineString)]) -> Vec<TopologyViolation> {
+    let mut violations = Vec::new();
+    if linestrings.len() < 2 {
+        return violations;
+    }
+
+    let mut tree: RTree<usize> = RTree::new();
+    for (i, (_, ls)) in linestrings.iter().enumerate() {
+        if let Some(bbox) = linestring_bbox(ls) {
+            tree.insert(bbox, i);
+        }
+    }
+
+    for (i, (id_a, ls_a)) in linestrings.iter().enumerate() {
+        let bbox_a = match linestring_bbox(ls_a) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        let candidates = tree.search(&bbox_a);
+        for j_ref in candidates {
+            let j = *j_ref;
+            if j <= i {
+                continue; // already processed or same linestring
+            }
+            let (id_b, ls_b) = &linestrings[j];
+
+            let mut crosses = false;
+            'segment_search: for w_a in ls_a.coords.windows(2) {
+                for w_b in ls_b.coords.windows(2) {
+                    if !matches!(
+                        intersect_segment_segment(&w_a[0], &w_a[1], &w_b[0], &w_b[1]),
+                        SegmentIntersection::None
+                    ) {
+                        crosses = true;
+                        break 'segment_search;
+                    }
+                }
+            }
+
+            if crosses {
+                violations.push(TopologyViolation::Crossing {
+                    feature_a: *id_a,
+                    feature_b: *id_b,
+                });
+            }
+        }
+    }
+
+    violations
 }
 
 /// Approximate gap detection.
@@ -1304,432 +1649,19 @@ fn topology_violation_to_rule_violation(viol: TopologyViolation) -> RuleViolatio
                 feature_a, feature_b, area
             ),
         },
+        TopologyViolation::Crossing {
+            feature_a,
+            feature_b,
+        } => RuleViolation {
+            rule: TopologyRule::MustNotCross,
+            feature_ids: vec![feature_a.to_string(), feature_b.to_string()],
+            location: None,
+            severity: Severity::Major,
+            description: format!("Features {} and {} cross each other", feature_a, feature_b),
+        },
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use oxigeo_core::vector::{Feature, FeatureCollection, FeatureId};
-
-    // ── helpers ────────────────────────────────────────────────────────────────
-
-    fn ls(coords: &[(f64, f64)]) -> LineString {
-        LineString {
-            coords: coords
-                .iter()
-                .map(|(x, y)| Coordinate::new_2d(*x, *y))
-                .collect(),
-        }
-    }
-
-    /// Build a Polygon directly (bypasses Polygon::new validation, needed for
-    /// constructing intentionally invalid geometries in tests).
-    fn poly_raw(exterior_coords: &[(f64, f64)]) -> Polygon {
-        Polygon {
-            exterior: ls(exterior_coords),
-            interiors: Vec::new(),
-        }
-    }
-
-    /// Build a valid closed polygon (CCW square).
-    fn ccw_square(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
-        poly_raw(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)])
-    }
-
-    fn fc_with_polygon(poly: Polygon) -> FeatureCollection {
-        FeatureCollection::new(vec![Feature::new(Geometry::Polygon(poly))])
-    }
-
-    fn fc_with_linestring(ls_geom: LineString) -> FeatureCollection {
-        FeatureCollection::new(vec![Feature::new(Geometry::LineString(ls_geom))])
-    }
-
-    // ── existing tests (unchanged) ─────────────────────────────────────────────
-
-    #[test]
-    fn test_topology_checker_creation() {
-        let checker = TopologyChecker::new();
-        assert!(checker.config.check_self_intersections);
-    }
-
-    #[test]
-    fn test_invalid_coordinate_detection() {
-        let checker = TopologyChecker::new();
-        let coord = Coordinate::new_2d(f64::NAN, 0.0);
-        let errors = checker.validate_point(&coord, &None);
-
-        assert!(errors.is_ok());
-        let errors = errors.ok().unwrap_or_default();
-        assert!(!errors.is_empty());
-        assert_eq!(errors[0].error_type, TopologyErrorType::InvalidCoordinate);
-    }
-
-    #[test]
-    fn test_linestring_validation() {
-        let checker = TopologyChecker::new();
-        let linestring = LineString {
-            coords: vec![Coordinate::new_2d(0.0, 0.0), Coordinate::new_2d(1.0, 1.0)],
-        };
-
-        let errors = checker.validate_linestring(&linestring, &None);
-        assert!(errors.is_ok());
-    }
-
-    #[test]
-    fn test_coords_equal() {
-        let checker = TopologyChecker::new();
-        let c1 = Coordinate::new_2d(0.0, 0.0);
-        let c2 = Coordinate::new_2d(0.0, 0.0);
-        let c3 = Coordinate::new_2d(1.0, 1.0);
-
-        assert!(checker.coords_equal(&c1, &c2));
-        assert!(!checker.coords_equal(&c1, &c3));
-    }
-
-    // ── new topology engine tests ──────────────────────────────────────────────
-
-    /// X-shaped self-intersecting linestring: (0,0)→(2,2)→(0,2)→(2,0).
-    /// Segment 0 (0,0)→(2,2) crosses segment 2 (0,2)→(2,0) at (1,1).
-    #[test]
-    fn test_self_intersect_simple_x() {
-        let ls_geom = ls(&[(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0)]);
-        let result = has_self_intersection(&ls_geom);
-        assert!(
-            result.is_some(),
-            "Expected self-intersection to be detected"
-        );
-        let pairs = result.unwrap_or_default();
-        assert!(
-            pairs.contains(&(0, 2)),
-            "Expected pair (0, 2) in crossings, got: {:?}",
-            pairs
-        );
-    }
-
-    /// Straight line with 10 collinear points — no self-intersection.
-    #[test]
-    fn test_self_intersect_no_intersection() {
-        let pts: Vec<(f64, f64)> = (0..10).map(|i| (i as f64, 0.0)).collect();
-        let ls_geom = ls(&pts);
-        let result = has_self_intersection(&ls_geom);
-        assert!(result.is_none(), "Straight line must not self-intersect");
-    }
-
-    /// 3-point L-bend: (0,0)→(1,0)→(1,1).  Adjacent segments share a point — not
-    /// a self-intersection (only 2 segments, cannot be non-adjacent).
-    #[test]
-    fn test_self_intersect_endpoint_shared_only() {
-        let ls_geom = ls(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]);
-        // 3 coords → 2 segments → no non-adjacent pairs
-        let result = has_self_intersection(&ls_geom);
-        assert!(result.is_none(), "L-bend must not be flagged");
-    }
-
-    /// Collinear overlap: (0,0)→(2,0)→(1,0)→(3,0).
-    /// Segment 0 and segment 2 are collinear and overlap.
-    #[test]
-    fn test_self_intersect_collinear_overlap() {
-        let ls_geom = ls(&[(0.0, 0.0), (2.0, 0.0), (1.0, 0.0), (3.0, 0.0)]);
-        let result = has_self_intersection(&ls_geom);
-        assert!(result.is_some(), "Collinear overlap should be detected");
-    }
-
-    /// Polygon with exterior ring in CW order — R2 violation expected.
-    #[test]
-    fn test_check_topology_rules_polygon_orientation_violation() {
-        // CW square (reversed from CCW)
-        let cw_poly = poly_raw(&[(0.0, 0.0), (0.0, 2.0), (2.0, 2.0), (2.0, 0.0), (0.0, 0.0)]);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc_with_polygon(cw_poly), &options);
-        let has_orient = violations.iter().any(|v| {
-            matches!(
-                v,
-                TopologyViolation::RingOrientation {
-                    ring_index: 0,
-                    expected_ccw: true,
-                    ..
-                }
-            )
-        });
-        assert!(
-            has_orient,
-            "Expected RingOrientation violation, got: {:?}",
-            violations
-        );
-    }
-
-    /// Polygon where last coord ≠ first — R3 violation.
-    #[test]
-    fn test_check_topology_rules_unclosed_ring() {
-        let unclosed = poly_raw(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc_with_polygon(unclosed), &options);
-        let has_unclosed = violations
-            .iter()
-            .any(|v| matches!(v, TopologyViolation::UnclosedRing { ring_index: 0, .. }));
-        assert!(
-            has_unclosed,
-            "Expected UnclosedRing violation, got: {:?}",
-            violations
-        );
-    }
-
-    /// Bowtie ring (self-intersecting exterior): R4 violation.
-    #[test]
-    fn test_check_topology_rules_polygon_self_intersect_ring() {
-        // Bowtie: (0,0)→(2,2)→(0,2)→(2,0)→(0,0)
-        let bowtie = poly_raw(&[(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0), (0.0, 0.0)]);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc_with_polygon(bowtie), &options);
-        let has_self_intersect = violations
-            .iter()
-            .any(|v| matches!(v, TopologyViolation::SelfIntersection { .. }));
-        assert!(
-            has_self_intersect,
-            "Expected SelfIntersection on bowtie ring, got: {:?}",
-            violations
-        );
-    }
-
-    /// Two overlapping squares: A (0,0)-(2,2) and B (1,1)-(3,3).  R6 violation.
-    #[test]
-    fn test_check_topology_rules_overlap_detection() {
-        let poly_a = ccw_square(0.0, 0.0, 2.0, 2.0);
-        let poly_b = ccw_square(1.0, 1.0, 3.0, 3.0);
-        let fc = FeatureCollection::new(vec![
-            Feature::with_id(FeatureId::Integer(1), Geometry::Polygon(poly_a)),
-            Feature::with_id(FeatureId::Integer(2), Geometry::Polygon(poly_b)),
-        ]);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc, &options);
-        let overlap = violations
-            .iter()
-            .find(|v| matches!(v, TopologyViolation::Overlap { .. }));
-        assert!(
-            overlap.is_some(),
-            "Expected Overlap violation, got: {:?}",
-            violations
-        );
-        if let Some(TopologyViolation::Overlap { area, .. }) = overlap {
-            assert!(*area > 0.0, "Expected positive overlap area, got {}", area);
-        }
-    }
-
-    /// Well-formed CCW polygon — no violations expected.
-    #[test]
-    fn test_check_topology_rules_clean_data_returns_empty() {
-        let clean = ccw_square(0.0, 0.0, 2.0, 2.0);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc_with_polygon(clean), &options);
-        assert!(
-            violations.is_empty(),
-            "Expected no violations for clean polygon, got: {:?}",
-            violations
-        );
-    }
-
-    /// R5 gap detection is opt-in.  With `detect_gaps: false`, no Gap violations.
-    /// With `detect_gaps: true` and two side-by-side non-overlapping polygons, a Gap
-    /// may be detected (proximity-based heuristic).
-    #[test]
-    fn test_check_topology_rules_gap_detection_optional() {
-        let poly_a = ccw_square(0.0, 0.0, 1.0, 1.0);
-        let poly_b = ccw_square(1.5, 0.0, 2.5, 1.0); // 0.5 gap on X axis
-        let fc = FeatureCollection::new(vec![
-            Feature::new(Geometry::Polygon(poly_a)),
-            Feature::new(Geometry::Polygon(poly_b)),
-        ]);
-
-        // Default options (detect_gaps = false) — no R5 violations
-        let options_off = TopologyOptions::default();
-        let violations_off = check_topology_rules(&fc, &options_off);
-        let has_gap_off = violations_off
-            .iter()
-            .any(|v| matches!(v, TopologyViolation::Gap { .. }));
-        assert!(
-            !has_gap_off,
-            "Should not detect gaps when detect_gaps=false"
-        );
-
-        // With detect_gaps = true — proximity heuristic may fire
-        let options_on = TopologyOptions {
-            detect_gaps: true,
-            ..TopologyOptions::default()
-        };
-        let violations_on = check_topology_rules(&fc, &options_on);
-        // We don't assert it MUST find a gap (heuristic), but we verify the code runs
-        let _ = violations_on;
-    }
-
-    /// 1000 non-overlapping polygons in a grid — no overlap violations expected.
-    /// This is a performance smoke test: we only assert correctness, not timing.
-    #[test]
-    fn test_check_topology_rules_1000_polygons_perf_smoke() {
-        let mut features = Vec::with_capacity(1000);
-        for row in 0..25 {
-            for col in 0..40 {
-                let x0 = col as f64 * 2.0;
-                let y0 = row as f64 * 2.0;
-                let poly = ccw_square(x0, y0, x0 + 1.0, y0 + 1.0);
-                features.push(Feature::new(Geometry::Polygon(poly)));
-            }
-        }
-        let fc = FeatureCollection::new(features);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc, &options);
-        // No overlaps expected among grid cells with 1-unit gaps between them
-        let overlap_count = violations
-            .iter()
-            .filter(|v| matches!(v, TopologyViolation::Overlap { .. }))
-            .count();
-        assert!(
-            overlap_count == 0,
-            "Non-overlapping grid should produce 0 Overlap violations, got {}",
-            overlap_count
-        );
-        // Total violations count is an upper bound sanity check (only orientation/closure
-        // violations if any raw struct construction produced bad geometry, which it shouldn't)
-        assert!(
-            violations.len() < 10,
-            "Expected < 10 violations for clean grid, got {}",
-            violations.len()
-        );
-    }
-
-    /// A self-intersecting LineString geometry inside a FeatureCollection — R1 violation.
-    #[test]
-    fn test_check_topology_rules_linestring_self_intersect() {
-        let ls_geom = ls(&[(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0)]);
-        let fc = fc_with_linestring(ls_geom);
-        let options = TopologyOptions::default();
-        let violations = check_topology_rules(&fc, &options);
-        let has_si = violations
-            .iter()
-            .any(|v| matches!(v, TopologyViolation::SelfIntersection { .. }));
-        assert!(
-            has_si,
-            "Expected SelfIntersection for X linestring, got: {:?}",
-            violations
-        );
-    }
-
-    // ── sliver area/perimeter tests (holes must net out of area) ──────────────
-
-    /// A square with a hole cut out must report the net area (exterior minus
-    /// hole), not the gross exterior area.
-    #[test]
-    fn test_calculate_area_subtracts_holes() {
-        let checker = TopologyChecker::new();
-        let exterior = ls(&[
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
-            (0.0, 0.0),
-        ]);
-        let hole = ls(&[(1.0, 1.0), (9.0, 1.0), (9.0, 9.0), (1.0, 9.0), (1.0, 1.0)]);
-        let polygon = Polygon {
-            exterior,
-            interiors: vec![hole],
-        };
-
-        // Exterior area = 100.0, hole area = 64.0, net area = 36.0.
-        let area = checker.calculate_area(&polygon);
-        assert!(
-            (area - 36.0).abs() < 1e-9,
-            "expected net area 36.0, got {area}"
-        );
-    }
-
-    /// A polygon with no holes keeps its full exterior area (regression guard
-    /// for the holes-subtraction change above).
-    #[test]
-    fn test_calculate_area_no_holes_unchanged() {
-        let checker = TopologyChecker::new();
-        let exterior = ls(&[
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
-            (0.0, 0.0),
-        ]);
-        let polygon = Polygon {
-            exterior,
-            interiors: vec![],
-        };
-
-        let area = checker.calculate_area(&polygon);
-        assert!(
-            (area - 100.0).abs() < 1e-9,
-            "expected area 100.0, got {area}"
-        );
-    }
-
-    /// A thin annulus (large exterior, near-equal-size hole) is a textbook
-    /// sliver: its true (net) area and compactness are tiny even though the
-    /// gross exterior area is large. Before the holes-subtraction fix,
-    /// `check_sliver` scored this using the gross exterior area (100.0),
-    /// which is far above `sliver_area_threshold` (1.0 by default), so the
-    /// sliver was silently missed. After the fix, the net area (~0.8) is
-    /// below the threshold and the compactness ratio is small enough to be
-    /// flagged.
-    #[test]
-    fn test_check_sliver_detects_thin_annulus() {
-        let checker = TopologyChecker::new();
-        let exterior = ls(&[
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
-            (0.0, 0.0),
-        ]);
-        // Ring thickness of 0.02 on all sides -> hole area = 9.96^2 = 99.2016,
-        // net area = 100.0 - 99.2016 = 0.7984.
-        let hole = ls(&[
-            (0.02, 0.02),
-            (9.98, 0.02),
-            (9.98, 9.98),
-            (0.02, 9.98),
-            (0.02, 0.02),
-        ]);
-        let polygon = Polygon {
-            exterior,
-            interiors: vec![hole],
-        };
-
-        let sliver = checker
-            .check_sliver(&polygon, &None)
-            .expect("check_sliver should succeed")
-            .expect("thin annulus should be flagged as a sliver");
-        assert!(
-            sliver.area < 1.0,
-            "expected net sliver area < 1.0, got {}",
-            sliver.area
-        );
-    }
-
-    /// A solid square (no holes) with the same exterior as the annulus test
-    /// above is well above the default area threshold and must NOT be
-    /// flagged as a sliver.
-    #[test]
-    fn test_check_sliver_ignores_solid_square() {
-        let checker = TopologyChecker::new();
-        let exterior = ls(&[
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
-            (0.0, 0.0),
-        ]);
-        let polygon = Polygon {
-            exterior,
-            interiors: vec![],
-        };
-
-        let sliver = checker
-            .check_sliver(&polygon, &None)
-            .expect("check_sliver should succeed");
-        assert!(sliver.is_none(), "solid square should not be a sliver");
-    }
-}
+#[path = "topology_tests.rs"]
+mod tests;

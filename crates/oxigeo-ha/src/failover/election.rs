@@ -1,4 +1,14 @@
-//! Leader election implementation (Raft-based).
+//! Leader election implementation (Raft-style term/vote state machine).
+//!
+//! This module implements the *leader election* half of Raft: a quorum-based
+//! term/vote state machine with `VoteRequest`/`VoteResponse`, majority computed
+//! from the real cluster membership, and transport-backed vote broadcast. The
+//! *log replication* half of Raft (AppendEntries with log-consistency checks,
+//! commit-index advancement, and conflict truncation) lives in
+//! [`super::log_replication`]. Deployments that only need active-active,
+//! CRDT-style replication use [`crate::replication`] instead; deployments that
+//! need linearizable, log-replicated consistency compose this election module
+//! with [`super::log_replication::ReplicatedLog`].
 
 use super::transport::{ElectionTransport, VoteHandler};
 use super::{FailoverConfig, NodeRole};

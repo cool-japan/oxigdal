@@ -408,6 +408,17 @@ pub struct HealthCheckResult {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// A caller-supplied probe used by [`HealthCheckType::Custom`] checks.
+///
+/// Implementors perform whatever application-specific liveness logic they need and return
+/// `(healthy, status_code, error_message)`. This replaces the previous behaviour where a
+/// custom check unconditionally reported healthy.
+#[async_trait::async_trait]
+pub trait CustomProbe: Send + Sync {
+    /// Probes `url` and reports health.
+    async fn probe(&self, url: &str) -> (bool, Option<u16>, Option<String>);
+}
+
 /// Advanced health checker with configurable probes.
 pub struct AdvancedHealthChecker {
     config: HealthCheckConfig,
@@ -415,6 +426,7 @@ pub struct AdvancedHealthChecker {
     consecutive_successes: DashMap<String, AtomicU32>,
     consecutive_failures: DashMap<String, AtomicU32>,
     max_history: usize,
+    custom_probe: Option<Arc<dyn CustomProbe>>,
 }
 
 impl AdvancedHealthChecker {
@@ -426,7 +438,15 @@ impl AdvancedHealthChecker {
             consecutive_successes: DashMap::new(),
             consecutive_failures: DashMap::new(),
             max_history: 100,
+            custom_probe: None,
         }
+    }
+
+    /// Registers a caller-supplied probe used for [`HealthCheckType::Custom`] checks.
+    #[must_use]
+    pub fn with_custom_probe(mut self, probe: Arc<dyn CustomProbe>) -> Self {
+        self.custom_probe = Some(probe);
+        self
     }
 
     /// Performs a health check on a backend.
@@ -460,29 +480,69 @@ impl AdvancedHealthChecker {
         check_result
     }
 
-    /// Performs HTTP health check.
+    /// Performs an HTTP(S) health check by issuing a real request to the backend.
+    ///
+    /// The backend is considered healthy when the response status is one of
+    /// `expected_status_codes` and (when configured) the response body contains
+    /// `expected_body`. Connect/TLS/timeout failures and unexpected statuses report
+    /// unhealthy with a diagnostic message.
     async fn http_check(&self, url: &str) -> (bool, Option<u16>, Option<String>) {
-        let check_url = format!("{}{}", url.trim_end_matches('/'), self.config.http_path);
-
-        // Simplified check - in production, use hyper client
-        let timeout = self.config.timeout;
-        let result = tokio::time::timeout(timeout, async {
-            // Mock HTTP check - simulates checking the URL
-            tracing::debug!("HTTP health check for {}", check_url);
-
-            // Parse URL to check if it's valid
-            if url::Url::parse(&check_url).is_err() {
-                return (false, None, Some("Invalid URL".to_string()));
+        // Honor the configured check type: HealthCheckType::Https upgrades a bare http:// URL
+        // to https:// so the probe performs a real TLS handshake.
+        let effective_url = if self.config.check_type == HealthCheckType::Https {
+            if let Some(rest) = url.strip_prefix("http://") {
+                format!("https://{rest}")
+            } else {
+                url.to_string()
             }
+        } else {
+            url.to_string()
+        };
 
-            // In production, make actual HTTP request
-            (true, Some(200u16), None)
-        })
-        .await;
+        let headers: Vec<(String, String)> = self
+            .config
+            .custom_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
-        match result {
-            Ok(r) => r,
-            Err(_) => (false, None, Some("Health check timeout".to_string())),
+        match super::probe::http_probe(
+            &effective_url,
+            &self.config.http_path,
+            self.config.timeout,
+            &headers,
+            self.config.follow_redirects,
+        )
+        .await
+        {
+            Ok(response) => {
+                let status_ok = self.config.expected_status_codes.contains(&response.status);
+
+                let body_ok = match &self.config.expected_body {
+                    Some(expected) => response.body.contains(expected.as_str()),
+                    None => true,
+                };
+
+                if status_ok && body_ok {
+                    (true, Some(response.status), None)
+                } else if !status_ok {
+                    (
+                        false,
+                        Some(response.status),
+                        Some(format!(
+                            "unexpected status {}; expected one of {:?}",
+                            response.status, self.config.expected_status_codes
+                        )),
+                    )
+                } else {
+                    (
+                        false,
+                        Some(response.status),
+                        Some("response body did not contain expected substring".to_string()),
+                    )
+                }
+            }
+            Err(e) => (false, None, Some(e.to_string())),
         }
     }
 
@@ -534,18 +594,37 @@ impl AdvancedHealthChecker {
         }
     }
 
-    /// Performs gRPC health check.
+    /// Performs a gRPC health check.
+    ///
+    /// A full `grpc.health.v1.Health/Check` (HTTP/2 + protobuf) is not implemented in Pure
+    /// Rust here, so rather than fabricate a healthy result this fails closed with a clear
+    /// message. Configure an HTTP or TCP check for gRPC backends until a native gRPC probe
+    /// lands.
     async fn grpc_check(&self, url: &str) -> (bool, Option<u16>, Option<String>) {
-        // Simplified gRPC health check - in production, use tonic
-        tracing::debug!("gRPC health check for {}", url);
-        (true, None, None)
+        tracing::debug!("gRPC health check requested for {}", url);
+        (
+            false,
+            None,
+            Some(
+                "gRPC health checks are not implemented; configure an HTTP or TCP health check"
+                    .to_string(),
+            ),
+        )
     }
 
-    /// Performs custom health check.
+    /// Performs a custom health check by invoking the caller-supplied [`CustomProbe`].
+    ///
+    /// When no custom probe has been registered (via [`Self::with_custom_probe`]) this fails
+    /// closed with an explanatory message instead of reporting an unverified healthy result.
     async fn custom_check(&self, url: &str) -> (bool, Option<u16>, Option<String>) {
-        // Custom check placeholder
-        tracing::debug!("Custom health check for {}", url);
-        (true, None, None)
+        match &self.custom_probe {
+            Some(probe) => probe.probe(url).await,
+            None => (
+                false,
+                None,
+                Some("custom health check selected but no CustomProbe was registered".to_string()),
+            ),
+        }
     }
 
     /// Updates consecutive success/failure counters.
@@ -1729,22 +1808,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_advanced_health_checker() {
+    async fn test_advanced_health_checker_real_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Spin a real local HTTP server returning 200 on /health.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind health server");
+        let addr = listener.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
         let config = HealthCheckConfig {
             check_type: HealthCheckType::Http,
             healthy_threshold: 2,
             unhealthy_threshold: 3,
             ..Default::default()
         };
+        let checker = AdvancedHealthChecker::new(config);
+        let url = format!("http://{addr}");
 
+        let result = checker.check("backend-1", &url).await;
+        assert!(
+            result.healthy,
+            "real 200 response must be healthy: {result:?}"
+        );
+        assert_eq!(result.status_code, Some(200));
+
+        let _ = checker.check("backend-1", &url).await;
+        assert!(checker.should_be_healthy("backend-1"));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_advanced_health_checker_down_backend_is_unhealthy() {
+        // Nothing listening -> must report unhealthy (the core defect: it used to always
+        // report healthy regardless of backend state).
+        let config = HealthCheckConfig {
+            check_type: HealthCheckType::Http,
+            ..Default::default()
+        };
         let checker = AdvancedHealthChecker::new(config);
 
-        let result = checker.check("backend-1", "http://localhost:8080").await;
+        let result = checker.check("backend-down", "http://127.0.0.1:1").await;
+        assert!(!result.healthy, "an unreachable backend must be unhealthy");
+        assert!(result.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_grpc_check_fails_closed() {
+        let config = HealthCheckConfig {
+            check_type: HealthCheckType::Grpc,
+            ..Default::default()
+        };
+        let checker = AdvancedHealthChecker::new(config);
+        let result = checker.check("grpc-backend", "http://127.0.0.1:9").await;
+        assert!(
+            !result.healthy,
+            "gRPC check must fail closed, never fake healthy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_custom_probe_is_invoked() {
+        struct AlwaysUp;
+        #[async_trait::async_trait]
+        impl CustomProbe for AlwaysUp {
+            async fn probe(&self, _url: &str) -> (bool, Option<u16>, Option<String>) {
+                (true, Some(200), None)
+            }
+        }
+
+        let config = HealthCheckConfig {
+            check_type: HealthCheckType::Custom,
+            ..Default::default()
+        };
+        let checker = AdvancedHealthChecker::new(config).with_custom_probe(Arc::new(AlwaysUp));
+        let result = checker.check("custom-backend", "http://example").await;
         assert!(result.healthy);
 
-        // Second check
-        let _ = checker.check("backend-1", "http://localhost:8080").await;
-
-        assert!(checker.should_be_healthy("backend-1"));
+        // Without a registered probe, custom checks fail closed.
+        let config2 = HealthCheckConfig {
+            check_type: HealthCheckType::Custom,
+            ..Default::default()
+        };
+        let checker2 = AdvancedHealthChecker::new(config2);
+        let result2 = checker2.check("custom-backend", "http://example").await;
+        assert!(!result2.healthy);
     }
 }

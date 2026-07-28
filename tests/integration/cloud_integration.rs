@@ -56,21 +56,23 @@ fn test_gcs_read() -> Result<()> {
     Ok(())
 }
 
-/// Test cloud caching
+/// Test cloud caching.
+///
+/// A meaningful caching test must observe a real cache-hit signal (hit/miss
+/// counters, a second-access latency drop, or a byte-for-byte replay from the
+/// backing store) against the real `oxigeo-cloud` cache. That crate is NOT a
+/// dependency of this test target, and the former local `CloudCache` stub
+/// returned identical fixed bytes on every call, so the assertion could never
+/// fail. Ignored with an honest error until `oxigeo-cloud` is wired in.
 #[test]
+#[ignore = "requires oxigeo-cloud dev-dependency to assert a real cache-hit signal"]
 fn test_cloud_caching() -> Result<()> {
-    // Test that cloud data is properly cached
-    let cache = CloudCache::new(1024 * 1024 * 100); // 100 MB cache
-
-    // First access - should download
-    let data1 = cache.get("s3://bucket/file.tif")?;
-
-    // Second access - should use cache
-    let data2 = cache.get("s3://bucket/file.tif")?;
-
-    assert_eq!(data1.len(), data2.len());
-
-    Ok(())
+    Err(
+        "cloud caching requires the oxigeo-cloud cache, which is not a \
+         dependency of oxigeo-dev-tools; a self-satisfying local stub would not \
+         validate caching behaviour"
+            .into(),
+    )
 }
 
 /// Test signed URL generation

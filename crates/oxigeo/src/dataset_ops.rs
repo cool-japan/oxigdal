@@ -91,7 +91,27 @@ impl Dataset {
                 new_info.height = Some(new_height);
                 new_info.geotransform = Some(new_gt);
 
-                Ok(Dataset::from_info(self.path().to_string(), new_info))
+                // Record the pixel window so that any subsequent real read
+                // (statistics/convert/read_band) crops the source file to this
+                // region instead of silently reprocessing the whole raster.
+                //
+                // If a clip window is already active (chained `.clip().clip()`),
+                // compose it: the new window is relative to the *current*
+                // (already-clipped) view, so translate it back into source-file
+                // coordinates.
+                let base = self.clip_window();
+                let window = crate::PixelWindow {
+                    col: base.map_or(col0, |b| b.col + col0),
+                    row: base.map_or(row0, |b| b.row + row0),
+                    width: new_width,
+                    height: new_height,
+                };
+
+                Ok(Dataset::from_info_with_window(
+                    self.path().to_string(),
+                    new_info,
+                    Some(window),
+                ))
             }
             None => {
                 // Vector path: no geo-transform available — just record the intent.

@@ -267,9 +267,16 @@ fn apply_memory_filters<'a>(
         filtered.retain(|f| feature_in_bbox(f, &bbox));
     }
 
-    // Apply CQL filter (simplified - property filtering)
+    // Apply CQL filter. An unparseable filter fails closed (propagates an
+    // error) rather than silently returning the whole collection.
     if let Some(ref filter_str) = params.filter {
-        filtered.retain(|f| feature_matches_filter(f, filter_str));
+        let mut kept = Vec::with_capacity(filtered.len());
+        for feature in filtered {
+            if feature_matches_filter(feature, filter_str)? {
+                kept.push(feature);
+            }
+        }
+        filtered = kept;
     }
 
     Ok(filtered)
@@ -363,44 +370,40 @@ fn geometry_intersects_bbox(geometry: &geojson::Geometry, bbox: &BboxFilter) -> 
     }
 }
 
-/// Check if feature matches a filter expression (simplified)
-pub(crate) fn feature_matches_filter(feature: &geojson::Feature, filter_str: &str) -> bool {
-    // Simplified filter matching - parse basic property comparisons
-    // Full CQL parsing is handled by the CqlFilter type for databases
+/// Check whether a feature matches a CQL2 filter expression.
+///
+/// The filter is parsed and evaluated with the shared [`CqlParser`], which
+/// supports equality/inequality, ordered comparisons, `LIKE`, `BETWEEN`, `IN`,
+/// `IS [NOT] NULL`, and boolean `AND`/`OR`/`NOT` composition.
+///
+/// # Security
+///
+/// This function **fails closed**: if the filter cannot be parsed it returns an
+/// [`Err`] rather than silently matching every feature. Any WFS-T transaction
+/// (Delete/Update/Replace) built on top of this matcher therefore rejects an
+/// unparseable filter instead of applying the action to the entire collection.
+/// Returning `Ok(true)` on an unparseable filter would turn a targeted
+/// `Delete` with e.g. `status <> 'archived'` into a full-collection wipe.
+pub(crate) fn feature_matches_filter(
+    feature: &geojson::Feature,
+    filter_str: &str,
+) -> ServiceResult<bool> {
+    let expr = crate::ogc_features::CqlParser::parse(filter_str).map_err(|e| {
+        ServiceError::InvalidParameter(
+            "FILTER".to_string(),
+            format!("unparseable CQL filter '{filter_str}': {e}"),
+        )
+    })?;
 
-    let props = match &feature.properties {
-        Some(p) => p,
-        None => return false,
-    };
+    // Missing properties are represented as a JSON null object so comparisons
+    // evaluate to `false` (a property filter cannot match an absent property).
+    let properties = feature
+        .properties
+        .as_ref()
+        .map(|p| serde_json::Value::Object(p.clone()))
+        .unwrap_or(serde_json::Value::Null);
 
-    // Try to parse simple "property = 'value'" expressions
-    let filter = filter_str.trim();
-
-    // Handle basic equality check
-    if filter.contains('=')
-        && !filter.contains("!=")
-        && !filter.contains("<=")
-        && !filter.contains(">=")
-    {
-        let parts: Vec<&str> = filter.splitn(2, '=').collect();
-        if parts.len() == 2 {
-            let prop_name = parts[0].trim().trim_matches('"').trim_matches('\'');
-            let prop_value = parts[1].trim().trim_matches('\'').trim_matches('"');
-
-            if let Some(value) = props.get(prop_name) {
-                return match value {
-                    serde_json::Value::String(s) => s == prop_value,
-                    serde_json::Value::Number(n) => n.to_string() == prop_value,
-                    serde_json::Value::Bool(b) => b.to_string() == prop_value,
-                    _ => false,
-                };
-            }
-        }
-    }
-
-    // Default to true if we can't parse the filter
-    // (actual filtering happens at database level)
-    true
+    Ok(crate::ogc_features::CqlParser::evaluate(&expr, &properties))
 }
 
 /// Count features in file with filtering

@@ -1,11 +1,11 @@
 # TODO: oxigeo-mobile
 
 > **Purpose:** C-compatible FFI bindings exposing OxiGeo to iOS (Swift) and Android (Kotlin/JNI) apps. Includes `cbindgen.toml` header generation and Swift/Kotlin scaffolding under `bindings/`.
-> **Status (2026-05-17):** 12,978 LoC · 178 #[test] attributes · 5 real-code placeholders.
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-07-28):** 9,734 Rust LoC (tokei, `src/`) · 197 tests with `--all-features`, 102 with default features, 0 failed · 3 of 5 real-code placeholders below fixed this release (Android vector geometry, tile renderer, iOS documents path); iOS display-size resampling and the single-global FFI error state remain open.
+> **Roadmap:** v0.1.7 → v0.2.0 → v0.2.1 (current) → v1.0.0
 
 ## High Priority (verified gaps)
-- [ ] Replace placeholder Android vector geometry with real feature payload
+- [x] Replace placeholder Android vector geometry with real feature payload
   - **Verified gap:** `src/android/vector.rs:1187-1189` — `// For now, create a simple point geometry as placeholder` / `// In a full implementation, the feature would contain geometry data` / `let geometry = Geometry::Point(Point2D { x: 0.0, y: 0.0 });`
   - **Goal:** When the Android JNI bridge converts a `*const OxiGeoFeature` to an `android.graphics.Path`, the geometry must come from the feature's actual WKB/WKT payload, not a hard-coded (0,0) point.
   - **Design:** Add a `geometry: *const u8` + `geometry_len: usize` + `geometry_format: u8 (0=WKB,1=WKT,2=GeoJSON)` triple to `OxiGeoFeature` (FFI struct in `src/ffi/vector/feature.rs`). Decode in `oxigeo_mobile_feature_get_geometry()` via `oxigeo_core::geometry::Geometry::from_wkb` then dispatch through `geometry_to_android_path` (already exists below the placeholder). For backward compatibility, if `geometry == NULL`, return null path with `InvalidArgument` error.
@@ -13,8 +13,9 @@
   - **Tests:** (proposed) `test_feature_with_wkb_polygon_renders_path`, `test_feature_with_null_geometry_returns_null_path`, `test_feature_with_invalid_wkb_returns_error`, `test_android_path_winding_matches_geometry_orientation`.
   - **Risk:** Adding fields to a public C struct is an ABI break — bump minor and document in CHANGELOG. Provide `oxigeo_mobile_feature_v2` constructor.
   - **Prerequisites:** None.
+  - **Done:** verified fixed as of 2026-07-28. `FfiFeature` (`src/ffi/vector/feature.rs`) now carries a real `geometry: Option<FfiGeometry>` field (typed geometry, rather than the raw `WKB`/`WKT`/`GeoJSON` byte-triple originally sketched). The Android path-conversion entry point (`src/android/vector.rs:~1275`) reads `handle.inner().geometry`, converts it via `ffi_geometry_to_geometry`, then calls the pre-existing `geometry_to_android_path` — the hard-coded `Point2D { x: 0.0, y: 0.0 }` placeholder is gone from the production path (it only remains in test fixtures that intentionally construct simple geometries to exercise the converter).
 
-- [ ] Real tile renderer for `tile_request_handler` placeholder
+- [x] Real tile renderer for `tile_request_handler` placeholder
   - **Verified gap:** `src/common/mod.rs:251-253` — `// Create a placeholder tile with geographic info encoded` / `// The actual rendering would be done by the tile rendering pipeline` / `let tile_data = vec![0u8; tile_data_size];`
   - **Goal:** The tile prefetcher must call into an actual rendering pipeline (raster sampling + reprojection to Web Mercator + encode to PNG/WebP) instead of caching all-zero buffers. Today the cache is populated with black tiles, which then "succeed" downstream and mask real bugs.
   - **Design:** Introduce `trait TileRenderer { fn render(&self, z: u8, x: u32, y: u32, tile_size: u32) -> Result<Vec<u8>, MobileError>; }`. Provide `RasterDatasetTileRenderer` that wraps an `oxigeo_core::Dataset`, uses `oxigeo_geotiff` for reads, `oxigeo-proj` for Web Mercator transform, and oxiarc-deflate/`oxigeo-webp` for encode. Inject the renderer into `prefetch_tiles_for_bbox` via a `TileRendererHandle` opaque FFI type.
@@ -22,8 +23,9 @@
   - **Tests:** (proposed) `test_tile_renderer_produces_nonzero_png`, `test_tile_renderer_handles_dateline_crossing_bbox`, `test_prefetch_tiles_calls_renderer_once_per_tile`, `test_tile_renderer_propagates_dataset_error`.
   - **Risk:** PNG encode is allocator-heavy; consider WebP-lossless as the default for mobile (smaller). Coordinate with oxigeo-webp.
   - **Prerequisites:** Stabilization of oxigeo-webp encoder (already in tree).
+  - **Done:** verified fixed as of 2026-07-28. `src/common/mod.rs` doc comments now explicitly state the prefetcher returns "pixels, not an all-zero placeholder buffer", and a regression test asserts "prefetched tile must not be an all-zero placeholder". The `vec![0u8; tile_data_size]` black-tile path called out in this item's verified gap is gone from the production path.
 
-- [ ] iOS `oxigeo_ios_get_documents_path` real platform call instead of `/Documents` literal
+- [x] iOS `oxigeo_ios_get_documents_path` real platform call instead of `/Documents` literal
   - **Verified gap:** `src/ios/mod.rs:97-100` — `pub extern "C" fn oxigeo_ios_get_documents_path() -> *mut std::os::raw::c_char {` / `// This would use iOS-specific APIs in a real implementation` / `// For now, return a placeholder` / `match std::ffi::CString::new("/Documents") {`
   - **Goal:** Return the actual iOS documents directory (`NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject`), not the literal `/Documents` (which is not a real iOS path).
   - **Design:** Add a thin Objective-C runtime call via `objc2 0.6` (workspace-compatible) inside a `#[cfg(target_os = "ios")]` block. Fall back to `std::env::var("HOME") + "/Documents"` when running on the simulator. Cache the result in a `OnceLock<CString>` so repeated calls don't re-FFI. The Swift bindings already wrap this; just have them point to a working impl.
@@ -31,6 +33,7 @@
   - **Tests:** (proposed) `test_ios_documents_path_nonempty_under_simulator`, `test_ios_documents_path_ends_with_documents`, `test_ios_documents_path_cached_pointer_stable_across_calls`.
   - **Risk:** objc2 crate adds an iOS-only dep; gate strictly behind `cfg(target_os = "ios")` and never compile on Linux/macOS host tests.
   - **Prerequisites:** None.
+  - **Done:** verified fixed as of 2026-07-28. `oxigeo_ios_get_documents_path` (`src/ios/mod.rs`) now has a real `#[cfg(target_os = "ios")]` branch calling `ios_paths::first_search_path(NS_DOCUMENT_DIRECTORY)` (an objc2-based `NSSearchPathForDirectoriesInDomains` lookup); the `"/Documents"` literal is now only the documented, explicitly-commented fallback for non-iOS hosts (desktop dev/CI, where there is no real app sandbox to query) rather than what a real iOS build returns. `oxigeo_ios_get_cache_path` follows the identical real/fallback pattern.
 
 - [ ] iOS raster resampling for display dimensions (replace fixed-resolution read)
   - **Verified gap:** `src/ios/raster.rs:39-40` — `// Read region with resampling for display size` / `// For now, use standard read (would implement resampling in production)`
@@ -40,6 +43,7 @@
   - **Tests:** (proposed) `test_read_for_display_2x_downsample_bilinear`, `test_read_for_display_3x_upsample_lanczos`, `test_read_for_display_identity_when_dims_match`, `test_read_for_display_invalid_method_returns_error`.
   - **Risk:** Lanczos kernel allocates a temp band; for very large requests document memory cost.
   - **Prerequisites:** None — `oxigeo_algorithms::resampling` already provides the kernels.
+  - **Re-verified 2026-07-28:** still open — `src/ios/raster.rs:40` still reads `// For now, use standard read (would implement resampling in production)`.
 
 - [ ] Replace single-global last-error string with thread-safe error queue
   - **Verified gap:** Existing TODO line — `[ ] Add thread-safe error message queue replacing single last-error global state`. `src/ffi/error.rs` uses a single `Mutex<String>` (verified — single global state pattern leaks errors between threads).
@@ -49,6 +53,7 @@
   - **Tests:** (proposed) `test_last_error_isolated_per_thread`, `test_last_error_survives_close_and_reopen`, `test_recent_errors_ring_buffer_caps_at_64`, `test_clear_last_error_only_affects_current_thread`.
   - **Risk:** Existing Swift/Kotlin wrappers may assume the global behavior — release notes must call this out.
   - **Prerequisites:** None.
+  - **Re-verified 2026-07-28:** still open — `src/ffi/error.rs:15` still declares `static LAST_ERROR: Mutex<Option<String>>` (single global, not `thread_local!`).
 
 ## Medium Priority
 - [ ] XCFramework build script (iOS + iOS-simulator + macOS Catalyst, lipo'd)
@@ -119,4 +124,4 @@
 - (no `[x]` entries in prior TODO.md — see README.md for the FFI architecture)
 
 ---
-*Last audited: 2026-05-17*
+*Last audited: 2026-07-28*

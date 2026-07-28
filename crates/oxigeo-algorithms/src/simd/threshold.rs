@@ -13,9 +13,14 @@
 //! - **Range Thresholding**: Keep values within a range
 //! - **Hysteresis Thresholding**: Two-level threshold with connectivity
 //!
-//! # Performance
+//! # Architecture Support
 //!
-//! Expected speedup over scalar: 6-12x for thresholding operations
+//! The pointwise thresholds (`binary_threshold`, `threshold_to_zero`,
+//! `threshold_truncate`, `threshold_range`) use NEON intrinsics
+//! (`vcgeq_u8`/`vcleq_u8`/`vbslq_u8`/`vminq_u8`) on aarch64, processing 16 pixels
+//! per instruction, with a scalar remainder. The neighborhood/histogram-based
+//! operations (Otsu, adaptive, hysteresis, multi-level) remain scalar. NEON
+//! output is bit-for-bit identical to the scalar fallback (see the parity tests).
 //!
 //! # Example
 //!
@@ -33,7 +38,118 @@
 //! # example().expect("example failed");
 //! ```
 
+#![allow(unsafe_code)]
+
 use crate::error::{AlgorithmError, Result};
+
+/// NEON-accelerated pointwise threshold kernels for aarch64. Each kernel loops
+/// over 16-byte chunks with intrinsics and finishes the tail with scalar code.
+#[cfg(target_arch = "aarch64")]
+mod neon_impl {
+    use std::arch::aarch64::*;
+
+    /// # Safety
+    /// `input.len() == output.len()`.
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn binary(
+        input: &[u8],
+        output: &mut [u8],
+        threshold: u8,
+        max_value: u8,
+        min_value: u8,
+    ) {
+        unsafe {
+            let len = input.len();
+            let chunks = len / 16;
+            let ip = input.as_ptr();
+            let op = output.as_mut_ptr();
+            let vt = vdupq_n_u8(threshold);
+            let vmax = vdupq_n_u8(max_value);
+            let vmin = vdupq_n_u8(min_value);
+            for i in 0..chunks {
+                let off = i * 16;
+                let v = vld1q_u8(ip.add(off));
+                let mask = vcgeq_u8(v, vt); // 0xFF where v >= threshold
+                vst1q_u8(op.add(off), vbslq_u8(mask, vmax, vmin));
+            }
+            for i in (chunks * 16)..len {
+                *op.add(i) = if *ip.add(i) >= threshold {
+                    max_value
+                } else {
+                    min_value
+                };
+            }
+        }
+    }
+
+    /// # Safety
+    /// `input.len() == output.len()`.
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn to_zero(input: &[u8], output: &mut [u8], threshold: u8) {
+        unsafe {
+            let len = input.len();
+            let chunks = len / 16;
+            let ip = input.as_ptr();
+            let op = output.as_mut_ptr();
+            let vt = vdupq_n_u8(threshold);
+            for i in 0..chunks {
+                let off = i * 16;
+                let v = vld1q_u8(ip.add(off));
+                let mask = vcgeq_u8(v, vt);
+                vst1q_u8(op.add(off), vandq_u8(mask, v));
+            }
+            for i in (chunks * 16)..len {
+                let x = *ip.add(i);
+                *op.add(i) = if x >= threshold { x } else { 0 };
+            }
+        }
+    }
+
+    /// # Safety
+    /// `input.len() == output.len()`.
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn truncate(input: &[u8], output: &mut [u8], threshold: u8) {
+        unsafe {
+            let len = input.len();
+            let chunks = len / 16;
+            let ip = input.as_ptr();
+            let op = output.as_mut_ptr();
+            let vt = vdupq_n_u8(threshold);
+            for i in 0..chunks {
+                let off = i * 16;
+                let v = vld1q_u8(ip.add(off));
+                vst1q_u8(op.add(off), vminq_u8(v, vt));
+            }
+            for i in (chunks * 16)..len {
+                *op.add(i) = (*ip.add(i)).min(threshold);
+            }
+        }
+    }
+
+    /// # Safety
+    /// `input.len() == output.len()`.
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn range(input: &[u8], output: &mut [u8], low: u8, high: u8) {
+        unsafe {
+            let len = input.len();
+            let chunks = len / 16;
+            let ip = input.as_ptr();
+            let op = output.as_mut_ptr();
+            let vlo = vdupq_n_u8(low);
+            let vhi = vdupq_n_u8(high);
+            for i in 0..chunks {
+                let off = i * 16;
+                let v = vld1q_u8(ip.add(off));
+                let mask = vandq_u8(vcgeq_u8(v, vlo), vcleq_u8(v, vhi));
+                vst1q_u8(op.add(off), vandq_u8(mask, v));
+            }
+            for i in (chunks * 16)..len {
+                let x = *ip.add(i);
+                *op.add(i) = if x >= low && x <= high { x } else { 0 };
+            }
+        }
+    }
+}
 
 /// Binary threshold with custom output values
 ///
@@ -66,31 +182,22 @@ pub fn binary_threshold(
         });
     }
 
-    const LANES: usize = 16;
-    let chunks = input.len() / LANES;
-
-    // SIMD processing - auto-vectorized by LLVM
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            output[j] = if input[j] >= threshold {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: lengths validated equal above.
+        unsafe {
+            neon_impl::binary(input, output, threshold, max_value, min_value);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..input.len() {
+            output[i] = if input[i] >= threshold {
                 max_value
             } else {
                 min_value
             };
         }
-    }
-
-    // Handle remainder
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..input.len() {
-        output[i] = if input[i] >= threshold {
-            max_value
-        } else {
-            min_value
-        };
     }
 
     Ok(())
@@ -115,21 +222,18 @@ pub fn threshold_to_zero(input: &[u8], output: &mut [u8], threshold: u8) -> Resu
         });
     }
 
-    const LANES: usize = 16;
-    let chunks = input.len() / LANES;
-
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            output[j] = if input[j] >= threshold { input[j] } else { 0 };
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: lengths validated equal above.
+        unsafe {
+            neon_impl::to_zero(input, output, threshold);
         }
     }
-
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..input.len() {
-        output[i] = if input[i] >= threshold { input[i] } else { 0 };
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..input.len() {
+            output[i] = if input[i] >= threshold { input[i] } else { 0 };
+        }
     }
 
     Ok(())
@@ -154,21 +258,18 @@ pub fn threshold_truncate(input: &[u8], output: &mut [u8], threshold: u8) -> Res
         });
     }
 
-    const LANES: usize = 16;
-    let chunks = input.len() / LANES;
-
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            output[j] = input[j].min(threshold);
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: lengths validated equal above.
+        unsafe {
+            neon_impl::truncate(input, output, threshold);
         }
     }
-
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..input.len() {
-        output[i] = input[i].min(threshold);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..input.len() {
+            output[i] = input[i].min(threshold);
+        }
     }
 
     Ok(())
@@ -205,31 +306,23 @@ pub fn threshold_range(
         });
     }
 
-    const LANES: usize = 16;
-    let chunks = input.len() / LANES;
-
-    for i in 0..chunks {
-        let start = i * LANES;
-        let end = start + LANES;
-
-        for j in start..end {
-            let val = input[j];
-            output[j] = if val >= low_threshold && val <= high_threshold {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: lengths validated equal above.
+        unsafe {
+            neon_impl::range(input, output, low_threshold, high_threshold);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..input.len() {
+            let val = input[i];
+            output[i] = if val >= low_threshold && val <= high_threshold {
                 val
             } else {
                 0
             };
         }
-    }
-
-    let remainder_start = chunks * LANES;
-    for i in remainder_start..input.len() {
-        let val = input[i];
-        output[i] = if val >= low_threshold && val <= high_threshold {
-            val
-        } else {
-            0
-        };
     }
 
     Ok(())
@@ -762,5 +855,59 @@ mod tests {
 
         let result = threshold_range(&input, &mut output, 200, 100);
         assert!(result.is_err());
+    }
+
+    fn make_image(len: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_pointwise_thresholds_match_scalar_reference() {
+        // Lengths chosen to exercise both the 16-wide NEON stride and the tail.
+        for len in [0usize, 1, 15, 16, 17, 31, 33, 100, 256, 257] {
+            let input = make_image(len, 0xDEAD ^ len as u64);
+            let (thr, lo, hi) = (100u8, 60u8, 190u8);
+
+            // binary_threshold
+            let mut out = vec![0u8; len];
+            binary_threshold(&input, &mut out, thr, 255, 0).expect("binary ok");
+            for i in 0..len {
+                let want = if input[i] >= thr { 255 } else { 0 };
+                assert_eq!(out[i], want, "binary mismatch len={len} i={i}");
+            }
+
+            // threshold_to_zero
+            threshold_to_zero(&input, &mut out, thr).expect("to_zero ok");
+            for i in 0..len {
+                let want = if input[i] >= thr { input[i] } else { 0 };
+                assert_eq!(out[i], want, "to_zero mismatch len={len} i={i}");
+            }
+
+            // threshold_truncate
+            threshold_truncate(&input, &mut out, thr).expect("truncate ok");
+            for i in 0..len {
+                assert_eq!(
+                    out[i],
+                    input[i].min(thr),
+                    "truncate mismatch len={len} i={i}"
+                );
+            }
+
+            // threshold_range
+            threshold_range(&input, &mut out, lo, hi).expect("range ok");
+            for i in 0..len {
+                let v = input[i];
+                let want = if v >= lo && v <= hi { v } else { 0 };
+                assert_eq!(out[i], want, "range mismatch len={len} i={i}");
+            }
+        }
     }
 }
