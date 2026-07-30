@@ -311,8 +311,11 @@ mod tests {
 
     #[test]
     fn test_man_page_generation() {
+        // The leaf name embeds the process id as well as a nanosecond stamp so
+        // that two concurrent runs of this binary can never share the directory.
         let dir = std::env::temp_dir().join(format!(
-            "oxigeo_man_test_{}",
+            "oxigeo_cli_man_test_{}_{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())

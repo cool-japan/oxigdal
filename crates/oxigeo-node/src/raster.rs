@@ -49,20 +49,24 @@ impl Dataset {
                 let metadata = reader.metadata().clone();
                 let band_count = metadata.band_count as usize;
 
-                // The underlying reader returns the whole image in its on-disk
-                // (band-interleaved-by-pixel / chunky) layout regardless of the
-                // band index, so read it once and deinterleave into per-band
-                // buffers here. This is the inverse of `interleave_bands` used
-                // on save, and is what makes multi-band GeoTIFFs round-trip.
-                let interleaved = reader.read_band(0, 0).to_napi()?;
-                let bands = Self::deinterleave_bands(
-                    &interleaved,
-                    metadata.width,
-                    metadata.height,
-                    band_count,
-                    metadata.data_type,
-                    metadata.nodata,
-                )?;
+                // `read_band(level, band)` returns one de-interleaved band plane
+                // (`width * height * bytes_per_sample` bytes) for the 0-based
+                // `band`, handling both chunky and planar on-disk layouts. Read
+                // each band in turn; `interleave_bands` still re-weaves them on
+                // save, which is what makes multi-band GeoTIFFs round-trip.
+                // See <https://github.com/cool-japan/oxigeo/issues/14>.
+                let mut bands = Vec::with_capacity(band_count);
+                for band_index in 0..band_count {
+                    let plane = reader.read_band(0, band_index).to_napi()?;
+                    bands.push(Self::band_plane_to_buffer(
+                        plane,
+                        metadata.width,
+                        metadata.height,
+                        band_index,
+                        metadata.data_type,
+                        metadata.nodata,
+                    )?);
+                }
 
                 Ok(Self {
                     metadata,
@@ -488,63 +492,51 @@ impl Dataset {
         Ok(interleaved)
     }
 
-    /// Splits a single band-interleaved-by-pixel (BIP) byte buffer into one
-    /// contiguous (band-sequential) buffer per band.
+    /// Wraps one de-interleaved band plane, as returned by
+    /// `GeoTiffReader::read_band`, in a [`RasterBuffer`].
     ///
-    /// This is the inverse of [`Self::interleave_bands`]. The input is expected
-    /// to contain `width * height * bytes_per_sample * band_count` bytes with
-    /// each pixel's samples stored consecutively; band `b` is gathered by taking
-    /// the `b`-th sample of every pixel.
-    fn deinterleave_bands(
-        interleaved: &[u8],
+    /// The driver already performs the de-interleave that
+    /// [`Self::interleave_bands`] undoes on save, so this only checks that the
+    /// plane is `width * height * bytes_per_sample` bytes -- the size
+    /// `RasterBuffer::new` demands -- and reports a clear `FORMAT_ERROR` if it
+    /// is not. See <https://github.com/cool-japan/oxigeo/issues/14>.
+    fn band_plane_to_buffer(
+        plane: Vec<u8>,
         width: u64,
         height: u64,
-        band_count: usize,
+        band_index: usize,
         data_type: RasterDataType,
         nodata: NoDataValue,
-    ) -> Result<Vec<RasterBuffer>> {
+    ) -> Result<RasterBuffer> {
         let bytes_per_sample = data_type.size_bytes();
-        let pixel_count = (width as usize) * (height as usize);
-        let expected = pixel_count * bytes_per_sample * band_count;
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|px| px.checked_mul(bytes_per_sample))
+            .ok_or_else(|| NodeError {
+                code: "FORMAT_ERROR".to_string(),
+                message: format!(
+                    "Raster dimensions {}x{} x {} bytes/sample overflow the address space",
+                    width, height, bytes_per_sample
+                ),
+            })?;
 
-        if interleaved.len() != expected {
+        if plane.len() != expected {
             return Err(NodeError {
                 code: "FORMAT_ERROR".to_string(),
                 message: format!(
-                    "Interleaved raster has {} bytes, expected {} ({}x{} x {} bands x {} bytes/sample)",
-                    interleaved.len(),
+                    "Band {} plane has {} bytes, expected {} ({}x{} x {} bytes/sample)",
+                    band_index,
+                    plane.len(),
                     expected,
                     width,
                     height,
-                    band_count,
                     bytes_per_sample
                 ),
             }
             .into());
         }
 
-        let mut bands = Vec::with_capacity(band_count);
-        for band_index in 0..band_count {
-            // Fast path: a single band is already band-sequential.
-            let band_bytes = if band_count == 1 {
-                interleaved.to_vec()
-            } else {
-                let mut buf = vec![0u8; pixel_count * bytes_per_sample];
-                for pixel in 0..pixel_count {
-                    let src = (pixel * band_count + band_index) * bytes_per_sample;
-                    let dst = pixel * bytes_per_sample;
-                    buf[dst..dst + bytes_per_sample]
-                        .copy_from_slice(&interleaved[src..src + bytes_per_sample]);
-                }
-                buf
-            };
-
-            let buffer =
-                RasterBuffer::new(band_bytes, width, height, data_type, nodata).to_napi()?;
-            bands.push(buffer);
-        }
-
-        Ok(bands)
+        RasterBuffer::new(plane, width, height, data_type, nodata).to_napi()
     }
 
     /// Gets metadata as a JavaScript object
@@ -722,16 +714,37 @@ pub fn open_raster(path: String) -> Result<Dataset> {
 mod tests {
     use super::*;
 
-    /// Builds a unique temp path for a test artifact, scoped to the OS temp dir
-    /// so nothing is hard-coded and parallel test runs don't collide.
-    fn temp_tif(tag: &str) -> String {
-        let mut path = std::env::temp_dir();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        path.push(format!("oxigeo_node_{tag}_{nanos}.tif"));
-        path.to_string_lossy().into_owned()
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(
+                std::env::temp_dir()
+                    .join(format!("oxigeo_node_{}_{seq}_{name}", std::process::id())),
+            )
+        }
+
+        /// The napi surface takes owned `String` paths, so hand out a copy.
+        fn as_string(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     #[test]
@@ -783,10 +796,10 @@ mod tests {
             ds.write_band(band, &buf).expect("write_band");
         }
 
-        let path = temp_tif("multiband");
-        ds.save(path.clone()).expect("save multi-band geotiff");
+        let path = TempPath::new("multiband.tif");
+        ds.save(path.as_string()).expect("save multi-band geotiff");
 
-        let reopened = Dataset::open(path.clone()).expect("reopen");
+        let reopened = Dataset::open(path.as_string()).expect("reopen");
         assert_eq!(reopened.band_count(), 3);
         assert_eq!(reopened.width(), width);
         assert_eq!(reopened.height(), height);
@@ -804,8 +817,86 @@ mod tests {
                 }
             }
         }
+    }
 
-        let _ = std::fs::remove_file(&path);
+    /// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// `Dataset::open` used to issue a single `read_band(0, 0)` and split the
+    /// result with `deinterleave_bands`, which hard-errored unless the buffer
+    /// was `width * height * bytes_per_sample * band_count` bytes. Once
+    /// `read_band` started returning a single de-interleaved band plane,
+    /// opening *any* multi-band GeoTIFF from Node failed outright with
+    /// `FORMAT_ERROR`. The pre-existing failure mode of the hand-rolled split
+    /// was worse than an error, though -- wrong pixels -- so this asserts the
+    /// per-band values, not merely that `open` succeeded.
+    #[test]
+    fn test_issue_14_open_multiband_geotiff_bands_are_distinct() {
+        let width = 7u32;
+        let height = 5u32;
+        let band_count = 3u32;
+
+        // Disjoint value range per band (band 0 -> 0..=12, band 1 -> 70..=82,
+        // band 2 -> 140..=152) so "band 0 repeated", "bands swapped" and
+        // "interleaved garbage" are each individually detectable.
+        let expected =
+            |band: u32, x: u32, y: u32| -> f64 { f64::from(band * 70 + ((y * width + x) % 13)) };
+
+        let mut ds = Dataset::create(width, height, band_count, "uint8".to_string())
+            .expect("create 3-band dataset");
+        for band in 0..band_count {
+            let mut buf = BufferWrapper::new(width, height, "uint8".to_string()).expect("buffer");
+            for y in 0..height {
+                for x in 0..width {
+                    buf.set_pixel(x, y, expected(band, x, y)).expect("set");
+                }
+            }
+            ds.write_band(band, &buf).expect("write_band");
+        }
+
+        let path = TempPath::new("issue14_multiband.tif");
+        ds.save(path.as_string()).expect("save multi-band geotiff");
+
+        let reopened = Dataset::open(path.as_string())
+            .expect("Dataset::open must succeed for a multi-band GeoTIFF (issue #14)");
+        assert_eq!(
+            reopened.band_count(),
+            band_count,
+            "band_count: expected {}, got {}",
+            band_count,
+            reopened.band_count()
+        );
+
+        for band in 0..band_count {
+            let read = reopened.read_band(band).expect("read_band");
+            for y in 0..height {
+                for x in 0..width {
+                    let want = expected(band, x, y);
+                    let got = read.get_pixel(x, y).expect("get_pixel");
+                    assert!(
+                        (got - want).abs() < f64::EPSILON,
+                        "band {band} pixel ({x},{y}): expected {want}, got {got}"
+                    );
+                }
+            }
+        }
+
+        // Every band must differ from band 0 at the same pixel: a plane that
+        // was silently re-sliced (or duplicated) would collapse these.
+        let band0 = reopened.read_band(0).expect("read_band 0");
+        for band in 1..band_count {
+            let other = reopened.read_band(band).expect("read_band");
+            for y in 0..height {
+                for x in 0..width {
+                    let base = band0.get_pixel(x, y).expect("get_pixel");
+                    let got = other.get_pixel(x, y).expect("get_pixel");
+                    assert!(
+                        (got - base).abs() > f64::EPSILON,
+                        "band {band} pixel ({x},{y}): expected a value distinct from band 0's \
+                         {base}, got {got}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -20,14 +20,55 @@ use oxigeo_mbtiles::{MBTilesReader, MbTilesError, TileCoord, TileFormat};
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 
-/// Generate a unique temp file path for the test fixture database.
-fn unique_tmp(label: &str) -> std::path::PathBuf {
-    static CTR: AtomicU64 = AtomicU64::new(0);
-    let n = CTR.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let mut p = std::env::temp_dir();
-    p.push(format!("oxigeo_mbtiles_test_{label}_{pid}_{n}.sqlite"));
-    p
+/// Per-test scratch SQLite fixture inside the system temp dir (house policy:
+/// no hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// database.  Dropping the guard removes the fixture *and its SQLite
+/// companions*, so a panicking test leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(label: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_mbtiles_test_{}_{seq}_{label}.sqlite",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        // SQLite writes `-wal` / `-shm` / `-journal` companions next to the
+        // database; removing only the main file would leak them.
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut sidecar = self.0.clone().into_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
+        }
+    }
+}
+
+/// Generate a unique temp fixture-database guard.
+fn unique_tmp(label: &str) -> TempPath {
+    TempPath::new(label)
 }
 
 /// Execute SQL via a one-shot OxiSQL connection and immediately close it.
@@ -169,7 +210,6 @@ fn test_reader_opens_minimal_valid_archive() {
     build_test_mbtiles(&path);
     let reader = MBTilesReader::open(&path).expect("open reader");
     assert_eq!(reader.metadata().name.as_deref(), Some("test"));
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 2: every canonical metadata key is parsed into the typed field.
@@ -192,7 +232,6 @@ fn test_reader_load_metadata_canonical_keys() {
     assert_eq!(m.tile_type.as_deref(), Some("overlay"));
     assert_eq!(m.version.as_deref(), Some("1.3.0"));
     assert_eq!(m.json.as_deref(), Some("{\"vector_layers\":[]}"));
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 3: bounds CSV "minlon,minlat,maxlon,maxlat" parsed into [f64; 4].
@@ -206,7 +245,6 @@ fn test_reader_load_metadata_bounds_parsed() {
     assert!((bounds[1] - -20.25).abs() < 1e-12);
     assert!((bounds[2] - 30.75).abs() < 1e-12);
     assert!((bounds[3] - 40.125).abs() < 1e-12);
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 4: center CSV "lon,lat,zoom" parsed into [f64; 3].
@@ -219,7 +257,6 @@ fn test_reader_load_metadata_center_parsed() {
     assert!((center[0] - 5.0).abs() < 1e-12);
     assert!((center[1] - 10.0).abs() < 1e-12);
     assert!((center[2] - 7.0).abs() < 1e-12);
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 5: unknown metadata keys land in `extras`.
@@ -235,7 +272,6 @@ fn test_reader_load_metadata_handles_extra_keys() {
     assert!(!extras.contains_key("name"));
     assert!(!extras.contains_key("bounds"));
     assert!(!extras.contains_key("minzoom"));
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 6: an archive lacking every optional metadata key is still accepted.
@@ -262,7 +298,6 @@ fn test_reader_load_metadata_missing_optional_keys_ok() {
     assert!(m.maxzoom.is_none());
     assert!(m.extras().is_empty());
     assert_eq!(reader.tile_count().expect("count"), 0);
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 7: get_tile round-trip — bytes inserted via SQL come back identical.
@@ -289,7 +324,6 @@ fn test_reader_get_tile_round_trip() {
         .expect("query (1,0,1)")
         .expect("tile present");
     assert_eq!(tile_101, vec![0x00, 0x01, 0x02, 0x03]);
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 8: requesting a non-existent tile returns Ok(None).
@@ -303,7 +337,6 @@ fn test_reader_get_tile_missing_returns_none() {
         .get_tile(&TileCoord { z: 5, x: 17, y: 23 })
         .expect("query missing");
     assert!(missing.is_none());
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 9: tile_count matches the number of rows inserted.
@@ -313,7 +346,6 @@ fn test_reader_tile_count_matches_inserted() {
     build_test_mbtiles(&path);
     let reader = MBTilesReader::open(&path).expect("open reader");
     assert_eq!(reader.tile_count().expect("count"), 3);
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 10: zoom_levels returns DISTINCT values, sorted ascending.
@@ -365,7 +397,6 @@ fn test_reader_zoom_levels_distinct_sorted() {
     let reader = MBTilesReader::open(&path).expect("open reader");
     let zooms = reader.zoom_levels().expect("zoom levels");
     assert_eq!(zooms, vec![0, 1, 3, 5]);
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 11: list_tiles enumerates every row ordered by (z, x, y) ascending.
@@ -420,7 +451,6 @@ fn test_reader_list_tiles_ordered_by_z_x_y() {
             TileCoord { z: 1, x: 1, y: 1 },
         ]
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 12: into_mbtiles eagerly materialises every tile, preserving bytes.
@@ -452,7 +482,6 @@ fn test_reader_into_mbtiles_preserves_all_tiles() {
     assert_eq!(store.metadata.name.as_deref(), Some("test"));
     assert_eq!(store.metadata.format, Some(TileFormat::Pbf));
     assert_eq!(store.metadata.maxzoom, Some(14));
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 13: archives missing the `tiles` table are rejected.
@@ -466,7 +495,6 @@ fn test_reader_rejects_missing_tiles_table() {
         MbTilesError::InvalidFormat(msg) => assert!(msg.contains("tiles"), "msg={msg}"),
         other => panic!("expected InvalidFormat, got {other:?}"),
     }
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 14: archives missing the `metadata` table are rejected.
@@ -487,7 +515,6 @@ fn test_reader_rejects_missing_metadata_table() {
         MbTilesError::InvalidFormat(msg) => assert!(msg.contains("metadata"), "msg={msg}"),
         other => panic!("expected InvalidFormat, got {other:?}"),
     }
-    let _ = std::fs::remove_file(&path);
 }
 
 // Test 15: a malformed `bounds` CSV surfaces InvalidMetadata.
@@ -530,7 +557,6 @@ fn test_reader_invalid_bounds_csv_returns_error() {
         MbTilesError::InvalidMetadata(msg) => assert!(msg.contains("bounds"), "msg={msg}"),
         other => panic!("expected InvalidMetadata, got {other:?}"),
     }
-    let _ = std::fs::remove_file(&path);
 }
 
 // Bonus: in-memory byte buffer reader (covers Self::open_in_memory).
@@ -541,7 +567,6 @@ fn test_reader_open_in_memory_round_trip() {
     let path = unique_tmp("t_inmem");
     build_test_mbtiles(&path);
     let bytes = std::fs::read(&path).expect("read bytes");
-    let _ = std::fs::remove_file(&path);
 
     let reader = MBTilesReader::open_in_memory(&bytes).expect("open in memory");
     assert_eq!(reader.tile_count().expect("count"), 3);

@@ -3,23 +3,61 @@
 use anyhow::{Context, Result, anyhow};
 use oxigeo_cli::util::vector::{AttributeFilter, FilterOp, convert_vector};
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_cli_vct_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Write a minimal GeoJSON FeatureCollection to a temp file and return the path.
-fn write_temp_geojson(name: &str, json: &str) -> Result<std::path::PathBuf> {
-    let mut path = std::env::temp_dir();
-    path.push(format!("oxigeo_vct_{name}.geojson"));
-    let mut f = std::fs::File::create(&path)
+fn write_temp_geojson(name: &str, json: &str) -> Result<TempPath> {
+    let path = temp_path(name, "geojson");
+    let mut f = std::fs::File::create(&*path)
         .with_context(|| format!("create temp geojson: {}", path.display()))?;
     f.write_all(json.as_bytes()).context("write temp geojson")?;
     Ok(path)
 }
 
-fn temp_path(name: &str, ext: &str) -> std::path::PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push(format!("oxigeo_vct_{name}.{ext}"));
-    path
+fn temp_path(name: &str, ext: &str) -> TempPath {
+    TempPath::new(&format!("{name}.{ext}"))
 }
 
 // 3-feature GeoJSON with different "kind" properties
@@ -96,9 +134,6 @@ fn test_geojson_to_geojson() -> Result<()> {
         .ok_or_else(|| anyhow!("expected features array in output"))?;
     assert_eq!(features.len(), 3);
 
-    // Cleanup
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }
 
@@ -124,9 +159,8 @@ fn test_geojson_to_shapefile() -> Result<()> {
     let features = reader.read_features()?;
     assert_eq!(features.len(), 3);
 
-    // Cleanup
-    let _ = std::fs::remove_file(&input);
-    for ext in &["shp", "dbf", "shx"] {
+    // Cleanup: the shapefile sidecars are not covered by the TempPath guard.
+    for ext in &["dbf", "shx"] {
         let _ = std::fs::remove_file(output.with_extension(ext));
     }
     Ok(())
@@ -155,10 +189,8 @@ fn test_shapefile_to_geojson() -> Result<()> {
         .ok_or_else(|| anyhow!("expected features array in output"))?;
     assert_eq!(features.len(), 3);
 
-    // Cleanup
-    let _ = std::fs::remove_file(&gj_input);
-    let _ = std::fs::remove_file(&gj_output);
-    for ext in &["shp", "dbf", "shx"] {
+    // Cleanup: the shapefile sidecars are not covered by the TempPath guard.
+    for ext in &["dbf", "shx"] {
         let _ = std::fs::remove_file(shp_intermediate.with_extension(ext));
     }
     Ok(())
@@ -197,8 +229,6 @@ fn test_attribute_filter_eq() -> Result<()> {
         assert_eq!(kind, "city");
     }
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }
 
@@ -236,8 +266,6 @@ fn test_attribute_filter_contains() -> Result<()> {
         assert!(label.contains("ap"), "label '{label}' should contain 'ap'");
     }
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }
 
@@ -259,7 +287,6 @@ fn test_unknown_output_format_error() -> Result<()> {
         );
     }
 
-    let _ = std::fs::remove_file(&input);
     Ok(())
 }
 
@@ -293,8 +320,6 @@ fn test_attribute_filter_ne() -> Result<()> {
         .ok_or_else(|| anyhow!("expected name field"))?;
     assert_eq!(name, "Beta");
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }
 
@@ -308,7 +333,7 @@ fn test_attribute_filter_ne() -> Result<()> {
 fn write_temp_fgb(
     name: &str,
     features_data: &[(&str, &str, f64, f64)], // (name, kind, x, y)
-) -> Result<std::path::PathBuf> {
+) -> Result<TempPath> {
     use oxigeo_core::vector::{Feature as CoreFeature, FieldValue, Geometry, Point};
     use oxigeo_flatgeobuf::{Column, ColumnType, FlatGeobufWriterBuilder, GeometryType};
     use std::fs::File;
@@ -322,7 +347,7 @@ fn write_temp_fgb(
         .with_column(Column::new("kind", ColumnType::String));
 
     let file =
-        File::create(&path).with_context(|| format!("create temp fgb: {}", path.display()))?;
+        File::create(&*path).with_context(|| format!("create temp fgb: {}", path.display()))?;
     let buf_writer = BufWriter::new(file);
     let mut writer = builder.build(buf_writer).context("create FGB writer")?;
 
@@ -338,7 +363,7 @@ fn write_temp_fgb(
 }
 
 /// Helper: write an empty FlatGeobuf file (no features).
-fn write_empty_fgb(name: &str) -> Result<std::path::PathBuf> {
+fn write_empty_fgb(name: &str) -> Result<TempPath> {
     use oxigeo_flatgeobuf::{FlatGeobufWriterBuilder, GeometryType};
     use std::fs::File;
     use std::io::BufWriter;
@@ -346,7 +371,7 @@ fn write_empty_fgb(name: &str) -> Result<std::path::PathBuf> {
     let path = temp_path(name, "fgb");
     let builder = FlatGeobufWriterBuilder::new(GeometryType::Point).with_index();
     let file =
-        File::create(&path).with_context(|| format!("create empty fgb: {}", path.display()))?;
+        File::create(&*path).with_context(|| format!("create empty fgb: {}", path.display()))?;
     let buf_writer = BufWriter::new(file);
     let writer = builder
         .build(buf_writer)
@@ -387,8 +412,6 @@ fn test_flatgeobuf_to_geojson() -> Result<()> {
     assert!(names.contains("Beta"), "Beta should be present");
     assert!(names.contains("Gamma"), "Gamma should be present");
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }
 
@@ -415,9 +438,6 @@ fn test_geojson_to_flatgeobuf() -> Result<()> {
         .ok_or_else(|| anyhow!("expected features array in read-back"))?;
     assert_eq!(features.len(), 3);
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_file(&read_back_path);
     Ok(())
 }
 
@@ -460,10 +480,6 @@ fn test_flatgeobuf_round_trip() -> Result<()> {
     assert!(names.contains("Node1"), "Node1 should survive round-trip");
     assert!(names.contains("Node2"), "Node2 should survive round-trip");
 
-    let _ = std::fs::remove_file(&input_fgb);
-    let _ = std::fs::remove_file(&mid_geojson);
-    let _ = std::fs::remove_file(&output_fgb);
-    let _ = std::fs::remove_file(&final_geojson);
     Ok(())
 }
 
@@ -502,8 +518,6 @@ fn test_flatgeobuf_attribute_filter() -> Result<()> {
         assert_eq!(kind, "city", "all returned features should have kind=city");
     }
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }
 
@@ -525,7 +539,5 @@ fn test_flatgeobuf_empty() -> Result<()> {
         .ok_or_else(|| anyhow!("expected features array even for empty collection"))?;
     assert!(features.is_empty(), "features array should be empty");
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
     Ok(())
 }

@@ -14,38 +14,73 @@
 )]
 
 use std::env;
-use std::fs::{self, File};
+use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use oxigeo_core::io::FileDataSource;
-use oxigeo_core::types::{GeoTransform, NoDataValue, RasterDataType};
+use oxigeo_core::types::RasterDataType;
 use oxigeo_geotiff::GeoTiffReader;
-use oxigeo_geotiff::tiff::{Compression, PhotometricInterpretation, TiffFile};
-use oxigeo_geotiff::writer::{
-    CogWriter, CogWriterOptions, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling,
-    WriterConfig,
-};
+use oxigeo_geotiff::tiff::Compression;
+use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
 
-/// Helper to create test output directory
-fn test_output_dir() -> PathBuf {
-    let mut path = env::temp_dir();
-    path.push("test_geotiffs");
+// Only the codec-gated tests below reach for these, so the imports carry the
+// same gates; without them there is nothing in this file that needs them.
+#[cfg(feature = "lzw")]
+use oxigeo_core::types::{GeoTransform, NoDataValue};
+#[cfg(feature = "lzw")]
+use oxigeo_geotiff::tiff::PhotometricInterpretation;
+#[cfg(any(feature = "deflate", feature = "lzw"))]
+use oxigeo_geotiff::tiff::TiffFile;
+#[cfg(any(feature = "deflate", feature = "lzw"))]
+use oxigeo_geotiff::writer::OverviewResampling;
+#[cfg(feature = "lzw")]
+use oxigeo_geotiff::writer::{CogWriter, CogWriterOptions};
 
-    // Create directory if it doesn't exist
-    if let Err(e) = fs::create_dir_all(&path)
-        && e.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        panic!("Failed to create test directory: {}", e);
+/// An RAII fixture path inside [`std::env::temp_dir`].
+///
+/// These fixtures used to share one fixed `test_geotiffs/` directory with fixed
+/// leaf names and no cleanup at all: two binaries (or two runs) writing
+/// `test_rgb.tif` raced on the same bytes, and every run leaked 22 files.  The
+/// leaf name now embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever collide, and
+/// dropping the guard removes the fixture even when a test panics.
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(env::temp_dir().join(format!(
+            "oxigeo_geotiff_writer_{}_{seq}_{name}",
+            std::process::id()
+        )))
     }
-
-    path
 }
 
-/// Helper to create a test file path
-fn test_file_path(name: &str) -> PathBuf {
-    let mut path = test_output_dir();
-    path.push(name);
-    path
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Helper to create a uniquely named test output file path.
+fn test_file_path(name: &str) -> TempPath {
+    TempPath::new(name)
 }
 
 /// Helper to create test data with a pattern
@@ -60,7 +95,8 @@ fn create_test_pattern_u8(width: u64, height: u64) -> Vec<u8> {
     data
 }
 
-/// Helper to create multi-band test data
+/// Helper to create multi-band test data (only the LZW cases need RGB).
+#[cfg(feature = "lzw")]
 fn create_test_pattern_rgb(width: u64, height: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity((width * height * 3) as usize);
     for y in 0..height {
@@ -74,8 +110,9 @@ fn create_test_pattern_rgb(width: u64, height: u64) -> Vec<u8> {
 }
 
 /// Verify TIFF header magic bytes
-fn verify_tiff_header(path: &PathBuf) -> Result<(), String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+#[cfg(any(feature = "deflate", feature = "lzw", feature = "zstd"))]
+fn verify_tiff_header(path: &std::path::Path) -> Result<(), String> {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut header = [0u8; 4];
     use std::io::Read;
     file.read_exact(&mut header)
@@ -90,7 +127,8 @@ fn verify_tiff_header(path: &PathBuf) -> Result<(), String> {
 }
 
 /// Verify IFD count and structure
-fn verify_ifd_structure(path: &PathBuf, expected_ifd_count: usize) -> Result<(), String> {
+#[cfg(any(feature = "deflate", feature = "lzw"))]
+fn verify_ifd_structure(path: &std::path::Path, expected_ifd_count: usize) -> Result<(), String> {
     let source = FileDataSource::open(path).map_err(|e| format!("Failed to open source: {}", e))?;
     let tiff = TiffFile::parse(&source).map_err(|e| format!("Failed to parse TIFF: {}", e))?;
 
@@ -422,8 +460,19 @@ fn test_write_rgb() {
         let reader = GeoTiffReader::new(source).expect("Should create reader");
 
         assert_eq!(reader.band_count(), 3);
-        let read_data = reader.read_band(0, 0).expect("Should read band");
-        assert_eq!(read_data, data);
+        // `read_band` returns the requested band de-interleaved, not the whole
+        // interleaved plane (cool-japan/oxigeo#14).
+        let pixels = (width * height) as usize;
+        for band in 0..3usize {
+            let read_data = reader.read_band(0, band).expect("Should read band");
+            let expected: Vec<u8> = (0..pixels).map(|i| data[i * 3 + band]).collect();
+            assert_eq!(read_data.len(), pixels, "band {band} length");
+            assert_eq!(read_data, expected, "band {band} data");
+        }
+        assert!(
+            reader.read_band(0, 3).is_err(),
+            "band 3 of a 3-band file must be rejected"
+        );
     }
 }
 
@@ -465,8 +514,19 @@ fn test_write_rgba() {
         let reader = GeoTiffReader::new(source).expect("Should create reader");
 
         assert_eq!(reader.band_count(), 4);
-        let read_data = reader.read_band(0, 0).expect("Should read band");
-        assert_eq!(read_data, data);
+        // `read_band` returns the requested band de-interleaved, not the whole
+        // interleaved plane (cool-japan/oxigeo#14).
+        let pixels = (width * height) as usize;
+        for band in 0..4usize {
+            let read_data = reader.read_band(0, band).expect("Should read band");
+            let expected: Vec<u8> = (0..pixels).map(|i| data[i * 4 + band]).collect();
+            assert_eq!(read_data.len(), pixels, "band {band} length");
+            assert_eq!(read_data, expected, "band {band} data");
+        }
+        assert!(
+            reader.read_band(0, 4).is_err(),
+            "band 4 of a 4-band file must be rejected"
+        );
     }
 }
 
@@ -507,8 +567,20 @@ fn test_write_multispectral() {
         let reader = GeoTiffReader::new(source).expect("Should create reader");
 
         assert_eq!(reader.band_count(), u32::from(band_count));
-        let read_data = reader.read_band(0, 0).expect("Should read band");
-        assert_eq!(read_data, data);
+        // `read_band` returns the requested band de-interleaved, not the whole
+        // interleaved plane (cool-japan/oxigeo#14).
+        let bands = band_count as usize;
+        let pixels = (width * height) as usize;
+        for band in 0..bands {
+            let read_data = reader.read_band(0, band).expect("Should read band");
+            let expected: Vec<u8> = (0..pixels).map(|i| data[i * bands + band]).collect();
+            assert_eq!(read_data.len(), pixels, "band {band} length");
+            assert_eq!(read_data, expected, "band {band} data");
+        }
+        assert!(
+            reader.read_band(0, bands).is_err(),
+            "band {bands} of a {bands}-band file must be rejected"
+        );
     }
 }
 

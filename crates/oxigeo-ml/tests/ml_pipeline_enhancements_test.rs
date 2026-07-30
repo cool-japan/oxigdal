@@ -5,6 +5,7 @@
 //! - Model versioning and A/B testing (ModelRegistry, AbTestConfig)
 
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use oxigeo_ml::batch_predict::{AdaptiveBatchConfig, AdaptiveBatcher, PredictionRequest};
@@ -16,8 +17,44 @@ use oxigeo_ml::model_versioning::{AbTestConfig, ModelMetadata, ModelRegistry, Mo
 // Helpers
 // ═════════════════════════════════════════════════════════════════════════════
 
-fn tmp_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(name)
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_ml_pipeline_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn make_entry(outputs: Vec<Vec<f32>>) -> CacheEntry {
@@ -52,14 +89,14 @@ fn meta(name: &str, version: ModelVersion) -> ModelMetadata {
 
 #[test]
 fn hot_reload_watcher_construction() {
-    let path = tmp_path("test.onnx");
+    let path = TempPath::new("test.onnx");
     let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
-    assert_eq!(watcher.path(), path.as_path());
+    assert_eq!(watcher.path(), &*path);
 }
 
 #[test]
 fn hot_reload_check_nonexistent_file_returns_none() {
-    let p = tmp_path("oxigeo_no_such_file_1234567890.onnx");
+    let p = TempPath::new("no_such_file.onnx");
     let watcher = ModelWatcher::new(&p, HotReloadConfig::default());
     let result = watcher.check_for_update().expect("should not error");
     assert!(result.is_none());
@@ -67,7 +104,7 @@ fn hot_reload_check_nonexistent_file_returns_none() {
 
 #[test]
 fn hot_reload_check_existing_file_first_call_returns_none() {
-    let p = tmp_path("oxigeo_hr_first_call.onnx");
+    let p = TempPath::new("hr_first_call.onnx");
     fs::write(&p, b"data").expect("write");
 
     let watcher = ModelWatcher::new(&p, HotReloadConfig::default());
@@ -77,13 +114,11 @@ fn hot_reload_check_existing_file_first_call_returns_none() {
         result.is_none(),
         "first check should establish baseline, not fire event"
     );
-
-    let _ = fs::remove_file(&p);
 }
 
 #[test]
 fn hot_reload_unchanged_file_returns_none_on_second_check() {
-    let p = tmp_path("oxigeo_hr_unchanged.onnx");
+    let p = TempPath::new("hr_unchanged.onnx");
     fs::write(&p, b"data").expect("write");
 
     let watcher = ModelWatcher::new(&p, HotReloadConfig::default());
@@ -93,13 +128,11 @@ fn hot_reload_unchanged_file_returns_none_on_second_check() {
         result.is_none(),
         "unchanged file should return None on second check"
     );
-
-    let _ = fs::remove_file(&p);
 }
 
 #[test]
 fn hot_reload_mark_reloaded_increments_version() {
-    let path = tmp_path("dummy.onnx");
+    let path = TempPath::new("dummy.onnx");
     let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
     assert_eq!(watcher.current_version().expect("v"), 0);
 
@@ -112,7 +145,7 @@ fn hot_reload_mark_reloaded_increments_version() {
 
 #[test]
 fn hot_reload_reload_count_tracks_mark_calls() {
-    let path = tmp_path("dummy.onnx");
+    let path = TempPath::new("dummy.onnx");
     let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
     assert_eq!(watcher.reload_count().expect("rc0"), 0);
 
@@ -137,7 +170,7 @@ fn hot_reload_poll_interval_custom() {
         poll_interval: Duration::from_millis(250),
         ..Default::default()
     };
-    let path = tmp_path("dummy.onnx");
+    let path = TempPath::new("dummy.onnx");
     let watcher = ModelWatcher::new(&path, cfg);
     assert_eq!(watcher.config().poll_interval, Duration::from_millis(250));
 }
@@ -148,14 +181,14 @@ fn hot_reload_reload_timeout_custom() {
         reload_timeout: Duration::from_secs(120),
         ..Default::default()
     };
-    let path = tmp_path("dummy.onnx");
+    let path = TempPath::new("dummy.onnx");
     let watcher = ModelWatcher::new(&path, cfg);
     assert_eq!(watcher.config().reload_timeout, Duration::from_secs(120));
 }
 
 #[test]
 fn hot_reload_version_starts_at_zero() {
-    let path = tmp_path("any.onnx");
+    let path = TempPath::new("any.onnx");
     let watcher = ModelWatcher::new(&path, HotReloadConfig::default());
     assert_eq!(watcher.current_version().expect("v"), 0);
 }
@@ -164,7 +197,7 @@ fn hot_reload_version_starts_at_zero() {
 fn hot_reload_reload_event_fields_populated() {
     let now = SystemTime::now();
     let event = ReloadEvent {
-        path: tmp_path("event_model.onnx"),
+        path: TempPath::new("event_model.onnx").to_path_buf(),
         timestamp: now,
         version: 7,
     };

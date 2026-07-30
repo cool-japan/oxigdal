@@ -9,8 +9,48 @@ use oxigeo_hdf5::attribute::Attribute;
 use oxigeo_hdf5::dataset::DatasetProperties;
 use oxigeo_hdf5::datatype::Datatype;
 use oxigeo_hdf5::{Hdf5Reader, Hdf5Version, Hdf5Writer};
-use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::NamedTempFile;
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_hdf5_integration_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Round-trip an i32 dataset and assert the real decoded values.
 #[test]
@@ -285,8 +325,7 @@ fn test_nested_group_fails_loud() {
 #[test]
 fn test_temp_dir_usage() {
     // Use temp_dir for the test file, per policy.
-    let temp_dir = env::temp_dir();
-    let temp_file = temp_dir.join("oxigeo_hdf5_integration_temp_dir.h5");
+    let temp_file = TempPath::new("temp_dir.h5");
 
     {
         let mut writer =
@@ -302,8 +341,6 @@ fn test_temp_dir_usage() {
         let reader = Hdf5Reader::open(&temp_file).expect("Failed to open file");
         assert!(reader.exists("/data"));
     }
-
-    let _ = std::fs::remove_file(temp_file);
 }
 
 #[test]

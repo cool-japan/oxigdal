@@ -669,10 +669,48 @@ pub fn compute_channel_importance(channel_weights: &[Vec<f32>]) -> Vec<f32> {
         .collect()
 }
 
+/// A private scratch directory for one [`iterative_pruning`] call.
+///
+/// The intermediate models used to be written straight into
+/// [`std::env::temp_dir`] as `pruned_iter_{i}.onnx`, with no uniquing at all:
+/// two concurrent `iterative_pruning` calls silently overwrote each other's
+/// intermediates and each went on to prune the *other* call's model. Each call
+/// now gets its own directory, named from the process id plus a monotonic
+/// counter, and the whole directory is removed when this guard drops — so an
+/// early `?` return no longer leaks the intermediates either.
+struct ScratchDir(std::path::PathBuf);
+
+impl ScratchDir {
+    fn new() -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("oxigeo_ml_pruning_{}_{seq}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn join(&self, name: &str) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Applies iterative pruning with gradual sparsity increase
 ///
+/// Intermediate models are written to a scratch directory private to this call,
+/// so concurrent invocations cannot overwrite each other's intermediates. The
+/// directory is removed before this function returns, including on error.
+///
 /// # Errors
-/// Returns an error if pruning fails
+/// Returns an error if the scratch directory cannot be created, or if pruning
+/// fails.
 pub fn iterative_pruning<P: AsRef<Path>>(
     input_path: P,
     output_path: P,
@@ -685,7 +723,7 @@ pub fn iterative_pruning<P: AsRef<Path>>(
     };
 
     let mut stats_history = Vec::with_capacity(iterations);
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = ScratchDir::new()?;
 
     for i in 0..iterations {
         let current_sparsity = match config.schedule {
@@ -723,13 +761,13 @@ pub fn iterative_pruning<P: AsRef<Path>>(
         let input_file = if i == 0 {
             input_path.as_ref().to_path_buf()
         } else {
-            temp_dir.join(format!("pruned_iter_{}.onnx", i - 1))
+            temp_dir.join(&format!("pruned_iter_{}.onnx", i - 1))
         };
 
         let output_file = if i == iterations - 1 {
             output_path.as_ref().to_path_buf()
         } else {
-            temp_dir.join(format!("pruned_iter_{}.onnx", i))
+            temp_dir.join(&format!("pruned_iter_{}.onnx", i))
         };
 
         let stats = prune_model(&input_file, &output_file, &iter_config)?;

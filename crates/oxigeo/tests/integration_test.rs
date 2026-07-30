@@ -5,7 +5,98 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use oxigeo::DatasetFormat;
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_integration_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl TempPath {
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Hand the path over to another guard, defusing this one.
+    fn take(self) -> std::path::PathBuf {
+        let path = self.0.clone();
+        std::mem::forget(self);
+        path
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Same guarantee for a Shapefile *stem*: the writer emits several sidecars
+/// sharing one base name, so the guard deletes every extension it may have
+/// created rather than leaking `.shx` / `.dbf` behind the `.shp`.
+struct TempStem(std::path::PathBuf);
+
+impl TempStem {
+    fn new(name: &str) -> Self {
+        Self(TempPath::new(name).take())
+    }
+}
+
+impl std::ops::Deref for TempStem {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempStem {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempStem {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        for ext in ["shp", "shx", "dbf", "prj", "cpg", "qix", "sbn", "sbx"] {
+            let _ = std::fs::remove_file(self.0.with_extension(ext));
+        }
+    }
+}
+
 use oxigeo::convert::{
     ConversionPlan, ConversionStep, ConvertOptions, can_convert, detect_format,
     supported_conversions,
@@ -426,15 +517,14 @@ fn plan_identity_no_transcode() {
 /// The image is an 8×8 single-band Float32 raster with sequential pixel values
 /// 1.0 … 64.0, a simple north-up geo-transform, and EPSG:4326 as the CRS.
 #[cfg(feature = "geotiff")]
-fn write_synthetic_tiff(name: &str) -> std::path::PathBuf {
+fn write_synthetic_tiff(name: &str) -> TempPath {
     use oxigeo::core_types::types::{GeoTransform, NoDataValue, RasterDataType};
     use oxigeo::geotiff::{
         GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
         tiff::{Compression, PhotometricInterpretation, Predictor},
     };
 
-    let dir = std::env::temp_dir();
-    let path = dir.join(name);
+    let path = TempPath::new(name);
 
     let config = WriterConfig {
         width: 8,
@@ -473,15 +563,14 @@ fn write_synthetic_tiff(name: &str) -> std::path::PathBuf {
 /// The image is `4×4`, `band_count` bands, `UInt8`, with a distinct value per
 /// `(pixel, band)`.  When `nodata` is `Some`, it is recorded in the header.
 #[cfg(feature = "geotiff")]
-fn write_multiband_tiff(name: &str, band_count: u16, nodata: Option<i64>) -> std::path::PathBuf {
+fn write_multiband_tiff(name: &str, band_count: u16, nodata: Option<i64>) -> TempPath {
     use oxigeo::core_types::types::{GeoTransform, NoDataValue, RasterDataType};
     use oxigeo::geotiff::{
         GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
         tiff::{Compression, PhotometricInterpretation, Predictor},
     };
 
-    let dir = std::env::temp_dir();
-    let path = dir.join(name);
+    let path = TempPath::new(name);
 
     let width = 4u32;
     let height = 4u32;
@@ -585,6 +674,9 @@ fn test_dataset_statistics_band_out_of_range() {
 /// should yield an 8×8 result.
 #[test]
 fn test_dataset_clip_raster() {
+    // The whole body is `geotiff`-gated, so the imports are too — without the
+    // feature there is nothing here that could use them.
+    #[cfg(feature = "geotiff")]
     use oxigeo::{BoundingBox, Dataset, DatasetFormat};
 
     // Build a metadata-only Dataset with a known geo-transform (no file on disk).
@@ -603,8 +695,7 @@ fn test_dataset_clip_raster() {
             tiff::{Compression, PhotometricInterpretation, Predictor},
         };
 
-        let dir = std::env::temp_dir();
-        let path = dir.join("test_ds_clip_16x16.tif");
+        let path = TempPath::new("test_ds_clip_16x16.tif");
 
         let config = WriterConfig {
             width: 16,
@@ -676,8 +767,7 @@ fn test_dataset_clip_raster() {
     #[cfg(feature = "geojson")]
     {
         use std::io::Write;
-        let dir = std::env::temp_dir();
-        let path = dir.join("test_ds_clip_vector.geojson");
+        let path = TempPath::new("test_ds_clip_vector.geojson");
         std::fs::File::create(&path)
             .and_then(|mut f| f.write_all(b"{\"type\":\"FeatureCollection\",\"features\":[]}"))
             .expect("write");
@@ -692,17 +782,13 @@ fn test_dataset_clip_raster() {
 /// `Dataset::reproject` returns `Err` when the `proj` feature is disabled.
 ///
 /// When `--all-features` is used this test is skipped via cfg.
-#[cfg(not(feature = "proj"))]
+#[cfg(all(not(feature = "proj"), feature = "geotiff"))]
 #[test]
 fn test_dataset_reproject_returns_err_without_proj_feature() {
-    use std::io::Write;
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_ds_reproject_noproj.tif");
-    // Write TIFF magic bytes only — we just need the file to exist.
-    let bytes: [u8; 8] = [0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
-    std::fs::File::create(&path)
-        .and_then(|mut f| f.write_all(&bytes))
-        .expect("write tiff");
+    // A real raster, not an 8-byte header stub: `Dataset::open` parses the IFD
+    // and rejects a file that ends before one, so a stub would fail the open
+    // rather than reach the assertion this test is actually about.
+    let path = write_synthetic_tiff("test_ds_reproject_noproj.tif");
 
     let ds = oxigeo::Dataset::open(path.to_str().expect("path str")).expect("open");
     let result = ds.reproject(3857);
@@ -815,7 +901,7 @@ fn test_dataset_convert_raster_identity() {
     use oxigeo::ConversionOptions;
 
     let src_path = write_synthetic_tiff("test_convert_src.tif");
-    let dst_path = std::env::temp_dir().join("test_convert_dst.tif");
+    let dst_path = TempPath::new("test_convert_dst.tif");
     let src_ds = oxigeo::Dataset::open(src_path.to_str().expect("path")).expect("open src");
 
     let dst_ds = src_ds
@@ -847,7 +933,7 @@ fn test_dataset_convert_multiband_roundtrip() {
     use oxigeo::geotiff::GeoTiffReader;
 
     let src_path = write_multiband_tiff("test_convert_multiband_src.tif", 3, Some(255));
-    let dst_path = std::env::temp_dir().join("test_convert_multiband_dst.tif");
+    let dst_path = TempPath::new("test_convert_multiband_dst.tif");
 
     let src_ds = oxigeo::Dataset::open(src_path.to_str().expect("path")).expect("open src");
     let dst_ds = src_ds
@@ -892,8 +978,7 @@ fn test_dataset_convert_geojson_shapefile_multibyte_keys() {
     use oxigeo::ConversionOptions;
     use std::io::Write;
 
-    let dir = std::env::temp_dir();
-    let src_path = dir.join("test_convert_multibyte_keys.geojson");
+    let src_path = TempPath::new("test_convert_multibyte_keys.geojson");
     // Property key "日本語フィールド名前" is 30 UTF-8 bytes; byte 10 lands
     // mid-character. Emoji key "🌍🌏🌎longitude" also straddles the boundary.
     let content = r#"{"type":"FeatureCollection","features":[
@@ -904,7 +989,7 @@ fn test_dataset_convert_geojson_shapefile_multibyte_keys() {
         .and_then(|mut f| f.write_all(content.as_bytes()))
         .expect("write geojson");
 
-    let dst_path = dir.join("test_convert_multibyte_keys.shp");
+    let dst_path = TempStem::new("test_convert_multibyte_keys.shp");
     let src_ds = oxigeo::Dataset::open(src_path.to_str().expect("path")).expect("open src");
     // Must not panic; conversion should complete.
     let result = src_ds.convert(
@@ -924,17 +1009,31 @@ fn test_dataset_convert_unsupported_pair_errors() {
     use oxigeo::{ConversionOptions, DatasetFormat};
     use std::io::Write;
 
-    // Create a minimal GeoTIFF on disk (just magic bytes)
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_convert_unsupported.tif");
-    let bytes: [u8; 8] = [0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+    // Create a minimal but *valid* GeoTIFF on disk: header plus a reachable
+    // IFD.  A bare 8-byte header is not a parseable TIFF and `Dataset::open`
+    // now reports that rather than returning a `0×0` dataset
+    // (cool-japan/oxigeo#14).
+    let path = TempPath::new("test_convert_unsupported.tif");
+    let mut bytes: Vec<u8> = vec![0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+    bytes.extend_from_slice(&3u16.to_le_bytes()); // 3 IFD entries
+    for (tag, ty, value) in [
+        (256u16, 4u16, 8u32), // ImageWidth  = 8  (LONG)
+        (257u16, 4u16, 8u32), // ImageLength = 8  (LONG)
+        (277u16, 3u16, 1u32), // SamplesPerPixel = 1 (SHORT)
+    ] {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&ty.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // count
+        bytes.extend_from_slice(&value.to_le_bytes()); // inline value
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0
     std::fs::File::create(&path)
         .and_then(|mut f| f.write_all(&bytes))
         .expect("write tiff");
 
     let ds = oxigeo::Dataset::open(path.to_str().expect("path")).expect("open");
     // GeoTIFF → GeoJSON is a raster→vector cross-conversion, not supported.
-    let output = dir.join("test_convert_unsupported_out.geojson");
+    let output = TempPath::new("test_convert_unsupported_out.geojson");
     let result = ds.convert(
         &output,
         DatasetFormat::GeoJson,
@@ -992,8 +1091,7 @@ fn test_open_s3_uri_parses_without_cloud_feature() {
 #[test]
 fn test_info_geojson_populated() {
     use std::io::Write;
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_info_geojson.geojson");
+    let path = TempPath::new("test_info_geojson.geojson");
     let content = br#"{"type":"FeatureCollection","features":[
         {"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{}},
         {"type":"Feature","geometry":{"type":"Point","coordinates":[1,1]},"properties":{}},
@@ -1020,8 +1118,7 @@ fn test_info_geojson_populated() {
 #[test]
 fn test_info_geojson_empty_collection() {
     use std::io::Write;
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_info_geojson_empty.geojson");
+    let path = TempPath::new("test_info_geojson_empty.geojson");
     std::fs::File::create(&path)
         .and_then(|mut f| f.write_all(b"{\"type\":\"FeatureCollection\",\"features\":[]}"))
         .expect("write geojson");
@@ -1040,8 +1137,7 @@ fn test_info_geojson_empty_collection() {
 #[test]
 fn test_info_geojson_bbox_parsed() {
     use std::io::Write;
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_info_geojson_bbox.geojson");
+    let path = TempPath::new("test_info_geojson_bbox.geojson");
     let content = br#"{"type":"FeatureCollection","bbox":[-180,-90,180,90],"features":[]}"#;
     std::fs::File::create(&path)
         .and_then(|mut f| f.write_all(content))
@@ -1074,7 +1170,7 @@ fn test_dataset_convert_geotiff_cog() {
     use oxigeo::geotiff::CogReader;
 
     let src_path = write_synthetic_tiff("test_cog_src.tif");
-    let dst_path = std::env::temp_dir().join("test_cog_dst.tif");
+    let dst_path = TempPath::new("test_cog_dst.tif");
 
     let src_ds = oxigeo::Dataset::open(src_path.to_str().expect("src path")).expect("open src");
     let opts = ConversionOptions {
@@ -1122,7 +1218,7 @@ fn test_dataset_convert_geotiff_with_lzw_compression() {
     use oxigeo::{Compression, ConversionOptions};
 
     let src_path = write_synthetic_tiff("test_convert_lzw_src.tif");
-    let dst_path = std::env::temp_dir().join("test_convert_lzw_dst.tif");
+    let dst_path = TempPath::new("test_convert_lzw_dst.tif");
     let src_ds = oxigeo::Dataset::open(src_path.to_str().expect("path")).expect("open src");
 
     let opts = ConversionOptions {
@@ -1169,9 +1265,8 @@ fn test_dataset_convert_geojson_to_geojson() {
     use oxigeo::ConversionOptions;
     use std::io::Write;
 
-    let dir = std::env::temp_dir();
-    let src_path = dir.join("test_convert_gj_src.geojson");
-    let dst_path = dir.join("test_convert_gj_dst.geojson");
+    let src_path = TempPath::new("test_convert_gj_src.geojson");
+    let dst_path = TempPath::new("test_convert_gj_dst.geojson");
 
     let content = br#"{"type":"FeatureCollection","features":[
         {"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"A"}}
@@ -1201,9 +1296,8 @@ fn test_dataset_convert_geojson_to_shapefile() {
     use oxigeo::ConversionOptions;
     use std::io::Write;
 
-    let dir = std::env::temp_dir();
-    let src_path = dir.join("test_convert_gj2shp_src.geojson");
-    let dst_path = dir.join("test_convert_gj2shp_dst.shp");
+    let src_path = TempPath::new("test_convert_gj2shp_src.geojson");
+    let dst_path = TempStem::new("test_convert_gj2shp_dst.shp");
 
     // Two Point features with a string property.
     let content = br#"{"type":"FeatureCollection","features":[
@@ -1249,8 +1343,7 @@ fn test_info_shapefile_populated() {
         dbf::{FieldDescriptor, FieldType},
     };
 
-    let dir = std::env::temp_dir();
-    let base = dir.join("test_info_shapefile");
+    let base = TempStem::new("test_info_shapefile");
 
     // Write a minimal shapefile with two Point features.
     let field = FieldDescriptor::new("name".to_string(), FieldType::Character, 20, 0)
@@ -1307,8 +1400,7 @@ fn test_info_geoparquet_populated() {
     use oxigeo_geoparquet::geometry::{Geometry as ParquetGeom, Point as ParquetPoint};
     use oxigeo_geoparquet::{GeoParquetWriter, GeometryColumnMetadata};
 
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_info_geoparquet.parquet");
+    let path = TempPath::new("test_info_geoparquet.parquet");
 
     // Create a minimal GeoParquet file with 3 Point features using the writer.
     {
@@ -1341,8 +1433,7 @@ fn test_info_flatgeobuf_populated() {
     use oxigeo_core::vector::{Coordinate, Feature as CoreFeature, FieldValue, Geometry, Point};
     use oxigeo_flatgeobuf::{FlatGeobufWriterBuilder, GeometryType as FgbGeomType};
 
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_info_flatgeobuf.fgb");
+    let path = TempPath::new("test_info_flatgeobuf.fgb");
 
     // Write a minimal FlatGeobuf with 2 Point features.
     {
@@ -1398,7 +1489,7 @@ fn test_build_vrt_single_source() {
     use oxigeo::vrt_builder::VrtOptions;
 
     let src_path = write_synthetic_tiff("test_vrt_single_src.tif");
-    let vrt_path = std::env::temp_dir().join("test_vrt_single.vrt");
+    let vrt_path = TempPath::new("test_vrt_single.vrt");
 
     let ds = oxigeo::Dataset::build_vrt(&[src_path.as_path()], &vrt_path, VrtOptions::default())
         .expect("build_vrt");
@@ -1436,7 +1527,7 @@ fn test_build_vrt_preserves_uint8_datatype() {
     use oxigeo::vrt_builder::VrtOptions;
 
     let src_path = write_multiband_tiff("test_vrt_uint8_src.tif", 1, None);
-    let vrt_path = std::env::temp_dir().join("test_vrt_uint8.vrt");
+    let vrt_path = TempPath::new("test_vrt_uint8.vrt");
 
     oxigeo::Dataset::build_vrt(&[src_path.as_path()], &vrt_path, VrtOptions::default())
         .expect("build_vrt");
@@ -1465,7 +1556,6 @@ fn test_build_vrt_two_tiffs_union_extent() {
     use oxigeo::vrt_builder::VrtOptions;
 
     // Write two 8×8 TIFFs side by side
-    let dir = std::env::temp_dir();
 
     let config_a = WriterConfig {
         width: 8,
@@ -1490,9 +1580,9 @@ fn test_build_vrt_two_tiffs_union_extent() {
         ..config_a.clone()
     };
 
-    let path_a = dir.join("test_vrt_union_a.tif");
-    let path_b = dir.join("test_vrt_union_b.tif");
-    let vrt_path = dir.join("test_vrt_union.vrt");
+    let path_a = TempPath::new("test_vrt_union_a.tif");
+    let path_b = TempPath::new("test_vrt_union_b.tif");
+    let vrt_path = TempPath::new("test_vrt_union.vrt");
 
     let pixel_data = vec![0u8; 8 * 8 * 4];
     let mut w_a = GeoTiffWriter::create(&path_a, config_a, GeoTiffWriterOptions::default())
@@ -1538,7 +1628,7 @@ fn test_build_vrt_two_tiffs_union_extent() {
 fn test_build_vrt_empty_sources_errors() {
     use oxigeo::vrt_builder::VrtOptions;
 
-    let vrt_path = std::env::temp_dir().join("test_vrt_empty.vrt");
+    let vrt_path = TempPath::new("test_vrt_empty.vrt");
     let result = oxigeo::Dataset::build_vrt(&[], &vrt_path, VrtOptions::default());
     assert!(
         result.is_err(),

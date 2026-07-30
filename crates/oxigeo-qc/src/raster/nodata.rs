@@ -23,10 +23,11 @@ use std::path::Path;
 
 use oxigeo_core::io::FileDataSource;
 use oxigeo_core::types::RasterDataType;
-use oxigeo_geotiff::cog::CogReader;
-use oxigeo_geotiff::tiff::{ImageInfo, SampleFormat};
+use oxigeo_geotiff::GeoTiffReader;
+use oxigeo_geotiff::tiff::SampleFormat;
 
 use crate::error::{QcIssue, QcResult, Severity};
+use crate::raster::band_scan::{RasterScan, native, scan_band};
 
 /// Default float-comparison epsilon for `f32` bands.
 pub const DEFAULT_FLOAT_EPS_F32: f32 = 1e-6;
@@ -92,29 +93,33 @@ impl NoDataValidator {
 
     /// Runs validation against a multi-band GeoTIFF file.
     ///
-    /// All tiles for every band are read into memory; for very large rasters
-    /// this can be memory-hungry — chunked streaming is a future
-    /// improvement.
+    /// Every pixel of every band is inspected, for chunky
+    /// (`PlanarConfiguration = 1`) and planar (`= 2`) files alike: the samples
+    /// come from the driver's band-aware read engine (see
+    /// `band_scan`), which the older `read_tile`-based walk did
+    /// not use and which is why a planar file used to be only ~`1/spp` scanned.
+    ///
+    /// One `bool` per pixel per band is retained for the common-footprint check,
+    /// so peak memory is `width × height × band_count` bytes plus one bounded
+    /// read stripe; the pixel data itself is streamed.
     pub fn check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<NoDataValidationResult> {
         let source = FileDataSource::open(path.as_ref()).map_err(|e| {
             crate::error::QcError::RasterError(format!("Failed to open raster: {}", e))
         })?;
-        let reader = CogReader::open(source).map_err(|e| {
+        let reader = GeoTiffReader::open(source).map_err(|e| {
             crate::error::QcError::RasterError(format!("Failed to read GeoTIFF: {}", e))
         })?;
-        let info = reader.primary_info().clone();
-        let nodata_value = reader.nodata().map_err(|e| {
-            crate::error::QcError::RasterError(format!("nodata read failed: {}", e))
-        })?;
+        let scan = RasterScan::probe(&reader)?;
+        let nodata_value = reader.nodata();
 
         // GDAL stores a single NoData per file; if extended per-band metadata
         // becomes available later, plug it in here. For now, every band shares
         // the same declared NoData (from GDAL_NODATA tag).
-        let band_count = info.samples_per_pixel as usize;
-        let declared_per_band: Vec<Option<f64>> =
-            (0..band_count).map(|_| nodata_value.as_f64()).collect();
+        let declared_per_band: Vec<Option<f64>> = (0..scan.band_count)
+            .map(|_| nodata_value.as_f64())
+            .collect();
 
-        let masks = read_band_masks(&reader, &info, &declared_per_band, self)?;
+        let masks = read_band_masks(&reader, &scan, &declared_per_band, self)?;
         Ok(self.evaluate_masks(masks, declared_per_band))
     }
 
@@ -312,120 +317,74 @@ pub(crate) struct NoDataBandMask {
     pub suspected_unmarked_nodata: bool,
 }
 
+/// Builds one NoData mask per band by streaming each band in full.
+///
+/// Reads go through [`scan_band`], so the walk is identical for tiled and
+/// striped files and for chunky and planar storage; nothing here has to know the
+/// block layout.
 fn read_band_masks<S: oxigeo_core::io::DataSource>(
-    reader: &CogReader<S>,
-    info: &ImageInfo,
+    reader: &GeoTiffReader<S>,
+    scan: &RasterScan,
     declared_per_band: &[Option<f64>],
     validator: &NoDataValidator,
 ) -> QcResult<Vec<NoDataBandMask>> {
-    let band_count = info.samples_per_pixel as usize;
-    let total_pixels = info.width * info.height;
+    let total_pixels = scan.total_pixels();
+    let pixels = usize::try_from(total_pixels).map_err(|_| {
+        crate::error::QcError::RasterError(format!(
+            "raster of {total_pixels} pixels does not fit in memory on this target"
+        ))
+    })?;
 
-    let dtype = info
-        .data_type()
-        .ok_or_else(|| crate::error::QcError::RasterError("data type unknown".to_string()))?;
+    let mut masks = Vec::with_capacity(scan.band_count);
+    for band_idx in 0..scan.band_count {
+        let declared = declared_per_band.get(band_idx).copied().flatten();
+        let mut bitmap = vec![false; pixels];
+        let mut nodata_count = 0u64;
 
-    let bytes_per_sample = (info.bits_per_sample.first().copied().unwrap_or(8) / 8) as usize;
-    let bytes_per_pixel = bytes_per_sample * band_count;
-    let expected_per_tile_uncompressed = info
-        .tile_width
-        .map(|tw| tw as usize)
-        .unwrap_or(info.width as usize)
-        * info
-            .tile_height
-            .map(|th| th as usize)
-            .unwrap_or(info.height as usize)
-        * bytes_per_pixel;
-
-    if expected_per_tile_uncompressed == 0 {
-        return Err(crate::error::QcError::RasterError(
-            "Image has zero-size tiles".to_string(),
-        ));
-    }
-
-    let tiles_x = info.tiles_across() as usize;
-    let tiles_y = info.tiles_down() as usize;
-
-    let mut bitmaps: Vec<Vec<bool>> = (0..band_count)
-        .map(|_| vec![false; total_pixels as usize])
-        .collect();
-
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let tile_bytes = reader.read_tile(0, tx as u32, ty as u32).map_err(|e| {
-                crate::error::QcError::RasterError(format!("read_tile failed: {}", e))
+        scan_band(reader, scan, band_idx, |first_row, samples| {
+            let base = usize::try_from(first_row * scan.width).map_err(|_| {
+                crate::error::QcError::RasterError("row offset overflows usize".to_string())
             })?;
-
-            let tile_w = info
-                .tile_width
-                .map(|tw| tw as usize)
-                .unwrap_or(info.width as usize);
-            let tile_h = info.tile_height.map(|th| th as usize).unwrap_or({
-                // striped: last strip may be shorter
-                let strip_height = info.rows_per_strip.unwrap_or(info.height as u32) as usize;
-                if ty == tiles_y - 1 {
-                    let remaining = info.height as usize - ty * strip_height;
-                    remaining.min(strip_height)
-                } else {
-                    strip_height
-                }
-            });
-
-            // Walk every pixel in this tile that maps onto a real image cell.
-            let img_w = info.width as usize;
-            let img_h = info.height as usize;
-            for row in 0..tile_h {
-                let img_y = ty * tile_h + row;
-                if img_y >= img_h {
-                    break;
-                }
-                for col in 0..tile_w {
-                    let img_x = tx * tile_w + col;
-                    if img_x >= img_w {
-                        break;
-                    }
-                    let pixel_offset_in_tile = (row * tile_w + col) * bytes_per_pixel;
-                    if pixel_offset_in_tile + bytes_per_pixel > tile_bytes.len() {
-                        break;
-                    }
-                    let pixel_idx = img_y * img_w + img_x;
-                    for (band_idx, bitmap) in bitmaps.iter_mut().enumerate().take(band_count) {
-                        let sample_offset = pixel_offset_in_tile + band_idx * bytes_per_sample;
-                        let sample_bytes =
-                            &tile_bytes[sample_offset..sample_offset + bytes_per_sample];
-                        if matches_nodata(
-                            sample_bytes,
-                            dtype,
-                            info.sample_format,
-                            declared_per_band.get(band_idx).copied().flatten(),
-                            validator,
-                        ) {
-                            bitmap[pixel_idx] = true;
-                        }
+            for (offset, sample) in samples.chunks_exact(scan.bytes_per_sample).enumerate() {
+                if matches_nodata(
+                    sample,
+                    scan.data_type,
+                    scan.sample_format,
+                    declared,
+                    validator,
+                ) {
+                    // `scan_band` yields whole rows, so the stripe's samples are
+                    // exactly `bitmap[base..base + n]`.
+                    if let Some(cell) = bitmap.get_mut(base + offset) {
+                        *cell = true;
+                        nodata_count += 1;
                     }
                 }
             }
-        }
+            Ok(())
+        })?;
+
+        masks.push(NoDataBandMask {
+            bitmap,
+            total: total_pixels,
+            nodata_count,
+            suspected_unmarked_nodata: false,
+        });
     }
-
-    let masks = bitmaps
-        .into_iter()
-        .map(|bm| {
-            let count = bm.iter().filter(|b| **b).count() as u64;
-            NoDataBandMask {
-                bitmap: bm,
-                total: total_pixels,
-                nodata_count: count,
-                suspected_unmarked_nodata: false,
-            }
-        })
-        .collect();
 
     Ok(masks)
 }
 
 /// Tests whether `sample_bytes` matches the declared NoData sentinel for a
 /// given (data_type, sample_format).
+///
+/// `sample_bytes` is in the **host's** byte order. The driver normalises decoded
+/// samples once, on the way out of block decode, so a `MM` file and its `II`
+/// twin deliver identical bytes here. This function must therefore not consult
+/// the file's byte order at all: it used to (correctly, while the driver handed
+/// back file-order bytes), and re-introducing that would byte-swap an `MM`
+/// file's samples a second time and collapse its NoData count to zero
+/// (cool-japan/oxigeo#14).
 fn matches_nodata(
     sample_bytes: &[u8],
     dtype: RasterDataType,
@@ -443,80 +402,42 @@ fn matches_nodata(
             sample_bytes.first().is_some_and(|&v| v as f64 == decl)
         }
         (UnsignedInteger, RasterDataType::UInt16) => {
-            if sample_bytes.len() < 2 {
-                return false;
-            }
-            let v = u16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
-            v as f64 == decl
+            native::read_u16(sample_bytes).is_some_and(|v| v as f64 == decl)
         }
         (UnsignedInteger, RasterDataType::UInt32) => {
-            if sample_bytes.len() < 4 {
-                return false;
-            }
-            let v = u32::from_le_bytes([
-                sample_bytes[0],
-                sample_bytes[1],
-                sample_bytes[2],
-                sample_bytes[3],
-            ]);
-            v as f64 == decl
+            native::read_u32(sample_bytes).is_some_and(|v| v as f64 == decl)
+        }
+        (UnsignedInteger, RasterDataType::UInt64) => {
+            native::read_u64(sample_bytes).is_some_and(|v| v as f64 == decl)
         }
         (SignedInteger, RasterDataType::Int8) => sample_bytes
             .first()
             .is_some_and(|&v| (v as i8) as f64 == decl),
         (SignedInteger, RasterDataType::Int16) => {
-            if sample_bytes.len() < 2 {
-                return false;
-            }
-            let v = i16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
-            v as f64 == decl
+            native::read_i16(sample_bytes).is_some_and(|v| v as f64 == decl)
         }
         (SignedInteger, RasterDataType::Int32) => {
-            if sample_bytes.len() < 4 {
-                return false;
-            }
-            let v = i32::from_le_bytes([
-                sample_bytes[0],
-                sample_bytes[1],
-                sample_bytes[2],
-                sample_bytes[3],
-            ]);
-            v as f64 == decl
+            native::read_i32(sample_bytes).is_some_and(|v| v as f64 == decl)
+        }
+        (SignedInteger, RasterDataType::Int64) => {
+            native::read_i64(sample_bytes).is_some_and(|v| v as f64 == decl)
         }
         (IeeeFloatingPoint, RasterDataType::Float32) => {
-            if sample_bytes.len() < 4 {
-                return false;
-            }
-            let v = f32::from_le_bytes([
-                sample_bytes[0],
-                sample_bytes[1],
-                sample_bytes[2],
-                sample_bytes[3],
-            ]);
-            // Honour NaN-sentinel convention.
-            if (decl as f32).is_nan() {
-                return v.is_nan();
-            }
-            (v - decl as f32).abs() <= validator.float_eps_f32
+            native::read_f32(sample_bytes).is_some_and(|v| {
+                // Honour NaN-sentinel convention.
+                if (decl as f32).is_nan() {
+                    return v.is_nan();
+                }
+                (v - decl as f32).abs() <= validator.float_eps_f32
+            })
         }
         (IeeeFloatingPoint, RasterDataType::Float64) => {
-            if sample_bytes.len() < 8 {
-                return false;
-            }
-            let v = f64::from_le_bytes([
-                sample_bytes[0],
-                sample_bytes[1],
-                sample_bytes[2],
-                sample_bytes[3],
-                sample_bytes[4],
-                sample_bytes[5],
-                sample_bytes[6],
-                sample_bytes[7],
-            ]);
-            if decl.is_nan() {
-                return v.is_nan();
-            }
-            (v - decl).abs() <= validator.float_eps_f64
+            native::read_f64(sample_bytes).is_some_and(|v| {
+                if decl.is_nan() {
+                    return v.is_nan();
+                }
+                (v - decl).abs() <= validator.float_eps_f64
+            })
         }
         _ => false,
     }
@@ -628,8 +549,11 @@ mod tests {
     fn test_nodata_float_eps_tolerance() {
         // Pixel value differs from the declared NoData by 0.01: well within
         // a 0.1 epsilon, well outside the default 1e-6 epsilon.
+        //
+        // `to_ne_bytes`, not `to_le_bytes`: `matches_nodata` consumes samples in
+        // the host's byte order, because that is what the driver hands out.
         let pixel: f32 = -9998.99;
-        let bytes = pixel.to_le_bytes();
+        let bytes = pixel.to_ne_bytes();
 
         let lenient = NoDataValidator::new().with_float_eps_f32(0.1);
         assert!(
@@ -657,7 +581,7 @@ mod tests {
 
         // NaN sentinel handling.
         let nan_pixel: f32 = f32::NAN;
-        let nan_bytes = nan_pixel.to_le_bytes();
+        let nan_bytes = nan_pixel.to_ne_bytes();
         let nan_match = matches_nodata(
             &nan_bytes,
             RasterDataType::Float32,
@@ -666,5 +590,27 @@ mod tests {
             &strict,
         );
         assert!(nan_match, "NaN pixel matches NaN sentinel");
+    }
+
+    /// A short sample slice must miss, not panic — `native::read_*` returns
+    /// `None` rather than indexing past the end.
+    #[test]
+    fn test_nodata_truncated_sample_does_not_match() {
+        let strict = NoDataValidator::new();
+        for dtype in [
+            RasterDataType::UInt16,
+            RasterDataType::Int32,
+            RasterDataType::Float64,
+        ] {
+            let fmt = match dtype {
+                RasterDataType::UInt16 => SampleFormat::UnsignedInteger,
+                RasterDataType::Int32 => SampleFormat::SignedInteger,
+                _ => SampleFormat::IeeeFloatingPoint,
+            };
+            assert!(
+                !matches_nodata(&[0u8], dtype, fmt, Some(0.0), &strict),
+                "{dtype:?}: a one-byte slice cannot hold a sample"
+            );
+        }
     }
 }

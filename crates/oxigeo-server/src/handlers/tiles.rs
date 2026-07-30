@@ -694,41 +694,22 @@ fn is_nodata(value: f64, nodata: Option<f64>) -> bool {
     }
 }
 
-/// Read a window for a specific band by reading the full band and extracting the
-/// requested region. Band 0 should use `Dataset::read_window` directly.
+/// Read a window of one band, touching only the blocks that overlap it.
+///
+/// `Dataset::read_window` is this with `band = 0`, so the red channel and the
+/// green/blue channels now come from the same code path; they used to disagree,
+/// with red going through a tile-stitching loop that silently produced an
+/// all-zero buffer for multi-band datasets.
+/// See <https://github.com/cool-japan/oxigeo/issues/14>.
 fn read_band_window(
     dataset: &crate::dataset_registry::Dataset,
     band: usize,
     window: (u64, u64, u64, u64),
 ) -> Result<RasterBuffer, TileError> {
     let (src_x, src_y, src_w, src_h) = window;
-    let band_data = dataset
-        .read_band(0, band)
-        .map_err(|e| TileError::Rendering(format!("Failed to read band {}: {}", band, e)))?;
-
-    let ds_width = dataset.width();
-    let ds_height = dataset.height();
-    let data_type = dataset.data_type();
-    let nodata = dataset.nodata();
-
-    let full = RasterBuffer::new(band_data, ds_width, ds_height, data_type, nodata)
-        .map_err(|e| TileError::Rendering(format!("Buffer creation error: {}", e)))?;
-
-    let mut window_buf = RasterBuffer::zeros(src_w, src_h, data_type);
-    for dy in 0..src_h {
-        for dx in 0..src_w {
-            let gx = src_x + dx;
-            let gy = src_y + dy;
-            if gx < ds_width
-                && gy < ds_height
-                && let Ok(val) = full.get_pixel(gx, gy)
-            {
-                let _ = window_buf.set_pixel(dx, dy, val);
-            }
-        }
-    }
-
-    Ok(window_buf)
+    dataset
+        .read_band_window(0, band, src_x, src_y, src_w, src_h)
+        .map_err(|e| TileError::Rendering(format!("Failed to read band {}: {}", band, e)))
 }
 
 /// Resample a buffer to `tile_px` x `tile_px` if it is not already that size.

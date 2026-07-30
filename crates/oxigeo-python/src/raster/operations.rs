@@ -1692,6 +1692,41 @@ pub fn translate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_python_operations_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     /// Exercises the `py.detach`-wrapped write/read paths end-to-end: a
     /// single-band array written via `write()` (GIL released during the
@@ -1702,7 +1737,7 @@ mod tests {
     fn test_write_read_roundtrip_across_gil_release() {
         Python::initialize();
         Python::attach(|py| {
-            let test_path = std::env::temp_dir().join("oxigeo_operations_roundtrip_test.tif");
+            let test_path = TempPath::new("operations_roundtrip_test.tif");
             let path_str = test_path.to_string_lossy().to_string();
 
             let data: Vec<Vec<f64>> = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
@@ -1716,8 +1751,6 @@ mod tests {
             let readonly = read_back.readonly();
             let slice = readonly.as_slice().expect("result must be contiguous");
             assert_eq!(slice, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-
-            let _ = std::fs::remove_file(&test_path);
         });
     }
 
@@ -1728,7 +1761,7 @@ mod tests {
     fn test_read_bands_with_window_across_gil_release() {
         Python::initialize();
         Python::attach(|py| {
-            let test_path = std::env::temp_dir().join("oxigeo_operations_read_bands_test.tif");
+            let test_path = TempPath::new("operations_read_bands_test.tif");
             let path_str = test_path.to_string_lossy().to_string();
 
             // 2 bands, 2x2 pixels, band-sequential (bands, height, width).
@@ -1749,8 +1782,186 @@ mod tests {
             let slice = readonly.as_slice().expect("result must be contiguous");
             // Windowed to the single top-left pixel of both bands.
             assert_eq!(slice, &[1.0, 10.0]);
+        });
+    }
 
-            let _ = std::fs::remove_file(&test_path);
+    /// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// `GeoTiffReader::read_band` used to ignore its `band` argument and return
+    /// the whole pixel-interleaved image, so this crate de-interleaved the
+    /// result by hand. It now returns one band plane, and the hand-rolled
+    /// de-interleave has been removed. This exercises the case that slipped
+    /// through: **more than two bands, read through an off-origin window**, so
+    /// that a band mix-up, an interleave-stride mix-up and a row/column mix-up
+    /// are each individually detectable.
+    #[test]
+    fn test_issue_14_read_bands_multiband_window_selects_each_band() {
+        Python::initialize();
+        Python::attach(|py| {
+            let test_path = TempPath::new("issue_14_multiband_window_test.tif");
+            let path_str = test_path.to_string_lossy().to_string();
+
+            // 3 bands, 3 rows x 4 cols. Value = 100*(band+1) + 10*row + col, so
+            // every sample identifies its own band, row and column.
+            const BANDS: usize = 3;
+            const HEIGHT: usize = 3;
+            const WIDTH: usize = 4;
+            let expected = |band: usize, row: usize, col: usize| -> f64 {
+                (100 * (band + 1) + 10 * row + col) as f64
+            };
+
+            let data: Vec<Vec<Vec<f64>>> = (0..BANDS)
+                .map(|b| {
+                    (0..HEIGHT)
+                        .map(|r| (0..WIDTH).map(|c| expected(b, r, c)).collect())
+                        .collect()
+                })
+                .collect();
+            let arr = numpy::PyArray3::from_vec3(py, &data).expect("build input array");
+            let arr_any = arr.into_any();
+
+            write(py, &path_str, &arr_any, None, None, None, false, 256, None)
+                .expect("write should succeed");
+
+            // Off-origin 2x2 window: rows 1..3, cols 1..3.
+            let (col_off, row_off, win_w, win_h) = (1usize, 1usize, 2usize, 2usize);
+            let window = WindowPy::new(col_off as u64, row_off as u64, win_w as u64, win_h as u64);
+
+            let result =
+                read_bands(py, &path_str, Some(&window), None, None).expect("read_bands failed");
+            let readonly = result.readonly();
+            let slice = readonly.as_slice().expect("result must be contiguous");
+
+            assert_eq!(
+                slice.len(),
+                BANDS * win_h * win_w,
+                "read_bands must return one sample per band per windowed pixel"
+            );
+
+            for band in 0..BANDS {
+                for row in 0..win_h {
+                    for col in 0..win_w {
+                        let got = slice[(band * win_h + row) * win_w + col];
+                        let want = expected(band, row_off + row, col_off + col);
+                        assert!(
+                            (got - want).abs() < f64::EPSILON,
+                            "band {} window pixel ({}, {}) = source ({}, {}): expected {}, got {}",
+                            band,
+                            row,
+                            col,
+                            row_off + row,
+                            col_off + col,
+                            want,
+                            got
+                        );
+                    }
+                }
+            }
+
+            // The single-band `read()` entry point must agree, band by band.
+            // `band` is 1-based here, 0-based in the driver -- a conversion the
+            // old de-interleave path also had to get right.
+            for band in 0..BANDS {
+                let one = read(py, &path_str, band as u32 + 1, Some(&window), None, false)
+                    .expect("read should succeed");
+                let one_ro = one.readonly();
+                let one_slice = one_ro.as_slice().expect("result must be contiguous");
+                for row in 0..win_h {
+                    for col in 0..win_w {
+                        let got = one_slice[row * win_w + col];
+                        let want = expected(band, row_off + row, col_off + col);
+                        assert!(
+                            (got - want).abs() < f64::EPSILON,
+                            "read(band={}) window pixel ({}, {}): expected {}, got {}",
+                            band + 1,
+                            row,
+                            col,
+                            want,
+                            got
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// A full-extent multi-band read must return exactly one plane per band --
+    /// `band_count * height * width` samples -- not the old
+    /// whole-interleaved-image buffer, and not the same plane repeated.
+    #[test]
+    fn test_issue_14_read_bands_full_extent_planes_are_distinct() {
+        Python::initialize();
+        Python::attach(|py| {
+            let test_path = TempPath::new("issue_14_multiband_full_test.tif");
+            let path_str = test_path.to_string_lossy().to_string();
+
+            let data: Vec<Vec<Vec<f64>>> = vec![
+                vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]],
+                vec![vec![11.0, 12.0, 13.0], vec![14.0, 15.0, 16.0]],
+                vec![vec![21.0, 22.0, 23.0], vec![24.0, 25.0, 26.0]],
+            ];
+            let arr = numpy::PyArray3::from_vec3(py, &data).expect("build input array");
+            let arr_any = arr.into_any();
+
+            write(py, &path_str, &arr_any, None, None, None, false, 256, None)
+                .expect("write should succeed");
+
+            let result = read_bands(py, &path_str, None, None, None).expect("read_bands failed");
+            let readonly = result.readonly();
+            let slice = readonly.as_slice().expect("result must be contiguous");
+
+            assert_eq!(
+                slice,
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // band 1
+                    11.0, 12.0, 13.0, 14.0, 15.0, 16.0, // band 2
+                    21.0, 22.0, 23.0, 24.0, 25.0, 26.0, // band 3
+                ],
+                "each band must come back as its own de-interleaved plane"
+            );
+        });
+    }
+
+    /// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// A band index past the end must raise `ValueError` from this crate rather
+    /// than surfacing the driver's lower-level error -- and it must raise at
+    /// all: the pre-fix reader ignored the band argument, so reading band 5 of a
+    /// 2-band raster silently succeeded.
+    #[test]
+    fn test_issue_14_read_band_out_of_range_is_value_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let test_path = TempPath::new("issue_14_band_range_test.tif");
+            let path_str = test_path.to_string_lossy().to_string();
+
+            let data: Vec<Vec<Vec<f64>>> = vec![
+                vec![vec![1.0, 2.0], vec![3.0, 4.0]],
+                vec![vec![10.0, 20.0], vec![30.0, 40.0]],
+            ];
+            let arr = numpy::PyArray3::from_vec3(py, &data).expect("build input array");
+            let arr_any = arr.into_any();
+
+            write(py, &path_str, &arr_any, None, None, None, false, 256, None)
+                .expect("write should succeed");
+
+            let err = crate::dataset::read_geotiff_band(&path_str, 5)
+                .expect_err("band 5 of a 2-band raster must be rejected");
+            assert!(
+                err.is_instance_of::<pyo3::exceptions::PyValueError>(py),
+                "expected ValueError, got {:?}",
+                err
+            );
+
+            let err = crate::dataset::read_geotiff_band(&path_str, 0)
+                .expect_err("band 0 must be rejected (bands are 1-based here)");
+            assert!(
+                err.is_instance_of::<pyo3::exceptions::PyValueError>(py),
+                "expected ValueError, got {:?}",
+                err
+            );
         });
     }
 }

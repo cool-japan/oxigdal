@@ -3,6 +3,47 @@
 use bytes::Bytes;
 use oxigeo_cache_advanced::{CacheConfig, compression::DataType, multi_tier::*};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch cache directory inside the system temp dir (house policy:
+/// no hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// directory.  Dropping the guard removes the directory tree, so a panicking
+/// test leaks nothing.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_cache_multi_tier_it_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 #[tokio::test]
 async fn test_l1_memory_tier_basic() {
@@ -70,19 +111,12 @@ async fn test_l1_remove() {
 
 #[tokio::test]
 async fn test_l2_disk_tier_basic() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Create unique temp directory for this test run to avoid conflicts
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_micros();
-    let temp_dir = std::env::temp_dir().join(format!("oxigeo_cache_l2_test_{}", timestamp));
+    let temp_dir = TempDir::new("l2_test");
 
     // Ensure clean state - remove directory if it exists
-    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    let _ = tokio::fs::remove_dir_all(&*temp_dir).await;
 
-    let tier = L2DiskTier::new(temp_dir.clone(), 1024 * 1024)
+    let tier = L2DiskTier::new(temp_dir.to_path_buf(), 1024 * 1024)
         .await
         .expect("L2 tier creation failed");
 
@@ -99,16 +133,15 @@ async fn test_l2_disk_tier_basic() {
 
     // Clean up
     tier.clear().await.expect("clear failed");
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
 #[tokio::test]
 async fn test_l2_persistence() {
-    let temp_dir = std::env::temp_dir().join("oxigeo_cache_l2_persist_test");
+    let temp_dir = TempDir::new("l2_persist_test");
 
     // Create tier and add data
     {
-        let tier = L2DiskTier::new(temp_dir.clone(), 1024 * 1024)
+        let tier = L2DiskTier::new(temp_dir.to_path_buf(), 1024 * 1024)
             .await
             .expect("L2 tier creation failed");
 
@@ -120,21 +153,18 @@ async fn test_l2_persistence() {
 
     // Create new tier instance and check if data persists
     {
-        let tier = L2DiskTier::new(temp_dir.clone(), 1024 * 1024)
+        let tier = L2DiskTier::new(temp_dir.to_path_buf(), 1024 * 1024)
             .await
             .expect("L2 tier creation failed");
 
         let stats = tier.stats().await;
         assert!(stats.item_count > 0);
     }
-
-    // Clean up
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
 #[tokio::test]
 async fn test_multi_tier_cache_get_from_l1() {
-    let temp_dir = std::env::temp_dir().join("oxigeo_cache_multi_test1");
+    let temp_dir = TempDir::new("multi_test1");
     let config = CacheConfig {
         l1_size: 1024 * 1024,
         l2_size: 4096 * 1024,
@@ -142,7 +172,7 @@ async fn test_multi_tier_cache_get_from_l1() {
         enable_compression: true,
         enable_prefetch: false,
         enable_distributed: false,
-        cache_dir: Some(temp_dir.clone()),
+        cache_dir: Some(temp_dir.to_path_buf()),
         eviction_policy: Default::default(),
     };
 
@@ -167,14 +197,11 @@ async fn test_multi_tier_cache_get_from_l1() {
     let stats = cache.stats().await;
     assert_eq!(stats.hits, 1);
     assert_eq!(stats.misses, 0);
-
-    // Clean up
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
 #[tokio::test]
 async fn test_multi_tier_cache_promotion() {
-    let temp_dir = std::env::temp_dir().join("oxigeo_cache_multi_test2");
+    let temp_dir = TempDir::new("multi_test2");
     let config = CacheConfig {
         l1_size: 100, // Very small L1
         l2_size: 1024 * 1024,
@@ -182,7 +209,7 @@ async fn test_multi_tier_cache_promotion() {
         enable_compression: true,
         enable_prefetch: false,
         enable_distributed: false,
-        cache_dir: Some(temp_dir.clone()),
+        cache_dir: Some(temp_dir.to_path_buf()),
         eviction_policy: Default::default(),
     };
 
@@ -202,14 +229,11 @@ async fn test_multi_tier_cache_promotion() {
     // Get (should retrieve from cache)
     let retrieved = cache.get(&key).await.expect("get failed");
     assert!(retrieved.is_some());
-
-    // Clean up
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
 #[tokio::test]
 async fn test_multi_tier_cache_remove() {
-    let temp_dir = std::env::temp_dir().join("oxigeo_cache_multi_test3");
+    let temp_dir = TempDir::new("multi_test3");
     let config = CacheConfig {
         l1_size: 1024 * 1024,
         l2_size: 4096 * 1024,
@@ -217,7 +241,7 @@ async fn test_multi_tier_cache_remove() {
         enable_compression: true,
         enable_prefetch: false,
         enable_distributed: false,
-        cache_dir: Some(temp_dir.clone()),
+        cache_dir: Some(temp_dir.to_path_buf()),
         eviction_policy: Default::default(),
     };
 
@@ -234,14 +258,11 @@ async fn test_multi_tier_cache_remove() {
     let removed = cache.remove(&key).await.expect("remove failed");
     assert!(removed);
     assert!(!cache.contains(&key).await);
-
-    // Clean up
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
 #[tokio::test]
 async fn test_multi_tier_cache_tier_stats() {
-    let temp_dir = std::env::temp_dir().join("oxigeo_cache_multi_test4");
+    let temp_dir = TempDir::new("multi_test4");
     let config = CacheConfig {
         l1_size: 1024 * 1024,
         l2_size: 4096 * 1024,
@@ -249,7 +270,7 @@ async fn test_multi_tier_cache_tier_stats() {
         enable_compression: true,
         enable_prefetch: false,
         enable_distributed: false,
-        cache_dir: Some(temp_dir.clone()),
+        cache_dir: Some(temp_dir.to_path_buf()),
         eviction_policy: Default::default(),
     };
 
@@ -267,9 +288,6 @@ async fn test_multi_tier_cache_tier_stats() {
     let tier_stats = cache.tier_stats().await;
     assert!(tier_stats.contains_key("L1-Memory"));
     assert!(tier_stats.contains_key("L2-Disk"));
-
-    // Clean up
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }
 
 #[tokio::test]
@@ -290,7 +308,7 @@ async fn test_cache_value_access_tracking() {
 
 #[tokio::test]
 async fn test_concurrent_access() {
-    let temp_dir = std::env::temp_dir().join("oxigeo_cache_concurrent_test");
+    let temp_dir = TempDir::new("concurrent_test");
     let config = CacheConfig {
         l1_size: 10 * 1024 * 1024,
         l2_size: 0,
@@ -298,7 +316,7 @@ async fn test_concurrent_access() {
         enable_compression: false,
         enable_prefetch: false,
         enable_distributed: false,
-        cache_dir: Some(temp_dir.clone()),
+        cache_dir: Some(temp_dir.to_path_buf()),
         eviction_policy: Default::default(),
     };
 
@@ -333,7 +351,4 @@ async fn test_concurrent_access() {
     for handle in handles {
         handle.await.expect("task failed");
     }
-
-    // Clean up
-    let _ = tokio::fs::remove_dir_all(temp_dir).await;
 }

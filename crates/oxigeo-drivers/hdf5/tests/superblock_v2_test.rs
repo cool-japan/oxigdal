@@ -7,6 +7,47 @@ use oxigeo_hdf5::superblock_v2::{
     jenkins_lookup3_hashlittle, read_superblock_v2, validate_superblock_checksum,
 };
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_hdf5_superblock_v2_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Jenkins lookup3 hashlittle tests
@@ -254,7 +295,7 @@ fn test_superblock_v3_same_layout_as_v2() {
 /// group object header address), but the specific stub error must be gone.
 #[test]
 fn test_superblock_v2_reader_dispatch_no_longer_errors_with_hdf5_sys_stub() {
-    use oxigeo_hdf5::Hdf5Reader;
+    use oxigeo_hdf5::{Hdf5Reader, SuperblockVersion};
 
     let sig = b"\x89HDF\r\n\x1a\n";
     let mut bytes: Vec<u8> = Vec::new();
@@ -282,19 +323,32 @@ fn test_superblock_v2_reader_dispatch_no_longer_errors_with_hdf5_sys_stub() {
     let checksum = jenkins_lookup3_hashlittle(&bytes, 0);
     bytes.extend_from_slice(&checksum.to_le_bytes());
 
-    let tmp = std::env::temp_dir().join("oxigeo_test_hdf5_v2_superblock_dispatch.h5");
+    let tmp = TempPath::new("v2_superblock_dispatch.h5");
     std::fs::write(&tmp, &bytes).expect("should be able to write temp file");
 
-    match Hdf5Reader::open(&tmp) {
-        Ok(_) => { /* success is also acceptable */ }
+    // The reader parses the superblock eagerly and defers the root group, so a
+    // well-formed V2 superblock opens even though its root-group address is
+    // bogus. That is the outcome this test pins.
+    //
+    // The old body was `match ... { Ok(_) => {}, Err(e) => assert!(...) }`.
+    // Because `open` succeeds, the `Err` arm — the only assertion in the test —
+    // was dead code and the test could not fail for any reason whatsoever,
+    // including a regression all the way back to the `hdf5_sys` stub.
+    let reader = match Hdf5Reader::open(&tmp) {
+        Ok(reader) => reader,
         Err(e) => {
             let msg = format!("{e:?}");
             assert!(
                 !msg.contains("requires hdf5_sys feature"),
                 "reader must not return the old hdf5_sys stub error; got: {msg}"
             );
+            panic!("a well-formed V2 superblock must open; got: {msg}");
         }
-    }
+    };
 
-    let _ = std::fs::remove_file(&tmp);
+    assert!(
+        matches!(reader.superblock_version(), SuperblockVersion::V2),
+        "the V2 superblock must be dispatched to the V2 parser, got {:?}",
+        reader.superblock_version()
+    );
 }

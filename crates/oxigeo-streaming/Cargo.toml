@@ -45,7 +45,7 @@ lru = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 num-traits = { workspace = true, optional = true }
 byteorder = { workspace = true, optional = true }
-ahash = { workspace = true, optional = true }
+ahash = { workspace = true, optional = true, features = ["std", "runtime-rng"] }
 reqwest = { workspace = true, optional = true }
 
 # State backend (OxiStore LSM via fjall) - Pure Rust, feature-gated

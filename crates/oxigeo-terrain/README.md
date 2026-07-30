@@ -25,10 +25,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-terrain = "0.2.1"
+oxigeo-terrain = "0.2.2"
 
 # With all features enabled
-oxigeo-terrain = { version = "0.2.1", features = ["all_features", "parallel"] }
+oxigeo-terrain = { version = "0.2.2", features = ["all_features", "parallel"] }
 ```
 
 ### Feature Flags

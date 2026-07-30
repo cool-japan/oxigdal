@@ -85,7 +85,13 @@ fn unique_test_dir(label: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("oxigeo_edge_test_{}_{}_{}", label, ts, id))
+    std::env::temp_dir().join(format!(
+        "oxigeo_edge_test_{}_{}_{}_{}",
+        label,
+        std::process::id(),
+        ts,
+        id
+    ))
 }
 
 /// Create a minimal EdgeConfig that stores data in a unique temp directory.

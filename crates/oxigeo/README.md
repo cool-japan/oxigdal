@@ -8,14 +8,16 @@
 [![License](https://img.shields.io/crates/l/oxigeo.svg)](LICENSE)
 
 Umbrella crate for OxiGeo — open any supported geospatial format with a single
-`Dataset::open()` call, just like `GDALOpen()`. Backed by **76 workspace crates**
-and ~789,000 SLoC of production Rust, it covers 17 format drivers, full CRS
+`Dataset::open()` call, just like `GDALOpen()`. Backed by **75 workspace crates**
+and ~791,000 SLoC of production Rust, it covers 16 format drivers, full CRS
 transformations, SIMD algorithms, cloud-native I/O, GPU acceleration, enterprise
 security, and bindings for Python, Node.js, WASM, iOS, and Android. First released
-as v0.1.0 on 2026-02-22; now at **v0.2.1**, a production-hardening release under
-the OxiGeo name (v0.2.0 published 2026-07-20 as the first OxiGeo release —
-rename-only, functionally identical to v0.1.7, the final release published the
-same day under the OxiGDAL name).
+as v0.1.0 on 2026-02-22; now at **v0.2.2**, a correctness campaign fixing
+[issue #14](https://github.com/cool-japan/oxigeo/issues/14) (`read_band` on
+multi-band rasters) at the driver level and adding zero-allocation typed/interleaved
+readers, on top of v0.2.1's production-hardening pass (v0.2.0 published 2026-07-20
+as the first OxiGeo release — rename-only, functionally identical to v0.1.7, the
+final release published the same day under the OxiGDAL name).
 
 ## Quick Start
 
@@ -36,6 +38,11 @@ fn main() -> oxigeo::Result<()> {
     println!("Size    : {}x{}", dataset.width(), dataset.height());
     println!("CRS     : {}", dataset.crs().name());
     println!("Drivers : {:?}", oxigeo::drivers());
+
+    // Multi-band reads: read_band(n) returns exactly band n; read_interleaved
+    // reads several bands at once (None = all bands, in file order)
+    let band0: Vec<f64> = dataset.read_band(0)?.to_typed_vec()?;
+    let rgb: Vec<f64> = dataset.read_interleaved(Some(&[0, 1, 2]))?;
     Ok(())
 }
 ```
@@ -70,7 +77,7 @@ fn main() -> oxigeo::Result<()> {
 
 ## Ecosystem Overview
 
-OxiGeo is a workspace of **76 crates** organized across:
+OxiGeo is a workspace of **75 crates** organized across:
 
 | Layer | Crates |
 |-------|--------|

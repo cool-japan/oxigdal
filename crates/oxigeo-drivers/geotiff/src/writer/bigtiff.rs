@@ -232,6 +232,39 @@ pub fn needs_bigtiff(
 mod tests {
     use super::*;
 
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// An RAII fixture path inside [`std::env::temp_dir`].
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_geotiff_bigtiff_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // needs_bigtiff — pure logic tests (no I/O)
     // -----------------------------------------------------------------------
@@ -406,7 +439,7 @@ mod tests {
         use crate::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
         use oxigeo_core::types::RasterDataType;
 
-        let tmp = std::env::temp_dir().join("test_bigtiff_magic.tif");
+        let tmp = TempPath::new("magic.tif");
 
         let config = WriterConfig::new(16, 16, 1, RasterDataType::UInt8)
             .with_compression(Compression::None)
@@ -454,7 +487,7 @@ mod tests {
         use crate::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
         use oxigeo_core::types::RasterDataType;
 
-        let tmp = std::env::temp_dir().join("test_bigtiff_force_header.tif");
+        let tmp = TempPath::new("force_header.tif");
 
         let config = WriterConfig::new(32, 32, 1, RasterDataType::UInt8)
             .with_compression(Compression::None)

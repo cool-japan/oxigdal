@@ -7,6 +7,7 @@
 )]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use oxigeo_gpkg::{
     GeoPackage, GeoPackageBuilder, GeoPackageEditor, error::GpkgError, vector::FeatureRow,
@@ -25,9 +26,55 @@ fn two_point_gpkg() -> Vec<u8> {
         .expect("build two-point gpkg")
 }
 
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture (and any SQLite sidecars), so
+/// a panicking test leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_gpkg_im_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        // SQLite may leave -wal / -shm / -journal sidecars next to the file.
+        if let Some(name) = self.0.file_name().and_then(|n| n.to_str()) {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let _ = std::fs::remove_file(self.0.with_file_name(format!("{name}{suffix}")));
+            }
+        }
+    }
+}
+
 /// Create a temp file path that is unique per test name.
-fn temp_path(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("oxigeo_im_test_{tag}.gpkg"))
+fn temp_path(tag: &str) -> TempPath {
+    TempPath::new(&format!("{tag}.gpkg"))
 }
 
 /// Construct a [`FeatureRow`] with a single POINT geometry and empty fields.
@@ -65,8 +112,6 @@ fn test_open_editor_reads_existing_features() {
     assert_eq!(ed.pending_deletes(), 0);
     // Snapshot has two features.
     assert_eq!(ed.snapshot_feature_count(), 2);
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,8 +128,6 @@ fn test_insert_feature_assigns_next_fid() {
 
     // max existing fid = 2, so next = 3
     assert_eq!(fid, 3);
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -101,8 +144,6 @@ fn test_insert_feature_increments_next_fid() {
     let fid_b = ed.insert_feature(make_point_row(7.0, 8.0));
 
     assert_eq!(fid_b - fid_a, 1);
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,8 +159,6 @@ fn test_update_feature_buffers_change() {
     ed.update_feature(1, make_point_row(99.0, 99.0)).unwrap();
 
     assert_eq!(ed.pending_updates(), 1);
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,8 +177,6 @@ fn test_update_feature_nonexistent_fid_errors() {
         matches!(result, Err(GpkgError::FeatureNotFound(999))),
         "expected FeatureNotFound(999), got {result:?}"
     );
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,8 +195,6 @@ fn test_delete_feature_nonexistent_fid_errors() {
         matches!(result, Err(GpkgError::FeatureNotFound(999))),
         "expected FeatureNotFound(999), got {result:?}"
     );
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -179,8 +214,6 @@ fn test_pending_counters_reflect_buffered_mutations() {
     assert_eq!(ed.pending_inserts(), 1);
     assert_eq!(ed.pending_updates(), 1);
     assert_eq!(ed.pending_deletes(), 1);
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,9 +236,6 @@ fn test_commit_to_path_writes_inserts() {
 
     let dst_bytes = std::fs::read(&dst).unwrap();
     assert_eq!(count_rows(&dst_bytes, "pts"), 3);
-
-    let _ = std::fs::remove_file(&src);
-    let _ = std::fs::remove_file(&dst);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,9 +260,6 @@ fn test_commit_to_path_writes_updates_replaces_geometry() {
     let gpkg = GeoPackage::from_bytes(dst_bytes).unwrap();
     let rows = gpkg.scan_table_by_name("pts").unwrap().unwrap();
     assert_eq!(rows.len(), 2);
-
-    let _ = std::fs::remove_file(&src);
-    let _ = std::fs::remove_file(&dst);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -255,9 +282,6 @@ fn test_commit_to_path_omits_deleted_features() {
 
     let dst_bytes = std::fs::read(&dst).unwrap();
     assert_eq!(count_rows(&dst_bytes, "pts"), 1);
-
-    let _ = std::fs::remove_file(&src);
-    let _ = std::fs::remove_file(&dst);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,9 +306,6 @@ fn test_commit_to_path_combined_ops_produces_correct_count() {
 
     let dst_bytes = std::fs::read(&dst).unwrap();
     assert_eq!(count_rows(&dst_bytes, "pts"), 2);
-
-    let _ = std::fs::remove_file(&src);
-    let _ = std::fs::remove_file(&dst);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,6 +338,4 @@ fn test_rollback_drops_pending_without_writing() {
         after_bytes, original_bytes,
         "source file must be untouched after rollback"
     );
-
-    let _ = std::fs::remove_file(&src);
 }

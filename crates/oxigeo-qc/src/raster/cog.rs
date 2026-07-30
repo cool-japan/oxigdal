@@ -400,19 +400,51 @@ mod tests {
     use std::env;
     use std::path::PathBuf;
 
-    fn unique_temp_path(label: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let mut path = env::temp_dir();
-        path.push(format!("oxigeo_qc_cog_{}_{}.tif", label, nanos));
-        path
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(label: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(env::temp_dir().join(format!(
+                "oxigeo_qc_cog_{}_{seq}_{label}.tif",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     /// Generates a minimal valid COG via `CogWriter`. Uses Deflate so this
     /// works without the lzw feature being enabled (deflate is default).
-    fn write_minimal_cog(path: &PathBuf) {
+    fn write_minimal_cog(path: &std::path::Path) {
         let width = 256u64;
         let height = 256u64;
         let data = vec![0u8; (width * height) as usize];
@@ -429,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_cog_strict_ogc10_minimal_pass() {
-        let path = unique_temp_path("ogc10_pass");
+        let path = TempPath::new("ogc10_pass");
         write_minimal_cog(&path);
 
         let checker = CogComplianceChecker::new().with_strict_mode(StrictMode::Ogc10);
@@ -447,7 +479,6 @@ mod tests {
             critical
         );
         assert!(result.is_compliant);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -458,7 +489,7 @@ mod tests {
         use std::fs::File;
         use std::io::Write;
 
-        let path = unique_temp_path("striped");
+        let path = TempPath::new("striped");
         {
             let mut f = File::create(&path).expect("create file");
             // Classic LE TIFF, IFD at offset 8.
@@ -510,12 +541,11 @@ mod tests {
             "expected Critical for striped layout, got {:#?}",
             result.issues
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_cog_strict_gdal_requires_ghost_area() {
-        let path = unique_temp_path("gdal_strict_no_ghost");
+        let path = TempPath::new("gdal_strict_no_ghost");
         write_minimal_cog(&path);
 
         let checker = CogComplianceChecker::new().with_strict_mode(StrictMode::GdalCogger);
@@ -531,7 +561,6 @@ mod tests {
             result.issues
         );
         assert_eq!(missing.expect("present").severity, Severity::Major);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -540,7 +569,7 @@ mod tests {
         use std::fs::File;
         use std::io::Write;
 
-        let path = unique_temp_path("misaligned");
+        let path = TempPath::new("misaligned");
         {
             let mut f = File::create(&path).expect("create");
             // Header
@@ -595,7 +624,6 @@ mod tests {
             "expected misaligned-offset Critical, got {:#?}",
             result.issues
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -604,7 +632,7 @@ mod tests {
         // INVERSE: non-pow2 levels should escape; instead, use a minimal
         // image and check that the underlying validator's "non-pow2"
         // info-level message becomes Severity::Info in our pipeline.
-        let path = unique_temp_path("ov_pow2");
+        let path = TempPath::new("ov_pow2");
         write_minimal_cog(&path);
 
         let checker = CogComplianceChecker::new();
@@ -619,7 +647,6 @@ mod tests {
             "did not expect non-pow2 Minor, got {:#?}",
             result.issues
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -627,7 +654,7 @@ mod tests {
         // Build a tiff with a ghost area, then verify our parser surfaces it.
         use std::fs::File;
         use std::io::Write;
-        let path = unique_temp_path("ghost_kv");
+        let path = TempPath::new("ghost_kv");
         let ghost: &[u8] = b"LAYOUT=IFDS_BEFORE_DATA\nBLOCK_SIZE_X=256\nBLOCK_SIZE_Y=256\n\0";
         {
             let mut f = File::create(&path).expect("");
@@ -649,12 +676,11 @@ mod tests {
         let area = ga.expect("ghost area present");
         assert_eq!(area.layout.as_deref(), Some("IFDS_BEFORE_DATA"));
         assert_eq!(area.block_size, Some((256, 256)));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_cog_ghost_area_absent_is_info_under_ogc10() {
-        let path = unique_temp_path("ogc10_no_ghost");
+        let path = TempPath::new("ogc10_no_ghost");
         write_minimal_cog(&path);
 
         let checker = CogComplianceChecker::new().with_strict_mode(StrictMode::Ogc10);
@@ -665,7 +691,6 @@ mod tests {
             "expected absent-Info, got {:#?}",
             result.issues
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -673,7 +698,7 @@ mod tests {
         // Synthesise a TIFF whose primary IFD declares a SubIFD pointer.
         use std::fs::File;
         use std::io::Write;
-        let path = unique_temp_path("subifd");
+        let path = TempPath::new("subifd");
         {
             let mut f = File::create(&path).expect("");
             f.write_all(&[0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00])
@@ -723,6 +748,5 @@ mod tests {
             "expected SubIFD legacy warning, got {:#?}",
             result.issues
         );
-        let _ = std::fs::remove_file(&path);
     }
 }

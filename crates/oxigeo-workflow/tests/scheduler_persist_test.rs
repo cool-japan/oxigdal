@@ -8,14 +8,50 @@ use oxigeo_workflow::dag::WorkflowDag;
 use oxigeo_workflow::scheduler::{ScheduleType, ScheduledWorkflow};
 use oxigeo_workflow::{Scheduler, SchedulerConfig, WorkflowDefinition};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Return a temp-dir path for the given test name.  The file is NOT created.
-fn tmp_jsonl_path(test_name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("oxigeo_scheduler_persist_{}.jsonl", test_name))
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).  The file is NOT created by this helper.
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_scheduler_persist_{}_{seq}_{name}.jsonl",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Build a minimal `WorkflowDefinition` suitable for scheduling.
@@ -57,8 +93,7 @@ fn make_scheduler_no_persistence() -> Scheduler {
 async fn test_persist_state_no_op_when_no_path() {
     // A scheduler with no persistence_path must return Ok(()) and must NOT
     // create any files in the temp directory.
-    let sentinel = tmp_jsonl_path("no_op_sentinel");
-    let _ = std::fs::remove_file(&sentinel);
+    let sentinel = TempPath::new("no_op_sentinel");
 
     let scheduler = make_scheduler_no_persistence();
     // Force-add a schedule via internal DashMap — but since add_schedule also
@@ -77,10 +112,9 @@ async fn test_persist_state_no_op_when_no_path() {
 
 #[tokio::test]
 async fn test_persist_state_creates_file() {
-    let path = tmp_jsonl_path("creates_file");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("creates_file");
 
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
 
     // add_schedule calls persist_state internally when enable_persistence=true.
     scheduler
@@ -98,17 +132,13 @@ async fn test_persist_state_creates_file() {
         !content.trim().is_empty(),
         "persistence file must not be empty"
     );
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn test_load_state_missing_file_returns_ok() {
-    let path = tmp_jsonl_path("missing_file");
-    let _ = std::fs::remove_file(&path); // guarantee absence
+    let path = TempPath::new("missing_file");
 
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
     // Must succeed even though the file does not exist yet.
     scheduler
         .load_state()
@@ -123,11 +153,10 @@ async fn test_load_state_missing_file_returns_ok() {
 
 #[tokio::test]
 async fn test_persist_and_load_round_trip() {
-    let path = tmp_jsonl_path("round_trip");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("round_trip");
 
     // ── Phase 1: write three schedules ──────────────────────────────────────
-    let scheduler_a = make_scheduler_with_path(path.clone());
+    let scheduler_a = make_scheduler_with_path(path.to_path_buf());
 
     let id1 = scheduler_a
         .add_schedule(make_workflow("wf-rt-1"), ScheduleType::Manual)
@@ -154,7 +183,7 @@ async fn test_persist_and_load_round_trip() {
     assert!(path.exists(), "file must exist after adds");
 
     // ── Phase 2: load into a fresh scheduler ────────────────────────────────
-    let scheduler_b = make_scheduler_with_path(path.clone());
+    let scheduler_b = make_scheduler_with_path(path.to_path_buf());
     assert!(
         scheduler_b.get_schedules().is_empty(),
         "scheduler_b must start empty"
@@ -186,15 +215,11 @@ async fn test_persist_and_load_round_trip() {
         .get_schedule(&id2)
         .expect("schedule 2 not found");
     assert_eq!(wf2.workflow.id, "wf-rt-2");
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn test_load_state_skips_corrupt_lines() {
-    let path = tmp_jsonl_path("corrupt_lines");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("corrupt_lines");
 
     // Build two valid serialised ScheduledWorkflow values.
     let valid_wf = ScheduledWorkflow {
@@ -229,7 +254,7 @@ async fn test_load_state_skips_corrupt_lines() {
     std::fs::write(&path, &content).expect("write corrupt-lines file");
 
     // Load into a fresh scheduler — must succeed with 2 loaded schedules.
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
     scheduler
         .load_state()
         .await
@@ -252,20 +277,16 @@ async fn test_load_state_skips_corrupt_lines() {
         ids.contains("sched-corrupt-test-2"),
         "second valid schedule missing"
     );
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn test_atomic_write_no_tmp_file_remains() {
-    let path = tmp_jsonl_path("atomic_write");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("atomic_write");
 
     // Derive the expected tmp path the same way the implementation does:
     // replace extension with "<ext>.tmp".
     let tmp_path: PathBuf = {
-        let mut p = path.clone();
+        let mut p = path.to_path_buf();
         let ext = match p.extension() {
             Some(e) => format!("{}.tmp", e.to_string_lossy()),
             None => "tmp".to_string(),
@@ -275,7 +296,7 @@ async fn test_atomic_write_no_tmp_file_remains() {
     };
     let _ = std::fs::remove_file(&tmp_path);
 
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
     scheduler
         .add_schedule(make_workflow("wf-atomic"), ScheduleType::Manual)
         .await
@@ -291,17 +312,13 @@ async fn test_atomic_write_no_tmp_file_remains() {
         !tmp_path.exists(),
         "tmp file must not remain after successful atomic write"
     );
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn test_add_schedule_triggers_persist() {
-    let path = tmp_jsonl_path("add_triggers");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("add_triggers");
 
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
 
     // No explicit persist_state call — add_schedule must trigger it.
     scheduler
@@ -313,17 +330,13 @@ async fn test_add_schedule_triggers_persist() {
         path.exists(),
         "add_schedule must trigger persist_state, creating the file"
     );
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn test_remove_schedule_triggers_persist() {
-    let path = tmp_jsonl_path("remove_triggers");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("remove_triggers");
 
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
 
     let schedule_id = scheduler
         .add_schedule(make_workflow("wf-remove-trigger"), ScheduleType::Manual)
@@ -351,17 +364,13 @@ async fn test_remove_schedule_triggers_persist() {
             "file should have 0 lines after the only schedule is removed"
         );
     }
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn test_persist_idempotent_on_empty_scheduler() {
-    let path = tmp_jsonl_path("empty_persist");
-    let _ = std::fs::remove_file(&path);
+    let path = TempPath::new("empty_persist");
 
-    let scheduler = make_scheduler_with_path(path.clone());
+    let scheduler = make_scheduler_with_path(path.to_path_buf());
 
     // Calling load_state on a new scheduler with no file must be a no-op.
     scheduler.load_state().await.expect("load on empty");
@@ -387,13 +396,10 @@ async fn test_persist_idempotent_on_empty_scheduler() {
     );
 
     // Reload — must succeed and remain empty.
-    let scheduler2 = make_scheduler_with_path(path.clone());
+    let scheduler2 = make_scheduler_with_path(path.to_path_buf());
     scheduler2.load_state().await.expect("reload empty file");
     assert!(
         scheduler2.get_schedules().is_empty(),
         "reloaded scheduler must be empty"
     );
-
-    // Clean up.
-    let _ = std::fs::remove_file(&path);
 }

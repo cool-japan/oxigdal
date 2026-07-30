@@ -84,11 +84,11 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-ml = "0.2.1"
-oxigeo-ml-foundation = "0.2.1"
+oxigeo-ml = "0.2.2"
+oxigeo-ml-foundation = "0.2.2"
 
 # Optional: Enable specific features
-oxigeo-ml = { version = "0.2.1", features = ["gpu", "cuda", "cloud-removal"] }
+oxigeo-ml = { version = "0.2.2", features = ["gpu", "cuda", "cloud-removal"] }
 ```
 
 ### System Requirements
@@ -356,7 +356,7 @@ cargo fmt --check
 
 ## License
 
-Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)).
+Licensed under the Apache License, Version 2.0 ([LICENSE](../../LICENSE)).
 
 ## Acknowledgments
 

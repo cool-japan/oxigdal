@@ -321,16 +321,53 @@ fn make_file_result(path: PathBuf, issues: Vec<QcIssue>) -> FileQcResult {
 mod tests {
     use super::*;
 
-    fn make_temp_dir(suffix: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("oxigeo_batch_test_{}", suffix));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture directory inside the system temp dir (house
+    /// policy: no hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same directory.  Dropping the guard removes the tree, so a
+    /// panicking test leaks nothing.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "oxigeo_qc_batch_{}_{seq}_{name}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
     fn test_batch_empty_dir() {
-        let dir = make_temp_dir("empty_dir");
+        let dir = TempDir::new("empty_dir");
         // Ensure the dir is empty.
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -343,13 +380,11 @@ mod tests {
         assert_eq!(report.total_files, 0, "empty dir should have 0 files");
         assert_eq!(report.total_issues, 0);
         assert_eq!(report.skipped_files, 0);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_batch_skips_unknown_extension() {
-        let dir = make_temp_dir("skip_unknown");
+        let dir = TempDir::new("skip_unknown");
         let txt_path = dir.join("readme.txt");
         std::fs::write(&txt_path, b"hello").expect("write txt");
 
@@ -357,13 +392,11 @@ mod tests {
         let report = runner.run(&dir).expect("batch run");
         assert_eq!(report.total_files, 0, ".txt should not be processed");
         assert_eq!(report.skipped_files, 1, ".txt should be skipped");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_batch_json_stac_dispatch() {
-        let dir = make_temp_dir("stac_dispatch");
+        let dir = TempDir::new("stac_dispatch");
         let json_path = dir.join("item.json");
         let stac_json = br#"{
             "type": "Feature",
@@ -384,13 +417,11 @@ mod tests {
             "STAC json should be processed as 1 file"
         );
         assert_eq!(report.skipped_files, 0);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_batch_non_stac_json_skipped() {
-        let dir = make_temp_dir("non_stac_json");
+        let dir = TempDir::new("non_stac_json");
         let json_path = dir.join("config.json");
         std::fs::write(&json_path, br#"{"foo": "bar"}"#).expect("write json");
 
@@ -401,13 +432,11 @@ mod tests {
             "non-STAC json should not be processed"
         );
         assert_eq!(report.skipped_files, 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_batch_extension_filter() {
-        let dir = make_temp_dir("ext_filter");
+        let dir = TempDir::new("ext_filter");
         let json_path = dir.join("item.json");
         let stac_json = br#"{"stac_version": "1.0.0", "type": "Catalog", "id": "c", "links": [], "description": "test"}"#;
         std::fs::write(&json_path, stac_json).expect("write stac json");
@@ -429,13 +458,11 @@ mod tests {
             "json should be skipped with tif-only filter"
         );
         assert_eq!(report.total_files, 1, "only the tif should be attempted");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_batch_recursive_true() {
-        let dir = make_temp_dir("recursive_true");
+        let dir = TempDir::new("recursive_true");
         let subdir = dir.join("sub");
         std::fs::create_dir_all(&subdir).expect("create subdir");
         let json_path = subdir.join("item.json");
@@ -452,13 +479,11 @@ mod tests {
             report.total_files, 1,
             "recursive should find file in subdir"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_batch_recursive_false() {
-        let dir = make_temp_dir("recursive_false");
+        let dir = TempDir::new("recursive_false");
         let subdir = dir.join("sub");
         std::fs::create_dir_all(&subdir).expect("create subdir");
         let json_path = subdir.join("item.json");
@@ -479,8 +504,6 @@ mod tests {
             report.skipped_files, 0,
             "subdirs are not counted as skipped"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

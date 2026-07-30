@@ -624,7 +624,10 @@ mod tests {
         use std::env;
 
         let temp_dir = env::temp_dir();
-        let output_path = temp_dir.join("test_detections.geojson");
+        let output_path = temp_dir.join(format!(
+            "oxigeo_ml_postprocessing_{}_detections.geojson",
+            std::process::id()
+        ));
 
         let detections = vec![GeoDetection {
             detection: Detection {

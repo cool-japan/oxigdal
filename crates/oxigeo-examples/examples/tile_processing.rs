@@ -57,8 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for ty in 0..tiles_y {
         for tx in 0..tiles_x {
-            // Read tile
-            let tile_buffer = reader.read_tile_buffer(0, tx, ty)?;
+            // Read tile. A `RasterBuffer` holds one band, so the band is part of
+            // the request: `read_tile_buffer` is the `band = 0` shorthand for
+            // `read_tile_band_buffer(level, band, tile_x, tile_y)`.
+            let tile_buffer = reader.read_tile_band_buffer(0, 0, tx, ty)?;
 
             // Process tile (e.g., apply threshold)
             let processed = process_tile(&tile_buffer, 128.0)?;

@@ -31,7 +31,6 @@ use std::path::{Path, PathBuf};
 
 use oxigeo_core::error::{IoError, OxiGeoError};
 
-use crate::magic::{BIGTIFF_VERSION, TIFF_VERSION};
 use crate::{DatasetFormat, DatasetInfo, Result};
 
 // ─── Cloud-scheme detection ──────────────────────────────────────────────────
@@ -101,15 +100,24 @@ fn read_magic_bytes(path: &Path, n: usize) -> Result<Vec<u8>> {
 /// STAC Items, ItemCollections, Catalogs, and Collections all carry the
 /// `"stac_version"` field.  We read a small prefix (4 KiB) of the file and
 /// look for that key without full JSON parsing — cheap and allocation-light.
+///
+/// The prefix is decoded with [`String::from_utf8_lossy`] rather than a strict
+/// [`std::str::from_utf8`]: a fixed-size read can land in the middle of a
+/// multi-byte UTF-8 sequence, and a strict decode of such a prefix fails
+/// wholesale — which previously made a perfectly valid STAC document containing
+/// non-ASCII text (a `title`, a `description`, …) fall through to the GeoJSON
+/// branch.
 fn is_stac_json(path: &Path) -> bool {
     use std::io::Read as _;
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
     let mut buf = vec![0u8; 4096];
-    let n = file.read(&mut buf).unwrap_or(0);
+    let Ok(n) = file.read(&mut buf) else {
+        return false;
+    };
     buf.truncate(n);
-    let text = std::str::from_utf8(&buf).unwrap_or("");
+    let text = String::from_utf8_lossy(&buf);
     text.contains("\"stac_version\"") || text.contains("\"stac_extensions\"")
 }
 
@@ -289,7 +297,10 @@ impl OpenedDataset {
 /// ```
 pub fn open(path: impl AsRef<Path>) -> Result<OpenedDataset> {
     let path_ref = path.as_ref();
-    let path_str = path_ref.to_str().unwrap_or("").to_string();
+    // Lossy rather than `unwrap_or("")`: a path that is not valid UTF-8 still
+    // has a usable scheme prefix and file extension, and collapsing it to the
+    // empty string silently classified every such file as `Unknown`.
+    let path_str = path_ref.to_string_lossy().into_owned();
 
     // 1 — Cloud/remote URL scheme check (no filesystem access needed)
     if let Some(scheme) = detect_cloud_scheme(&path_str) {
@@ -352,600 +363,292 @@ pub fn open(path: impl AsRef<Path>) -> Result<OpenedDataset> {
         }
     };
 
-    let info = build_dataset_info(path_ref, format);
+    let info = build_dataset_info(path_ref, format)?;
     let opened = map_format_to_opened(format, info);
     Ok(opened)
 }
 
 /// Build a [`DatasetInfo`] for the given path and detected format.
 ///
-/// For GeoTIFF datasets the first IFD is parsed to populate width, height,
-/// band count, and (when present) the GeoTransform from ModelTiepointTag
-/// and ModelPixelScaleTag.  Other formats fall back to empty metadata that
-/// the driver crates populate lazily.
-fn build_dataset_info(path: &Path, format: DatasetFormat) -> DatasetInfo {
+/// For every format that has a header probe the probe is *authoritative*: when
+/// it fails, the failure is propagated as a typed [`OxiGeoError`] instead of
+/// being collapsed into an all-zero `DatasetInfo`.  Reporting `0×0`,
+/// `band_count = 0` for a file that is really an 8000×8000 single-band raster
+/// is worse than an error — it makes the caller's own validation
+/// (`bands().next().ok_or("no bands")?`) fire with a nonsense diagnosis and
+/// makes `width()`/`height()` silently wrong (cool-japan/oxigeo#14).
+///
+/// Formats without a probe (`NetCdf`, `Hdf5`, `Zarr`, `Grib`, `Jpeg2000`,
+/// `Vrt`, tile archives, `Unknown`, …) still yield an empty descriptor — that
+/// is "nothing was parsed", not "a parse failed", and every unknown field is
+/// honestly `None`.
+///
+/// # Errors
+///
+/// Propagates the probe error for [`DatasetFormat::GeoTiff`],
+/// [`DatasetFormat::GeoJson`], [`DatasetFormat::Shapefile`],
+/// [`DatasetFormat::FlatGeobuf`] and [`DatasetFormat::GeoParquet`].
+fn build_dataset_info(path: &Path, format: DatasetFormat) -> Result<DatasetInfo> {
     let path_str = path.to_str().map(str::to_string);
 
-    let empty = |fmt: DatasetFormat| DatasetInfo {
-        format: fmt,
-        path: path_str.clone(),
-        width: None,
-        height: None,
-        band_count: 0,
-        layer_count: 0,
-        crs: None,
-        geotransform: None,
-        feature_count: None,
-        bounds: None,
-    };
-
     // Attempt lightweight header parsing for formats we understand.
-    match format {
-        DatasetFormat::GeoTiff => {
-            let mut info = extract_tiff_info(path).unwrap_or_else(|| empty(format));
-            info.path = path_str;
-            info
-        }
-        DatasetFormat::GeoJson => {
-            let mut info = extract_geojson_info(path).unwrap_or_else(|| empty(format));
-            info.path = path_str;
-            info
-        }
+    let mut info = match format {
+        DatasetFormat::GeoTiff => extract_tiff_info(path)?,
+        DatasetFormat::GeoJson => extract_geojson_info(path)?,
         #[cfg(feature = "shapefile")]
-        DatasetFormat::Shapefile => {
-            let mut info = extract_shapefile_info(path).unwrap_or_else(|| empty(format));
-            info.path = path_str;
-            info
-        }
+        DatasetFormat::Shapefile => extract_shapefile_info(path)?,
         #[cfg(feature = "flatgeobuf")]
-        DatasetFormat::FlatGeobuf => {
-            let mut info = extract_flatgeobuf_info(path).unwrap_or_else(|| empty(format));
-            info.path = path_str;
-            info
-        }
+        DatasetFormat::FlatGeobuf => extract_flatgeobuf_info(path)?,
         #[cfg(feature = "geoparquet")]
-        DatasetFormat::GeoParquet => {
-            let mut info = extract_geoparquet_info(path).unwrap_or_else(|| empty(format));
-            info.path = path_str;
-            info
-        }
-        _ => empty(format),
-    }
+        DatasetFormat::GeoParquet => extract_geoparquet_info(path)?,
+        other => DatasetInfo {
+            format: other,
+            ..DatasetInfo::default()
+        },
+    };
+    info.path = path_str;
+    Ok(info)
 }
 
-// ─── TIFF IFD parsing (lightweight, no external deps) ────────────────────────
+// ─── GeoTIFF header probe ────────────────────────────────────────────────────
 
-/// TIFF tag constants for the fields we extract.
-const TAG_IMAGE_WIDTH: u16 = 256;
-const TAG_IMAGE_LENGTH: u16 = 257;
-const TAG_SAMPLES_PER_PIXEL: u16 = 277;
-const TAG_BITS_PER_SAMPLE: u16 = 258;
-const TAG_SAMPLE_FORMAT: u16 = 339;
-const TAG_MODEL_PIXEL_SCALE: u16 = 33550;
-const TAG_MODEL_TIEPOINT: u16 = 33922;
-const TAG_GEO_KEY_DIRECTORY: u16 = 34735;
-
-/// Upper bound on how far [`extract_tiff_info`] will extend its initial 8 KiB
-/// peek window to resolve out-of-line georeferencing tag values (see
-/// [`extract_tiff_info`] for why this extension is needed).
+/// Wrap a GeoTIFF header-parsing failure in a typed, self-describing error.
 ///
-/// Real-world GeoTIFF georeferencing arrays (`ModelPixelScaleTag` = 24 bytes,
-/// `ModelTiepointTag` = 48 bytes, `GeoKeyDirectoryTag` = a few KiB even for
-/// directories with hundreds of keys) are always tiny, so 1 MiB is generous
-/// headroom. This also bounds worst-case I/O/memory for a hostile file that
-/// advertises a huge `GeoKeyDirectoryTag` count or offset — such files fall
-/// back to the existing "value out of reach" `None` behavior instead of
-/// forcing a multi-gigabyte read.
-const MAX_GEOREF_PEEK_BYTES: usize = 1024 * 1024;
-
-/// Read a u16 from `buf` at `offset` respecting byte order.
-fn tiff_read_u16(buf: &[u8], offset: usize, le: bool) -> Option<u16> {
-    if offset + 2 > buf.len() {
-        return None;
-    }
-    Some(if le {
-        u16::from_le_bytes([buf[offset], buf[offset + 1]])
-    } else {
-        u16::from_be_bytes([buf[offset], buf[offset + 1]])
+/// Used for every stage of [`extract_tiff_info`] so that a file which *looks*
+/// like a GeoTIFF (magic bytes matched) but whose metadata cannot be recovered
+/// surfaces as an error rather than as an all-zero [`DatasetInfo`].
+#[cfg(feature = "geotiff")]
+fn tiff_header_error(path: &Path, detail: impl core::fmt::Display) -> OxiGeoError {
+    OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+        message: format!(
+            "'{}' was detected as a GeoTIFF but its metadata could not be extracted: {detail}",
+            path.display()
+        ),
     })
 }
 
-/// Read a u32 from `buf` at `offset` respecting byte order.
-fn tiff_read_u32(buf: &[u8], offset: usize, le: bool) -> Option<u32> {
-    if offset + 4 > buf.len() {
-        return None;
-    }
-    Some(if le {
-        u32::from_le_bytes([
-            buf[offset],
-            buf[offset + 1],
-            buf[offset + 2],
-            buf[offset + 3],
-        ])
-    } else {
-        u32::from_be_bytes([
-            buf[offset],
-            buf[offset + 1],
-            buf[offset + 2],
-            buf[offset + 3],
-        ])
-    })
-}
-
-/// Read a u64 from `buf` at `offset` respecting byte order.
-fn tiff_read_u64(buf: &[u8], offset: usize, le: bool) -> Option<u64> {
-    if offset + 8 > buf.len() {
-        return None;
-    }
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&buf[offset..offset + 8]);
-    Some(if le {
-        u64::from_le_bytes(bytes)
-    } else {
-        u64::from_be_bytes(bytes)
-    })
-}
-
-/// Read an f64 from `buf` at `offset` respecting byte order.
-fn tiff_read_f64(buf: &[u8], offset: usize, le: bool) -> Option<f64> {
-    if offset + 8 > buf.len() {
-        return None;
-    }
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&buf[offset..offset + 8]);
-    Some(if le {
-        f64::from_le_bytes(bytes)
-    } else {
-        f64::from_be_bytes(bytes)
-    })
-}
-
-/// Extract the IFD tag value as a u32.  For SHORT / LONG types the value
-/// is stored inline in the 4-byte value/offset field of the IFD entry.
-fn ifd_entry_value_u32(buf: &[u8], entry_offset: usize, le: bool) -> Option<u32> {
-    let type_id = tiff_read_u16(buf, entry_offset + 2, le)?;
-    match type_id {
-        // SHORT (u16) — stored inline in first 2 bytes of the value field
-        3 => tiff_read_u16(buf, entry_offset + 8, le).map(u32::from),
-        // LONG (u32) — stored inline
-        4 => tiff_read_u32(buf, entry_offset + 8, le),
-        _ => None,
-    }
-}
-
-/// Read the first element of a SHORT-typed IFD entry, handling both the inline
-/// storage form and the out-of-line offset form.
+/// Parse a GeoTIFF header and extract dataset-level metadata.
 ///
-/// Returns `None` for non-SHORT entries or when the referenced data lies beyond
-/// the prefix buffer we read.  Used for `BitsPerSample` / `SampleFormat`, whose
-/// per-sample arrays are stored out-of-line once `samples_per_pixel` exceeds the
-/// inline capacity (2 SHORTs for classic TIFF, 4 for BigTIFF).
-fn ifd_entry_first_short(buf: &[u8], entry_offset: usize, le: bool, bigtiff: bool) -> Option<u16> {
-    let type_id = tiff_read_u16(buf, entry_offset + 2, le)?;
-    if type_id != 3 {
-        return None; // only SHORT is handled here
-    }
-    let (count, value_field, inline_cap) = if bigtiff {
-        (
-            tiff_read_u64(buf, entry_offset + 4, le)?,
-            entry_offset + 12,
-            8usize,
-        )
-    } else {
-        (
-            u64::from(tiff_read_u32(buf, entry_offset + 4, le)?),
-            entry_offset + 8,
-            4usize,
-        )
-    };
-    // 2 bytes per SHORT element.
-    let total = count.saturating_mul(2);
-    if total as usize <= inline_cap {
-        tiff_read_u16(buf, value_field, le)
-    } else {
-        let off = if bigtiff {
-            tiff_read_u64(buf, value_field, le)? as usize
-        } else {
-            tiff_read_u32(buf, value_field, le)? as usize
-        };
-        tiff_read_u16(buf, off, le)
-    }
-}
-
-/// Parse the first IFD of a TIFF file and determine its pixel [`RasterDataType`]
-/// from the `BitsPerSample` and `SampleFormat` tags.
+/// # Why this delegates to the real TIFF parser
 ///
-/// Falls back to `UInt8` (8-bit unsigned — the dominant imagery case and the
-/// TIFF-spec default sample format) when the tags are absent but the file is a
-/// valid TIFF.  Returns `None` only when the file cannot be parsed as a TIFF.
+/// This probe used to hand-roll an IFD parse over a fixed **8 KiB** window read
+/// from the front of the file.  That is only correct for files whose first IFD
+/// happens to sit inside those 8 KiB.  TIFF places no such requirement on
+/// writers, and in particular a writer that emits *pixel data first and the IFD
+/// last* — which is exactly what OxiGeo's own
+/// [`oxigeo_geotiff::GeoTiffWriter`] does — puts the IFD megabytes into the
+/// file.  For every such file the old probe found no IFD entries at all and
+/// silently reported `0×0` with `band_count = 0`, so `Dataset::bands()` yielded
+/// nothing and `Dataset::width()`/`height()` returned `0` with no error raised
+/// anywhere (cool-japan/oxigeo#14).  OxiGeo could not correctly re-open a
+/// GeoTIFF it had just written.
 ///
-/// Exposed as `pub(crate)` so that `vrt_builder.rs` can emit the correct GDAL
-/// `dataType` for each source band instead of hardcoding `Float32`.
-pub(crate) fn extract_tiff_data_type(path: &Path) -> Option<oxigeo_core::types::RasterDataType> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 8192];
-    let n = file.read(&mut buf).ok()?;
-    buf.truncate(n);
-    if buf.len() < 8 {
-        return None;
-    }
-
-    let le = buf[0] == 0x49;
-    let version = tiff_read_u16(&buf, 2, le)?;
-    let bigtiff = version == BIGTIFF_VERSION;
-    let (ifd_offset, entry_size) = if bigtiff {
-        (tiff_read_u64(&buf, 8, le)? as usize, 20usize)
-    } else if version == TIFF_VERSION {
-        (tiff_read_u32(&buf, 4, le)? as usize, 12usize)
-    } else {
-        return None;
-    };
-
-    let num_entries = if bigtiff {
-        tiff_read_u64(&buf, ifd_offset, le)? as usize
-    } else {
-        tiff_read_u16(&buf, ifd_offset, le)? as usize
-    };
-    let entries_start = if bigtiff {
-        ifd_offset + 8
-    } else {
-        ifd_offset + 2
-    };
-
-    let mut bits_per_sample: Option<u16> = None;
-    let mut sample_format: u16 = 1; // TIFF default: unsigned integer
-
-    for i in 0..num_entries {
-        let eo = entries_start + i * entry_size;
-        if eo + entry_size > buf.len() {
-            break;
-        }
-        let tag = tiff_read_u16(&buf, eo, le)?;
-        match tag {
-            TAG_BITS_PER_SAMPLE => {
-                if let Some(v) = ifd_entry_first_short(&buf, eo, le, bigtiff) {
-                    bits_per_sample = Some(v);
-                }
-            }
-            TAG_SAMPLE_FORMAT => {
-                if let Some(v) = ifd_entry_first_short(&buf, eo, le, bigtiff) {
-                    sample_format = v;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let bits = bits_per_sample.unwrap_or(8);
-    Some(
-        oxigeo_core::types::RasterDataType::from_tiff_sample_format(sample_format, bits)
-            .unwrap_or(oxigeo_core::types::RasterDataType::UInt8),
-    )
-}
-
-/// Parse the first IFD of a TIFF file and extract basic metadata.
+/// Rather than widen the window (there is no window that is always big enough —
+/// the IFD offset is a full `u32`/`u64`), the probe now uses the crate's real
+/// TIFF reader, which seeks to the recorded IFD offset like any conformant
+/// reader.  This is still a *header-only* operation: [`GeoTiffReader::open`]
+/// parses the IFD chain and the block-offset arrays via ranged reads and does
+/// not touch, let alone decode, any pixel data.
 ///
-/// Reads an initial 8 KiB peek window, which covers the IFD entry list and
-/// any small inline tag values for the vast majority of files. Some
-/// georeferencing tag *values* (`ModelPixelScaleTag`, `ModelTiepointTag`,
-/// `GeoKeyDirectoryTag`) are stored out-of-line at a file offset recorded in
-/// the IFD entry rather than inline — for real-world rasters with many tags
-/// or strips (e.g. a striped GeoTIFF with `RowsPerStrip=1`, which pushes huge
-/// `StripOffsets`/`StripByteCounts` arrays ahead of the small geo-tag value
-/// arrays) that offset routinely lands past the initial 8 KiB window. When
-/// that happens, the peek buffer is extended with a second, bounded read
-/// (see [`MAX_GEOREF_PEEK_BYTES`]) so georeferencing is not silently dropped.
+/// # Errors
 ///
-/// Exposed as `pub(crate)` so that `lib.rs` can reuse this logic without
-/// duplicating it.
-pub(crate) fn extract_tiff_info(path: &Path) -> Option<DatasetInfo> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 8192];
-    let n = file.read(&mut buf).ok()?;
-    buf.truncate(n);
-    if buf.len() < 8 {
-        return None;
+/// Returns [`OxiGeoError::Io`] when the file cannot be opened, and
+/// [`OxiGeoError::Format`] when the TIFF structure cannot be parsed or declares
+/// a degenerate geometry (zero width/height/band count, or dimensions that do
+/// not fit the `u32` fields of [`DatasetInfo`]).  It never returns a
+/// zero-filled `DatasetInfo`.
+#[cfg(feature = "geotiff")]
+pub(crate) fn extract_tiff_info(path: &Path) -> Result<DatasetInfo> {
+    use oxigeo_core::io::FileDataSource;
+    use oxigeo_geotiff::GeoTiffReader;
+
+    // `FileDataSource::open` already produces a typed `OxiGeoError::Io` that
+    // names the path, so propagate it unchanged.
+    let source = FileDataSource::open(path)?;
+    let reader = GeoTiffReader::open(source).map_err(|e| tiff_header_error(path, e))?;
+
+    let width_u64 = reader.width();
+    let height_u64 = reader.height();
+    let width = tiff_dimension(path, width_u64, "width")?;
+    let height = tiff_dimension(path, height_u64, "height")?;
+
+    let band_count = reader.band_count();
+    if band_count == 0 {
+        return Err(tiff_header_error(
+            path,
+            "the IFD declares SamplesPerPixel = 0, so the file has no raster bands",
+        ));
     }
 
-    // Byte order
-    let le = buf[0] == 0x49; // 'I' = little-endian
+    let geotransform = reader.geo_transform().copied();
 
-    // TIFF version
-    let version = tiff_read_u16(&buf, 2, le)?;
-    let (ifd_offset, entry_size) = if version == BIGTIFF_VERSION {
-        // BigTIFF: offset size = 8, pad = 2, IFD at offset 8
-        let off = tiff_read_u64(&buf, 8, le)? as usize;
-        (off, 20usize) // BigTIFF entries are 20 bytes
-    } else if version == TIFF_VERSION {
-        let off = tiff_read_u32(&buf, 4, le)? as usize;
-        (off, 12usize) // Classic: 12 bytes per entry
-    } else {
-        return None; // not a TIFF
-    };
-
-    // Number of IFD entries
-    let num_entries = if version == BIGTIFF_VERSION {
-        tiff_read_u64(&buf, ifd_offset, le)? as usize
-    } else {
-        tiff_read_u16(&buf, ifd_offset, le)? as usize
-    };
-    let entries_start = if version == BIGTIFF_VERSION {
-        ifd_offset + 8
-    } else {
-        ifd_offset + 2
-    };
-
-    let mut width: Option<u32> = None;
-    let mut height: Option<u32> = None;
-    let mut samples_per_pixel: u32 = 1;
-    let mut pixel_scale_offset: Option<usize> = None;
-    let mut tiepoint_offset: Option<usize> = None;
-    // GeoKeyDirectory: (value offset into `buf`, number of SHORT entries).
-    let mut geo_key_dir: Option<(usize, usize)> = None;
-
-    for i in 0..num_entries {
-        let eo = entries_start + i * entry_size;
-        if eo + entry_size > buf.len() {
-            break;
-        }
-        let tag = tiff_read_u16(&buf, eo, le)?;
-
-        match tag {
-            TAG_IMAGE_WIDTH => {
-                width = ifd_entry_value_u32(&buf, eo, le);
-            }
-            TAG_IMAGE_LENGTH => {
-                height = ifd_entry_value_u32(&buf, eo, le);
-            }
-            TAG_SAMPLES_PER_PIXEL => {
-                if let Some(v) = ifd_entry_value_u32(&buf, eo, le) {
-                    samples_per_pixel = v;
-                }
-            }
-            TAG_MODEL_PIXEL_SCALE => {
-                // Value is a DOUBLE[3] — stored at offset pointed to by value field
-                let off = tiff_read_u32(&buf, eo + 8, le)? as usize;
-                pixel_scale_offset = Some(off);
-            }
-            TAG_MODEL_TIEPOINT => {
-                let off = tiff_read_u32(&buf, eo + 8, le)? as usize;
-                tiepoint_offset = Some(off);
-            }
-            TAG_GEO_KEY_DIRECTORY => {
-                // GeoKeyDirectory is a SHORT[] whose length (>4 bytes) forces
-                // out-of-line storage: the value field holds a file offset.
-                let (count, value_off) = if version == BIGTIFF_VERSION {
-                    (
-                        tiff_read_u64(&buf, eo + 4, le)? as usize,
-                        tiff_read_u64(&buf, eo + 12, le)? as usize,
-                    )
-                } else {
-                    (
-                        tiff_read_u32(&buf, eo + 4, le)? as usize,
-                        tiff_read_u32(&buf, eo + 8, le)? as usize,
-                    )
-                };
-                geo_key_dir = Some((value_off, count));
-            }
-            _ => {}
-        }
-    }
-
-    // The scan above only guarantees the *IFD entries* are visible in the
-    // initial peek — the DOUBLE/SHORT arrays they point to (pixel scale,
-    // tiepoint, GeoKey directory) live out-of-line at those file offsets,
-    // which for real-world rasters can fall past the first 8 KiB (see the
-    // doc comment on this function). Extend `buf` with a bounded, best-effort
-    // read so those values aren't silently treated as absent; the file
-    // cursor is already positioned at `buf.len()` from the initial read, so
-    // this simply continues reading forward.
-    let mut required_end = buf.len();
-    if let Some(off) = pixel_scale_offset {
-        required_end = required_end.max(off.saturating_add(24));
-    }
-    if let Some(off) = tiepoint_offset {
-        required_end = required_end.max(off.saturating_add(48));
-    }
-    if let Some((off, count)) = geo_key_dir {
-        required_end = required_end.max(off.saturating_add(count.saturating_mul(2)));
-    }
-    if required_end > buf.len() && required_end <= MAX_GEOREF_PEEK_BYTES {
-        let extra_needed = (required_end - buf.len()) as u64;
-        let _ = (&mut file).take(extra_needed).read_to_end(&mut buf);
-    }
-
-    // Construct GeoTransform from ModelPixelScale + ModelTiepoint if both present.
-    // ModelPixelScale = [ScaleX, ScaleY, ScaleZ]
-    // ModelTiepoint = [I, J, K, X, Y, Z] — typically I=J=K=0 for north-up
-    let geotransform = match (pixel_scale_offset, tiepoint_offset) {
-        (Some(ps_off), Some(tp_off)) if ps_off + 24 <= buf.len() && tp_off + 48 <= buf.len() => {
-            let scale_x = tiff_read_f64(&buf, ps_off, le)?;
-            let scale_y = tiff_read_f64(&buf, ps_off + 8, le)?;
-            let _i = tiff_read_f64(&buf, tp_off, le)?;
-            let _j = tiff_read_f64(&buf, tp_off + 8, le)?;
-            let origin_x = tiff_read_f64(&buf, tp_off + 24, le)?;
-            let origin_y = tiff_read_f64(&buf, tp_off + 32, le)?;
-            if scale_x.is_finite() && scale_y.is_finite() && scale_x > 0.0 && scale_y > 0.0 {
-                // `ModelPixelScaleTag`'s Y scale is always stored as a positive
-                // magnitude (GeoTIFF spec); `GeoTransform::north_up` expects a
-                // *negative* pixel_height for north-up rasters (Y increases
-                // downward in pixel space, upward in world space), matching
-                // the driver crate's `geokeys::extract_geo_transform`. Passing
-                // the raw positive value here previously flipped the Y axis,
-                // which would in turn have made the derived `bounds()` land on
-                // the wrong side of the origin.
-                Some(oxigeo_core::types::GeoTransform::north_up(
-                    origin_x, origin_y, scale_x, -scale_y,
-                ))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    // Decode the GeoKeyDirectory (if any) into an `EPSG:<code>` CRS string.
-    let crs = geo_key_dir
-        .and_then(|(off, count)| decode_geokey_epsg(&buf, off, count, le))
+    // EPSG code 0 is not a real authority code — treat it as "absent" rather
+    // than emitting the meaningless string "EPSG:0".
+    let crs = reader
+        .epsg_code()
+        .filter(|&code| code != 0)
         .map(|code| format!("EPSG:{code}"));
 
-    // Derive the bounding box from the geotransform + raster dimensions,
-    // matching GDAL's `gdalinfo` "Corner Coordinates" derivation. Previously
-    // this was hardcoded to `None` even when a geotransform was available.
-    let bounds = match (&geotransform, width, height) {
-        (Some(gt), Some(w), Some(h)) if w > 0 && h > 0 => {
-            Some(gt.compute_bounds(u64::from(w), u64::from(h)))
-        }
-        _ => None,
-    };
+    // Derive the bounding box the same way `gdalinfo` derives its "Corner
+    // Coordinates": from the geo-transform and the raster extent.
+    let bounds = geotransform.map(|gt| gt.compute_bounds(width_u64, height_u64));
 
-    Some(DatasetInfo {
+    Ok(DatasetInfo {
         format: DatasetFormat::GeoTiff,
         path: None, // populated by callers that know the path
-        width,
-        height,
-        band_count: samples_per_pixel,
+        width: Some(width),
+        height: Some(height),
+        band_count,
         layer_count: 0,
         crs,
         geotransform,
         feature_count: None,
         bounds,
+        // `None` only when the BitsPerSample / SampleFormat combination has no
+        // `RasterDataType` equivalent; the raster itself is still openable.
+        data_type: reader.data_type(),
     })
 }
 
-/// GeoTIFF GeoKey IDs we care about for CRS identification.
-const GEOKEY_GT_MODEL_TYPE: u16 = 1024;
-const GEOKEY_GEOGRAPHIC_TYPE: u16 = 2048;
-const GEOKEY_PROJECTED_CS_TYPE: u16 = 3072;
-/// GeoKey sentinel value meaning "user-defined" (no EPSG code available).
-const GEOKEY_USER_DEFINED: u16 = 32767;
-
-/// Decode an EPSG code from a GeoTIFF GeoKeyDirectory SHORT array.
+/// Validate one raster dimension read from a TIFF header and narrow it to the
+/// `u32` used by [`DatasetInfo`].
 ///
-/// The directory layout (GeoTIFF spec) is a `SHORT[]`:
-/// `[KeyDirectoryVersion, KeyRevision, MinorRevision, NumberOfKeys]` followed by
-/// `NumberOfKeys` entries of `[KeyID, TIFFTagLocation, Count, ValueOffset]`.
-/// When `TIFFTagLocation == 0`, `ValueOffset` holds the value inline — which is
-/// exactly how the EPSG code is stored for `ProjectedCSTypeGeoKey` (3072) and
-/// `GeographicTypeGeoKey` (2048).
+/// Rejects `0` (a degenerate raster that would reproduce the very "silent
+/// zeros" this probe exists to prevent) and values that do not fit in `u32`
+/// (silently truncating a BigTIFF dimension would corrupt every derived
+/// window / bounds computation).
+#[cfg(feature = "geotiff")]
+fn tiff_dimension(path: &Path, value: u64, what: &str) -> Result<u32> {
+    if value == 0 {
+        return Err(tiff_header_error(
+            path,
+            format!("the IFD declares a raster {what} of 0 pixels"),
+        ));
+    }
+    u32::try_from(value).map_err(|_| {
+        tiff_header_error(
+            path,
+            format!("the IFD declares a raster {what} of {value} pixels, which exceeds u32"),
+        )
+    })
+}
+
+/// Stub used when the `geotiff` feature is disabled.
 ///
-/// Prefers the projected CRS code over the geographic one; returns `None` when
-/// neither is present, the code is user-defined (32767), or the buffer is too
-/// short to hold the declared entries.
-fn decode_geokey_epsg(buf: &[u8], value_off: usize, num_shorts: usize, le: bool) -> Option<u32> {
-    // Need at least the 4-short header.
-    if num_shorts < 4 {
-        return None;
-    }
-    // Bytes required for the whole directory.
-    let bytes_needed = value_off.checked_add(num_shorts.checked_mul(2)?)?;
-    if bytes_needed > buf.len() {
-        return None;
-    }
-
-    let read_short = |idx: usize| tiff_read_u16(buf, value_off + idx * 2, le);
-    let number_of_keys = read_short(3)? as usize;
-
-    let mut projected: Option<u16> = None;
-    let mut geographic: Option<u16> = None;
-    let mut model_type: Option<u16> = None;
-
-    for k in 0..number_of_keys {
-        let base = 4 + k * 4;
-        // Ensure the 4 shorts of this key entry are within the declared array.
-        if base + 4 > num_shorts {
-            break;
-        }
-        let key_id = read_short(base)?;
-        let tag_location = read_short(base + 1)?;
-        let value = read_short(base + 3)?;
-        // Only inline values (TIFFTagLocation == 0) carry a direct EPSG code.
-        if tag_location != 0 {
-            continue;
-        }
-        match key_id {
-            GEOKEY_GT_MODEL_TYPE => model_type = Some(value),
-            GEOKEY_PROJECTED_CS_TYPE => projected = Some(value),
-            GEOKEY_GEOGRAPHIC_TYPE => geographic = Some(value),
-            _ => {}
-        }
-    }
-
-    let valid = |code: u16| -> Option<u32> {
-        if code == 0 || code == GEOKEY_USER_DEFINED {
-            None
-        } else {
-            Some(u32::from(code))
-        }
-    };
-
-    // ModelType 2 == geographic; prefer the geographic key in that case.
-    // Otherwise prefer the projected code, then fall back to geographic.
-    if model_type == Some(2) {
-        geographic
-            .and_then(valid)
-            .or_else(|| projected.and_then(valid))
-    } else {
-        projected
-            .and_then(valid)
-            .or_else(|| geographic.and_then(valid))
-    }
+/// Without the feature the crate has no TIFF parser at all, so the only honest
+/// answer is a typed error naming the missing feature — never a zero-filled
+/// [`DatasetInfo`].
+///
+/// # Errors
+///
+/// Always returns [`OxiGeoError::NotSupported`].
+#[cfg(not(feature = "geotiff"))]
+pub(crate) fn extract_tiff_info(path: &Path) -> Result<DatasetInfo> {
+    Err(OxiGeoError::NotSupported {
+        operation: format!(
+            "'{}' was detected as a GeoTIFF but the 'geotiff' feature is disabled — \
+             enable it to read GeoTIFF metadata",
+            path.display()
+        ),
+    })
 }
 
 // ─── GeoJSON lightweight sniffing ────────────────────────────────────────────
 
+/// Size of the prefix read by [`extract_geojson_info`].
+///
+/// A GeoJSON `FeatureCollection` puts `"type"` and (when present) the
+/// collection-level `"bbox"` near the front of the document, so a bounded peek
+/// is enough to classify the file and recover its extent without streaming
+/// gigabytes at open time.
+const GEOJSON_PEEK_BYTES: usize = 65536;
+
 /// Read the first few kilobytes of a GeoJSON file and try to extract the
 /// collection-level bbox and feature count.
 ///
-/// This is intentionally approximate (string-level scanning + serde_json for
-/// bbox/feature arrays) to avoid pulling in a full JSON parser in all paths.
+/// This is intentionally approximate (string-level scanning) to avoid running a
+/// full JSON parse over a potentially multi-gigabyte document at open time.
+///
+/// The feature count is only reported when the *whole* document fitted in the
+/// peek window.  Counting `"type":"Feature"` occurrences inside a truncated
+/// prefix yields a number that is silently too small — and a wrong count is
+/// worse than no count, so a document larger than the window reports
+/// `feature_count = None` ("not cheaply countable"), which is exactly what that
+/// field is documented to mean.
 ///
 /// Exposed as `pub(crate)` so that `lib.rs` can reuse this logic without
 /// duplicating it.
-pub(crate) fn extract_geojson_info(path: &Path) -> Option<DatasetInfo> {
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Io`] when the file cannot be opened or read.  A file
+/// that simply is not a `FeatureCollection` is not an error — it yields an
+/// honest descriptor with `layer_count = 0`.
+pub(crate) fn extract_geojson_info(path: &Path) -> Result<DatasetInfo> {
     use std::io::Read;
     // Read a larger chunk — GeoJSON bbox may appear after features array header
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 65536];
-    let n = file.read(&mut buf).ok()?;
-    buf.truncate(n);
-    let text = std::str::from_utf8(&buf).ok()?;
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        OxiGeoError::Io(IoError::Read {
+            message: format!("cannot open GeoJSON '{}': {e}", path.display()),
+        })
+    })?;
+    // Read one byte more than the peek window so that "the document ended
+    // inside the window" can be distinguished from "the document was cut off".
+    let mut buf = vec![0u8; GEOJSON_PEEK_BYTES + 1];
+    let mut filled = 0usize;
+    loop {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                filled += n;
+                if filled == buf.len() {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                return Err(OxiGeoError::Io(IoError::Read {
+                    message: format!("cannot read GeoJSON '{}': {e}", path.display()),
+                }));
+            }
+        }
+    }
+    let complete = filled <= GEOJSON_PEEK_BYTES;
+    buf.truncate(filled.min(GEOJSON_PEEK_BYTES));
+    // A fixed-size read can split a multi-byte UTF-8 sequence; a strict decode
+    // of such a prefix fails wholesale and would drop *all* metadata for an
+    // otherwise perfectly valid document that merely contains non-ASCII text.
+    let text = String::from_utf8_lossy(&buf);
 
     // Very lightweight: check if it's a FeatureCollection
     let is_collection = text.contains("\"FeatureCollection\"");
     let layer_count = if is_collection { 1 } else { 0 };
 
     // Count features: count occurrences of `"type":"Feature"` or `"type": "Feature"`
-    let feature_count = if is_collection {
-        let count = count_geojson_features(text);
+    let feature_count = if is_collection && complete {
+        let count = count_geojson_features(&text);
         if count > 0 { Some(count as u64) } else { None }
     } else {
         None
     };
 
     // Extract top-level bbox if present: `"bbox":[minx,miny,maxx,maxy]`
-    let bounds = extract_geojson_bbox(text);
+    let bounds = extract_geojson_bbox(&text);
 
-    Some(DatasetInfo {
+    Ok(DatasetInfo {
         format: DatasetFormat::GeoJson,
         path: None, // populated by callers that know the path
-        width: None,
-        height: None,
-        band_count: 0,
         layer_count,
-        crs: None,
-        geotransform: None,
         feature_count,
         bounds,
+        ..DatasetInfo::default()
     })
 }
 
 /// Count `"type":"Feature"` occurrences in a GeoJSON text snippet.
 ///
-/// This is approximate for very large files where the features array is truncated,
-/// but works correctly for files that fit in the initial read buffer.
+/// Exact for a complete document; callers must not use it on a truncated
+/// prefix (see [`extract_geojson_info`]).
 fn count_geojson_features(text: &str) -> usize {
     // Accept both `"type":"Feature"` and `"type": "Feature"` variants.
     let mut count = 0usize;
@@ -997,11 +700,24 @@ fn extract_geojson_bbox(text: &str) -> Option<crate::BoundingBox> {
 /// `feature_count` and `bounds`.
 ///
 /// Exposed as `pub(crate)` so that `lib.rs` can use it directly in `open_vector`.
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Format`] when the `.shp` header cannot be parsed, so
+/// that a corrupt or truncated shapefile is reported instead of being collapsed
+/// into an all-zero [`DatasetInfo`].
 #[cfg(feature = "shapefile")]
-pub(crate) fn extract_shapefile_info(path: &Path) -> Option<DatasetInfo> {
+pub(crate) fn extract_shapefile_info(path: &Path) -> Result<DatasetInfo> {
     // Strip any extension from path to get the base path for ShapefileReader::open
     let base = path.with_extension("");
-    let reader = oxigeo_shapefile::ShapefileReader::open(&base).ok()?;
+    let reader = oxigeo_shapefile::ShapefileReader::open(&base).map_err(|e| {
+        OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+            message: format!(
+                "'{}' was detected as an ESRI Shapefile but its header could not be read: {e}",
+                path.display()
+            ),
+        })
+    })?;
 
     let header = reader.header();
     let bbox = &header.bbox;
@@ -1014,17 +730,14 @@ pub(crate) fn extract_shapefile_info(path: &Path) -> Option<DatasetInfo> {
 
     let crs = reader.crs().map(str::to_string);
 
-    Some(DatasetInfo {
+    Ok(DatasetInfo {
         format: DatasetFormat::Shapefile,
         path: None,
-        width: None,
-        height: None,
-        band_count: 0,
         layer_count: 1,
         crs,
-        geotransform: None,
         feature_count,
         bounds,
+        ..DatasetInfo::default()
     })
 }
 
@@ -1033,11 +746,27 @@ pub(crate) fn extract_shapefile_info(path: &Path) -> Option<DatasetInfo> {
 /// Parse the FlatGeobuf header to populate `feature_count` and `bounds`.
 ///
 /// Exposed as `pub(crate)` so that `lib.rs` can use it directly in `open_vector`.
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Io`] when the file cannot be opened and
+/// [`OxiGeoError::Format`] when the FlatGeobuf header cannot be parsed.
 #[cfg(feature = "flatgeobuf")]
-pub(crate) fn extract_flatgeobuf_info(path: &Path) -> Option<DatasetInfo> {
+pub(crate) fn extract_flatgeobuf_info(path: &Path) -> Result<DatasetInfo> {
     use std::io::BufReader;
-    let file = std::fs::File::open(path).ok()?;
-    let reader = oxigeo_flatgeobuf::FlatGeobufReader::new(BufReader::new(file)).ok()?;
+    let file = std::fs::File::open(path).map_err(|e| {
+        OxiGeoError::Io(IoError::Read {
+            message: format!("cannot open FlatGeobuf '{}': {e}", path.display()),
+        })
+    })?;
+    let reader = oxigeo_flatgeobuf::FlatGeobufReader::new(BufReader::new(file)).map_err(|e| {
+        OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+            message: format!(
+                "'{}' was detected as FlatGeobuf but its header could not be read: {e}",
+                path.display()
+            ),
+        })
+    })?;
     let header = reader.header();
 
     let feature_count = header.features_count;
@@ -1053,17 +782,14 @@ pub(crate) fn extract_flatgeobuf_info(path: &Path) -> Option<DatasetInfo> {
         .and_then(|c| c.organization_code)
         .map(|code| format!("EPSG:{code}"));
 
-    Some(DatasetInfo {
+    Ok(DatasetInfo {
         format: DatasetFormat::FlatGeobuf,
         path: None,
-        width: None,
-        height: None,
-        band_count: 0,
         layer_count: 1,
         crs,
-        geotransform: None,
         feature_count,
         bounds,
+        ..DatasetInfo::default()
     })
 }
 
@@ -1072,9 +798,21 @@ pub(crate) fn extract_flatgeobuf_info(path: &Path) -> Option<DatasetInfo> {
 /// Parse the GeoParquet file metadata to populate `feature_count` and `bounds`.
 ///
 /// Exposed as `pub(crate)` so that `lib.rs` can use it directly in `open_vector`.
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Format`] when the Parquet footer / GeoParquet
+/// metadata cannot be read.
 #[cfg(feature = "geoparquet")]
-pub(crate) fn extract_geoparquet_info(path: &Path) -> Option<DatasetInfo> {
-    let reader = oxigeo_geoparquet::GeoParquetReader::open(path).ok()?;
+pub(crate) fn extract_geoparquet_info(path: &Path) -> Result<DatasetInfo> {
+    let reader = oxigeo_geoparquet::GeoParquetReader::open(path).map_err(|e| {
+        OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+            message: format!(
+                "'{}' was detected as GeoParquet but its metadata could not be read: {e}",
+                path.display()
+            ),
+        })
+    })?;
 
     let feature_count = {
         let n = reader.num_rows();
@@ -1090,17 +828,13 @@ pub(crate) fn extract_geoparquet_info(path: &Path) -> Option<DatasetInfo> {
             .and_then(|bbox| crate::BoundingBox::new(bbox[0], bbox[1], bbox[2], bbox[3]).ok())
     };
 
-    Some(DatasetInfo {
+    Ok(DatasetInfo {
         format: DatasetFormat::GeoParquet,
         path: None,
-        width: None,
-        height: None,
-        band_count: 0,
         layer_count: 1,
-        crs: None,
-        geotransform: None,
         feature_count,
         bounds,
+        ..DatasetInfo::default()
     })
 }
 
@@ -1155,61 +889,52 @@ mod tests {
     use super::*;
     use crate::magic::{HDF5_MAGIC, JP2_MAGIC};
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    // ── GeoKeyDirectory EPSG decode ──────────────────────────────────────────
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(PathBuf);
 
-    /// Serialize a GeoKeyDirectory SHORT array (little-endian) into bytes at a
-    /// given `offset`, returning the full buffer.
-    fn make_geokey_buf(offset: usize, shorts: &[u16]) -> Vec<u8> {
-        let mut buf = vec![0u8; offset + shorts.len() * 2];
-        for (i, &s) in shorts.iter().enumerate() {
-            let b = s.to_le_bytes();
-            buf[offset + i * 2] = b[0];
-            buf[offset + i * 2 + 1] = b[1];
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(
+                std::env::temp_dir()
+                    .join(format!("oxigeo_open_{}_{seq}_{name}", std::process::id())),
+            )
         }
-        buf
     }
 
-    #[test]
-    fn test_decode_geokey_projected_epsg() {
-        // Header: version 1, rev 1.0, 2 keys.
-        // Key 1: GTModelType (1024), loc 0, count 1, value 1 (projected).
-        // Key 2: ProjectedCSType (3072), loc 0, count 1, value 32633 (UTM 33N).
-        let shorts = [1u16, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633];
-        let buf = make_geokey_buf(16, &shorts);
-        assert_eq!(
-            decode_geokey_epsg(&buf, 16, shorts.len(), true),
-            Some(32633)
-        );
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
     }
 
-    #[test]
-    fn test_decode_geokey_geographic_epsg() {
-        // GTModelType=2 (geographic), GeographicType (2048)=4326.
-        let shorts = [1u16, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326];
-        let buf = make_geokey_buf(0, &shorts);
-        assert_eq!(decode_geokey_epsg(&buf, 0, shorts.len(), true), Some(4326));
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
     }
 
-    #[test]
-    fn test_decode_geokey_user_defined_is_none() {
-        // ProjectedCSType user-defined (32767) → no EPSG code.
-        let shorts = [1u16, 1, 0, 1, 3072, 0, 1, 32767];
-        let buf = make_geokey_buf(0, &shorts);
-        assert_eq!(decode_geokey_epsg(&buf, 0, shorts.len(), true), None);
-    }
-
-    #[test]
-    fn test_decode_geokey_truncated_is_none() {
-        // Declared 4 shorts but buffer only holds 3 → None, no panic.
-        let buf = make_geokey_buf(0, &[1u16, 1, 0]);
-        assert_eq!(decode_geokey_epsg(&buf, 0, 8, true), None);
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     // ── helper: create a temp file with given bytes ──────────────────────────
-    fn write_temp_file(name: &str, content: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir();
-        let path = dir.join(name);
+    fn write_temp_file(name: &str, content: &[u8]) -> TempPath {
+        let path = TempPath::new(name);
         let mut f = std::fs::File::create(&path).expect("create temp file");
         f.write_all(content).expect("write temp file");
         path
@@ -1291,9 +1016,10 @@ mod tests {
 
     #[test]
     fn test_magic_tiff_little_endian() {
-        // Minimal TIFF LE header: II + version 42 LE
-        let bytes = [0x49u8, 0x49, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let path = write_temp_file("test_magic_tiff_le.tif", &bytes);
+        // A real (if minimal) little-endian TIFF: `II` + version 42 + a
+        // parseable IFD.  A bare 8-byte header is *not* a TIFF and is covered
+        // separately by `test_tiff_header_without_ifd_is_rejected`.
+        let path = write_temp_file("test_magic_tiff_le.tif", &build_minimal_tiff_le(8, 4, 1));
         let ds = open(&path).expect("open tiff le");
         assert_eq!(ds.format(), DatasetFormat::GeoTiff);
         assert!(ds.is_raster());
@@ -1301,11 +1027,27 @@ mod tests {
 
     #[test]
     fn test_magic_tiff_big_endian() {
-        // Minimal TIFF BE header: MM + version 42 BE
-        let bytes = [0x4Du8, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00];
-        let path = write_temp_file("test_magic_tiff_be.tif", &bytes);
+        // Minimal big-endian TIFF: `MM` + version 42 BE + a parseable IFD.
+        let path = write_temp_file("test_magic_tiff_be.tif", &build_minimal_tiff_be(800, 600));
         let ds = open(&path).expect("open tiff be");
         assert_eq!(ds.format(), DatasetFormat::GeoTiff);
+    }
+
+    /// A file that carries the TIFF magic but no reachable IFD must be
+    /// reported as an error, not as a `0×0` / `band_count = 0` dataset.
+    ///
+    /// Before the cool-japan/oxigeo#14 fix this returned `Ok` with an all-zero
+    /// [`DatasetInfo`], so nothing downstream could tell a corrupt file from a
+    /// legitimately empty one.
+    #[test]
+    fn test_tiff_header_without_ifd_is_rejected() {
+        let bytes = [0x49u8, 0x49, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let path = write_temp_file("test_magic_tiff_no_ifd.tif", &bytes);
+        let err = open(&path).expect_err("header-only TIFF must not open silently");
+        assert!(
+            matches!(err, OxiGeoError::Format(_)) || matches!(err, OxiGeoError::Io(_)),
+            "expected a typed Format/Io error, got {err:?}"
+        );
     }
 
     #[test]
@@ -1348,11 +1090,27 @@ mod tests {
 
     #[test]
     fn test_extension_shapefile_fallback() {
+        // `.shp` carries no magic bytes we match on, so the extension decides.
         let content = b"\x00\x00\x27\x0A"; // SHP magic (optional check)
         let path = write_temp_file("test_ext_shapefile.shp", content);
-        let ds = open(&path).expect("open shp");
-        assert_eq!(ds.format(), DatasetFormat::Shapefile);
-        assert!(ds.is_vector());
+        assert_eq!(
+            DatasetFormat::from_extension(&path.to_string_lossy()),
+            DatasetFormat::Shapefile
+        );
+    }
+
+    /// A truncated `.shp` must surface the header failure instead of yielding
+    /// an all-zero descriptor that looks like a valid empty layer.
+    #[cfg(feature = "shapefile")]
+    #[test]
+    fn test_truncated_shapefile_is_rejected() {
+        let content = b"\x00\x00\x27\x0A";
+        let path = write_temp_file("test_truncated_shapefile.shp", content);
+        let err = open(&path).expect_err("truncated .shp must not open silently");
+        assert!(
+            matches!(err, OxiGeoError::Format(_)) || matches!(err, OxiGeoError::Io(_)),
+            "expected a typed Format/Io error, got {err:?}"
+        );
     }
 
     #[test]
@@ -1436,6 +1194,28 @@ mod tests {
         buf.extend_from_slice(&[0x00, 0x00]); // pad to 4 bytes
         // Next IFD offset = 0 (end)
         buf.extend_from_slice(&0u32.to_le_bytes());
+        buf
+    }
+
+    /// Build a minimal but valid TIFF file (classic, **big**-endian) with IFD
+    /// entries for ImageWidth and ImageLength.
+    fn build_minimal_tiff_be(width: u32, height: u32) -> Vec<u8> {
+        // MM + version 42 BE + IFD at offset 8
+        let mut buf: Vec<u8> = vec![0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08];
+        let num_entries: u16 = 2;
+        buf.extend_from_slice(&num_entries.to_be_bytes());
+        // ImageWidth as LONG BE
+        buf.extend_from_slice(&256u16.to_be_bytes());
+        buf.extend_from_slice(&4u16.to_be_bytes());
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&width.to_be_bytes());
+        // ImageLength as LONG BE
+        buf.extend_from_slice(&257u16.to_be_bytes());
+        buf.extend_from_slice(&4u16.to_be_bytes());
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&height.to_be_bytes());
+        // Next IFD = 0
+        buf.extend_from_slice(&0u32.to_be_bytes());
         buf
     }
 
@@ -1726,26 +1506,24 @@ mod tests {
 
     #[test]
     fn test_tiff_big_endian_extraction() {
-        // MM + version 42 BE + IFD at offset 8
-        let mut buf: Vec<u8> = vec![0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08];
-        let num_entries: u16 = 2;
-        buf.extend_from_slice(&num_entries.to_be_bytes());
-        // ImageWidth as LONG BE
-        buf.extend_from_slice(&256u16.to_be_bytes());
-        buf.extend_from_slice(&4u16.to_be_bytes());
-        buf.extend_from_slice(&1u32.to_be_bytes());
-        buf.extend_from_slice(&800u32.to_be_bytes());
-        // ImageLength as LONG BE
-        buf.extend_from_slice(&257u16.to_be_bytes());
-        buf.extend_from_slice(&4u16.to_be_bytes());
-        buf.extend_from_slice(&1u32.to_be_bytes());
-        buf.extend_from_slice(&600u32.to_be_bytes());
-        buf.extend_from_slice(&0u32.to_be_bytes());
-        let path = write_temp_file("test_meta_be.tif", &buf);
+        let path = write_temp_file("test_meta_be.tif", &build_minimal_tiff_be(800, 600));
         let ds = open(&path).expect("open");
         let info = ds.info().expect("info");
         assert_eq!(info.width, Some(800));
         assert_eq!(info.height, Some(600));
+    }
+
+    /// A TIFF whose IFD declares `ImageWidth = 0` is degenerate: reporting it as
+    /// a `0`-wide dataset is exactly the silent-zeros failure mode that
+    /// cool-japan/oxigeo#14 was about, so it must be an error instead.
+    #[test]
+    fn test_tiff_zero_dimension_is_rejected() {
+        let path = write_temp_file("test_meta_zero_dim.tif", &build_minimal_tiff_le(0, 16, 1));
+        let err = open(&path).expect_err("zero-width TIFF must not open silently");
+        assert!(
+            matches!(err, OxiGeoError::Format(_)),
+            "expected a typed Format error, got {err:?}"
+        );
     }
 
     // ── GeoJSON lightweight extraction ─────────────────────────────────────────

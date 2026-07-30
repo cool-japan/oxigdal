@@ -46,6 +46,35 @@
 //! # Ok::<(), oxigeo_core::error::OxiGeoError>(())
 //! ```
 //!
+//! ## Reading pixels into a buffer you own (no extra allocation)
+//!
+//! [`RasterBuffer::copy_to_slice`] converts and writes straight into a
+//! caller-supplied slice, so nothing is allocated or copied twice — the
+//! equivalent of GDAL's `RasterBand::read_into_slice`:
+//!
+//! ```
+//! use oxigeo_core::buffer::RasterBuffer;
+//! use oxigeo_core::types::RasterDataType;
+//!
+//! let mut buffer = RasterBuffer::zeros(4, 2, RasterDataType::UInt16);
+//! buffer.set_pixel(0, 0, 7.0)?;
+//!
+//! // The only allocation is the destination, and it belongs to the caller.
+//! let mut pixels = vec![0.0f64; 8];
+//! buffer.copy_to_slice(&mut pixels)?;
+//! assert_eq!(pixels[0], 7.0);
+//! # Ok::<(), oxigeo_core::error::OxiGeoError>(())
+//! ```
+//!
+//! With `ndarray` the destination is simply the array's backing slice:
+//!
+//! ```text
+//! let mut array = ndarray::Array2::<f64>::zeros((height, width));
+//! if let Some(dst) = array.as_slice_mut() {
+//!     buffer.copy_to_slice(dst)?;
+//! }
+//! ```
+//!
 //! ## Computing statistics
 //!
 //! ```
@@ -79,6 +108,12 @@ use crate::error::{OxiGeoError, Result};
 #[cfg(not(feature = "std"))]
 use crate::math::FloatExt;
 use crate::types::{NoDataValue, RasterDataType};
+
+pub mod element;
+pub use element::{
+    FloatToIntRounding, RasterElement, RasterElementKind, convert_raw_bytes, convert_raw_into,
+    convert_raw_into_with, elements_as_bytes,
+};
 
 mod band_iterator;
 pub use band_iterator::{BandIterator, BandRef, MultiBandBuffer};
@@ -309,11 +344,20 @@ impl RasterBuffer {
 
     /// Creates a buffer from typed vector data
     ///
+    /// The samples are copied in one bulk `memcpy` and keep their native
+    /// endianness.
+    ///
     /// # Arguments
     /// * `width` - Width in pixels
     /// * `height` - Height in pixels
     /// * `data` - Typed data (e.g., `Vec<f32>`, `Vec<u8>`)
     /// * `data_type` - The raster data type
+    ///
+    /// # Type Parameters
+    /// * `T` - A plain-old-data numeric type whose size matches `data_type`.
+    ///   Types with padding bytes (e.g. `#[repr(C)]` structs) must not be used;
+    ///   prefer [`RasterBuffer::from_element_slice`], which is restricted to the
+    ///   ten sealed [`RasterElement`] types and cannot be misused.
     ///
     /// # Errors
     /// Returns an error if the data size doesn't match dimensions and type
@@ -350,14 +394,19 @@ impl RasterBuffer {
             });
         }
 
-        let byte_data: Vec<u8> = data
-            .iter()
-            .flat_map(|v| {
-                // SAFETY: We're reading the bytes of a Copy type
-                let ptr = v as *const T as *const u8;
-                unsafe { core::slice::from_raw_parts(ptr, type_size) }.to_vec()
-            })
-            .collect();
+        // Bulk copy: one `memcpy` for the whole vector instead of a per-element
+        // `Vec` allocation inside `flat_map`.
+        //
+        // SAFETY: `T: Copy` has no drop glue and the source slice is live and
+        // initialised for `data.len() * size_of::<T>()` bytes. `u8` has an
+        // alignment of 1, so the reinterpretation cannot violate alignment, and
+        // the borrow ends before `data` is dropped. (As documented above, `T`
+        // must be padding-free; that requirement predates this optimisation and
+        // is enforced by using `from_element_slice` instead.)
+        let byte_data: Vec<u8> = unsafe {
+            core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), data.len() * type_size)
+        }
+        .to_vec();
 
         Self::new(
             byte_data,
@@ -368,63 +417,199 @@ impl RasterBuffer {
         )
     }
 
-    /// Returns the buffer data as a typed slice
+    /// Creates a buffer from a slice of typed samples.
+    ///
+    /// The type-safe counterpart of [`RasterBuffer::from_typed_vec`]: the data
+    /// type is derived from `T`, the samples are copied in one bulk `memcpy`,
+    /// and only the ten [`RasterElement`] types are accepted.
+    ///
+    /// # Errors
+    /// Returns an error if `data.len()` differs from `width * height`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use oxigeo_core::buffer::RasterBuffer;
+    /// use oxigeo_core::types::RasterDataType;
+    ///
+    /// let buffer = RasterBuffer::from_element_slice(2, 2, &[1.0f32, 2.0, 3.0, 4.0])?;
+    /// assert_eq!(buffer.data_type(), RasterDataType::Float32);
+    /// assert_eq!(buffer.get_pixel(1, 1)?, 4.0);
+    /// # Ok::<(), oxigeo_core::error::OxiGeoError>(())
+    /// ```
+    pub fn from_element_slice<T: RasterElement>(
+        width: u64,
+        height: u64,
+        data: &[T],
+    ) -> Result<Self> {
+        let expected_pixels = width * height;
+        if data.len() as u64 != expected_pixels {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "data",
+                message: format!(
+                    "Data length mismatch: expected {} pixels for {}x{}, got {}",
+                    expected_pixels,
+                    width,
+                    height,
+                    data.len()
+                ),
+            });
+        }
+
+        Self::new(
+            elements_as_bytes(data).to_vec(),
+            width,
+            height,
+            T::DATA_TYPE,
+            NoDataValue::None,
+        )
+    }
+
+    /// Returns the buffer data as a typed slice (zero-copy)
     ///
     /// # Type Parameters
     /// * `T` - The target type (must match the buffer's data type size)
     ///
     /// # Errors
-    /// Returns an error if the type size doesn't match the data type
+    /// Returns an error if the type size doesn't match the data type, or if the
+    /// buffer's storage is not aligned for `T`. Use
+    /// [`RasterBuffer::to_typed_vec`] or [`RasterBuffer::copy_to_slice`] when an
+    /// alignment-independent typed view is needed.
     pub fn as_slice<T: Copy + 'static>(&self) -> Result<&[T]> {
-        let type_size = core::mem::size_of::<T>();
-        let expected_size = self.data_type.size_bytes();
-
-        if type_size != expected_size {
-            return Err(OxiGeoError::InvalidParameter {
-                parameter: "T",
-                message: format!(
-                    "Type size mismatch: requested type has {} bytes, buffer contains {:?} ({} bytes)",
-                    type_size, self.data_type, expected_size
-                ),
-            });
-        }
+        Self::check_type_size::<T>(self.data_type)?;
 
         let pixel_count = (self.width * self.height) as usize;
-        // SAFETY: We've verified the type size matches, and the data is properly aligned
-        // for the original type it was created with
-        let slice =
-            unsafe { core::slice::from_raw_parts(self.data.as_ptr() as *const T, pixel_count) };
+        if pixel_count == 0 {
+            // An empty `Vec<u8>` has a dangling, 1-byte-aligned pointer, which
+            // `from_raw_parts` rejects even for a zero length.
+            return Ok(&[]);
+        }
+
+        let ptr = self.data.as_ptr().cast::<T>();
+        Self::check_alignment(ptr)?;
+        // SAFETY: The type size matches the pixel size (checked above), so
+        // `pixel_count * size_of::<T>()` equals the buffer length; the pointer is
+        // aligned for `T` (checked above) and non-null (`pixel_count > 0`); the
+        // returned slice borrows `self`, and `T: Copy` primitives have no
+        // invalid bit patterns.
+        let slice = unsafe { core::slice::from_raw_parts(ptr, pixel_count) };
         Ok(slice)
     }
 
-    /// Returns the buffer data as a mutable typed slice
+    /// Returns the buffer data as a mutable typed slice (zero-copy)
     ///
     /// # Type Parameters
     /// * `T` - The target type (must match the buffer's data type size)
     ///
     /// # Errors
-    /// Returns an error if the type size doesn't match the data type
+    /// Returns an error if the type size doesn't match the data type, or if the
+    /// buffer's storage is not aligned for `T`.
     pub fn as_slice_mut<T: Copy + 'static>(&mut self) -> Result<&mut [T]> {
-        let type_size = core::mem::size_of::<T>();
-        let expected_size = self.data_type.size_bytes();
-
-        if type_size != expected_size {
-            return Err(OxiGeoError::InvalidParameter {
-                parameter: "T",
-                message: format!(
-                    "Type size mismatch: requested type has {} bytes, buffer contains {:?} ({} bytes)",
-                    type_size, self.data_type, expected_size
-                ),
-            });
-        }
+        Self::check_type_size::<T>(self.data_type)?;
 
         let pixel_count = (self.width * self.height) as usize;
-        // SAFETY: We've verified the type size matches, and the data is properly aligned
-        // for the original type it was created with
-        let slice = unsafe {
-            core::slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut T, pixel_count)
-        };
+        if pixel_count == 0 {
+            return Ok(&mut []);
+        }
+
+        let ptr = self.data.as_mut_ptr().cast::<T>();
+        Self::check_alignment(ptr.cast_const())?;
+        // SAFETY: Same reasoning as `as_slice`, plus the unique borrow of `self`
+        // guaranteeing exclusive access for the lifetime of the returned slice.
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, pixel_count) };
         Ok(slice)
+    }
+
+    // ─── Bulk Typed Access ───────────────────────────────────────────────
+
+    /// Converts every pixel into a caller-supplied slice, in one pass and
+    /// without allocating.
+    ///
+    /// This is the `OxiGeo` equivalent of GDAL's
+    /// `RasterBand::read_into_slice`: the destination belongs to the caller
+    /// (a `Vec<f64>`, an `ndarray::Array2<f64>`'s backing slice, a
+    /// memory-mapped region…), so no temporary buffer and no second pass are
+    /// needed. Unlike [`RasterBuffer::as_slice`] it works for *any* destination
+    /// type and needs no alignment or data-type match.
+    ///
+    /// When `T` already matches the buffer's data type the copy is a plain
+    /// `memcpy`. See [`element`] for the exact conversion semantics; floats are
+    /// rounded with [`FloatToIntRounding::Nearest`].
+    ///
+    /// # Errors
+    /// Returns an error if `dst.len()` differs from [`RasterBuffer::pixel_count`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use oxigeo_core::buffer::RasterBuffer;
+    /// use oxigeo_core::types::RasterDataType;
+    ///
+    /// let mut buffer = RasterBuffer::zeros(3, 2, RasterDataType::UInt16);
+    /// buffer.set_pixel(2, 1, 40_000.0)?;
+    ///
+    /// // Allocate once, reuse across tiles/bands: nothing else is allocated.
+    /// let mut pixels = vec![0.0f64; buffer.pixel_count() as usize];
+    /// buffer.copy_to_slice(&mut pixels)?;
+    ///
+    /// assert_eq!(pixels.last().copied(), Some(40_000.0));
+    /// # Ok::<(), oxigeo_core::error::OxiGeoError>(())
+    /// ```
+    pub fn copy_to_slice<T: RasterElement>(&self, dst: &mut [T]) -> Result<()> {
+        convert_raw_into(&self.data, self.data_type, dst)
+    }
+
+    /// [`RasterBuffer::copy_to_slice`] with an explicit float→integer rounding
+    /// mode.
+    ///
+    /// # Errors
+    /// Returns an error if `dst.len()` differs from [`RasterBuffer::pixel_count`].
+    pub fn copy_to_slice_with<T: RasterElement>(
+        &self,
+        dst: &mut [T],
+        rounding: FloatToIntRounding,
+    ) -> Result<()> {
+        convert_raw_into_with(&self.data, self.data_type, dst, rounding)
+    }
+
+    /// Converts every pixel into a freshly allocated `Vec<T>`.
+    ///
+    /// Exactly one allocation, then a single conversion pass. Prefer
+    /// [`RasterBuffer::copy_to_slice`] when a destination already exists.
+    ///
+    /// # Errors
+    /// Returns an error only if the buffer's declared size and its storage
+    /// disagree, which the constructors make impossible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use oxigeo_core::buffer::RasterBuffer;
+    /// use oxigeo_core::types::RasterDataType;
+    ///
+    /// let buffer = RasterBuffer::from_element_slice(2, 1, &[-3i16, 300])?;
+    /// assert_eq!(buffer.to_typed_vec::<f64>()?, vec![-3.0, 300.0]);
+    /// // Integer destinations saturate instead of wrapping.
+    /// assert_eq!(buffer.to_typed_vec::<u8>()?, vec![0, 255]);
+    /// # Ok::<(), oxigeo_core::error::OxiGeoError>(())
+    /// ```
+    pub fn to_typed_vec<T: RasterElement>(&self) -> Result<Vec<T>> {
+        self.to_typed_vec_with(FloatToIntRounding::Nearest)
+    }
+
+    /// [`RasterBuffer::to_typed_vec`] with an explicit float→integer rounding
+    /// mode.
+    ///
+    /// # Errors
+    /// Returns an error only if the buffer's declared size and its storage
+    /// disagree, which the constructors make impossible.
+    pub fn to_typed_vec_with<T: RasterElement>(
+        &self,
+        rounding: FloatToIntRounding,
+    ) -> Result<Vec<T>> {
+        let mut out = vec![T::default(); self.pixel_count() as usize];
+        self.copy_to_slice_with(&mut out, rounding)?;
+        Ok(out)
     }
 
     /// Gets a pixel value as f64
@@ -805,36 +990,33 @@ impl RasterBuffer {
 
     // ─── Row & Window Access ─────────────────────────────────────────────
 
-    /// Returns a row of pixel data as a typed slice.
+    /// Returns a row of pixel data as a typed slice (zero-copy).
     ///
     /// # Errors
-    /// Returns an error if `y` is out of bounds or type size mismatches.
+    /// Returns an error if `y` is out of bounds, the type size mismatches, or
+    /// the buffer's storage is not aligned for `T`.
     pub fn row_slice<T: Copy + 'static>(&self, y: u64) -> Result<&[T]> {
         if y >= self.height {
             return Err(OxiGeoError::OutOfBounds {
                 message: format!("Row {} out of bounds for height {}", y, self.height),
             });
         }
-        let type_size = core::mem::size_of::<T>();
         let expected_size = self.data_type.size_bytes();
-        if type_size != expected_size {
-            return Err(OxiGeoError::InvalidParameter {
-                parameter: "T",
-                message: format!(
-                    "Type size {} doesn't match {:?} size {}",
-                    type_size, self.data_type, expected_size
-                ),
-            });
+        Self::check_type_size::<T>(self.data_type)?;
+
+        if self.width == 0 {
+            return Ok(&[]);
         }
+
         let row_start = (y * self.width) as usize * expected_size;
         let row_end = row_start + self.width as usize * expected_size;
-        // SAFETY: type size verified above, row bounds verified
-        let slice = unsafe {
-            core::slice::from_raw_parts(
-                self.data[row_start..row_end].as_ptr() as *const T,
-                self.width as usize,
-            )
-        };
+        let ptr = self.data[row_start..row_end].as_ptr().cast::<T>();
+        Self::check_alignment(ptr)?;
+        // SAFETY: The row bounds are inside the buffer (checked above) and cover
+        // exactly `width * size_of::<T>()` bytes; `row_start` is a multiple of
+        // the sample size, and the resulting pointer is aligned for `T`
+        // (checked above) and non-null (`width > 0`).
+        let slice = unsafe { core::slice::from_raw_parts(ptr, self.width as usize) };
         Ok(slice)
     }
 
@@ -875,6 +1057,42 @@ impl RasterBuffer {
         Ok(())
     }
 
+    /// Verifies that `T` has the same size as one sample of `data_type`.
+    fn check_type_size<T>(data_type: RasterDataType) -> Result<()> {
+        let type_size = core::mem::size_of::<T>();
+        let expected_size = data_type.size_bytes();
+        if type_size != expected_size {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "T",
+                message: format!(
+                    "Type size mismatch: requested type has {} bytes, buffer contains {:?} ({} bytes)",
+                    type_size, data_type, expected_size
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Verifies that `ptr` satisfies `T`'s alignment.
+    ///
+    /// The buffer's storage is a `Vec<u8>`, which is only guaranteed to be
+    /// 1-byte aligned; reinterpreting it as `&[T]` without this check would be
+    /// undefined behaviour whenever the allocator (or a custom global allocator)
+    /// hands back an under-aligned block.
+    fn check_alignment<T>(ptr: *const T) -> Result<()> {
+        if ptr.is_aligned() {
+            return Ok(());
+        }
+        Err(OxiGeoError::InvalidParameter {
+            parameter: "T",
+            message: format!(
+                "Buffer storage is misaligned for the requested type: it needs {}-byte alignment but starts {} byte(s) past one; use `to_typed_vec`/`copy_to_slice` for an alignment-independent typed copy",
+                core::mem::align_of::<T>(),
+                ptr.addr() % core::mem::align_of::<T>()
+            ),
+        })
+    }
+
     fn check_type(&self, expected: RasterDataType) -> Result<()> {
         if self.data_type != expected {
             return Err(OxiGeoError::InvalidParameter {
@@ -905,6 +1123,18 @@ impl RasterBuffer {
 
     /// Converts the buffer to a different data type
     ///
+    /// The `nodata` value is carried over unchanged (it is *not* re-encoded into
+    /// the target type), exactly as before.
+    ///
+    /// Values that do not fit the target type saturate at its bounds and
+    /// floating-point samples are truncated towards zero
+    /// ([`FloatToIntRounding::Truncate`]), matching the historical per-pixel
+    /// implementation bit-for-bit. Use [`RasterBuffer::copy_to_slice_with`] or
+    /// [`convert_raw_bytes`] to pick [`FloatToIntRounding::Nearest`] instead.
+    ///
+    /// Integer→integer conversions are exact: they no longer bridge through
+    /// `f64`, so `u64`/`i64` values beyond 2<sup>53</sup> keep every bit.
+    ///
     /// # Errors
     /// Returns an error if conversion fails
     pub fn convert_to(&self, target_type: RasterDataType) -> Result<Self> {
@@ -915,12 +1145,13 @@ impl RasterBuffer {
         let mut result = Self::zeros(self.width, self.height, target_type);
         result.nodata = self.nodata;
 
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let value = self.get_pixel(x, y)?;
-                result.set_pixel(x, y, value)?;
-            }
-        }
+        convert_raw_bytes(
+            &self.data,
+            self.data_type,
+            &mut result.data,
+            target_type,
+            FloatToIntRounding::Truncate,
+        )?;
 
         Ok(result)
     }
@@ -1330,10 +1561,28 @@ mod tests {
                 .set_pixel(x, 1, (x + 10) as f64)
                 .expect("set should work");
         }
-        let row: &[f32] = buffer.row_slice(1).expect("row_slice should work");
-        assert_eq!(row.len(), 5);
-        assert!((row[0] - 10.0).abs() < 1e-5);
-        assert!((row[4] - 14.0).abs() < 1e-5);
+
+        // The zero-copy view requires the storage to be aligned for `f32`.
+        // Production allocators over-align `Vec<u8>`, but an allocator that
+        // honours the requested 1-byte alignment exactly (Miri's, or a custom
+        // global allocator) makes `row_slice` report the documented alignment
+        // error instead of producing undefined behaviour.
+        match buffer.row_slice::<f32>(1) {
+            Ok(row) => {
+                assert_eq!(row.len(), 5);
+                assert!((row[0] - 10.0).abs() < 1e-5);
+                assert!((row[4] - 14.0).abs() < 1e-5);
+            }
+            Err(err) => {
+                let text = format!("{err:?}");
+                assert!(text.contains("misaligned"), "unexpected error: {text}");
+            }
+        }
+
+        // The alignment-free path always works.
+        let all: Vec<f32> = buffer.to_typed_vec().expect("to_typed_vec should work");
+        assert!((all[5] - 10.0).abs() < 1e-5);
+        assert!((all[9] - 14.0).abs() < 1e-5);
     }
 
     #[test]

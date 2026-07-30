@@ -97,6 +97,10 @@ pub use types::{
 pub use vector::FieldValue;
 
 pub use buffer::Mask;
+pub use buffer::{
+    FloatToIntRounding, RasterElement, RasterElementKind, convert_raw_bytes, convert_raw_into,
+    convert_raw_into_with, elements_as_bytes,
+};
 #[cfg(feature = "std")]
 pub use io::{MmapDataSource, MmapDataSourceRw};
 

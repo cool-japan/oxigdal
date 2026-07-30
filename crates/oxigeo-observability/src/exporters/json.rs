@@ -597,7 +597,47 @@ impl JsonMetricReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture *directory* inside the system temp dir (house
+    /// policy: no hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same directory.  Dropping the guard removes the fixture, so a
+    /// panicking test leaks nothing.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_observability_json_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn test_json_metric_conversion() {
@@ -618,10 +658,9 @@ mod tests {
 
     #[test]
     fn test_json_file_exporter() {
-        let temp_dir = env::temp_dir().join("oxigeo-test-json-exporter");
-        let _ = fs::remove_dir_all(&temp_dir);
+        let temp_dir = TempDir::new("exporter");
 
-        let config = JsonExporterConfig::new(&temp_dir)
+        let config = JsonExporterConfig::new(temp_dir.to_path_buf())
             .with_prefix("test_metrics")
             .with_json_lines(true);
 
@@ -638,15 +677,11 @@ mod tests {
         let stats = exporter.stats();
         assert_eq!(stats.total_metrics, 2);
         assert!(stats.total_bytes > 0);
-
-        // Clean up
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_json_metric_reader() {
-        let temp_dir = env::temp_dir().join("oxigeo-test-json-reader");
-        let _ = fs::remove_dir_all(&temp_dir);
+        let temp_dir = TempDir::new("reader");
         fs::create_dir_all(&temp_dir).expect("should create dir");
 
         // Write some test data
@@ -690,15 +725,12 @@ mod tests {
 
         let by_name = reader.read_by_name("metric1").expect("should filter");
         assert_eq!(by_name.len(), 1);
-
-        // Clean up
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_config_builder() {
-        let metrics_dir = std::env::temp_dir().join("oxigeo_metrics_config_test");
-        let config = JsonExporterConfig::new(metrics_dir.clone())
+        let metrics_dir = TempDir::new("config_builder");
+        let config = JsonExporterConfig::new(metrics_dir.to_path_buf())
             .with_prefix("app_metrics")
             .with_pretty_print(true)
             .with_max_file_size(50 * 1024 * 1024)
@@ -706,7 +738,7 @@ mod tests {
             .with_json_lines(false)
             .with_metadata(true);
 
-        assert_eq!(config.output_dir, metrics_dir);
+        assert_eq!(config.output_dir.as_path(), &*metrics_dir);
         assert_eq!(config.file_prefix, "app_metrics");
         assert!(config.pretty_print);
         assert_eq!(config.max_file_size, 50 * 1024 * 1024);

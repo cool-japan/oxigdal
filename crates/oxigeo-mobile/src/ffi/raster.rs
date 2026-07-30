@@ -324,17 +324,8 @@ pub unsafe extern "C" fn oxigeo_dataset_read_region(
         }
     };
 
-    // Read the full band data (we'll need to extract the region)
-    let band_data = match reader.read_band(0, (band - 1) as usize) {
-        Ok(data) => data,
-        Err(e) => {
-            crate::ffi::error::set_last_error(format!("Failed to read band data: {}", e));
-            return OxiGeoErrorCode::IoError;
-        }
-    };
-
-    // Calculate bytes per pixel based on data type
-    let bytes_per_pixel = match handle.metadata.data_type {
+    // Calculate bytes per sample based on data type
+    let bytes_per_sample = match handle.metadata.data_type {
         0 => 1, // Byte
         1 => 2, // UInt16
         2 => 2, // Int16
@@ -345,9 +336,8 @@ pub unsafe extern "C" fn oxigeo_dataset_read_region(
         _ => 1,
     };
 
-    // Extract the region from the full band data
-    let samples_per_pixel = handle.metadata.band_count as usize;
-    let row_stride = handle.metadata.width as usize * bytes_per_pixel * samples_per_pixel;
+    let samples_per_pixel = handle.metadata.band_count.max(1) as usize;
+    let first_band = (band - 1) as usize;
 
     // Widen to i64 and use checked arithmetic so a large-but-plausible region
     // request (e.g. x_size/y_size in the tens of thousands, or a caller
@@ -375,7 +365,7 @@ pub unsafe extern "C" fn oxigeo_dataset_read_region(
 
     // Copy the region data to the output buffer. Computed with checked
     // arithmetic for the same overflow reasons as `expected_size` above.
-    let dst_row_stride = match checked_dst_row_stride(x_size, bytes_per_pixel, buf.channels) {
+    let dst_row_stride = match checked_dst_row_stride(x_size, bytes_per_sample, buf.channels) {
         Some(v) => v,
         None => {
             crate::ffi::error::set_last_error("Destination row stride overflows".to_string());
@@ -383,36 +373,61 @@ pub unsafe extern "C" fn oxigeo_dataset_read_region(
         }
     };
 
-    for row in 0..y_size as usize {
-        let src_row = y_off as usize + row;
-        let src_offset =
-            src_row * row_stride + x_off as usize * bytes_per_pixel * samples_per_pixel;
+    // Fill `channels_to_copy` consecutive bands, starting at the requested
+    // (1-based) `band`, interleaved into the caller's buffer.
+    //
+    // `read_window(level, band, x, y, w, h)` returns exactly that band's
+    // samples for exactly that rectangle -- `w * h * bytes_per_sample` bytes,
+    // row-major -- and touches only the blocks that overlap it. This replaces a
+    // full-band read followed by hand-rolled interleaved indexing: that
+    // indexing assumed `read_band` returned the whole chunky image, so after
+    // <https://github.com/cool-japan/oxigeo/issues/14> its row stride was
+    // `band_count` times too large and its bounds guard silently skipped most
+    // rows, leaving the caller's buffer untouched.
+    let channels_to_copy = samples_per_pixel
+        .saturating_sub(first_band)
+        .min(buf.channels as usize);
+    let dst_pixel_stride = bytes_per_sample * buf.channels as usize;
 
-        // For band-interleaved data, we need to extract just the requested band
-        // For now, copy all samples (channels) from the source
-        let dst_offset = row * dst_row_stride;
+    for ch in 0..channels_to_copy {
+        let plane = match reader.read_window(
+            0,
+            first_band + ch,
+            x_off as u64,
+            y_off as u64,
+            x_size as u64,
+            y_size as u64,
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                crate::ffi::error::set_last_error(format!(
+                    "Failed to read band {} region: {}",
+                    first_band + ch + 1,
+                    e
+                ));
+                return OxiGeoErrorCode::IoError;
+            }
+        };
 
-        if src_offset + x_size as usize * bytes_per_pixel * samples_per_pixel <= band_data.len()
-            && dst_offset + dst_row_stride <= buf.length
-        {
+        for row in 0..y_size as usize {
+            let dst_offset = row * dst_row_stride;
+            if dst_offset + dst_row_stride > buf.length {
+                break;
+            }
+
             for col in 0..x_size as usize {
-                let src_col_offset = src_offset + col * bytes_per_pixel * samples_per_pixel;
-                let dst_col_offset = dst_offset + col * bytes_per_pixel * buf.channels as usize;
+                let src_offset = (row * x_size as usize + col) * bytes_per_sample;
+                let dst_ch_offset = dst_offset + col * dst_pixel_stride + ch * bytes_per_sample;
 
-                // Copy data for each channel
-                let channels_to_copy = samples_per_pixel.min(buf.channels as usize);
-                for ch in 0..channels_to_copy {
-                    let src_ch_offset = src_col_offset + ch * bytes_per_pixel;
-                    let dst_ch_offset = dst_col_offset + ch * bytes_per_pixel;
-
-                    if src_ch_offset + bytes_per_pixel <= band_data.len() {
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                band_data.as_ptr().add(src_ch_offset),
-                                buf.data.add(dst_ch_offset),
-                                bytes_per_pixel,
-                            );
-                        }
+                if src_offset + bytes_per_sample <= plane.len()
+                    && dst_ch_offset + bytes_per_sample <= buf.length
+                {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            plane.as_ptr().add(src_offset),
+                            buf.data.add(dst_ch_offset),
+                            bytes_per_sample,
+                        );
                     }
                 }
             }
@@ -485,22 +500,33 @@ pub unsafe extern "C" fn oxigeo_dataset_read_tile(
         0
     };
 
-    // Read the tile from the reader
-    let tile_data = match reader.read_tile(overview_level, coord.x as u32, coord.y as u32) {
-        Ok(data) => data,
+    // Read the tile from the reader, one band at a time and interleaved.
+    //
+    // `reader.read_tile` would return one raw block: correct only for a chunky
+    // file, because a `PlanarConfiguration = 2` block holds a single band's
+    // plane while the handle below would still claim `band_count` channels for
+    // it. See `common::tile_read` (cool-japan/oxigeo#14).
+    let tile = match crate::common::tile_read::read_block_interleaved(
+        &reader,
+        overview_level,
+        coord.x as u32,
+        coord.y as u32,
+    ) {
+        Ok(tile) => tile,
         Err(e) => {
             crate::ffi::error::set_last_error(format!("Failed to read tile: {}", e));
             return OxiGeoErrorCode::IoError;
         }
     };
 
-    let channels = handle.metadata.band_count;
-
+    // The block's own geometry, not the requested `tile_size`: a GeoTIFF block
+    // is whatever the file says it is, and mislabelling it makes every consumer
+    // index into the wrong pixels.
     let tile_handle = Box::new(TileHandle {
-        data: tile_data,
-        width: tile_size,
-        height: tile_size,
-        channels,
+        data: tile.data,
+        width: tile.width,
+        height: tile.height,
+        channels: tile.channels,
     });
 
     unsafe {
@@ -600,22 +626,6 @@ pub unsafe extern "C" fn oxigeo_dataset_compute_stats(
         }
     };
 
-    // For approximate stats, we might read from an overview level
-    let level = if approx_ok != 0 && reader.overview_count() > 0 {
-        reader.overview_count() - 1
-    } else {
-        0
-    };
-
-    // Read band data
-    let band_data = match reader.read_band(level, (band - 1) as usize) {
-        Ok(data) => data,
-        Err(e) => {
-            crate::ffi::error::set_last_error(format!("Failed to read band data: {}", e));
-            return OxiGeoErrorCode::IoError;
-        }
-    };
-
     // Determine data type from metadata
     let data_type = match handle.metadata.data_type {
         0 => RasterDataType::UInt8,
@@ -628,16 +638,49 @@ pub unsafe extern "C" fn oxigeo_dataset_compute_stats(
         _ => RasterDataType::UInt8,
     };
 
-    // Create a RasterBuffer to compute statistics
     let width = handle.metadata.width as u64;
     let height = handle.metadata.height as u64;
 
-    // For overview levels, adjust dimensions
-    let (actual_width, actual_height) = if level > 0 {
-        let scale = 1u64 << level;
-        ((width + scale - 1) / scale, (height + scale - 1) / scale)
+    // For approximate stats, read from the coarsest overview.
+    //
+    // Level numbering is `0 = full resolution`, `1..=overview_count()` = the
+    // overviews, so the coarsest is `overview_count()`, not `overview_count()
+    // - 1`. `read_band` used to ignore its level argument entirely, which is
+    // why the off-by-one went unnoticed.
+    // See <https://github.com/cool-japan/oxigeo/issues/14>.
+    let mut level = if approx_ok != 0 && reader.overview_count() > 0 {
+        reader.overview_count()
     } else {
-        (width, height)
+        0
+    };
+
+    // Overview dimensions come from the level's own IFD via
+    // `GeoTiffReader::level_size`. They used to be inferred as
+    // `ceil(full / 2^level)` and cross-checked against the level's pixel count,
+    // which only holds for a strict power-of-two pyramid and threw the overview
+    // away whenever it was not one; the real dimensions always match the data
+    // `read_band` returns. See <https://github.com/cool-japan/oxigeo/issues/14>.
+    let mut actual_width = width;
+    let mut actual_height = height;
+    if level > 0 {
+        match reader.level_size(level) {
+            Ok((level_width, level_height)) => {
+                actual_width = level_width;
+                actual_height = level_height;
+            }
+            // A level whose IFD cannot be resolved is not usable; fall back to
+            // full resolution rather than reporting statistics for nothing.
+            Err(_) => level = 0,
+        }
+    }
+
+    // Read band data
+    let band_data = match reader.read_band(level, (band - 1) as usize) {
+        Ok(data) => data,
+        Err(e) => {
+            crate::ffi::error::set_last_error(format!("Failed to read band data: {}", e));
+            return OxiGeoErrorCode::IoError;
+        }
     };
 
     let buffer = match RasterBuffer::new(
@@ -1235,6 +1278,47 @@ pub extern "C" fn oxigeo_get_version_string() -> *mut c_char {
 mod tests {
     use super::*;
     use crate::ffi::oxigeo_string_free;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_mobile_ffi_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_version() {
@@ -1312,8 +1396,7 @@ mod tests {
     fn test_create_dataset() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_create_dataset.tif");
+        let temp_path = TempPath::new("create_dataset.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -1389,8 +1472,7 @@ mod tests {
     fn test_invalid_region_coords() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_invalid_region.tif");
+        let temp_path = TempPath::new("invalid_region.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -1483,8 +1565,7 @@ mod tests {
     fn test_read_region_rejects_implausible_channels_without_panicking() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_read_region_overflow_channels.tif");
+        let temp_path = TempPath::new("overflow_channels.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -1534,8 +1615,7 @@ mod tests {
     fn test_read_region_rejects_zero_channels() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_read_region_zero_channels.tif");
+        let temp_path = TempPath::new("zero_channels.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 

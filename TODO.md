@@ -1,8 +1,56 @@
 # OxiGeo TODO
 
-> Version: 0.2.1 (release-ready, 2026-07-28) | previous release: 0.2.0 (2026-07-20) | 75 crates | 17,723 tests passing (100 skipped), 0 failures | 416 doc tests | ~784K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
+> Version: 0.2.2 (2026-07-30) | previous release: 0.2.1 (2026-07-28) | 75 crates | 18,133 tests passing (101 skipped), 0 failures (`--all-features`); 16,684 passing (80 skipped) on default features | 402 doc tests | ~791K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
 
 ---
+
+## v0.2.2 — Issue #14 Fix Campaign Complete, Release-Ready 2026-07-30 (branch: 0.2.2)
+
+[GitHub issue #14](https://github.com/cool-japan/oxigeo/issues/14): `Dataset::read_band`
+silently ignored its `band` argument on multi-band rasters, returning the whole
+pixel-interleaved image. Root-caused to the GeoTIFF driver's block-decode engine
+(rewritten as `band_read.rs`/`band_read/multi.rs`), which also surfaced the identical
+defect pattern — wrong planar-config assumption or wrong byte order on multi-band raster
+reads — independently re-implemented in a dozen other crates (QC, server, mobile, WASM,
+WCS, Node, CLI, ML, Jupyter, VRT), plus several unrelated bugs found along the way. 192
+files changed; 33 new `issue_14_*`-named files (30 regression tests, 2 benchmarks, 1
+example). Gates green: `cargo fmt --check` clean, `cargo clippy --workspace
+--all-features --all-targets` 0 warnings, `cargo nextest run --all-features` 18,133
+passed / 0 failed / 101 skipped (16,684 / 0 / 80 skipped on default features), 402 doc
+tests passing, `cargo deny check` passing, `cargo publish --dry-run --workspace` clean
+across all 75 crates. Full categorized list in CHANGELOG.md `[0.2.2]`.
+
+### Fixed in 0.2.2
+- [x] **`oxigeo-drivers/geotiff`**: `read_band` root-cause fixed (new `band_read`/
+  `band_read::multi` engine); predictor cross-band-stride bug on planar files;
+  LERC+predictor undefined-combination silent corruption; O(n)→O(1) tile-offset lookup
+  (`cog/block_index.rs`, was 77% of one band read on an 8000-strip file)
+- [x] **`oxigeo-core`**: new sealed `RasterElement` typed conversion layer;
+  `RasterBuffer::convert_to` precision corruption for `UInt64`/`Int64` > 2^53; latent UB
+  in `as_slice`/`as_slice_mut`/`row_slice` (unchecked alignment + dangling pointer at
+  zero length); `DataSource::read_range_into`/`range_slice` fast-path trait methods
+- [x] **Downstream fan-out (same defect, cool-japan/oxigeo#14)**: oxigeo-qc (big-endian +
+  planar scan), oxigeo-server (WMS/WMTS overview-level + multi-band window),
+  oxigeo-services WCS (multi-band truncation), oxigeo-mobile (planar tile, region read,
+  overview stats), oxigeo-wasm (byte-order double-swap), oxigeo-node (multi-band open),
+  oxigeo-cli (workaround removal), oxigeo-ml-foundation (dataset loader),
+  oxigeo-jupyter (`%stats`), oxigeo-drivers-vrt (byte order)
+- [x] **Unrelated bugs found along the way**: oxigeo-streaming `ChunkedReader` failed on
+  its first call on every stream; oxigeo-mbtiles spill-file (`-wal`/`-shm`/`-journal`)
+  leak; `oxigeo-ml::optimization::iterative_pruning` concurrent-call model corruption;
+  `oxigeo-compress` 32-bit/wasm32 `usize` overflow in `LZ4_MAX_OUTPUT_GUESS`;
+  `oxigeo-compress` failed to build for `wasm32-unknown-unknown` (ahash/getrandom)
+- [x] **DEFLATE tile decoding 1.45–1.79× faster** — `oxiarc-*` 0.3.6 → 0.4.0 (two-level
+  Huffman, buffered bit reader, in-place LZ77 history); GeoTIFF driver uses the new
+  decompress-into-slice entry point
+
+### Added in 0.2.2
+- [x] `oxigeo::Dataset::{read_interleaved, read_interleaved_into, read_window_interleaved,
+  read_window_interleaved_into, read_band_into, read_window_into, data_type}` — the
+  supported replacement for the pre-0.2.2 `read_band` behaviour
+- [x] `oxigeo-drivers/geotiff`: `read_band_into`/`read_band_into_typed`,
+  `read_window*`, `read_bands_into_typed`/`read_window_bands_into_typed`, `byte_order()`,
+  `level_size()`, opt-in `parallel` feature (rayon block-decode fan-out)
 
 ## v0.2.1 — Production-Hardening Complete, Release-Ready 2026-07-28 (branch: 0.2.1)
 

@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use memmap2::{Mmap, MmapMut};
 
 use crate::error::{IoError, OxiGeoError, Result};
+use crate::io::traits::{dst_too_small, range_bounds_usize};
 use crate::io::{ByteRange, DataSource};
 
 // ---------------------------------------------------------------------------
@@ -184,10 +185,30 @@ impl DataSource for MmapDataSource {
     }
 
     fn read_range(&self, range: ByteRange) -> Result<Vec<u8>> {
-        let offset = range.start as usize;
-        let len = range.len() as usize;
+        let (offset, len) = range_bounds_usize(range)?;
         let data = self.read_at(offset, len)?;
         Ok(data.to_vec())
+    }
+
+    /// Copies straight out of the mapping into `dst` — no intermediate `Vec`.
+    ///
+    /// Callers that can work from a borrowed slice should prefer
+    /// [`DataSource::range_slice`], which copies nothing at all.
+    fn read_range_into(&self, range: ByteRange, dst: &mut [u8]) -> Result<usize> {
+        let (offset, len) = range_bounds_usize(range)?;
+        if dst.len() < len {
+            return Err(dst_too_small(len, dst.len()));
+        }
+        dst[..len].copy_from_slice(self.read_at(offset, len)?);
+        Ok(len)
+    }
+
+    /// Hands back a borrowed view of the mapping: reading a block through this
+    /// costs neither an allocation nor a copy.
+    fn range_slice(&self, range: ByteRange) -> Option<&[u8]> {
+        let start = usize::try_from(range.start).ok()?;
+        let len = usize::try_from(range.end.checked_sub(range.start)?).ok()?;
+        self.read_at(start, len).ok()
     }
 
     fn supports_range_requests(&self) -> bool {
@@ -445,10 +466,30 @@ impl DataSource for MmapDataSourceRw {
     }
 
     fn read_range(&self, range: ByteRange) -> Result<Vec<u8>> {
-        let offset = range.start as usize;
-        let len = range.len() as usize;
+        let (offset, len) = range_bounds_usize(range)?;
         let data = self.read_at(offset, len)?;
         Ok(data.to_vec())
+    }
+
+    /// Copies straight out of the mapping into `dst` — no intermediate `Vec`.
+    fn read_range_into(&self, range: ByteRange, dst: &mut [u8]) -> Result<usize> {
+        let (offset, len) = range_bounds_usize(range)?;
+        if dst.len() < len {
+            return Err(dst_too_small(len, dst.len()));
+        }
+        dst[..len].copy_from_slice(self.read_at(offset, len)?);
+        Ok(len)
+    }
+
+    /// Hands back a borrowed view of the mapping (see
+    /// [`MmapDataSource::range_slice`](DataSource::range_slice)).
+    ///
+    /// The borrow is immutable and `&self`, so no write through
+    /// [`MmapDataSourceRw::write_at`] can be in flight while it is alive.
+    fn range_slice(&self, range: ByteRange) -> Option<&[u8]> {
+        let start = usize::try_from(range.start).ok()?;
+        let len = usize::try_from(range.end.checked_sub(range.start)?).ok()?;
+        self.read_at(start, len).ok()
     }
 
     fn supports_range_requests(&self) -> bool {
@@ -531,10 +572,50 @@ mod tests {
     use std::env::temp_dir;
     use std::fs;
     use std::io::{Read, Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    // Helper: write `data` to a temp file and return the path.
-    fn write_temp_file(name: &str, data: &[u8]) -> PathBuf {
-        let path = temp_dir().join(name);
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(temp_dir().join(format!(
+                "oxigeo_core_mmap_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    // Helper: write `data` to a temp file and return its guard.
+    fn write_temp_file(name: &str, data: &[u8]) -> TempPath {
+        let path = TempPath::new(name);
         let mut f = fs::File::create(&path).expect("test helper: failed to create temp file");
         f.write_all(data)
             .expect("test helper: failed to write temp data");
@@ -543,8 +624,8 @@ mod tests {
     }
 
     // Helper: create a uniquely named temp path for RW tests.
-    fn temp_rw_path(name: &str) -> PathBuf {
-        temp_dir().join(name)
+    fn temp_rw_path(name: &str) -> TempPath {
+        TempPath::new(name)
     }
 
     // -----------------------------------------------------------------------
@@ -685,7 +766,6 @@ mod tests {
     fn test_mmap_rw_create_and_write() {
         let path = temp_rw_path("mmap_rw_create.bin");
         // Remove if exists from a previous run
-        let _ = fs::remove_file(&path);
 
         {
             let mut rw = MmapDataSourceRw::create(&path, 1024)
@@ -721,7 +801,6 @@ mod tests {
     #[test]
     fn test_mmap_rw_write_at() {
         let path = temp_rw_path("mmap_rw_write_at.bin");
-        let _ = fs::remove_file(&path);
 
         let mut rw =
             MmapDataSourceRw::create(&path, 256).expect("MmapDataSourceRw::create should succeed");
@@ -740,7 +819,6 @@ mod tests {
     #[test]
     fn test_mmap_rw_out_of_bounds() {
         let path = temp_rw_path("mmap_rw_oob.bin");
-        let _ = fs::remove_file(&path);
 
         let mut rw =
             MmapDataSourceRw::create(&path, 128).expect("MmapDataSourceRw::create should succeed");
@@ -760,7 +838,6 @@ mod tests {
     #[test]
     fn test_mmap_rw_std_io_traits() {
         let path = temp_rw_path("mmap_rw_io.bin");
-        let _ = fs::remove_file(&path);
 
         let mut rw =
             MmapDataSourceRw::create(&path, 64).expect("MmapDataSourceRw::create should succeed");
@@ -783,7 +860,6 @@ mod tests {
     #[test]
     fn test_mmap_rw_datasource_trait() {
         let path = temp_rw_path("mmap_rw_ds.bin");
-        let _ = fs::remove_file(&path);
 
         let mut rw =
             MmapDataSourceRw::create(&path, 512).expect("MmapDataSourceRw::create should succeed");
@@ -803,7 +879,6 @@ mod tests {
     #[test]
     fn test_mmap_rw_create_zero_len_err() {
         let path = temp_rw_path("mmap_rw_zero_len.bin");
-        let _ = fs::remove_file(&path);
 
         let err = MmapDataSourceRw::create(&path, 0);
         assert!(err.is_err());

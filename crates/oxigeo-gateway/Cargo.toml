@@ -68,7 +68,7 @@ base64.workspace = true
 parking_lot.workspace = true
 dashmap.workspace = true
 lru.workspace = true
-ahash.workspace = true
+ahash = { workspace = true, features = ["std", "runtime-rng"] }
 blake3.workspace = true
 getrandom.workspace = true
 oxiarc-deflate = { workspace = true }

@@ -202,10 +202,63 @@ impl Dataset {
         }
     }
 
-    /// Read a tile as RasterBuffer
+    /// Pixel dimensions `(width, height)` of one resolution level.
+    ///
+    /// `level` is `0` for full resolution and `1..=`[`Self::overview_count`] for
+    /// the overviews. The values come from the level's **own** IFD, so they are
+    /// the dimensions actually stored rather than the `ceil(full / 2^level)` a
+    /// caller would otherwise have to assume — an assumption that only holds for
+    /// a strict power-of-two pyramid and silently mis-describes every overview
+    /// of a raster GDAL (or this crate's own writer) built with any other
+    /// decimation factor. See <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// # Errors
+    /// Returns an error if `level` names no overview or if the reader is closed.
+    pub fn level_size(&self, level: usize) -> Result<(u64, u64), oxigeo_core::OxiGeoError> {
+        let guard = self
+            .reader
+            .read()
+            .map_err(|_| oxigeo_core::OxiGeoError::Internal {
+                message: "Failed to acquire read lock".to_string(),
+            })?;
+
+        if let Some(ref reader) = *guard {
+            reader.level_size(level)
+        } else {
+            Err(oxigeo_core::OxiGeoError::Internal {
+                message: "Reader not initialized".to_string(),
+            })
+        }
+    }
+
+    /// Read band 0 of a tile as RasterBuffer
+    ///
+    /// Shorthand for [`Self::read_tile_band_buffer`] with `band = 0`.
     pub fn read_tile_buffer(
         &self,
         level: usize,
+        tile_x: u32,
+        tile_y: u32,
+    ) -> Result<RasterBuffer, oxigeo_core::OxiGeoError> {
+        self.read_tile_band_buffer(level, 0, tile_x, tile_y)
+    }
+
+    /// Read one band of a tile as RasterBuffer
+    ///
+    /// A [`RasterBuffer`] holds one band's plane, so a multi-band tile needs a
+    /// band selector; [`Self::read_tile_buffer`] pinned it to 0. The driver
+    /// de-interleaves a chunky band and plane-selects a planar one, and takes
+    /// the block geometry from the requested level's own IFD.
+    ///
+    /// # Arguments
+    /// * `level` - Overview level (0 = full resolution)
+    /// * `band` - Zero-based band index
+    /// * `tile_x` - Block column
+    /// * `tile_y` - Block row
+    pub fn read_tile_band_buffer(
+        &self,
+        level: usize,
+        band: usize,
         tile_x: u32,
         tile_y: u32,
     ) -> Result<RasterBuffer, oxigeo_core::OxiGeoError> {
@@ -217,7 +270,7 @@ impl Dataset {
             })?;
 
         if let Some(ref reader) = *guard {
-            reader.read_tile_buffer(level, tile_x, tile_y)
+            reader.read_tile_band_buffer(level, band, tile_x, tile_y)
         } else {
             Err(oxigeo_core::OxiGeoError::Internal {
                 message: "Reader not initialized".to_string(),
@@ -247,7 +300,9 @@ impl Dataset {
         }
     }
 
-    /// Read a window of data from the dataset as RasterBuffer
+    /// Read a window of the first band from the dataset as RasterBuffer
+    ///
+    /// Equivalent to [`Self::read_band_window`] with `level = 0`, `band = 0`.
     ///
     /// # Arguments
     /// * `x_offset` - X offset in pixels
@@ -261,92 +316,247 @@ impl Dataset {
         x_size: u64,
         y_size: u64,
     ) -> Result<RasterBuffer, oxigeo_core::OxiGeoError> {
+        self.read_band_window(0, 0, x_offset, y_offset, x_size, y_size)
+    }
+
+    /// Read a window of one band from the dataset as RasterBuffer
+    ///
+    /// The returned buffer is always `x_size` x `y_size`; the part of the
+    /// request that overhangs the raster extent is left at zero.
+    ///
+    /// This delegates to `GeoTiffReader::read_window`, which touches only the
+    /// tiles or strips overlapping the window and de-interleaves the requested
+    /// band for us. It replaces an older tile-stitching loop built on
+    /// `read_tile_buffer`, which could not represent a chunky multi-band tile
+    /// and therefore returned a silently all-zero buffer for every dataset with
+    /// more than one band. See <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// The bounds check and the clamp use the **level's own** dimensions
+    /// ([`Self::level_size`]), so `level > 0` behaves exactly as `level = 0`
+    /// does. They used to use the full-resolution dimensions — the driver
+    /// exposed no per-level size accessor — which made every overview window
+    /// that fitted the full-resolution grid but not the overview grid an error
+    /// instead of a clamp.
+    ///
+    /// # Arguments
+    /// * `level` - Overview level (0 = full resolution)
+    /// * `band` - Zero-based band index
+    /// * `x_offset` - X offset in pixels, in the level's grid
+    /// * `y_offset` - Y offset in pixels, in the level's grid
+    /// * `x_size` - Width to read
+    /// * `y_size` - Height to read
+    pub fn read_band_window(
+        &self,
+        level: usize,
+        band: usize,
+        x_offset: u64,
+        y_offset: u64,
+        x_size: u64,
+        y_size: u64,
+    ) -> Result<RasterBuffer, oxigeo_core::OxiGeoError> {
+        // The level's own extent, from its own IFD: an overview chain is not
+        // necessarily power-of-two, so `ceil(full / 2^level)` is not it.
+        let (level_width, level_height) = self.level_size(level)?;
+
         // Validate window bounds
-        if x_offset >= self.width || y_offset >= self.height {
+        if x_offset >= level_width || y_offset >= level_height {
             return Err(oxigeo_core::OxiGeoError::OutOfBounds {
                 message: format!(
-                    "Window offset ({}, {}) out of bounds ({}x{})",
-                    x_offset, y_offset, self.width, self.height
+                    "Window offset ({}, {}) out of bounds ({}x{}) at level {}",
+                    x_offset, y_offset, level_width, level_height, level
                 ),
             });
         }
 
-        // Clamp window size to dataset bounds
-        let actual_x_size = x_size.min(self.width - x_offset);
-        let actual_y_size = y_size.min(self.height - y_offset);
+        // Clamp window size to the level's bounds; the overhang stays zeroed.
+        let actual_x_size = x_size.min(level_width - x_offset);
+        let actual_y_size = y_size.min(level_height - y_offset);
 
-        // Create output buffer with requested size
         let mut window_buffer = RasterBuffer::zeros(x_size, y_size, self.data_type);
+        if actual_x_size == 0 || actual_y_size == 0 {
+            return Ok(window_buffer);
+        }
 
-        // Get tile dimensions (default to 256x256 if not tiled)
-        let (tile_w, tile_h) = self.tile_size.unwrap_or((256, 256));
-        let tile_w = tile_w as u64;
-        let tile_h = tile_h as u64;
+        let guard = self
+            .reader
+            .read()
+            .map_err(|_| oxigeo_core::OxiGeoError::Internal {
+                message: "Failed to acquire read lock".to_string(),
+            })?;
+        let reader = guard
+            .as_ref()
+            .ok_or_else(|| oxigeo_core::OxiGeoError::Internal {
+                message: "Reader not initialized".to_string(),
+            })?;
 
-        // Calculate tile range that intersects with the requested window
-        let start_tile_x = x_offset / tile_w;
-        let start_tile_y = y_offset / tile_h;
-        let end_tile_x = (x_offset + actual_x_size).div_ceil(tile_w);
-        let end_tile_y = (y_offset + actual_y_size).div_ceil(tile_h);
+        let bytes = reader.read_window(
+            level,
+            band,
+            x_offset,
+            y_offset,
+            actual_x_size,
+            actual_y_size,
+        )?;
 
-        // Read only the tiles that intersect with the window
-        for tile_y in start_tile_y..end_tile_y {
-            for tile_x in start_tile_x..end_tile_x {
-                // Calculate tile boundaries in dataset coordinates
-                let tile_pixel_x = tile_x * tile_w;
-                let tile_pixel_y = tile_y * tile_h;
+        let plane = RasterBuffer::new(
+            bytes,
+            actual_x_size,
+            actual_y_size,
+            self.data_type,
+            self.nodata,
+        )?;
 
-                // Read the tile
-                let tile_buffer = match self.read_tile_buffer(0, tile_x as u32, tile_y as u32) {
-                    Ok(buf) => buf,
-                    Err(e) => {
-                        // If tile read fails, skip it (may be outside bounds or missing)
-                        debug!("Failed to read tile ({}, {}): {}", tile_x, tile_y, e);
-                        continue;
-                    }
-                };
+        if actual_x_size == x_size && actual_y_size == y_size {
+            return Ok(plane);
+        }
 
-                let tile_width = tile_buffer.width();
-                let tile_height = tile_buffer.height();
-
-                // Calculate the intersection between tile and requested window
-                let win_min_x = x_offset;
-                let win_min_y = y_offset;
-                let win_max_x = x_offset + actual_x_size;
-                let win_max_y = y_offset + actual_y_size;
-
-                let tile_max_x = (tile_pixel_x + tile_width).min(self.width);
-                let tile_max_y = (tile_pixel_y + tile_height).min(self.height);
-
-                let intersect_min_x = win_min_x.max(tile_pixel_x);
-                let intersect_min_y = win_min_y.max(tile_pixel_y);
-                let intersect_max_x = win_max_x.min(tile_max_x);
-                let intersect_max_y = win_max_y.min(tile_max_y);
-
-                // Copy pixels from tile to window buffer
-                for src_y in intersect_min_y..intersect_max_y {
-                    for src_x in intersect_min_x..intersect_max_x {
-                        // Calculate position in tile coordinates
-                        let tile_local_x = src_x - tile_pixel_x;
-                        let tile_local_y = src_y - tile_pixel_y;
-
-                        // Calculate position in window coordinates
-                        let win_local_x = src_x - x_offset;
-                        let win_local_y = src_y - y_offset;
-
-                        // Read pixel from tile and write to window buffer
-                        if let Ok(value) = tile_buffer.get_pixel(tile_local_x, tile_local_y) {
-                            let _ = window_buffer.set_pixel(win_local_x, win_local_y, value);
-                        }
-                    }
-                }
+        for y in 0..actual_y_size {
+            for x in 0..actual_x_size {
+                let value = plane.get_pixel(x, y)?;
+                window_buffer.set_pixel(x, y, value)?;
             }
         }
 
         Ok(window_buffer)
     }
 
-    /// Get pixel value at coordinates
+    /// Choose the coarsest resolution level that still resolves the request.
+    ///
+    /// `src_width` x `src_height` is the full-resolution pixel window the
+    /// request covers and `target_width` x `target_height` the image being
+    /// produced from it, so their ratio is how much the client is downsampling.
+    /// The chosen level is the coarsest whose own decimation factor is still no
+    /// more than 1.5x that ratio; level 0 is returned when the client wants full
+    /// resolution or upsampling, or when the dataset has no overviews.
+    ///
+    /// # Why this is not `1 << level`
+    ///
+    /// The WMS and WMTS handlers each used to assume level *n* is exactly
+    /// `2^n` coarser than full resolution. GDAL — and this crate's own writer —
+    /// routinely build chains that are not exact powers of two (a 5x3 level
+    /// under an 8x6 base is a decimation of 1.6, not 2), and rounding at every
+    /// step compounds the drift further down a chain. The factor is measured
+    /// here against each level's real dimensions instead, via
+    /// [`Self::level_size`]. See <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// A level whose size cannot be read ends the search rather than failing the
+    /// request: a coarser level is an optimisation, and level 0 always works.
+    #[must_use]
+    pub fn select_overview_level(
+        &self,
+        src_width: u64,
+        src_height: u64,
+        target_width: u64,
+        target_height: u64,
+    ) -> usize {
+        if self.overview_count == 0 {
+            return 0;
+        }
+
+        let ratio_x = if target_width > 0 {
+            src_width as f64 / target_width as f64
+        } else {
+            1.0
+        };
+        let ratio_y = if target_height > 0 {
+            src_height as f64 / target_height as f64
+        } else {
+            1.0
+        };
+        let request_ratio = ratio_x.max(ratio_y);
+        if request_ratio <= 1.0 {
+            // Full resolution or upsampling.
+            return 0;
+        }
+
+        let Ok((base_width, base_height)) = self.level_size(0) else {
+            return 0;
+        };
+        if base_width == 0 || base_height == 0 {
+            return 0;
+        }
+
+        let mut best_level = 0;
+        for level in 1..=self.overview_count {
+            let Ok((level_width, level_height)) = self.level_size(level) else {
+                break;
+            };
+            if level_width == 0 || level_height == 0 {
+                break;
+            }
+            let factor = (base_width as f64 / level_width as f64)
+                .max(base_height as f64 / level_height as f64);
+            // Allow a slight overshoot (1.5x) to avoid reading unnecessarily
+            // large data, exactly as the power-of-two version did.
+            if factor <= request_ratio * 1.5 {
+                best_level = level;
+            } else {
+                break;
+            }
+        }
+
+        best_level
+    }
+
+    /// Map a full-resolution pixel window onto `level`'s own pixel grid.
+    ///
+    /// Returns `(x, y, width, height)` in the level's coordinates, clamped to
+    /// the level's extent and never zero-sized. The scale factors come from
+    /// [`Self::level_size`], so a non-power-of-two overview lands where its
+    /// pixels actually are; with `level = 0` the window is returned unchanged
+    /// apart from the clamp.
+    ///
+    /// # Errors
+    /// Returns an error if `level` names no overview or if the reader is closed.
+    pub fn window_at_level(
+        &self,
+        level: usize,
+        x: u64,
+        y: u64,
+        width: u64,
+        height: u64,
+    ) -> Result<(u64, u64, u64, u64), oxigeo_core::OxiGeoError> {
+        let (level_width, level_height) = self.level_size(level)?;
+        if level_width == 0 || level_height == 0 {
+            return Err(oxigeo_core::OxiGeoError::OutOfBounds {
+                message: format!("Level {level} declares a zero-sized image"),
+            });
+        }
+
+        let (base_width, base_height) = self.level_size(0)?;
+        let scale_x = if base_width > 0 {
+            level_width as f64 / base_width as f64
+        } else {
+            1.0
+        };
+        let scale_y = if base_height > 0 {
+            level_height as f64 / base_height as f64
+        } else {
+            1.0
+        };
+
+        let scaled_x = ((x as f64) * scale_x).floor().max(0.0) as u64;
+        let scaled_y = ((y as f64) * scale_y).floor().max(0.0) as u64;
+        let scaled_x = scaled_x.min(level_width - 1);
+        let scaled_y = scaled_y.min(level_height - 1);
+
+        let scaled_width = (((width as f64) * scale_x).ceil().max(1.0) as u64)
+            .min(level_width - scaled_x)
+            .max(1);
+        let scaled_height = (((height as f64) * scale_y).ceil().max(1.0) as u64)
+            .min(level_height - scaled_y)
+            .max(1);
+
+        Ok((scaled_x, scaled_y, scaled_width, scaled_height))
+    }
+
+    /// Get the first band's pixel value at coordinates
+    ///
+    /// Reads a 1x1 window rather than decoding the whole containing tile and
+    /// indexing into it. The tile-based version could not represent a chunky
+    /// multi-band tile and so returned an error for every dataset with more
+    /// than one band -- the same defect that made `read_window` return zeros.
+    /// See <https://github.com/cool-japan/oxigeo/issues/14>.
     pub fn get_pixel(&self, x: u64, y: u64) -> Result<f64, oxigeo_core::OxiGeoError> {
         if x >= self.width || y >= self.height {
             return Err(oxigeo_core::OxiGeoError::OutOfBounds {
@@ -357,18 +567,7 @@ impl Dataset {
             });
         }
 
-        // Determine which tile contains this pixel
-        let (tile_w, tile_h) = self.tile_size.unwrap_or((256, 256));
-        let tile_x = x / tile_w as u64;
-        let tile_y = y / tile_h as u64;
-        let local_x = x % tile_w as u64;
-        let local_y = y % tile_h as u64;
-
-        // Read the tile
-        let tile_buffer = self.read_tile_buffer(0, tile_x as u32, tile_y as u32)?;
-
-        // Get the pixel value
-        tile_buffer.get_pixel(local_x, local_y)
+        self.read_band_window(0, 0, x, y, 1, 1)?.get_pixel(0, 0)
     }
 
     /// Get raster band info (for compatibility with old code)

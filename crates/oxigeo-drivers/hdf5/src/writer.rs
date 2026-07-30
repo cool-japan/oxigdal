@@ -666,7 +666,48 @@ impl Default for Hdf5WriterBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::NamedTempFile;
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_hdf5_writer_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_writer_creation() {
@@ -730,8 +771,7 @@ mod tests {
     /// signature) that round-trips its values through `oxih5`.
     #[test]
     fn test_finalize_emits_real_hdf5() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_writer_real_signature.h5");
+        let path = TempPath::new("real_signature.h5");
 
         {
             let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
@@ -754,16 +794,13 @@ mod tests {
         let ds = file.dataset("x").expect("dataset x");
         assert_eq!(ds.shape, vec![3]);
         assert_eq!(ds.as_f64().expect("as_f64"), vec![1.0, 2.0, 3.0]);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Non-string root attributes are beyond `oxih5`'s writer surface and must
     /// fail loud rather than silently degrade.
     #[test]
     fn test_unsupported_root_attr_fails_loud() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_writer_unsupported_root_attr.h5");
+        let path = TempPath::new("unsupported_root_attr.h5");
 
         let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
         writer
@@ -771,8 +808,6 @@ mod tests {
             .expect("buffer attr");
         let result = writer.finalize();
         assert!(matches!(result, Err(Hdf5Error::FeatureNotAvailable { .. })));
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A chunked (uncompressed) root dataset whose chunk shape equals its full
@@ -781,8 +816,7 @@ mod tests {
     /// layout, and round-trip its values through `oxih5`'s own reader.
     #[test]
     fn test_chunked_dataset_writes_real_chunked_layout() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_writer_chunked.h5");
+        let path = TempPath::new("chunked.h5");
 
         {
             let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
@@ -802,8 +836,6 @@ mod tests {
         assert_eq!(ds.shape, vec![4, 2]);
         let values = ds.as_f64().expect("as_f64");
         assert_eq!(values, (0..8).map(|i| i as f64).collect::<Vec<_>>());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A chunk shape smaller than the dataset shape would silently drop data
@@ -812,8 +844,7 @@ mod tests {
     /// file that looks chunked but loses data.
     #[test]
     fn test_partitioned_chunk_shape_fails_loud() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_writer_partitioned_chunk.h5");
+        let path = TempPath::new("partitioned_chunk.h5");
 
         let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
         let props = DatasetProperties::new().with_chunks(vec![2, 2]);
@@ -826,8 +857,6 @@ mod tests {
 
         let result = writer.finalize();
         assert!(matches!(result, Err(Hdf5Error::FeatureNotAvailable { .. })));
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Requesting GZIP compression must fail loud at `finalize()` — `oxih5`
@@ -835,8 +864,7 @@ mod tests {
     /// an uncompressed dataset.
     #[test]
     fn test_compressed_dataset_fails_loud() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_writer_compressed_fails.h5");
+        let path = TempPath::new("compressed_fails.h5");
 
         let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
         let props = DatasetProperties::new()
@@ -851,16 +879,13 @@ mod tests {
 
         let result = writer.finalize();
         assert!(matches!(result, Err(Hdf5Error::FeatureNotAvailable { .. })));
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A zero-filled (no explicit data) root dataset with a configured
     /// `fill_value` must be written with that fill value, not plain zeros.
     #[test]
     fn test_fill_value_is_honored_for_zero_filled_dataset() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_writer_fill_value.h5");
+        let path = TempPath::new("fill_value.h5");
 
         {
             let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
@@ -877,7 +902,5 @@ mod tests {
         let ds = file.dataset("filled").expect("dataset filled");
         let values = ds.as_i32().expect("as_i32");
         assert_eq!(values, vec![42, 42, 42, 42, 42]);
-
-        let _ = std::fs::remove_file(&path);
     }
 }

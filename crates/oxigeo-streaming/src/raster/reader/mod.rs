@@ -316,21 +316,20 @@ impl RasterStreamReader {
         let img_width = info.width as usize;
         let img_height = info.height as usize;
 
-        // Determine tile/strip layout
-        let geotiff_info = reader.metadata();
-        let (tile_w, tile_h) = match geotiff_info.layout {
-            oxigeo_core::types::PixelLayout::Tiled {
-                tile_width,
-                tile_height,
-            } => (tile_width as usize, tile_height as usize),
-            _ => {
-                // Striped layout: treat as tiles of (img_width x rows_per_strip)
-                // We read the whole band and extract
-                return Self::read_geotiff_chunk_full_band(
-                    path, metadata, x_start, y_start, width, height,
-                );
-            }
+        // Determine tile/strip layout.
+        //
+        // `GeoTiffReader::metadata().layout` is *always* `PixelLayout::Tiled`
+        // (it substitutes 256x256 when the file carries no TileWidth tag), so
+        // it cannot be used to tell a striped file from a tiled one. Ask
+        // `tile_size()` instead, which returns `None` for striped files, and
+        // fall back to the per-band window reader for those -- the tile-grid
+        // arithmetic below would otherwise index a fabricated 256x256 grid.
+        let Some((tile_w, tile_h)) = reader.tile_size() else {
+            return Self::read_geotiff_chunk_full_band(
+                path, metadata, x_start, y_start, width, height,
+            );
         };
+        let (tile_w, tile_h) = (tile_w as usize, tile_h as usize);
 
         // Allocate output buffer
         let out_size = width * height * bytes_per_pixel;
@@ -392,7 +391,13 @@ impl RasterStreamReader {
         // where bytes_per_pixel = data_type.size_bytes() * band_count.
         // We encode the effective width as width * band_count so that the buffer can hold
         // all interleaved band data correctly.
-        let band_count = metadata.band_count as u64;
+        //
+        // The band count must come from the same source `bytes_per_pixel` above
+        // was derived from (the file), not from the cached `metadata` struct: if
+        // the two ever disagree the payload length and the declared width would
+        // disagree too, and `RasterBuffer::new` would reject a buffer that is in
+        // fact correct.
+        let band_count = info.band_count as u64;
         let effective_width = width as u64 * band_count;
         RasterBuffer::new(
             out_data,
@@ -404,7 +409,17 @@ impl RasterStreamReader {
         .map_err(|e| StreamingError::Other(format!("Failed to create RasterBuffer: {}", e)))
     }
 
-    /// Fallback for striped GeoTIFFs: read the full band and extract the window.
+    /// Fallback for striped GeoTIFFs: read the requested window of every band
+    /// and weave the planes back into the chunky (band-interleaved-by-pixel)
+    /// layout the rest of the streaming pipeline expects.
+    ///
+    /// `GeoTiffReader::read_window(level, band, ..)` returns *one* band plane --
+    /// `w * h * bytes_per_sample` bytes, row-major -- and touches only the
+    /// strips that overlap the window, so this no longer decodes the whole
+    /// image to serve one chunk. The interleave here is deliberate: the chunk
+    /// buffer is consumed by `raster::writer`, which recovers the pixel width as
+    /// `buffer.width() / band_count` and reads samples at a `band_count` stride.
+    /// See <https://github.com/cool-japan/oxigeo/issues/14>.
     fn read_geotiff_chunk_full_band(
         path: &Path,
         metadata: &RasterMetadata,
@@ -423,38 +438,52 @@ impl RasterStreamReader {
 
         let info = reader.metadata();
         let data_type = info.data_type;
-        let bytes_per_pixel = data_type.size_bytes() * info.band_count as usize;
+        let bytes_per_sample = data_type.size_bytes();
+        let band_count = info.band_count.max(1) as usize;
+        let bytes_per_pixel = bytes_per_sample * band_count;
         let img_width = info.width as usize;
+        let img_height = info.height as usize;
 
-        // Read the entire band
-        let band_data = reader
-            .read_band(0, 0)
-            .map_err(|e| StreamingError::Other(format!("Failed to read band: {}", e)))?;
-
-        // Extract the window
         let out_size = width * height * bytes_per_pixel;
         let mut out_data = vec![0u8; out_size];
 
-        for row_idx in 0..height {
-            let src_y = y_start + row_idx;
-            if src_y >= info.height as usize {
-                break;
-            }
-            let src_offset = (src_y * img_width + x_start) * bytes_per_pixel;
-            let dst_offset = row_idx * width * bytes_per_pixel;
-            let copy_width = width.min(img_width.saturating_sub(x_start));
-            let copy_bytes = copy_width * bytes_per_pixel;
+        // Clamp the window to the raster extent: chunk grids routinely overhang
+        // the right/bottom edge, and `read_window` rejects an out-of-bounds
+        // window rather than silently truncating. The overhang stays zeroed,
+        // matching the tiled path.
+        let copy_w = width.min(img_width.saturating_sub(x_start));
+        let copy_h = height.min(img_height.saturating_sub(y_start));
 
-            if src_offset + copy_bytes <= band_data.len()
-                && dst_offset + copy_bytes <= out_data.len()
-            {
-                out_data[dst_offset..dst_offset + copy_bytes]
-                    .copy_from_slice(&band_data[src_offset..src_offset + copy_bytes]);
+        if copy_w > 0 && copy_h > 0 {
+            for band in 0..band_count {
+                let plane = reader
+                    .read_window(
+                        0,
+                        band,
+                        x_start as u64,
+                        y_start as u64,
+                        copy_w as u64,
+                        copy_h as u64,
+                    )
+                    .map_err(|e| {
+                        StreamingError::Other(format!("Failed to read band {}: {}", band, e))
+                    })?;
+
+                for row in 0..copy_h {
+                    for col in 0..copy_w {
+                        let src = (row * copy_w + col) * bytes_per_sample;
+                        let dst = ((row * width + col) * band_count + band) * bytes_per_sample;
+                        out_data[dst..dst + bytes_per_sample]
+                            .copy_from_slice(&plane[src..src + bytes_per_sample]);
+                    }
+                }
             }
         }
 
-        let band_count = metadata.band_count as u64;
-        let effective_width = width as u64 * band_count;
+        // Keep the encoded width consistent with the band count the payload was
+        // actually built from, so `RasterBuffer::new`'s `w * h * size_bytes`
+        // check cannot fail on a metadata/file disagreement.
+        let effective_width = width as u64 * band_count as u64;
         RasterBuffer::new(
             out_data,
             effective_width,

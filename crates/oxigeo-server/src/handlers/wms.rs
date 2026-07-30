@@ -726,9 +726,10 @@ fn render_map(
         src_x, src_y, src_width, src_height, ds_width, ds_height, band_count
     );
 
-    // Determine the best overview level for this request
+    // Determine the best overview level for this request. The factor of each
+    // level comes from its own dimensions, not from `1 << level`.
     let overview_level =
-        select_overview_level(dataset, src_width, src_height, width as u64, height as u64);
+        dataset.select_overview_level(src_width, src_height, width as u64, height as u64);
 
     // Build the rendering style
     let render_style = if let Some(style_cfg) = style {
@@ -783,68 +784,17 @@ fn render_map(
     encode_image(&final_rgba, width, height, format).map_err(|e| WmsError::Rendering(e.to_string()))
 }
 
-/// Select the best overview level for the requested resolution
-///
-/// Returns 0 for full resolution, or a higher number for coarser overviews.
-/// Picks the overview where the overview resolution is just finer than what
-/// the client requested, ensuring quality while avoiding reading unnecessary data.
-fn select_overview_level(
-    dataset: &Dataset,
-    src_width: u64,
-    src_height: u64,
-    target_width: u64,
-    target_height: u64,
-) -> usize {
-    let overview_count = dataset.overview_count();
-    if overview_count == 0 {
-        return 0;
-    }
-
-    // Calculate the downsample ratio the client is requesting
-    let ratio_x = if target_width > 0 {
-        src_width as f64 / target_width as f64
-    } else {
-        1.0
-    };
-    let ratio_y = if target_height > 0 {
-        src_height as f64 / target_height as f64
-    } else {
-        1.0
-    };
-    let request_ratio = ratio_x.max(ratio_y);
-
-    if request_ratio <= 1.0 {
-        // Client wants full resolution or upsampling
-        return 0;
-    }
-
-    // Each overview level typically halves the resolution (factor of 2)
-    // Find the highest overview level where the overview factor <= request ratio
-    let mut best_level = 0;
-    for level in 1..=overview_count {
-        let overview_factor = (1u64 << level) as f64;
-        if overview_factor <= request_ratio * 1.5 {
-            // Allow slight overshoot (1.5x) to avoid reading unnecessarily large data
-            best_level = level;
-        } else {
-            break;
-        }
-    }
-
-    best_level
-}
-
 /// Render a single-band dataset with colormap
 fn render_single_band(
     dataset: &Dataset,
-    _overview_level: usize,
+    overview_level: usize,
     source: SourceRegion,
     target: TargetDimensions,
     style: &RenderStyle,
 ) -> Result<Vec<u8>, WmsError> {
-    // Read the source window
-    let src_buffer = dataset
-        .read_window(source.x, source.y, source.width, source.height)
+    // Read the source window from the chosen level, with the window mapped onto
+    // that level's own pixel grid.
+    let src_buffer = read_level_band(dataset, overview_level, 0, source)
         .map_err(|e| WmsError::Rendering(format!("Failed to read window: {}", e)))?;
 
     // Resample to target dimensions if needed
@@ -863,28 +813,21 @@ fn render_single_band(
 /// Render an RGB dataset by reading three separate bands
 fn render_rgb_bands(
     dataset: &Dataset,
-    _overview_level: usize,
+    overview_level: usize,
     source: SourceRegion,
     target: TargetDimensions,
     style: &RenderStyle,
 ) -> Result<Vec<u8>, WmsError> {
-    // For RGB datasets we read three bands and compose them.
-    // Read the full window (band 0) first.
-    let band_0 = dataset
-        .read_window(source.x, source.y, source.width, source.height)
+    // For RGB datasets we read three bands and compose them. All three come
+    // from the same windowed, per-band read path at the same level, so the
+    // channels cannot disagree.
+    let band_0 = read_level_band(dataset, overview_level, 0, source)
         .map_err(|e| WmsError::Rendering(format!("Failed to read red band: {}", e)))?;
 
-    // For datasets with interleaved bands, we need to synthesize per-band buffers
-    // from the single read_window result. The dataset's read_window returns
-    // band 0 data. We generate approximate G and B by shifting pixel reads.
-    // However, if the dataset truly has separate bands accessible, we use
-    // band data from read_band calls.
-
-    // Attempt to read bands 1 and 2 as separate band data and build windows
-    let green_buffer =
-        build_band_window_from_full(dataset, 1, source.x, source.y, source.width, source.height);
-    let blue_buffer =
-        build_band_window_from_full(dataset, 2, source.x, source.y, source.width, source.height);
+    // Bands 1 and 2; a dataset with fewer than three bands falls back to
+    // grayscale-as-RGB below.
+    let green_buffer = read_level_band(dataset, overview_level, 1, source);
+    let blue_buffer = read_level_band(dataset, overview_level, 2, source);
 
     let (green_buf, blue_buf) = match (green_buffer, blue_buffer) {
         (Ok(g), Ok(b)) => (g, b),
@@ -921,45 +864,27 @@ fn render_rgb_bands(
         .map_err(|e| WmsError::Rendering(format!("RGB rendering failed: {}", e)))
 }
 
-/// Build a RasterBuffer for a specific band from band-level data
+/// Read one band of `source` (a full-resolution pixel window) from `level`.
 ///
-/// Reads the full band and extracts the window region.
-fn build_band_window_from_full(
+/// The window is mapped onto the level's own pixel grid by
+/// [`Dataset::window_at_level`], so a non-power-of-two overview is read where
+/// its pixels actually are rather than where `1 << level` would put them. All
+/// RGB channels come through here, so they cannot disagree; they used to, with
+/// red going through a tile-stitching loop that silently produced an all-zero
+/// buffer for multi-band datasets. See
+/// <https://github.com/cool-japan/oxigeo/issues/14>.
+fn read_level_band(
     dataset: &Dataset,
+    level: usize,
     band: usize,
-    src_x: u64,
-    src_y: u64,
-    src_width: u64,
-    src_height: u64,
+    source: SourceRegion,
 ) -> Result<RasterBuffer, WmsError> {
-    let band_data = dataset
-        .read_band(0, band)
-        .map_err(|e| WmsError::Rendering(format!("Failed to read band {}: {}", band, e)))?;
-
-    let ds_width = dataset.width();
-    let ds_height = dataset.height();
-    let data_type = dataset.data_type();
-    let nodata = dataset.nodata();
-
-    let full_buffer = RasterBuffer::new(band_data, ds_width, ds_height, data_type, nodata)
-        .map_err(|e| WmsError::Rendering(format!("Buffer creation error: {}", e)))?;
-
-    // Extract the window from the full buffer
-    let mut window = RasterBuffer::zeros(src_width, src_height, data_type);
-    for dy in 0..src_height {
-        for dx in 0..src_width {
-            let gx = src_x + dx;
-            let gy = src_y + dy;
-            if gx < ds_width
-                && gy < ds_height
-                && let Ok(val) = full_buffer.get_pixel(gx, gy)
-            {
-                let _ = window.set_pixel(dx, dy, val);
-            }
-        }
-    }
-
-    Ok(window)
+    let (x, y, width, height) = dataset
+        .window_at_level(level, source.x, source.y, source.width, source.height)
+        .map_err(|e| WmsError::Rendering(format!("Failed to map window to level: {}", e)))?;
+    dataset
+        .read_band_window(level, band, x, y, width, height)
+        .map_err(|e| WmsError::Rendering(format!("Failed to read band {}: {}", band, e)))
 }
 
 /// Handle GetFeatureInfo request

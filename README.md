@@ -14,22 +14,22 @@
 
 **GeoSentinel**: watch any place on Earth for change — and tell no one where you're looking. It searches the public Earth Search STAC API for a cloud-filtered Sentinel-2 scene pair, streams only the needed COG windows via HTTP range requests, and runs the whole change-detection pipeline — NDVI difference, thresholding, polygonization, geodesic areas, GeoJSON export — 100% client-side in Pure-Rust WebAssembly; your area of interest never leaves your machine. **[Try it live](https://cooljapan.tech/geosentinel/)** — one of **four** hosted [demos](#demos) below, alongside [GeoLab](#geolab--terrain-analysis-on-streamed-cogs), [GeoVault](#geovault--sovereign-clean-room-workstation), and [GeoParquet Live](#geoparquet-live--query-59-gb-with-no-database).
 
-OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. The current release is **v0.2.1**, a production-hardening release on top of **v0.2.0**, which was published to crates.io on 2026-07-20 as the first release under the OxiGeo name — a rename-only release, functionally identical to v0.1.7, which was published the same day as the final release under the OxiGDAL name (v0.1.6 released 2026-06-15). The library delivers ~784K Rust SLoC across **75 workspace crates**, covering 16 geospatial format drivers exposed through `oxigeo::Dataset::open()` (plus separate KML/KMZ and TopoJSON format support in dedicated crates, see [Format Drivers](#architecture)), full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. The current release is **v0.2.2**, a correctness campaign centered on [issue #14](https://github.com/cool-japan/oxigeo/issues/14) — `Dataset::read_band` silently returning the whole pixel-interleaved image instead of one band — root-caused and fixed at the GeoTIFF driver level, with the same defect pattern independently found and fixed across a dozen downstream crates. It builds on **v0.2.1**'s production-hardening pass (2026-07-28) and **v0.2.0**, published to crates.io on 2026-07-20 as the first release under the OxiGeo name — a rename-only release, functionally identical to v0.1.7, which was published the same day as the final release under the OxiGDAL name (v0.1.6 released 2026-06-15). The library delivers ~791K Rust SLoC across **75 workspace crates**, covering 16 geospatial format drivers exposed through `oxigeo::Dataset::open()` (plus separate KML/KMZ and TopoJSON format support in dedicated crates, see [Format Drivers](#architecture)), full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.2.1 (2026-07-28, production-hardening release); v0.2.0 published 2026-07-20 (first OxiGeo release, rename-only); v0.1.7 published 2026-07-20 (final OxiGDAL release); v0.1.6 released 2026-06-15 |
-| **Rust SLoC** | ~784K across 2,478 `.rs` files (via `tokei`) |
-| **Total SLoC** | ~818K (all languages, via `tokei`) |
+| **Version** | 0.2.2 (2026-07-30, issue #14 correctness campaign); v0.2.1 released 2026-07-28 (production-hardening); v0.2.0 published 2026-07-20 (first OxiGeo release, rename-only); v0.1.7 published 2026-07-20 (final OxiGDAL release); v0.1.6 released 2026-06-15 |
+| **Rust SLoC** | ~791K across 2,501 `.rs` files (via `tokei`) |
+| **Total SLoC** | ~819K (all languages, via `tokei`) |
 | **Workspace crates** | 75 |
-| **Tests** | 17,723 passing (100 skipped), 0 failures; 416 doc tests passing |
+| **Tests** | 18,133 passing (101 skipped), 0 failures (`--all-features`); 16,684 passing (80 skipped) on default features; 402 doc tests passing |
 | **Format drivers** | 16, exposed through `oxigeo::Dataset::open()` (GeoTIFF/COG, GeoJSON, Shapefile, GeoParquet, NetCDF, HDF5, Zarr, GRIB, FlatGeobuf, JPEG2000, VRT, GeoPackage, PMTiles, MBTiles, COPC, LAS/LAZ) — plus KML/KMZ (`oxigeo-drivers-advanced`) and TopoJSON writer (`oxigeo-geojson`), which ship as separate, non-`Dataset`-registry format support |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
-| **Estimated dev cost** | $30.89M equivalent (COCOMO) |
+| **Estimated dev cost** | $31.68M equivalent (COCOMO) |
 
 ## Why OxiGeo?
 
@@ -672,6 +672,7 @@ code. Workflow definitions can still describe Kafka endpoints via the pure-Rust
 | **v0.1.7** | 2026-07-20 (final release under the OxiGDAL name) | Production-hardening campaign: 233 verified defects fixed across 69 crates (GeoTIFF float-predictor silent-corruption fix, JPEG2000 MQ-decoder spec conformance + real Tier-2 packet/precinct decode, real FlatGeobuf FlatBuffers wire format, LERC2 bit-stuffed decoder, HDF5 ScaleOffset/N-Bit real filters, RBAC pattern-match bypass fix), 3 new hosted demos (GeoSentinel change detection, GeoVault attestation workstation, GeoParquet Live), security attestation module (blake3 chain → Merkle root → Ed25519 seal), multicloud S3/GCS/Azure `build_backend()` factory, pure-Rust ONNX export encoder, WFS-T/WCS real transactions, 76 crates, 16,909 tests |
 | **v0.2.0** | 2026-07-20 (released) | Project renamed: OxiGDAL → OxiGeo. Rename-only release, functionally identical to v0.1.7; all 74 crates republished as `oxigeo`/`oxigeo-<name>` |
 | **v0.2.1** | 2026-07-28 (released) | Production-hardening campaign: 342 defects found workspace-wide, 314 fixed across 38 crate lanes (~520 files) — GeoTIFF/JPEG2000/GRIB/HDF5/NetCDF correctness fixes, WFS-T fail-closed security fix, header-driven allocation DoS hardening; new axum-backed `oxigeo-gateway` serving layer (GraphQL + WebSocket + load-balanced reverse proxy); `oxih5`/`oxinetcdf` bumped to 0.2.2, `scirs2` to 0.6.4; 75 crates, 17,723 tests |
+| **v0.2.2** | 2026-07-30 (released) | Issue #14 fix campaign: `Dataset::read_band` root-caused and fixed at the GeoTIFF driver level (new `band_read`/`band_read::multi` decode engine; also fixed a predictor cross-band-stride bug and an O(n)→O(1) tile-index lookup); the same interleaving/byte-order defect pattern independently found and fixed in a dozen downstream crates (QC, server, mobile, WASM, WCS, Node, CLI, ML, Jupyter, VRT); new `oxigeo-core` typed zero-copy `RasterElement` layer and zero-allocation `read_interleaved`/`read_band_into`/`read_window_into` readers; DEFLATE tile decode 1.45–1.79× faster (`oxiarc-*` 0.4.0); plus unrelated fixes (streaming `ChunkedReader` first-read failure, mbtiles spill-file leak, ML pruning concurrency corruption, wasm32 `oxigeo-compress` build); 75 crates, 18,133 tests |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |
 

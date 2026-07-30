@@ -56,7 +56,10 @@ mod tests {
     #[test]
     fn test_pretrained_loader() {
         // Placeholder test — path intentionally does not exist
-        let nonexistent = std::env::temp_dir().join("nonexistent_oxigeo_model.pth");
+        let nonexistent = std::env::temp_dir().join(format!(
+            "oxigeo_nonexistent_model_{}.pth",
+            std::process::id()
+        ));
         let result = PretrainedLoader::load(nonexistent.to_string_lossy().as_ref());
         assert!(result.is_err());
     }

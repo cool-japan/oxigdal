@@ -7,7 +7,55 @@
 
 use oxigeo_drivers_advanced::gpkg::{ConnectionMode, GpkgConnection, RTreeIndex, SpatialIndex};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a test that returns early
+/// through `?` (or panics) leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_gpkg_rtree_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        // SQLite writes `-wal` / `-shm` / `-journal` companions next to the
+        // database; removing only the main file would leak them.
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut sidecar = self.0.clone().into_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
+        }
+    }
+}
 
 // ── Geometry blob helpers ────────────────────────────────────────────────────
 
@@ -88,8 +136,7 @@ fn test_blob_helpers_produce_non_empty_output() {
 /// Main integration test: `build` must populate the R-tree from real WKB blobs.
 #[test]
 fn test_rtree_build_populates_from_db() -> TestResult {
-    let tmp = std::env::temp_dir().join("test_gpkg_rtree_build.gpkg");
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = TempPath::new("build.gpkg");
 
     let pts: &[(i64, f64, f64)] = &[(1, 10.0, 20.0), (2, 50.0, 60.0), (3, -10.0, -20.0)];
     let rows: Vec<(i64, Vec<u8>)> = pts
@@ -113,7 +160,6 @@ fn test_rtree_build_populates_from_db() -> TestResult {
         "feature at (-10,-20) must NOT be found"
     );
 
-    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
 
@@ -121,8 +167,7 @@ fn test_rtree_build_populates_from_db() -> TestResult {
 /// insert the correct bounding boxes.
 #[test]
 fn test_rtree_build_wkb_scan_path() -> TestResult {
-    let tmp = std::env::temp_dir().join("test_gpkg_rtree_wkb.gpkg");
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = TempPath::new("wkb.gpkg");
 
     let rows: Vec<(i64, Vec<u8>)> = vec![
         (1, make_gpkg_point_blob_no_envelope(7.0, 8.0)),
@@ -143,15 +188,13 @@ fn test_rtree_build_wkb_scan_path() -> TestResult {
         "feature at (100,200) should NOT be found"
     );
 
-    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
 
 /// Corrupt geometry blobs must be silently skipped; valid ones must be indexed.
 #[test]
 fn test_rtree_build_skips_corrupt_geometry() -> TestResult {
-    let tmp = std::env::temp_dir().join("test_gpkg_rtree_corrupt.gpkg");
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = TempPath::new("corrupt.gpkg");
 
     let rows: Vec<(i64, Vec<u8>)> = vec![
         (1, make_gpkg_point_blob_with_envelope(5.0, 5.0)),
@@ -171,7 +214,6 @@ fn test_rtree_build_skips_corrupt_geometry() -> TestResult {
         "only the valid feature should be in the index"
     );
 
-    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
 
@@ -196,8 +238,7 @@ fn test_rtree_insert_query_remove_preserved() {
 /// `build` called twice must rebuild from scratch (no duplicate entries).
 #[test]
 fn test_rtree_build_clears_existing_index() -> TestResult {
-    let tmp = std::env::temp_dir().join("test_gpkg_rtree_rebuild.gpkg");
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = TempPath::new("rebuild.gpkg");
 
     let rows: Vec<(i64, Vec<u8>)> = vec![(1, make_gpkg_point_blob_with_envelope(1.0, 1.0))];
     populate_test_db(&tmp, &rows)?;
@@ -215,6 +256,5 @@ fn test_rtree_build_clears_existing_index() -> TestResult {
         "second build must not create duplicate entries"
     );
 
-    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }

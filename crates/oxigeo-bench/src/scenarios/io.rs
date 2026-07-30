@@ -626,8 +626,50 @@ impl BenchmarkScenario for DirectIoScenario {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn create_test_file(path: &PathBuf, size: usize) -> std::io::Result<()> {
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_bench_io_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn create_test_file(path: &Path, size: usize) -> std::io::Result<()> {
         let mut file = File::create(path)?;
         let data = vec![0u8; size];
         file.write_all(&data)?;
@@ -637,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_sequential_read_scenario_creation() {
-        let scenario = SequentialReadScenario::new(std::env::temp_dir().join("test.bin"))
+        let scenario = SequentialReadScenario::new(TempPath::new("test.bin").to_path_buf())
             .with_buffer_size(16384);
 
         assert_eq!(scenario.name(), "sequential_read");
@@ -647,7 +689,7 @@ mod tests {
     #[test]
     fn test_sequential_write_scenario_creation() {
         let scenario =
-            SequentialWriteScenario::new(std::env::temp_dir().join("output.bin"), 1024 * 1024)
+            SequentialWriteScenario::new(TempPath::new("output.bin").to_path_buf(), 1024 * 1024)
                 .with_buffer_size(32768);
 
         assert_eq!(scenario.name(), "sequential_write");
@@ -656,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_random_access_scenario_creation() {
-        let scenario = RandomAccessScenario::new(std::env::temp_dir().join("test.bin"), 100)
+        let scenario = RandomAccessScenario::new(TempPath::new("test.bin").to_path_buf(), 100)
             .with_chunk_size(8192);
 
         assert_eq!(scenario.name(), "random_access");
@@ -665,35 +707,31 @@ mod tests {
 
     #[test]
     fn test_chunked_io_scenario() {
-        let temp_dir = std::env::temp_dir();
-        let input_path = temp_dir.join("test_chunked_input.bin");
-        let output_path = temp_dir.join("test_chunked_output.bin");
+        let input_path = TempPath::new("chunked_input.bin");
+        let output_path = TempPath::new("chunked_output.bin");
 
         // Create test file
         create_test_file(&input_path, 10240).expect("Failed to create test file");
 
-        let scenario = ChunkedIoScenario::new(&input_path, &output_path)
+        let scenario = ChunkedIoScenario::new(input_path.to_path_buf(), output_path.to_path_buf())
             .with_chunk_sizes(vec![512, 1024, 4096]);
 
         assert_eq!(scenario.name(), "chunked_io");
         assert_eq!(scenario.chunk_sizes.len(), 3);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&input_path);
     }
 
     #[test]
     fn test_buffered_io_scenario_creation() {
-        let scenario = BufferedIoScenario::new(std::env::temp_dir().join("test.bin"), true);
+        let scenario = BufferedIoScenario::new(TempPath::new("test.bin").to_path_buf(), true);
         assert_eq!(scenario.name(), "buffered_io");
 
-        let scenario = BufferedIoScenario::new(std::env::temp_dir().join("test.bin"), false);
+        let scenario = BufferedIoScenario::new(TempPath::new("test.bin").to_path_buf(), false);
         assert_eq!(scenario.name(), "unbuffered_io");
     }
 
     #[test]
     fn test_direct_io_scenario_creation() {
-        let scenario = DirectIoScenario::new(std::env::temp_dir().join("test_direct_io.bin"))
+        let scenario = DirectIoScenario::new(TempPath::new("direct_io.bin").to_path_buf())
             .with_alignment(8192);
 
         assert_eq!(scenario.name(), "direct_io");
@@ -702,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_direct_io_scenario_description_matches_platform_behavior() {
-        let scenario = DirectIoScenario::new(std::env::temp_dir().join("test_direct_io.bin"));
+        let scenario = DirectIoScenario::new(TempPath::new("direct_io.bin").to_path_buf());
         let description = scenario.description();
 
         // The description must never claim an uncached bypass this build
@@ -717,24 +755,22 @@ mod tests {
 
     #[test]
     fn test_direct_io_scenario_rejects_zero_alignment() {
-        let input_path = std::env::temp_dir().join("test_direct_io_zero_alignment.bin");
+        let input_path = TempPath::new("direct_io_zero_alignment.bin");
         create_test_file(&input_path, 4096).expect("Failed to create test file");
 
-        let mut scenario = DirectIoScenario::new(&input_path).with_alignment(0);
+        let mut scenario = DirectIoScenario::new(input_path.to_path_buf()).with_alignment(0);
         let result = scenario.setup();
 
         assert!(
             result.is_err(),
             "zero alignment must be rejected in setup()"
         );
-
-        let _ = std::fs::remove_file(&input_path);
     }
 
     #[test]
     fn test_direct_io_scenario_setup_rejects_missing_file() {
         let mut scenario =
-            DirectIoScenario::new(std::env::temp_dir().join("test_direct_io_does_not_exist.bin"));
+            DirectIoScenario::new(TempPath::new("direct_io_does_not_exist.bin").to_path_buf());
         assert!(scenario.setup().is_err());
     }
 
@@ -747,17 +783,15 @@ mod tests {
         // since this file's fallback/`F_NOCACHE` paths (used on this test
         // runner's platform) have no O_DIRECT-style block-alignment
         // requirement; on Linux CI this exercises the real O_DIRECT open.
-        let input_path = std::env::temp_dir().join("test_direct_io_execute.bin");
+        let input_path = TempPath::new("direct_io_execute.bin");
         // 3 alignment-sized blocks so the read loop iterates more than once.
         create_test_file(&input_path, 4096 * 3).expect("Failed to create test file");
 
-        let mut scenario = DirectIoScenario::new(&input_path).with_alignment(4096);
+        let mut scenario = DirectIoScenario::new(input_path.to_path_buf()).with_alignment(4096);
 
         scenario.setup().expect("setup should succeed");
         let result = scenario.execute();
         scenario.teardown().expect("teardown should succeed");
-
-        let _ = std::fs::remove_file(&input_path);
 
         assert!(
             result.is_ok(),

@@ -33,7 +33,25 @@ oxiarc-brotli = { workspace = true }
 oxiarc-snappy = { workspace = true }
 
 # Additional dependencies
-ahash = { workspace = true }
+# `ahash` is target-split below: its default `runtime-rng` feature pulls
+# `getrandom`, which refuses to build for `wasm32-unknown-unknown` unless its
+# JS backend is opted into. See the two `[target...]` sections.
+
+# Everywhere `getrandom` has a real OS entropy source, keep ahash's default
+# `runtime-rng`: the hash keys are drawn per process, so the input to
+# `DictionaryEncoder::compress` — which is attacker-controlled in a server —
+# cannot be crafted to collide in the dictionary map.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ahash = { workspace = true, features = ["std", "runtime-rng"] }
+
+# On wasm32 there is no OS entropy source, and `getrandom`'s only option is its
+# `wasm_js` backend, i.e. a hard dependency on a JavaScript host. This crate is
+# a pure-Rust codec library with no other JS coupling, so instead of dragging
+# one in, wasm builds swap `runtime-rng` for `compile-time-rng`: `const-random`
+# generates the keys on the *host* at build time, keeping ahash's speed and a
+# per-build (rather than per-process) key.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ahash = { workspace = true, features = ["std", "compile-time-rng"] }
 
 [dev-dependencies]
 criterion = { workspace = true }

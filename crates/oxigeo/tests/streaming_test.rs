@@ -1,8 +1,166 @@
 //! Integration tests for FlatGeobuf, Shapefile, GeoPackage, GeoParquet, and
 //! STAC feature streaming via `StreamingExt::features()`.
 
+// Every test in this file is gated on the driver feature it exercises, so with
+// none of them enabled (`--no-default-features`) these two imports would be
+// unused. The gate lists exactly the features whose tests use them.
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
 use oxigeo::open::open;
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
 use oxigeo::streaming::StreamingExt;
+
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+struct TempPath(std::path::PathBuf);
+
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+impl TempPath {
+    fn new(name: &str) -> Self {
+        Self(std::env::temp_dir().join(unique_leaf(name)))
+    }
+}
+
+/// A unique leaf name: `oxigeo_stream_<pid>_<seq>_<name>`.
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+fn unique_leaf(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("oxigeo_stream_{}_{seq}_{name}", std::process::id())
+}
+
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(any(
+    feature = "shapefile",
+    feature = "flatgeobuf",
+    feature = "gpkg",
+    feature = "geoparquet",
+    feature = "stac",
+    feature = "geojson"
+))]
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Same guarantee for a Shapefile *stem*: the writer emits several sidecars
+/// sharing one base name, so the guard deletes every extension it may have
+/// created rather than leaking `.shx` / `.dbf` behind the `.shp`.
+#[cfg(feature = "shapefile")]
+struct TempStem(std::path::PathBuf);
+
+#[cfg(feature = "shapefile")]
+impl TempStem {
+    fn new(name: &str) -> Self {
+        Self(std::env::temp_dir().join(unique_leaf(name)))
+    }
+}
+
+#[cfg(feature = "shapefile")]
+impl std::ops::Deref for TempStem {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(feature = "shapefile")]
+impl AsRef<std::path::Path> for TempStem {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(feature = "shapefile")]
+impl Drop for TempStem {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        for ext in ["shp", "shx", "dbf", "prj", "cpg", "qix", "sbn", "sbx"] {
+            let _ = std::fs::remove_file(self.0.with_extension(ext));
+        }
+    }
+}
 
 // ─── Shapefile streaming ─────────────────────────────────────────────────────
 
@@ -16,8 +174,7 @@ fn test_stream_shapefile_features() {
     use oxigeo_core::vector::{FieldValue, Geometry, Point};
     use std::collections::HashMap;
 
-    let dir = std::env::temp_dir();
-    let base = dir.join("stream_shp_test");
+    let base = TempStem::new("stream_shp_test");
 
     // Build schema — a single "name" field
     let schema = ShapefileSchemaBuilder::new()
@@ -61,8 +218,7 @@ fn test_stream_shapefile_feature_has_wkb_geometry() {
     use oxigeo_core::vector::{FieldValue, Geometry, Point};
     use std::collections::HashMap;
 
-    let dir = std::env::temp_dir();
-    let base = dir.join("stream_shp_wkb_test");
+    let base = TempStem::new("stream_shp_wkb_test");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("id", 10)
@@ -99,8 +255,7 @@ fn test_stream_shapefile_feature_properties() {
     use oxigeo_core::vector::{FieldValue, Geometry, Point};
     use std::collections::HashMap;
 
-    let dir = std::env::temp_dir();
-    let base = dir.join("stream_shp_props_test");
+    let base = TempStem::new("stream_shp_props_test");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("city", 50)
@@ -166,8 +321,7 @@ fn test_stream_flatgeobuf_features() {
     let bytes = buf.into_inner();
 
     // Write to a temp file
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_fgb_test.fgb");
+    let path = TempPath::new("stream_fgb_test.fgb");
     std::fs::write(&path, &bytes).expect("write fgb file");
 
     let ds = open(&path).expect("open fgb");
@@ -193,8 +347,7 @@ fn test_stream_flatgeobuf_feature_has_wkb_geometry() {
     writer.add_feature(&feat).expect("add");
 
     let bytes = writer.finish().expect("finish").into_inner();
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_fgb_geom_test.fgb");
+    let path = TempPath::new("stream_fgb_geom_test.fgb");
     std::fs::write(&path, &bytes).expect("write");
 
     let ds = open(&path).expect("open");
@@ -227,8 +380,7 @@ fn test_stream_geopackage_basic() {
     // A real multi-row GPKG requires a valid SQLite B-tree; we use a minimal
     // file that the gpkg reader will open (the file is valid SQLite even if
     // gpkg_contents is empty), verifying the full dispatch path is wired.
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_gpkg_basic.gpkg");
+    let path = TempPath::new("stream_gpkg_basic.gpkg");
 
     // Write a minimal SQLite file with the GeoPackage application_id so that
     // the magic-byte detector recognises it as GPKG.
@@ -266,8 +418,6 @@ fn test_stream_geopackage_basic() {
     let wkb = GpkgBinaryParser::to_wkb(&geom);
     // WKB Point LE: byte_order(1) + type(4) + x(8) + y(8) = 21 bytes
     assert_eq!(wkb.len(), 21, "WKB Point should be 21 bytes");
-
-    let _ = std::fs::remove_file(&path);
 }
 
 /// Verify that opening a GeoPackage where gpkg_contents is unreadable (but
@@ -281,18 +431,12 @@ fn test_stream_geopackage_missing_path_returns_empty() {
     use oxigeo::streaming::StreamingExt;
 
     // Construct an OpenedDataset::GeoPackage with no path.
-    let info = DatasetInfo {
-        format: DatasetFormat::GeoPackage,
-        path: None,
-        width: None,
-        height: None,
-        band_count: 0,
-        layer_count: 0,
-        crs: None,
-        geotransform: None,
-        feature_count: None,
-        bounds: None,
-    };
+    // `DatasetInfo` is `#[non_exhaustive]`, so downstream code (this integration
+    // test included) builds one from `Default` and assigns the fields it cares
+    // about rather than using a struct expression.
+    let mut info = DatasetInfo::default();
+    info.format = DatasetFormat::GeoPackage;
+    info.path = None;
     let ds = OpenedDataset::GeoPackage(info);
     let stream = ds.features().expect("features() on no-path gpkg");
     assert_eq!(stream.count(), 0, "no-path GPKG should produce 0 features");
@@ -319,8 +463,7 @@ fn test_stream_geoparquet_basic() {
     use parquet::file::properties::WriterProperties;
     use std::sync::Arc;
 
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_geoparquet_basic_v2.parquet");
+    let path = TempPath::new("stream_geoparquet_basic_v2.parquet");
 
     // Encode 3 WKB Point geometries.
     let points = [(-122.4f64, 37.8), (-118.2, 34.0), (-87.6, 41.9)];
@@ -378,8 +521,6 @@ fn test_stream_geoparquet_basic() {
         // WKB Point LE: 1 + 4 + 8 + 8 = 21 bytes
         assert_eq!(feat.geometry_byte_len(), 21, "WKB Point should be 21 bytes");
     }
-
-    let _ = std::fs::remove_file(&path);
 }
 
 /// Stream a GeoParquet that contains additional non-geometry columns.
@@ -397,18 +538,9 @@ fn test_stream_geoparquet_handles_missing_file() {
         .join("oxigeo_nonexistent_test_ZZZZ.parquet")
         .to_string_lossy()
         .to_string();
-    let info = DatasetInfo {
-        format: DatasetFormat::GeoParquet,
-        path: Some(nonexistent_path),
-        width: None,
-        height: None,
-        band_count: 0,
-        layer_count: 0,
-        crs: None,
-        geotransform: None,
-        feature_count: None,
-        bounds: None,
-    };
+    let mut info = DatasetInfo::default();
+    info.format = DatasetFormat::GeoParquet;
+    info.path = Some(nonexistent_path);
     let ds = OpenedDataset::GeoParquet(info);
     // Should return Err (file not found), not panic.
     let result = ds.features();
@@ -421,8 +553,7 @@ fn test_stream_geoparquet_handles_missing_file() {
 #[cfg(feature = "stac")]
 #[test]
 fn test_stream_stac_item_collection() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_stac_item_collection.json");
+    let path = TempPath::new("stream_stac_item_collection.json");
 
     let stac_json = r#"{
   "type": "FeatureCollection",
@@ -490,16 +621,13 @@ fn test_stream_stac_item_collection() {
     // item-3: null geometry
     let f2 = &features[2];
     assert!(!f2.has_geometry(), "item-3 should have no geometry (null)");
-
-    let _ = std::fs::remove_file(&path);
 }
 
 /// A STAC Catalog JSON (not a FeatureCollection) should yield an empty stream.
 #[cfg(feature = "stac")]
 #[test]
 fn test_stream_stac_catalog_returns_empty() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_stac_catalog.json");
+    let path = TempPath::new("stream_stac_catalog.json");
 
     let catalog_json = r#"{
   "type": "Catalog",
@@ -519,16 +647,13 @@ fn test_stream_stac_catalog_returns_empty() {
         count, 0,
         "STAC Catalog should produce 0 features (links not followed)"
     );
-
-    let _ = std::fs::remove_file(&path);
 }
 
 /// A single STAC Feature (not wrapped in a FeatureCollection) streams as one item.
 #[cfg(feature = "stac")]
 #[test]
 fn test_stream_stac_single_feature() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_stac_single_feature.json");
+    let path = TempPath::new("stream_stac_single_feature.json");
 
     let item_json = r#"{
   "type": "Feature",
@@ -566,8 +691,6 @@ fn test_stream_stac_single_feature() {
         Some("single-item"),
         "feature id should be preserved"
     );
-
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─── GeoJSON streaming error handling ─────────────────────────────────────────
@@ -576,8 +699,7 @@ fn test_stream_stac_single_feature() {
 #[cfg(feature = "geojson")]
 #[test]
 fn test_stream_geojson_feature_collection() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_geojson_fc.geojson");
+    let path = TempPath::new("stream_geojson_fc.geojson");
     let content = r#"{"type":"FeatureCollection","features":[
         {"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{"n":"a"}},
         {"type":"Feature","geometry":{"type":"Point","coordinates":[3.0,4.0]},"properties":{"n":"b"}}
@@ -587,7 +709,6 @@ fn test_stream_geojson_feature_collection() {
     let ds = open(&path).expect("open geojson");
     let count = ds.features().expect("features()").count();
     assert_eq!(count, 2, "FeatureCollection should stream 2 features");
-    let _ = std::fs::remove_file(&path);
 }
 
 /// A single Feature (not a FeatureCollection) yields an empty stream — the
@@ -595,8 +716,7 @@ fn test_stream_geojson_feature_collection() {
 #[cfg(feature = "geojson")]
 #[test]
 fn test_stream_geojson_single_feature_is_empty() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_geojson_single.geojson");
+    let path = TempPath::new("stream_geojson_single.geojson");
     let content =
         r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}}"#;
     std::fs::write(&path, content).expect("write geojson");
@@ -613,7 +733,6 @@ fn test_stream_geojson_single_feature_is_empty() {
         0,
         "single Feature yields empty stream"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 /// Truncated / corrupt GeoJSON surfaces as an error instead of a silent empty
@@ -622,8 +741,7 @@ fn test_stream_geojson_single_feature_is_empty() {
 #[cfg(feature = "geojson")]
 #[test]
 fn test_stream_geojson_corrupt_errors() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("stream_geojson_corrupt.geojson");
+    let path = TempPath::new("stream_geojson_corrupt.geojson");
     // Truncated mid-object — not valid JSON.
     let content =
         r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Poi"#;
@@ -635,7 +753,6 @@ fn test_stream_geojson_corrupt_errors() {
         result.is_err(),
         "corrupt GeoJSON should return Err, got Ok(empty)"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 // ─── Unknown dispatch + exhaustive tests ─────────────────────────────────────
@@ -653,18 +770,9 @@ fn test_stream_unknown_returns_empty() {
         .join("oxigeo_bad_format_ZZZZ.xyz")
         .to_string_lossy()
         .to_string();
-    let info = DatasetInfo {
-        format: DatasetFormat::Unknown,
-        path: Some(bad_format_path),
-        width: None,
-        height: None,
-        band_count: 0,
-        layer_count: 0,
-        crs: None,
-        geotransform: None,
-        feature_count: None,
-        bounds: None,
-    };
+    let mut info = DatasetInfo::default();
+    info.format = DatasetFormat::Unknown;
+    info.path = Some(bad_format_path);
     let ds = OpenedDataset::Unknown(info);
     let stream = ds.features().expect("Unknown variant should not error");
     assert_eq!(
@@ -685,17 +793,11 @@ fn test_features_dispatch_exhaustive() {
     use oxigeo::streaming::StreamingExt;
     use oxigeo_core::error::OxiGeoError;
 
-    let make_info = |fmt: DatasetFormat| DatasetInfo {
-        format: fmt,
-        path: None,
-        width: None,
-        height: None,
-        band_count: 0,
-        layer_count: 0,
-        crs: None,
-        geotransform: None,
-        feature_count: None,
-        bounds: None,
+    let make_info = |fmt: DatasetFormat| {
+        let mut info = DatasetInfo::default();
+        info.format = fmt;
+        info.path = None;
+        info
     };
 
     // Vector variants: expect Ok(FeatureStream) — even if empty.

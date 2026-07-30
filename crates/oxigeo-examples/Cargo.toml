@@ -47,6 +47,9 @@ default = []
 zstd = ["oxigeo-geotiff/zstd"]
 
 [dependencies]
+# The unified facade — `examples/issue_14_dem_to_array2.rs` demonstrates the
+# `oxigeo::Dataset` read-into API exactly as an end user would call it.
+oxigeo = { workspace = true }
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-geotiff = { workspace = true }
 oxigeo-algorithms = { workspace = true, default-features = true }

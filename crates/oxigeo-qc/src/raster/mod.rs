@@ -1,6 +1,7 @@
 //! Raster quality control modules.
 
 pub mod accuracy;
+pub(crate) mod band_scan;
 pub mod cog;
 pub mod completeness;
 pub mod consistency;

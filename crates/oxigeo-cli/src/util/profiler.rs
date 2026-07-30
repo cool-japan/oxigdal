@@ -357,9 +357,17 @@ fn execute_read_bands(input: &str, ext: &str) -> Result<()> {
                 .with_context(|| format!("Failed to open GeoTIFF: {input}"))?;
             let reader = GeoTiffReader::open(source)
                 .with_context(|| format!("Failed to parse GeoTIFF: {input}"))?;
-            let _data = reader
-                .read_band(0, 0)
-                .with_context(|| format!("Failed to read band from {input}"))?;
+            // Read every band, not just band 0. `read_band` used to ignore its
+            // band argument and decode the whole interleaved image, so a single
+            // call happened to move all the bytes; it now returns one band
+            // plane, and profiling only band 0 would under-report a multi-band
+            // read by a factor of `band_count`.
+            // See <https://github.com/cool-japan/oxigeo/issues/14>.
+            for band in 0..reader.band_count().max(1) {
+                let _data = reader
+                    .read_band(0, band as usize)
+                    .with_context(|| format!("Failed to read band {band} from {input}"))?;
+            }
             Ok(())
         }
         other => anyhow::bail!(

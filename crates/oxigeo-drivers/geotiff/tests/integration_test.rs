@@ -9,20 +9,58 @@ use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use oxigeo_core::io::FileDataSource;
 use oxigeo_core::types::{GeoTransform, RasterDataType};
 use oxigeo_geotiff::tiff::{ByteOrderType, TiffHeader};
 
-/// Helper function to create a temporary test file
-fn temp_test_file(name: &str) -> PathBuf {
-    let mut path = env::temp_dir();
-    path.push(format!("oxigeo_test_{}", name));
-    path
+/// An RAII fixture path inside [`std::env::temp_dir`].
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(env::temp_dir().join(format!(
+            "oxigeo_geotiff_integration_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Helper function to create a uniquely named temporary test file.
+fn temp_test_file(name: &str) -> TempPath {
+    TempPath::new(name)
 }
 
 /// Creates a minimal valid TIFF file for testing
-fn create_minimal_tiff(path: &PathBuf) -> std::io::Result<()> {
+fn create_minimal_tiff(path: &std::path::Path) -> std::io::Result<()> {
     let mut file = File::create(path)?;
 
     // Write TIFF header (little-endian, classic)

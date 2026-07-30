@@ -11,8 +11,49 @@ use oxigeo_geojson::{
     open_geojsonl, read_geojsonl, write_geojsonl, write_geojsonl_to_file,
 };
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_geojsonl_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Build a simple `Feature` containing a 2-D Point at `(lon, lat)`.
 fn point_feature(lon: f64, lat: f64) -> Feature {
@@ -134,7 +175,7 @@ fn test_geojsonl_auto_detected() {
         .map(|i| point_feature(f64::from(i), f64::from(i)))
         .collect();
 
-    let tmp = std::env::temp_dir().join("test_auto_detect.geojsonl");
+    let tmp = TempPath::new("auto_detect.geojsonl");
 
     write_geojsonl_to_file(&tmp, features).expect("write succeeded");
 
@@ -150,9 +191,6 @@ fn test_geojsonl_auto_detected() {
         }
         other => panic!("expected FeatureCollection, got {other:?}"),
     }
-
-    // Clean up
-    let _ = std::fs::remove_file(&tmp);
 }
 
 // ─── Test 7: geometry_bbox for Point ─────────────────────────────────────────
@@ -251,7 +289,7 @@ fn test_geojsonl_file_roundtrip() {
         .map(|i| point_feature(f64::from(i) * 10.0, f64::from(i) * 5.0))
         .collect();
 
-    let tmp = std::env::temp_dir().join("test_file_roundtrip.ndjson");
+    let tmp = TempPath::new("file_roundtrip.ndjson");
 
     write_geojsonl_to_file(&tmp, features).expect("write succeeded");
     let result = open_geojsonl(&tmp).expect("read succeeded");
@@ -264,8 +302,6 @@ fn test_geojsonl_file_roundtrip() {
     } else {
         panic!("feature 2 must be a Point");
     }
-
-    let _ = std::fs::remove_file(&tmp);
 }
 
 // ─── Test 12: GeoJsonWriter streaming + geojsonl through same types ───────────

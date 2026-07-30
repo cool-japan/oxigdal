@@ -118,63 +118,69 @@ struct PendingBandData {
     data: Vec<f64>,
 }
 
-/// De-interleaves a single band's samples out of a pixel-interleaved (BIP /
-/// "chunky") raw buffer covering all bands.
+/// Validates that a buffer returned by `GeoTiffReader::read_band` is exactly
+/// one de-interleaved band plane.
 ///
-/// `GeoTiffReader::read_band` (oxigeo-geotiff) currently returns the full
-/// interleaved buffer for *every* band regardless of the requested band
-/// index -- there is no `PlanarConfiguration` support on either side, and
-/// every writer in this crate always produces chunky-interleaved data (see
-/// `write_geotiff_data`'s "for each pixel, all bands" layout). So for
-/// `band_count == 1` the raw buffer already *is* the single band and is
-/// returned unchanged; for `band_count > 1` this slices out the requested
-/// band's samples using that known, fixed stride.
-fn de_interleave_band(
+/// `GeoTiffReader::read_band(level, band)` returns *that band's* samples only
+/// -- `width × height × bytes_per_sample` bytes, already de-interleaved out of
+/// the file's chunky (`PlanarConfiguration = 1`) storage or selected out of its
+/// planar (`= 2`) storage by the driver. This crate therefore does no
+/// de-interleaving of its own; it only checks that the plane it got is the size
+/// `RasterBuffer::new` is about to demand, so a driver-side regression surfaces
+/// as a clear message instead of an opaque buffer error.
+///
+/// Historically `read_band` ignored its `band` argument and handed back the
+/// whole interleaved image, which this crate then sliced by hand
+/// (`de_interleave_band`). That workaround is gone: keeping it would have
+/// re-sliced an already-single-band plane and read the wrong pixels.
+/// See <https://github.com/cool-japan/oxigeo/issues/14>.
+fn check_band_plane_len(
     raw: &[u8],
     width: u64,
     height: u64,
-    band_count: u32,
     band: u32,
     data_type: RasterDataType,
-) -> PyResult<Vec<u8>> {
-    let band_count = band_count.max(1) as usize;
-    if band_count == 1 {
-        return Ok(raw.to_vec());
-    }
-
-    if band < 1 || band as usize > band_count {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Band {} out of range (1-{})",
-            band, band_count
-        )));
-    }
-
-    let pixel_count = (width * height) as usize;
+) -> PyResult<()> {
     let bytes_per_sample = data_type.size_bytes();
-    let stride = bytes_per_sample * band_count;
-    let expected_total = pixel_count * stride;
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(bytes_per_sample))
+        .ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err(format!(
+                "Raster dimensions {}x{} ({} bytes/sample) overflow usize",
+                width, height, bytes_per_sample
+            ))
+        })?;
 
-    if raw.len() != expected_total {
+    if raw.len() != expected {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "Unexpected interleaved band data size: expected {} bytes for \
-             {}x{}x{} bands ({} bytes/sample), got {}",
-            expected_total,
+            "Unexpected band data size: expected {} bytes for band {} of a \
+             {}x{} raster ({} bytes/sample), got {}",
+            expected,
+            band,
             width,
             height,
-            band_count,
             bytes_per_sample,
             raw.len()
         )));
     }
+    Ok(())
+}
 
-    let band_offset = bytes_per_sample * (band as usize - 1);
-    let mut out = vec![0u8; pixel_count * bytes_per_sample];
-    for px in 0..pixel_count {
-        let src = px * stride + band_offset;
-        let dst = px * bytes_per_sample;
-        out[dst..dst + bytes_per_sample].copy_from_slice(&raw[src..src + bytes_per_sample]);
+/// Rejects a 1-based band index that the raster does not have.
+///
+/// Returns the same `ValueError` message as `Dataset.read_band` /
+/// `read_bands`, so every entry point reports an out-of-range band
+/// identically rather than surfacing the driver's lower-level error.
+fn check_band_index(band: u32, band_count: u32) -> PyResult<()> {
+    if band < 1 || band > band_count.max(1) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Band {} out of range (1-{})",
+            band,
+            band_count.max(1)
+        )));
     }
-    Ok(out)
+    Ok(())
 }
 
 /// A geospatial dataset that can be read from or written to.
@@ -433,11 +439,11 @@ impl Dataset {
         let nodata = reader.nodata();
         let band_count = reader.metadata().band_count;
 
-        // Read the raw band data. Note: the underlying reader returns the
-        // full pixel-interleaved buffer for *all* bands regardless of the
-        // index passed here; `de_interleave_band` below extracts just the
-        // requested band.
-        let raw_data = reader.read_band(0, (band - 1) as usize).map_err(|e| {
+        check_band_index(band, band_count)?;
+
+        // `read_band` takes a 0-based band index and returns that band's plane
+        // only, de-interleaved by the driver (issue #14).
+        let band_data = reader.read_band(0, (band - 1) as usize).map_err(|e| {
             pyo3::exceptions::PyIOError::new_err(format!(
                 "Failed to read band {} from '{}': {}",
                 band,
@@ -446,7 +452,7 @@ impl Dataset {
             ))
         })?;
 
-        let band_data = de_interleave_band(&raw_data, width, height, band_count, band, data_type)?;
+        check_band_plane_len(&band_data, width, height, band, data_type)?;
 
         // Convert raw bytes to f64 buffer
         let buffer =
@@ -1043,24 +1049,18 @@ pub fn read_geotiff_band(path: &str, band: u32) -> PyResult<(Vec<f64>, u64, u64,
     let data_type = reader.data_type().unwrap_or(RasterDataType::Float64);
     let nodata = reader.nodata();
 
-    // Note: the underlying reader returns the full pixel-interleaved buffer
-    // for *all* bands regardless of the index passed here; `de_interleave_band`
-    // below extracts just the requested band.
-    let raw_data = reader.read_band(0, (band - 1) as usize).map_err(|e| {
+    check_band_index(band, metadata.band_count)?;
+
+    // `read_band` takes a 0-based band index and returns that band's plane
+    // only, de-interleaved by the driver (issue #14).
+    let band_data = reader.read_band(0, (band - 1) as usize).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!(
             "Failed to read band {} from '{}': {}",
             band, path, e
         ))
     })?;
 
-    let band_data = de_interleave_band(
-        &raw_data,
-        width,
-        height,
-        metadata.band_count,
-        band,
-        data_type,
-    )?;
+    check_band_plane_len(&band_data, width, height, band, data_type)?;
 
     let buffer = RasterBuffer::new(band_data, width, height, data_type, nodata).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create buffer: {}", e))

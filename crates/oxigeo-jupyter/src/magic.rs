@@ -350,12 +350,10 @@ impl MagicCommand {
                 })?;
 
                 let bytes_per_sample = handle.metadata.data_type.size_bytes();
-                let band_data = extract_interleaved_band(
-                    &raw,
+                let band_data = check_band_plane(
+                    raw,
                     handle.metadata.width,
                     handle.metadata.height,
-                    band_count,
-                    band_index,
                     bytes_per_sample,
                     dataset,
                 )?;
@@ -479,41 +477,47 @@ pub fn all_magic_help() -> String {
     help
 }
 
-/// Extracts a single band's samples out of pixel-interleaved (band-interleaved
-/// by pixel) raster data, as returned by [`oxigeo_geotiff::GeoTiffReader::read_band`].
+/// Checks that a buffer from [`oxigeo_geotiff::GeoTiffReader::read_band`] is
+/// exactly one band plane and hands it back unchanged.
 ///
-/// For each pixel the source buffer holds `band_count` consecutive samples of
-/// `bytes_per_sample` bytes each; this copies out just the `band_index`-th
-/// (0-based) sample of every pixel, preserving row-major pixel order.
-fn extract_interleaved_band(
-    data: &[u8],
+/// `read_band(level, band)` returns that band's samples only --
+/// `width * height * bytes_per_sample` bytes, row-major -- with the driver
+/// de-interleaving chunky (`PlanarConfiguration = 1`) storage and selecting out
+/// of planar (`= 2`) storage on our behalf. This crate therefore performs no
+/// de-interleaving of its own; it only rejects a plane that is not the size
+/// `RasterBuffer::new` is about to demand, so a driver-side regression reports
+/// itself clearly. See <https://github.com/cool-japan/oxigeo/issues/14>.
+fn check_band_plane(
+    data: Vec<u8>,
     width: u64,
     height: u64,
-    band_count: u32,
-    band_index: u32,
     bytes_per_sample: usize,
     dataset: &str,
 ) -> Result<Vec<u8>> {
-    let pixel_count = (width * height) as usize;
-    let stride = bytes_per_sample * band_count as usize;
-    let expected_len = pixel_count * stride;
-    if data.len() < expected_len {
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(bytes_per_sample))
+        .ok_or_else(|| {
+            JupyterError::Magic(format!(
+                "Raster dimensions {}x{} for '{}' overflow the address space",
+                width, height, dataset
+            ))
+        })?;
+
+    if data.len() != expected_len {
         return Err(JupyterError::Magic(format!(
-            "Band data for '{}' is truncated: expected at least {} bytes, got {}",
+            "Band data for '{}' has the wrong size: expected {} bytes \
+             ({}x{} x {} byte(s)), got {}",
             dataset,
             expected_len,
+            width,
+            height,
+            bytes_per_sample,
             data.len()
         )));
     }
 
-    let mut out = Vec::with_capacity(pixel_count * bytes_per_sample);
-    let band_offset = band_index as usize * bytes_per_sample;
-    for pixel in 0..pixel_count {
-        let base = pixel * stride + band_offset;
-        out.extend_from_slice(&data[base..base + bytes_per_sample]);
-    }
-
-    Ok(out)
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -946,6 +950,76 @@ mod tests {
         assert!(text2.contains("min=0"), "band2 got: {text2}");
         assert!(text2.contains("max=150"), "band2 got: {text2}");
         assert!(text2.contains("mean=75"), "band2 got: {text2}");
+        Ok(())
+    }
+
+    /// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// `%stats` used to call `read_band(0, band_index)` and then de-interleave
+    /// the result *again* through `extract_interleaved_band`, which demanded
+    /// `width * height * band_count * bytes_per_sample` bytes. Once `read_band`
+    /// started returning a single de-interleaved plane, that check tripped and
+    /// `%stats` hard-errored for every multi-band raster. Each band's own
+    /// statistics must now come back for each requested band.
+    #[test]
+    fn test_issue_14_stats_multiband_selects_requested_band() -> Result<()> {
+        // 3-band 4x4 raster, pixel-interleaved. Per-band value ranges are far
+        // apart so a mis-selected band cannot coincidentally match:
+        //   band 1 -> 0..=15      (mean 7.5)
+        //   band 2 -> 100..=115   (mean 107.5)
+        //   band 3 -> 1000..=1015 (mean 1007.5)
+        let mut values = Vec::with_capacity(48);
+        for i in 0..16 {
+            values.push(i as f32);
+            values.push(100.0 + i as f32);
+            values.push(1000.0 + i as f32);
+        }
+        let (_guard, path) = write_test_raster_f32(3, &values)?;
+        let mut ns = HashMap::new();
+        load_raster_into(&mut ns, &path, "rgb")?;
+
+        // (band number, min, max, mean) expected for each of the three bands.
+        let expected = [
+            (1usize, "min=0", "max=15", "mean=7.5"),
+            (2, "min=100", "max=115", "mean=107.5"),
+            (3, "min=1000", "max=1015", "mean=1007.5"),
+        ];
+
+        for (band, min, max, mean) in expected {
+            let output = MagicCommand::Stats {
+                dataset: "rgb".to_string(),
+                band: Some(band),
+            }
+            .execute(&mut ns)
+            .map_err(|e| {
+                JupyterError::Magic(format!(
+                    "%stats band {band} on a 3-band raster must succeed (issue #14): {e}"
+                ))
+            })?;
+            let text = output.get("text/plain").map(|s| s.as_str()).unwrap_or("");
+
+            assert!(
+                text.contains(&format!("band {band}")),
+                "band {band}: expected the report to name `band {band}`, got: {text}"
+            );
+            assert!(
+                text.contains(min),
+                "band {band} pixel minimum: expected `{min}`, got: {text}"
+            );
+            assert!(
+                text.contains(max),
+                "band {band} pixel maximum: expected `{max}`, got: {text}"
+            );
+            assert!(
+                text.contains(mean),
+                "band {band} pixel mean: expected `{mean}`, got: {text}"
+            );
+            assert!(
+                text.contains("count=16"),
+                "band {band}: expected count=16 (4x4 single band plane), got: {text}"
+            );
+        }
+
         Ok(())
     }
 

@@ -19,10 +19,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-temporal = "0.2.1"
+oxigeo-temporal = "0.2.2"
 
 # Enable specific features
-oxigeo-temporal = { version = "0.2.1", features = ["all_temporal"] }
+oxigeo-temporal = { version = "0.2.2", features = ["all_temporal"] }
 ```
 
 ## Usage Examples

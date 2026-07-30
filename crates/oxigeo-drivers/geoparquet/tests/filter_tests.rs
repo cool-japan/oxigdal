@@ -19,6 +19,7 @@ use parquet::file::properties::WriterProperties;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Fixture builder ────────────────────────────────────────────────────────────
 
@@ -88,16 +89,51 @@ fn write_attributed_fixture(path: &Path) {
     writer.close().expect("close writer");
 }
 
-fn cleanup(path: &Path) {
-    let _ = std::fs::remove_file(path);
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_gpq_filter_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 // ── 1. test_spatial_filter_exact_row_level ────────────────────────────────────
 
 #[test]
 fn test_spatial_filter_exact_row_level() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("geoparquet_spatial_row_filter.parquet");
+    let path = TempPath::new("geoparquet_spatial_row_filter.parquet");
     write_attributed_fixture(&path);
 
     let mut reader = GeoParquetReader::open(&path).expect("open");
@@ -111,16 +147,13 @@ fn test_spatial_filter_exact_row_level() {
         total_rows, 2,
         "only (0,0) and (5,5) are inside [-1,-1,10,10]"
     );
-
-    cleanup(&path);
 }
 
 // ── 2. test_attribute_filter_eq_string ───────────────────────────────────────
 
 #[test]
 fn test_attribute_filter_eq_string() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("geoparquet_attr_string.parquet");
+    let path = TempPath::new("geoparquet_attr_string.parquet");
     write_attributed_fixture(&path);
 
     let mut reader = GeoParquetReader::open(&path).expect("open");
@@ -145,16 +178,13 @@ fn test_attribute_filter_eq_string() {
         .downcast_ref::<StringArray>()
         .expect("string array");
     assert_eq!(name_col.value(0), "gamma");
-
-    cleanup(&path);
 }
 
 // ── 3. test_attribute_filter_numeric_gt ──────────────────────────────────────
 
 #[test]
 fn test_attribute_filter_numeric_gt() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("geoparquet_attr_numeric.parquet");
+    let path = TempPath::new("geoparquet_attr_numeric.parquet");
     write_attributed_fixture(&path);
 
     let mut reader = GeoParquetReader::open(&path).expect("open");
@@ -170,16 +200,13 @@ fn test_attribute_filter_numeric_gt() {
 
     let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total_rows, 2, "score > 3.0 → delta(4.0) + epsilon(5.0)");
-
-    cleanup(&path);
 }
 
 // ── 4. test_combined_spatial_attribute_filter ─────────────────────────────────
 
 #[test]
 fn test_combined_spatial_attribute_filter() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("geoparquet_combined_filter.parquet");
+    let path = TempPath::new("geoparquet_combined_filter.parquet");
     write_attributed_fixture(&path);
 
     let mut reader = GeoParquetReader::open(&path).expect("open");
@@ -203,16 +230,13 @@ fn test_combined_spatial_attribute_filter() {
         total_rows, 2,
         "rows at (15,5) and (25,5) satisfy both filters"
     );
-
-    cleanup(&path);
 }
 
 // ── 5. test_empty_result_no_matches ──────────────────────────────────────────
 
 #[test]
 fn test_empty_result_no_matches() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("geoparquet_no_match.parquet");
+    let path = TempPath::new("geoparquet_no_match.parquet");
     write_attributed_fixture(&path);
 
     let mut reader = GeoParquetReader::open(&path).expect("open");
@@ -223,6 +247,4 @@ fn test_empty_result_no_matches() {
 
     let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total_rows, 0, "no geometry inside [1000,1000,2000,2000]");
-
-    cleanup(&path);
 }

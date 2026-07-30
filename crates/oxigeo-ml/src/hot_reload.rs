@@ -309,6 +309,47 @@ impl<T> HotReloadModel<T> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_ml_hot_reload_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     fn default_watcher(path: impl AsRef<Path>) -> ModelWatcher {
         ModelWatcher::new(path, HotReloadConfig::default())
@@ -316,9 +357,9 @@ mod tests {
 
     #[test]
     fn test_construction() {
-        let path = std::env::temp_dir().join("oxigeo_nonexistent_test_model_bx9f.onnx");
+        let path = TempPath::new("nonexistent_test_model.onnx");
         let watcher = default_watcher(&path);
-        assert_eq!(watcher.path(), path.as_path());
+        assert_eq!(watcher.path(), &*path);
     }
 
     #[test]
@@ -331,8 +372,7 @@ mod tests {
 
     #[test]
     fn test_check_nonexistent_file() {
-        let path =
-            std::env::temp_dir().join("oxigeo_nonexistent_absolutely_does_not_exist_bx9f.onnx");
+        let path = TempPath::new("absolutely_does_not_exist.onnx");
         let watcher = default_watcher(&path);
         let result = watcher.check_for_update();
         assert!(result.is_ok());
@@ -341,22 +381,18 @@ mod tests {
 
     #[test]
     fn test_check_existing_file_first_call_no_event() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hot_reload_test_first_call.onnx");
+        let path = TempPath::new("first_call.onnx");
         fs::write(&path, b"dummy model data").expect("write");
 
         let watcher = default_watcher(&path);
         // First call should record mtime but return None (no prior state)
         let result = watcher.check_for_update().expect("check");
         assert!(result.is_none(), "first check should not fire reload event");
-
-        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_check_file_unchanged_returns_none() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hot_reload_unchanged.onnx");
+        let path = TempPath::new("unchanged.onnx");
         fs::write(&path, b"dummy model").expect("write");
 
         let watcher = default_watcher(&path);
@@ -365,13 +401,11 @@ mod tests {
         // Second call — same mtime, should be None
         let result = watcher.check_for_update().expect("check 2");
         assert!(result.is_none(), "unchanged file should return None");
-
-        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mark_reloaded_increments_version() {
-        let path = std::env::temp_dir().join("oxigeo_dummy_bx9f.onnx");
+        let path = TempPath::new("dummy.onnx");
         let watcher = default_watcher(&path);
         assert_eq!(watcher.current_version().expect("v"), 0);
 
@@ -386,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_reload_count_tracking() {
-        let path = std::env::temp_dir().join("oxigeo_dummy_bx9f.onnx");
+        let path = TempPath::new("dummy.onnx");
         let watcher = default_watcher(&path);
         assert_eq!(watcher.reload_count().expect("rc"), 0);
 
@@ -399,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_poll_interval_accessor() {
-        let path = std::env::temp_dir().join("oxigeo_dummy_bx9f.onnx");
+        let path = TempPath::new("dummy.onnx");
         let config = HotReloadConfig {
             poll_interval: Duration::from_millis(500),
             ..Default::default()
@@ -410,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_reload_timeout_accessor() {
-        let path = std::env::temp_dir().join("oxigeo_dummy_bx9f.onnx");
+        let path = TempPath::new("dummy.onnx");
         let config = HotReloadConfig {
             reload_timeout: Duration::from_secs(60),
             ..Default::default()
@@ -427,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_version_starts_at_zero() {
-        let path = std::env::temp_dir().join("oxigeo_dummy_bx9f.onnx");
+        let path = TempPath::new("dummy.onnx");
         let watcher = default_watcher(&path);
         assert_eq!(watcher.current_version().expect("v"), 0);
     }
@@ -435,8 +469,7 @@ mod tests {
     #[test]
     fn test_hot_reload_model_atomic_swap() {
         // Use a trivial "model" = the file's byte length, loaded via a closure.
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hotswap_model.bin");
+        let path = TempPath::new("hotswap_model.bin");
         fs::write(&path, b"aaaa").expect("write v1"); // len 4
 
         let load = |p: &Path| -> Result<usize, MlError> {
@@ -467,14 +500,11 @@ mod tests {
         // The previously-held Arc still points at the old model (atomic swap).
         assert_eq!(*old, 4);
         assert_eq!(handle.reload_count().expect("rc"), 1);
-
-        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_hot_reload_bad_load_keeps_old_model() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hotswap_badload.bin");
+        let path = TempPath::new("hotswap_badload.bin");
         fs::write(&path, b"good").expect("write");
 
         // Loader fails whenever the file content starts with 'x'.
@@ -495,21 +525,19 @@ mod tests {
         let result = handle.force_reload(load);
         assert!(result.is_err(), "bad load should error");
         assert_eq!(*handle.current().expect("still old"), 4);
-
-        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_reload_event_fields() {
-        let model_path = std::env::temp_dir().join("oxigeo_model_bx9f.onnx");
+        let model_path = TempPath::new("event_model.onnx");
         let now = SystemTime::now();
         let event = ReloadEvent {
-            path: model_path.clone(),
+            path: model_path.to_path_buf(),
             timestamp: now,
             version: 3,
         };
         assert_eq!(event.version, 3);
-        assert_eq!(event.path, model_path);
+        assert_eq!(event.path.as_path(), &*model_path);
         assert_eq!(event.timestamp, now);
     }
 }

@@ -16,6 +16,38 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// A SQLite-backed fixture path that cleans up after itself.
+///
+/// SQLite leaves `-wal` / `-shm` / `-journal` companions next to the database;
+/// a bare `remove_file` on the main path leaks them into the temp dir.  This
+/// guard removes the whole set on drop, so a panicking test leaks nothing
+/// either.
+pub(crate) struct SqliteFixture(PathBuf);
+
+impl std::ops::Deref for SqliteFixture {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for SqliteFixture {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for SqliteFixture {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut sidecar = self.0.clone().into_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(PathBuf::from(sidecar));
+        }
+    }
+}
+
 /// Absolute path to the workspace root (two levels up from this crate).
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -135,8 +167,8 @@ pub(crate) fn gpkg_fixture_bytes() -> Vec<u8> {
 }
 
 /// Write [`gpkg_fixture_bytes`] to a fresh temp file and return its path.
-pub(crate) fn gpkg_fixture_path() -> PathBuf {
-    write_temp_file(&gpkg_fixture_bytes(), "fixture", "gpkg")
+pub(crate) fn gpkg_fixture_path() -> SqliteFixture {
+    SqliteFixture(write_temp_file(&gpkg_fixture_bytes(), "fixture", "gpkg"))
 }
 
 // ── MBTiles ─────────────────────────────────────────────────────────────────
@@ -147,7 +179,7 @@ pub(crate) fn gpkg_fixture_path() -> PathBuf {
 ///
 /// Schema: `metadata(name, value)` + `tiles(zoom_level, tile_column,
 /// tile_row, tile_data)`, with 3 tiles across zoom levels 0-1.
-pub(crate) fn mbtiles_fixture_path() -> PathBuf {
+pub(crate) fn mbtiles_fixture_path() -> SqliteFixture {
     use oxisql_core::{Connection, ToSqlValue};
     use oxisql_sqlite_compat::SqliteConnection;
 
@@ -205,7 +237,7 @@ pub(crate) fn mbtiles_fixture_path() -> PathBuf {
     rt.block_on(conn.execute_batch("PRAGMA wal_checkpoint"))
         .expect("checkpoint wal");
 
-    path
+    SqliteFixture(path)
 }
 
 // ── GeoParquet ──────────────────────────────────────────────────────────────

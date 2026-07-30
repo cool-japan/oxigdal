@@ -547,6 +547,47 @@ pub unsafe extern "C" fn oxigeo_ios_read_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_mobile_ios_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_enhance_params_bounds() {
@@ -590,8 +631,7 @@ mod tests {
     fn test_ios_get_raster_stats_null_out_stats() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_ios_stats.tif");
+        let temp_path = TempPath::new("stats.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -619,8 +659,7 @@ mod tests {
     fn test_ios_get_raster_stats_invalid_band() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_ios_stats_band.tif");
+        let temp_path = TempPath::new("stats_band.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -677,8 +716,7 @@ mod tests {
     fn test_ios_read_tile_null_buffer() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_ios_tile_null_buffer.tif");
+        let temp_path = TempPath::new("tile_null_buffer.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -706,8 +744,7 @@ mod tests {
     fn test_ios_read_tile_invalid_coords() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_ios_tile_invalid_coords.tif");
+        let temp_path = TempPath::new("tile_invalid_coords.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -753,8 +790,7 @@ mod tests {
     fn test_ios_read_tile_invalid_size() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_ios_tile_invalid_size.tif");
+        let temp_path = TempPath::new("tile_invalid_size.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -800,8 +836,7 @@ mod tests {
     fn test_ios_read_tile_buffer_too_small() {
         use std::ffi::CString;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_ios_tile_small_buffer.tif");
+        let temp_path = TempPath::new("tile_small_buffer.tif");
         let path_cstring =
             CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 

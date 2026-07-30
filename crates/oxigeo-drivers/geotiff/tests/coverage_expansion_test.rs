@@ -16,18 +16,59 @@ use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use oxigeo_core::io::FileDataSource;
-use oxigeo_core::types::{GeoTransform, NoDataValue, RasterDataType};
+use oxigeo_core::types::RasterDataType;
+// Only the LZW-gated cases below georeference or set a nodata value.
+#[cfg(feature = "lzw")]
+use oxigeo_core::types::{GeoTransform, NoDataValue};
 use oxigeo_geotiff::GeoTiffReader;
 use oxigeo_geotiff::tiff::{ByteOrderType, TiffHeader};
 use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
 
-/// Helper function to create a temporary test file with unique prefix
-fn temp_test_file(name: &str) -> PathBuf {
-    let mut path = env::temp_dir();
-    path.push(format!("oxigeo_coverage_{}", name));
-    path
+/// An RAII fixture path inside [`std::env::temp_dir`].
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(env::temp_dir().join(format!(
+            "oxigeo_geotiff_coverage_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Helper function to create a uniquely named temporary test file.
+fn temp_test_file(name: &str) -> TempPath {
+    TempPath::new(name)
 }
 
 // ============================================================
@@ -308,8 +349,19 @@ fn test_coverage_three_band_rgb() {
         let source = FileDataSource::open(&path).expect("Should open RGB file");
         let reader = GeoTiffReader::new(source).expect("Should create reader for RGB");
         assert_eq!(reader.band_count(), 3);
-        let read_data = reader.read_band(0, 0).expect("Should read RGB band");
-        assert_eq!(read_data, data, "RGB data should match");
+        // `read_band` returns the requested band de-interleaved, not the whole
+        // interleaved plane (cool-japan/oxigeo#14).
+        let pixels = (width * height) as usize;
+        for band in 0..3usize {
+            let read_data = reader.read_band(0, band).expect("Should read RGB band");
+            let expected: Vec<u8> = (0..pixels).map(|i| data[i * 3 + band]).collect();
+            assert_eq!(read_data.len(), pixels, "RGB band {band} length");
+            assert_eq!(read_data, expected, "RGB band {band} data should match");
+        }
+        assert!(
+            reader.read_band(0, 3).is_err(),
+            "band 3 of a 3-band file must be rejected"
+        );
     }
 
     let _ = std::fs::remove_file(path);
@@ -348,8 +400,19 @@ fn test_coverage_four_band_rgba() {
         let source = FileDataSource::open(&path).expect("Should open RGBA file");
         let reader = GeoTiffReader::new(source).expect("Should create reader for RGBA");
         assert_eq!(reader.band_count(), 4);
-        let read_data = reader.read_band(0, 0).expect("Should read RGBA band");
-        assert_eq!(read_data, data, "RGBA data should match");
+        // `read_band` returns the requested band de-interleaved, not the whole
+        // interleaved plane (cool-japan/oxigeo#14).
+        let pixels = (width * height) as usize;
+        for band in 0..4usize {
+            let read_data = reader.read_band(0, band).expect("Should read RGBA band");
+            let expected: Vec<u8> = (0..pixels).map(|i| data[i * 4 + band]).collect();
+            assert_eq!(read_data.len(), pixels, "RGBA band {band} length");
+            assert_eq!(read_data, expected, "RGBA band {band} data should match");
+        }
+        assert!(
+            reader.read_band(0, 4).is_err(),
+            "band 4 of a 4-band file must be rejected"
+        );
     }
 
     let _ = std::fs::remove_file(path);

@@ -5,7 +5,12 @@
 //! free GeoJSON↔core helper functions live here so they stay co-located with
 //! the only call-site that uses them.
 
-use crate::{Compression, ConversionOptions, Dataset, DatasetFormat};
+use crate::{ConversionOptions, Dataset, DatasetFormat};
+
+// The umbrella compression enum is only ever mapped onto a driver's own
+// compression codes, and the only such mapping lives in the GeoTIFF writer path.
+#[cfg(feature = "geotiff")]
+use crate::Compression;
 use oxigeo_core::error::OxiGeoError;
 use oxigeo_core::error::Result;
 
@@ -145,14 +150,33 @@ impl Dataset {
             Some(Compression::None) | None => TiffCompression::None,
         };
 
-        // `GeoTiffReader::read_band` returns the *entire* pixel-interleaved image
-        // (all bands, chunky/row-major) in a single call — the band argument is
-        // not a per-band selector. Reading it once yields exactly the buffer the
-        // GeoTIFF/COG writers expect (`width × height × band_count ×
-        // bytes_per_sample`, chunky). Looping over `band_count` would append that
-        // full image `band_count` times and trip the writers' length validation,
-        // breaking every multi-band conversion.
-        let full_band_data: Vec<u8> = reader.read_band(0, 0)?;
+        // `GeoTiffReader::read_band(level, band)` returns ONE de-interleaved band
+        // plane — `width × height × bytes_per_sample` bytes, row-major. The
+        // GeoTIFF/COG writers, in contrast, consume a chunky (pixel-interleaved)
+        // buffer of `width × height × band_count × bytes_per_sample` bytes, so
+        // every band is read and the planes are woven back together below.
+        //
+        // A single-band raster is already in the writers' layout, so its plane
+        // moves straight through without an interleave pass or an extra copy.
+        let bands_to_read = usize::from(band_count.max(1));
+        let bytes_per_sample = data_type.size_bytes();
+        let full_band_data: Vec<u8> = if bands_to_read == 1 {
+            reader.read_band(0, 0)?
+        } else {
+            let pixel_count = src_width
+                .checked_mul(src_height)
+                .and_then(|px| usize::try_from(px).ok())
+                .ok_or_else(|| OxiGeoError::Internal {
+                    message: format!(
+                        "raster extent {src_width}×{src_height} overflows the address space"
+                    ),
+                })?;
+            let mut planes: Vec<Vec<u8>> = Vec::with_capacity(bands_to_read);
+            for band in 0..bands_to_read {
+                planes.push(reader.read_band(0, band)?);
+            }
+            interleave_band_planes(&planes, pixel_count, bytes_per_sample)?
+        };
 
         // Honour any clip window recorded by `Dataset::clip`: crop the pixel
         // buffer to the window and use the clipped dimensions + geo-transform
@@ -324,6 +348,83 @@ impl Dataset {
             })
         })
     }
+}
+
+// ─── Band interleaving ──────────────────────────────────────────────────────
+
+/// Weave per-band plane buffers into a single chunky (pixel-interleaved) buffer.
+///
+/// Input is one buffer per band, each `pixel_count × bytes_per_sample` bytes in
+/// row-major order — the layout [`oxigeo_geotiff::GeoTiffReader::read_band`]
+/// produces.  Output is the layout the GeoTIFF/COG writers consume: for every
+/// pixel, all bands consecutively (`b0 b1 b2 b0 b1 b2 …`), each sample copied
+/// whole so its byte order is preserved verbatim.
+///
+/// Every plane length is validated against `pixel_count × bytes_per_sample`
+/// first: a mismatch means the file's real sample size disagrees with the
+/// declared [`RasterDataType`](oxigeo_core::types::RasterDataType), and writing
+/// that buffer would silently emit shifted pixel values.
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Internal`] when `planes` is empty, when
+/// `bytes_per_sample` is zero, when any plane has the wrong length, or when the
+/// interleaved size overflows `usize`.
+#[cfg(feature = "geotiff")]
+fn interleave_band_planes(
+    planes: &[Vec<u8>],
+    pixel_count: usize,
+    bytes_per_sample: usize,
+) -> Result<Vec<u8>> {
+    let band_count = planes.len();
+    if band_count == 0 {
+        return Err(OxiGeoError::Internal {
+            message: "cannot interleave zero band planes".to_string(),
+        });
+    }
+    if bytes_per_sample == 0 {
+        return Err(OxiGeoError::Internal {
+            message: "bytes per sample must be non-zero to interleave band planes".to_string(),
+        });
+    }
+
+    let plane_len =
+        pixel_count
+            .checked_mul(bytes_per_sample)
+            .ok_or_else(|| OxiGeoError::Internal {
+                message: format!(
+                    "band plane size {pixel_count} × {bytes_per_sample} overflows the address space"
+                ),
+            })?;
+    for (index, plane) in planes.iter().enumerate() {
+        if plane.len() != plane_len {
+            return Err(OxiGeoError::Internal {
+                message: format!(
+                    "band {index} returned {} bytes, expected {plane_len} \
+                     ({pixel_count} pixels × {bytes_per_sample} bytes/sample)",
+                    plane.len()
+                ),
+            });
+        }
+    }
+
+    let total = plane_len
+        .checked_mul(band_count)
+        .ok_or_else(|| OxiGeoError::Internal {
+            message: format!(
+                "interleaved buffer {plane_len} × {band_count} overflows the address space"
+            ),
+        })?;
+
+    let mut out = vec![0u8; total];
+    for (band, plane) in planes.iter().enumerate() {
+        for pixel in 0..pixel_count {
+            let src = pixel * bytes_per_sample;
+            let dst = (pixel * band_count + band) * bytes_per_sample;
+            out[dst..dst + bytes_per_sample].copy_from_slice(&plane[src..src + bytes_per_sample]);
+        }
+    }
+    Ok(out)
 }
 
 // ─── GeoJSON→Shapefile conversion helpers ───────────────────────────────────
@@ -604,6 +705,79 @@ fn infer_shapefile_schema(
     descriptors.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok((shape_type, descriptors))
+}
+
+#[cfg(all(test, feature = "geotiff"))]
+#[allow(clippy::expect_used)]
+mod interleave_tests {
+    use super::interleave_band_planes;
+
+    /// Three 2-byte-per-sample planes must weave into `b0 b1 b2 b0 b1 b2 …`
+    /// with every sample's byte order preserved verbatim.
+    #[test]
+    fn test_interleave_three_uint16_planes() {
+        // 2 pixels per band, values chosen so both bytes of each sample differ
+        // between bands — a byte-order or stride slip cannot cancel out.
+        let b0: Vec<u8> = vec![0xE8, 0x03, 0xE9, 0x03]; // 1000, 1001 (LE)
+        let b1: Vec<u8> = vec![0xD0, 0x07, 0xD1, 0x07]; // 2000, 2001 (LE)
+        let b2: Vec<u8> = vec![0xB8, 0x0B, 0xB9, 0x0B]; // 3000, 3001 (LE)
+        let out = interleave_band_planes(&[b0, b1, b2], 2, 2).expect("interleave");
+        assert_eq!(
+            out,
+            vec![
+                0xE8, 0x03, 0xD0, 0x07, 0xB8, 0x0B, // pixel 0: 1000, 2000, 3000
+                0xE9, 0x03, 0xD1, 0x07, 0xB9, 0x0B, // pixel 1: 1001, 2001, 3001
+            ]
+        );
+    }
+
+    /// Single-byte samples: the interleave degenerates to a plain transpose.
+    #[test]
+    fn test_interleave_two_uint8_planes() {
+        let b0: Vec<u8> = vec![1, 2, 3];
+        let b1: Vec<u8> = vec![10, 20, 30];
+        let out = interleave_band_planes(&[b0, b1], 3, 1).expect("interleave");
+        assert_eq!(out, vec![1, 10, 2, 20, 3, 30]);
+    }
+
+    /// Eight-byte samples (Float64 / Int64) keep whole-sample granularity.
+    #[test]
+    fn test_interleave_eight_byte_samples() {
+        let b0: Vec<u8> = (0u8..8).collect();
+        let b1: Vec<u8> = (100u8..108).collect();
+        let out = interleave_band_planes(&[b0.clone(), b1.clone()], 1, 8).expect("interleave");
+        assert_eq!(out[..8], b0[..]);
+        assert_eq!(out[8..], b1[..]);
+    }
+
+    /// A single plane round-trips unchanged (the caller short-circuits this
+    /// case, but the helper must still be correct for it).
+    #[test]
+    fn test_interleave_single_plane_is_identity() {
+        let b0: Vec<u8> = vec![9, 8, 7, 6];
+        let out = interleave_band_planes(std::slice::from_ref(&b0), 2, 2).expect("interleave");
+        assert_eq!(out, b0);
+    }
+
+    /// A plane whose length disagrees with `pixel_count × bytes_per_sample`
+    /// means the declared data type does not describe the file — that must be
+    /// an error, never a silently shifted buffer.
+    #[test]
+    fn test_interleave_rejects_short_plane() {
+        let b0: Vec<u8> = vec![1, 2, 3, 4];
+        let b1: Vec<u8> = vec![5, 6];
+        let err = interleave_band_planes(&[b0, b1], 2, 2);
+        assert!(err.is_err(), "mismatched plane length must be rejected");
+    }
+
+    #[test]
+    fn test_interleave_rejects_degenerate_inputs() {
+        assert!(interleave_band_planes(&[], 2, 2).is_err(), "no planes");
+        assert!(
+            interleave_band_planes(&[vec![1, 2]], 2, 0).is_err(),
+            "zero bytes per sample"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "geojson", feature = "shapefile"))]

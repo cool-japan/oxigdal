@@ -26,14 +26,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-grib = "0.2.1"
+oxigeo-grib = "0.2.2"
 ```
 
 ### Feature Flags
 
 ```toml
 [dependencies]
-oxigeo-grib = { version = "0.2.1", features = ["grib1", "grib2"] }
+oxigeo-grib = { version = "0.2.2", features = ["grib1", "grib2"] }
 ```
 
 Available features:

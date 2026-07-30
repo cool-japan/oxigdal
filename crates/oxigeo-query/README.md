@@ -25,8 +25,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-query = "0.2.1"
-oxigeo-core = "0.2.1"
+oxigeo-query = "0.2.2"
+oxigeo-core = "0.2.2"
 tokio = { version = "1", features = ["full"] }
 ```
 

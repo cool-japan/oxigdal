@@ -125,6 +125,27 @@ let writer = CogWriter::new(file, options)?;
 writer.write_buffer(&buffer)?;
 ```
 
+### Reading one band, or a window of one band
+
+`read_tile`/`read_band` return raw driver bytes exactly as one band; use
+`read_band_into`/`read_window_into` to decode straight into a caller-owned
+buffer with no extra allocation:
+
+```rust
+use oxigeo_geotiff::GeoTiffReader;
+use oxigeo_core::io::FileDataSource;
+
+let source = FileDataSource::open("multiband.tif")?;
+let reader = GeoTiffReader::open(source)?;
+
+// Band 1 (0-indexed), whole image, no intermediate allocation
+let mut band = vec![0u8; reader.band_byte_len(0)?];
+reader.read_band_into(0, 1, &mut band)?;
+
+// A 256x256 window of band 0
+let window = reader.read_window(0, 0, 100, 100, 256, 256)?;
+```
+
 ## Compression Options
 
 ```rust

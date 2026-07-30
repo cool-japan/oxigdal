@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn test_model_zoo_creation() {
-        let temp_dir = std::env::temp_dir().join("oxigeo_test_zoo");
+        let temp_dir = std::env::temp_dir().join(format!("oxigeo_test_zoo_{}", std::process::id()));
         let zoo_result = ModelZoo::with_cache_dir(&temp_dir);
         assert!(zoo_result.is_ok());
 

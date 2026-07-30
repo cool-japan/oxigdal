@@ -461,6 +461,47 @@ mod tests {
     use crate::CacheConfig;
     use crate::compression::DataType;
     use bytes::Bytes;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch cache directory inside the system temp dir (house
+    /// policy: no hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same directory.  Dropping the guard removes the directory tree, so
+    /// a panicking test leaks nothing.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_cache_warming_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[tokio::test]
     async fn test_sequential_warming() {
@@ -505,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_warmer() {
-        let temp_dir = std::env::temp_dir().join("oxigeo_warmer_test");
+        let temp_dir = TempDir::new("warmer_test");
         let config = CacheConfig {
             l1_size: 1024 * 1024,
             l2_size: 0,
@@ -513,7 +554,7 @@ mod tests {
             enable_compression: false,
             enable_prefetch: false,
             enable_distributed: false,
-            cache_dir: Some(temp_dir.clone()),
+            cache_dir: Some(temp_dir.to_path_buf()),
             eviction_policy: Default::default(),
         };
 
@@ -549,9 +590,6 @@ mod tests {
         // Check progress
         let progress = warmer.progress().await;
         assert!(progress.is_complete());
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
 
     #[test]

@@ -24,10 +24,10 @@
 use std::path::Path;
 
 use oxigeo_core::io::FileDataSource;
-use oxigeo_geotiff::cog::CogReader;
-use oxigeo_geotiff::tiff::ImageInfo;
+use oxigeo_geotiff::GeoTiffReader;
 
 use crate::error::{QcIssue, QcResult, Severity};
+use crate::raster::band_scan::{RasterScan, native, scan_band};
 
 // ── Band range ────────────────────────────────────────────────────────────────
 
@@ -144,7 +144,7 @@ impl RadiometricValidationResult {
 
 /// Per-sensor radiometric range validator.
 ///
-/// Opens a GeoTIFF via [`CogReader`], samples pixels using a deterministic
+/// Opens a GeoTIFF through the driver's band-aware read engine, samples pixels using a deterministic
 /// stride, and emits [`crate::error::QcIssue`] entries when values fall outside
 /// the profile's expected ranges.
 #[derive(Debug, Clone)]
@@ -185,21 +185,27 @@ impl RadiometricValidator {
     /// Validates the radiometric content of a raster file.
     ///
     /// Uses deterministic stride sampling (~10 000 samples per band maximum).
+    ///
+    /// The sample grid is identical for chunky (`PlanarConfiguration = 1`) and
+    /// planar (`= 2`) files: samples come from the driver's band-aware read
+    /// engine (see `band_scan`), not from a hand-de-interleaved
+    /// `read_tile`, which used to reach only ~`1/spp` of a planar file and
+    /// attribute those samples to the wrong bands.
     pub fn check_file<P: AsRef<Path>>(&self, path: P) -> QcResult<RadiometricValidationResult> {
         let source = FileDataSource::open(path.as_ref()).map_err(|e| {
             crate::error::QcError::RasterError(format!("Failed to open raster: {}", e))
         })?;
-        let reader = CogReader::open(source).map_err(|e| {
+        let reader = GeoTiffReader::open(source).map_err(|e| {
             crate::error::QcError::RasterError(format!("Failed to read GeoTIFF: {}", e))
         })?;
-        let info = reader.primary_info().clone();
-        let band_count = info.samples_per_pixel as usize;
+        let scan = RasterScan::probe(&reader)?;
+        let band_count = scan.band_count;
 
         let mut issues = Vec::new();
         let mut per_band = Vec::with_capacity(band_count);
 
         for band_idx in 0..band_count {
-            let samples = sample_band(&reader, &info, band_idx, band_count)?;
+            let samples = sample_band(&reader, &scan, band_idx)?;
             if samples.is_empty() {
                 continue;
             }
@@ -226,95 +232,52 @@ impl RadiometricValidator {
 
 /// Reads pixel values for one band using stride-based deterministic sampling.
 ///
-/// Stride = `max(1, total_pixels / 10_000)`.
+/// Stride = `max(1, total_pixels / 10_000)` over the band's row-major pixel
+/// index, which is exactly the grid the old tile walk produced for a chunky
+/// file — and, unlike it, the same grid for a planar one.
 fn sample_band<S: oxigeo_core::io::DataSource>(
-    reader: &CogReader<S>,
-    info: &ImageInfo,
+    reader: &GeoTiffReader<S>,
+    scan: &RasterScan,
     band_idx: usize,
-    band_count: usize,
 ) -> QcResult<Vec<f64>> {
-    let total_pixels = info.width as usize * info.height as usize;
+    let total_pixels = usize::try_from(scan.total_pixels()).map_err(|_| {
+        crate::error::QcError::RasterError("raster pixel count overflows usize".to_string())
+    })?;
     if total_pixels == 0 {
         return Ok(Vec::new());
     }
 
     let stride = total_pixels.div_ceil(10_000).max(1);
 
-    let bytes_per_sample = (info.bits_per_sample.first().copied().unwrap_or(8) as usize) / 8;
-    let bytes_per_pixel = bytes_per_sample * band_count;
-
-    let tile_w = info
-        .tile_width
-        .map(|tw| tw as usize)
-        .unwrap_or(info.width as usize);
-    let tile_h = info
-        .tile_height
-        .map(|th| th as usize)
-        .unwrap_or(info.rows_per_strip.unwrap_or(info.height as u32) as usize);
-    let tiles_x = info.tiles_across() as usize;
-    let tiles_y = info.tiles_down() as usize;
-
-    let img_w = info.width as usize;
-    let img_h = info.height as usize;
-
-    let dtype = info
-        .data_type()
-        .ok_or_else(|| crate::error::QcError::RasterError("data type unknown".to_string()))?;
-
     // Pre-allocate a generous upper bound (total_pixels / stride + 1).
     let mut samples = Vec::with_capacity(total_pixels / stride + 1);
 
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let tile_bytes = reader.read_tile(0, tx as u32, ty as u32).map_err(|e| {
-                crate::error::QcError::RasterError(format!("read_tile failed: {}", e))
-            })?;
-
-            // Actual tile height for the last strip in strip-based TIFFs.
-            let actual_tile_h = if info.tile_height.is_none() {
-                let strip_h = info.rows_per_strip.unwrap_or(info.height as u32) as usize;
-                if ty == tiles_y - 1 {
-                    let remaining = img_h.saturating_sub(ty * strip_h);
-                    remaining.min(strip_h)
-                } else {
-                    strip_h
-                }
-            } else {
-                tile_h
-            };
-
-            for row in 0..actual_tile_h {
-                let img_y = ty * tile_h + row;
-                if img_y >= img_h {
-                    break;
-                }
-                for col in 0..tile_w {
-                    let img_x = tx * tile_w + col;
-                    if img_x >= img_w {
-                        break;
-                    }
-                    let global_pixel = img_y * img_w + img_x;
-                    if !global_pixel.is_multiple_of(stride) {
-                        continue;
-                    }
-                    let pixel_offset = (row * tile_w + col) * bytes_per_pixel;
-                    let sample_offset = pixel_offset + band_idx * bytes_per_sample;
-                    if sample_offset + bytes_per_sample > tile_bytes.len() {
-                        continue;
-                    }
-                    let bytes = &tile_bytes[sample_offset..sample_offset + bytes_per_sample];
-                    if let Some(v) = bytes_to_f64(bytes, dtype, info.sample_format) {
-                        samples.push(v);
-                    }
-                }
+    scan_band(reader, scan, band_idx, |first_row, bytes| {
+        let base = usize::try_from(first_row * scan.width).map_err(|_| {
+            crate::error::QcError::RasterError("row offset overflows usize".to_string())
+        })?;
+        for (offset, sample) in bytes.chunks_exact(scan.bytes_per_sample).enumerate() {
+            if !(base + offset).is_multiple_of(stride) {
+                continue;
+            }
+            if let Some(v) = bytes_to_f64(sample, scan.data_type, scan.sample_format) {
+                samples.push(v);
             }
         }
-    }
+        Ok(())
+    })?;
 
     Ok(samples)
 }
 
 /// Converts raw sample bytes to `f64` for any supported data type.
+///
+/// `bytes` is in the **host's** byte order: the driver normalises decoded samples
+/// once, on the way out of block decode, so an `MM` file and its `II` twin
+/// deliver identical bytes here. Consulting the file's byte order — which this
+/// did before cool-japan/oxigeo#14, correctly at the time — would now swap an
+/// `MM` file's samples a second time and turn every min/max/mean/out-of-range
+/// verdict back into fiction.
 fn bytes_to_f64(
     bytes: &[u8],
     dtype: oxigeo_core::types::RasterDataType,
@@ -325,47 +288,17 @@ fn bytes_to_f64(
 
     match (fmt, dtype) {
         (SF::UnsignedInteger, DT::UInt8) => bytes.first().map(|&v| v as f64),
-        (SF::UnsignedInteger, DT::UInt16) => {
-            if bytes.len() < 2 {
-                return None;
-            }
-            Some(u16::from_le_bytes([bytes[0], bytes[1]]) as f64)
-        }
-        (SF::UnsignedInteger, DT::UInt32) => {
-            if bytes.len() < 4 {
-                return None;
-            }
-            Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64)
-        }
+        (SF::UnsignedInteger, DT::UInt16) => native::read_u16(bytes).map(|v| v as f64),
+        (SF::UnsignedInteger, DT::UInt32) => native::read_u32(bytes).map(|v| v as f64),
+        (SF::UnsignedInteger, DT::UInt64) => native::read_u64(bytes).map(|v| v as f64),
         (SF::SignedInteger, DT::Int8) => bytes.first().map(|&v| (v as i8) as f64),
-        (SF::SignedInteger, DT::Int16) => {
-            if bytes.len() < 2 {
-                return None;
-            }
-            Some(i16::from_le_bytes([bytes[0], bytes[1]]) as f64)
-        }
-        (SF::SignedInteger, DT::Int32) => {
-            if bytes.len() < 4 {
-                return None;
-            }
-            Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64)
-        }
-        (SF::IeeeFloatingPoint, DT::Float32) => {
-            if bytes.len() < 4 {
-                return None;
-            }
-            let v = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            if v.is_nan() { None } else { Some(v as f64) }
-        }
-        (SF::IeeeFloatingPoint, DT::Float64) => {
-            if bytes.len() < 8 {
-                return None;
-            }
-            let v = f64::from_le_bytes([
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ]);
-            if v.is_nan() { None } else { Some(v) }
-        }
+        (SF::SignedInteger, DT::Int16) => native::read_i16(bytes).map(|v| v as f64),
+        (SF::SignedInteger, DT::Int32) => native::read_i32(bytes).map(|v| v as f64),
+        (SF::SignedInteger, DT::Int64) => native::read_i64(bytes).map(|v| v as f64),
+        (SF::IeeeFloatingPoint, DT::Float32) => native::read_f32(bytes)
+            .filter(|v| !v.is_nan())
+            .map(f64::from),
+        (SF::IeeeFloatingPoint, DT::Float64) => native::read_f64(bytes).filter(|v| !v.is_nan()),
         _ => None,
     }
 }

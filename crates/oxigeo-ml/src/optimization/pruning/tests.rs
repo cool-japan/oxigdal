@@ -3,6 +3,46 @@
 
 use super::*;
 use crate::optimization::onnx_weights::test_support::build_model;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+/// An RAII fixture path inside [`std::env::temp_dir`].
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_ml_prune_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 #[test]
 fn test_pruning_config_builder() {
@@ -154,9 +194,8 @@ fn test_unstructured_pruning_real_onnx_roundtrip() {
     let w2: Vec<f32> = (1..=9).map(|i| -(i as f32)).collect();
     let model = build_model(&[("w1", vec![4, 4], w1), ("w2", vec![3, 3], w2)]);
 
-    let dir = std::env::temp_dir();
-    let input = dir.join("oxigeo_prune_unstruct_in.onnx");
-    let output = dir.join("oxigeo_prune_unstruct_out.onnx");
+    let input = TempPath::new("unstruct_in.onnx");
+    let output = TempPath::new("unstruct_out.onnx");
     std::fs::write(&input, &model).expect("write input");
 
     let config = PruningConfig::builder()
@@ -181,9 +220,6 @@ fn test_unstructured_pruning_real_onnx_roundtrip() {
         crate::optimization::onnx_weights::parse_float_initializers(&out_bytes).expect("parse");
     let w1_out = &inits[0].values;
     assert_eq!(w1_out[0], 0.0, "smallest magnitude weight should be pruned");
-
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
 }
 
 #[test]
@@ -197,9 +233,8 @@ fn test_structured_pruning_zeroes_whole_channels() {
     ];
     let model = build_model(&[("conv", vec![4, 4], weights)]);
 
-    let dir = std::env::temp_dir();
-    let input = dir.join("oxigeo_prune_struct_in.onnx");
-    let output = dir.join("oxigeo_prune_struct_out.onnx");
+    let input = TempPath::new("struct_in.onnx");
+    let output = TempPath::new("struct_out.onnx");
     std::fs::write(&input, &model).expect("write input");
 
     let config = PruningConfig::builder()
@@ -219,16 +254,12 @@ fn test_structured_pruning_zeroes_whole_channels() {
     // Channel 0 (indices 0..4) must be fully zeroed; others untouched.
     assert_eq!(&vals[0..4], &[0.0, 0.0, 0.0, 0.0]);
     assert_eq!(&vals[4..8], &[5.0, 5.0, 5.0, 5.0]);
-
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
 }
 
 #[test]
 fn test_pruning_rejects_non_onnx_input() {
-    let dir = std::env::temp_dir();
-    let input = dir.join("oxigeo_prune_bad_in.bin");
-    let output = dir.join("oxigeo_prune_bad_out.bin");
+    let input = TempPath::new("bad_in.bin");
+    let output = TempPath::new("bad_out.bin");
     std::fs::write(&input, vec![0xAAu8; 128]).expect("write");
 
     let config = PruningConfig::builder().sparsity_target(0.5).build();
@@ -237,7 +268,75 @@ fn test_pruning_rejects_non_onnx_input() {
         result.is_err(),
         "non-ONNX input must be rejected, not corrupted"
     );
+}
 
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
+/// `iterative_pruning` must not let concurrent callers trample each other.
+///
+/// The intermediate models were written straight into `std::env::temp_dir()` as
+/// `pruned_iter_{i}.onnx` with no uniquing whatsoever, so two simultaneous calls
+/// shared one set of filenames: each iteration read back whichever model the
+/// *other* thread had most recently written and pruned that instead. Every
+/// thread here uses a distinct parameter count, so a crossed intermediate shows
+/// up immediately as the wrong `original_params` on iteration 2+ or as a final
+/// model of the wrong size.
+#[test]
+fn test_iterative_pruning_is_safe_under_concurrency() {
+    /// Distinct tensor width per thread => distinct parameter count.
+    const THREADS: usize = 8;
+    const ITERATIONS: usize = 3;
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|t| {
+            std::thread::spawn(move || {
+                // Thread t gets (t + 3) x (t + 3) weights: 9, 16, 25, ... params.
+                let side = t + 3;
+                let params = side * side;
+                let weights: Vec<f32> = (1..=params).map(|i| i as f32).collect();
+                let model = build_model(&[("w", vec![side as i64, side as i64], weights)]);
+
+                let input = TempPath::new(&format!("iter_concurrent_in_{t}.onnx"));
+                let output = TempPath::new(&format!("iter_concurrent_out_{t}.onnx"));
+                std::fs::write(&input, &model).expect("write input");
+
+                let config = PruningConfig::builder()
+                    .strategy(PruningStrategy::Magnitude)
+                    .sparsity_target(0.5)
+                    .schedule(PruningSchedule::Iterative {
+                        iterations: ITERATIONS,
+                    })
+                    .build();
+
+                let history = iterative_pruning(&*input, &*output, &config).expect("prune");
+
+                assert_eq!(
+                    history.len(),
+                    ITERATIONS,
+                    "thread {t}: one stats entry per iteration"
+                );
+                for (i, stats) in history.iter().enumerate() {
+                    assert_eq!(
+                        stats.original_params, params,
+                        "thread {t} iteration {i}: pruned a model with {} params, but this \
+                         thread's model has {params} — an intermediate from another thread \
+                         was picked up",
+                        stats.original_params
+                    );
+                }
+
+                // The final output must still be this thread's model.
+                let out_bytes = std::fs::read(&output).expect("read output");
+                let (_, total) = count_zeros(&out_bytes);
+                assert_eq!(
+                    total, params,
+                    "thread {t}: final model has {total} params, expected {params}"
+                );
+            })
+        })
+        .collect();
+
+    for (t, handle) in handles.into_iter().enumerate() {
+        handle
+            .join()
+            .unwrap_or_else(|_| panic!("thread {t} panicked"));
+    }
 }

@@ -1044,10 +1044,50 @@ impl core::fmt::Display for DatasetWriter {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn make_temp_geojson(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir();
-        let path = dir.join(name);
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_builder_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn make_temp_geojson(name: &str) -> TempPath {
+        let path = TempPath::new(name);
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(b"{}").expect("write");
         path
@@ -1123,21 +1163,21 @@ mod tests {
 
     #[test]
     fn test_create_builder_stores_format() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.tif");
+        let path = TempPath::new("out_test.tif");
         let builder = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff);
         assert_eq!(builder.format(), OutputFormat::GeoTiff);
     }
 
     #[test]
     fn test_create_builder_stores_crs() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.tif");
+        let path = TempPath::new("out_test.tif");
         let builder = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff).with_crs("EPSG:4326");
         assert_eq!(builder.options().crs.as_deref(), Some("EPSG:4326"));
     }
 
     #[test]
     fn test_create_builder_stores_compression() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.tif");
+        let path = TempPath::new("out_test.tif");
         let builder = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_compression(CompressionType::Zstd);
         assert_eq!(builder.options().compression, CompressionType::Zstd);
@@ -1145,7 +1185,7 @@ mod tests {
 
     #[test]
     fn test_create_builder_stores_tile_size() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.tif");
+        let path = TempPath::new("out_test.tif");
         let builder =
             DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff).with_tile_size(512, 512);
         assert_eq!(builder.options().tile_size, Some((512, 512)));
@@ -1153,7 +1193,7 @@ mod tests {
 
     #[test]
     fn test_create_builder_stores_decimal_precision() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.geojson");
+        let path = TempPath::new("out_test.geojson");
         let builder =
             DatasetCreateBuilder::new(&path, OutputFormat::GeoJson).with_decimal_precision(7);
         assert_eq!(builder.options().decimal_precision, Some(7));
@@ -1161,7 +1201,7 @@ mod tests {
 
     #[test]
     fn test_create_builder_zero_tile_size_error() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.tif");
+        let path = TempPath::new("out_test.tif");
         let result = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_tile_size(0, 256)
             .create();
@@ -1170,7 +1210,7 @@ mod tests {
 
     #[test]
     fn test_create_builder_invalid_predictor_error() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.tif");
+        let path = TempPath::new("out_test.tif");
         let result = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_predictor(5)
             .create();
@@ -1179,7 +1219,7 @@ mod tests {
 
     #[test]
     fn test_create_builder_jpeg_non_geotiff_error() {
-        let path = std::env::temp_dir().join("oxigeo_out_test.geojson");
+        let path = TempPath::new("out_test.geojson");
         let result = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
             .with_compression(CompressionType::Jpeg)
             .create();
@@ -1188,7 +1228,7 @@ mod tests {
 
     #[test]
     fn test_create_builder_valid_create() {
-        let path = std::env::temp_dir().join("oxigeo_valid_out_test.tif");
+        let path = TempPath::new("valid_out_test.tif");
         let writer = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_crs("EPSG:4326")
             .with_compression(CompressionType::Deflate)
@@ -1228,7 +1268,7 @@ mod tests {
 
     #[test]
     fn test_dataset_writer_display() {
-        let path = std::env::temp_dir().join("oxigeo_disp_test.tif");
+        let path = TempPath::new("disp_test.tif");
         let writer = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_compression(CompressionType::Lzw)
             .create()
@@ -1242,7 +1282,7 @@ mod tests {
 
     #[test]
     fn test_writer_set_dimensions() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1254,7 +1294,7 @@ mod tests {
 
     #[test]
     fn test_writer_zero_dimensions_error() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1265,7 +1305,7 @@ mod tests {
 
     #[test]
     fn test_writer_write_band_requires_config() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1275,7 +1315,7 @@ mod tests {
 
     #[test]
     fn test_writer_write_band_validates_size() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1288,7 +1328,7 @@ mod tests {
 
     #[test]
     fn test_writer_write_band_validates_index() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1302,7 +1342,7 @@ mod tests {
 
     #[test]
     fn test_writer_write_all_bands() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1315,8 +1355,7 @@ mod tests {
 
     #[test]
     fn test_writer_finalize_geojson() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("writer_finalize_test.geojson");
+        let path = TempPath::new("writer_finalize_test.geojson");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
             .with_crs("EPSG:4326")
             .with_decimal_precision(6)
@@ -1327,13 +1366,11 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("read");
         assert!(content.contains("FeatureCollection"));
         assert!(content.contains("EPSG:4326"));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_writer_geojson_add_feature_writes_real_content() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("writer_add_feature_test.geojson");
+        let path = TempPath::new("writer_add_feature_test.geojson");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
             .create()
             .expect("create");
@@ -1358,12 +1395,11 @@ mod tests {
             serde_json::json!("Tokyo")
         );
         assert_eq!(features[0]["geometry"]["type"], serde_json::json!("Point"));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_writer_add_feature_rejects_raster_format() {
-        let path = std::env::temp_dir().join("writer_add_feature_reject.tif");
+        let path = TempPath::new("writer_add_feature_reject.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");
@@ -1377,8 +1413,7 @@ mod tests {
         use oxigeo_core::io::FileDataSource;
         use oxigeo_geotiff::GeoTiffReader;
 
-        let dir = std::env::temp_dir();
-        let path = dir.join("writer_finalize_geotiff_test.tif");
+        let path = TempPath::new("writer_finalize_geotiff_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .with_crs("EPSG:4326")
             .create()
@@ -1400,13 +1435,11 @@ mod tests {
             vec![10, 20, 30, 40],
             "pixel data should round-trip through the real GeoTIFF writer"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_writer_finalize_unsupported_format_errors() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("writer_finalize_gpkg_test.gpkg");
+        let path = TempPath::new("writer_finalize_gpkg_test.gpkg");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoPackage)
             .create()
             .expect("create");
@@ -1428,25 +1461,21 @@ mod tests {
             !path.exists(),
             "no placeholder file should be written for an unsupported format"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_writer_double_finalize_error() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("writer_double_finalize.geojson");
+        let path = TempPath::new("writer_double_finalize.geojson");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
             .create()
             .expect("create");
         w.finalize().expect("finalize");
         assert!(w.finalize().is_err(), "double finalize should error");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_writer_write_after_finalize_error() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("writer_write_after_fin.geojson");
+        let path = TempPath::new("writer_write_after_fin.geojson");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoJson)
             .create()
             .expect("create");
@@ -1457,12 +1486,11 @@ mod tests {
             w.write_band(1, &[0u8; 4]).is_err(),
             "write after finalize should error"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_writer_geo_transform() {
-        let path = std::env::temp_dir().join("oxigeo_w_test.tif");
+        let path = TempPath::new("w_test.tif");
         let mut w = DatasetCreateBuilder::new(&path, OutputFormat::GeoTiff)
             .create()
             .expect("create");

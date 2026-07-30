@@ -27,11 +27,50 @@ mod tests {
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn unique_suffix() -> String {
-        static CTR: AtomicU64 = AtomicU64::new(0);
-        let n = CTR.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        format!("{pid}_{n}")
+    /// Per-test scratch SQLite fixture inside the system temp dir (house
+    /// policy: no hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same database.  Dropping the guard removes the fixture *and its
+    /// SQLite companions*, so a panicking test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static CTR: AtomicU64 = AtomicU64::new(0);
+            let n = CTR.fetch_add(1, Ordering::Relaxed);
+            Self(env::temp_dir().join(format!(
+                "oxigeo_gpkg_export_{}_{n}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            // SQLite writes `-wal` / `-shm` / `-journal` companions next to
+            // the database; removing only the main file would leak them.
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let mut sidecar = self.0.clone().into_os_string();
+                sidecar.push(suffix);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
+            }
+        }
     }
 
     fn make_rt() -> tokio::runtime::Runtime {
@@ -83,7 +122,7 @@ mod tests {
     ///
     /// `tiles` is a slice of `(zoom_level, tile_column, tile_row, tile_data)`.
     fn make_test_gpkg(tiles: &[(u32, u32, u32, Vec<u8>)]) -> Vec<u8> {
-        let path = env::temp_dir().join(format!("test_gpkg_{}.gpkg", unique_suffix()));
+        let path = TempPath::new("test_gpkg.gpkg");
         let rt = make_rt();
         let conn = oxisql_open(&rt, &path);
 
@@ -252,9 +291,7 @@ mod tests {
         rt.block_on(conn.execute_batch("PRAGMA wal_checkpoint"))
             .unwrap();
         drop(conn);
-        let bytes = std::fs::read(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
-        bytes
+        std::fs::read(&path).unwrap()
     }
 
     /// A fake PNG blob (starts with `\x89PNG`).
@@ -327,12 +364,11 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out = env::temp_dir().join(format!("empty_{}.mbtiles", unique_suffix()));
+        let out = TempPath::new("empty.mbtiles");
         let stats = exporter.export_to_path(&out).expect("export must succeed");
 
         assert_eq!(stats.tiles_written, 0, "empty pyramid => 0 tiles written");
         assert_eq!(stats.bytes_written, 0);
-        let _ = std::fs::remove_file(&out);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -348,7 +384,7 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out = env::temp_dir().join(format!("with_tiles_{}.mbtiles", unique_suffix()));
+        let out = TempPath::new("with_tiles.mbtiles");
         let stats = exporter.export_to_path(&out).expect("export must succeed");
 
         assert_eq!(stats.tiles_written, 1);
@@ -358,7 +394,6 @@ mod tests {
         let conn = oxisql_open(&rt, &out);
         let count = oxisql_count(&rt, &conn, "SELECT COUNT(*) FROM tiles");
         assert_eq!(count, 1);
-        let _ = std::fs::remove_file(&out);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -374,7 +409,7 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out = env::temp_dir().join(format!("meta_{}.mbtiles", unique_suffix()));
+        let out = TempPath::new("meta.mbtiles");
         let stats = exporter.export_to_path(&out).expect("export must succeed");
 
         assert!(
@@ -403,7 +438,6 @@ mod tests {
             &[],
         );
         assert_eq!(format.as_deref(), Some("png"));
-        let _ = std::fs::remove_file(&out);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -419,7 +453,7 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out_path = env::temp_dir().join(format!("out_{}.mbtiles", unique_suffix()));
+        let out_path = TempPath::new("out.mbtiles");
         let stats = exporter
             .export_to_path(&out_path)
             .expect("export_to_path must succeed");
@@ -431,8 +465,6 @@ mod tests {
         let conn = oxisql_open(&rt, &out_path);
         let count = oxisql_count(&rt, &conn, "SELECT COUNT(*) FROM tiles");
         assert_eq!(count, 1);
-
-        let _ = std::fs::remove_file(&out_path);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -451,7 +483,7 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out = env::temp_dir().join(format!("rt_{}.mbtiles", unique_suffix()));
+        let out = TempPath::new("rt.mbtiles");
         exporter.export_to_path(&out).expect("export must succeed");
 
         let rt = make_rt();
@@ -468,7 +500,6 @@ mod tests {
             Some(blob.as_slice()),
             "tile_data must round-trip byte-for-byte through MBTiles"
         );
-        let _ = std::fs::remove_file(&out);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -487,7 +518,7 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out = env::temp_dir().join(format!("tms_{}.mbtiles", unique_suffix()));
+        let out = TempPath::new("tms.mbtiles");
         exporter.export_to_path(&out).expect("export must succeed");
 
         let rt = make_rt();
@@ -512,8 +543,6 @@ mod tests {
             exists_row0, 1,
             "TMS row 0 must exist for gpkg_row=1 at zoom 1"
         );
-
-        let _ = std::fs::remove_file(&out);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -544,11 +573,10 @@ mod tests {
         let exporter =
             GpkgMbTilesExporter::new(&gpkg, "test_tiles").expect("exporter construction");
 
-        let out = env::temp_dir().join(format!("zoom_{}.mbtiles", unique_suffix()));
+        let out = TempPath::new("zoom.mbtiles");
         let stats = exporter.export_to_path(&out).expect("export must succeed");
 
         assert_eq!(stats.min_zoom, 0);
         assert_eq!(stats.max_zoom, 1);
-        let _ = std::fs::remove_file(&out);
     }
 }

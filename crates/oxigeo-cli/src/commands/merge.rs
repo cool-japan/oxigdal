@@ -343,14 +343,56 @@ fn merge_band(
 mod tests {
     use super::*;
     use crate::OutputFormat;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_cli_merge_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     /// `execute` must reject a merge request with fewer than 2 inputs before
     /// touching the filesystem, with the exact "at least 2 input files"
     /// message from the check at the top of the function.
     #[test]
     fn test_merge_requires_multiple_inputs() {
+        let output = TempPath::new("single_input.tif");
         let args = MergeArgs {
-            output: std::env::temp_dir().join("oxigeo_cli_merge_test_single_input.tif"),
+            output: output.to_path_buf(),
             inputs: vec![PathBuf::from("only_one_input.tif")],
             no_data: None,
             output_no_data: None,
@@ -373,8 +415,9 @@ mod tests {
     /// different error (e.g. an index-out-of-bounds panic from `all_info[0]`).
     #[test]
     fn test_merge_requires_multiple_inputs_zero() {
+        let output = TempPath::new("zero_inputs.tif");
         let args = MergeArgs {
-            output: std::env::temp_dir().join("oxigeo_cli_merge_test_zero_inputs.tif"),
+            output: output.to_path_buf(),
             inputs: Vec::new(),
             no_data: None,
             output_no_data: None,

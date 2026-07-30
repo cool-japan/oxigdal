@@ -93,6 +93,13 @@ tempfile.workspace = true
 name = "memory_bench"
 harness = false
 
+# Bulk raster-conversion microbenchmark (GitHub issue #14). Plain `Instant`
+# timing with interleaved A/B rounds and medians — no criterion harness, so it
+# stays honest on a loaded machine and costs no extra dependency.
+[[bench]]
+name = "issue_14_convert_bench"
+harness = false
+
 [lints]
 workspace = true
 

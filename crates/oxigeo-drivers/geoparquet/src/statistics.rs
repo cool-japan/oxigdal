@@ -212,6 +212,15 @@ mod tests {
         p
     }
 
+    /// Write `batches` to `path`, one row group per batch, and check that the
+    /// file really came out with `row_groups` row groups.
+    ///
+    /// `row_groups` used to be discarded via `let _ = row_groups;`, which left
+    /// the fixtures' central assumption — that the write+flush loop below puts
+    /// each batch in its own row group — completely unchecked. Only two of the
+    /// five callers assert the resulting group count themselves, so a change in
+    /// the parquet writer's flush semantics would have silently reshaped the
+    /// other three fixtures out from under their assertions.
     fn write_simple_parquet(
         path: &std::path::Path,
         schema: Arc<ArrowSchema>,
@@ -220,10 +229,7 @@ mod tests {
     ) {
         let _ = std::fs::remove_file(path);
         let file = File::create(path).expect("create");
-        let _ = row_groups; // each `write` call below produces one row group.
-        // Use a large row count so each write+flush produces one row group;
-        // the write+flush pattern below is what governs row-group boundaries
-        // in tests.
+        // Each write+flush pair closes one row group.
         let props = WriterProperties::builder().build();
         let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("writer");
         for batch in batches {
@@ -231,6 +237,13 @@ mod tests {
             writer.flush().expect("flush");
         }
         writer.close().expect("close");
+
+        let actual = read_metadata(path).num_row_groups();
+        assert_eq!(
+            actual, row_groups,
+            "fixture {path:?} was expected to have {row_groups} row group(s), \
+             but the writer produced {actual}"
+        );
     }
 
     fn read_metadata(path: &std::path::Path) -> Arc<ParquetMetaData> {

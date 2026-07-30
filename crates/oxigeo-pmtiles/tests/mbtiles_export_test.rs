@@ -12,6 +12,53 @@
 
 use oxigeo_pmtiles::writer::PmTilesBuilder;
 use oxigeo_pmtiles::{MbTilesConn, MbTilesExportStats, MbTilesExporter, PmTilesReader, TileType};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture (and any SQLite sidecars), so
+/// a panicking test leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_pmtiles_mbtiles_export_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        // SQLite may leave -wal / -shm / -journal sidecars next to the file.
+        if let Some(name) = self.0.file_name().and_then(|n| n.to_str()) {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let _ = std::fs::remove_file(self.0.with_file_name(format!("{name}{suffix}")));
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helper builders
@@ -219,7 +266,7 @@ fn test_export_to_file_creates_valid_sqlite() {
     let bytes = builder.build().expect("build archive");
     let reader = PmTilesReader::from_bytes(bytes).expect("parse archive");
 
-    let tmp_path = std::env::temp_dir().join("oxigeo_mbtiles_export_test_file.mbtiles");
+    let tmp_path = TempPath::new("file.mbtiles");
     let exporter = MbTilesExporter::new(&reader);
     let stats = exporter
         .export_to_path(&tmp_path)
@@ -233,8 +280,6 @@ fn test_export_to_file_creates_valid_sqlite() {
         .query_count("SELECT COUNT(*) FROM tiles", &[])
         .expect("query tile count");
     assert_eq!(db_count, 2, "exported file should contain 2 tile rows");
-
-    let _ = std::fs::remove_file(&tmp_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +327,7 @@ fn test_export_round_trip_tile_data_byte_exact() {
 
 #[test]
 fn test_export_to_path_overwrites_existing() {
-    let tmp_path = std::env::temp_dir().join("oxigeo_mbtiles_export_test_overwrite.mbtiles");
+    let tmp_path = TempPath::new("overwrite.mbtiles");
 
     let reader1 = empty_archive(TileType::Png, 0, 2);
     let exporter1 = MbTilesExporter::new(&reader1);
@@ -319,8 +364,6 @@ fn test_export_to_path_overwrites_existing() {
         format, "pbf",
         "overwritten file should reflect second archive's tile type (MVT → pbf)"
     );
-
-    let _ = std::fs::remove_file(&tmp_path);
 }
 
 // ---------------------------------------------------------------------------

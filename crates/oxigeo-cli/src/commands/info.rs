@@ -1055,7 +1055,7 @@ mod tests {
     #[test]
     fn test_read_gpkg_info_synthesized_fixture() {
         let path = crate::commands::test_fixtures::gpkg_fixture_path();
-        let info = read_gpkg_info(&args_for(path.clone())).expect("read GeoPackage info");
+        let info = read_gpkg_info(&args_for(path.to_path_buf())).expect("read GeoPackage info");
         assert_eq!(info.layer_count, 1);
         let layer = &info.layers[0];
         assert_eq!(layer.table_name, "cities");
@@ -1069,7 +1069,7 @@ mod tests {
     #[test]
     fn test_read_mbtiles_info_synthesized_fixture() {
         let path = crate::commands::test_fixtures::mbtiles_fixture_path();
-        let info = read_mbtiles_info(&args_for(path.clone())).expect("read MBTiles info");
+        let info = read_mbtiles_info(&args_for(path.to_path_buf())).expect("read MBTiles info");
         assert_eq!(info.tile_count, 3);
         assert_eq!(info.min_zoom, Some(0));
         assert_eq!(info.max_zoom, Some(1));

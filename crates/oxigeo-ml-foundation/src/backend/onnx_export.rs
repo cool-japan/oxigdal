@@ -1108,7 +1108,8 @@ mod tests {
         let mut weights = WeightMap::new();
         weights.insert("w".to_string(), vec![10.0, 20.0, 30.0]);
 
-        let path = std::env::temp_dir().join("oxigeo_ml_weights_test.oxw");
+        let path =
+            std::env::temp_dir().join(format!("oxigeo_ml_weights_test_{}.oxw", std::process::id()));
         save_weights_to_path(&weights, &path).expect("save");
         let restored = load_weights_from_path(&path).expect("load");
         let _ = std::fs::remove_file(&path);

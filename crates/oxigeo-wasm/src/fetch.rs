@@ -121,6 +121,7 @@ use oxigeo_core::error::{IoError, OxiGeoError, Result};
 use oxigeo_core::io::{ByteRange, DataSource};
 
 use crate::error::{FetchError, WasmError, WasmResult};
+use crate::memory_source::{dst_too_small, needed_len};
 
 /// Default maximum retry attempts
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -302,6 +303,12 @@ impl FetchBackend {
     }
 }
 
+// `read_range_into` / `range_slice` (cool-japan/oxigeo#14) are deliberately
+// left at their trait defaults here: this backend holds no bytes of its own --
+// every read is a live `fetch()` -- so there is nothing to lend, and the
+// synchronous path below cannot produce data to write into a caller's buffer
+// either. The defaults (`None`, and "reject an undersized `dst`, then surface
+// the same `NotSupported` error") are exactly right.
 impl DataSource for FetchBackend {
     fn size(&self) -> Result<u64> {
         Ok(self.size)
@@ -413,6 +420,28 @@ impl PrefetchedFetchBackend {
 
         Ok(Self { url, size, data })
     }
+
+    /// Borrows `range` out of the prefetched buffer, or reports the same
+    /// end-of-file error [`DataSource::read_range`] reports for it.
+    ///
+    /// Bounds are checked against the bytes actually held, not against
+    /// [`Self::size`]: `with_header` prefetches only the leading portion of a
+    /// much larger remote object.
+    ///
+    /// `usize::try_from` rather than `as usize`: on `wasm32` (a 32-bit target)
+    /// a cast would silently truncate an offset past 4 GiB, and the previous
+    /// `range.end as usize` check also let an inverted range through to a
+    /// panicking slice index.
+    fn slice_for(&self, range: ByteRange) -> Result<&[u8]> {
+        let eof = || {
+            OxiGeoError::Io(IoError::UnexpectedEof {
+                offset: range.start,
+            })
+        };
+        let start = usize::try_from(range.start).map_err(|_| eof())?;
+        let end = usize::try_from(range.end).map_err(|_| eof())?;
+        self.data.get(start..end).ok_or_else(eof)
+    }
 }
 
 impl DataSource for PrefetchedFetchBackend {
@@ -421,12 +450,32 @@ impl DataSource for PrefetchedFetchBackend {
     }
 
     fn read_range(&self, range: ByteRange) -> Result<Vec<u8>> {
-        if range.end as usize > self.data.len() {
-            return Err(OxiGeoError::Io(IoError::UnexpectedEof {
-                offset: range.start,
-            }));
+        Ok(self.slice_for(range)?.to_vec())
+    }
+
+    /// Copies straight out of the prefetched buffer, skipping the intermediate
+    /// `Vec` the trait's default implementation would allocate per block
+    /// (cool-japan/oxigeo#14).
+    fn read_range_into(&self, range: ByteRange, dst: &mut [u8]) -> Result<usize> {
+        if let Some(needed) = needed_len(range)
+            && dst.len() < needed
+        {
+            return Err(dst_too_small(needed, dst.len()));
         }
-        Ok(self.data[range.start as usize..range.end as usize].to_vec())
+        let src = self.slice_for(range)?;
+        let available = dst.len();
+        let out = dst
+            .get_mut(..src.len())
+            .ok_or_else(|| dst_too_small(src.len(), available))?;
+        out.copy_from_slice(src);
+        Ok(src.len())
+    }
+
+    /// Lends the requested bytes straight out of the prefetched buffer: once a
+    /// range has been downloaded, re-reading it costs neither an allocation nor
+    /// a copy.
+    fn range_slice(&self, range: ByteRange) -> Option<&[u8]> {
+        self.slice_for(range).ok()
     }
 }
 
@@ -1036,6 +1085,128 @@ mod tests {
         assert!(queue.get_completed(id2).is_some());
 
         assert_eq!(queue.pending_count(), 1);
+    }
+
+    /// Builds a backend over an already-downloaded buffer, the state
+    /// `PrefetchedFetchBackend::new` / `with_header` leave behind (both are
+    /// browser-only, so the constructors themselves cannot run under `cargo
+    /// test`). `size` is deliberately larger than `data`, mirroring
+    /// `with_header`'s partial prefetch of a big remote object.
+    fn prefetched(data: Vec<u8>, size: u64) -> PrefetchedFetchBackend {
+        PrefetchedFetchBackend {
+            url: "https://example.invalid/cog.tif".to_string(),
+            size,
+            data,
+        }
+    }
+
+    /// cool-japan/oxigeo#14: the zero-copy entry points must agree with
+    /// `read_range` byte for byte, and error for error.
+    #[test]
+    fn test_issue_14_prefetched_read_range_into_matches_read_range() {
+        let src = prefetched((0u8..32).collect(), 1 << 20);
+        for range in [
+            ByteRange::new(0, 32),
+            ByteRange::new(8, 20),
+            ByteRange::new(0, 1),
+            ByteRange::new(31, 32),
+            ByteRange::new(5, 5),
+            ByteRange::new(32, 32),
+        ] {
+            let expected = src.read_range(range).expect("read_range");
+            let mut dst = vec![0x5Au8; expected.len()];
+            let written = src.read_range_into(range, &mut dst).expect("read_into");
+            assert_eq!(written, expected.len(), "count mismatch for {range:?}");
+            assert_eq!(dst, expected, "bytes mismatch for {range:?}");
+        }
+
+        // Beyond the *prefetched* bytes (even though `size` says the remote
+        // object is far larger) and inverted ranges must fail identically.
+        for range in [
+            ByteRange::new(28, 40),
+            ByteRange::new(32, 33),
+            ByteRange::new(20, 8),
+        ] {
+            assert!(src.read_range(range).is_err(), "read_range {range:?}");
+            let mut dst = vec![0u8; 64];
+            let err = src
+                .read_range_into(range, &mut dst)
+                .expect_err("read_range_into should reject");
+            assert!(
+                matches!(err, OxiGeoError::Io(IoError::UnexpectedEof { .. })),
+                "expected EOF for {range:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_issue_14_prefetched_read_range_into_buffer_sizing() {
+        let src = prefetched((0u8..16).collect(), 16);
+        let range = ByteRange::new(4, 12);
+
+        let mut dst = vec![0xEEu8; 12];
+        assert_eq!(src.read_range_into(range, &mut dst).expect("read_into"), 8);
+        assert_eq!(&dst[..8], &(4u8..12).collect::<Vec<u8>>()[..]);
+        assert_eq!(&dst[8..], &[0xEE; 4], "tail must be left alone");
+
+        let mut dst = vec![0xEEu8; 7];
+        let err = src
+            .read_range_into(range, &mut dst)
+            .expect_err("short dst must be rejected");
+        assert!(
+            matches!(err, OxiGeoError::InvalidParameter { parameter, .. } if parameter == "dst"),
+            "expected an InvalidParameter(dst) error, got {err}"
+        );
+        assert_eq!(dst, vec![0xEE; 7], "dst must be untouched");
+
+        assert_eq!(
+            src.read_range_into(ByteRange::new(3, 3), &mut [])
+                .expect("empty range"),
+            0
+        );
+    }
+
+    #[test]
+    fn test_issue_14_prefetched_range_slice_borrows_backing_buffer() {
+        let src = prefetched((0u8..64).collect(), 1 << 30);
+        let borrowed = src.range_slice(ByteRange::new(16, 48)).expect("borrow");
+        assert_eq!(borrowed, &src.data[16..48]);
+        assert!(
+            std::ptr::eq(borrowed.as_ptr(), src.data[16..48].as_ptr()),
+            "range_slice must borrow the prefetched buffer, not copy it"
+        );
+
+        assert!(
+            src.range_slice(ByteRange::new(9, 9))
+                .expect("empty")
+                .is_empty()
+        );
+        assert!(
+            src.range_slice(ByteRange::new(60, 65)).is_none(),
+            "past the prefetched bytes"
+        );
+        assert!(src.range_slice(ByteRange::new(40, 8)).is_none(), "inverted");
+        assert!(
+            src.range_slice(ByteRange::new(u64::MAX - 1, u64::MAX))
+                .is_none(),
+            "unrepresentable offset"
+        );
+    }
+
+    /// The live-fetch backend holds nothing it could lend, and says so.
+    #[test]
+    fn test_issue_14_fetch_backend_cannot_lend() {
+        let backend = FetchBackend {
+            url: "https://example.invalid/cog.tif".to_string(),
+            size: 4096,
+            supports_range: true,
+        };
+        assert!(backend.range_slice(ByteRange::new(0, 16)).is_none());
+        assert!(
+            backend
+                .read_range_into(ByteRange::new(0, 16), &mut [0u8; 16])
+                .is_err()
+        );
     }
 
     // WASM-specific tests would use wasm-bindgen-test

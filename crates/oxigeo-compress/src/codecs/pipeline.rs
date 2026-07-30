@@ -379,7 +379,18 @@ const LZ4_SIZE_GUESS_MULTIPLIERS: &[usize] = &[4, 16, 64, 256, 1024, 4096, 16384
 /// `oxiarc_lz4::decompress_block` only pre-allocates `min(bound, input.len()*4)`
 /// and grows on demand, so a large bound here does not itself allocate 4 GiB —
 /// it is purely the decoder's overflow ceiling.
-const LZ4_MAX_OUTPUT_GUESS: usize = 4 * 1024 * 1024 * 1024;
+///
+/// 4 GiB does not fit in a 32-bit `usize` (`wasm32`, 32-bit ARM/x86); there the
+/// ceiling saturates at `usize::MAX`, which is the same "entire address space"
+/// bound one word smaller.
+const LZ4_MAX_OUTPUT_GUESS: usize = {
+    const FOUR_GIB: u64 = 4 * 1024 * 1024 * 1024;
+    if FOUR_GIB <= usize::MAX as u64 {
+        FOUR_GIB as usize
+    } else {
+        usize::MAX
+    }
+};
 
 /// Decompress a [`PipelineStage::Lz4`] payload, growing the output-size bound
 /// on each retry until decoding succeeds. The fixed

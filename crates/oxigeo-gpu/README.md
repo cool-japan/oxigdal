@@ -22,14 +22,14 @@ GPU-accelerated geospatial operations for OxiGeo using [wgpu](https://wgpu.rs/) 
 
 ```toml
 [dependencies]
-oxigeo-gpu = "0.2.1"
+oxigeo-gpu = "0.2.2"
 ```
 
 Enable WebGPU on WASM targets:
 
 ```toml
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-oxigeo-gpu = { version = "0.2.1", features = ["webgpu"] }
+oxigeo-gpu = { version = "0.2.2", features = ["webgpu"] }
 ```
 
 ## Quick Start

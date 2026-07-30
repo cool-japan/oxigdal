@@ -5,7 +5,47 @@ use oxigeo_3d::classification::*;
 use oxigeo_3d::mesh::*;
 use oxigeo_3d::pointcloud::*;
 use oxigeo_3d::terrain::*;
-use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_3d_pointcloud_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 #[test]
 fn test_point_creation_and_classification() {
@@ -281,19 +321,14 @@ fn test_integration_point_cloud_to_mesh_export() {
     let mesh = tin_to_mesh(&tin).expect("TIN to mesh conversion should succeed");
 
     // Export to OBJ
-    let temp_dir = env::temp_dir();
-    let obj_path = temp_dir.join("test_integration.obj");
+    let obj_path = TempPath::new("test_integration.obj");
     let result = export_obj(&mesh, &obj_path);
     assert!(result.is_ok());
 
     // Export to GLB
-    let glb_path = temp_dir.join("test_integration.glb");
+    let glb_path = TempPath::new("test_integration.glb");
     let result = export_glb(&mesh, &glb_path);
     assert!(result.is_ok());
-
-    // Clean up
-    let _ = std::fs::remove_file(&obj_path);
-    let _ = std::fs::remove_file(&glb_path);
 }
 
 #[test]

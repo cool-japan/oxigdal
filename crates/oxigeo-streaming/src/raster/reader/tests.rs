@@ -95,6 +95,365 @@ fn write_test_geotiff(
     writer.write(data).expect("write data");
 }
 
+/// Helper: write a *striped* (non-tiled) test GeoTIFF.
+///
+/// `WriterConfig` has no `with_striped()` builder -- striped output is selected
+/// by clearing `tile_width`/`tile_height`, which `GeoTiffWriter` then routes
+/// through `write_striped_data` (16 rows per strip). Every other fixture in
+/// this file calls `.with_tile_size(256, 256)`, which is exactly why the
+/// striped decode path went untested; see
+/// <https://github.com/cool-japan/oxigeo/issues/14>.
+fn write_test_geotiff_striped(
+    path: &Path,
+    width: u64,
+    height: u64,
+    band_count: u16,
+    data_type: oxigeo_core::types::RasterDataType,
+    data: &[u8],
+    gt: &GeoTransform,
+) {
+    use oxigeo_geotiff::tiff::{Compression, PhotometricInterpretation, Predictor};
+    use oxigeo_geotiff::writer::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
+
+    let photometric = if band_count >= 3 {
+        PhotometricInterpretation::Rgb
+    } else {
+        PhotometricInterpretation::BlackIsZero
+    };
+
+    let mut config = WriterConfig::new(width, height, band_count, data_type)
+        .with_compression(Compression::None)
+        .with_predictor(Predictor::None)
+        .with_photometric(photometric)
+        .with_geo_transform(*gt)
+        .with_overviews(false, oxigeo_geotiff::OverviewResampling::Average);
+    config.tile_width = None;
+    config.tile_height = None;
+
+    let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())
+        .expect("create striped writer");
+    writer.write(data).expect("write striped data");
+}
+
+/// Per-band, per-pixel sample value used by the issue #14 striped fixtures.
+///
+/// The `band * 64` offset makes the planes trivially distinguishable and the
+/// `+ 1` guarantees no sample is ever zero, so a zeroed buffer can never pass.
+fn issue_14_sample(band: usize, x: usize, y: usize, width: usize) -> u8 {
+    ((band as u64) * 64 + ((y * width + x) as u64 % 61) + 1) as u8
+}
+
+/// Builds chunky (band-interleaved-by-pixel) fixture data for
+/// [`issue_14_sample`].
+fn issue_14_chunky_data(width: usize, height: usize, bands: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(width * height * bands);
+    for y in 0..height {
+        for x in 0..width {
+            for band in 0..bands {
+                data.push(issue_14_sample(band, x, y, width));
+            }
+        }
+    }
+    data
+}
+
+/// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+///
+/// `read_geotiff_chunk_full_band` used to call `read_band(0, 0)` -- which then
+/// returned the *whole* pixel-interleaved image -- and index it with
+/// `bytes_per_pixel = size_bytes * band_count` as if it were the chunk, so
+/// every sample outside chunk (0, 0) was silently wrong (the bounds guard just
+/// skipped rows instead of erroring). It now reads each band with
+/// `read_window` and re-interleaves into the chunky layout `raster::writer`
+/// expects.
+#[tokio::test]
+async fn test_issue_14_striped_multiband_chunk_interleaves_correctly() {
+    let temp_dir = env::temp_dir();
+    let test_path = temp_dir.join("test_issue_14_striped_multiband.tif");
+
+    let width = 64usize;
+    let height = 48usize;
+    let bands = 3usize;
+    let gt = GeoTransform {
+        origin_x: 0.0,
+        origin_y: height as f64,
+        pixel_width: 1.0,
+        pixel_height: -1.0,
+        row_rotation: 0.0,
+        col_rotation: 0.0,
+    };
+
+    let data = issue_14_chunky_data(width, height, bands);
+    write_test_geotiff_striped(
+        &test_path,
+        width as u64,
+        height as u64,
+        bands as u16,
+        oxigeo_core::types::RasterDataType::UInt8,
+        &data,
+        &gt,
+    );
+
+    // Premise: this fixture really is striped, so the chunk read takes the
+    // `tile_size().is_none()` branch.
+    {
+        let source = FileDataSource::open(&test_path).expect("open striped fixture");
+        let raw_reader = GeoTiffReader::open(source).expect("parse striped fixture");
+        assert!(
+            raw_reader.tile_size().is_none(),
+            "fixture must be striped for this regression to exercise the striped path"
+        );
+    }
+
+    let chunk_w = 32usize;
+    let chunk_h = 32usize;
+    let config = RasterStreamConfig::default().with_chunk_size(chunk_w, chunk_h);
+    let reader = RasterStreamReader::new(&test_path, config)
+        .await
+        .expect("create reader for striped multi-band fixture");
+    assert_eq!(reader.metadata().band_count, bands as u32);
+
+    // Chunk (0, 1): x_start = 32, y_start = 0 -- a real sub-window, not the
+    // whole image, and not the origin chunk (where the old bug was invisible).
+    let chunk = reader
+        .read_chunk(0, 1)
+        .await
+        .expect("read striped multi-band chunk (0, 1)");
+
+    let x_start = chunk_w;
+    let y_start = 0usize;
+
+    assert_eq!(
+        chunk.buffer.width() as usize,
+        chunk_w * bands,
+        "encoded chunk width must be chunk_width * band_count: expected {}, got {}",
+        chunk_w * bands,
+        chunk.buffer.width()
+    );
+    assert_eq!(
+        chunk.buffer.height() as usize,
+        chunk_h,
+        "chunk height: expected {}, got {}",
+        chunk_h,
+        chunk.buffer.height()
+    );
+
+    let bytes = chunk.buffer.as_bytes();
+    assert!(
+        bytes.iter().any(|&b| b != 0),
+        "striped multi-band chunk (0, 1) came back entirely zero"
+    );
+
+    for row in 0..chunk_h {
+        for col in 0..chunk_w {
+            for band in 0..bands {
+                let expected = issue_14_sample(band, x_start + col, y_start + row, width);
+                let actual = bytes[(row * chunk_w + col) * bands + band];
+                assert_eq!(
+                    actual,
+                    expected,
+                    "band {} pixel ({}, {}) [chunk-local ({}, {})]: expected {}, got {}",
+                    band,
+                    x_start + col,
+                    y_start + row,
+                    col,
+                    row,
+                    expected,
+                    actual
+                );
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&test_path);
+}
+
+/// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+///
+/// `read_geotiff_chunk` used to dispatch on `metadata().layout`, which the
+/// GeoTIFF reader hardcodes to `PixelLayout::Tiled { 256, 256 }` even for
+/// striped files. The striped branch was therefore unreachable and striped
+/// files were decoded against a fabricated 256x256 tile grid. Dispatch is now
+/// driven by `reader.tile_size().is_none()`.
+#[tokio::test]
+async fn test_issue_14_striped_chunk_reaches_the_striped_path() {
+    let temp_dir = env::temp_dir();
+    let test_path = temp_dir.join("test_issue_14_striped_dispatch.tif");
+
+    let width = 40usize;
+    let height = 40usize;
+    let gt = GeoTransform {
+        origin_x: 0.0,
+        origin_y: height as f64,
+        pixel_width: 1.0,
+        pixel_height: -1.0,
+        row_rotation: 0.0,
+        col_rotation: 0.0,
+    };
+
+    let data = issue_14_chunky_data(width, height, 1);
+    write_test_geotiff_striped(
+        &test_path,
+        width as u64,
+        height as u64,
+        1,
+        oxigeo_core::types::RasterDataType::UInt8,
+        &data,
+        &gt,
+    );
+
+    // Document the premise: no TileWidth tag, so `tile_size()` is None while
+    // `metadata().layout` still claims a 256x256 tile grid.
+    let source = FileDataSource::open(&test_path).expect("open striped fixture");
+    let raw_reader = GeoTiffReader::open(source).expect("parse striped fixture");
+    assert!(
+        raw_reader.tile_size().is_none(),
+        "fixture must be striped: tile_size() should be None"
+    );
+    assert!(
+        matches!(
+            raw_reader.metadata().layout,
+            oxigeo_core::types::PixelLayout::Tiled { .. }
+        ),
+        "metadata().layout is a fabricated tile grid even for striped files -- \
+         it must not be used for dispatch"
+    );
+    drop(raw_reader);
+
+    let chunk_w = 16usize;
+    let chunk_h = 16usize;
+    let config = RasterStreamConfig::default().with_chunk_size(chunk_w, chunk_h);
+    let reader = RasterStreamReader::new(&test_path, config)
+        .await
+        .expect("create reader for striped single-band fixture");
+
+    // Chunk (1, 1) starts at (16, 16): fully inside the raster, past both the
+    // first strip boundary and the first fabricated 256x256 "tile".
+    let chunk = reader
+        .read_chunk(1, 1)
+        .await
+        .expect("read striped chunk (1, 1)");
+
+    let cw = chunk.buffer.width() as usize;
+    let ch = chunk.buffer.height() as usize;
+    assert_eq!(cw, chunk_w, "chunk width: expected {}, got {}", chunk_w, cw);
+    assert_eq!(
+        ch, chunk_h,
+        "chunk height: expected {}, got {}",
+        chunk_h, ch
+    );
+
+    let bytes = chunk.buffer.as_bytes();
+    for row in 0..ch {
+        for col in 0..cw {
+            let expected = issue_14_sample(0, chunk_w + col, chunk_h + row, width);
+            let actual = bytes[row * cw + col];
+            assert_eq!(
+                actual,
+                expected,
+                "band 0 pixel ({}, {}) [chunk-local ({}, {})]: expected {}, got {}",
+                chunk_w + col,
+                chunk_h + row,
+                col,
+                row,
+                expected,
+                actual
+            );
+        }
+    }
+
+    let _ = std::fs::remove_file(&test_path);
+}
+
+/// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+///
+/// The right/bottom edge chunk of a striped multi-band raster: the chunk grid
+/// overhangs the raster extent, the read must be clamped rather than rejected
+/// or padded with garbage, and every returned sample must still be correct.
+#[tokio::test]
+async fn test_issue_14_striped_edge_chunk_overhang_has_no_garbage() {
+    let temp_dir = env::temp_dir();
+    let test_path = temp_dir.join("test_issue_14_striped_edge_chunk.tif");
+
+    // 50x50 with 32x32 chunks: the (1, 1) chunk overhangs by 14 pixels in both
+    // axes.
+    let width = 50usize;
+    let height = 50usize;
+    let bands = 3usize;
+    let gt = GeoTransform {
+        origin_x: 0.0,
+        origin_y: height as f64,
+        pixel_width: 1.0,
+        pixel_height: -1.0,
+        row_rotation: 0.0,
+        col_rotation: 0.0,
+    };
+
+    let data = issue_14_chunky_data(width, height, bands);
+    write_test_geotiff_striped(
+        &test_path,
+        width as u64,
+        height as u64,
+        bands as u16,
+        oxigeo_core::types::RasterDataType::UInt8,
+        &data,
+        &gt,
+    );
+
+    let chunk_w = 32usize;
+    let chunk_h = 32usize;
+    let config = RasterStreamConfig::default().with_chunk_size(chunk_w, chunk_h);
+    let reader = RasterStreamReader::new(&test_path, config)
+        .await
+        .expect("create reader for striped edge-chunk fixture");
+
+    let chunk = reader
+        .read_chunk(1, 1)
+        .await
+        .expect("edge chunk (1, 1) must read without error");
+
+    let expected_w = width - chunk_w;
+    let expected_h = height - chunk_h;
+    assert_eq!(
+        chunk.buffer.width() as usize,
+        expected_w * bands,
+        "clamped edge chunk encoded width: expected {}, got {}",
+        expected_w * bands,
+        chunk.buffer.width()
+    );
+    assert_eq!(
+        chunk.buffer.height() as usize,
+        expected_h,
+        "clamped edge chunk height: expected {}, got {}",
+        expected_h,
+        chunk.buffer.height()
+    );
+
+    let bytes = chunk.buffer.as_bytes();
+    for row in 0..expected_h {
+        for col in 0..expected_w {
+            for band in 0..bands {
+                let expected = issue_14_sample(band, chunk_w + col, chunk_h + row, width);
+                let actual = bytes[(row * expected_w + col) * bands + band];
+                assert_eq!(
+                    actual,
+                    expected,
+                    "edge chunk band {} pixel ({}, {}) [chunk-local ({}, {})]: expected {}, got {}",
+                    band,
+                    chunk_w + col,
+                    chunk_h + row,
+                    col,
+                    row,
+                    expected,
+                    actual
+                );
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&test_path);
+}
+
 #[tokio::test]
 async fn test_write_then_read_roundtrip_uint8() {
     let temp_dir = env::temp_dir();
@@ -367,7 +726,8 @@ async fn test_write_read_roundtrip_float32() {
     let mut data = Vec::with_capacity(pixel_count * 4);
     for i in 0..pixel_count {
         let val = (i as f32) * 0.5;
-        data.extend_from_slice(&val.to_le_bytes());
+        // The writer takes samples in host order and emits them in its declared order.
+        data.extend_from_slice(&val.to_ne_bytes());
     }
 
     write_test_geotiff(
@@ -393,9 +753,9 @@ async fn test_write_read_roundtrip_float32() {
     let chunk = reader.read_chunk(0, 0).await.expect("read float32 chunk");
     let chunk_bytes = chunk.buffer.as_bytes();
 
-    // Verify first pixel value
-    assert!(chunk_bytes.len() >= 4);
-    let first_val = f32::from_le_bytes([
+    // Decoded samples reach the caller in host byte order, so read them as native.
+    assert!(chunk_bytes.len() >= 8);
+    let first_val = f32::from_ne_bytes([
         chunk_bytes[0],
         chunk_bytes[1],
         chunk_bytes[2],
@@ -405,6 +765,20 @@ async fn test_write_read_roundtrip_float32() {
         (first_val - 0.0).abs() < 1e-6,
         "First pixel should be 0.0, got {}",
         first_val
+    );
+
+    // 0.0 has palindromic bytes, so it cannot detect a missed or doubled byte swap.
+    // Pixel 1 is 0.5 (0x3F000000), which can.
+    let second_val = f32::from_ne_bytes([
+        chunk_bytes[4],
+        chunk_bytes[5],
+        chunk_bytes[6],
+        chunk_bytes[7],
+    ]);
+    assert!(
+        (second_val - 0.5).abs() < 1e-6,
+        "Second pixel should be 0.5, got {}",
+        second_val
     );
 
     let _ = std::fs::remove_file(&test_path);
@@ -1037,7 +1411,7 @@ async fn test_metadata_nodata_float_preservation() {
     let pixel_count = (width * height) as usize;
     let mut data = Vec::with_capacity(pixel_count * 4);
     for _ in 0..pixel_count {
-        data.extend_from_slice(&(42.0f32).to_le_bytes());
+        data.extend_from_slice(&(42.0f32).to_ne_bytes());
     }
 
     let config = WriterConfig::new(

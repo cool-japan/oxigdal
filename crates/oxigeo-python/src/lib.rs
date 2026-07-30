@@ -96,7 +96,7 @@ fn open(py: Python<'_>, path: &str, mode: &str) -> PyResult<Dataset> {
 ///
 /// Example:
 ///     >>> oxigeo.version()
-///     '0.2.1'
+///     '0.2.2'
 #[pyfunction]
 fn version() -> &'static str {
     oxigeo_core::VERSION

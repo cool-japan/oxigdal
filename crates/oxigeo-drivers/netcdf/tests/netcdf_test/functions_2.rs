@@ -3,9 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use oxigeo_netcdf::{
-    Attribute, AttributeValue, Attributes, CfMetadata, DataType, Dimension,
-    DimensionSize, Dimensions, NetCdfError, NetCdfMetadata, NetCdfReader, NetCdfVersion,
-    NetCdfWriter, Variable, Variables,
+    Attribute, AttributeValue, Attributes, CfMetadata, DataType, Dimension, NetCdfError,
+    NetCdfMetadata, NetCdfVersion, Variable,
 };
 
 mod attribute_tests {
@@ -44,16 +43,14 @@ mod attribute_tests {
     }
     #[test]
     fn test_attribute_value_f32() {
-        let val = AttributeValue::f32(3.14);
+        let val = AttributeValue::f32(std::f32::consts::PI);
         assert_eq!(val.type_name(), "f32");
         assert_eq!(val.len(), 1);
     }
     #[test]
     fn test_attribute_value_f64() {
         let val = AttributeValue::f64(std::f64::consts::PI);
-        assert!(
-            (val.as_f64().expect("Should be f64") - std::f64::consts::PI).abs() < 1e-10
-        );
+        assert!((val.as_f64().expect("Should be f64") - std::f64::consts::PI).abs() < 1e-10);
         assert_eq!(val.type_name(), "f64");
     }
     #[test]
@@ -116,13 +113,21 @@ mod attribute_tests {
         let mut attrs = Attributes::new();
         attrs.set(Attribute::new("test", AttributeValue::i32(1)).expect("Valid"));
         assert_eq!(
-            attrs.get_value("test").expect("Should exist").as_i32()
-            .expect("Should be i32"), 1
+            attrs
+                .get_value("test")
+                .expect("Should exist")
+                .as_i32()
+                .expect("Should be i32"),
+            1
         );
         attrs.set(Attribute::new("test", AttributeValue::i32(2)).expect("Valid"));
         assert_eq!(
-            attrs.get_value("test").expect("Should exist").as_i32()
-            .expect("Should be i32"), 2
+            attrs
+                .get_value("test")
+                .expect("Should exist")
+                .as_i32()
+                .expect("Should be i32"),
+            2
         );
         assert_eq!(attrs.len(), 1);
     }
@@ -133,7 +138,7 @@ mod attribute_tests {
         assert!(attrs.contains("test"));
         let removed = attrs.remove("test");
         assert!(removed.is_some());
-        assert!(! attrs.contains("test"));
+        assert!(!attrs.contains("test"));
         assert!(attrs.remove("nonexistent").is_none());
     }
     #[test]
@@ -147,8 +152,8 @@ mod attribute_tests {
             .expect("Failed");
         let names = attrs.names();
         assert_eq!(names.len(), 2);
-        assert!(names.contains(& "first"));
-        assert!(names.contains(& "second"));
+        assert!(names.contains(&"first"));
+        assert!(names.contains(&"second"));
     }
     #[test]
     fn test_attributes_duplicate_fails() {
@@ -156,8 +161,7 @@ mod attribute_tests {
         attrs
             .add(Attribute::new("test", AttributeValue::i32(1)).expect("Valid"))
             .expect("First add should succeed");
-        let result = attrs
-            .add(Attribute::new("test", AttributeValue::i32(2)).expect("Valid"));
+        let result = attrs.add(Attribute::new("test", AttributeValue::i32(2)).expect("Valid"));
         assert!(result.is_err());
     }
 }
@@ -167,7 +171,7 @@ mod metadata_tests {
     fn test_netcdf_version_classic() {
         let version = NetCdfVersion::Classic;
         assert!(version.is_netcdf3());
-        assert!(! version.is_netcdf4());
+        assert!(!version.is_netcdf4());
         assert_eq!(version.version_number(), 3);
         assert_eq!(version.format_name(), "NetCDF-3 Classic");
     }
@@ -175,14 +179,14 @@ mod metadata_tests {
     fn test_netcdf_version_offset64bit() {
         let version = NetCdfVersion::Offset64Bit;
         assert!(version.is_netcdf3());
-        assert!(! version.is_netcdf4());
+        assert!(!version.is_netcdf4());
         assert_eq!(version.version_number(), 3);
         assert_eq!(version.format_name(), "NetCDF-3 64-bit Offset");
     }
     #[test]
     fn test_netcdf_version_netcdf4() {
         let version = NetCdfVersion::NetCdf4;
-        assert!(! version.is_netcdf3());
+        assert!(!version.is_netcdf3());
         assert!(version.is_netcdf4());
         assert_eq!(version.version_number(), 4);
         assert_eq!(version.format_name(), "NetCDF-4");
@@ -190,7 +194,7 @@ mod metadata_tests {
     #[test]
     fn test_netcdf_version_netcdf4_classic() {
         let version = NetCdfVersion::NetCdf4Classic;
-        assert!(! version.is_netcdf3());
+        assert!(!version.is_netcdf3());
         assert!(version.is_netcdf4());
         assert_eq!(version.version_number(), 4);
         assert_eq!(version.format_name(), "NetCDF-4 Classic");
@@ -206,8 +210,8 @@ mod metadata_tests {
         assert!(cf.conventions.is_none());
         assert!(cf.title.is_none());
         assert!(cf.institution.is_none());
-        assert!(! cf.has_conventions());
-        assert!(! cf.is_cf_compliant());
+        assert!(!cf.has_conventions());
+        assert!(!cf.is_cf_compliant());
     }
     #[test]
     fn test_cf_metadata_cf_compliant() {
@@ -221,28 +225,19 @@ mod metadata_tests {
         let mut cf = CfMetadata::new();
         cf.conventions = Some("Other-1.0".to_string());
         assert!(cf.has_conventions());
-        assert!(! cf.is_cf_compliant());
+        assert!(!cf.is_cf_compliant());
     }
     #[test]
     fn test_cf_metadata_from_attributes() {
         let mut attrs = Attributes::new();
         attrs
-            .add(
-                Attribute::new("Conventions", AttributeValue::text("CF-1.8"))
-                    .expect("Valid"),
-            )
+            .add(Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("Valid"))
             .expect("Failed");
         attrs
-            .add(
-                Attribute::new("title", AttributeValue::text("Test Data"))
-                    .expect("Valid"),
-            )
+            .add(Attribute::new("title", AttributeValue::text("Test Data")).expect("Valid"))
             .expect("Failed");
         attrs
-            .add(
-                Attribute::new("institution", AttributeValue::text("Test Lab"))
-                    .expect("Valid"),
-            )
+            .add(Attribute::new("institution", AttributeValue::text("Test Lab")).expect("Valid"))
             .expect("Failed");
         attrs
             .add(Attribute::new("source", AttributeValue::text("Model")).expect("Valid"))
@@ -308,10 +303,7 @@ mod metadata_tests {
             .expect("Failed");
         metadata
             .variables_mut()
-            .add(
-                Variable::new("data", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
-            )
+            .add(Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"))
             .expect("Failed");
         assert_eq!(metadata.variables().len(), 1);
         assert!(metadata.variables().contains("data"));
@@ -343,10 +335,7 @@ mod metadata_tests {
         let mut metadata = NetCdfMetadata::new_classic();
         metadata
             .variables_mut()
-            .add(
-                Variable::new("data", DataType::F32, vec!["missing".to_string()])
-                    .expect("Valid"),
-            )
+            .add(Variable::new("data", DataType::F32, vec!["missing".to_string()]).expect("Valid"))
             .expect("Failed");
         let result = metadata.validate();
         assert!(result.is_err());
@@ -366,10 +355,7 @@ mod metadata_tests {
             .expect("Failed");
         metadata
             .variables_mut()
-            .add(
-                Variable::new("data", DataType::U16, vec!["x".to_string()])
-                    .expect("Valid"),
-            )
+            .add(Variable::new("data", DataType::U16, vec!["x".to_string()]).expect("Valid"))
             .expect("Failed");
         let result = metadata.validate();
         assert!(result.is_err());
@@ -391,7 +377,8 @@ mod metadata_tests {
             Err(NetCdfError::UnlimitedDimensionError(msg)) => {
                 assert!(
                     msg.contains("one unlimited"),
-                    "Error should mention one unlimited: {}", msg
+                    "Error should mention one unlimited: {}",
+                    msg
                 );
             }
             _ => panic!("Expected UnlimitedDimensionError"),
@@ -412,11 +399,11 @@ mod metadata_tests {
             .variables_mut()
             .add(
                 Variable::new(
-                        "data",
-                        DataType::F32,
-                        vec!["x".to_string(), "y".to_string()],
-                    )
-                    .expect("Valid"),
+                    "data",
+                    DataType::F32,
+                    vec!["x".to_string(), "y".to_string()],
+                )
+                .expect("Valid"),
             )
             .expect("Failed");
         metadata
@@ -434,17 +421,11 @@ mod metadata_tests {
         let mut metadata = NetCdfMetadata::new_classic();
         metadata
             .global_attributes_mut()
-            .add(
-                Attribute::new("Conventions", AttributeValue::text("CF-1.8"))
-                    .expect("Valid"),
-            )
+            .add(Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("Valid"))
             .expect("Failed");
         metadata
             .global_attributes_mut()
-            .add(
-                Attribute::new("title", AttributeValue::text("Test Data"))
-                    .expect("Valid"),
-            )
+            .add(Attribute::new("title", AttributeValue::text("Test Data")).expect("Valid"))
             .expect("Failed");
         metadata.parse_cf_metadata();
         let cf = metadata.cf_metadata().expect("CF metadata should exist");

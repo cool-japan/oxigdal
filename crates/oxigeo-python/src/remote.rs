@@ -64,6 +64,52 @@ impl MemoryDataSource {
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
     }
+
+    /// Borrows `range` out of the fetched buffer, or reports the same
+    /// out-of-range error [`DataSource::read_range`] reports for it.
+    fn slice_for(&self, range: ByteRange) -> CoreResult<&[u8]> {
+        let out_of_range = || {
+            OxiGeoError::Io(IoError::Read {
+                message: format!(
+                    "out-of-range read {}..{} for a {}-byte in-memory buffer",
+                    range.start,
+                    range.end,
+                    self.data.len()
+                ),
+            })
+        };
+        let start = usize::try_from(range.start).map_err(|_| out_of_range())?;
+        let end = usize::try_from(range.end).map_err(|_| out_of_range())?;
+        // `get` rejects both an inverted range (`start > end`) and one running
+        // past the buffer, exactly like the explicit checks it replaces.
+        self.data.get(start..end).ok_or_else(out_of_range)
+    }
+}
+
+/// Builds the error a `read_range_into` implementation returns when the
+/// caller's destination buffer cannot hold the whole range.
+///
+/// Mirrors the message `oxigeo_core::io`'s built-in sources produce (their
+/// helper is crate-private) so the diagnostic is identical whichever source a
+/// caller is holding.
+fn dst_too_small(needed: usize, available: usize) -> OxiGeoError {
+    OxiGeoError::invalid_parameter(
+        "dst",
+        format!(
+            "destination buffer is {available} bytes but the requested range needs {needed}; \
+             size it with ByteRange::len()"
+        ),
+    )
+}
+
+/// Computes the destination length `range` requires, or `None` when the range
+/// is itself malformed (inverted, or wider than `usize`).
+///
+/// A `None` result means "let the source's own range check report it", which
+/// keeps `read_range_into` erroring exactly like `read_range` instead of
+/// underflowing on `ByteRange::len`.
+fn needed_len(range: ByteRange) -> Option<usize> {
+    usize::try_from(range.end.checked_sub(range.start)?).ok()
 }
 
 impl DataSource for MemoryDataSource {
@@ -72,19 +118,32 @@ impl DataSource for MemoryDataSource {
     }
 
     fn read_range(&self, range: ByteRange) -> CoreResult<Vec<u8>> {
-        let start = range.start as usize;
-        let end = range.end as usize;
-        if start > end || end > self.data.len() {
-            return Err(OxiGeoError::Io(IoError::Read {
-                message: format!(
-                    "out-of-range read {}..{} for a {}-byte in-memory buffer",
-                    start,
-                    end,
-                    self.data.len()
-                ),
-            }));
+        Ok(self.slice_for(range)?.to_vec())
+    }
+
+    /// Copies straight out of the fetched buffer, skipping the intermediate
+    /// `Vec` the trait's default implementation would allocate per block
+    /// (cool-japan/oxigeo#14).
+    fn read_range_into(&self, range: ByteRange, dst: &mut [u8]) -> CoreResult<usize> {
+        if let Some(needed) = needed_len(range)
+            && dst.len() < needed
+        {
+            return Err(dst_too_small(needed, dst.len()));
         }
-        Ok(self.data[start..end].to_vec())
+        let src = self.slice_for(range)?;
+        let available = dst.len();
+        let out = dst
+            .get_mut(..src.len())
+            .ok_or_else(|| dst_too_small(src.len(), available))?;
+        out.copy_from_slice(src);
+        Ok(src.len())
+    }
+
+    /// Lends the requested bytes straight out of the resident buffer: reading a
+    /// block of a remote raster costs neither an allocation nor a copy once the
+    /// object has been fetched.
+    fn range_slice(&self, range: ByteRange) -> Option<&[u8]> {
+        self.slice_for(range).ok()
     }
 }
 
@@ -110,6 +169,27 @@ impl DataSource for AnySource {
         match self {
             Self::File(f) => f.read_range(range),
             Self::Memory(m) => m.read_range(range),
+        }
+    }
+
+    /// Forwards to the inner source rather than inheriting the trait default
+    /// (cool-japan/oxigeo#14): the default would allocate a `Vec` per block and
+    /// copy it into `dst`, throwing away `FileDataSource`'s single positional
+    /// `pread` and `MemoryDataSource`'s direct copy.
+    fn read_range_into(&self, range: ByteRange, dst: &mut [u8]) -> CoreResult<usize> {
+        match self {
+            Self::File(f) => f.read_range_into(range, dst),
+            Self::Memory(m) => m.read_range_into(range, dst),
+        }
+    }
+
+    /// Forwards to the inner source so a fully-buffered remote object can still
+    /// be read without copying. `FileDataSource` cannot lend and returns `None`,
+    /// which is the correct answer for the local-file arm.
+    fn range_slice(&self, range: ByteRange) -> Option<&[u8]> {
+        match self {
+            Self::File(f) => f.range_slice(range),
+            Self::Memory(m) => m.range_slice(range),
         }
     }
 }
@@ -339,6 +419,47 @@ pub(crate) fn unsupported_driver_error(driver: &str) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_python_remote_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_classify_remote_url() {
@@ -395,6 +516,149 @@ mod tests {
     fn test_memory_data_source_out_of_range() {
         let source = MemoryDataSource::new(vec![1, 2, 3]);
         assert!(source.read_range(ByteRange::new(1, 10)).is_err());
+    }
+
+    /// cool-japan/oxigeo#14: the zero-copy entry points must agree with
+    /// `read_range` byte for byte, and error for error.
+    #[test]
+    fn test_issue_14_memory_read_range_into_matches_read_range() {
+        let source = MemoryDataSource::new((0u8..32).collect());
+        for range in [
+            ByteRange::new(0, 32),  // whole buffer
+            ByteRange::new(8, 20),  // interior
+            ByteRange::new(0, 1),   // leading boundary
+            ByteRange::new(31, 32), // trailing boundary
+            ByteRange::new(5, 5),   // empty
+            ByteRange::new(32, 32), // empty at EOF
+        ] {
+            let expected = source.read_range(range).expect("read_range");
+            let mut dst = vec![0xAAu8; expected.len()];
+            let written = source.read_range_into(range, &mut dst).expect("read_into");
+            assert_eq!(written, expected.len(), "count mismatch for {range:?}");
+            assert_eq!(dst, expected, "bytes mismatch for {range:?}");
+        }
+
+        // Past EOF / inverted: both paths must fail, and `read_range_into` must
+        // not panic on the underflowing length.
+        for range in [
+            ByteRange::new(28, 40),
+            ByteRange::new(32, 33),
+            ByteRange::new(20, 8),
+        ] {
+            assert!(source.read_range(range).is_err(), "read_range {range:?}");
+            let mut dst = vec![0u8; 64];
+            let err = source
+                .read_range_into(range, &mut dst)
+                .expect_err("read_range_into should reject");
+            assert!(
+                matches!(err, OxiGeoError::Io(IoError::Read { .. })),
+                "expected an out-of-range read error for {range:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_issue_14_memory_read_range_into_buffer_sizing() {
+        let source = MemoryDataSource::new((0u8..16).collect());
+        let range = ByteRange::new(4, 12);
+
+        // Too long: only the first 8 bytes are written, the tail is preserved.
+        let mut dst = vec![0xEEu8; 12];
+        assert_eq!(
+            source.read_range_into(range, &mut dst).expect("read_into"),
+            8
+        );
+        assert_eq!(&dst[..8], &(4u8..12).collect::<Vec<u8>>()[..]);
+        assert_eq!(&dst[8..], &[0xEE; 4], "tail must be left alone");
+
+        // Too short: rejected before anything is written.
+        let mut dst = vec![0xEEu8; 7];
+        let err = source
+            .read_range_into(range, &mut dst)
+            .expect_err("short dst must be rejected");
+        assert!(
+            matches!(err, OxiGeoError::InvalidParameter { parameter, .. } if parameter == "dst"),
+            "expected an InvalidParameter(dst) error, got {err}"
+        );
+        assert_eq!(dst, vec![0xEE; 7], "dst must be untouched");
+
+        // An empty range writes nothing, even into an empty destination.
+        assert_eq!(
+            source
+                .read_range_into(ByteRange::new(3, 3), &mut [])
+                .expect("empty range"),
+            0
+        );
+    }
+
+    #[test]
+    fn test_issue_14_memory_range_slice_borrows_backing_buffer() {
+        let source = MemoryDataSource::new((0u8..64).collect());
+        let borrowed = source.range_slice(ByteRange::new(16, 48)).expect("borrow");
+        assert_eq!(borrowed, &source.data[16..48]);
+        assert!(
+            std::ptr::eq(borrowed.as_ptr(), source.data[16..48].as_ptr()),
+            "range_slice must borrow the backing buffer, not copy it"
+        );
+        assert!(
+            source
+                .range_slice(ByteRange::new(9, 9))
+                .expect("empty")
+                .is_empty()
+        );
+        assert!(
+            source.range_slice(ByteRange::new(60, 65)).is_none(),
+            "past EOF"
+        );
+        assert!(
+            source.range_slice(ByteRange::new(40, 8)).is_none(),
+            "inverted"
+        );
+        assert!(
+            source
+                .range_slice(ByteRange::new(u64::MAX - 1, u64::MAX))
+                .is_none(),
+            "unrepresentable offset"
+        );
+    }
+
+    /// `AnySource` must forward both zero-copy entry points to whichever source
+    /// it wraps -- inheriting the trait defaults would silently drop
+    /// `FileDataSource`'s single `pread` and `MemoryDataSource`'s borrow.
+    #[test]
+    fn test_issue_14_any_source_forwards_to_inner() {
+        use std::io::Write;
+
+        let payload: Vec<u8> = (0u8..64).collect();
+
+        let memory = AnySource::Memory(MemoryDataSource::new(payload.clone()));
+        let range = ByteRange::new(16, 48);
+        let borrowed = memory
+            .range_slice(range)
+            .expect("the memory arm must lend its buffer");
+        assert_eq!(borrowed, &payload[16..48]);
+        let mut dst = vec![0u8; 32];
+        assert_eq!(memory.read_range_into(range, &mut dst).expect("into"), 32);
+        assert_eq!(dst, payload[16..48]);
+
+        let path = TempPath::new("issue_14_any_source.bin");
+        {
+            let mut file = std::fs::File::create(&path).expect("create temp file");
+            file.write_all(&payload).expect("write temp file");
+            file.flush().expect("flush temp file");
+        }
+        let file = AnySource::File(FileDataSource::open(&path).expect("open temp file"));
+        // A file cannot lend, so the caller must fall back to a copy -- but the
+        // copy still goes straight into `dst`.
+        assert!(file.range_slice(range).is_none());
+        let mut dst = vec![0xEEu8; 40];
+        assert_eq!(file.read_range_into(range, &mut dst).expect("into"), 32);
+        assert_eq!(&dst[..32], &payload[16..48]);
+        assert_eq!(&dst[32..], &[0xEE; 8], "tail must be left alone");
+        assert!(
+            file.read_range_into(range, &mut [0u8; 8]).is_err(),
+            "a short dst must be rejected through the forwarding arm too"
+        );
     }
 
     #[cfg(not(feature = "cloud"))]

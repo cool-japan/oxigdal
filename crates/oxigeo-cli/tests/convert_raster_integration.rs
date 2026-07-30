@@ -424,3 +424,182 @@ fn test_cloud_uri_classification() {
     assert!(!is_cloud_uri("relative/path.tif"));
     assert!(!is_cloud_uri(""));
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests for <https://github.com/cool-japan/oxigeo/issues/14>.
+//
+// The tests above use a constant value per band, which proves band isolation
+// but not pixel *placement*: a transposed or offset window would still pass.
+// These use a value that encodes each sample's own band, row and column, so a
+// band mix-up, a row/column swap and an off-by-one window origin are each
+// individually detectable.
+//
+// `read_band_region` used to stitch tiles and de-interleave by hand, on the
+// assumption that `read_band` returned the whole chunky image. It now calls
+// `GeoTiffReader::read_window`, which returns just the requested band's
+// samples for just the requested rectangle.
+// ---------------------------------------------------------------------------
+
+/// Writes a multi-band UInt8 GeoTIFF whose every sample identifies itself.
+///
+/// Sample at (band, row, col) is `(band * 37 + row * 7 + col * 3) % 251`, which
+/// is distinct enough that neighbouring pixels, neighbouring rows and
+/// neighbouring bands all differ.
+fn write_positional_multiband(
+    path: &std::path::Path,
+    width: u64,
+    height: u64,
+    band_count: usize,
+    tiled: bool,
+) -> anyhow::Result<()> {
+    let mut data = vec![0u8; (width * height) as usize * band_count];
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            for band in 0..band_count {
+                let pixel = row * width as usize + col;
+                data[pixel * band_count + band] = positional_sample(band, row, col);
+            }
+        }
+    }
+
+    let mut config = WriterConfig::new(width, height, band_count as u16, RasterDataType::UInt8);
+    config.generate_overviews = false;
+    if tiled {
+        config.tile_width = Some(64);
+        config.tile_height = Some(64);
+    } else {
+        config.tile_width = None;
+        config.tile_height = None;
+    }
+    config.geo_transform = Some(standard_geotransform());
+
+    let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    writer.write(&data).map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(())
+}
+
+fn positional_sample(band: usize, row: usize, col: usize) -> u8 {
+    ((band * 37 + row * 7 + col * 3) % 251) as u8
+}
+
+/// Asserts a windowed read placed every sample at the right coordinate.
+fn assert_window_matches(
+    buffer: &RasterBuffer,
+    band: usize,
+    x_offset: usize,
+    y_offset: usize,
+    width: usize,
+    height: usize,
+    context: &str,
+) {
+    let bytes = buffer.as_bytes();
+    assert_eq!(
+        bytes.len(),
+        width * height,
+        "{context}: window must hold exactly one band's worth of samples"
+    );
+    for row in 0..height {
+        for col in 0..width {
+            let got = bytes[row * width + col];
+            let want = positional_sample(band, y_offset + row, x_offset + col);
+            assert_eq!(
+                got,
+                want,
+                "{context}: window pixel ({row}, {col}) = source \
+                 ({}, {}) of band {band}: expected {want}, got {got}",
+                y_offset + row,
+                x_offset + col
+            );
+        }
+    }
+}
+
+#[test]
+fn test_issue_14_read_band_region_multiband_window_is_positionally_correct() -> TestResult {
+    const BANDS: usize = 3;
+    for (label, tiled, w, h) in [("tiled", true, 96u64, 80u64), ("striped", false, 40, 30)] {
+        let out_path = tmp_path(&format!("issue_14_region_{label}.tif"));
+        let _ = std::fs::remove_file(&out_path);
+        write_positional_multiband(&out_path, w, h, BANDS, tiled)?;
+
+        // An off-origin window that is not tile-aligned, so a tile-boundary
+        // mistake shows up as well.
+        let (x_off, y_off, win_w, win_h) = (7usize, 11usize, 23usize, 13usize);
+
+        for band in 0..BANDS {
+            let region = raster::read_band_region(
+                &out_path,
+                band as u32,
+                x_off as u64,
+                y_off as u64,
+                win_w as u64,
+                win_h as u64,
+            )?;
+            assert_eq!(region.width(), win_w as u64);
+            assert_eq!(region.height(), win_h as u64);
+            assert_window_matches(
+                &region,
+                band,
+                x_off,
+                y_off,
+                win_w,
+                win_h,
+                &format!("{label} region band {band}"),
+            );
+        }
+
+        let _ = std::fs::remove_file(&out_path);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_issue_14_read_band_full_plane_is_positionally_correct() -> TestResult {
+    const BANDS: usize = 3;
+    for (label, tiled, w, h) in [("tiled", true, 96u64, 80u64), ("striped", false, 40, 30)] {
+        let out_path = tmp_path(&format!("issue_14_full_{label}.tif"));
+        let _ = std::fs::remove_file(&out_path);
+        write_positional_multiband(&out_path, w, h, BANDS, tiled)?;
+
+        for band in 0..BANDS {
+            let plane = raster::read_band(&out_path, band as u32)?;
+            assert_eq!(plane.width(), w);
+            assert_eq!(plane.height(), h);
+            assert_window_matches(
+                &plane,
+                band,
+                0,
+                0,
+                w as usize,
+                h as usize,
+                &format!("{label} full band {band}"),
+            );
+        }
+
+        let _ = std::fs::remove_file(&out_path);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_issue_14_read_band_region_clamps_overhanging_window() -> TestResult {
+    let out_path = tmp_path("issue_14_region_overhang.tif");
+    let _ = std::fs::remove_file(&out_path);
+    write_positional_multiband(&out_path, 40, 30, 2, false)?;
+
+    // Requests 20x20 starting at (30, 20); only 10x10 is inside the raster, so
+    // the result must be clamped to the overlap rather than erroring or
+    // returning uninitialised bytes.
+    let region = raster::read_band_region(&out_path, 1, 30, 20, 20, 20)?;
+    assert_eq!(region.width(), 10, "width must clamp to the raster extent");
+    assert_eq!(
+        region.height(),
+        10,
+        "height must clamp to the raster extent"
+    );
+    assert_window_matches(&region, 1, 30, 20, 10, 10, "clamped region band 1");
+
+    let _ = std::fs::remove_file(&out_path);
+    Ok(())
+}

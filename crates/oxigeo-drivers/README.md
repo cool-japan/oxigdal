@@ -26,9 +26,9 @@ There is no single `oxigeo-drivers` meta-crate to depend on. Add only the driver
 
 ```toml
 [dependencies]
-oxigeo-geotiff   = "0.2.1"
-oxigeo-geojson   = "0.2.1"
-oxigeo-shapefile = "0.2.1"
+oxigeo-geotiff   = "0.2.2"
+oxigeo-geojson   = "0.2.2"
+oxigeo-shapefile = "0.2.2"
 ```
 
 ---
@@ -260,7 +260,7 @@ cargo nextest run --all-features -p oxigeo-geotiff
 ## License
 
 Licensed under the Apache License, Version 2.0.
-See [LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>.
+See [LICENSE](../../LICENSE) or <http://www.apache.org/licenses/LICENSE-2.0>.
 
 Copyright © 2026 COOLJAPAN OU (Team Kitasan)
 Repository: <https://github.com/cool-japan/oxigeo>

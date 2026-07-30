@@ -364,6 +364,48 @@ fn data_type_size(dtype: DataType) -> usize {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_nc4_functions_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn test_hdf5_signature() {
         assert_eq!(
@@ -548,8 +590,7 @@ mod tests {
     }
     #[test]
     fn test_nc4_writer_define_mode() {
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("test_nc4_define.nc4");
+        let temp_file = TempPath::new("define.nc4");
         {
             let mut writer = Nc4Writer::create(&temp_file).expect("Failed to create writer");
             let dim = Dimension::new("time", 10).expect("Failed to create dimension");
@@ -570,7 +611,6 @@ mod tests {
                 .expect("Failed to set compression");
             writer.close().expect("Failed to close writer");
         }
-        let _ = std::fs::remove_file(&temp_file);
     }
     #[test]
     fn test_byte_order_default() {

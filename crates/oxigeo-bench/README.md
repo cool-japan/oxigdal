@@ -19,7 +19,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-bench = "0.2.1"
+oxigeo-bench = "0.2.2"
 ```
 
 ## Quick Start
@@ -143,7 +143,7 @@ if !report.has_regressions() {
 
 ```toml
 [dependencies]
-oxigeo-bench = { version = "0.2.1", features = ["raster", "vector"] }
+oxigeo-bench = { version = "0.2.2", features = ["raster", "vector"] }
 ```
 
 ## Benchmark Scenarios

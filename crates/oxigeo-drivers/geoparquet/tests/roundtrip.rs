@@ -4,11 +4,51 @@
 use oxigeo_geoparquet::geometry::{Coordinate, Geometry, LineString, Point, Polygon};
 use oxigeo_geoparquet::metadata::{Crs, GeometryColumnMetadata};
 use oxigeo_geoparquet::{GeoParquetReader, GeoParquetWriter};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_gpq_roundtrip_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 #[test]
 fn test_roundtrip_points() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("test_roundtrip_points.parquet");
+    let path = TempPath::new("test_roundtrip_points.parquet");
 
     // Create test geometries
     let geometries = vec![
@@ -49,16 +89,12 @@ fn test_roundtrip_points() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-
     Ok(())
 }
 
 #[test]
 fn test_roundtrip_linestrings() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("test_roundtrip_linestrings.parquet");
+    let path = TempPath::new("test_roundtrip_linestrings.parquet");
 
     // Create test geometries
     let coords1 = vec![
@@ -111,16 +147,12 @@ fn test_roundtrip_linestrings() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-
     Ok(())
 }
 
 #[test]
 fn test_roundtrip_polygons() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("test_roundtrip_polygons.parquet");
+    let path = TempPath::new("test_roundtrip_polygons.parquet");
 
     // Create test polygon
     let exterior_coords = vec![
@@ -177,16 +209,12 @@ fn test_roundtrip_polygons() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-
     Ok(())
 }
 
 #[test]
 fn test_metadata_preservation() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("test_metadata.parquet");
+    let path = TempPath::new("test_metadata.parquet");
 
     // Write with specific CRS
     {
@@ -211,16 +239,12 @@ fn test_metadata_preservation() -> Result<(), Box<dyn std::error::Error>> {
         assert!(column_meta.crs.is_some());
     }
 
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
-
     Ok(())
 }
 
 #[test]
 fn test_batch_writing() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("test_batch.parquet");
+    let path = TempPath::new("test_batch.parquet");
 
     // Write many geometries to test batch flushing
     {
@@ -242,9 +266,6 @@ fn test_batch_writing() -> Result<(), Box<dyn std::error::Error>> {
         let reader = GeoParquetReader::open(&path)?;
         assert_eq!(reader.num_rows(), 250);
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(&path);
 
     Ok(())
 }

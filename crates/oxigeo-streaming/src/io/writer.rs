@@ -203,32 +203,102 @@ impl ChunkedWriter {
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(env::temp_dir().join(format!(
+                "oxigeo_streaming_io_writer_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[tokio::test]
     async fn test_chunked_writer() {
-        let temp_dir = env::temp_dir();
-        let test_path = temp_dir.join("test_chunked_write.dat");
+        let test_path = TempPath::new("chunked_write.dat");
 
-        let result =
-            ChunkedWriter::from_file(&test_path, ChunkStrategy::FixedSize(1024), 10240, 4).await;
+        let mut writer =
+            ChunkedWriter::from_file(&test_path, ChunkStrategy::FixedSize(1024), 10240, 4)
+                .await
+                .expect("a writable temp path must open as a ChunkedWriter");
 
-        if let Ok(mut writer) = result {
-            let data = Bytes::from(vec![42u8; 1024]);
-            writer.write_chunk(data).await.ok();
-            writer.finalize().await.ok();
-        }
+        assert_eq!(writer.chunks_written(), 0, "nothing written yet");
+        assert_eq!(writer.bytes_written(), 0, "nothing written yet");
 
-        // Clean up
-        tokio::fs::remove_file(&test_path).await.ok();
+        writer
+            .write_chunk(Bytes::from(vec![42u8; 1024]))
+            .await
+            .expect("writing a 1 KiB chunk must succeed");
+
+        assert_eq!(writer.chunks_written(), 1, "one chunk was written");
+        assert_eq!(writer.bytes_written(), 1024, "one 1 KiB chunk was written");
+
+        writer
+            .finalize()
+            .await
+            .expect("finalize must succeed after a clean write");
+
+        // The bytes must actually have reached disk: one 1024-byte data chunk
+        // plus the 12-byte `CHNK` footer finalize appends.
+        let written = std::fs::read(&test_path).expect("output file must exist after finalize");
+        assert_eq!(
+            written.len(),
+            1024 + 12,
+            "finalize must flush the data chunk and append the 12-byte footer"
+        );
+        assert!(
+            written[..1024].iter().all(|&b| b == 42),
+            "the data chunk must round-trip byte for byte"
+        );
+        assert_eq!(
+            &written[1024..1028],
+            b"CHNK",
+            "the footer must carry the CHNK magic"
+        );
+        let footer_total = u64::from_le_bytes(
+            written[1028..1036]
+                .try_into()
+                .expect("footer must carry 8 bytes of chunk count"),
+        );
+        assert_eq!(footer_total, 1, "the footer must record one data chunk");
     }
 
     /// Verify that `finalize` writes the footer and reports the correct total.
     #[tokio::test]
     async fn test_chunked_writer_finalize_patches_total_chunks() {
-        let temp_dir = env::temp_dir();
-        let test_path = temp_dir.join("test_cw_finalize_total.dat");
-        // Clean up before test to avoid stale state
-        tokio::fs::remove_file(&test_path).await.ok();
+        let test_path = TempPath::new("cw_finalize_total.dat");
 
         let mut writer =
             ChunkedWriter::from_file(&test_path, ChunkStrategy::FixedSize(512), 10240, 2)
@@ -252,17 +322,12 @@ mod tests {
             .await
             .expect("file metadata should be readable");
         assert!(meta.len() > 5 * 512, "footer was not written");
-
-        tokio::fs::remove_file(&test_path).await.ok();
     }
 
     /// When `set_total_chunks` matches the actual count, `finalize` succeeds.
     #[tokio::test]
     async fn test_chunked_writer_with_preset_chunks_matches_on_finalize() {
-        let temp_dir = env::temp_dir();
-        let test_path = temp_dir.join("test_cw_preset_match.dat");
-        tokio::fs::remove_file(&test_path).await.ok();
-
+        let test_path = TempPath::new("cw_preset_match.dat");
         let mut writer =
             ChunkedWriter::from_file(&test_path, ChunkStrategy::FixedSize(256), 10240, 2)
                 .await
@@ -281,17 +346,12 @@ mod tests {
             .finalize()
             .await
             .expect("finalize should succeed when preset matches actual");
-
-        tokio::fs::remove_file(&test_path).await.ok();
     }
 
     /// When `set_total_chunks` does NOT match the actual count, `finalize` errors.
     #[tokio::test]
     async fn test_chunked_writer_preset_mismatch_returns_error() {
-        let temp_dir = env::temp_dir();
-        let test_path = temp_dir.join("test_cw_preset_mismatch.dat");
-        tokio::fs::remove_file(&test_path).await.ok();
-
+        let test_path = TempPath::new("cw_preset_mismatch.dat");
         let mut writer =
             ChunkedWriter::from_file(&test_path, ChunkStrategy::FixedSize(256), 10240, 2)
                 .await
@@ -314,7 +374,5 @@ mod tests {
             }
             other => panic!("expected IncompleteFinalize, got {:?}", other),
         }
-
-        tokio::fs::remove_file(&test_path).await.ok();
     }
 }

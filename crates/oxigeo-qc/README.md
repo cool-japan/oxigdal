@@ -28,14 +28,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-qc = "0.2.1"
+oxigeo-qc = "0.2.2"
 ```
 
 ### With Optional Features
 
 ```toml
 [dependencies]
-oxigeo-qc = { version = "0.2.1", features = ["html"] }
+oxigeo-qc = { version = "0.2.2", features = ["html"] }
 ```
 
 **Available Features:**

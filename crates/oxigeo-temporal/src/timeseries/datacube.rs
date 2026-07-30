@@ -1578,7 +1578,8 @@ mod tests {
 
         #[test]
         fn test_zarr_from_nonexistent_path() {
-            let nonexistent = std::env::temp_dir().join("nonexistent_zarr_path_12345");
+            let nonexistent = std::env::temp_dir()
+                .join(format!("oxigeo_nonexistent_zarr_{}", std::process::id()));
             let result = DataCube::from_zarr(&nonexistent);
             assert!(result.is_err(), "Should fail for nonexistent path");
         }

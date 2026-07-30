@@ -801,6 +801,47 @@ impl MultiTierCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch cache directory inside the system temp dir (house
+    /// policy: no hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same directory.  Dropping the guard removes the directory tree, so
+    /// a panicking test leaks nothing.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_cache_multi_tier_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[tokio::test]
     async fn test_l1_memory_tier() {
@@ -883,8 +924,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_multi_tier_cache_honors_wtinylfu_config() {
-        let temp_dir = std::env::temp_dir().join("oxigeo_cache_wtinylfu_test");
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let temp_dir = TempDir::new("wtinylfu_test");
+        let _ = tokio::fs::remove_dir_all(&*temp_dir).await;
         let config = CacheConfig {
             l1_size: 1024,
             l2_size: 4096,
@@ -892,7 +933,7 @@ mod tests {
             enable_compression: true,
             enable_prefetch: false,
             enable_distributed: false,
-            cache_dir: Some(temp_dir.clone()),
+            cache_dir: Some(temp_dir.to_path_buf()),
             eviction_policy: EvictionPolicyType::WTinyLfu,
         };
 
@@ -904,13 +945,11 @@ mod tests {
         let value = CacheValue::new(Bytes::from("payload"), DataType::Text);
         cache.put(key.clone(), value).await.expect("put failed");
         assert!(cache.get(&key).await.expect("get failed").is_some());
-
-        let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
 
     #[tokio::test]
     async fn test_multi_tier_cache() {
-        let temp_dir = std::env::temp_dir().join("oxigeo_cache_test");
+        let temp_dir = TempDir::new("cache_test");
         let config = CacheConfig {
             l1_size: 1024,
             l2_size: 4096,
@@ -918,7 +957,7 @@ mod tests {
             enable_compression: true,
             enable_prefetch: false,
             enable_distributed: false,
-            cache_dir: Some(temp_dir.clone()),
+            cache_dir: Some(temp_dir.to_path_buf()),
             eviction_policy: EvictionPolicyType::Lru,
         };
 
@@ -938,8 +977,5 @@ mod tests {
         // Get
         let retrieved = cache.get(&key).await.expect("get failed");
         assert!(retrieved.is_some());
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
 }

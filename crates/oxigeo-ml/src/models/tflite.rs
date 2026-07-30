@@ -767,7 +767,13 @@ mod tests {
     fn test_model_not_found() {
         use std::env;
         let temp_dir = env::temp_dir();
-        let nonexistent_path = temp_dir.join("nonexistent_model.tflite");
+        // Process-unique leaf so a concurrent test binary can never create
+        // this path out from under us; the `nonexistent_model.tflite` suffix
+        // is what the error-message assertion below matches on.
+        let nonexistent_path = temp_dir.join(format!(
+            "oxigeo_tflite_{}_nonexistent_model.tflite",
+            std::process::id()
+        ));
 
         let config = TfLiteConfig::default();
         let result = TfLiteModel::from_file(&nonexistent_path, config);

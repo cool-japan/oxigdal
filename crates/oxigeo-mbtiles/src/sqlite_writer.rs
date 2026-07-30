@@ -146,16 +146,55 @@ mod tests {
     use crate::reader::MBTilesReader;
     use crate::tile_coords::TileFormat;
 
-    fn unique_temp_path(tag: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "oxigeo-mbtiles-writer-test-{tag}-{pid}-{seq}.mbtiles"
-        ));
-        p
+    /// Per-test scratch SQLite fixture inside the system temp dir (house
+    /// policy: no hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same database.  Dropping the guard removes the fixture *and its
+    /// SQLite companions*, so a panicking test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo-mbtiles-writer-test-{tag}-{}-{seq}.mbtiles",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            // SQLite writes `-wal` / `-shm` / `-journal` companions next to
+            // the database; removing only the main file would leak them.
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let mut sidecar = self.0.clone().into_os_string();
+                sidecar.push(suffix);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
+            }
+        }
+    }
+
+    fn unique_temp_path(tag: &str) -> TempPath {
+        TempPath::new(tag)
     }
 
     /// End-to-end: build an archive in memory, write it to a real on-disk
@@ -219,8 +258,6 @@ mod tests {
             .get_tile(&crate::tile_coords::TileCoord { z: 1, x: 1, y: 0 })
             .unwrap();
         assert_eq!(flipped2, Some(vec![5, 6, 7, 8]));
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A byte-for-byte comparison isn't meaningful (SQLite headers/page
@@ -237,8 +274,6 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert!(bytes.len() >= 16);
         assert_eq!(&bytes[0..16], b"SQLite format 3\0");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Writing to a path that already contains a file must overwrite it
@@ -254,8 +289,6 @@ mod tests {
 
         let reader = MBTilesReader::open(&path).unwrap();
         assert_eq!(reader.tile_count().unwrap(), 1);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Non-canonical metadata keys must survive a write/read round trip.
@@ -284,7 +317,5 @@ mod tests {
                 .map(|s| s.as_str()),
             Some("vendor_value")
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 }

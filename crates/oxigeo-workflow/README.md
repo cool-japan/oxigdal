@@ -32,16 +32,16 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-workflow = "0.2.1"
+oxigeo-workflow = "0.2.2"
 
 # For integrations (HTTP, Airflow, Prefect, Temporal)
-oxigeo-workflow = { version = "0.2.1", features = ["integrations"] }
+oxigeo-workflow = { version = "0.2.2", features = ["integrations"] }
 
 # For HTTP server support
-oxigeo-workflow = { version = "0.2.1", features = ["server"] }
+oxigeo-workflow = { version = "0.2.2", features = ["server"] }
 
 # For all features
-oxigeo-workflow = { version = "0.2.1", features = ["full"] }
+oxigeo-workflow = { version = "0.2.2", features = ["full"] }
 ```
 
 ## Quick Start
@@ -551,7 +551,7 @@ Contributions are welcome! This project follows COOLJAPAN ecosystem standards:
 
 ## License
 
-Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0).
+Licensed under the Apache License, Version 2.0 ([LICENSE](../../LICENSE) or http://www.apache.org/licenses/LICENSE-2.0).
 
 ## Related Projects
 

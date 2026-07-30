@@ -2,21 +2,18 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use oxigeo_netcdf::{
-    Attribute, AttributeValue, Attributes, CfMetadata, DataType, Dimension,
-    DimensionSize, Dimensions, NetCdfError, NetCdfMetadata, NetCdfReader, NetCdfVersion,
-    NetCdfWriter, Variable, Variables,
-};
-use std::path::PathBuf;
-
 #[cfg(feature = "netcdf3")]
 mod writer_tests {
-    use super::*;
+    use crate::functions::temp_file_path;
+    use oxigeo_netcdf::{
+        Attribute, AttributeValue, DataType, Dimension, NetCdfError, NetCdfVersion, NetCdfWriter,
+        Variable,
+    };
     #[test]
     fn test_writer_create() {
         let path = temp_file_path("writer_create");
-        let writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
+        let writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
         assert!(writer.metadata().dimensions().is_empty());
         assert!(writer.metadata().variables().is_empty());
         let _ = std::fs::remove_file(&path);
@@ -24,8 +21,8 @@ mod writer_tests {
     #[test]
     fn test_writer_add_dimension() {
         let path = temp_file_path("writer_add_dim");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
         writer
             .add_dimension(Dimension::new("x", 10).expect("Valid dimension"))
             .expect("Failed to add dimension");
@@ -36,15 +33,14 @@ mod writer_tests {
     #[test]
     fn test_writer_add_variable() {
         let path = temp_file_path("writer_add_var");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
         writer
             .add_dimension(Dimension::new("x", 10).expect("Valid"))
             .expect("Failed to add dimension");
         writer
             .add_variable(
-                Variable::new("data", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed to add variable");
         assert_eq!(writer.metadata().variables().len(), 1);
@@ -53,13 +49,11 @@ mod writer_tests {
     #[test]
     fn test_writer_add_variable_missing_dimension() {
         let path = temp_file_path("writer_missing_dim");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        let result = writer
-            .add_variable(
-                Variable::new("data", DataType::F32, vec!["missing".to_string()])
-                    .expect("Valid"),
-            );
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        let result = writer.add_variable(
+            Variable::new("data", DataType::F32, vec!["missing".to_string()]).expect("Valid"),
+        );
         assert!(result.is_err());
         match result {
             Err(NetCdfError::DimensionNotFound { name }) => {
@@ -72,8 +66,8 @@ mod writer_tests {
     #[test]
     fn test_writer_add_global_attribute() {
         let path = temp_file_path("writer_global_attr");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
         writer
             .add_global_attribute(
                 Attribute::new("title", AttributeValue::text("Test")).expect("Valid"),
@@ -85,13 +79,14 @@ mod writer_tests {
     #[test]
     fn test_writer_add_variable_attribute() {
         let path = temp_file_path("writer_var_attr");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 10).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("temp", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("temp", DataType::F32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         writer
@@ -111,13 +106,12 @@ mod writer_tests {
     #[test]
     fn test_writer_add_variable_attribute_missing_var() {
         let path = temp_file_path("writer_missing_var");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        let result = writer
-            .add_variable_attribute(
-                "nonexistent",
-                Attribute::new("units", AttributeValue::text("test")).expect("Valid"),
-            );
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        let result = writer.add_variable_attribute(
+            "nonexistent",
+            Attribute::new("units", AttributeValue::text("test")).expect("Valid"),
+        );
         assert!(result.is_err());
         match result {
             Err(NetCdfError::VariableNotFound { name }) => {
@@ -130,13 +124,14 @@ mod writer_tests {
     #[test]
     fn test_writer_end_define_mode() {
         let path = temp_file_path("writer_end_define");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 10).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("data", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         writer.end_define_mode().expect("Failed to end define mode");
@@ -147,13 +142,14 @@ mod writer_tests {
     #[test]
     fn test_writer_write_before_end_define_fails() {
         let path = temp_file_path("writer_write_before_define");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 10).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("data", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         let data = vec![0.0f32; 10];
@@ -164,67 +160,77 @@ mod writer_tests {
     #[test]
     fn test_writer_write_f32() {
         let path = temp_file_path("writer_write_f32");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 5).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 5).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("data", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         writer.end_define_mode().expect("Failed to end define mode");
         let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        writer.write_f32("data", &data).expect("Failed to write data");
+        writer
+            .write_f32("data", &data)
+            .expect("Failed to write data");
         writer.close().expect("Failed to close");
         let _ = std::fs::remove_file(&path);
     }
     #[test]
     fn test_writer_write_f64() {
         let path = temp_file_path("writer_write_f64");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 5).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 5).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("data", DataType::F64, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::F64, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         writer.end_define_mode().expect("Failed to end define mode");
         let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        writer.write_f64("data", &data).expect("Failed to write data");
+        writer
+            .write_f64("data", &data)
+            .expect("Failed to write data");
         writer.close().expect("Failed to close");
         let _ = std::fs::remove_file(&path);
     }
     #[test]
     fn test_writer_write_i32() {
         let path = temp_file_path("writer_write_i32");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 5).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 5).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("data", DataType::I32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::I32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         writer.end_define_mode().expect("Failed to end define mode");
         let data: Vec<i32> = vec![1, 2, 3, 4, 5];
-        writer.write_i32("data", &data).expect("Failed to write data");
+        writer
+            .write_i32("data", &data)
+            .expect("Failed to write data");
         writer.close().expect("Failed to close");
         let _ = std::fs::remove_file(&path);
     }
     #[test]
     fn test_writer_write_wrong_size() {
         let path = temp_file_path("writer_wrong_size");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 10).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(
-                Variable::new("data", DataType::F32, vec!["x".to_string()])
-                    .expect("Valid"),
+                Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
             )
             .expect("Failed");
         writer.end_define_mode().expect("Failed to end define mode");
@@ -240,9 +246,11 @@ mod writer_tests {
     #[test]
     fn test_writer_write_missing_variable() {
         let path = temp_file_path("writer_write_missing");
-        let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 10).expect("Valid")).expect("Failed");
+        let mut writer =
+            NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
         writer.end_define_mode().expect("Failed to end define mode");
         let data = vec![0.0f32; 10];
         let result = writer.write_f32("nonexistent", &data);
@@ -255,23 +263,34 @@ mod writer_tests {
         }
         let _ = std::fs::remove_file(&path);
     }
+    /// NetCDF-4 needs no feature flag any more: it is served by the Pure-Rust
+    /// `oxinetcdf` backend, so creating a NetCDF-4 writer always succeeds and
+    /// the resulting writer reports the NetCDF-4 version.
     #[test]
-    fn test_writer_create_netcdf4_fails_without_feature() {
+    fn test_writer_create_netcdf4_is_always_available() {
         let path = temp_file_path("writer_netcdf4");
-        let result = NetCdfWriter::create(&path, NetCdfVersion::NetCdf4);
-        #[cfg(not(feature = "netcdf4"))]
-        assert!(result.is_err());
-        let _ = std::fs::remove_file(&path);
+        let writer = NetCdfWriter::create(&path, NetCdfVersion::NetCdf4)
+            .expect("NetCDF-4 writer creation must succeed (Pure-Rust backend)");
+        assert_eq!(writer.metadata().version(), NetCdfVersion::NetCdf4);
+        assert!(writer.metadata().version().is_netcdf4());
     }
 }
 #[cfg(feature = "netcdf3")]
 mod reader_tests {
-    use super::*;
-    fn create_test_file(path: &PathBuf) {
-        let mut writer = NetCdfWriter::create(path, NetCdfVersion::Classic)
-            .expect("Failed to create writer");
-        writer.add_dimension(Dimension::new("x", 10).expect("Valid")).expect("Failed");
-        writer.add_dimension(Dimension::new("y", 20).expect("Valid")).expect("Failed");
+    use crate::functions::temp_file_path;
+    use oxigeo_netcdf::{
+        Attribute, AttributeValue, DataType, Dimension, NetCdfError, NetCdfReader, NetCdfVersion,
+        NetCdfWriter, Variable,
+    };
+    fn create_test_file(path: &std::path::Path) {
+        let mut writer =
+            NetCdfWriter::create(path, NetCdfVersion::Classic).expect("Failed to create writer");
+        writer
+            .add_dimension(Dimension::new("x", 10).expect("Valid"))
+            .expect("Failed");
+        writer
+            .add_dimension(Dimension::new("y", 20).expect("Valid"))
+            .expect("Failed");
         writer
             .add_variable(Variable::new_coordinate("x", DataType::F32).expect("Valid"))
             .expect("Failed");
@@ -281,17 +300,16 @@ mod reader_tests {
         writer
             .add_variable(
                 Variable::new(
-                        "data",
-                        DataType::F64,
-                        vec!["x".to_string(), "y".to_string()],
-                    )
-                    .expect("Valid"),
+                    "data",
+                    DataType::F64,
+                    vec!["x".to_string(), "y".to_string()],
+                )
+                .expect("Valid"),
             )
             .expect("Failed");
         writer
             .add_global_attribute(
-                Attribute::new("title", AttributeValue::text("Test File"))
-                    .expect("Valid"),
+                Attribute::new("title", AttributeValue::text("Test File")).expect("Valid"),
             )
             .expect("Failed");
         writer
@@ -306,7 +324,9 @@ mod reader_tests {
         let data: Vec<f64> = (0..200).map(|i| i as f64 * 0.1).collect();
         writer.write_f32("x", &x_data).expect("Failed to write x");
         writer.write_f32("y", &y_data).expect("Failed to write y");
-        writer.write_f64("data", &data).expect("Failed to write data");
+        writer
+            .write_f64("data", &data)
+            .expect("Failed to write data");
         writer.close().expect("Failed to close");
     }
     #[test]
@@ -355,7 +375,10 @@ mod reader_tests {
         let attrs = reader.global_attributes();
         assert!(attrs.contains("title"));
         let title = attrs.get("title").expect("title should exist");
-        assert_eq!(title.value().as_text().expect("Should be text"), "Test File");
+        assert_eq!(
+            title.value().as_text().expect("Should be text"),
+            "Test File"
+        );
         let _ = std::fs::remove_file(&path);
     }
     #[test]
@@ -378,7 +401,11 @@ mod reader_tests {
         let data = reader.read_f32("x").expect("Failed to read x");
         assert_eq!(data.len(), 10);
         for (i, &val) in data.iter().enumerate() {
-            assert!((val - i as f32).abs() < f32::EPSILON, "Mismatch at index {}", i);
+            assert!(
+                (val - i as f32).abs() < f32::EPSILON,
+                "Mismatch at index {}",
+                i
+            );
         }
         let _ = std::fs::remove_file(&path);
     }

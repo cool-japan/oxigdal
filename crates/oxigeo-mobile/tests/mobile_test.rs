@@ -11,6 +11,46 @@ use oxigeo_mobile::common::cache::{oxigeo_cache_clear, oxigeo_cache_get_info};
 use oxigeo_mobile::common::*;
 use oxigeo_mobile::ffi::types::*;
 use oxigeo_mobile::ffi::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(
+            std::env::temp_dir().join(format!("oxigeo_mobile_{}_{seq}_{name}", std::process::id())),
+        )
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 #[test]
 fn test_library_initialization() {
@@ -393,8 +433,7 @@ fn test_tile_reading_null_dataset() {
 fn test_tile_reading_invalid_coords() {
     use std::ffi::CString;
 
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("test_tile_coords.tif");
+    let temp_path = TempPath::new("tile_coords.tif");
     let path_cstring =
         CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -476,8 +515,7 @@ fn test_tile_get_data_null() {
 fn test_android_tile_reading() {
     use std::ffi::CString;
 
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("test_android_tile.tif");
+    let temp_path = TempPath::new("android_tile.tif");
     let path_cstring =
         CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -535,8 +573,7 @@ fn test_android_tile_reading() {
 fn test_ios_tile_reading() {
     use std::ffi::CString;
 
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("test_ios_tile.tif");
+    let temp_path = TempPath::new("ios_tile.tif");
     let path_cstring =
         CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
 
@@ -586,5 +623,434 @@ fn test_ios_tile_reading() {
         );
 
         oxigeo_mobile::ffi::raster::oxigeo_dataset_close(dataset_ptr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for https://github.com/cool-japan/oxigeo/issues/14
+//
+// `GeoTiffReader::read_band(level, band)` used to ignore both arguments and
+// return the whole pixel-interleaved image. It now returns one de-interleaved
+// band plane at the requested overview level. Two call sites in this crate
+// were built on the old behaviour:
+//
+//   * `oxigeo_dataset_read_region` computed `row_stride = width *
+//     bytes_per_sample * band_count` over a buffer that had become
+//     `band_count` times smaller, so its bounds guard silently skipped almost
+//     every row and left the caller's buffer untouched. It now issues one
+//     `read_window` per requested channel and interleaves the planes into the
+//     caller's buffer.
+//   * `oxigeo_dataset_compute_stats` asked for level `overview_count() - 1`,
+//     but level numbering is `0 = full resolution` and `1..=overview_count()`
+//     = the overviews, so the coarsest overview is `overview_count()`.
+// ---------------------------------------------------------------------------
+
+/// Per-band, per-pixel sample value for the issue-14 fixtures.
+///
+/// Each band gets a disjoint value range (band 0 -> `0..=12`, band 1 ->
+/// `70..=82`, band 2 -> `140..=152`), so "band 0 repeated", "bands swapped"
+/// and "buffer left untouched" are each individually detectable.
+fn issue_14_sample(band: i32, x: i32, y: i32, width: i32) -> u8 {
+    (band * 70 + ((y * width + x) % 13)) as u8
+}
+
+/// Builds a `bands`-band UInt8 GeoTIFF at `path` through the public FFI
+/// create/write/flush pipeline, filled with [`issue_14_sample`].
+///
+/// # Safety
+/// `path` must be a valid null-terminated path string.
+unsafe fn write_issue_14_fixture(path: &std::ffi::CStr, width: i32, height: i32, bands: i32) {
+    let mut dataset_ptr: *mut OxiGeoDataset = std::ptr::null_mut();
+
+    unsafe {
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_create(
+            path.as_ptr(),
+            width,
+            height,
+            bands,
+            OxiGeoDataType::Byte,
+            &mut dataset_ptr,
+        );
+        assert_eq!(result, OxiGeoErrorCode::Success, "dataset_create failed");
+
+        for band in 0..bands {
+            let mut plane: Vec<u8> = Vec::with_capacity((width * height) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    plane.push(issue_14_sample(band, x, y, width));
+                }
+            }
+            let buffer = OxiGeoBuffer {
+                data: plane.as_mut_ptr(),
+                length: plane.len(),
+                width,
+                height,
+                channels: 1,
+            };
+            let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_write_region(
+                dataset_ptr,
+                0,
+                0,
+                width,
+                height,
+                band + 1,
+                &buffer,
+            );
+            assert_eq!(
+                result,
+                OxiGeoErrorCode::Success,
+                "write_region failed for band {}",
+                band + 1
+            );
+        }
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_flush(dataset_ptr);
+        assert_eq!(result, OxiGeoErrorCode::Success, "dataset_flush failed");
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_close(dataset_ptr);
+        assert_eq!(result, OxiGeoErrorCode::Success, "dataset_close failed");
+    }
+}
+
+/// Builds a unique temp path for an issue-14 fixture, scoped to the OS temp
+/// dir so nothing is hard-coded and parallel runs cannot collide.
+fn issue_14_temp_path(tag: &str) -> TempPath {
+    TempPath::new(&format!("issue14_{tag}.tif"))
+}
+
+#[test]
+fn test_issue_14_read_region_multiband_fills_requested_bands() {
+    use std::ffi::CString;
+
+    let width = 8i32;
+    let height = 6i32;
+    let bands = 3i32;
+
+    let temp_path = issue_14_temp_path("read_region_multiband");
+    let path_cstring =
+        CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
+
+    unsafe {
+        write_issue_14_fixture(&path_cstring, width, height, bands);
+
+        let mut dataset_ptr: *mut OxiGeoDataset = std::ptr::null_mut();
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_open(
+            path_cstring.as_ptr(),
+            &mut dataset_ptr,
+        );
+        assert_eq!(result, OxiGeoErrorCode::Success, "dataset_open failed");
+
+        // A sub-rectangle, deliberately not the whole image and not at the
+        // origin, so a stride/offset mistake cannot cancel out.
+        let x_off = 2i32;
+        let y_off = 1i32;
+        let x_size = 4i32;
+        let y_size = 3i32;
+
+        // `band` is 1-based here: band 2 means we start at 0-based band index
+        // 1 and fill `channels = 2` consecutive bands (0-based indices 1, 2).
+        let band = 2i32;
+        let channels = 2i32;
+        let first_band = band - 1;
+
+        // Sentinel fill: any byte still 0xAA at the end was never written,
+        // which is exactly the old failure mode (guard skipped the row).
+        const SENTINEL: u8 = 0xAA;
+        let mut buffer_data = vec![SENTINEL; (x_size * y_size * channels) as usize];
+        let mut buffer = OxiGeoBuffer {
+            data: buffer_data.as_mut_ptr(),
+            length: buffer_data.len(),
+            width: x_size,
+            height: y_size,
+            channels,
+        };
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_read_region(
+            dataset_ptr,
+            x_off,
+            y_off,
+            x_size,
+            y_size,
+            band,
+            &mut buffer,
+        );
+        assert_eq!(
+            result,
+            OxiGeoErrorCode::Success,
+            "read_region of a {x_size}x{y_size} window at ({x_off},{y_off}) from a \
+             {bands}-band raster must succeed (issue #14)"
+        );
+
+        assert!(
+            buffer_data.iter().any(|&b| b != SENTINEL),
+            "destination buffer was left entirely untouched (all 0x{SENTINEL:02X}); \
+             read_region wrote nothing"
+        );
+
+        for row in 0..y_size {
+            for col in 0..x_size {
+                for ch in 0..channels {
+                    let src_band = first_band + ch;
+                    let expected = issue_14_sample(src_band, x_off + col, y_off + row, width);
+                    let idx = ((row * x_size + col) * channels + ch) as usize;
+                    let actual = buffer_data[idx];
+                    assert_eq!(
+                        actual,
+                        expected,
+                        "band {} (0-based {}) pixel ({}, {}) at buffer offset {}: \
+                         expected {}, got {}",
+                        src_band + 1,
+                        src_band,
+                        x_off + col,
+                        y_off + row,
+                        idx,
+                        expected,
+                        actual
+                    );
+                }
+            }
+        }
+
+        // Sanity: the two interleaved channels must actually differ, so a
+        // "same plane copied twice" bug cannot pass the loop above.
+        assert_ne!(
+            buffer_data[0], buffer_data[1],
+            "channel 0 and channel 1 of the first destination pixel are identical \
+             ({}); the two bands were not de-interleaved separately",
+            buffer_data[0]
+        );
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_close(dataset_ptr);
+        assert_eq!(result, OxiGeoErrorCode::Success);
+    }
+}
+
+#[test]
+fn test_issue_14_read_region_single_band_unchanged() {
+    use std::ffi::CString;
+
+    let width = 8i32;
+    let height = 6i32;
+
+    let temp_path = issue_14_temp_path("read_region_single_band");
+    let path_cstring =
+        CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
+
+    unsafe {
+        write_issue_14_fixture(&path_cstring, width, height, 1);
+
+        let mut dataset_ptr: *mut OxiGeoDataset = std::ptr::null_mut();
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_open(
+            path_cstring.as_ptr(),
+            &mut dataset_ptr,
+        );
+        assert_eq!(result, OxiGeoErrorCode::Success, "dataset_open failed");
+
+        let x_off = 1i32;
+        let y_off = 2i32;
+        let x_size = 5i32;
+        let y_size = 3i32;
+
+        const SENTINEL: u8 = 0xAA;
+        let mut buffer_data = vec![SENTINEL; (x_size * y_size) as usize];
+        let mut buffer = OxiGeoBuffer {
+            data: buffer_data.as_mut_ptr(),
+            length: buffer_data.len(),
+            width: x_size,
+            height: y_size,
+            channels: 1,
+        };
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_read_region(
+            dataset_ptr,
+            x_off,
+            y_off,
+            x_size,
+            y_size,
+            1,
+            &mut buffer,
+        );
+        assert_eq!(
+            result,
+            OxiGeoErrorCode::Success,
+            "single-band read_region must succeed"
+        );
+
+        for row in 0..y_size {
+            for col in 0..x_size {
+                let expected = issue_14_sample(0, x_off + col, y_off + row, width);
+                let idx = (row * x_size + col) as usize;
+                let actual = buffer_data[idx];
+                assert_eq!(
+                    actual,
+                    expected,
+                    "band 1 (0-based 0) pixel ({}, {}) at buffer offset {}: expected {}, got {}",
+                    x_off + col,
+                    y_off + row,
+                    idx,
+                    expected,
+                    actual
+                );
+            }
+        }
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_close(dataset_ptr);
+        assert_eq!(result, OxiGeoErrorCode::Success);
+    }
+}
+
+#[test]
+fn test_issue_14_compute_stats_approx_uses_valid_level() {
+    use oxigeo_core::io::FileDataSource;
+    use oxigeo_core::types::{GeoTransform, NoDataValue, RasterDataType};
+    use oxigeo_geotiff::tiff::{Compression, Predictor};
+    use oxigeo_geotiff::{
+        GeoTiffReader, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
+    };
+    use std::ffi::CString;
+
+    // The FFI create/flush pipeline never generates overviews, so build the
+    // pyramid directly with the writer. 64x64 with levels [2, 4] gives a real
+    // multi-level file whose coarsest level is `overview_count()`.
+    let width = 64u64;
+    let height = 64u64;
+    let temp_path = issue_14_temp_path("compute_stats_overviews");
+
+    let mut samples = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            // Smooth ramp 0..=126 so averaging overviews stay inside the same
+            // value range as the full-resolution data.
+            samples.push((x + y) as u8);
+        }
+    }
+
+    let config = WriterConfig::new(width, height, 1, RasterDataType::UInt8)
+        .with_compression(Compression::None)
+        .with_predictor(Predictor::None)
+        .with_tile_size(16, 16)
+        .with_overviews(true, OverviewResampling::Average)
+        .with_overview_levels(vec![2, 4])
+        .with_geo_transform(GeoTransform::north_up(0.0, 0.0, 1.0, -1.0))
+        .with_epsg_code(4326)
+        .with_nodata(NoDataValue::None);
+
+    {
+        let mut writer = GeoTiffWriter::create(&temp_path, config, GeoTiffWriterOptions::default())
+            .expect("create overview fixture");
+        writer.write(&samples).expect("write overview fixture");
+    }
+
+    // Confirm the fixture really has overviews; otherwise this test would
+    // silently degrade into the no-overview path.
+    let (overview_count, coarsest_pixels) = {
+        let source = FileDataSource::open(&temp_path).expect("open fixture");
+        let reader = GeoTiffReader::open(source).expect("parse fixture");
+        let count = reader.overview_count();
+        // Level numbering: 0 = full resolution, 1..=overview_count() = the
+        // overviews. `count` (not `count - 1`) is the coarsest level.
+        let pixels = reader
+            .band_pixel_count(count)
+            .expect("coarsest overview level must exist");
+        (count, pixels)
+    };
+    assert!(
+        overview_count > 0,
+        "fixture must contain overviews for this test to exercise the level \
+         fallback: overview_count() = {overview_count}"
+    );
+
+    let path_cstring =
+        CString::new(temp_path.to_str().expect("valid path")).expect("valid cstring");
+
+    unsafe {
+        let mut dataset_ptr: *mut OxiGeoDataset = std::ptr::null_mut();
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_open(
+            path_cstring.as_ptr(),
+            &mut dataset_ptr,
+        );
+        assert_eq!(result, OxiGeoErrorCode::Success, "dataset_open failed");
+
+        let mut exact = OxiGeoStats {
+            min: 0.0,
+            max: 0.0,
+            mean: 0.0,
+            stddev: 0.0,
+            valid_count: 0,
+        };
+        let result =
+            oxigeo_mobile::ffi::raster::oxigeo_dataset_compute_stats(dataset_ptr, 1, 0, &mut exact);
+        assert_eq!(
+            result,
+            OxiGeoErrorCode::Success,
+            "exact stats (approx_ok = 0) must succeed"
+        );
+        assert_eq!(
+            exact.valid_count,
+            width * height,
+            "exact stats: expected {} valid pixels, got {}",
+            width * height,
+            exact.valid_count
+        );
+
+        let mut approx = OxiGeoStats {
+            min: 0.0,
+            max: 0.0,
+            mean: 0.0,
+            stddev: 0.0,
+            valid_count: 0,
+        };
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_compute_stats(
+            dataset_ptr,
+            1,
+            1,
+            &mut approx,
+        );
+        assert_eq!(
+            result,
+            OxiGeoErrorCode::Success,
+            "approximate stats (approx_ok != 0) on a file with {overview_count} overview(s) \
+             must succeed, not fail with a buffer-size error: {:?}",
+            {
+                let msg = oxigeo_get_last_error();
+                let text = std::ffi::CStr::from_ptr(msg).to_string_lossy().into_owned();
+                oxigeo_string_free(msg);
+                text
+            }
+        );
+
+        // The coarsest overview is level `overview_count()`, not
+        // `overview_count() - 1`: reading it must yield exactly that level's
+        // pixel count, which for this 64x64 / [2, 4] pyramid is 16x16 = 256.
+        assert_eq!(
+            approx.valid_count, coarsest_pixels as u64,
+            "approximate stats: expected the coarsest overview's {} pixels, got {}",
+            coarsest_pixels, approx.valid_count
+        );
+        assert!(
+            approx.valid_count < width * height,
+            "approximate stats: pixel count {} must be smaller than the \
+             full-resolution count {} (an overview was supposed to be read)",
+            approx.valid_count,
+            width * height
+        );
+        assert!(
+            approx.min >= exact.min && approx.max <= exact.max,
+            "approximate stats: min/max ({}, {}) must stay inside the exact range \
+             ({}, {})",
+            approx.min,
+            approx.max,
+            exact.min,
+            exact.max
+        );
+        assert!(
+            (approx.mean - exact.mean).abs() < 5.0,
+            "approximate stats: mean {} must be close to the exact mean {}",
+            approx.mean,
+            exact.mean
+        );
+
+        let result = oxigeo_mobile::ffi::raster::oxigeo_dataset_close(dataset_ptr);
+        assert_eq!(result, OxiGeoErrorCode::Success);
     }
 }

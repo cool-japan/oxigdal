@@ -8,6 +8,25 @@ use oxigeo_core::io::{ByteRange, DataSource};
 use super::header::{ByteOrderType, TiffVariant};
 use super::tags::TiffTag;
 
+/// Error for a TIFF structure the source could not supply in full.
+///
+/// `DataSource` implementations disagree about ranges that run past the end:
+/// the file- and mmap-backed ones fail, the in-memory ones clamp and return a
+/// short buffer. The IFD parser used to index its buffers directly, so through a
+/// clamping source a truncated or corrupt-offset file *panicked* in `byteorder`
+/// instead of erroring. Every read below is length-checked and reports this
+/// instead.
+fn truncated(what: &str, offset: u64, needed: usize, available: usize) -> OxiGeoError {
+    OxiGeoError::io_error_builder("TIFF structure runs past the end of the file")
+        .with_operation("parse_ifd")
+        .with_parameter("structure", what.to_string())
+        .with_parameter("offset", offset.to_string())
+        .with_parameter("bytes_needed", needed.to_string())
+        .with_parameter("bytes_available", available.to_string())
+        .with_suggestion("File is truncated, or an IFD offset points outside it")
+        .build()
+}
+
 /// TIFF field types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -208,7 +227,11 @@ impl IfdEntry {
         _variant: TiffVariant,
     ) -> Result<Vec<u8>> {
         if let Some(inline) = &self.inline_value {
-            Ok(inline[..self.value_size() as usize].to_vec())
+            let want = usize::try_from(self.value_size()).unwrap_or(usize::MAX);
+            Ok(inline
+                .get(..want)
+                .ok_or_else(|| truncated("inline tag value", 0, want, inline.len()))?
+                .to_vec())
         } else {
             let range = ByteRange::from_offset_length(self.value_offset, self.value_size());
             source.read_range(range)
@@ -226,11 +249,24 @@ impl IfdEntry {
                 .build()
         })?;
 
+        // The inline field is 4 bytes on a classic TIFF and 8 on a BigTIFF, so a
+        // malformed entry can name a wider field type than its own inline value
+        // can hold (a `Long8` of count 0 in a classic file, say). Check before
+        // reading rather than letting `byteorder` panic on it.
+        let need = |n: usize| -> Result<&[u8]> {
+            bytes
+                .get(..n)
+                .ok_or_else(|| truncated("inline tag value", 0, n, bytes.len()))
+        };
         let value = match self.field_type {
-            FieldType::Byte | FieldType::Undefined => u64::from(bytes[0]),
-            FieldType::Short => u64::from(byte_order.read_u16(bytes)),
-            FieldType::Long => u64::from(byte_order.read_u32(bytes)),
-            FieldType::Long8 => byte_order.read_u64(bytes),
+            FieldType::Byte | FieldType::Undefined => u64::from(
+                *bytes
+                    .first()
+                    .ok_or_else(|| truncated("inline tag value", 0, 1, 0))?,
+            ),
+            FieldType::Short => u64::from(byte_order.read_u16(need(2)?)),
+            FieldType::Long => u64::from(byte_order.read_u32(need(4)?)),
+            FieldType::Long8 => byte_order.read_u64(need(8)?),
             _ => {
                 return Err(OxiGeoError::invalid_parameter_builder(
                     "field_type",
@@ -528,10 +564,13 @@ impl Ifd {
 
         let count_bytes =
             source.read_range(ByteRange::from_offset_length(offset, count_size as u64))?;
+        let count_bytes = count_bytes
+            .get(..count_size)
+            .ok_or_else(|| truncated("IFD entry count", offset, count_size, count_bytes.len()))?;
 
         let entry_count = match variant {
-            TiffVariant::Classic => u64::from(byte_order.read_u16(&count_bytes)),
-            TiffVariant::BigTiff => byte_order.read_u64(&count_bytes),
+            TiffVariant::Classic => u64::from(byte_order.read_u16(count_bytes)),
+            TiffVariant::BigTiff => byte_order.read_u64(count_bytes),
         };
 
         if entry_count > 65535 {
@@ -547,7 +586,11 @@ impl Ifd {
         }
 
         let entry_size = variant.ifd_entry_size();
-        let entries_offset = offset + count_size as u64;
+        // `entry_count` is capped at 65535 just above and `entry_size` is 12 or
+        // 20, so only the file-supplied `offset` can push these past `u64`.
+        let entries_offset = offset
+            .checked_add(count_size as u64)
+            .ok_or_else(|| truncated("IFD entries", offset, count_size, 0))?;
         let entries_size = entry_count * entry_size as u64;
 
         // Read all entries
@@ -558,21 +601,39 @@ impl Ifd {
         for i in 0..entry_count as usize {
             let start = i * entry_size;
             let end = start + entry_size;
-            let entry = IfdEntry::parse(&entries_bytes[start..end], byte_order, variant)?;
+            let bytes = entries_bytes.get(start..end).ok_or_else(|| {
+                truncated(
+                    "IFD entry",
+                    entries_offset + start as u64,
+                    entry_size,
+                    entries_bytes.len().saturating_sub(start),
+                )
+            })?;
+            let entry = IfdEntry::parse(bytes, byte_order, variant)?;
             entries.push(entry);
         }
 
         // Read next IFD offset
-        let next_offset_pos = entries_offset + entries_size;
+        let next_offset_pos = entries_offset
+            .checked_add(entries_size)
+            .ok_or_else(|| truncated("next IFD offset", entries_offset, 0, 0))?;
         let next_offset_size = variant.offset_size();
         let next_offset_bytes = source.read_range(ByteRange::from_offset_length(
             next_offset_pos,
             next_offset_size as u64,
         ))?;
+        let next_offset_bytes = next_offset_bytes.get(..next_offset_size).ok_or_else(|| {
+            truncated(
+                "next IFD offset",
+                next_offset_pos,
+                next_offset_size,
+                next_offset_bytes.len(),
+            )
+        })?;
 
         let next_ifd_offset = match variant {
-            TiffVariant::Classic => u64::from(byte_order.read_u32(&next_offset_bytes)),
-            TiffVariant::BigTiff => byte_order.read_u64(&next_offset_bytes),
+            TiffVariant::Classic => u64::from(byte_order.read_u32(next_offset_bytes)),
+            TiffVariant::BigTiff => byte_order.read_u64(next_offset_bytes),
         };
 
         Ok(Self {

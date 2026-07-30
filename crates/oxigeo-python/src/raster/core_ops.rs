@@ -461,10 +461,51 @@ pub fn parse_crs_string(crs_str: &str) -> PyResult<Crs> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_python_raster_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_create_raster_validation() {
-        let test_path = std::env::temp_dir().join("oxigeo_create_raster_test.tif");
+        let test_path = TempPath::new("create_raster_test.tif");
         let test_path_str = test_path.to_string_lossy();
         assert!(
             create_raster(
@@ -525,8 +566,8 @@ mod tests {
     fn test_create_raster_cog_driver_builds_real_overviews() {
         pyo3::Python::initialize();
         pyo3::Python::attach(|py| {
-            let cog_path = std::env::temp_dir().join("oxigeo_create_raster_cog_test.tif");
-            let plain_path = std::env::temp_dir().join("oxigeo_create_raster_plain_test.tif");
+            let cog_path = TempPath::new("create_raster_cog_test.tif");
+            let plain_path = TempPath::new("create_raster_plain_test.tif");
             let cog_path_str = cog_path.to_string_lossy().to_string();
             let plain_path_str = plain_path.to_string_lossy().to_string();
 
@@ -575,9 +616,6 @@ mod tests {
                 0,
                 "driver=None must not silently build overviews"
             );
-
-            let _ = std::fs::remove_file(&cog_path);
-            let _ = std::fs::remove_file(&plain_path);
         });
     }
 
@@ -589,7 +627,7 @@ mod tests {
     fn test_open_raster_vrt_driver_is_honest_not_implemented_error() {
         pyo3::Python::initialize();
         pyo3::Python::attach(|py| {
-            let test_path = std::env::temp_dir().join("oxigeo_open_raster_vrt_test.tif");
+            let test_path = TempPath::new("open_raster_vrt_test.tif");
             // Reuse whatever create_raster leaves behind from the COG test if
             // present, else create a minimal file so the "path exists" check
             // doesn't shadow the driver check.
@@ -624,8 +662,6 @@ mod tests {
                 message.contains("VRT") || message.contains("not") || message.contains("Not"),
                 "expected an honest 'not implemented'-style message, got: {message}"
             );
-
-            let _ = std::fs::remove_file(&test_path);
         });
     }
 

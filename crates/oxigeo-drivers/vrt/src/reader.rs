@@ -341,7 +341,16 @@ impl VrtReader {
         Ok(())
     }
 
-    /// Reads a single pixel value from a buffer
+    /// Reads a single pixel value from a buffer.
+    ///
+    /// `buffer` holds **host-native** samples. Every VRT source is a GeoTIFF
+    /// opened through [`SourceDataset`] (see its `geotiff` field — no other
+    /// source kind is supported), and `GeoTiffReader` normalises decoded samples
+    /// to host order whatever the file's `II`/`MM` header says. These reads were
+    /// spelled `from_le_bytes`, which is the same thing on a little-endian host
+    /// but asserted a contract the data does not have and would mis-read every
+    /// multi-byte pixel function input on a big-endian one
+    /// (cool-japan/oxigeo#14).
     fn read_pixel_value(
         &self,
         buffer: &[u8],
@@ -360,15 +369,15 @@ impl VrtReader {
             RasterDataType::UInt8 => buffer[offset] as f64,
             RasterDataType::Int8 => buffer[offset] as i8 as f64,
             RasterDataType::UInt16 => {
-                let val = u16::from_le_bytes([buffer[offset], buffer[offset + 1]]);
+                let val = u16::from_ne_bytes([buffer[offset], buffer[offset + 1]]);
                 val as f64
             }
             RasterDataType::Int16 => {
-                let val = i16::from_le_bytes([buffer[offset], buffer[offset + 1]]);
+                let val = i16::from_ne_bytes([buffer[offset], buffer[offset + 1]]);
                 val as f64
             }
             RasterDataType::UInt32 => {
-                let val = u32::from_le_bytes([
+                let val = u32::from_ne_bytes([
                     buffer[offset],
                     buffer[offset + 1],
                     buffer[offset + 2],
@@ -377,7 +386,7 @@ impl VrtReader {
                 val as f64
             }
             RasterDataType::Int32 => {
-                let val = i32::from_le_bytes([
+                let val = i32::from_ne_bytes([
                     buffer[offset],
                     buffer[offset + 1],
                     buffer[offset + 2],
@@ -386,7 +395,7 @@ impl VrtReader {
                 val as f64
             }
             RasterDataType::Float32 => {
-                let val = f32::from_le_bytes([
+                let val = f32::from_ne_bytes([
                     buffer[offset],
                     buffer[offset + 1],
                     buffer[offset + 2],
@@ -394,7 +403,7 @@ impl VrtReader {
                 ]);
                 val as f64
             }
-            RasterDataType::Float64 => f64::from_le_bytes([
+            RasterDataType::Float64 => f64::from_ne_bytes([
                 buffer[offset],
                 buffer[offset + 1],
                 buffer[offset + 2],
@@ -417,7 +426,13 @@ impl VrtReader {
         if is_nodata { Ok(None) } else { Ok(Some(value)) }
     }
 
-    /// Writes a single pixel value to a buffer
+    /// Writes a single pixel value to a buffer.
+    ///
+    /// The output buffer holds **host-native** samples, matching what
+    /// [`Self::read_pixel_value`] consumes and what the simple-source path
+    /// memcpys straight out of a `GeoTiffReader` window. Writing little-endian
+    /// here while the copy path writes native would produce a buffer with two
+    /// byte orders in it on a big-endian host (cool-japan/oxigeo#14).
     fn write_pixel_value(
         &self,
         buffer: &mut [u8],
@@ -443,26 +458,26 @@ impl VrtReader {
             }
             RasterDataType::UInt16 => {
                 let val = write_val.clamp(0.0, 65535.0) as u16;
-                buffer[offset..offset + 2].copy_from_slice(&val.to_le_bytes());
+                buffer[offset..offset + 2].copy_from_slice(&val.to_ne_bytes());
             }
             RasterDataType::Int16 => {
                 let val = write_val.clamp(-32768.0, 32767.0) as i16;
-                buffer[offset..offset + 2].copy_from_slice(&val.to_le_bytes());
+                buffer[offset..offset + 2].copy_from_slice(&val.to_ne_bytes());
             }
             RasterDataType::UInt32 => {
                 let val = write_val.clamp(0.0, u32::MAX as f64) as u32;
-                buffer[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                buffer[offset..offset + 4].copy_from_slice(&val.to_ne_bytes());
             }
             RasterDataType::Int32 => {
                 let val = write_val.clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-                buffer[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                buffer[offset..offset + 4].copy_from_slice(&val.to_ne_bytes());
             }
             RasterDataType::Float32 => {
                 let val = write_val as f32;
-                buffer[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                buffer[offset..offset + 4].copy_from_slice(&val.to_ne_bytes());
             }
             RasterDataType::Float64 => {
-                buffer[offset..offset + 8].copy_from_slice(&write_val.to_le_bytes());
+                buffer[offset..offset + 8].copy_from_slice(&write_val.to_ne_bytes());
             }
             _ => return Err(VrtError::invalid_source("Unsupported data type")),
         }

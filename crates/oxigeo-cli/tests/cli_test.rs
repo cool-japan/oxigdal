@@ -16,19 +16,30 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // =============================================================================
 // Test Utilities
 // =============================================================================
 
-/// Create a temporary directory with a unique name for tests
+/// Create a temporary directory with a unique name for tests.
+///
+/// The leaf name embeds the process id and a monotonic counter (as well as a
+/// nanosecond stamp), so no two test binaries — nor two concurrent runs of this
+/// one — can ever land on the same directory.
 fn create_temp_dir(prefix: &str) -> Result<PathBuf, std::io::Error> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_base = std::env::temp_dir();
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir_name = format!("oxigeo_test_{}_{}", prefix, timestamp);
+    let dir_name = format!(
+        "oxigeo_cli_test_{}_{seq}_{}_{prefix}",
+        std::process::id(),
+        timestamp
+    );
     let dir_path = temp_base.join(dir_name);
     fs::create_dir_all(&dir_path)?;
     Ok(dir_path)

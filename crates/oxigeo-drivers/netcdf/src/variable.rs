@@ -146,14 +146,16 @@ impl Variable {
     ) -> Result<Self> {
         let name = name.into();
         if name.is_empty() {
-            return Err(NetCdfError::Core(
-                OxiGeoError::invalid_parameter_builder("name", "Variable name cannot be empty")
-                    .with_operation("create_netcdf_variable")
-                    .with_parameter("data_type", format!("{:?}", data_type))
-                    .with_parameter("num_dimensions", dimension_names.len().to_string())
-                    .with_suggestion("Provide a non-empty variable name")
-                    .build(),
-            ));
+            // Domain validation failure -> the crate's variable error category
+            // (code N006), consistent with `Dimension::new` (DimensionError)
+            // and `Attribute::new` (AttributeError). Wrapping this in
+            // `NetCdfError::Core` would misclassify it as a generic core
+            // error (N100) and lose the variable-specific suggestion.
+            return Err(NetCdfError::VariableError(format!(
+                "Variable name cannot be empty (data_type: {data_type:?}, num_dimensions: {}). \
+                 Provide a non-empty variable name",
+                dimension_names.len()
+            )));
         }
         Ok(Self {
             name,
@@ -179,16 +181,10 @@ impl Variable {
     pub fn new_coordinate(name: impl Into<String>, data_type: DataType) -> Result<Self> {
         let name = name.into();
         if name.is_empty() {
-            return Err(NetCdfError::Core(
-                OxiGeoError::invalid_parameter_builder(
-                    "name",
-                    "Coordinate variable name cannot be empty",
-                )
-                .with_operation("create_coordinate_variable")
-                .with_parameter("data_type", format!("{:?}", data_type))
-                .with_suggestion("Provide a non-empty coordinate variable name")
-                .build(),
-            ));
+            return Err(NetCdfError::VariableError(format!(
+                "Coordinate variable name cannot be empty (data_type: {data_type:?}). \
+                 Provide a non-empty coordinate variable name"
+            )));
         }
         let dimension_names = vec![name.clone()];
         Ok(Self {

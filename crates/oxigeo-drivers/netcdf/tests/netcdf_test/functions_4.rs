@@ -2,28 +2,25 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use oxigeo_netcdf::{
-    Attribute, AttributeValue, Attributes, CfMetadata, DataType, Dimension,
-    DimensionSize, Dimensions, NetCdfError, NetCdfMetadata, NetCdfReader, NetCdfVersion,
-    NetCdfWriter, Variable, Variables,
-};
-
 #[cfg(feature = "netcdf3")]
 mod roundtrip_tests {
-    use super::*;
+    use crate::functions::temp_file_path;
+    use oxigeo_netcdf::{
+        Attribute, AttributeValue, DataType, Dimension, NetCdfReader, NetCdfVersion, NetCdfWriter,
+        Variable,
+    };
     #[test]
     fn test_roundtrip_simple() {
         let path = temp_file_path("roundtrip_simple");
         {
-            let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-                .expect("Failed to create");
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
             writer
                 .add_dimension(Dimension::new("x", 5).expect("Valid"))
                 .expect("Failed");
             writer
                 .add_variable(
-                    Variable::new("values", DataType::F32, vec!["x".to_string()])
-                        .expect("Valid"),
+                    Variable::new("values", DataType::F32, vec!["x".to_string()]).expect("Valid"),
                 )
                 .expect("Failed");
             writer.end_define_mode().expect("Failed");
@@ -39,7 +36,10 @@ mod roundtrip_tests {
             for (i, (&got, &exp)) in data.iter().zip(expected.iter()).enumerate() {
                 assert!(
                     (got - exp).abs() < 1e-6,
-                    "Mismatch at index {}: got {}, expected {}", i, got, exp
+                    "Mismatch at index {}: got {}, expected {}",
+                    i,
+                    got,
+                    exp
                 );
             }
         }
@@ -49,8 +49,8 @@ mod roundtrip_tests {
     fn test_roundtrip_multidimensional() {
         let path = temp_file_path("roundtrip_multi");
         {
-            let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-                .expect("Failed to create");
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
             writer
                 .add_dimension(Dimension::new("x", 3).expect("Valid"))
                 .expect("Failed");
@@ -60,11 +60,11 @@ mod roundtrip_tests {
             writer
                 .add_variable(
                     Variable::new(
-                            "matrix",
-                            DataType::F64,
-                            vec!["x".to_string(), "y".to_string()],
-                        )
-                        .expect("Valid"),
+                        "matrix",
+                        DataType::F64,
+                        vec!["x".to_string(), "y".to_string()],
+                    )
+                    .expect("Valid"),
                 )
                 .expect("Failed");
             writer.end_define_mode().expect("Failed");
@@ -74,14 +74,17 @@ mod roundtrip_tests {
         }
         {
             let reader = NetCdfReader::open(&path).expect("Failed to open");
-            let var = reader.variables().get("matrix").expect("Variable should exist");
+            let var = reader
+                .variables()
+                .get("matrix")
+                .expect("Variable should exist");
             let shape = var.shape(reader.dimensions()).expect("Failed to get shape");
             assert_eq!(shape, vec![3, 4]);
             let data = reader.read_f64("matrix").expect("Failed to read");
             assert_eq!(data.len(), 12);
-            for i in 0..12 {
+            for (i, &got) in data.iter().enumerate() {
                 let expected = i as f64 * 1.5;
-                assert!((data[i] - expected).abs() < 1e-10, "Mismatch at index {}", i);
+                assert!((got - expected).abs() < 1e-10, "Mismatch at index {}", i);
             }
         }
         let _ = std::fs::remove_file(&path);
@@ -90,18 +93,16 @@ mod roundtrip_tests {
     fn test_roundtrip_with_attributes() {
         let path = temp_file_path("roundtrip_attrs");
         {
-            let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-                .expect("Failed to create");
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
             writer
                 .add_global_attribute(
-                    Attribute::new("Conventions", AttributeValue::text("CF-1.8"))
-                        .expect("Valid"),
+                    Attribute::new("Conventions", AttributeValue::text("CF-1.8")).expect("Valid"),
                 )
                 .expect("Failed");
             writer
                 .add_global_attribute(
-                    Attribute::new("title", AttributeValue::text("Test Dataset"))
-                        .expect("Valid"),
+                    Attribute::new("title", AttributeValue::text("Test Dataset")).expect("Valid"),
                 )
                 .expect("Failed");
             writer
@@ -114,29 +115,25 @@ mod roundtrip_tests {
                 .expect("Failed");
             writer
                 .add_variable(
-                    Variable::new("data", DataType::F32, vec!["x".to_string()])
-                        .expect("Valid"),
+                    Variable::new("data", DataType::F32, vec!["x".to_string()]).expect("Valid"),
                 )
                 .expect("Failed");
             writer
                 .add_variable_attribute(
                     "data",
-                    Attribute::new("units", AttributeValue::text("meters"))
-                        .expect("Valid"),
+                    Attribute::new("units", AttributeValue::text("meters")).expect("Valid"),
                 )
                 .expect("Failed");
             writer
                 .add_variable_attribute(
                     "data",
-                    Attribute::new("long_name", AttributeValue::text("Distance"))
-                        .expect("Valid"),
+                    Attribute::new("long_name", AttributeValue::text("Distance")).expect("Valid"),
                 )
                 .expect("Failed");
             writer
                 .add_variable_attribute(
                     "data",
-                    Attribute::new("scale_factor", AttributeValue::f64(1.5))
-                        .expect("Valid"),
+                    Attribute::new("scale_factor", AttributeValue::f64(1.5)).expect("Valid"),
                 )
                 .expect("Failed");
             writer.end_define_mode().expect("Failed");
@@ -151,7 +148,10 @@ mod roundtrip_tests {
             assert!(global_attrs.contains("title"));
             assert!(global_attrs.contains("version"));
             let conventions = global_attrs.get("Conventions").expect("Should exist");
-            assert_eq!(conventions.value().as_text().expect("Should be text"), "CF-1.8");
+            assert_eq!(
+                conventions.value().as_text().expect("Should be text"),
+                "CF-1.8"
+            );
             let cf = reader.cf_metadata().expect("CF metadata should exist");
             assert!(cf.is_cf_compliant());
             assert_eq!(cf.title.as_deref(), Some("Test Dataset"));
@@ -169,8 +169,8 @@ mod roundtrip_tests {
     fn test_roundtrip_coordinate_variables() {
         let path = temp_file_path("roundtrip_coords");
         {
-            let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-                .expect("Failed to create");
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
             writer
                 .add_dimension(Dimension::new("lat", 3).expect("Valid"))
                 .expect("Failed");
@@ -178,37 +178,31 @@ mod roundtrip_tests {
                 .add_dimension(Dimension::new("lon", 4).expect("Valid"))
                 .expect("Failed");
             writer
-                .add_variable(
-                    Variable::new_coordinate("lat", DataType::F64).expect("Valid"),
-                )
+                .add_variable(Variable::new_coordinate("lat", DataType::F64).expect("Valid"))
                 .expect("Failed");
             writer
-                .add_variable(
-                    Variable::new_coordinate("lon", DataType::F64).expect("Valid"),
-                )
+                .add_variable(Variable::new_coordinate("lon", DataType::F64).expect("Valid"))
                 .expect("Failed");
             writer
                 .add_variable(
                     Variable::new(
-                            "temp",
-                            DataType::F32,
-                            vec!["lat".to_string(), "lon".to_string()],
-                        )
-                        .expect("Valid"),
+                        "temp",
+                        DataType::F32,
+                        vec!["lat".to_string(), "lon".to_string()],
+                    )
+                    .expect("Valid"),
                 )
                 .expect("Failed");
             writer
                 .add_variable_attribute(
                     "lat",
-                    Attribute::new("units", AttributeValue::text("degrees_north"))
-                        .expect("Valid"),
+                    Attribute::new("units", AttributeValue::text("degrees_north")).expect("Valid"),
                 )
                 .expect("Failed");
             writer
                 .add_variable_attribute(
                     "lon",
-                    Attribute::new("units", AttributeValue::text("degrees_east"))
-                        .expect("Valid"),
+                    Attribute::new("units", AttributeValue::text("degrees_east")).expect("Valid"),
                 )
                 .expect("Failed");
             writer
@@ -219,11 +213,17 @@ mod roundtrip_tests {
                 .expect("Failed");
             writer.end_define_mode().expect("Failed");
             let lat_data = vec![30.0, 40.0, 50.0];
-            let lon_data = vec![- 120.0, - 110.0, - 100.0, - 90.0];
+            let lon_data = vec![-120.0, -110.0, -100.0, -90.0];
             let temp_data = vec![280.0f32; 12];
-            writer.write_f64("lat", &lat_data).expect("Failed to write lat");
-            writer.write_f64("lon", &lon_data).expect("Failed to write lon");
-            writer.write_f32("temp", &temp_data).expect("Failed to write temp");
+            writer
+                .write_f64("lat", &lat_data)
+                .expect("Failed to write lat");
+            writer
+                .write_f64("lon", &lon_data)
+                .expect("Failed to write lon");
+            writer
+                .write_f32("temp", &temp_data)
+                .expect("Failed to write temp");
             writer.close().expect("Failed to close");
         }
         {
@@ -233,11 +233,11 @@ mod roundtrip_tests {
             let lon_var = reader.variables().get("lon").expect("Should exist");
             assert!(lon_var.is_coordinate());
             let temp_var = reader.variables().get("temp").expect("Should exist");
-            assert!(! temp_var.is_coordinate());
+            assert!(!temp_var.is_coordinate());
             let lat_data = reader.read_f64("lat").expect("Failed to read lat");
             assert_eq!(lat_data, vec![30.0, 40.0, 50.0]);
             let lon_data = reader.read_f64("lon").expect("Failed to read lon");
-            assert_eq!(lon_data, vec![- 120.0, - 110.0, - 100.0, - 90.0]);
+            assert_eq!(lon_data, vec![-120.0, -110.0, -100.0, -90.0]);
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -245,15 +245,14 @@ mod roundtrip_tests {
     fn test_roundtrip_integer_data() {
         let path = temp_file_path("roundtrip_int");
         {
-            let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-                .expect("Failed to create");
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
             writer
                 .add_dimension(Dimension::new("x", 10).expect("Valid"))
                 .expect("Failed");
             writer
                 .add_variable(
-                    Variable::new("counts", DataType::I32, vec!["x".to_string()])
-                        .expect("Valid"),
+                    Variable::new("counts", DataType::I32, vec!["x".to_string()]).expect("Valid"),
                 )
                 .expect("Failed");
             writer.end_define_mode().expect("Failed");
@@ -274,8 +273,8 @@ mod roundtrip_tests {
     fn test_roundtrip_unlimited_dimension() {
         let path = temp_file_path("roundtrip_unlimited");
         {
-            let mut writer = NetCdfWriter::create(&path, NetCdfVersion::Classic)
-                .expect("Failed to create");
+            let mut writer =
+                NetCdfWriter::create(&path, NetCdfVersion::Classic).expect("Failed to create");
             writer
                 .add_dimension(Dimension::new_unlimited("time", 0).expect("Valid"))
                 .expect("Failed");
@@ -283,18 +282,16 @@ mod roundtrip_tests {
                 .add_dimension(Dimension::new("x", 5).expect("Valid"))
                 .expect("Failed");
             writer
-                .add_variable(
-                    Variable::new_coordinate("time", DataType::F64).expect("Valid"),
-                )
+                .add_variable(Variable::new_coordinate("time", DataType::F64).expect("Valid"))
                 .expect("Failed");
             writer
                 .add_variable(
                     Variable::new(
-                            "data",
-                            DataType::F32,
-                            vec!["time".to_string(), "x".to_string()],
-                        )
-                        .expect("Valid"),
+                        "data",
+                        DataType::F32,
+                        vec!["time".to_string(), "x".to_string()],
+                    )
+                    .expect("Valid"),
                 )
                 .expect("Failed");
             writer.end_define_mode().expect("Failed");
@@ -309,7 +306,7 @@ mod roundtrip_tests {
     }
 }
 mod error_tests {
-    use super::*;
+    use oxigeo_netcdf::NetCdfError;
     #[test]
     fn test_error_display_dimension_not_found() {
         let err = NetCdfError::DimensionNotFound {
@@ -317,7 +314,11 @@ mod error_tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("missing_dim"), "Error message: {}", msg);
-        assert!(msg.to_lowercase().contains("not found"), "Error message: {}", msg);
+        assert!(
+            msg.to_lowercase().contains("not found"),
+            "Error message: {}",
+            msg
+        );
     }
     #[test]
     fn test_error_display_variable_not_found() {
@@ -383,13 +384,12 @@ mod error_tests {
     }
     #[test]
     fn test_error_display_unlimited_dimension() {
-        let err = NetCdfError::UnlimitedDimensionError(
-            "Cannot change fixed dimension".to_string(),
-        );
+        let err = NetCdfError::UnlimitedDimensionError("Cannot change fixed dimension".to_string());
         let msg = err.to_string();
         assert!(
             msg.to_lowercase().contains("unlimited") || msg.contains("fixed"),
-            "Error message: {}", msg
+            "Error message: {}",
+            msg
         );
     }
     #[test]
@@ -404,7 +404,8 @@ mod error_tests {
         let msg = err.to_string();
         assert!(
             msg.to_lowercase().contains("i/o") || msg.contains("I/O"),
-            "Error message: {}", msg
+            "Error message: {}",
+            msg
         );
     }
 }

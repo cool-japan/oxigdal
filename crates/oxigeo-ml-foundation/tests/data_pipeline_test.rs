@@ -280,14 +280,15 @@ fn test_checkpoint_manager() {
     use oxigeo_ml_foundation::training::checkpointing::CheckpointManager;
     use std::env;
 
-    let checkpoint_dir = env::temp_dir().join("oxigeo_test_checkpoints");
+    let checkpoint_dir =
+        env::temp_dir().join(format!("oxigeo_test_checkpoints_{}", std::process::id()));
     let manager = CheckpointManager::new(checkpoint_dir.clone(), None, true)
         .expect("Failed to create checkpoint manager");
 
     assert!(manager.save_best_only);
 
     // Test should_save logic
-    let mut manager = CheckpointManager::new(checkpoint_dir, None, true)
+    let mut manager = CheckpointManager::new(checkpoint_dir.clone(), None, true)
         .expect("Failed to create checkpoint manager");
 
     assert!(
@@ -302,6 +303,8 @@ fn test_checkpoint_manager() {
         !manager.should_save(Some(1.1)),
         "Should not save worse checkpoint"
     );
+
+    let _ = std::fs::remove_dir_all(&checkpoint_dir);
 }
 
 /// Test loss function computation

@@ -32,10 +32,51 @@ pub struct TiffFile {
 }
 
 impl TiffFile {
+    /// Reads the leading header bytes, however few of them the source has.
+    ///
+    /// The parser wants [`TiffHeader::BIGTIFF_HEADER_SIZE`] bytes, because that
+    /// is the largest header it may have to look at, but a *classic* TIFF header
+    /// is only [`TiffHeader::MIN_HEADER_SIZE`] bytes and
+    /// [`TiffHeader::parse`] handles every length from there up, with a specific
+    /// error for each way it can fall short.
+    ///
+    /// Sources differ in what they do with a range that runs past the end:
+    /// exact-read sources (`FileDataSource`, `MmapDataSource`) fail, clamping
+    /// ones return what they have. Asking for 16 bytes unconditionally therefore
+    /// made a file's verdict depend on which source it was opened through, and
+    /// on the exact-read ones it reported every short file — 2 bytes or 15 —
+    /// as "Failed to read 16 bytes at offset 0", an I/O error describing this
+    /// read rather than the file. So: ask for 16, and if the source refuses
+    /// *because it is smaller than that*, ask again for exactly what it has and
+    /// let the header parser render the verdict. A genuine I/O failure is still
+    /// returned untouched, and a truncated file still errors — with the header
+    /// parser's message instead of this function's.
+    fn read_header_bytes<S: DataSource>(source: &S) -> Result<Vec<u8>> {
+        let want = TiffHeader::BIGTIFF_HEADER_SIZE as u64;
+        match source.read_range(ByteRange::from_offset_length(0, want)) {
+            Ok(bytes) => Ok(bytes),
+            Err(err) => {
+                let Ok(size) = source.size() else {
+                    return Err(err);
+                };
+                if size >= want {
+                    return Err(err);
+                }
+                source.read_range(ByteRange::from_offset_length(0, size))
+            }
+        }
+    }
+
     /// Parses a TIFF file from a data source
+    ///
+    /// # Errors
+    /// Returns an error if the header is shorter than a TIFF header, declares
+    /// neither `II` nor `MM`, names an unsupported version, or if no IFD can be
+    /// parsed from it. A file too short to hold a header is reported as such
+    /// (see [`TiffHeader::parse`]), not as an unknown format.
     pub fn parse<S: DataSource>(source: &S) -> Result<Self> {
         // Read header
-        let header_bytes = source.read_range(ByteRange::from_offset_length(0, 16))?;
+        let header_bytes = Self::read_header_bytes(source)?;
         let header = TiffHeader::parse(&header_bytes)?;
 
         // Parse all IFDs

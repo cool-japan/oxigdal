@@ -99,9 +99,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // Print overview information
+    // Print overview information. Each level's real size comes from its own
+    // IFD via `level_size`, so it is right even for a pyramid that is not a
+    // strict power-of-two decimation.
     println!("--- Overviews ---");
     println!("Overview count: {}", reader.overview_count());
+    for level in 0..=reader.overview_count() {
+        match reader.level_size(level) {
+            Ok((width, height)) => println!("  Level {}: {}x{}", level, width, height),
+            Err(e) => eprintln!("  Level {}: unavailable ({})", level, e),
+        }
+    }
     println!();
 
     // Print tile information
@@ -137,30 +145,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!();
 
-        // Read tile as buffer
+        // Read the tile as a buffer, one band at a time. A `RasterBuffer` holds
+        // a single band, so the band is part of the request;
+        // `read_tile_buffer(level, tile_x, tile_y)` is the `band = 0` shorthand.
         println!("--- Reading Tile as RasterBuffer ---");
-        match reader.read_tile_buffer(0, 0, 0) {
-            Ok(buffer) => {
-                println!("Buffer size: {}x{}", buffer.width(), buffer.height());
-                println!("Buffer data type: {:?}", buffer.data_type());
+        for band in 0..reader.band_count() as usize {
+            match reader.read_tile_band_buffer(0, band, 0, 0) {
+                Ok(buffer) => {
+                    println!("Band {}:", band);
+                    println!("  Buffer size: {}x{}", buffer.width(), buffer.height());
+                    println!("  Buffer data type: {:?}", buffer.data_type());
 
-                // Get a pixel value
-                if let Ok(value) = buffer.get_pixel(0, 0) {
-                    println!("Pixel (0, 0) value: {}", value);
-                }
+                    // Get a pixel value
+                    if let Ok(value) = buffer.get_pixel(0, 0) {
+                        println!("  Pixel (0, 0) value: {}", value);
+                    }
 
-                // Compute statistics
-                if let Ok(stats) = buffer.compute_statistics() {
-                    println!("Statistics:");
-                    println!("  Min: {}", stats.min);
-                    println!("  Max: {}", stats.max);
-                    println!("  Mean: {}", stats.mean);
-                    println!("  Std Dev: {}", stats.std_dev);
-                    println!("  Valid pixels: {}", stats.valid_count);
+                    // Compute statistics
+                    if let Ok(stats) = buffer.compute_statistics() {
+                        println!("  Statistics:");
+                        println!("    Min: {}", stats.min);
+                        println!("    Max: {}", stats.max);
+                        println!("    Mean: {}", stats.mean);
+                        println!("    Std Dev: {}", stats.std_dev);
+                        println!("    Valid pixels: {}", stats.valid_count);
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("Failed to read tile buffer: {}", e);
+                Err(e) => {
+                    eprintln!("Failed to read tile buffer for band {}: {}", band, e);
+                }
             }
         }
     }

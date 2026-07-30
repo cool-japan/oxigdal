@@ -84,14 +84,7 @@ fn open_cloud_with_feature(path: &str) -> Result<Dataset> {
     let info = DatasetInfo {
         format: guessed_format,
         path: Some(path.to_string()),
-        width: None,
-        height: None,
-        band_count: 0,
-        layer_count: 0,
-        crs: None,
-        geotransform: None,
-        feature_count: None,
-        bounds: None,
+        ..DatasetInfo::default()
     };
 
     // Validate that the oxigeo-cloud crate can at least parse the URI scheme

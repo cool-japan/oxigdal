@@ -75,6 +75,47 @@ async fn open_cloud_datasource(uri: &str) -> Result<Box<dyn DataSource>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_cli_cloud_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_is_cloud_uri() {
@@ -96,8 +137,7 @@ mod tests {
 
     #[test]
     fn test_open_datasource_file_path() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("cloud_test_direct.bin");
+        let path = TempPath::new("direct.bin");
         std::fs::write(&path, b"test data").expect("write temp file");
         let result = open_datasource(path.to_str().expect("valid path"));
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
@@ -105,8 +145,7 @@ mod tests {
 
     #[test]
     fn test_open_datasource_file_uri() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("cloud_test_uri.bin");
+        let path = TempPath::new("uri.bin");
         std::fs::write(&path, b"test data").expect("write temp file");
         let uri = format!("file://{}", path.display());
         let result = open_datasource(&uri);

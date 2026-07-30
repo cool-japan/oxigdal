@@ -1052,6 +1052,47 @@ mod tests {
     use super::*;
     use crate::header::PmTilesHeader;
     use crate::pmtiles::PmTilesReader;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_pmtiles_writer_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Unit tests for internal helpers
@@ -1424,7 +1465,7 @@ mod tests {
     #[test]
     fn test_pmtiles_writer_magic_and_version() {
         use std::io::{Read, Seek, SeekFrom};
-        let tmp = std::env::temp_dir().join("test_pmtiles_writer_magic.pmtiles");
+        let tmp = TempPath::new("magic.pmtiles");
         let writer =
             PmTilesWriter::create(&tmp, PmTilesWriterOptions::default()).expect("create ok");
         writer.finish().expect("finish ok");
@@ -1440,14 +1481,12 @@ mod tests {
         let mut count_buf = [0u8; 8];
         f.read_exact(&mut count_buf).expect("read ok");
         assert_eq!(u64::from_le_bytes(count_buf), 0);
-
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
     fn test_pmtiles_writer_small_archive_root_only() {
         use std::io::{Read, Seek, SeekFrom};
-        let tmp = std::env::temp_dir().join("test_pmtiles_writer_small.pmtiles");
+        let tmp = TempPath::new("small.pmtiles");
         let mut writer =
             PmTilesWriter::create(&tmp, PmTilesWriterOptions::default()).expect("create ok");
         // Write 100 unique tiles at zoom 5.
@@ -1470,13 +1509,11 @@ mod tests {
             leaf_dirs_length, 0,
             "small archive should have no leaf directories"
         );
-
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
     fn test_pmtiles_writer_dedup_reduces_file_size() {
-        let tmp = std::env::temp_dir().join("test_pmtiles_writer_dedup.pmtiles");
+        let tmp = TempPath::new("dedup.pmtiles");
         let mut writer =
             PmTilesWriter::create(&tmp, PmTilesWriterOptions::default()).expect("create ok");
         let tile_data = vec![0xABu8; 1024];
@@ -1494,15 +1531,13 @@ mod tests {
             "Expected deduplicated archive, got {} bytes",
             file_size
         );
-
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
     fn test_pmtiles_writer_large_archive_has_leaves() {
         use std::io::{Read, Seek, SeekFrom};
 
-        let tmp = std::env::temp_dir().join("test_pmtiles_writer_large_leaves.pmtiles");
+        let tmp = TempPath::new("large_leaves.pmtiles");
         let mut writer = PmTilesWriter::create(
             &tmp,
             PmTilesWriterOptions {
@@ -1550,15 +1585,13 @@ mod tests {
             leaf_dirs_length > 0,
             "5000-tile archive should use leaf directories (leaf_dirs_length={leaf_dirs_length})"
         );
-
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
     fn test_pmtiles_writer_roundtrip_via_reader() {
         use std::io::Read;
 
-        let tmp = std::env::temp_dir().join("test_pmtiles_writer_roundtrip.pmtiles");
+        let tmp = TempPath::new("roundtrip.pmtiles");
         let mut writer =
             PmTilesWriter::create(&tmp, PmTilesWriterOptions::default()).expect("create ok");
 
@@ -1595,7 +1628,5 @@ mod tests {
                 "tile z={z} x={x} y={y} content mismatch"
             );
         }
-
-        let _ = std::fs::remove_file(&tmp);
     }
 }

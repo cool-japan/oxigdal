@@ -571,29 +571,62 @@ mod tests {
     use crate::source::{FileSource, Source};
     use crate::stream::{BoxStream, StreamItem};
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn unique_temp_path(tag: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("oxigeo-etl-sched-{}-{}", tag, nanos))
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_etl_sched_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     #[tokio::test]
     async fn test_execute_reports_success_for_valid_pipeline() {
         // A well-formed pipeline over an existing input file must report success:true and
         // actually move the bytes to the sink (proving the pipeline really ran).
-        let input_path = unique_temp_path("ok-in");
-        let output_path = unique_temp_path("ok-out");
+        let input_path = TempPath::new("ok-in");
+        let output_path = TempPath::new("ok-out");
         {
             let mut f = std::fs::File::create(&input_path).expect("create input");
             f.write_all(b"hello etl scheduler").expect("write input");
         }
 
         let pipeline = Pipeline::builder()
-            .source(Box::new(FileSource::new(input_path.clone())))
-            .sink(Box::new(FileSink::new(output_path.clone())))
+            .source(Box::new(FileSource::new(input_path.to_path_buf())))
+            .sink(Box::new(FileSink::new(output_path.to_path_buf())))
             .build()
             .expect("build pipeline");
 
@@ -607,21 +640,18 @@ mod tests {
 
         let written = std::fs::read(&output_path).expect("read output");
         assert_eq!(written, b"hello etl scheduler");
-
-        let _ = std::fs::remove_file(&input_path);
-        let _ = std::fs::remove_file(&output_path);
     }
 
     #[tokio::test]
     async fn test_execute_reports_failure_when_pipeline_errors() {
         // Source file does not exist -> Pipeline::run_ref returns Err -> the task must report
         // success:false (NOT a fabricated success), after exhausting retries.
-        let missing_input = unique_temp_path("missing-in");
-        let output_path = unique_temp_path("fail-out");
+        let missing_input = TempPath::new("missing-in");
+        let output_path = TempPath::new("fail-out");
 
         let pipeline = Pipeline::builder()
-            .source(Box::new(FileSource::new(missing_input)))
-            .sink(Box::new(FileSink::new(output_path.clone())))
+            .source(Box::new(FileSource::new(missing_input.to_path_buf())))
+            .sink(Box::new(FileSink::new(output_path.to_path_buf())))
             .build()
             .expect("build pipeline");
 
@@ -644,8 +674,6 @@ mod tests {
             "failure must carry an error message"
         );
         assert_eq!(result.retries, 2, "should have exhausted the retry budget");
-
-        let _ = std::fs::remove_file(&output_path);
     }
 
     #[tokio::test]
@@ -711,11 +739,11 @@ mod tests {
     async fn test_execute_honors_timeout() {
         // The pipeline would take 30s; a 50ms timeout must abort it and, after retries, report
         // failure with a timeout error rather than hanging or fabricating success.
-        let output_path = unique_temp_path("timeout-out");
+        let output_path = TempPath::new("timeout-out");
 
         let pipeline = Pipeline::builder()
             .source(Box::new(SlowSource))
-            .sink(Box::new(FileSink::new(output_path.clone())))
+            .sink(Box::new(FileSink::new(output_path.to_path_buf())))
             .build()
             .expect("build pipeline");
 
@@ -741,7 +769,5 @@ mod tests {
             "error should mention the timeout, got: {}",
             error
         );
-
-        let _ = std::fs::remove_file(&output_path);
     }
 }

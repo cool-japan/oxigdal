@@ -11,7 +11,51 @@ use oxigeo_shapefile::{
     ShapefileSchemaBuilder, ShapefileWriter,
 };
 use std::collections::HashMap;
-use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch shapefile *stem* inside the system temp dir (house policy:
+/// no hardcoded absolute paths).
+///
+/// A shapefile fixture is a *set* of sidecar files sharing one stem, so this
+/// guard owns the stem and, on drop, removes every sidecar that could have been
+/// produced for it.  The leaf name embeds the process id and a monotonic
+/// counter, so no two test binaries — nor two concurrent runs of this one — can
+/// ever land on the same stem.  A panicking test therefore leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_shapefile_filter_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        for ext in ["shp", "shx", "dbf", "prj", "cpg", "sbn", "sbx", "qix"] {
+            let _ = std::fs::remove_file(self.0.with_extension(ext));
+        }
+    }
+}
 
 // ── Helper: build and write a point shapefile with 5 features ─────────────────
 
@@ -52,18 +96,11 @@ fn write_filter_fixture(base_path: &std::path::Path) {
     writer.write_features(&features).expect("write features");
 }
 
-fn cleanup(base_path: &std::path::Path) {
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
-}
-
 // ── 1. test_filter_string_eq ──────────────────────────────────────────────────
 
 #[test]
 fn test_filter_string_eq() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("filter_string_eq");
+    let base_path = TempPath::new("filter_string_eq");
     write_filter_fixture(&base_path);
 
     let reader = ShapefileReader::open(&base_path).expect("open shapefile");
@@ -83,16 +120,13 @@ fn test_filter_string_eq() {
         results[0].attributes.get("NAME"),
         Some(&FieldValue::String("Point 2".to_string()))
     );
-
-    cleanup(&base_path);
 }
 
 // ── 2. test_filter_numeric_gt ─────────────────────────────────────────────────
 
 #[test]
 fn test_filter_numeric_gt() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("filter_numeric_gt");
+    let base_path = TempPath::new("filter_numeric_gt");
     write_filter_fixture(&base_path);
 
     let reader = ShapefileReader::open(&base_path).expect("open shapefile");
@@ -112,16 +146,13 @@ fn test_filter_numeric_gt() {
             panic!("expected Float VALUE attribute");
         }
     }
-
-    cleanup(&base_path);
 }
 
 // ── 3. test_filter_string_contains ────────────────────────────────────────────
 
 #[test]
 fn test_filter_string_contains() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("filter_string_contains");
+    let base_path = TempPath::new("filter_string_contains");
     write_filter_fixture(&base_path);
 
     let reader = ShapefileReader::open(&base_path).expect("open shapefile");
@@ -133,16 +164,13 @@ fn test_filter_string_contains() {
     };
     let results = reader.read_features_filtered(&filter).expect("filter read");
     assert_eq!(results.len(), 5, "all 5 features contain 'Point' in NAME");
-
-    cleanup(&base_path);
 }
 
 // ── 4. test_filter_missing_field ──────────────────────────────────────────────
 
 #[test]
 fn test_filter_missing_field() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("filter_missing_field");
+    let base_path = TempPath::new("filter_missing_field");
     write_filter_fixture(&base_path);
 
     let reader = ShapefileReader::open(&base_path).expect("open shapefile");
@@ -159,16 +187,13 @@ fn test_filter_missing_field() {
         results.is_empty(),
         "filtering on a non-existent field must return empty results"
     );
-
-    cleanup(&base_path);
 }
 
 // ── 5. test_filter_predicate_closure ─────────────────────────────────────────
 
 #[test]
 fn test_filter_predicate_closure() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("filter_predicate_closure");
+    let base_path = TempPath::new("filter_predicate_closure");
     write_filter_fixture(&base_path);
 
     let reader = ShapefileReader::open(&base_path).expect("open shapefile");
@@ -185,16 +210,13 @@ fn test_filter_predicate_closure() {
             "all returned features must have even record_number"
         );
     }
-
-    cleanup(&base_path);
 }
 
 // ── 6. test_filter_bool_eq ────────────────────────────────────────────────────
 
 #[test]
 fn test_filter_bool_eq() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("filter_bool_eq");
+    let base_path = TempPath::new("filter_bool_eq");
     write_filter_fixture(&base_path);
 
     let reader = ShapefileReader::open(&base_path).expect("open shapefile");
@@ -214,6 +236,4 @@ fn test_filter_bool_eq() {
             "all returned features must be ACTIVE"
         );
     }
-
-    cleanup(&base_path);
 }

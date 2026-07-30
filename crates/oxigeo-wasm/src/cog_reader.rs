@@ -770,7 +770,8 @@ impl WasmCogReader {
     /// Read a specific tile from the full-resolution image (level 0).
     ///
     /// Signature and behaviour are preserved for existing callers: the returned
-    /// bytes are the fully decoded tile in raster order. This now routes through
+    /// bytes are the fully decoded tile in raster order, in the **host's** byte
+    /// order. This now routes through
     /// [`read_tile_level`](Self::read_tile_level) so the horizontal Predictor
     /// (TIFF tag 317) is undone when present. `predictor == 1` (or absent) is a
     /// no-op, so existing non-predicted COGs are unaffected.
@@ -783,9 +784,25 @@ impl WasmCogReader {
     /// The tile is fetched from that level's own tile directory, decompressed,
     /// and — when the level declares `predictor == 2` — the horizontal
     /// differencing predictor is undone in place using the level's sample
-    /// layout (bits/sample, samples/pixel) and the reader's byte order. The
+    /// layout (bits/sample, samples/pixel) and the file's byte order. The
     /// returned bytes are the decoded tile in raster order (`tile_width ×
     /// tile_height × samples_per_pixel` samples).
+    ///
+    /// # Byte order
+    ///
+    /// The returned samples are in the **host's** byte order, whatever the
+    /// file's `II`/`MM` header says. This is the same contract
+    /// `oxigeo_geotiff`'s reader has (see its *Byte order of decoded samples*
+    /// crate docs), which matters because [`crate::WasmCogViewer`] serves tiles
+    /// from *either* this reader (URL path) or `oxigeo_geotiff::CogReader`
+    /// (`openBytes` path) and must not have to know which. Before
+    /// cool-japan/oxigeo#14 this reader returned file-order bytes and the viewer
+    /// carried a `little_endian` flag to compensate — one flag that had to mean
+    /// two different things depending on which reader had produced the tile.
+    ///
+    /// The two swaps in this function are ordered and both necessary: the
+    /// predictor is defined on *file*-order samples (TIFF 6.0 §14), so it is
+    /// undone first, and only then are the samples normalised to host order.
     pub async fn read_tile_level(&self, level: usize, tile_x: u32, tile_y: u32) -> Result<Vec<u8>> {
         let lvl = self
             .metadata
@@ -815,17 +832,7 @@ impl WasmCogReader {
 
         let mut decompressed = decompress_tile(compressed_data, lvl.compression)?;
 
-        // Undo the horizontal predictor when the level declares one.
-        if lvl.predictor == 2 {
-            apply_horizontal_predictor(
-                &mut decompressed,
-                lvl.tile_width,
-                lvl.tile_height,
-                lvl.bits_per_sample,
-                lvl.samples_per_pixel,
-                self.is_little_endian(),
-            );
-        }
+        finish_tile_decode(&mut decompressed, lvl, self.is_little_endian());
 
         Ok(decompressed)
     }
@@ -865,7 +872,6 @@ impl WasmCogReader {
         let th = tile_height as u64;
         let tiles_across = lvl.width.div_ceil(tw);
         let tiles_down = lvl.height.div_ceil(th);
-        let little_endian = self.is_little_endian();
 
         let tx0 = x0 / tw;
         let ty0 = y0 / th;
@@ -890,7 +896,7 @@ impl WasmCogReader {
         // order — issue them concurrently instead of one at a time.
         let fetches = stream::iter(coords.into_iter().map(|(tx, ty)| async move {
             let bytes = self.read_tile_level(level, tx, ty).await?;
-            Ok::<_, OxiGeoError>((tx, ty, bytes_to_u16(&bytes, little_endian)))
+            Ok::<_, OxiGeoError>((tx, ty, bytes_to_u16(&bytes)))
         }))
         .buffer_unordered(MAX_CONCURRENT_TILE_FETCHES)
         .collect::<Vec<_>>()
@@ -996,8 +1002,16 @@ impl WasmCogReader {
         &self.metadata
     }
 
-    /// Returns `true` if the underlying TIFF uses little-endian byte order.
-    pub fn is_little_endian(&self) -> bool {
+    /// Returns `true` if the underlying TIFF's *header* declares little-endian.
+    ///
+    /// Deliberately **not** `pub`: this describes the file on disk, never the
+    /// samples this reader hands out, which are always host-native (see
+    /// [`Self::read_tile_level`]). While it was public, `WasmCogViewer` used it
+    /// to byte-swap tiles, which was correct only for as long as this reader
+    /// returned file-order bytes. Keeping it module-private means no consumer
+    /// can make that mistake again — the sample contract is now enforced by
+    /// visibility rather than by a comment (cool-japan/oxigeo#14).
+    fn is_little_endian(&self) -> bool {
         matches!(self.byte_order, ByteOrder::LittleEndian)
     }
 }
@@ -1024,21 +1038,76 @@ fn decompress_tile(compressed: Vec<u8>, compression: u16) -> Result<Vec<u8>> {
     }
 }
 
-/// Reinterpret a decoded tile byte buffer as little-/big-endian `u16` samples.
+/// Reinterpret a decoded tile byte buffer as `u16` samples.
+///
+/// The input comes from [`WasmCogReader::read_tile_level`], which has already
+/// normalised samples to host order, so this is a plain `from_ne_bytes` — it
+/// takes no byte-order argument precisely so that it cannot undo that
+/// normalisation (cool-japan/oxigeo#14).
 ///
 /// A trailing odd byte (if any) is dropped via `chunks_exact`.
 #[allow(dead_code)] // Used by read_window_u16 (A4 pipeline surface)
-fn bytes_to_u16(bytes: &[u8], little_endian: bool) -> Vec<u16> {
+fn bytes_to_u16(bytes: &[u8]) -> Vec<u16> {
     bytes
         .chunks_exact(2)
-        .map(|c| {
-            if little_endian {
-                u16::from_le_bytes([c[0], c[1]])
-            } else {
-                u16::from_be_bytes([c[0], c[1]])
-            }
-        })
+        .map(|c| u16::from_ne_bytes([c[0], c[1]]))
         .collect()
+}
+
+/// Finish decoding one decompressed tile: undo the predictor, then normalise.
+///
+/// Split out of [`WasmCogReader::read_tile_level`] so that the *ordering* of
+/// these two steps — not merely the existence of each — is reachable from a
+/// native unit test, since `read_tile_level` itself needs a browser `fetch`.
+/// The order is load-bearing and not interchangeable:
+///
+/// 1. TIFF's horizontal differencing predictor is defined over samples in the
+///    **file's** byte order (TIFF 6.0 §14), so it must be undone first.
+/// 2. Only then are samples rewritten into the **host's** order, which is the
+///    contract every caller above this function relies on.
+///
+/// Swapping the two silently corrupts predicted `MM` tiles; dropping step 2
+/// re-splits the crate into two byte-order contracts, which is precisely the
+/// bug cool-japan/oxigeo#14 removed.
+fn finish_tile_decode(data: &mut [u8], lvl: &IfdMetadata, file_is_little_endian: bool) {
+    if lvl.predictor == 2 {
+        apply_horizontal_predictor(
+            data,
+            lvl.tile_width,
+            lvl.tile_height,
+            lvl.bits_per_sample,
+            lvl.samples_per_pixel,
+            file_is_little_endian,
+        );
+    }
+    normalize_samples_to_native(data, lvl.bits_per_sample, file_is_little_endian);
+}
+
+/// Rewrite a decoded tile's samples from the file's byte order into the host's.
+///
+/// This is the crate's one and only sample byte-swap, called at the end of
+/// [`WasmCogReader::read_tile_level`]. Everything downstream — `bytes_to_u16`,
+/// the window assemblers, `crate::WasmCogViewer` and its elevation decoder —
+/// reads host-native and must stay that way; a second swap anywhere above this
+/// line silently corrupts every `MM` file (cool-japan/oxigeo#14).
+///
+/// Only 16-, 32- and 64-bit samples are swapped. 8-bit samples have nothing to
+/// swap, and any other `BitsPerSample` (sub-byte packing, or an exotic width
+/// like 24) has no defined sample boundary to swap across, so both pass through
+/// untouched — the same scope `oxigeo_geotiff`'s normalisation uses.
+fn normalize_samples_to_native(data: &mut [u8], bits_per_sample: u16, file_is_little_endian: bool) {
+    if file_is_little_endian == cfg!(target_endian = "little") {
+        return;
+    }
+    let sample_bytes = match bits_per_sample {
+        16 => 2usize,
+        32 => 4,
+        64 => 8,
+        _ => return,
+    };
+    for sample in data.chunks_exact_mut(sample_bytes) {
+        sample.reverse();
+    }
 }
 
 /// Undo TIFF horizontal differencing (Predictor 2) for one row of 16-bit
@@ -1312,7 +1381,153 @@ mod tests {
             expected.extend_from_slice(row);
         }
         apply_horizontal_predictor(&mut bytes, 2, 2, 16, 1, true);
-        assert_eq!(bytes_to_u16(&bytes, true), expected);
+        // The predictor leaves samples in *file* order; normalisation is the
+        // separate step `read_tile_level` applies next.
+        normalize_samples_to_native(&mut bytes, 16, true);
+        assert_eq!(bytes_to_u16(&bytes), expected);
+    }
+
+    /// `normalize_samples_to_native` is the pivot the whole wasm byte-order
+    /// contract turns on, so pin both directions explicitly.
+    #[test]
+    fn normalize_samples_to_native_swaps_only_foreign_order() {
+        let host_is_le = cfg!(target_endian = "little");
+
+        // A file in the host's own order is already native: byte-for-byte
+        // identical after normalisation, at every supported width.
+        for (bits, width) in [(16u16, 2usize), (32, 4), (64, 8)] {
+            let original: Vec<u8> = (0..(width as u8 * 3)).collect();
+            let mut same = original.clone();
+            normalize_samples_to_native(&mut same, bits, host_is_le);
+            assert_eq!(same, original, "{bits}-bit host-order file must not move");
+
+            // A file in the opposite order has each sample reversed in place,
+            // and never across sample boundaries.
+            let mut foreign = original.clone();
+            normalize_samples_to_native(&mut foreign, bits, !host_is_le);
+            let expected: Vec<u8> = original
+                .chunks_exact(width)
+                .flat_map(|c| c.iter().rev().copied())
+                .collect();
+            assert_eq!(foreign, expected, "{bits}-bit foreign file must swap");
+        }
+
+        // 8-bit and exotic widths have no sample order to normalise.
+        for bits in [1u16, 8, 24] {
+            let original: Vec<u8> = (0..12u8).collect();
+            let mut data = original.clone();
+            normalize_samples_to_native(&mut data, bits, !host_is_le);
+            assert_eq!(data, original, "{bits}-bit samples must pass through");
+        }
+    }
+
+    /// A tile whose sample count is not a whole multiple of the sample width
+    /// (a truncated block) must normalise its complete samples and drop the
+    /// trailing partial one rather than panicking or shifting the buffer.
+    #[test]
+    fn normalize_samples_to_native_ignores_trailing_partial_sample() {
+        let host_is_le = cfg!(target_endian = "little");
+        let mut data = vec![1u8, 2, 3, 4, 5];
+        normalize_samples_to_native(&mut data, 16, !host_is_le);
+        assert_eq!(data, vec![2, 1, 4, 3, 5]);
+    }
+
+    /// Minimal level record for the tile-decode tests.
+    fn level_16bit(tile_width: u32, tile_height: u32, predictor: u16) -> IfdMetadata {
+        IfdMetadata {
+            width: u64::from(tile_width),
+            height: u64::from(tile_height),
+            tile_width,
+            tile_height,
+            bits_per_sample: 16,
+            samples_per_pixel: 1,
+            sample_format: 1,
+            compression: 1,
+            photometric_interpretation: 1,
+            predictor,
+            tile_offsets: Vec::new(),
+            tile_byte_counts: Vec::new(),
+            pixel_scale_x: None,
+            pixel_scale_y: None,
+            tiepoint_pixel_x: None,
+            tiepoint_pixel_y: None,
+            tiepoint_geo_x: None,
+            tiepoint_geo_y: None,
+            epsg_code: None,
+        }
+    }
+
+    /// Serialise one 2x2 16-bit tile of `values`, in `II` or `MM`, optionally
+    /// horizontally predicted — i.e. exactly the bytes a real COG would store.
+    fn encode_tile_16bit(values: &[[u16; 2]; 2], little_endian: bool, predictor: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        for row in values {
+            let mut row = row.to_vec();
+            if predictor == 2 {
+                // Forward horizontal differencing, the encoder's transform.
+                for i in (1..row.len()).rev() {
+                    row[i] = row[i].wrapping_sub(row[i - 1]);
+                }
+            }
+            for v in row {
+                out.extend_from_slice(&if little_endian {
+                    v.to_le_bytes()
+                } else {
+                    v.to_be_bytes()
+                });
+            }
+        }
+        out
+    }
+
+    /// The revert-proof test for the URL reader's half of the byte-order
+    /// contract (cool-japan/oxigeo#14).
+    ///
+    /// `read_tile_level` itself needs a browser `fetch`, so this drives the
+    /// post-decompression pipeline it delegates to, `finish_tile_decode`, over
+    /// an `MM` tile and its byte-identical `II` twin. The same logical raster
+    /// must decode to the same samples from both, with and without a predictor.
+    ///
+    /// Delete the `normalize_samples_to_native` call from `finish_tile_decode`
+    /// and the `MM` case decodes to byte-swapped garbage while `II` stays
+    /// correct, so the equality assertion fails. Re-introduce a *second* swap
+    /// anywhere above it and it fails the same way.
+    #[test]
+    fn finish_tile_decode_is_byte_order_agnostic() {
+        // No value is byte-palindromic, so a missed or doubled swap cannot
+        // coincidentally produce the right number.
+        let values: [[u16; 2]; 2] = [[0x7FFF, 100], [4000, 0x0102]];
+        let expected: Vec<u16> = values.iter().flatten().copied().collect();
+
+        for predictor in [1u16, 2] {
+            let lvl = level_16bit(2, 2, predictor);
+
+            let mut le = encode_tile_16bit(&values, true, predictor);
+            let mut be = encode_tile_16bit(&values, false, predictor);
+            assert_ne!(le, be, "an MM fixture identical to II proves nothing");
+
+            finish_tile_decode(&mut le, &lvl, true);
+            finish_tile_decode(&mut be, &lvl, false);
+
+            let from_le = bytes_to_u16(&le);
+            let from_be = bytes_to_u16(&be);
+
+            assert_eq!(
+                from_le, expected,
+                "predictor {predictor}: II tile must decode to the written values"
+            );
+            assert_eq!(
+                from_be, expected,
+                "predictor {predictor}: MM tile must decode to the written values — \
+                 read_tile_level normalises to host order, so the file's byte \
+                 order must not survive into the samples"
+            );
+            assert_eq!(
+                from_le, from_be,
+                "predictor {predictor}: II and MM encodings of one tile must \
+                 yield one result"
+            );
+        }
     }
 
     /// Build a synthetic tile whose every pixel encodes its global coordinate
@@ -1490,11 +1705,17 @@ mod tests {
         });
     }
 
+    /// `bytes_to_u16` is host-native by construction — it has no byte-order
+    /// parameter left to get wrong. Feeding it native bytes must round-trip.
     #[test]
-    fn bytes_to_u16_endianness() {
-        let bytes = [0x01, 0x02, 0xFF, 0x00];
-        assert_eq!(bytes_to_u16(&bytes, true), vec![0x0201, 0x00FF]);
-        assert_eq!(bytes_to_u16(&bytes, false), vec![0x0102, 0xFF00]);
+    fn bytes_to_u16_is_host_native() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x0201u16.to_ne_bytes());
+        bytes.extend_from_slice(&0x00FFu16.to_ne_bytes());
+        assert_eq!(bytes_to_u16(&bytes), vec![0x0201, 0x00FF]);
+        // A trailing odd byte is dropped, not misread.
+        bytes.push(0xAB);
+        assert_eq!(bytes_to_u16(&bytes), vec![0x0201, 0x00FF]);
     }
 
     #[test]

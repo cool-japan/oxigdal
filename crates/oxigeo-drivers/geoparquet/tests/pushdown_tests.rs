@@ -18,6 +18,7 @@ use parquet::schema::types::{SchemaDescriptor, Type};
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -27,8 +28,44 @@ fn point_wkb(x: f64, y: f64) -> Vec<u8> {
     writer.write_geometry(&geom).expect("wkb encode")
 }
 
-fn cleanup(path: &Path) {
-    let _ = std::fs::remove_file(path);
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_gpq_pushdown_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Embed the `geo` metadata key so `GeoParquetReader` can open the file.
@@ -48,8 +85,7 @@ fn geo_schema(base: Schema, geom_col: &str) -> Arc<Schema> {
 /// Expect 0 rows returned.
 #[test]
 fn test_row_group_pruning_disjoint_bbox() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_rg_disjoint.parquet");
+    let path = TempPath::new("pushdown_rg_disjoint.parquet");
 
     // Row-group 0: points near (0,0) – zone A
     // Row-group 1: points near (100,100) – zone B
@@ -63,8 +99,6 @@ fn test_row_group_pruning_disjoint_bbox() {
     let results = reader.read_pushdown().expect("pushdown");
     let total: usize = results.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total, 0, "no row groups or rows should match the query");
-
-    cleanup(&path);
 }
 
 // ── Test 2: row-group pruning — partial overlap ────────────────────────────────
@@ -73,8 +107,7 @@ fn test_row_group_pruning_disjoint_bbox() {
 /// Expect rows only from zone A.
 #[test]
 fn test_row_group_pruning_partial_overlap() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_rg_partial.parquet");
+    let path = TempPath::new("pushdown_rg_partial.parquet");
 
     // RG 0: zone A near (1,1)
     // RG 1: zone B near (100,100)
@@ -104,16 +137,13 @@ fn test_row_group_pruning_partial_overlap() {
             );
         }
     }
-
-    cleanup(&path);
 }
 
 // ── Test 3: predicate pushdown — Eq (Utf8) ────────────────────────────────────
 
 #[test]
 fn test_predicate_pushdown_eq() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_eq.parquet");
+    let path = TempPath::new("pushdown_eq.parquet");
     write_attributed_parquet(&path);
 
     let filter = AttributeFilter::Eq {
@@ -141,16 +171,13 @@ fn test_predicate_pushdown_eq() {
             assert_eq!(names.value(i), "alpha", "name must be 'alpha'");
         }
     }
-
-    cleanup(&path);
 }
 
 // ── Test 4: predicate pushdown — Range (Int64) ────────────────────────────────
 
 #[test]
 fn test_predicate_pushdown_range() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_range.parquet");
+    let path = TempPath::new("pushdown_range.parquet");
     write_attributed_parquet(&path);
 
     let filter = AttributeFilter::Range {
@@ -180,8 +207,6 @@ fn test_predicate_pushdown_range() {
             );
         }
     }
-
-    cleanup(&path);
 }
 
 // ── Test 5: BboxColumns::detect — struct shape ────────────────────────────────
@@ -295,8 +320,7 @@ fn test_covering_bbox_flat_columns_shape() {
 
 #[test]
 fn test_no_covering_bbox_falls_back_to_wkb_bbox() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_no_bbox_cols.parquet");
+    let path = TempPath::new("pushdown_no_bbox_cols.parquet");
 
     // Write a plain GeoParquet file (no bbox columns).
     write_plain_geo_parquet(&path);
@@ -323,16 +347,13 @@ fn test_no_covering_bbox_falls_back_to_wkb_bbox() {
         total, 2,
         "WKB fallback should return rows at (0,0) and (5,5)"
     );
-
-    cleanup(&path);
 }
 
 // ── Test 8: combined bbox + attribute filter ──────────────────────────────────
 
 #[test]
 fn test_predicate_combined_with_bbox() {
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_combined.parquet");
+    let path = TempPath::new("pushdown_combined.parquet");
     write_attributed_parquet(&path);
 
     // bbox (0,0,20,20) should hit rows with x in [1,5,15] (name=alpha,beta,gamma)
@@ -363,8 +384,6 @@ fn test_predicate_combined_with_bbox() {
             assert_eq!(names.value(i), "alpha");
         }
     }
-
-    cleanup(&path);
 }
 
 // ── Fixture writers ────────────────────────────────────────────────────────────
@@ -545,8 +564,7 @@ fn test_wkb_fallback_matches_multi_geometries() {
         Coordinate, LineString, MultiLineString, MultiPolygon, Polygon,
     };
 
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join("pushdown_multi_geom_no_bbox.parquet");
+    let path = TempPath::new("pushdown_multi_geom_no_bbox.parquet");
 
     // Row 0: MultiPolygon whose parts lie inside the query box (0,0,10,10).
     let mpoly_in = Geometry::MultiPolygon(MultiPolygon::new(vec![
@@ -602,6 +620,4 @@ fn test_wkb_fallback_matches_multi_geometries() {
         total, 2,
         "WKB fallback must return the intersecting MultiPolygon and MultiLineString rows"
     );
-
-    cleanup(&path);
 }

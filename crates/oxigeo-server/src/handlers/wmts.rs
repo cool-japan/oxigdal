@@ -947,9 +947,10 @@ async fn render_tile(
         return render_empty_tile(tile_width, tile_height, format);
     }
 
-    // Determine the best overview level based on the resolution ratio
+    // Determine the best overview level based on the resolution ratio. The
+    // factor of each level comes from its own dimensions, not from `1 << level`.
     let overview_level =
-        select_tile_overview_level(&dataset, src_width, src_height, tile_width, tile_height);
+        dataset.select_overview_level(src_width, src_height, tile_width, tile_height);
 
     // Build the rendering style from layer configuration
     let render_style = if let Some(ref style_cfg) = layer_info.config.style {
@@ -996,65 +997,17 @@ fn render_empty_tile(width: u64, height: u64, format: ImageFormat) -> Result<Byt
         .map_err(|e| WmtsError::Rendering(format!("Empty tile encoding failed: {}", e)))
 }
 
-/// Select the best overview level for tile rendering
-///
-/// Chooses the overview level that provides just enough resolution for the
-/// requested tile, avoiding reading unnecessarily high-resolution data
-/// at low zoom levels.
-fn select_tile_overview_level(
-    dataset: &crate::dataset_registry::Dataset,
-    src_width: u64,
-    src_height: u64,
-    tile_width: u64,
-    tile_height: u64,
-) -> usize {
-    let overview_count = dataset.overview_count();
-    if overview_count == 0 {
-        return 0;
-    }
-
-    // Calculate the downsample ratio
-    let ratio_x = if tile_width > 0 {
-        src_width as f64 / tile_width as f64
-    } else {
-        1.0
-    };
-    let ratio_y = if tile_height > 0 {
-        src_height as f64 / tile_height as f64
-    } else {
-        1.0
-    };
-    let request_ratio = ratio_x.max(ratio_y);
-
-    if request_ratio <= 1.0 {
-        return 0; // Full resolution or upsampling needed
-    }
-
-    // Find the best overview level (each level typically halves resolution)
-    let mut best_level = 0;
-    for level in 1..=overview_count {
-        let overview_factor = (1u64 << level) as f64;
-        if overview_factor <= request_ratio * 1.5 {
-            best_level = level;
-        } else {
-            break;
-        }
-    }
-
-    best_level
-}
-
 /// Render a single-band tile with colormap
 fn render_tile_single_band(
     dataset: &crate::dataset_registry::Dataset,
-    _overview_level: usize,
+    overview_level: usize,
     source: SourceRegion,
     tile: TileDimensions,
     style: &RenderStyle,
 ) -> Result<Vec<u8>, WmtsError> {
-    // Read the source window from the dataset
-    let src_buffer = dataset
-        .read_window(source.x, source.y, source.width, source.height)
+    // Read the source window from the chosen level, with the window mapped onto
+    // that level's own pixel grid.
+    let src_buffer = read_level_band(dataset, overview_level, 0, source)
         .map_err(|e| WmtsError::Rendering(format!("Failed to read window: {}", e)))?;
 
     // Resample to tile dimensions
@@ -1073,21 +1026,18 @@ fn render_tile_single_band(
 /// Render an RGB tile from three bands
 fn render_tile_rgb(
     dataset: &crate::dataset_registry::Dataset,
-    _overview_level: usize,
+    overview_level: usize,
     source: SourceRegion,
     tile: TileDimensions,
     style: &RenderStyle,
 ) -> Result<Vec<u8>, WmtsError> {
-    // Read band 0 (red) using read_window
-    let red_buffer = dataset
-        .read_window(source.x, source.y, source.width, source.height)
+    // All three channels come from the same windowed, per-band read at the same
+    // level, so they cannot disagree.
+    let red_buffer = read_level_band(dataset, overview_level, 0, source)
         .map_err(|e| WmtsError::Rendering(format!("Failed to read red band: {}", e)))?;
 
-    // Read bands 1 (green) and 2 (blue) from full band data and extract windows
-    let green_buffer =
-        build_band_window(dataset, 1, source.x, source.y, source.width, source.height);
-    let blue_buffer =
-        build_band_window(dataset, 2, source.x, source.y, source.width, source.height);
+    let green_buffer = read_level_band(dataset, overview_level, 1, source);
+    let blue_buffer = read_level_band(dataset, overview_level, 2, source);
 
     let (green_buf, blue_buf) = match (green_buffer, blue_buffer) {
         (Ok(g), Ok(b)) => (g, b),
@@ -1124,43 +1074,27 @@ fn resample_if_needed(
     }
 }
 
-/// Build a RasterBuffer window for a specific band from full band data
-fn build_band_window(
+/// Read one band of `source` (a full-resolution pixel window) from `level`.
+///
+/// The window is mapped onto the level's own pixel grid by
+/// [`crate::dataset_registry::Dataset::window_at_level`], so a non-power-of-two
+/// overview is read where its pixels actually are rather than where `1 << level`
+/// would put them. All RGB channels come through here, so they cannot disagree;
+/// they used to, with red going through a tile-stitching loop that silently
+/// produced an all-zero buffer for multi-band datasets. See
+/// <https://github.com/cool-japan/oxigeo/issues/14>.
+fn read_level_band(
     dataset: &crate::dataset_registry::Dataset,
+    level: usize,
     band: usize,
-    src_x: u64,
-    src_y: u64,
-    src_width: u64,
-    src_height: u64,
+    source: SourceRegion,
 ) -> Result<RasterBuffer, WmtsError> {
-    let band_data = dataset
-        .read_band(0, band)
-        .map_err(|e| WmtsError::Rendering(format!("Failed to read band {}: {}", band, e)))?;
-
-    let ds_width = dataset.width();
-    let ds_height = dataset.height();
-    let data_type = dataset.data_type();
-    let nodata = dataset.nodata();
-
-    let full_buffer = RasterBuffer::new(band_data, ds_width, ds_height, data_type, nodata)
-        .map_err(|e| WmtsError::Rendering(format!("Buffer creation error: {}", e)))?;
-
-    // Extract the window
-    let mut window = RasterBuffer::zeros(src_width, src_height, data_type);
-    for dy in 0..src_height {
-        for dx in 0..src_width {
-            let gx = src_x + dx;
-            let gy = src_y + dy;
-            if gx < ds_width
-                && gy < ds_height
-                && let Ok(val) = full_buffer.get_pixel(gx, gy)
-            {
-                let _ = window.set_pixel(dx, dy, val);
-            }
-        }
-    }
-
-    Ok(window)
+    let (x, y, width, height) = dataset
+        .window_at_level(level, source.x, source.y, source.width, source.height)
+        .map_err(|e| WmtsError::Rendering(format!("Failed to map window to level: {}", e)))?;
+    dataset
+        .read_band_window(level, band, x, y, width, height)
+        .map_err(|e| WmtsError::Rendering(format!("Failed to read band {}: {}", band, e)))
 }
 
 #[cfg(test)]

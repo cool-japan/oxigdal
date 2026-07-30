@@ -35,7 +35,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-cluster = "0.2.1"
+oxigeo-cluster = "0.2.2"
 ```
 
 ## Quick Start

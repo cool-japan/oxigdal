@@ -136,7 +136,7 @@ impl MBTilesReader {
         let runtime = match Self::build_runtime() {
             Ok(rt) => rt,
             Err(e) => {
-                let _ = fs::remove_file(&temp_path);
+                remove_spill_file(&temp_path);
                 return Err(e);
             }
         };
@@ -145,7 +145,7 @@ impl MBTilesReader {
         let conn = match runtime.block_on(SqliteConnection::open(&path_str)) {
             Ok(c) => c,
             Err(e) => {
-                let _ = fs::remove_file(&temp_path);
+                remove_spill_file(&temp_path);
                 return Err(sqlite_err(e));
             }
         };
@@ -165,7 +165,7 @@ impl MBTilesReader {
             }),
             Err(e) => {
                 // conn will be dropped here; temp file cleanup follows
-                let _ = fs::remove_file(&temp_path);
+                remove_spill_file(&temp_path);
                 Err(e)
             }
         }
@@ -307,7 +307,7 @@ impl MBTilesReader {
 impl Drop for MBTilesReader {
     fn drop(&mut self) {
         if let Some(path) = self.owned_temp_path.take() {
-            let _ = fs::remove_file(path);
+            remove_spill_file(&path);
         }
     }
 }
@@ -393,6 +393,21 @@ fn coord_from_row(z: i64, x: i64, y: i64) -> Result<TileCoord, MbTilesError> {
         x: x_u32,
         y: y_u32,
     })
+}
+
+/// Remove a spill database *and every SQLite companion file it may have left
+/// behind*.
+///
+/// SQLite writes `-wal` (write-ahead log), `-shm` (shared-memory index) and
+/// `-journal` files next to the database.  Removing only the database itself
+/// leaked a `<name>.sqlite-wal` into the temp directory on every
+/// [`MBTilesReader::open_in_memory`] call.
+fn remove_spill_file(path: &Path) {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut sidecar = path.to_path_buf().into_os_string();
+        sidecar.push(suffix);
+        let _ = fs::remove_file(PathBuf::from(sidecar));
+    }
 }
 
 /// Generate a unique path inside [`std::env::temp_dir`] for the in-memory

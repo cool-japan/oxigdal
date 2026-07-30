@@ -738,10 +738,51 @@ mod tests {
     use super::*;
     use crate::open::open;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn make_temp_file(name: &str, content: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir();
-        let path = dir.join(name);
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_streaming_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn make_temp_file(name: &str, content: &[u8]) -> TempPath {
+        let path = TempPath::new(name);
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(content).expect("write");
         path
@@ -965,11 +1006,38 @@ mod tests {
         );
     }
 
+    /// Build a minimal but *valid* classic little-endian TIFF (header + a
+    /// reachable IFD declaring ImageWidth/ImageLength/SamplesPerPixel).
+    ///
+    /// A bare 8-byte TIFF header is not a parseable TIFF: `open()` now reports
+    /// that as an error instead of handing back a `0x0` dataset
+    /// (cool-japan/oxigeo#14), so raster fixtures must be real TIFFs.
+    fn minimal_tiff_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut buf: Vec<u8> = vec![0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+        buf.extend_from_slice(&3u16.to_le_bytes()); // 3 IFD entries
+        // ImageWidth (LONG)
+        buf.extend_from_slice(&256u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&width.to_le_bytes());
+        // ImageLength (LONG)
+        buf.extend_from_slice(&257u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        // SamplesPerPixel (SHORT)
+        buf.extend_from_slice(&277u16.to_le_bytes());
+        buf.extend_from_slice(&3u16.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0x00, 0x00]);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0
+        buf
+    }
+
     #[test]
     fn test_streaming_ext_features_on_raster_errors() {
-        // Write a minimal TIFF LE header
-        let bytes = [0x49u8, 0x49, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let path = make_temp_file("stream_ext_tiff.tif", &bytes);
+        let path = make_temp_file("stream_ext_tiff.tif", &minimal_tiff_bytes(8, 8));
         let ds = open(&path).expect("open tiff");
         let result = ds.features();
         assert!(result.is_err(), "features() on raster dataset should error");
@@ -977,8 +1045,7 @@ mod tests {
 
     #[test]
     fn test_streaming_ext_tiles_on_raster() {
-        let bytes = [0x49u8, 0x49, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let path = make_temp_file("stream_ext_tiles_tiff.tif", &bytes);
+        let path = make_temp_file("stream_ext_tiles_tiff.tif", &minimal_tiff_bytes(8, 8));
         let ds = open(&path).expect("open tiff");
         let result = ds.tiles(2);
         assert!(result.is_ok(), "tiles() on raster should succeed");

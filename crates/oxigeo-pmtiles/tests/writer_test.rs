@@ -5,6 +5,47 @@
 use oxigeo_pmtiles::{
     PmTilesBuilder, PmTilesHeader, PmTilesReader, TileType, tile_id_to_zxy, zxy_to_tile_id,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch fixture inside the system temp dir (house policy: no
+/// hardcoded absolute paths).
+///
+/// The leaf name embeds the process id and a monotonic counter, so no two test
+/// binaries — nor two concurrent runs of this one — can ever land on the same
+/// file.  Dropping the guard removes the fixture, so a panicking test leaks
+/// nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_pmtiles_writer_it_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -495,14 +536,12 @@ fn test_write_to_temp_file_and_read_back() {
         (1, 1, 1, b"tile-1-11"),
     ]);
 
-    let dir = std::env::temp_dir();
-    let path = dir.join("test_pmtiles_writer.pmtiles");
+    let path = TempPath::new("roundtrip.pmtiles");
     {
         let mut f = std::fs::File::create(&path).expect("create file");
         f.write_all(&archive).expect("write");
     }
     let read_back = std::fs::read(&path).expect("read file");
-    let _ = std::fs::remove_file(&path);
 
     let reader = PmTilesReader::from_bytes(read_back).expect("reader");
     assert_eq!(reader.header.addressed_tiles, 3);

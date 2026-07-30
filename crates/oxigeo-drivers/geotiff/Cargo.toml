@@ -22,6 +22,10 @@ lzw = ["dep:oxiarc-lzw"]
 zstd = ["dep:oxiarc-zstd"]
 jpeg = ["dep:jpeg-decoder", "dep:jpeg-encoder"]
 webp = ["dep:image-webp"]
+# Spread the per-tile decode of a band/window read across rayon workers.
+# Deliberately NOT a default: this crate is compiled to wasm32-unknown-unknown
+# for oxigeo-wasm, and wasm32 has no OS threads.
+parallel = ["dep:rayon"]
 
 [dependencies]
 oxigeo-core = { workspace = true, default-features = true }
@@ -36,6 +40,9 @@ oxiarc-zstd = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
 jpeg-encoder = { workspace = true, optional = true }
 image-webp = { workspace = true, optional = true }
+
+# Parallel tile decode (opt-in, non-wasm)
+rayon = { workspace = true, optional = true }
 
 # Async
 tokio = { workspace = true, optional = true, features = ["io-util"] }

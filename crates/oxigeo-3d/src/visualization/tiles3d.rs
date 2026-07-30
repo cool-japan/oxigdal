@@ -852,7 +852,82 @@ pub fn write_pnts<P: AsRef<Path>>(point_cloud: &PointCloud, path: P) -> Result<(
 mod tests {
     use super::*;
     use crate::mesh::{Material, Vertex};
-    use std::env;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Builds a unique leaf name inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same path.
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let seq = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "oxigeo_3d_tiles3d_{}_{seq}_{name}",
+            std::process::id()
+        ))
+    }
+
+    /// Per-test scratch file; dropping the guard removes it, so a panicking
+    /// test leaks nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            Self(unique_temp_path(name))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    /// Per-test scratch directory; dropping the guard removes it recursively.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            Self(unique_temp_path(name))
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn test_bounding_volume_from_bounds() {
@@ -914,8 +989,7 @@ mod tests {
         let root = Tile::new(bv, 10.0).with_content("test.b3dm");
         let tileset = Tileset::new(root);
 
-        let temp_dir = env::temp_dir();
-        let path = temp_dir.join("test_tileset.json");
+        let path = TempPath::new("test_tileset.json");
 
         // Write
         let write_result = tileset.write(&path);
@@ -924,9 +998,6 @@ mod tests {
         // Read
         let read_result = Tileset::read(&path);
         assert!(read_result.is_ok());
-
-        // Clean up
-        let _ = fs::remove_file(&path);
     }
 
     // ========== glTF Export Tests ==========
@@ -1173,23 +1244,28 @@ mod tests {
 
         let options = B3dmOptions::new().with_batch_table(batch_table);
 
-        let temp_dir = env::temp_dir();
-        let path = temp_dir.join("test_with_batch_table.b3dm");
+        let path = TempPath::new("test_with_batch_table.b3dm");
 
         let result = write_b3dm_with_options(&mesh, &path, &options);
         assert!(result.is_ok());
 
-        // Verify file was created and has correct magic
-        if path.exists() {
-            let data = std::fs::read(&path);
-            if let Ok(bytes) = data {
-                assert_eq!(&bytes[0..4], b"b3dm");
-                // Version should be 1
-                let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-                assert_eq!(version, 1);
-            }
-            let _ = fs::remove_file(&path);
-        }
+        // Verify file was created and has correct magic. These checks used to
+        // sit inside `if path.exists()` / `if let Ok(..)`, so the test passed
+        // vacuously whenever the write silently produced nothing.
+        assert!(
+            path.exists(),
+            "write_b3dm_with_options reported success but wrote no file"
+        );
+        let bytes = std::fs::read(&path).expect("the b3dm written above must be readable");
+        assert!(
+            bytes.len() >= 28,
+            "a b3dm must be at least a 28-byte header, got {} bytes",
+            bytes.len()
+        );
+        assert_eq!(&bytes[0..4], b"b3dm");
+        // Version should be 1
+        let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        assert_eq!(version, 1);
     }
 
     #[test]
@@ -1201,65 +1277,58 @@ mod tests {
         mesh.add_triangle(0, 1, 2);
         mesh.calculate_normals();
 
-        let temp_dir = env::temp_dir().join("tiles3d_test");
-        let options = TilesetOptions::default().with_output_dir(&temp_dir);
+        let temp_dir = TempDir::new("tiles3d_test");
+        let options = TilesetOptions::default().with_output_dir(temp_dir.to_path_buf());
 
-        let tileset_result = create_3d_tileset(&mesh, &options);
-        assert!(tileset_result.is_ok());
+        // Everything below used to be nested inside `if let Ok(..)` guards, so
+        // the test passed vacuously whenever the tileset write failed.
+        let tileset = create_3d_tileset(&mesh, &options).expect("create_3d_tileset must succeed");
 
-        if let Ok(tileset) = tileset_result {
-            let write_result = write_3d_tiles(&tileset, &mesh, &options);
-            assert!(write_result.is_ok());
+        write_3d_tiles(&tileset, &mesh, &options).expect("write_3d_tiles must succeed");
 
-            // Check files exist
-            let tileset_path = temp_dir.join("tileset.json");
-            let content_path = temp_dir.join("content.b3dm");
+        // Check files exist
+        let tileset_path = temp_dir.join("tileset.json");
+        let content_path = temp_dir.join("content.b3dm");
 
-            assert!(tileset_path.exists());
-            assert!(content_path.exists());
+        assert!(tileset_path.exists(), "tileset.json must be written");
+        assert!(content_path.exists(), "content.b3dm must be written");
 
-            // Verify B3DM has valid glTF data
-            if let Ok(b3dm_data) = std::fs::read(&content_path) {
-                assert_eq!(&b3dm_data[0..4], b"b3dm");
+        // Verify B3DM has valid glTF data
+        {
+            let b3dm_data =
+                std::fs::read(&content_path).expect("the b3dm written above must be readable");
+            assert!(
+                b3dm_data.len() >= 28,
+                "a b3dm must be at least a 28-byte header, got {} bytes",
+                b3dm_data.len()
+            );
+            assert_eq!(&b3dm_data[0..4], b"b3dm");
 
-                // Find GLB data position (after header and feature/batch tables)
-                let feature_table_len = u32::from_le_bytes([
-                    b3dm_data[12],
-                    b3dm_data[13],
-                    b3dm_data[14],
-                    b3dm_data[15],
-                ]) as usize;
-                let feature_binary_len = u32::from_le_bytes([
-                    b3dm_data[16],
-                    b3dm_data[17],
-                    b3dm_data[18],
-                    b3dm_data[19],
-                ]) as usize;
-                let batch_table_len = u32::from_le_bytes([
-                    b3dm_data[20],
-                    b3dm_data[21],
-                    b3dm_data[22],
-                    b3dm_data[23],
-                ]) as usize;
-                let batch_binary_len = u32::from_le_bytes([
-                    b3dm_data[24],
-                    b3dm_data[25],
-                    b3dm_data[26],
-                    b3dm_data[27],
-                ]) as usize;
+            // Find GLB data position (after header and feature/batch tables)
+            let feature_table_len =
+                u32::from_le_bytes([b3dm_data[12], b3dm_data[13], b3dm_data[14], b3dm_data[15]])
+                    as usize;
+            let feature_binary_len =
+                u32::from_le_bytes([b3dm_data[16], b3dm_data[17], b3dm_data[18], b3dm_data[19]])
+                    as usize;
+            let batch_table_len =
+                u32::from_le_bytes([b3dm_data[20], b3dm_data[21], b3dm_data[22], b3dm_data[23]])
+                    as usize;
+            let batch_binary_len =
+                u32::from_le_bytes([b3dm_data[24], b3dm_data[25], b3dm_data[26], b3dm_data[27]])
+                    as usize;
 
-                let glb_offset = 28
-                    + feature_table_len
-                    + feature_binary_len
-                    + batch_table_len
-                    + batch_binary_len;
+            let glb_offset =
+                28 + feature_table_len + feature_binary_len + batch_table_len + batch_binary_len;
 
-                // Verify GLB magic
-                assert_eq!(&b3dm_data[glb_offset..glb_offset + 4], b"glTF");
-            }
-
-            // Clean up
-            let _ = fs::remove_dir_all(&temp_dir);
+            // Verify GLB magic
+            assert!(
+                glb_offset + 4 <= b3dm_data.len(),
+                "the b3dm header's table lengths put the GLB payload at {glb_offset}, \
+                 past the end of the {}-byte file",
+                b3dm_data.len()
+            );
+            assert_eq!(&b3dm_data[glb_offset..glb_offset + 4], b"glTF");
         }
     }
 
@@ -1272,16 +1341,18 @@ mod tests {
         mesh.add_vertex(Vertex::new([0.0, 1.0, 0.0]));
         mesh.add_triangle(0, 1, 2);
 
-        let glb_result = create_glb_bytes(&mesh);
-        assert!(glb_result.is_ok());
+        let glb_data = create_glb_bytes(&mesh).expect("create_glb_bytes must succeed");
 
-        if let Ok(glb_data) = glb_result {
-            // GLB total length should match header value
-            let length = u32::from_le_bytes([glb_data[8], glb_data[9], glb_data[10], glb_data[11]]);
-            assert_eq!(length as usize, glb_data.len());
+        assert!(
+            glb_data.len() >= 12,
+            "a GLB must carry at least a 12-byte header, got {} bytes",
+            glb_data.len()
+        );
+        // GLB total length should match header value
+        let length = u32::from_le_bytes([glb_data[8], glb_data[9], glb_data[10], glb_data[11]]);
+        assert_eq!(length as usize, glb_data.len());
 
-            // Total length should be 4-byte aligned
-            assert_eq!(glb_data.len() % 4, 0);
-        }
+        // Total length should be 4-byte aligned
+        assert_eq!(glb_data.len() % 4, 0);
     }
 }

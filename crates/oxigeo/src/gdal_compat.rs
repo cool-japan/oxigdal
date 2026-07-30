@@ -156,6 +156,48 @@ pub fn GDALGetGeoTransform(dataset: &Dataset) -> Result<GeoTransform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_gdal_compat_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     /// Opening a nonexistent path returns an error (not a panic).
     #[test]
@@ -186,8 +228,7 @@ mod tests {
     #[test]
     fn test_gdal_compat_open_close_tiff() {
         use std::io::Write;
-        let dir = std::env::temp_dir();
-        let path = dir.join("test_gdal_compat_tiff.tif");
+        let path = TempPath::new("test_gdal_compat_tiff.tif");
         // Minimal LE TIFF header: width=128, height=64, bands=3
         let mut buf: Vec<u8> = vec![0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
         buf.extend_from_slice(&3u16.to_le_bytes()); // 3 IFD entries

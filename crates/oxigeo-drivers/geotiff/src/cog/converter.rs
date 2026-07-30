@@ -228,14 +228,50 @@ impl CogConverter {
         let samples_per_pixel = primary_info.samples_per_pixel as usize;
         let photometric = primary_info.photometric;
 
-        // Read the REAL pixel data of the primary image for analysis. The
-        // GeoTIFF reader reassembles all tiles/strips into a row-major,
-        // band-interleaved buffer — exactly the layout `analyze_for_cog`
-        // and `CogWriter::write` expect. The same reader also carries the
-        // input's geospatial referencing, and the same buffer is reused for
-        // the write pipeline below so the input is only decoded once.
+        // Read the REAL pixel data of the primary image for analysis.
+        //
+        // `read_band(level, band)` returns ONE de-interleaved band plane
+        // (`width × height × bytes_per_sample`), while `analyze_for_cog` and
+        // `CogWriter::write` both want the row-major, band-interleaved (chunky)
+        // whole-image buffer. So read each plane and weave them back together;
+        // the single-band case — the common one — is a straight pass-through.
+        // See <https://github.com/cool-japan/oxigeo/issues/14>.
+        //
+        // The same reader also carries the input's geospatial referencing, and
+        // the same buffer is reused for the write pipeline below so the input is
+        // only decoded once.
         let source_reader = GeoTiffReader::open(FileDataSource::open(&self.input_path)?)?;
-        let image_data = source_reader.read_band(0, 0)?;
+        let image_data = if samples_per_pixel <= 1 {
+            source_reader.read_band(0, 0)?
+        } else {
+            let plane_len = source_reader.band_byte_len(0)?;
+            let pixel_count = source_reader.band_pixel_count(0)?;
+            let bytes_per_sample = data_type.size_bytes();
+            let mut interleaved =
+                vec![
+                    0u8;
+                    plane_len.checked_mul(samples_per_pixel).ok_or_else(|| {
+                        OxiGeoError::InvalidParameter {
+                            parameter: "SamplesPerPixel",
+                            message: format!(
+                                "Interleaved image size overflows usize in {}",
+                                self.input_path
+                            ),
+                        }
+                    })?
+                ];
+            let mut plane = vec![0u8; plane_len];
+            for band in 0..samples_per_pixel {
+                source_reader.read_band_into(0, band, &mut plane)?;
+                for px in 0..pixel_count {
+                    let src = px * bytes_per_sample;
+                    let dst = (px * samples_per_pixel + band) * bytes_per_sample;
+                    interleaved[dst..dst + bytes_per_sample]
+                        .copy_from_slice(&plane[src..src + bytes_per_sample]);
+                }
+            }
+            interleaved
+        };
         let sample_data = image_data.as_slice();
 
         // Report progress

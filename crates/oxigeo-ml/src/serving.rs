@@ -681,8 +681,9 @@ mod tests {
 
         // register_version requires the model file to exist on disk.
         let dir = std::env::temp_dir();
-        let stable_path = dir.join("oxigeo_ml_shadow_stable.onnx");
-        let shadow_path = dir.join("oxigeo_ml_shadow_new.onnx");
+        let pid = std::process::id();
+        let stable_path = dir.join(format!("oxigeo_ml_shadow_stable_{pid}.onnx"));
+        let shadow_path = dir.join(format!("oxigeo_ml_shadow_new_{pid}.onnx"));
         for p in [&stable_path, &shadow_path] {
             let mut f = std::fs::File::create(p).expect("create temp model file");
             f.write_all(b"onnx").expect("write temp model");

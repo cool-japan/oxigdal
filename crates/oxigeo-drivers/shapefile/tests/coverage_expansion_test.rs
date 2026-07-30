@@ -20,19 +20,50 @@ use oxigeo_shapefile::{
     ShapefileFeature, ShapefileReader, ShapefileSchemaBuilder, ShapefileWriter,
 };
 use std::collections::HashMap;
-use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Helper to create temp base path with unique name
-fn temp_base_path(name: &str) -> std::path::PathBuf {
-    let temp_dir = env::temp_dir();
-    temp_dir.join(format!("oxigeo_shp_cov_{}", name))
+/// Per-test scratch shapefile *stem* inside the system temp dir (house policy:
+/// no hardcoded absolute paths).
+///
+/// A shapefile fixture is a *set* of sidecar files sharing one stem, so this
+/// guard owns the stem and, on drop, removes every sidecar that could have been
+/// produced for it.  The leaf name embeds the process id and a monotonic
+/// counter, so no two test binaries — nor two concurrent runs of this one — can
+/// ever land on the same stem.  A panicking test therefore leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_shp_cov_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
 }
 
-/// Helper to clean up shapefile triple
-fn cleanup_shapefile(base_path: &std::path::Path) {
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        for ext in ["shp", "shx", "dbf", "prj", "cpg", "sbn", "sbx", "qix"] {
+            let _ = std::fs::remove_file(self.0.with_extension(ext));
+        }
+    }
 }
 
 // ============================================================
@@ -42,7 +73,7 @@ fn cleanup_shapefile(base_path: &std::path::Path) {
 /// Test 1: Point geometry round-trip
 #[test]
 fn test_cov_point_geometry_roundtrip() {
-    let base_path = temp_base_path("point_rt");
+    let base_path = TempPath::new("point_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for point roundtrip")
@@ -92,14 +123,12 @@ fn test_cov_point_geometry_roundtrip() {
             }
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 2: LineString (PolyLine) geometry round-trip
 #[test]
 fn test_cov_linestring_geometry_roundtrip() {
-    let base_path = temp_base_path("linestring_rt");
+    let base_path = TempPath::new("linestring_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for linestring")
@@ -153,14 +182,12 @@ fn test_cov_linestring_geometry_roundtrip() {
             panic!("Expected LineString geometry");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 3: Polygon geometry round-trip
 #[test]
 fn test_cov_polygon_geometry_roundtrip() {
-    let base_path = temp_base_path("polygon_rt");
+    let base_path = TempPath::new("polygon_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for polygon roundtrip")
@@ -211,14 +238,12 @@ fn test_cov_polygon_geometry_roundtrip() {
             panic!("Expected Polygon geometry");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 4: MultiPoint geometry round-trip
 #[test]
 fn test_cov_multipoint_geometry_roundtrip() {
-    let base_path = temp_base_path("multipoint_rt");
+    let base_path = TempPath::new("multipoint_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for multipoint roundtrip")
@@ -259,14 +284,12 @@ fn test_cov_multipoint_geometry_roundtrip() {
             panic!("Expected MultiPoint geometry");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 5: MultiLineString geometry round-trip
 #[test]
 fn test_cov_multilinestring_geometry_roundtrip() {
-    let base_path = temp_base_path("multilinestring_rt");
+    let base_path = TempPath::new("multilinestring_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for multilinestring roundtrip")
@@ -330,14 +353,12 @@ fn test_cov_multilinestring_geometry_roundtrip() {
             other => panic!("Expected MultiLineString geometry, got {:?}", other),
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 6: Polygon with hole (interior ring) round-trip
 #[test]
 fn test_cov_polygon_with_hole_roundtrip() {
-    let base_path = temp_base_path("polygon_hole_rt");
+    let base_path = TempPath::new("polygon_hole_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for polygon with hole")
@@ -402,8 +423,6 @@ fn test_cov_polygon_with_hole_roundtrip() {
             panic!("Expected Polygon geometry with hole");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 // ============================================================
@@ -413,7 +432,7 @@ fn test_cov_polygon_with_hole_roundtrip() {
 /// Test 7: Various DBF field types round-trip
 #[test]
 fn test_cov_dbf_field_types_roundtrip() {
-    let base_path = temp_base_path("dbf_types_rt");
+    let base_path = TempPath::new("dbf_types_rt");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("CHARFLD", 50)
         .expect("Failed to add CHARFLD for field type roundtrip")
@@ -492,14 +511,12 @@ fn test_cov_dbf_field_types_roundtrip() {
             "BOOLFLD should be true"
         );
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 8: Numeric attribute precision
 #[test]
 fn test_cov_numeric_precision() {
-    let base_path = temp_base_path("num_precision");
+    let base_path = TempPath::new("num_precision");
     let schema = ShapefileSchemaBuilder::new()
         .add_numeric_field("PRECISE", 20, 8)
         .expect("Failed to add PRECISE field")
@@ -535,14 +552,12 @@ fn test_cov_numeric_precision() {
             panic!("PRECISE should be Float");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 9: Special characters in attribute values
 #[test]
 fn test_cov_special_characters_in_attributes() {
-    let base_path = temp_base_path("special_chars");
+    let base_path = TempPath::new("special_chars");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("TEXT", 100)
         .expect("Failed to add TEXT field for special chars")
@@ -592,14 +607,12 @@ fn test_cov_special_characters_in_attributes() {
             assert_eq!(val.trim(), "Hello, World!", "First text should match");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 10: Null attribute values
 #[test]
 fn test_cov_null_attributes() {
-    let base_path = temp_base_path("null_attrs");
+    let base_path = TempPath::new("null_attrs");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for null attrs")
@@ -637,8 +650,6 @@ fn test_cov_null_attributes() {
             "NAME should be null or empty"
         );
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 // ============================================================
@@ -648,7 +659,7 @@ fn test_cov_null_attributes() {
 /// Test 11: Large feature count (500 features)
 #[test]
 fn test_cov_large_feature_count() {
-    let base_path = temp_base_path("large_count");
+    let base_path = TempPath::new("large_count");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("ID", 10)
         .expect("Failed to add ID field for large count")
@@ -693,14 +704,12 @@ fn test_cov_large_feature_count() {
             "Last record number"
         );
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 12: Multiple polygons with varying complexity
 #[test]
 fn test_cov_multiple_polygons() {
-    let base_path = temp_base_path("multi_polys");
+    let base_path = TempPath::new("multi_polys");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for multi polygons")
@@ -775,8 +784,6 @@ fn test_cov_multiple_polygons() {
             assert!(feat.geometry.is_some(), "Each feature should have geometry");
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 // ============================================================
@@ -786,7 +793,7 @@ fn test_cov_multiple_polygons() {
 /// Test 13: Missing .shp file
 #[test]
 fn test_cov_missing_shp_file() {
-    let base_path = temp_base_path("missing_shp");
+    let base_path = TempPath::new("missing_shp");
     let result = ShapefileReader::open(&base_path);
     assert!(result.is_err(), "Should fail when .shp file is missing");
 }
@@ -794,7 +801,7 @@ fn test_cov_missing_shp_file() {
 /// Test 14: Missing .dbf file (create .shp but not .dbf)
 #[test]
 fn test_cov_missing_dbf_file() {
-    let base_path = temp_base_path("missing_dbf");
+    let base_path = TempPath::new("missing_dbf");
 
     // Create just the .shp file to make it partially exist
     let shp_path = base_path.with_extension("shp");
@@ -809,7 +816,7 @@ fn test_cov_missing_dbf_file() {
 /// Test 15: Empty features write error
 #[test]
 fn test_cov_empty_features_write_error() {
-    let base_path = temp_base_path("empty_write_err");
+    let base_path = TempPath::new("empty_write_err");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 30)
         .expect("Failed to add NAME field for empty write error")
@@ -819,8 +826,6 @@ fn test_cov_empty_features_write_error() {
         .expect("Failed to create writer for empty write error");
     let result = writer.write_features(&[]);
     assert!(result.is_err(), "Should reject empty feature list");
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 16: Invalid shape type code
@@ -852,7 +857,7 @@ fn test_cov_field_name_too_long() {
 /// Test 18: Verify SHX index is consistent
 #[test]
 fn test_cov_shx_index_consistency() {
-    let base_path = temp_base_path("shx_index");
+    let base_path = TempPath::new("shx_index");
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("ID", 10)
         .expect("Failed to add ID field for SHX index test")
@@ -896,8 +901,6 @@ fn test_cov_shx_index_consistency() {
             }
         }
     }
-
-    cleanup_shapefile(&base_path);
 }
 
 /// Test 19: Feature to OxiGeo conversion

@@ -48,6 +48,9 @@ index = ["dep:oxigeo-index"]
 # no_std geometry primitives
 noalloc = ["dep:oxigeo-noalloc"]
 
+# Spread the per-tile decode of a raster read across rayon workers.
+parallel = ["oxigeo-geotiff/parallel"]
+
 # GDAL C API compatibility shim (function-name aliases)
 gdal-compat = []
 

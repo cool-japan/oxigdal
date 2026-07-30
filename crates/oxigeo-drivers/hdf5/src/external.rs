@@ -549,6 +549,47 @@ impl ExternalFileManager {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_hdf5_external_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     /// A dataset header can claim an external element count far larger than the
     /// backing file. `read_data` must reject such a request with a typed error
@@ -644,17 +685,16 @@ mod tests {
 
     #[test]
     fn test_external_file_manager() {
-        let temp_dir = std::env::temp_dir();
-        let mut manager = ExternalFileManager::new(temp_dir.clone());
+        let mut manager = ExternalFileManager::new(std::env::temp_dir());
 
         // Create a test file
-        let test_file_path = temp_dir.join("test_external.bin");
+        let test_file_path = TempPath::new("external.bin");
         let mut f = std::fs::File::create(&test_file_path).expect("Failed to create test file");
         f.write_all(b"Hello, World!").expect("Failed to write");
         f.sync_all().expect("Failed to sync");
         drop(f);
 
-        let ext_file = ExternalFile::simple(test_file_path.clone(), 13);
+        let ext_file = ExternalFile::simple(test_file_path.to_path_buf(), 13);
 
         // Test reading
         let data = manager.read_data(&ext_file, 0, 5).expect("Failed to read");
@@ -662,8 +702,5 @@ mod tests {
 
         let data = manager.read_data(&ext_file, 7, 6).expect("Failed to read");
         assert_eq!(&data, b"World!");
-
-        // Clean up
-        std::fs::remove_file(&test_file_path).ok();
     }
 }

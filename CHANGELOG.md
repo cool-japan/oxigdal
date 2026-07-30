@@ -5,6 +5,254 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-07-30
+
+**Issue #14 fix campaign.** [GitHub issue #14](https://github.com/cool-japan/oxigeo/issues/14)
+reported that `Dataset::read_band` silently ignored its `band` argument on
+multi-band rasters, returning the whole pixel-interleaved image instead of the
+requested band. Root-causing it traced back to `oxigeo-drivers/geotiff`'s
+block-decode engine (rewritten from scratch as `band_read.rs`/`band_read/multi.rs`),
+then surfaced the identical defect pattern — assuming chunky
+(`PlanarConfiguration=1`) interleaving, or the wrong byte order, wherever
+multi-band raster data was read — independently re-implemented in a dozen other
+crates, plus a handful of unrelated bugs found along the way. 192 files changed;
+33 new `issue_14_*`-named files (30 regression tests, 2 benchmarks, 1 example) plus
+dedicated cases embedded in the Node/ML/Jupyter/CLI suites guard against
+regressions.
+
+### Changed
+
+- **BREAKING — `oxigeo::Dataset::read_band` now returns one band.** Up to 0.2.1 it
+  ignored its `band` argument on multi-band rasters and returned the whole
+  pixel-interleaved image (`width × height × bands` samples, `b0 b1 b2 b0 b1 b2 …`),
+  which silently mis-fed every caller that asked for a single band. It now returns
+  exactly that band's `width × height` samples. Single-band rasters are unaffected;
+  on a 3-band file `read_band(0)` returns a third as many samples as it used to, so
+  a length check finds affected code quickly.
+
+- **BREAKING — `DatasetInfo` is now `#[non_exhaustive]`.** It also gained
+  `impl Default` and a new `data_type: Option<RasterDataType>` field (the on-disk
+  pixel type, readable before any raster read via the new `Dataset::data_type()`).
+  Downstream struct-literal construction — even `DatasetInfo { field, .. }` — no
+  longer compiles; build from `DatasetInfo::default()` instead.
+
+- **DEFLATE tile decoding is substantially faster.** The `oxiarc-*` suite moves
+  0.3.6 → 0.4.0, which rewrites the DEFLATE/zlib decoder (two-level Huffman
+  root+sub-tables, a buffered bit reader with a register-resident accumulator, and
+  an LZ77 history that *is* the output buffer instead of a ring buffer written
+  twice), and the GeoTIFF driver now uses its new decompress-into-slice entry
+  point. Measured on 256×256 UInt16 DEM tiles with `PREDICTOR=2` — the layout used
+  by SRTM/Copernicus DEM COGs — decode throughput goes from 99.0 MiB/s on
+  oxiarc-deflate 0.3.6 to 143.7 MiB/s on 0.4.0 (**1.45×**), and to 177.4 MiB/s
+  (**1.79×**) through `zlib_decompress_into`, which is the path a whole-band read
+  now takes. Whole-band DEFLATE reads additionally perform zero decode-side
+  allocations: one caller-owned scratch buffer serves every tile, where each tile
+  previously grew its own `Vec` by repeated doubling. Output bytes are unchanged;
+  the decoded-size hint is an optimisation only, and a wrong, absent, or clamped
+  hint falls back to the growable path rather than failing (cool-japan/oxigeo#14).
+
+### Added
+
+- **`oxigeo::Dataset` interleaved (multi-band) readers** — the supported
+  replacement for the pre-0.2.2 `read_band` behaviour, so the breaking change above
+  leaves no gap:
+  - `read_interleaved(bands) -> Vec<T>` and `read_interleaved_into(bands, dst)`
+  - `read_window_interleaved(bands, col, row, w, h) -> Vec<T>` and
+    `read_window_interleaved_into(bands, col, row, w, h, dst)`
+
+  `bands` is `Option<&[u32]>`: `None` means every band in file order (mirroring
+  GDAL's `panBandMap == nullptr`), and a slice selects, reorders (`&[2,1,0]` reads
+  RGB as BGR), subsets (only the named bands are decoded), or repeats band indices.
+  The element type is converted from the file's type while the blocks are decoded,
+  exactly as `read_band_into` does. The `*_into` forms allocate a single scratch
+  buffer sized to one horizontal *strip* of one band — not to the raster — so peak
+  extra memory stays bounded however large the image is; a single-band selection
+  delegates to the `read_band_into` path and allocates nothing at all. All four
+  honour `Dataset::clip`'s pixel window like every other reader.
+
+- **`oxigeo::Dataset` gained a pre-read type query and zero-allocation
+  single-band/window readers**: `data_type() -> Option<RasterDataType>` reads the
+  on-disk pixel type from the header before any raster read; `read_band_into<T:
+  RasterElement>(band, dst)` and `read_window_into<T>(band, col, row, w, h, dst)`
+  decode straight into a caller-owned buffer (the interleaved readers above already
+  build on this same path). `RasterElement` — see `oxigeo-core` below — is
+  re-exported at the crate root.
+
+- **`oxigeo-core` gained a typed, zero-copy raster-element layer.** The sealed
+  `RasterElement` trait (implemented for `u8/i8/u16/i16/u32/i32/u64/i64/f32/f64`;
+  `Copy + Default + Send + Sync + 'static`) defines each type's on-disk byte width,
+  `RasterDataType` tag, and native-endian byte conversion, plus exact — never
+  lossy through `f64` — integer-to-integer conversion via an `i128` bridge. Built
+  on it: `convert_raw_into`/`convert_raw_into_with`/`convert_raw_bytes`/
+  `elements_as_bytes`, and `RasterBuffer::from_element_slice`/
+  `copy_to_slice[_with]`/`to_typed_vec[_with]`. `DataSource`/`AsyncDataSource`
+  gained `read_range_into`/`range_slice` methods (default: still allocates
+  internally); `FileDataSource` now issues real positional reads (`pread`/
+  `seek_read`) instead of serializing every read through one `Mutex<File>`, and
+  `MmapDataSource`/`MmapDataSourceRw` override both for true zero-copy reads
+  straight out of the mapping.
+
+- **`oxigeo-drivers/geotiff` gained a real band-aware, low-allocation read API**:
+  `band_byte_len`/`band_pixel_count`, `read_band_into`/`read_band_into_typed`,
+  `read_window`/`read_window_into`/`read_window_into_typed`,
+  `read_bands_into_typed`/`read_window_bands_into_typed` (one block decode shared
+  across every requested band), `byte_order()`, `level_size(level)` (exact
+  per-overview dimensions from that level's own IFD, not `full_size / 2^level`),
+  `read_tile_band_buffer` (`read_tile_buffer` is now its `band = 0` shorthand),
+  `CogReader::tile_decoded_size`/`read_tile_into`, and `compression::decompress_into`/
+  `decompress_into_partial`. New opt-in `parallel` feature fans block decode out
+  across rayon workers (bit-identical to serial).
+
+### Fixed
+
+**GeoTIFF driver — the issue #14 root cause (`oxigeo-drivers/geotiff`)**
+
+- **`GeoTiffReader::read_band` never read its `band` parameter** (it was named
+  `_band`). It sized its output as the *whole* image (`width × height ×
+  bytes_per_sample × samples_per_pixel`) and copied every decoded tile's raw
+  chunky (`PlanarConfiguration=1`) bytes into it 1:1 — so every band index
+  returned identical, full-image bytes, and a `PlanarConfiguration=2` (planar)
+  file was decoded as if it were chunky, scrambling every band. Overview levels
+  (`level > 0`) additionally walked the primary image's tile grid unconditionally.
+  Replaced by a purpose-built engine (`band_read.rs`, `band_read/multi.rs`): a
+  `ReadPlan`/`LevelGeometry` resolves each level's real geometry and planar config
+  once, and `decode_block` either de-interleaves the requested band during the
+  scatter (chunky) or reads only that band's own blocks (planar) — the interleaved
+  plane is never materialized, and the band index is validated. Output is now
+  exactly one band's `width × height × bytes_per_sample` bytes.
+- **The TIFF predictor (horizontal-differencing) undo used the wrong stride on
+  planar files.** `CogReader::read_tile` always passed `samples_per_pixel` as the
+  predictor stride, but a planar block holds one band, so the correct stride is 1;
+  the wrong stride "subtracts the wrong neighbour from every sample… rows bleed
+  into each other. Nothing errors; the pixels are simply wrong." Fixed via a new
+  per-block `block_samples_per_pixel` (1 when planar). Separately,
+  `Compression::Lerc` combined with any `Predictor` is undefined by spec — no real
+  encoder produces it — but the old driver reversed the predictor over
+  already-decoded LERC floats anyway, corrupting every sample after the first;
+  this combination is now a hard error instead of silent garbage.
+- **Per-tile reads re-parsed the entire `TileOffsets`/`TileByteCounts` array on
+  every single lookup** — measured at 77% (190 of 248 ms) of one band read on an
+  8000-strip file. A new `BlockIndex` (`cog/block_index.rs`) parses each level's
+  offset/count arrays once at `open()` for O(1) lookups thereafter, bounded
+  against hostile headers.
+- **`CogConverter::convert` (GeoTIFF→COG) depended on the bug above** — it called
+  the old `read_band(0, 0)` specifically *because* it returned the whole
+  interleaved image, and reassembled that into its output. Fixing `read_band` in
+  isolation would have silently truncated every multi-band conversion to one
+  band; the converter now reads and re-interleaves each band explicitly.
+- `tiff/ifd.rs`: several direct-slice-index panics on truncated/malformed IFDs are
+  now typed errors. `lerc_codec`: `serialize_native` used a hardcoded
+  `to_le_bytes()`, silently byte-reversing output on big-endian hosts; now
+  `to_ne_bytes()`.
+
+**`oxigeo-core` foundation**
+
+- **`RasterBuffer::convert_to` silently corrupted large `UInt64`/`Int64`
+  values.** Its per-pixel path round-tripped every sample through
+  `get_pixel`/`set_pixel`, which decoded/encoded via `f64` — exact only to 2^53 —
+  so e.g. `(1u64 << 53) + 1` silently became `1u64 << 53` on conversion. Fixed by
+  routing through an exact `i128` bridge.
+- **Latent undefined behavior in `RasterBuffer::as_slice`/`as_slice_mut`/
+  `row_slice`.** They reinterpreted a `Vec<u8>`'s pointer directly as `*const T`
+  without checking alignment (`Vec<u8>` only guarantees 1-byte alignment), and ran
+  `from_raw_parts` on the zero-length dangling sentinel pointer for empty buffers
+  — UB regardless of length whenever `align_of::<T>() > 1`. It never crashed in
+  practice because production allocators over-align, which is exactly why it
+  stayed latent. Now checks alignment explicitly and short-circuits on zero
+  length.
+- `MmapDataSource`/`MmapDataSourceRw::read_range` cast a `u64` byte offset to
+  `usize` unchecked, silently wrapping on 32-bit targets for offsets beyond
+  `u32::MAX`; now a checked `usize::try_from`.
+- **`oxigeo::Dataset::open` (and the standalone format probes) now report a real
+  error instead of silently opening a GeoTIFF/GeoJSON/Shapefile/FlatGeobuf/
+  GeoParquet file with zeroed-out metadata.** The old hand-rolled TIFF header
+  parser only looked at the first 8 KiB/1 MiB of the file; an IFD located past
+  that window (as OxiGeo's own writer produces, which emits pixels before the
+  IFD) silently opened as a 0×0, 0-band dataset instead of erroring. Reading now
+  delegates to `oxigeo_geotiff::GeoTiffReader` directly, and every format probe
+  changed from `Option` (silent empty result) to `Result`. GeoJSON's
+  `feature_count` similarly stopped under-counting large documents past its 64
+  KiB peek window — it now reports `None` instead of a wrong number. BREAKING: a
+  file that previously opened "successfully" with empty/zeroed metadata now
+  returns `Err`.
+
+**The same defect pattern, independently found and fixed workspace-wide
+(cool-japan/oxigeo#14)**
+
+- **oxigeo-qc**: the nodata and radiometric scanners hardcoded little-endian byte
+  decoding regardless of the file's actual byte order, misclassifying nodata on
+  big-endian GeoTIFFs; a separate bug assumed chunky layout unconditionally, so
+  planar files were scanned one plane at a time, attributed to the wrong band, and
+  reported clean. A new `band_scan` module centralizes correct band-aware
+  scanning.
+- **oxigeo-server**: the WMS/WMTS/XYZ tile handlers assumed power-of-two overview
+  pyramids (`level = 1 << n`); a non-power-of-two chain served the wrong
+  resolution for the requested zoom — a georeferencing error in served imagery —
+  and multi-band pixel windows silently returned all-zero data. An RGB
+  composite's red channel was also read through a different, disagreeing code
+  path than green/blue; all three now share one corrected `read_level_band`
+  helper.
+- **oxigeo-services (WCS)**: `GetCoverage` on a multi-band raster wrote only one
+  band's samples into a buffer sized for all of them, silently truncating/
+  zero-padding the response.
+- **oxigeo-mobile**: tile reads on a planar-layout file interleaved the wrong
+  bytes into RGBA output; windowed region reads (`oxigeo_dataset_read_region`)
+  silently left the output buffer untouched instead of erroring or filling it,
+  once the driver-level bug above was fixed out from under it; overview-level
+  statistics had an off-by-one level and assumed power-of-two dimensions.
+- **oxigeo-wasm**: the in-browser COG viewer had two tile-decoding paths that
+  disagreed about whether a tile's byte order still needed swapping, double- or
+  never-swapping depending on which one served the request.
+- **oxigeo-node**: `Dataset::open` hand-rolled a de-interleave step assuming the
+  old broken `read_band` — every multi-band open hard-failed with
+  `FORMAT_ERROR`.
+- **oxigeo-cli**: `read_band`'s workaround code (tolerating either a single-band
+  or a whole-interleaved-image result) and `read_band_region`'s ~200-line
+  hand-rolled tile-stitcher/de-interleaver (which, as its own removed comment
+  noted, "could not read `PlanarConfiguration = 2` files correctly") are both
+  replaced by direct calls to the fixed driver API; `profiler.rs`'s per-band
+  benchmark used to only ever measure band 0.
+- **oxigeo-ml-foundation**: `GeoTiffDataset::load_all_bands` manually
+  de-interleaved a `read_band(0, 0)` result under the old semantics; once
+  `read_band` was fixed, that workaround itself became actively wrong and is now
+  removed.
+- **oxigeo-jupyter**: the `%stats` magic double-de-interleaved an already
+  single-band buffer for the same reason.
+- **oxigeo-drivers-vrt**: pixel accessors used `from_le_bytes`/`to_le_bytes` on
+  buffers that are already host-native (from `GeoTiffReader`), corrupting values
+  on big-endian hosts.
+
+**Unrelated bugs found along the way**
+
+- **oxigeo-streaming**: `ChunkedReader::read_chunk` failed on the *first* call on
+  every stream (an empty, not-yet-filled buffer was treated as a hard error), and
+  read-ahead prefetch desynced its cursor against any directly-read chunk, failing
+  every subsequent prefetch push.
+- **oxigeo-mbtiles**: `MBTilesReader::open_in_memory` deleted only the primary
+  SQLite spill file on cleanup, leaking its `-wal`/`-shm`/`-journal` siblings into
+  the OS temp directory on every call.
+- **oxigeo-ml**: `optimization::iterative_pruning` wrote intermediates to fixed,
+  non-unique file paths; concurrent calls could overwrite and corrupt each
+  other's in-progress models. Each call now uses an isolated, auto-cleaned
+  scratch directory.
+- **oxigeo-compress**: `LZ4_MAX_OUTPUT_GUESS` was a raw `4 * 1024 * 1024 * 1024`
+  `usize` literal, which overflows `usize` on 32-bit targets (wasm32, 32-bit
+  ARM/x86); now computed in `u64` with a saturating cast.
+- **oxigeo-netcdf**: `Variable::new`/`new_coordinate`'s empty-name error was
+  misclassified as a generic `Core` error instead of `VariableError`.
+- **`oxigeo-compress` now builds for `wasm32-unknown-unknown`.** It failed to
+  compile at all on that target: `ahash`'s default `runtime-rng` feature pulls
+  `getrandom`, which hard-errors on wasm32 unless its JavaScript backend is
+  explicitly opted into (`The "wasm_js" backend requires the wasm_js feature`).
+  wasm builds of this crate now use ahash's `compile-time-rng` instead, so the
+  hash keys are generated on the host at build time and no JavaScript host is
+  required; every other target keeps `runtime-rng` and its per-process keys
+  unchanged. The workspace `ahash` entry moved to `default-features = false`
+  (Cargo forbids a member from disabling a workspace dependency's defaults), so
+  `oxigeo-{compress,edge,gateway,streaming}` now name `["std", "runtime-rng"]`
+  explicitly — the same feature set as before on native targets. Only
+  `oxigeo-wasm` is built for wasm32 in CI, so this was invisible there.
+
 ## [0.2.1] - 2026-07-28
 
 Production-hardening campaign (2026-07): a workspace-wide, multi-agent defect
@@ -1097,7 +1345,7 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigeo>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigeo/issues>
 
-[Unreleased]: https://github.com/cool-japan/oxigeo/compare/v0.2.1...HEAD
+[0.2.2]: https://github.com/cool-japan/oxigeo/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/cool-japan/oxigeo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/cool-japan/oxigeo/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/cool-japan/oxigdal/releases/tag/v0.1.7

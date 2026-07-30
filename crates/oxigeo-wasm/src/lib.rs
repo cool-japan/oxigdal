@@ -368,8 +368,6 @@ pub struct WasmCogViewer {
     bits_per_sample: u16,
     /// TIFF SampleFormat (1=uint, 2=int, 3=float) — needed for elevation decode
     sample_format: u16,
-    /// True if the source TIFF stores samples little-endian
-    little_endian: bool,
     /// GeoTIFF geotransform data (for calculating geographic bounds)
     pixel_scale_x: Option<f64>,
     pixel_scale_y: Option<f64>,
@@ -398,7 +396,6 @@ impl WasmCogViewer {
             epsg_code: None,
             bits_per_sample: 8,
             sample_format: 1,
-            little_endian: true,
             pixel_scale_x: None,
             pixel_scale_y: None,
             tiepoint_pixel_x: None,
@@ -469,7 +466,6 @@ impl WasmCogViewer {
         self.epsg_code = metadata.epsg_code;
         self.bits_per_sample = metadata.bits_per_sample;
         self.sample_format = metadata.sample_format;
-        self.little_endian = reader.is_little_endian();
 
         // A URL-opened viewer never uses the in-memory reader.
         self.mem_reader = None;
@@ -608,9 +604,6 @@ impl WasmCogViewer {
     /// Returns a JavaScript error if the bytes are not a valid TIFF/COG.
     #[wasm_bindgen(js_name = openBytes)]
     pub fn open_bytes(&mut self, data: &[u8], name: Option<String>) -> Result<(), JsValue> {
-        // Endianness is decided by the first two bytes of the TIFF header.
-        let little_endian = data.len() >= 2 && &data[0..2] == b"II";
-
         let source = MemorySource::new(data.to_vec());
         let reader = oxigeo_geotiff::CogReader::open(source).map_err(|e| to_js_error(&e))?;
 
@@ -625,7 +618,6 @@ impl WasmCogViewer {
         self.sample_format = info.sample_format as u16;
         self.overview_count = reader.overview_count();
         self.epsg_code = reader.geo_keys().and_then(|g| g.epsg_code());
-        self.little_endian = little_endian;
 
         // GeoTransform → geotransform fields (best-effort). The URL path stores
         // raw (positive) ModelPixelScale values, so mirror that convention here:
@@ -670,6 +662,14 @@ impl WasmCogViewer {
     /// For bytes-opened viewers this delegates to the in-memory `CogReader`
     /// (decompression and predictor handled internally, full codec support).
     /// For URL-opened viewers it streams the tile over HTTP range requests.
+    ///
+    /// Both readers return samples in the **host's** byte order, so callers do
+    /// not need to know which one produced the tile. That was not always true:
+    /// until cool-japan/oxigeo#14 the URL reader returned samples in the file's
+    /// order and this viewer carried a `little_endian` flag to compensate,
+    /// which the `openBytes` path then had to set to a value that meant
+    /// something different. Both readers now normalise internally and the flag
+    /// is gone.
     #[wasm_bindgen]
     pub async fn read_tile(
         &self,
@@ -705,8 +705,9 @@ impl WasmCogViewer {
     ///
     /// The decoding honours the source's SampleFormat and BitsPerSample
     /// (u8 / u16 / i16 / i32 / f32, plus u32 / f64), so elevation DEMs such as
-    /// the SRTM `i16` little-endian tiles are returned as real heights. Works
-    /// for both URL-opened and bytes-opened viewers.
+    /// the SRTM `i16` tiles are returned as real heights. Works for both
+    /// URL-opened and bytes-opened viewers, and for `II` and `MM` sources
+    /// alike: [`Self::read_tile`] has already normalised the samples.
     #[wasm_bindgen(js_name = readTileElevation)]
     pub async fn read_tile_elevation(
         &self,
@@ -719,7 +720,6 @@ impl WasmCogViewer {
             &raw,
             self.sample_format,
             self.bits_per_sample,
-            self.little_endian,
         ))
     }
 
@@ -798,90 +798,46 @@ fn to_js_error(err: &OxiGeoError) -> JsValue {
 /// Supported combinations: 8-bit unsigned, 16-bit unsigned/signed, 32-bit
 /// unsigned/signed/float, and 64-bit float. Unknown combinations fall back to
 /// treating each byte as a `u8`.
-fn decode_elevation(
-    raw: &[u8],
-    sample_format: u16,
-    bits_per_sample: u16,
-    little_endian: bool,
-) -> Vec<f32> {
-    // Reads a fixed-size little/big-endian chunk into an array.
+///
+/// `raw` is in the **host's** byte order — both readers behind
+/// [`WasmCogViewer::read_tile`] normalise before returning — so every read here
+/// is `from_ne_bytes` and there is no byte-order parameter to get wrong. This
+/// function used to take a `little_endian` flag sourced from the file header;
+/// once the readers normalised, that flag byte-swapped `MM` data a second time
+/// (cool-japan/oxigeo#14).
+fn decode_elevation(raw: &[u8], sample_format: u16, bits_per_sample: u16) -> Vec<f32> {
     match (sample_format, bits_per_sample) {
-        // 8-bit: endianness irrelevant.
+        // 8-bit: nothing to order.
         (_, 8) => raw.iter().map(|&b| f32::from(b)).collect(),
         // 16-bit signed integer (e.g. SRTM elevation).
         (2, 16) => raw
             .chunks_exact(2)
-            .map(|c| {
-                let v = if little_endian {
-                    i16::from_le_bytes([c[0], c[1]])
-                } else {
-                    i16::from_be_bytes([c[0], c[1]])
-                };
-                f32::from(v)
-            })
+            .map(|c| f32::from(i16::from_ne_bytes([c[0], c[1]])))
             .collect(),
         // 16-bit unsigned integer.
         (_, 16) => raw
             .chunks_exact(2)
-            .map(|c| {
-                let v = if little_endian {
-                    u16::from_le_bytes([c[0], c[1]])
-                } else {
-                    u16::from_be_bytes([c[0], c[1]])
-                };
-                f32::from(v)
-            })
+            .map(|c| f32::from(u16::from_ne_bytes([c[0], c[1]])))
             .collect(),
         // 32-bit IEEE float.
         (3, 32) => raw
             .chunks_exact(4)
-            .map(|c| {
-                let bytes = [c[0], c[1], c[2], c[3]];
-                if little_endian {
-                    f32::from_le_bytes(bytes)
-                } else {
-                    f32::from_be_bytes(bytes)
-                }
-            })
+            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         // 32-bit signed integer.
         (2, 32) => raw
             .chunks_exact(4)
-            .map(|c| {
-                let bytes = [c[0], c[1], c[2], c[3]];
-                let v = if little_endian {
-                    i32::from_le_bytes(bytes)
-                } else {
-                    i32::from_be_bytes(bytes)
-                };
-                v as f32
-            })
+            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect(),
         // 32-bit unsigned integer.
         (_, 32) => raw
             .chunks_exact(4)
-            .map(|c| {
-                let bytes = [c[0], c[1], c[2], c[3]];
-                let v = if little_endian {
-                    u32::from_le_bytes(bytes)
-                } else {
-                    u32::from_be_bytes(bytes)
-                };
-                v as f32
-            })
+            .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect(),
         // 64-bit IEEE float.
         (3, 64) => raw
             .chunks_exact(8)
-            .map(|c| {
-                let bytes = [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]];
-                let v = if little_endian {
-                    f64::from_le_bytes(bytes)
-                } else {
-                    f64::from_be_bytes(bytes)
-                };
-                v as f32
-            })
+            .map(|c| f64::from_ne_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32)
             .collect(),
         // Fallback: treat bytes as u8 samples.
         _ => raw.iter().map(|&b| f32::from(b)).collect(),
@@ -1775,6 +1731,10 @@ impl GeoJsonExporter {
     }
 }
 
+/// `decode_elevation` consumes **host-native** samples, because that is what
+/// both of `WasmCogViewer`'s readers produce. Every fixture here is therefore
+/// built with `to_ne_bytes`; a fixture built with `to_le_bytes` would silently
+/// stop testing anything on a big-endian host.
 #[cfg(test)]
 mod decode_elevation_tests {
     use super::decode_elevation;
@@ -1782,44 +1742,50 @@ mod decode_elevation_tests {
     #[test]
     fn decodes_u8_samples() {
         let raw = [0u8, 128, 255];
-        let out = decode_elevation(&raw, 1, 8, true);
+        let out = decode_elevation(&raw, 1, 8);
         assert_eq!(out, vec![0.0, 128.0, 255.0]);
     }
 
     #[test]
-    fn decodes_i16_little_endian() {
-        // -100 and 300 as i16 LE.
+    fn decodes_i16_samples() {
         let mut raw = Vec::new();
-        raw.extend_from_slice(&(-100i16).to_le_bytes());
-        raw.extend_from_slice(&300i16.to_le_bytes());
-        let out = decode_elevation(&raw, 2, 16, true);
+        raw.extend_from_slice(&(-100i16).to_ne_bytes());
+        raw.extend_from_slice(&300i16.to_ne_bytes());
+        let out = decode_elevation(&raw, 2, 16);
         assert_eq!(out, vec![-100.0, 300.0]);
     }
 
+    /// The decoder must not reinterpret samples by file byte order any more:
+    /// a buffer whose bytes are the *opposite* of host order decodes to the
+    /// byte-swapped number, because normalisation already happened upstream.
     #[test]
-    fn decodes_i16_big_endian() {
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&(-100i16).to_be_bytes());
-        raw.extend_from_slice(&300i16.to_be_bytes());
-        let out = decode_elevation(&raw, 2, 16, false);
-        assert_eq!(out, vec![-100.0, 300.0]);
+    fn decodes_by_host_order_only() {
+        let mut reversed = (-100i16).to_ne_bytes();
+        reversed.reverse();
+        let out = decode_elevation(&reversed, 2, 16);
+        assert_eq!(
+            out,
+            vec![f32::from((-100i16).swap_bytes())],
+            "decode_elevation must interpret bytes as host-native; if it \
+             re-applied a file byte order it would decode this back to -100"
+        );
     }
 
     #[test]
     fn decodes_u16_and_i32_and_f32() {
-        let u16_raw = 40000u16.to_le_bytes();
-        assert_eq!(decode_elevation(&u16_raw, 1, 16, true), vec![40000.0]);
+        let u16_raw = 40000u16.to_ne_bytes();
+        assert_eq!(decode_elevation(&u16_raw, 1, 16), vec![40000.0]);
 
-        let i32_raw = (-1_000_000i32).to_le_bytes();
-        assert_eq!(decode_elevation(&i32_raw, 2, 32, true), vec![-1_000_000.0]);
+        let i32_raw = (-1_000_000i32).to_ne_bytes();
+        assert_eq!(decode_elevation(&i32_raw, 2, 32), vec![-1_000_000.0]);
 
-        let f32_raw = 1234.5f32.to_le_bytes();
-        assert_eq!(decode_elevation(&f32_raw, 3, 32, true), vec![1234.5]);
+        let f32_raw = 1234.5f32.to_ne_bytes();
+        assert_eq!(decode_elevation(&f32_raw, 3, 32), vec![1234.5]);
     }
 
     #[test]
     fn decodes_f64() {
-        let raw = 2.5f64.to_le_bytes();
-        assert_eq!(decode_elevation(&raw, 3, 64, true), vec![2.5]);
+        let raw = 2.5f64.to_ne_bytes();
+        assert_eq!(decode_elevation(&raw, 3, 64), vec![2.5]);
     }
 }

@@ -702,6 +702,50 @@ impl SwmrStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture *and* the
+    /// sidecars SWMR coordination writes next to it (`.lock`, version file),
+    /// so a panicking test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_hdf5_swmr_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(self.0.with_extension("lock"));
+            let _ = std::fs::remove_file(version_file_path(&self.0));
+        }
+    }
 
     #[test]
     fn test_swmr_config_writer() {
@@ -742,8 +786,7 @@ mod tests {
 
     #[test]
     fn test_file_lock() {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join("swmr_test.h5");
+        let test_file = TempPath::new("file_lock.h5");
 
         let mut lock = FileLock::new(&test_file);
         assert!(lock.try_acquire().is_ok());

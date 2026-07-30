@@ -27,7 +27,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-zarr = "0.2.1"
+oxigeo-zarr = "0.2.2"
 ```
 
 ### Features
@@ -37,25 +37,25 @@ Enable optional features for specific capabilities:
 ```toml
 [dependencies]
 # Filesystem support
-oxigeo-zarr = { version = "0.2.1", features = ["filesystem"] }
+oxigeo-zarr = { version = "0.2.2", features = ["filesystem"] }
 
 # Cloud storage with S3
-oxigeo-zarr = { version = "0.2.1", features = ["s3", "async"] }
+oxigeo-zarr = { version = "0.2.2", features = ["s3", "async"] }
 
 # HTTP remote access
-oxigeo-zarr = { version = "0.2.1", features = ["http"] }
+oxigeo-zarr = { version = "0.2.2", features = ["http"] }
 
 # Compression codecs
-oxigeo-zarr = { version = "0.2.1", features = ["zstd", "gzip", "lz4"] }
+oxigeo-zarr = { version = "0.2.2", features = ["zstd", "gzip", "lz4"] }
 
 # Parallel processing
-oxigeo-zarr = { version = "0.2.1", features = ["parallel"] }
+oxigeo-zarr = { version = "0.2.2", features = ["parallel"] }
 
 # Chunk caching
-oxigeo-zarr = { version = "0.2.1", features = ["cache"] }
+oxigeo-zarr = { version = "0.2.2", features = ["cache"] }
 
 # All features
-oxigeo-zarr = { version = "0.2.1", features = ["filesystem", "s3", "http", "async", "zstd", "gzip", "lz4", "shuffle", "delta", "scale-offset", "parallel", "cache", "v2", "v3"] }
+oxigeo-zarr = { version = "0.2.2", features = ["filesystem", "s3", "http", "async", "zstd", "gzip", "lz4", "shuffle", "delta", "scale-offset", "parallel", "cache", "v2", "v3"] }
 ```
 
 ## Quick Start

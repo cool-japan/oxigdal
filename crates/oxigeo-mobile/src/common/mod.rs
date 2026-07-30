@@ -4,6 +4,7 @@
 //! including caching, tile management, and memory optimization.
 
 pub mod cache;
+pub(crate) mod tile_read;
 pub mod tiles;
 
 use crate::ffi::types::*;
@@ -245,9 +246,6 @@ pub unsafe extern "C" fn oxigeo_mobile_prefetch_tiles(
         }
     };
 
-    let channels = handle.metadata.band_count;
-    let tile_size = tiles::TILE_SIZE;
-
     let mut prefetched_count: i32 = 0;
 
     // Iterate through zoom levels and prefetch tiles
@@ -293,8 +291,17 @@ pub unsafe extern "C" fn oxigeo_mobile_prefetch_tiles(
                 0
             };
 
-            let tile_data = match reader.read_tile(overview_level, *tile_x as u32, *tile_y as u32) {
-                Ok(data) => data,
+            // Band-aware: `read_tile` would hand back one raw block, which on a
+            // `PlanarConfiguration = 2` file is a single band's plane, and the
+            // cache entry would then claim `band_count` channels for it. See
+            // [`tile_read`] (cool-japan/oxigeo#14).
+            let tile = match tile_read::read_block_interleaved(
+                &reader,
+                overview_level,
+                *tile_x as u32,
+                *tile_y as u32,
+            ) {
+                Ok(tile) => tile,
                 Err(_) => {
                     // This tile falls outside the dataset's real raster
                     // extent (or the overview read failed for some other
@@ -305,10 +312,10 @@ pub unsafe extern "C" fn oxigeo_mobile_prefetch_tiles(
             };
             drop(reader);
 
-            let tile_data_size = tile_data.len();
+            let tile_data_size = tile.data.len();
 
-            // Cache the real tile data.
-            cache::put_cached_tile(cache_key, tile_data, tile_size, tile_size, channels);
+            // Cache the real tile data, labelled with the block's own geometry.
+            cache::put_cached_tile(cache_key, tile.data, tile.width, tile.height, tile.channels);
 
             prefetched_count += 1;
 
@@ -329,6 +336,47 @@ mod tests {
     };
     use crate::ffi::types::OxiGeoDataType;
     use std::ffi::CString;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_mobile_prefetch_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     /// Creates a real, single-band GeoTIFF filled with `pixel_value` at
     /// `width`x`height`, flushes it to `path`, and reopens it read-only so
@@ -456,8 +504,7 @@ mod tests {
 
     #[test]
     fn test_prefetch_tiles_invalid_bbox() {
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("oxigeo_mobile_prefetch_null_bbox.tif");
+        let temp_path = TempPath::new("null_bbox.tif");
         let dataset_ptr = build_readable_test_dataset(&temp_path, 8, 8, 42);
 
         // null bbox
@@ -465,13 +512,11 @@ mod tests {
         assert_eq!(result, -1);
 
         unsafe { oxigeo_dataset_close(dataset_ptr) };
-        let _ = std::fs::remove_file(&temp_path);
     }
 
     #[test]
     fn test_prefetch_tiles_invalid_zoom() {
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("oxigeo_mobile_prefetch_invalid_zoom.tif");
+        let temp_path = TempPath::new("invalid_zoom.tif");
         let dataset_ptr = build_readable_test_dataset(&temp_path, 8, 8, 42);
 
         let bbox = OxiGeoBbox {
@@ -490,13 +535,11 @@ mod tests {
         assert_eq!(result, -1);
 
         unsafe { oxigeo_dataset_close(dataset_ptr) };
-        let _ = std::fs::remove_file(&temp_path);
     }
 
     #[test]
     fn test_prefetch_tiles_small_bbox() {
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("oxigeo_mobile_prefetch_small_bbox.tif");
+        let temp_path = TempPath::new("small_bbox.tif");
         let dataset_ptr = build_readable_test_dataset(&temp_path, 8, 8, 42);
 
         // Initialize cache
@@ -517,13 +560,11 @@ mod tests {
         assert!(result >= 0);
 
         unsafe { oxigeo_dataset_close(dataset_ptr) };
-        let _ = std::fs::remove_file(&temp_path);
     }
 
     #[test]
     fn test_prefetch_tiles_invalid_geo_bbox() {
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("oxigeo_mobile_prefetch_invalid_geo_bbox.tif");
+        let temp_path = TempPath::new("invalid_geo_bbox.tif");
         let dataset_ptr = build_readable_test_dataset(&temp_path, 8, 8, 42);
 
         let bbox = OxiGeoBbox {
@@ -537,13 +578,11 @@ mod tests {
         assert_eq!(result, -1);
 
         unsafe { oxigeo_dataset_close(dataset_ptr) };
-        let _ = std::fs::remove_file(&temp_path);
     }
 
     #[test]
     fn test_prefetch_tiles_offline_mode() {
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("oxigeo_mobile_prefetch_offline_mode.tif");
+        let temp_path = TempPath::new("offline_mode.tif");
         let dataset_ptr = build_readable_test_dataset(&temp_path, 8, 8, 42);
 
         // Initialize cache
@@ -568,7 +607,6 @@ mod tests {
         let _ = oxigeo_mobile_set_offline_mode(0);
 
         unsafe { oxigeo_dataset_close(dataset_ptr) };
-        let _ = std::fs::remove_file(&temp_path);
     }
 
     /// Verifies the critical fix: prefetched tiles contain **real** dataset
@@ -577,8 +615,7 @@ mod tests {
     fn test_prefetch_tiles_caches_real_pixel_data() {
         const PIXEL_VALUE: u8 = 201;
 
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("oxigeo_mobile_prefetch_real_pixels.tif");
+        let temp_path = TempPath::new("real_pixels.tif");
         let dataset_ptr = build_readable_test_dataset(&temp_path, 64, 64, PIXEL_VALUE);
 
         let _ = cache::init_cache(50);
@@ -612,6 +649,5 @@ mod tests {
         );
 
         unsafe { oxigeo_dataset_close(dataset_ptr) };
-        let _ = std::fs::remove_file(&temp_path);
     }
 }

@@ -1,10 +1,23 @@
 //! Compression and decompression for TIFF data
 //!
 //! This module provides implementations for various TIFF compression schemes.
+//!
+//! Two decode entry points are available:
+//!
+//! - [`decompress`] allocates and returns an owned `Vec<u8>` — convenient, and the
+//!   only option for codecs whose decoder can exclusively produce an owned buffer.
+//! - [`decompress_into`] / [`decompress_into_partial`] decode straight into a
+//!   caller-owned buffer, which lets a tile reader reuse one scratch buffer across
+//!   every tile of a band instead of allocating (and, for `Compression::None`,
+//!   *copying*) one buffer per tile. See [`crate::cog::CogReader::read_tile_into`].
+
+pub mod predictor;
 
 use oxigeo_core::error::{CompressionError, OxiGeoError, Result};
 
-use crate::tiff::{ByteOrderType, Compression, Predictor};
+use crate::tiff::Compression;
+
+pub use predictor::{apply_predictor_forward, apply_predictor_reverse};
 
 // Re-export JPEG types for public API
 #[cfg(feature = "jpeg")]
@@ -13,6 +26,27 @@ pub use jpeg_encoder::ColorType;
 // Re-export WebP color type for public API
 #[cfg(feature = "webp")]
 pub use image_webp::ColorType as WebpColorType;
+
+/// Upper bound (in bytes) on a speculative allocation driven by a decoded-size
+/// *hint*.
+///
+/// Decoded-size hints are derived from IFD tags (tile geometry, sample count),
+/// i.e. from untrusted input: a malformed or hostile header can claim a tile of
+/// essentially any size. Codecs that pre-size their output buffer from the hint
+/// therefore clamp it here first, so a bogus header costs at most one 256 MiB
+/// reservation rather than an instant out-of-memory abort. The clamp only ever
+/// affects the *initial capacity*: a buffer that legitimately needs to grow past
+/// it still does.
+const MAX_SIZE_HINT_BYTES: usize = 256 * 1024 * 1024;
+
+/// Clamps an untrusted decoded-size hint to [`MAX_SIZE_HINT_BYTES`].
+const fn clamped_hint(expected_size: usize) -> usize {
+    if expected_size > MAX_SIZE_HINT_BYTES {
+        MAX_SIZE_HINT_BYTES
+    } else {
+        expected_size
+    }
+}
 
 /// Decompresses data using the specified compression scheme
 pub fn decompress(data: &[u8], compression: Compression, expected_size: usize) -> Result<Vec<u8>> {
@@ -42,6 +76,90 @@ pub fn decompress(data: &[u8], compression: Compression, expected_size: usize) -
             method: compression as u16,
         })),
     }
+}
+
+/// Decompresses `src` directly into `dst`, without allocating an intermediate
+/// buffer for the result.
+///
+/// This is the buffer-reusing counterpart of [`decompress`]. It is the fast path
+/// for whole-band reads, where one scratch buffer can serve every tile of the
+/// band: `Compression::None` becomes a single `copy_from_slice` (the pure-waste
+/// `to_vec()` allocation disappears), PackBits is expanded straight into `dst`,
+/// and DEFLATE inflates straight into `dst`. Codecs whose decoder API can only
+/// produce an owned `Vec` (LZW, ZSTD, JPEG, WebP, LERC) decode once and are copied
+/// into `dst` — one copy, not the previous copy *plus* a redundant `to_vec()`.
+///
+/// # Errors
+/// Returns [`CompressionError::InvalidData`] if the decoded payload is not
+/// exactly `dst.len()` bytes long, and propagates any codec error. Use
+/// [`decompress_into_partial`] when a short payload must be tolerated (e.g. a
+/// truncated final strip).
+pub fn decompress_into(src: &[u8], compression: Compression, dst: &mut [u8]) -> Result<()> {
+    let written = decompress_into_partial(src, compression, dst)?;
+    if written != dst.len() {
+        return Err(OxiGeoError::Compression(CompressionError::InvalidData {
+            message: format!(
+                "decompressed length {} does not match destination length {}",
+                written,
+                dst.len()
+            ),
+        }));
+    }
+    Ok(())
+}
+
+/// Decompresses `src` into the front of `dst`, returning how many bytes were
+/// written.
+///
+/// Identical to [`decompress_into`] except that a payload *shorter* than `dst` is
+/// accepted and reported rather than rejected; the untouched tail of `dst` keeps
+/// whatever the caller put there. A payload *longer* than `dst` is always an
+/// error — silently discarding decoded pixels would corrupt the raster.
+///
+/// # Errors
+/// Returns [`CompressionError::InvalidData`] if the decoded payload does not fit
+/// in `dst`, and propagates any codec error.
+pub fn decompress_into_partial(
+    src: &[u8],
+    compression: Compression,
+    dst: &mut [u8],
+) -> Result<usize> {
+    match compression {
+        // Uncompressed: a straight copy into the caller's buffer. Previously this
+        // went through `data.to_vec()`, i.e. a full-size allocation plus copy that
+        // the caller then had to copy out of again.
+        Compression::None => {
+            if src.len() > dst.len() {
+                return Err(too_large(src.len(), dst.len()));
+            }
+            dst[..src.len()].copy_from_slice(src);
+            Ok(src.len())
+        }
+
+        // PackBits expands run-length codes directly into `dst`.
+        Compression::Packbits => decompress_packbits_into(src, dst),
+
+        // DEFLATE inflates directly into `dst` (oxiarc-deflate 0.4.0+).
+        #[cfg(feature = "deflate")]
+        Compression::Deflate | Compression::AdobeDeflate => decompress_deflate_into(src, dst),
+
+        // Every other codec returns an owned buffer from its decoder; copy it in.
+        _ => {
+            let decoded = decompress(src, compression, dst.len())?;
+            if decoded.len() > dst.len() {
+                return Err(too_large(decoded.len(), dst.len()));
+            }
+            dst[..decoded.len()].copy_from_slice(&decoded);
+            Ok(decoded.len())
+        }
+    }
+}
+
+/// Builds the "decoded payload does not fit" error shared by the decode-into paths.
+fn too_large(decoded: usize, capacity: usize) -> OxiGeoError {
+    OxiGeoError::Compression(CompressionError::InvalidData {
+        message: format!("decompressed length {decoded} exceeds destination length {capacity}"),
+    })
 }
 
 /// Compresses data using the specified compression scheme
@@ -87,295 +205,68 @@ pub fn compress(data: &[u8], compression: Compression) -> Result<Vec<u8>> {
     }
 }
 
-/// Reads a `bytes_per_sample`-wide unsigned sample from `bytes` using `byte_order`.
+/// DEFLATE (zlib-wrapped) decompression.
 ///
-/// Falls back to a single-byte read for widths other than 1/2/4/8 (never panics).
-fn read_sample(bytes: &[u8], bytes_per_sample: usize, byte_order: ByteOrderType) -> u64 {
-    match bytes_per_sample {
-        2 if bytes.len() >= 2 => u64::from(byte_order.read_u16(bytes)),
-        4 if bytes.len() >= 4 => u64::from(byte_order.read_u32(bytes)),
-        8 if bytes.len() >= 8 => byte_order.read_u64(bytes),
-        _ => bytes.first().copied().map_or(0, u64::from),
-    }
-}
-
-/// Writes `value` back as a `bytes_per_sample`-wide unsigned sample using `byte_order`.
+/// # The size hint
 ///
-/// Falls back to a single-byte write for widths other than 1/2/4/8 (never panics).
-fn write_sample(bytes: &mut [u8], bytes_per_sample: usize, byte_order: ByteOrderType, value: u64) {
-    match bytes_per_sample {
-        2 if bytes.len() >= 2 => byte_order.write_u16(bytes, value as u16),
-        4 if bytes.len() >= 4 => byte_order.write_u32(bytes, value as u32),
-        8 if bytes.len() >= 8 => byte_order.write_u64(bytes, value),
-        _ => {
-            if let Some(b) = bytes.first_mut() {
-                *b = value as u8;
-            }
-        }
-    }
-}
-
-/// Reconstructs original sample values from stored horizontal deltas (decode direction).
+/// `expected_size` pre-sizes the output buffer so the decoder writes into one
+/// allocation instead of growing a `Vec` by repeated doubling (a 1 MiB tile cost
+/// five reallocations and five full copies of the bytes decoded so far). The hint
+/// comes from IFD tags, i.e. from untrusted input, so it is clamped by
+/// [`clamped_hint`] first.
 ///
-/// Per the TIFF 6.0 spec, horizontal differencing operates on whole samples in the
-/// file's declared byte order, not on individual bytes: for samples wider than 8 bits
-/// this requires carry-propagating addition across the low/high bytes of each sample,
-/// not independent per-byte wraparound (which silently drops carries and corrupts data).
-fn undifference_row(
-    row: &mut [u8],
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    byte_order: ByteOrderType,
-) {
-    if bytes_per_sample == 0 || samples_per_pixel == 0 {
-        return;
-    }
-    let sample_count = row.len() / bytes_per_sample;
-    for j in samples_per_pixel..sample_count {
-        let cur_off = j * bytes_per_sample;
-        let prev_off = (j - samples_per_pixel) * bytes_per_sample;
-        let prev = read_sample(&row[prev_off..], bytes_per_sample, byte_order);
-        let delta = read_sample(&row[cur_off..], bytes_per_sample, byte_order);
-        write_sample(
-            &mut row[cur_off..cur_off + bytes_per_sample],
-            bytes_per_sample,
-            byte_order,
-            prev.wrapping_add(delta),
-        );
-    }
-}
-
-/// Encodes sample deltas from original values (encode direction).
+/// The hint is an optimisation, never a constraint: if the payload turns out to
+/// decode to more than the hint — a wrong tag, a clamped hint, or a caller that
+/// passed `0` — this falls back to the growable path and returns exactly what that
+/// path would have returned, including its errors. That fallback is also what
+/// handles the one input `zlib_decompress_into` cannot take, a zlib stream with a
+/// preset dictionary (never emitted by a TIFF encoder).
 ///
-/// Processes samples from right to left so that the "previous pixel" value read for
-/// each delta is always the still-original (undifferenced) sample. See
-/// [`undifference_row`] for why this must operate on whole samples, not bytes.
-fn difference_row(
-    row: &mut [u8],
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    byte_order: ByteOrderType,
-) {
-    if bytes_per_sample == 0 || samples_per_pixel == 0 {
-        return;
-    }
-    let sample_count = row.len() / bytes_per_sample;
-    for j in (samples_per_pixel..sample_count).rev() {
-        let cur_off = j * bytes_per_sample;
-        let prev_off = (j - samples_per_pixel) * bytes_per_sample;
-        let cur = read_sample(&row[cur_off..], bytes_per_sample, byte_order);
-        let prev = read_sample(&row[prev_off..], bytes_per_sample, byte_order);
-        write_sample(
-            &mut row[cur_off..cur_off + bytes_per_sample],
-            bytes_per_sample,
-            byte_order,
-            cur.wrapping_sub(prev),
-        );
-    }
-}
-
-/// Reconstructs one scanline that was encoded with the TIFF 6.0 floating-point
-/// predictor (Predictor tag = 3).
-///
-/// The on-disk layout produced by the floating-point predictor is, per scanline:
-/// 1. a *byte-plane transpose* — the most-significant byte of every sample first
-///    (grouped across the whole row), then the next byte plane, and so on down to
-///    the least-significant byte plane; and
-/// 2. a *byte-wise horizontal delta* applied to that transposed stream with a
-///    stride equal to `samples_per_pixel` (matching libtiff's `fpAcc`/`fpDiff`).
-///
-/// Decoding therefore first undoes the byte-wise delta, then undoes the transpose,
-/// reassembling each sample in the file's declared `byte_order` so that downstream
-/// sample readers interpret the bytes correctly. The plane order on disk is always
-/// most-significant-byte-first regardless of `byte_order`; only the reassembly step
-/// depends on the byte order.
-fn undo_float_predictor_row(
-    row: &mut [u8],
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    byte_order: ByteOrderType,
-) -> Result<()> {
-    let cc = row.len();
-    if bytes_per_sample == 0 || cc == 0 {
-        return Ok(());
-    }
-    if !cc.is_multiple_of(bytes_per_sample) {
-        return Err(OxiGeoError::Compression(
-            CompressionError::DecompressionFailed {
-                message: format!(
-                    "Floating-point predictor: scanline length {cc} is not a multiple of \
-                     sample size {bytes_per_sample}"
-                ),
-            },
-        ));
-    }
-    let sample_count = cc / bytes_per_sample;
-    let stride = samples_per_pixel.max(1);
-
-    // Step 1: undo the byte-wise horizontal delta (running sum, stride = spp).
-    for i in stride..cc {
-        row[i] = row[i].wrapping_add(row[i - stride]);
-    }
-
-    // Step 2: undo the byte-plane transpose, reassembling samples in `byte_order`.
-    let planes = row.to_vec();
-    for sample in 0..sample_count {
-        for byte in 0..bytes_per_sample {
-            // Plane 0 holds the most-significant byte of every sample.
-            let plane = match byte_order {
-                ByteOrderType::BigEndian => byte,
-                ByteOrderType::LittleEndian => bytes_per_sample - byte - 1,
-            };
-            row[bytes_per_sample * sample + byte] = planes[plane * sample_count + sample];
-        }
-    }
-    Ok(())
-}
-
-/// Encodes one scanline with the TIFF 6.0 floating-point predictor (Predictor
-/// tag = 3). This is the exact inverse of [`undo_float_predictor_row`]: it first
-/// performs the byte-plane transpose (most-significant byte plane first) and then
-/// applies the byte-wise horizontal delta with stride `samples_per_pixel`.
-fn apply_float_predictor_row(
-    row: &mut [u8],
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    byte_order: ByteOrderType,
-) -> Result<()> {
-    let cc = row.len();
-    if bytes_per_sample == 0 || cc == 0 {
-        return Ok(());
-    }
-    if !cc.is_multiple_of(bytes_per_sample) {
-        return Err(OxiGeoError::Compression(
-            CompressionError::CompressionFailed {
-                message: format!(
-                    "Floating-point predictor: scanline length {cc} is not a multiple of \
-                     sample size {bytes_per_sample}"
-                ),
-            },
-        ));
-    }
-    let sample_count = cc / bytes_per_sample;
-    let stride = samples_per_pixel.max(1);
-
-    // Step 1: byte-plane transpose (most-significant byte plane first).
-    let samples = row.to_vec();
-    for sample in 0..sample_count {
-        for byte in 0..bytes_per_sample {
-            let plane = match byte_order {
-                ByteOrderType::BigEndian => byte,
-                ByteOrderType::LittleEndian => bytes_per_sample - byte - 1,
-            };
-            row[plane * sample_count + sample] = samples[bytes_per_sample * sample + byte];
-        }
-    }
-
-    // Step 2: byte-wise horizontal delta (applied back-to-front, stride = spp).
-    for i in (stride..cc).rev() {
-        row[i] = row[i].wrapping_sub(row[i - stride]);
-    }
-    Ok(())
-}
-
-/// Iterates each scanline of `data` and applies `op` to it.
-fn for_each_row<F>(
-    data: &mut [u8],
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    width: usize,
-    mut op: F,
-) -> Result<()>
-where
-    F: FnMut(&mut [u8]) -> Result<()>,
-{
-    let row_bytes = width
-        .saturating_mul(samples_per_pixel)
-        .saturating_mul(bytes_per_sample);
-    if row_bytes == 0 {
-        return Ok(());
-    }
-    for row_start in (0..data.len()).step_by(row_bytes) {
-        let row_end = (row_start + row_bytes).min(data.len());
-        op(&mut data[row_start..row_end])?;
-    }
-    Ok(())
-}
-
-/// Applies a predictor in the reverse (decode) direction.
-///
-/// `byte_order` must match the byte order the samples are stored in on disk (i.e. the
-/// TIFF file's own byte order for reads), since multi-byte samples must be reassembled
-/// with carry-propagating arithmetic (horizontal differencing) or byte-plane transposed
-/// (floating-point) rather than treated as independent bytes.
-///
-/// # Errors
-/// Returns an error if the floating-point predictor is requested but a scanline length
-/// is not a whole multiple of the sample size (a corrupt/malformed tile), rather than
-/// silently returning undecoded data.
-pub fn apply_predictor_reverse(
-    data: &mut [u8],
-    predictor: Predictor,
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    width: usize,
-    byte_order: ByteOrderType,
-) -> Result<()> {
-    match predictor {
-        Predictor::None => Ok(()),
-        Predictor::HorizontalDifferencing => {
-            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
-                undifference_row(row, bytes_per_sample, samples_per_pixel, byte_order);
-                Ok(())
-            })
-        }
-        Predictor::FloatingPoint => {
-            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
-                undo_float_predictor_row(row, bytes_per_sample, samples_per_pixel, byte_order)
-            })
-        }
-    }
-}
-
-/// Applies a predictor in the forward (encode) direction, for compression.
-///
-/// `byte_order` selects the on-disk byte order the encoded samples will be written in;
-/// callers must pass the same byte order that the resulting file's header declares.
-///
-/// # Errors
-/// Returns an error if the floating-point predictor is requested but a scanline length
-/// is not a whole multiple of the sample size.
-pub fn apply_predictor_forward(
-    data: &mut [u8],
-    predictor: Predictor,
-    bytes_per_sample: usize,
-    samples_per_pixel: usize,
-    width: usize,
-    byte_order: ByteOrderType,
-) -> Result<()> {
-    match predictor {
-        Predictor::None => Ok(()),
-        Predictor::HorizontalDifferencing => {
-            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
-                difference_row(row, bytes_per_sample, samples_per_pixel, byte_order);
-                Ok(())
-            })
-        }
-        Predictor::FloatingPoint => {
-            for_each_row(data, bytes_per_sample, samples_per_pixel, width, |row| {
-                apply_float_predictor_row(row, bytes_per_sample, samples_per_pixel, byte_order)
-            })
-        }
-    }
-}
-
+/// Requires oxiarc-deflate 0.4.0 for [`oxiarc_deflate::zlib::zlib_decompress_into`];
+/// 0.3.6 had no decompress-into-slice or capacity-hint entry point at all.
 #[cfg(feature = "deflate")]
-fn decompress_deflate(data: &[u8], _expected_size: usize) -> Result<Vec<u8>> {
+fn decompress_deflate(data: &[u8], expected_size: usize) -> Result<Vec<u8>> {
+    let hint = clamped_hint(expected_size);
+    if hint > 0 {
+        let mut out = vec![0u8; hint];
+        if let Ok(written) = oxiarc_deflate::zlib::zlib_decompress_into(data, &mut out) {
+            out.truncate(written);
+            return Ok(out);
+        }
+    }
+
     oxiarc_deflate::zlib_decompress(data).map_err(|e| {
         OxiGeoError::Compression(CompressionError::DecompressionFailed {
             message: format!("DEFLATE decompression failed: {}", e),
         })
     })
+}
+
+/// DEFLATE decode straight into `dst`, with no intermediate `Vec` at all.
+///
+/// This is the whole-band read path: one caller-owned scratch buffer serves every
+/// tile of the band, so a 4000×4000 DEFLATE raster performs zero decode-side
+/// allocations rather than one growable `Vec` per tile.
+///
+/// Falls back to the owned-buffer path on any error so that failure modes — a
+/// corrupt stream, a payload larger than `dst`, a preset dictionary — stay exactly
+/// what [`decompress_into_partial`]'s generic arm produced before, error message
+/// included. `dst` may have been partially written when that happens; the caller
+/// is returning an error either way.
+#[cfg(feature = "deflate")]
+fn decompress_deflate_into(src: &[u8], dst: &mut [u8]) -> Result<usize> {
+    if let Ok(written) = oxiarc_deflate::zlib::zlib_decompress_into(src, dst) {
+        return Ok(written);
+    }
+
+    // Hint `0` deliberately: the sized attempt is the one that just failed, so go
+    // straight to the growable path rather than repeating it.
+    let decoded = decompress_deflate(src, 0)?;
+    if decoded.len() > dst.len() {
+        return Err(too_large(decoded.len(), dst.len()));
+    }
+    dst[..decoded.len()].copy_from_slice(&decoded);
+    Ok(decoded.len())
 }
 
 #[cfg(feature = "deflate")]
@@ -409,6 +300,12 @@ fn compress_lzw(data: &[u8]) -> Result<Vec<u8>> {
     })
 }
 
+/// ZSTD decompression.
+///
+/// `_expected_size` cannot be honoured: `oxiarc_zstd::decode_all` owns and sizes
+/// its own output buffer, and oxiarc-zstd 0.4.0 exposes no capacity-hint or
+/// decompress-into-slice entry point to pass the hint to (unlike
+/// [`decompress_deflate`], which gained one in oxiarc-deflate 0.4.0).
 #[cfg(feature = "zstd")]
 fn decompress_zstd(data: &[u8], _expected_size: usize) -> Result<Vec<u8>> {
     oxiarc_zstd::decode_all(data).map_err(|e| {
@@ -683,8 +580,13 @@ fn cmyk_to_rgb(cmyk_data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// PackBits decompression (simple RLE)
+///
+/// `expected_size` is treated strictly as a *hint*: it sizes the output buffer
+/// (clamped by [`clamped_hint`], since it derives from untrusted IFD tags) and
+/// stops the expansion loop, but it is never trusted as the authoritative output
+/// length — a stream that ends early yields a shorter buffer, exactly as before.
 fn decompress_packbits(data: &[u8], expected_size: usize) -> Result<Vec<u8>> {
-    let mut output = Vec::with_capacity(expected_size);
+    let mut output = Vec::with_capacity(clamped_hint(expected_size));
     let mut i = 0;
 
     while i < data.len() && output.len() < expected_size {
@@ -717,6 +619,58 @@ fn decompress_packbits(data: &[u8], expected_size: usize) -> Result<Vec<u8>> {
     }
 
     Ok(output)
+}
+
+/// PackBits decompression straight into a caller-owned buffer.
+///
+/// Mirrors [`decompress_packbits`] byte for byte (including its "unexpected end
+/// of data" errors) but writes into `dst` instead of a fresh `Vec`, and refuses
+/// to expand past the end of `dst` rather than growing without bound.
+///
+/// Returns the number of bytes written, which may be less than `dst.len()` if the
+/// stream ends early.
+fn decompress_packbits_into(data: &[u8], dst: &mut [u8]) -> Result<usize> {
+    let mut written = 0usize;
+    let mut i = 0;
+
+    while i < data.len() && written < dst.len() {
+        let n = data[i] as i8;
+        i += 1;
+
+        if n >= 0 {
+            // Literal run: copy next n+1 bytes
+            let count = (n as usize) + 1;
+            if i + count > data.len() {
+                return Err(OxiGeoError::Compression(CompressionError::InvalidData {
+                    message: "PackBits: unexpected end of data".to_string(),
+                }));
+            }
+            if written + count > dst.len() {
+                return Err(too_large(written + count, dst.len()));
+            }
+            dst[written..written + count].copy_from_slice(&data[i..i + count]);
+            written += count;
+            i += count;
+        } else if n > -128 {
+            // Repeat run: repeat next byte -n+1 times
+            if i >= data.len() {
+                return Err(OxiGeoError::Compression(CompressionError::InvalidData {
+                    message: "PackBits: unexpected end of data".to_string(),
+                }));
+            }
+            let count = ((-n) as usize) + 1;
+            let byte = data[i];
+            i += 1;
+            if written + count > dst.len() {
+                return Err(too_large(written + count, dst.len()));
+            }
+            dst[written..written + count].fill(byte);
+            written += count;
+        }
+        // n == -128: no-op
+    }
+
+    Ok(written)
 }
 
 /// PackBits compression (simple RLE)
@@ -776,362 +730,6 @@ mod tests {
         assert_eq!(&decompressed, original);
     }
 
-    #[test]
-    fn test_predictor() {
-        let original = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let mut data = original.clone();
-
-        // Apply forward then reverse should give original
-        apply_predictor_forward(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            1,
-            1,
-            8,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("forward predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            1,
-            1,
-            8,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse predictor");
-
-        assert_eq!(data, original);
-    }
-
-    #[test]
-    fn test_predictor_16bit_roundtrip() {
-        // Single-band, 16-bit samples, little-endian: a round-trip through
-        // forward+reverse must reproduce the original regardless of carries.
-        let original: Vec<u8> = [100i16, 300, -50, 20000, -20000, 7]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            2,
-            1,
-            original.len() / 2,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("forward predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            2,
-            1,
-            original.len() / 2,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse predictor");
-
-        assert_eq!(data, original);
-    }
-
-    #[test]
-    fn test_predictor_reverse_16bit_carry() {
-        // Regression test for the byte-wise-vs-sample-wise bug: a delta that
-        // carries from the low byte into the high byte of a 16-bit sample must
-        // be reconstructed correctly, not silently dropped.
-        //
-        // sample0 = 100 (0x0064), delta1 = 200 (0x00C8) => sample1 must be 300.
-        let mut row = Vec::new();
-        row.extend_from_slice(&100u16.to_le_bytes());
-        row.extend_from_slice(&200u16.to_le_bytes());
-
-        apply_predictor_reverse(
-            &mut row,
-            Predictor::HorizontalDifferencing,
-            2,
-            1,
-            2,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse predictor");
-
-        let sample0 = u16::from_le_bytes([row[0], row[1]]);
-        let sample1 = u16::from_le_bytes([row[2], row[3]]);
-        assert_eq!(sample0, 100);
-        assert_eq!(sample1, 300);
-    }
-
-    #[test]
-    fn test_predictor_32bit_roundtrip() {
-        let original: Vec<u8> = [10i32, 100_000, -5, 2_000_000_000]
-            .iter()
-            .flat_map(|v| v.to_be_bytes())
-            .collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            4,
-            1,
-            original.len() / 4,
-            ByteOrderType::BigEndian,
-        )
-        .expect("forward predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            4,
-            1,
-            original.len() / 4,
-            ByteOrderType::BigEndian,
-        )
-        .expect("reverse predictor");
-
-        assert_eq!(data, original);
-    }
-
-    #[test]
-    fn test_predictor_16bit_multiband_roundtrip() {
-        // 2 interleaved bands (samples_per_pixel = 2), so the predictor stride
-        // must skip over the other band's sample, not the adjacent byte.
-        let original: Vec<u8> = [1i16, 2, 3, 4, 5, 6, 7, 8]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            2,
-            2,
-            original.len() / 4,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("forward predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::HorizontalDifferencing,
-            2,
-            2,
-            original.len() / 4,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse predictor");
-
-        assert_eq!(data, original);
-    }
-
-    /// Round-trips a single-band Float32 scanline through the TIFF 6.0
-    /// floating-point predictor (Predictor=3). Forward then reverse must
-    /// reproduce the original bytes bit-for-bit.
-    #[test]
-    fn test_float_predictor_f32_roundtrip_le() {
-        let values: [f32; 6] = [1.0, 1.5, -2.25, 3.125, 1000.0, -0.0001];
-        let original: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            1,
-            values.len(),
-            ByteOrderType::LittleEndian,
-        )
-        .expect("forward float predictor");
-        // Encoded form must differ from the raw bytes (the predictor did work).
-        assert_ne!(data, original, "float predictor must transform the data");
-
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            1,
-            values.len(),
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse float predictor");
-
-        assert_eq!(data, original);
-        // Values must decode exactly.
-        let decoded: Vec<f32> = data
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        assert_eq!(decoded, values);
-    }
-
-    /// Round-trips a single-band Float64 scanline through the floating-point
-    /// predictor in big-endian byte order.
-    #[test]
-    fn test_float_predictor_f64_roundtrip_be() {
-        let values: [f64; 5] = [1.0, -1.0, 123456.789, f64::MIN_POSITIVE, -42.0];
-        let original: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::FloatingPoint,
-            8,
-            1,
-            values.len(),
-            ByteOrderType::BigEndian,
-        )
-        .expect("forward float predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::FloatingPoint,
-            8,
-            1,
-            values.len(),
-            ByteOrderType::BigEndian,
-        )
-        .expect("reverse float predictor");
-
-        assert_eq!(data, original);
-    }
-
-    /// Round-trips a 3-band (RGB) interleaved Float32 image through the
-    /// floating-point predictor: the byte-wise delta stride must equal
-    /// `samples_per_pixel`, so per-band structure is preserved.
-    #[test]
-    fn test_float_predictor_f32_multiband_roundtrip() {
-        // 2 pixels x 3 bands (interleaved) x 1 row.
-        let values: [f32; 6] = [10.0, 20.0, 30.0, 11.0, 21.0, 31.0];
-        let original: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            3,
-            2, // width = 2 pixels
-            ByteOrderType::LittleEndian,
-        )
-        .expect("forward float predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            3,
-            2,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse float predictor");
-
-        assert_eq!(data, original);
-    }
-
-    /// Round-trips multiple scanlines (a full tile) so the per-row iteration
-    /// in `for_each_row` is exercised for the floating-point predictor.
-    #[test]
-    fn test_float_predictor_multirow_roundtrip() {
-        // 4 columns x 3 rows, single band Float32.
-        let width = 4usize;
-        let rows = 3usize;
-        let values: Vec<f32> = (0..(width * rows)).map(|i| i as f32 * 0.5 - 3.0).collect();
-        let original: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let mut data = original.clone();
-
-        apply_predictor_forward(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            1,
-            width,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("forward float predictor");
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            1,
-            width,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse float predictor");
-
-        assert_eq!(data, original);
-    }
-
-    /// Decodes a hand-constructed Predictor=3 Float32 scanline built exactly as
-    /// libtiff's `fpDiff` would (byte-plane transpose, MSB plane first, then a
-    /// byte-wise delta with stride = samples_per_pixel) and asserts the recovered
-    /// floats are bit-exact. This locks the on-disk format so externally produced
-    /// (GDAL/libtiff) tiles decode correctly, not just our own round-trips.
-    #[test]
-    fn test_float_predictor_decodes_libtiff_layout() {
-        // Two little-endian Float32 samples: 1.0 and 2.0.
-        // 1.0f32 LE bytes: 00 00 80 3F ; 2.0f32 LE bytes: 00 00 00 40.
-        let s0 = 1.0f32.to_le_bytes(); // [0x00,0x00,0x80,0x3F]
-        let s1 = 2.0f32.to_le_bytes(); // [0x00,0x00,0x00,0x40]
-
-        // Byte-plane transpose, MSB plane first (plane 0 = byte index 3 of each LE sample):
-        //   plane0 = [s0[3], s1[3]] = [0x3F, 0x40]
-        //   plane1 = [s0[2], s1[2]] = [0x80, 0x00]
-        //   plane2 = [s0[1], s1[1]] = [0x00, 0x00]
-        //   plane3 = [s0[0], s1[0]] = [0x00, 0x00]
-        let transposed = [
-            s0[3], s1[3], // plane0
-            s0[2], s1[2], // plane1
-            s0[1], s1[1], // plane2
-            s0[0], s1[0], // plane3
-        ];
-        // Apply byte-wise forward delta (stride = 1), back-to-front, to get the
-        // on-disk stream.
-        let mut on_disk = transposed;
-        for i in (1..on_disk.len()).rev() {
-            on_disk[i] = on_disk[i].wrapping_sub(on_disk[i - 1]);
-        }
-
-        // Decode through the public reverse predictor.
-        let mut data = on_disk.to_vec();
-        apply_predictor_reverse(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            1,
-            2,
-            ByteOrderType::LittleEndian,
-        )
-        .expect("reverse float predictor");
-
-        let decoded: Vec<f32> = data
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        assert_eq!(decoded, vec![1.0f32, 2.0f32]);
-    }
-
-    /// A malformed floating-point tile (scanline length not a multiple of the
-    /// sample size) must return an explicit error, never silently pass through
-    /// undecoded bytes.
-    #[test]
-    fn test_float_predictor_rejects_ragged_row() {
-        // width=2, spp=1, bps=4 => expected row length 8, but supply 6 bytes.
-        let mut data = vec![0u8; 6];
-        let err = apply_predictor_reverse(
-            &mut data,
-            Predictor::FloatingPoint,
-            4,
-            1,
-            2,
-            ByteOrderType::LittleEndian,
-        )
-        .expect_err("ragged float scanline must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("Floating-point predictor"),
-            "unexpected error message: {msg}"
-        );
-    }
-
     #[cfg(feature = "deflate")]
     #[test]
     fn test_deflate_roundtrip() {
@@ -1142,6 +740,104 @@ mod tests {
         assert_eq!(&decompressed, original);
     }
 
+    /// A payload comfortably larger than the decoder's 32 KiB history window and
+    /// its old 64 KiB starting capacity, so the sized and growable paths differ in
+    /// how many times they (would) reallocate — mixing incompressible noise with
+    /// long runs to produce both literals and far back-references.
+    #[cfg(feature = "deflate")]
+    fn large_deflate_payload() -> Vec<u8> {
+        let mut data = Vec::with_capacity(300 * 1024);
+        let mut state = 0x1234_5678u32;
+        while data.len() < 300 * 1024 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            data.extend_from_slice(&state.to_le_bytes());
+            data.extend(std::iter::repeat_n((state >> 24) as u8, 64));
+        }
+        data
+    }
+
+    /// cool-japan/oxigeo#14: the decoded-size hint added on top of
+    /// oxiarc-deflate 0.4.0 is an optimisation, never a constraint. A hint that is
+    /// exact, absent, too small, or too large must all yield identical bytes.
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn test_issue_14_deflate_size_hint_never_changes_output() {
+        let original = large_deflate_payload();
+        let compressed = compress_deflate(&original).expect("deflate encode");
+
+        for hint in [
+            original.len(),     // exact: takes the sized fast path
+            0,                  // absent: goes straight to the growable path
+            1,                  // far too small: fast path fails, falls back
+            original.len() - 1, // off by one: fast path fails, falls back
+            original.len() + 1, // slightly large: fast path succeeds, truncates
+            original.len() * 4, // very large: fast path succeeds, truncates
+            usize::MAX,         // hostile: clamped, then falls back
+        ] {
+            let decoded = decompress_deflate(&compressed, hint)
+                .unwrap_or_else(|e| panic!("hint {hint} must decode: {e}"));
+            assert_eq!(decoded, original, "hint {hint} changed the decoded bytes");
+        }
+    }
+
+    /// cool-japan/oxigeo#14: DEFLATE now inflates straight into the caller's
+    /// buffer. A payload shorter than `dst` must be reported, not rejected, and
+    /// must leave the tail of `dst` untouched (the truncated-final-strip case).
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn test_issue_14_deflate_into_partial_leaves_tail_intact() {
+        let original = large_deflate_payload();
+        let compressed = compress_deflate(&original).expect("deflate encode");
+
+        let mut dst = vec![0xAAu8; original.len() + 128];
+        let written = decompress_into_partial(&compressed, Compression::Deflate, &mut dst)
+            .expect("short payload must be accepted");
+
+        assert_eq!(written, original.len());
+        assert_eq!(&dst[..written], &original[..]);
+        assert!(
+            dst[written..].iter().all(|&b| b == 0xAA),
+            "decode must not disturb the tail of the destination"
+        );
+    }
+
+    /// cool-japan/oxigeo#14: a payload larger than `dst` must stay an error on the
+    /// decode-into path — silently dropping decoded pixels would corrupt the
+    /// raster. The inflate-into fast path reports this itself; this pins that it
+    /// still surfaces as an error rather than a truncated success.
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn test_issue_14_deflate_into_rejects_oversized_payload() {
+        let original = large_deflate_payload();
+        let compressed = compress_deflate(&original).expect("deflate encode");
+
+        let mut dst = vec![0u8; original.len() / 2];
+        decompress_into_partial(&compressed, Compression::Deflate, &mut dst)
+            .expect_err("payload larger than dst must fail");
+    }
+
+    /// cool-japan/oxigeo#14: corrupt input must still fail, and fail the same way,
+    /// through the inflate-into path as through the owned-buffer path.
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn test_issue_14_deflate_into_rejects_corrupt_stream() {
+        let original = large_deflate_payload();
+        let mut compressed = compress_deflate(&original).expect("deflate encode");
+        // Corrupt the middle of the stream, leaving the zlib header intact so the
+        // failure comes from the inflate body rather than header validation.
+        let mid = compressed.len() / 2;
+        compressed[mid] ^= 0xFF;
+
+        let mut dst = vec![0u8; original.len()];
+        let into_err = decompress_into_partial(&compressed, Compression::Deflate, &mut dst);
+        let owned_err = decompress_deflate(&compressed, 0);
+        assert_eq!(
+            into_err.is_err(),
+            owned_err.is_err(),
+            "decode-into and owned paths must agree on whether a corrupt stream fails"
+        );
+    }
+
     #[cfg(feature = "zstd")]
     #[test]
     fn test_zstd_roundtrip() {
@@ -1150,6 +846,203 @@ mod tests {
         let decompressed =
             decompress_zstd(&compressed, original.len()).expect("decompression should work");
         assert_eq!(&decompressed, original);
+    }
+
+    /// Payload used by the `decompress_into` equivalence tests: long enough to
+    /// exercise real codec paths (literals, runs, back-references), and with a
+    /// repetitive tail so PackBits produces both literal and repeat runs.
+    fn sample_payload() -> Vec<u8> {
+        let mut data: Vec<u8> = (0..=255u8).collect();
+        data.extend(std::iter::repeat_n(0x42u8, 300));
+        data.extend((0..=255u8).rev());
+        data
+    }
+
+    /// cool-japan/oxigeo#14: for every supported `Compression` variant,
+    /// `decompress_into` must produce exactly what `decompress` produces.
+    #[test]
+    fn test_issue_14_decompress_into_matches_decompress() {
+        let original = sample_payload();
+
+        // (variant, compressed bytes) for every codec this build supports.
+        let mut cases: Vec<(Compression, Vec<u8>)> = vec![
+            (Compression::None, original.clone()),
+            (
+                Compression::Packbits,
+                compress(&original, Compression::Packbits).expect("packbits encode"),
+            ),
+        ];
+        #[cfg(feature = "deflate")]
+        {
+            let encoded = compress(&original, Compression::Deflate).expect("deflate encode");
+            cases.push((Compression::Deflate, encoded.clone()));
+            cases.push((Compression::AdobeDeflate, encoded));
+        }
+        #[cfg(feature = "lzw")]
+        cases.push((
+            Compression::Lzw,
+            compress(&original, Compression::Lzw).expect("lzw encode"),
+        ));
+        #[cfg(feature = "zstd")]
+        cases.push((
+            Compression::Zstd,
+            compress(&original, Compression::Zstd).expect("zstd encode"),
+        ));
+        #[cfg(feature = "webp")]
+        {
+            // WebP needs explicit dimensions: 16x16 RGB = 768 bytes.
+            let pixels: Vec<u8> = (0..768u32).map(|i| (i % 251) as u8).collect();
+            let encoded = compress_webp_with_params(&pixels, 16, 16, image_webp::ColorType::Rgb8)
+                .expect("webp encode");
+            cases.push((Compression::WebP, encoded));
+        }
+        #[cfg(feature = "jpeg")]
+        {
+            // JPEG is lossy, but `decompress_into` must still agree with
+            // `decompress` byte for byte on the same input.
+            let pixels: Vec<u8> = (0..64u32).map(|i| (i * 4) as u8).collect();
+            let encoded =
+                compress_jpeg_with_params(&pixels, 8, 8, jpeg_encoder::ColorType::Luma, 85)
+                    .expect("jpeg encode");
+            cases.push((Compression::Jpeg, encoded));
+        }
+        // LERC: a minimal constant-image blob (see `test_lerc_dispatch_decodes_constant_image`).
+        cases.push((Compression::Lerc, lerc_constant_blob()));
+
+        for (compression, compressed) in cases {
+            let expected = decompress(&compressed, compression, original.len())
+                .unwrap_or_else(|e| panic!("decompress failed for {compression:?}: {e}"));
+
+            let mut dst = vec![0xAAu8; expected.len()];
+            decompress_into(&compressed, compression, &mut dst)
+                .unwrap_or_else(|e| panic!("decompress_into failed for {compression:?}: {e}"));
+            assert_eq!(
+                dst, expected,
+                "decompress_into mismatch for {compression:?}"
+            );
+
+            // The partial variant must report the same length.
+            let mut dst = vec![0xAAu8; expected.len()];
+            let written = decompress_into_partial(&compressed, compression, &mut dst)
+                .unwrap_or_else(|e| panic!("partial failed for {compression:?}: {e}"));
+            assert_eq!(written, expected.len(), "written mismatch {compression:?}");
+            assert_eq!(dst, expected, "partial mismatch for {compression:?}");
+        }
+    }
+
+    /// cool-japan/oxigeo#14: an unknown compression method must fail through the
+    /// decode-into path exactly as it does through [`decompress`].
+    #[test]
+    fn test_issue_14_decompress_into_rejects_unknown_method() {
+        let mut dst = [0u8; 8];
+        let err = decompress_into(&[0u8; 4], Compression::Lzma, &mut dst)
+            .expect_err("unknown method must fail");
+        assert!(
+            format!("{err}").contains("Unknown compression method"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// cool-japan/oxigeo#14: `decompress_into` is strict about length — a payload
+    /// that is shorter or longer than `dst` is a typed error, while
+    /// `decompress_into_partial` accepts (and reports) a short payload.
+    #[test]
+    fn test_issue_14_decompress_into_length_mismatch() {
+        let payload = b"0123456789";
+
+        // Destination too large for the payload.
+        let mut dst = [0u8; 16];
+        let err = decompress_into(payload, Compression::None, &mut dst)
+            .expect_err("short payload must be rejected");
+        assert!(
+            format!("{err}").contains("does not match destination length"),
+            "unexpected error: {err}"
+        );
+        // ... but the partial variant accepts it and reports the true length.
+        let mut dst = [0u8; 16];
+        let written = decompress_into_partial(payload, Compression::None, &mut dst)
+            .expect("short payload is fine for the partial variant");
+        assert_eq!(written, payload.len());
+        assert_eq!(&dst[..written], payload);
+        assert!(dst[written..].iter().all(|&b| b == 0), "tail untouched");
+
+        // Destination too small for the payload.
+        let mut dst = [0u8; 4];
+        let err = decompress_into(payload, Compression::None, &mut dst)
+            .expect_err("oversized payload must be rejected");
+        assert!(
+            format!("{err}").contains("exceeds destination length"),
+            "unexpected error: {err}"
+        );
+        let mut dst = [0u8; 4];
+        let err = decompress_into_partial(payload, Compression::None, &mut dst)
+            .expect_err("oversized payload must be rejected by the partial variant too");
+        assert!(
+            format!("{err}").contains("exceeds destination length"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// cool-japan/oxigeo#14: the PackBits decode-into path must reproduce the
+    /// `Vec`-returning decoder exactly, including its truncated-stream error.
+    #[test]
+    fn test_issue_14_packbits_into_matches_vec_decoder() {
+        let original = sample_payload();
+        let compressed = compress_packbits(&original).expect("packbits encode");
+
+        let expected = decompress_packbits(&compressed, original.len()).expect("packbits decode");
+        assert_eq!(expected, original);
+
+        let mut dst = vec![0u8; original.len()];
+        let written = decompress_packbits_into(&compressed, &mut dst).expect("packbits into");
+        assert_eq!(written, expected.len());
+        assert_eq!(dst, expected);
+
+        // A literal run that claims more bytes than remain must error in both.
+        let truncated = [0x05u8, 1, 2];
+        let vec_err = decompress_packbits(&truncated, 6).expect_err("vec decoder must error");
+        let mut dst = [0u8; 6];
+        let into_err = decompress_packbits_into(&truncated, &mut dst).expect_err("into must error");
+        assert_eq!(format!("{vec_err}"), format!("{into_err}"));
+        assert!(format!("{into_err}").contains("PackBits: unexpected end of data"));
+    }
+
+    /// cool-japan/oxigeo#14: an untrusted decoded-size hint must not drive an
+    /// unbounded speculative allocation.
+    #[test]
+    fn test_issue_14_size_hint_is_clamped() {
+        assert_eq!(clamped_hint(0), 0);
+        assert_eq!(clamped_hint(1024), 1024);
+        assert_eq!(clamped_hint(MAX_SIZE_HINT_BYTES), MAX_SIZE_HINT_BYTES);
+        assert_eq!(clamped_hint(usize::MAX), MAX_SIZE_HINT_BYTES);
+
+        // A hostile hint must not abort the process; decoding still succeeds and
+        // the output length is decided by the data, never by the hint.
+        let compressed = compress_packbits(b"abc").expect("packbits encode");
+        let out = decompress_packbits(&compressed, usize::MAX).expect("hostile hint tolerated");
+        assert_eq!(out, b"abc");
+    }
+
+    /// Minimal checksum-free LERC2 v2 constant-image blob (2x2 Float, all valid,
+    /// `zMin == zMax`), shared by the LERC tests.
+    fn lerc_constant_blob() -> Vec<u8> {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(b"Lerc2 ");
+        blob.extend_from_slice(&2i32.to_le_bytes()); // version 2 (no checksum)
+        blob.extend_from_slice(&2i32.to_le_bytes()); // nRows
+        blob.extend_from_slice(&2i32.to_le_bytes()); // nCols
+        blob.extend_from_slice(&4i32.to_le_bytes()); // numValidPixel
+        blob.extend_from_slice(&8i32.to_le_bytes()); // microBlockSize
+        let blobsize_pos = blob.len();
+        blob.extend_from_slice(&0i32.to_le_bytes()); // blobSize placeholder
+        blob.extend_from_slice(&6i32.to_le_bytes()); // dt = Float
+        blob.extend_from_slice(&0.0f64.to_le_bytes()); // maxZError
+        blob.extend_from_slice(&7.0f64.to_le_bytes()); // zMin
+        blob.extend_from_slice(&7.0f64.to_le_bytes()); // zMax == zMin => const
+        blob.extend_from_slice(&0i32.to_le_bytes()); // numBytesMask = 0 (all valid)
+        let blob_size = blob.len() as i32;
+        blob[blobsize_pos..blobsize_pos + 4].copy_from_slice(&blob_size.to_le_bytes());
+        blob
     }
 
     #[cfg(feature = "jpeg")]
@@ -1387,8 +1280,13 @@ mod tests {
 
     /// Builds a minimal, checksum-free LERC2 v2 constant-image blob (2x2 Float,
     /// all valid, `zMin == zMax`) and verifies it decodes through the public
-    /// `decompress` dispatch for `Compression::Lerc` (TIFF tag 34887) into native
-    /// little-endian f32 sample bytes — not the `UnknownMethod` fall-through.
+    /// `decompress` dispatch for `Compression::Lerc` (TIFF tag 34887) into
+    /// **host**-order f32 sample bytes — not the `UnknownMethod` fall-through.
+    ///
+    /// Host order, not little-endian: the LERC decoder is excluded from the
+    /// byte-order normalisation (`crate::decoded_needs_native_swap`) on the
+    /// grounds that it already emits native samples, so that is what it must be
+    /// asserted to do.
     #[test]
     fn test_lerc_dispatch_decodes_constant_image() {
         let mut blob = Vec::new();
@@ -1416,7 +1314,7 @@ mod tests {
         assert_eq!(out.len(), 16);
         let decoded: Vec<f32> = out
             .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         assert_eq!(decoded, vec![7.0f32; 4]);
     }

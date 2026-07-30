@@ -206,6 +206,30 @@ impl ChunkedBuffer {
         inner.chunks.is_empty()
     }
 
+    /// Move the write cursor to `index`, but only while the buffer is drained.
+    ///
+    /// [`Self::push`] enforces a strictly sequential producer: a chunk is only
+    /// accepted when its index equals the internal write cursor. A *pull-based*
+    /// consumer such as [`crate::io::ChunkedReader`] serves a buffer miss with a
+    /// direct read that deliberately bypasses this buffer, which leaves the
+    /// write cursor lagging behind the stream and makes every later read-ahead
+    /// `push` fail with [`StreamingError::InvalidOperation`]. Re-basing while
+    /// the buffer holds nothing lets read-ahead resume at the consumer's real
+    /// position without weakening the ordering check for buffered chunks.
+    ///
+    /// Returns `true` when the cursor was moved, `false` when the buffer still
+    /// holds chunks (in which case re-basing would reorder them and is refused).
+    pub async fn rebase_if_empty(&self, index: usize) -> bool {
+        let mut inner = self.inner.write().await;
+        if !inner.chunks.is_empty() {
+            return false;
+        }
+        inner.next_write_index = index;
+        inner.next_read_index = index;
+        debug!("Buffer write cursor re-based to chunk {index}");
+        true
+    }
+
     /// Get the current buffer size in bytes.
     pub async fn size_bytes(&self) -> usize {
         let inner = self.inner.read().await;

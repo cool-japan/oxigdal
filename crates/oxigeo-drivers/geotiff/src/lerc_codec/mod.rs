@@ -500,22 +500,34 @@ impl LercCodec {
 // Wire into the GeoTIFF compression dispatch
 // ---------------------------------------------------------------------------
 
-/// Serializes one decoded value into `out` as little-endian bytes of `dt`.
+/// Serializes one decoded value into `out` as **host**-order bytes of `dt`.
+///
+/// The name is load-bearing: `crate::decoded_needs_native_swap` excludes
+/// `Compression::Lerc` from the byte-order normalisation precisely because this
+/// function is the one that puts LERC samples in host order, so it must actually
+/// do so. It used to write `to_le_bytes` unconditionally, which agrees with the
+/// host on every little-endian target — every target this crate is tested on —
+/// and silently byte-reversed every LERC sample on a big-endian one, with the
+/// swap that would have fixed it deliberately switched off.
+///
+/// This is about the *decoder's output*, not the wire format: a LERC blob is
+/// little-endian on disk by definition (see [`LercCodec::encode`]), whatever the
+/// enclosing TIFF's `II`/`MM` header says.
 fn serialize_native(out: &mut Vec<u8>, v: f64, dt: LercDataType) {
     match dt {
         LercDataType::Char => out.push((v as i8) as u8),
         LercDataType::Byte => out.push(v as u8),
-        LercDataType::Short => out.extend_from_slice(&(v as i16).to_le_bytes()),
-        LercDataType::UShort => out.extend_from_slice(&(v as u16).to_le_bytes()),
-        LercDataType::Int => out.extend_from_slice(&(v as i32).to_le_bytes()),
-        LercDataType::UInt => out.extend_from_slice(&(v as u32).to_le_bytes()),
-        LercDataType::Float => out.extend_from_slice(&(v as f32).to_le_bytes()),
-        LercDataType::Double => out.extend_from_slice(&v.to_le_bytes()),
+        LercDataType::Short => out.extend_from_slice(&(v as i16).to_ne_bytes()),
+        LercDataType::UShort => out.extend_from_slice(&(v as u16).to_ne_bytes()),
+        LercDataType::Int => out.extend_from_slice(&(v as i32).to_ne_bytes()),
+        LercDataType::UInt => out.extend_from_slice(&(v as u32).to_ne_bytes()),
+        LercDataType::Float => out.extend_from_slice(&(v as f32).to_ne_bytes()),
+        LercDataType::Double => out.extend_from_slice(&v.to_ne_bytes()),
     }
 }
 
-/// Decode a LERC-compressed TIFF tile/strip into native little-endian sample
-/// bytes matching the blob's declared LERC data type.
+/// Decode a LERC-compressed TIFF tile/strip into **host**-order sample bytes
+/// matching the blob's declared LERC data type.
 ///
 /// The returned buffer holds `cols * rows * bands` samples of
 /// [`LercDataType::byte_size`] bytes each, in row-major, band-interleaved order.
@@ -538,7 +550,10 @@ pub fn decompress_lerc(data: &[u8], _expected_size: usize) -> Result<Vec<u8>> {
 /// # Errors
 /// Returns an error on dimension mismatch.
 pub fn compress_lerc(data: &[u8], width: u32, height: u32, n_bands: u32) -> Result<Vec<u8>> {
-    // Treat incoming bytes as f32 pixels
+    // Treat incoming bytes as f32 pixels in the **host's** byte order, which is
+    // what every raster buffer in the workspace holds (see the crate-level
+    // *Byte order of decoded samples* section); the LERC blob this produces is
+    // little-endian on the wire regardless.
     if !data.len().is_multiple_of(4) {
         return Err(OxiGeoError::Compression(
             CompressionError::CompressionFailed {
@@ -552,7 +567,7 @@ pub fn compress_lerc(data: &[u8], width: u32, height: u32, n_bands: u32) -> Resu
 
     let values: Vec<f64> = data
         .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+        .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]) as f64)
         .collect();
 
     LercCodec::encode(&values, width, height, n_bands, &LercParams::default())

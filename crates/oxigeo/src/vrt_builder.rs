@@ -162,11 +162,12 @@ pub fn build_vrt(sources: &[&Path], output_path: &Path, options: VrtOptions) -> 
         width: Some(total_width),
         height: Some(total_height),
         band_count,
-        layer_count: 0,
         crs: source_metas.first().and_then(|m| m.crs.clone()),
         geotransform: Some(vrt_gt),
-        feature_count: None,
-        bounds: None,
+        // Every source is validated to share one pixel type by the caller, so
+        // the VRT inherits the first source's element type.
+        data_type: source_metas.first().and_then(|m| m.data_type),
+        ..DatasetInfo::default()
     };
 
     Ok(Dataset::from_info(output_str.to_string(), info))
@@ -191,6 +192,8 @@ struct SourceMeta {
     origin_x: f64,
     /// Geotransform origin Y (top-left corner).
     origin_y: f64,
+    /// Pixel element type parsed from the source header, when known.
+    data_type: Option<oxigeo_core::types::RasterDataType>,
     /// GDAL data type string (e.g. "Float32").
     data_type_str: String,
     /// CRS string (optional).
@@ -230,21 +233,20 @@ struct Bbox {
 
 /// Read lightweight raster metadata from a source file.
 fn read_source_meta(path: &Path) -> Result<SourceMeta> {
-    // Attempt IFD-level parsing for GeoTIFF; fall back to placeholders.
-    let info_opt = crate::open::extract_tiff_info(path);
-
-    match info_opt {
-        Some(info) => {
+    // Attempt header-level parsing for GeoTIFF; anything else is unsupported.
+    match crate::open::extract_tiff_info(path) {
+        Ok(info) => {
             let gt = info
                 .geotransform
                 .unwrap_or_else(|| GeoTransform::north_up(0.0, 0.0, 1.0, 1.0));
             let width = info.width.unwrap_or(1);
             let height = info.height.unwrap_or(1);
             let pixel_height = gt.pixel_height.abs();
-            // Parse the real pixel type (BitsPerSample / SampleFormat) rather
+            // Use the real pixel type (BitsPerSample / SampleFormat) rather
             // than assuming Float32 — UInt8/UInt16 imagery would otherwise be
             // misinterpreted as 4-byte floats by VRT readers.
-            let data_type_str = crate::open::extract_tiff_data_type(path)
+            let data_type_str = info
+                .data_type
                 .map(|dt| dt.name().to_string())
                 .unwrap_or_else(|| "Float32".to_string());
             Ok(SourceMeta {
@@ -255,14 +257,15 @@ fn read_source_meta(path: &Path) -> Result<SourceMeta> {
                 band_count: info.band_count.max(1),
                 origin_x: gt.origin_x,
                 origin_y: gt.origin_y,
+                data_type: info.data_type,
                 data_type_str,
                 crs: info.crs,
             })
         }
-        None => Err(OxiGeoError::InvalidParameter {
+        Err(e) => Err(OxiGeoError::InvalidParameter {
             parameter: "source",
             message: format!(
-                "cannot read raster metadata from '{}' — only GeoTIFF sources are supported",
+                "cannot read raster metadata from '{}' — only GeoTIFF sources are supported ({e})",
                 path.display()
             ),
         }),

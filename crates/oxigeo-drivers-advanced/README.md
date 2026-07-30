@@ -38,7 +38,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-drivers-advanced = "0.2.1"
+oxigeo-drivers-advanced = "0.2.2"
 ```
 
 ### JPEG2000

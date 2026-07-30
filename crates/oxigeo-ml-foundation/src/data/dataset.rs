@@ -237,37 +237,29 @@ impl GeoTiffDataset {
             ));
         }
 
-        // `GeoTiffReader::read_band` ignores its band argument and returns the
-        // full-resolution raster with every band pixel-interleaved (chunky
-        // layout): for pixel `p` the samples are laid out band-major within the
-        // pixel as `[b0, b1, ..., b_{K-1}]`. We read that single interleaved
-        // buffer once (level 0) and de-interleave it into one single-band
-        // [`RasterBuffer`] per band so that downstream patch extraction can
-        // address channels independently.
-        let interleaved = reader.read_band(0, 0)?;
-
+        // `GeoTiffReader::read_band(level, band)` returns exactly one
+        // de-interleaved band plane -- `width * height * bytes_per_sample`
+        // bytes, row-major, with the driver handling both chunky
+        // (`PlanarConfiguration = 1`) and planar (`= 2`) storage. So we ask for
+        // each band in turn and wrap it directly; de-interleaving here would
+        // re-slice an already-single-band plane and read the wrong pixels.
+        // See <https://github.com/cool-japan/oxigeo/issues/14>.
         let band_count = band_count as usize;
         let bytes_per_sample = data_type.size_bytes();
         let pixel_count = (width * height) as usize;
-        let expected_len = pixel_count * band_count * bytes_per_sample;
-        if interleaved.len() != expected_len {
-            return Err(Error::invalid_dimensions(
-                format!(
-                    "{} bytes ({}x{} x {} band(s) x {} byte(s))",
-                    expected_len, width, height, band_count, bytes_per_sample
-                ),
-                format!("{} bytes", interleaved.len()),
-            ));
-        }
+        let expected_len = pixel_count * bytes_per_sample;
 
-        let stride = band_count * bytes_per_sample;
         let mut bands = Vec::with_capacity(band_count);
         for band_idx in 0..band_count {
-            let mut band_bytes = Vec::with_capacity(pixel_count * bytes_per_sample);
-            let band_base = band_idx * bytes_per_sample;
-            for pixel in 0..pixel_count {
-                let src = pixel * stride + band_base;
-                band_bytes.extend_from_slice(&interleaved[src..src + bytes_per_sample]);
+            let band_bytes = reader.read_band(0, band_idx)?;
+            if band_bytes.len() != expected_len {
+                return Err(Error::invalid_dimensions(
+                    format!(
+                        "{} bytes ({}x{} x {} byte(s)) for band {}",
+                        expected_len, width, height, bytes_per_sample, band_idx
+                    ),
+                    format!("{} bytes", band_bytes.len()),
+                ));
             }
             let buffer = RasterBuffer::new(band_bytes, width, height, data_type, nodata)?;
             bands.push(buffer);
@@ -545,39 +537,92 @@ mod tests {
     use super::*;
     #[cfg(feature = "ml")]
     use std::env;
+
+    /// A fixture path that is unique per process and per call, and that removes
+    /// the file when it goes out of scope -- including on a panicking test,
+    /// where a trailing `remove_file` would be skipped.
     #[cfg(feature = "ml")]
-    use std::fs;
+    struct TempPath(PathBuf);
+
+    #[cfg(feature = "ml")]
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    #[cfg(feature = "ml")]
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    #[cfg(feature = "ml")]
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     /// Helper to create a test GeoTIFF file
     #[cfg(feature = "ml")]
-    fn create_test_geotiff(width: u32, height: u32, bands: u16) -> Result<PathBuf> {
+    fn create_test_geotiff(width: u32, height: u32, bands: u16) -> Result<TempPath> {
+        // Fill with the historical test pattern: a running `i % 256` over the
+        // pixel-interleaved byte stream.
+        let size = (width as usize) * (height as usize) * (bands as usize);
+        let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+        create_test_geotiff_with_data(width, height, bands, &data)
+    }
+
+    /// Helper to create a test GeoTIFF file from caller-supplied,
+    /// pixel-interleaved (`[b0,b1,..,b0,b1,..]`) UInt8 samples.
+    #[cfg(feature = "ml")]
+    fn create_test_geotiff_with_data(
+        width: u32,
+        height: u32,
+        bands: u16,
+        data: &[u8],
+    ) -> Result<TempPath> {
         use oxigeo_core::RasterDataType;
         use oxigeo_core::types::{GeoTransform, NoDataValue};
         use oxigeo_geotiff::{GeoTiffWriter, GeoTiffWriterOptions, WriterConfig};
 
-        // Create temp directory
-        let temp_dir = env::temp_dir().join("oxigeo_ml_test");
-        fs::create_dir_all(&temp_dir)?;
+        // Fixtures live directly in the temp directory: a shared subdirectory
+        // would outlive every run, since no single test can know when the last
+        // one has finished with it.
+        let temp_dir = env::temp_dir();
 
         // Generate unique filename
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| Error::InvalidState(format!("Failed to get timestamp: {}", e)))?
             .as_nanos();
+        // The leaf name embeds the process id and a monotonic counter on top of
+        // the timestamp, so no two test binaries -- nor two concurrent runs of
+        // this one -- can ever land on the same fixture file.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let filename = temp_dir.join(format!(
-            "test_{}x{}_b{}_t{}.tif",
-            width, height, bands, timestamp
+            "oxigeo_ml_test_{}_{}_{}x{}_b{}_t{}.tif",
+            std::process::id(),
+            seq,
+            width,
+            height,
+            bands,
+            timestamp
         ));
 
-        // Create test data
         let data_type = RasterDataType::UInt8;
         let size =
             (width as u64) * (height as u64) * (bands as u64) * (data_type.size_bytes() as u64);
-        let mut data = vec![0u8; size as usize];
-
-        // Fill with test pattern
-        for (i, item) in data.iter_mut().enumerate() {
-            *item = (i % 256) as u8;
+        if data.len() as u64 != size {
+            return Err(Error::invalid_dimensions(
+                format!("{} sample bytes", size),
+                format!("{} sample bytes", data.len()),
+            ));
         }
 
         // Setup geotransform
@@ -605,12 +650,23 @@ mod tests {
 
         let mut writer = GeoTiffWriter::create(&filename, config, options)?;
 
-        writer.write(&data)?;
+        writer.write(data)?;
 
         // Writer automatically closes when dropped
         drop(writer);
 
-        Ok(filename)
+        Ok(TempPath(filename))
+    }
+
+    /// Per-band, per-pixel value used by the issue-14 regression fixture.
+    ///
+    /// Each band occupies its own disjoint value range (band 0 -> `0..=16`,
+    /// band 1 -> `80..=96`, band 2 -> `160..=176`), so "band 0 repeated",
+    /// "bands swapped" and "interleaved garbage" are all individually
+    /// distinguishable from the correct answer.
+    #[cfg(feature = "ml")]
+    fn issue_14_band_value(band: usize, pixel: usize) -> u8 {
+        (band as u8) * 80 + (pixel % 17) as u8
     }
 
     #[test]
@@ -687,7 +743,7 @@ mod tests {
         // Create a test GeoTIFF file
         let test_file = create_test_geotiff(128, 128, 1).expect("Failed to create test file");
 
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (64, 64))
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], (64, 64))
             .expect("Failed to create dataset");
 
         let result = dataset.load_raster(&test_file);
@@ -698,7 +754,6 @@ mod tests {
         assert_eq!(buffer.height(), 128);
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
     }
 
     #[test]
@@ -709,7 +764,7 @@ mod tests {
         // buffer per band, each of full spatial size.
         let test_file = create_test_geotiff(32, 16, 3).expect("Failed to create test file");
 
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (8, 8))
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], (8, 8))
             .and_then(|d| d.with_channels(3))
             .expect("Failed to create dataset");
 
@@ -737,7 +792,111 @@ mod tests {
         assert_eq!((n0, n1, n2), (3.0, 4.0, 5.0));
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
+    }
+
+    /// Regression test for <https://github.com/cool-japan/oxigeo/issues/14>.
+    ///
+    /// `load_all_bands` used to issue a single `read_band(0, 0)`, assert the
+    /// result was `width * height * band_count * bytes_per_sample` bytes and
+    /// de-interleave it by hand. Once `read_band` started returning one
+    /// de-interleaved band plane (`width * height * bytes_per_sample`), that
+    /// length assertion failed for every multi-band file, so loading any
+    /// RGB/multispectral GeoTIFF errored out and ML training on multi-channel
+    /// data was dead. It must now read each band separately and hand back one
+    /// full-size buffer per band, holding that band's own samples.
+    #[test]
+    #[cfg(feature = "ml")]
+    fn test_issue_14_load_all_bands_multiband_returns_distinct_planes() {
+        let width = 12u32;
+        let height = 5u32;
+        let band_count = 3usize;
+        let pixel_count = (width as usize) * (height as usize);
+
+        // Pixel-interleaved source: [b0,b1,b2, b0,b1,b2, ...].
+        let mut interleaved = Vec::with_capacity(pixel_count * band_count);
+        for pixel in 0..pixel_count {
+            for band in 0..band_count {
+                interleaved.push(issue_14_band_value(band, pixel));
+            }
+        }
+
+        let test_file =
+            create_test_geotiff_with_data(width, height, band_count as u16, &interleaved)
+                .expect("Failed to create 3-band test file");
+
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], (4, 4))
+            .and_then(|d| d.with_channels(3))
+            .expect("Failed to create dataset");
+
+        let bands = dataset
+            .load_all_bands(&test_file)
+            .expect("load_all_bands must succeed for a multi-band GeoTIFF (issue #14)");
+
+        assert_eq!(
+            bands.len(),
+            band_count,
+            "expected one RasterBuffer per band: expected {}, got {}",
+            band_count,
+            bands.len()
+        );
+
+        for (band, buffer) in bands.iter().enumerate() {
+            assert_eq!(
+                buffer.width(),
+                width as u64,
+                "band {}: width expected {}, got {}",
+                band,
+                width,
+                buffer.width()
+            );
+            assert_eq!(
+                buffer.height(),
+                height as u64,
+                "band {}: height expected {}, got {}",
+                band,
+                height,
+                buffer.height()
+            );
+
+            for y in 0..height as u64 {
+                for x in 0..width as u64 {
+                    let pixel = (y as usize) * (width as usize) + (x as usize);
+                    let expected = f64::from(issue_14_band_value(band, pixel));
+                    let actual = buffer
+                        .get_pixel(x, y)
+                        .expect("get_pixel inside the raster extent");
+                    assert!(
+                        (actual - expected).abs() < f64::EPSILON,
+                        "band {} pixel ({}, {}): expected {}, got {}",
+                        band,
+                        x,
+                        y,
+                        expected,
+                        actual
+                    );
+                }
+            }
+        }
+
+        // Explicitly rule out the "every band is band 0" failure mode: each
+        // band lives in a disjoint value range, so pixel (0, 0) must differ.
+        for band in 1..band_count {
+            let first = bands[0]
+                .get_pixel(0, 0)
+                .expect("get_pixel inside the raster extent");
+            let other = bands[band]
+                .get_pixel(0, 0)
+                .expect("get_pixel inside the raster extent");
+            assert!(
+                (first - other).abs() > f64::EPSILON,
+                "band {} pixel (0, 0): expected a value distinct from band 0's {}, got {}",
+                band,
+                first,
+                other
+            );
+        }
+
+        // Cleanup
     }
 
     #[test]
@@ -746,7 +905,7 @@ mod tests {
         // Create a test GeoTIFF file
         let test_file = create_test_geotiff(64, 64, 1).expect("Failed to create test file");
 
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (32, 32))
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], (32, 32))
             .expect("Failed to create dataset");
 
         // First load - should read from disk
@@ -764,7 +923,6 @@ mod tests {
         assert_eq!(buffer1.height(), buffer2.height());
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
     }
 
     #[test]
@@ -774,7 +932,7 @@ mod tests {
         let test_file = create_test_geotiff(512, 512, 1).expect("Failed to create test file");
 
         let patch_size = (128, 128);
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], patch_size)
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], patch_size)
             .expect("Failed to create dataset");
 
         let buffer = dataset
@@ -787,7 +945,6 @@ mod tests {
         assert_eq!(patch_data.len(), patch_size.0 * patch_size.1);
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
     }
 
     #[test]
@@ -797,13 +954,11 @@ mod tests {
         // rather than fabricating all-zero targets.
         let test_file = create_test_geotiff(64, 64, 1).expect("Failed to create test file");
 
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], (16, 16))
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], (16, 16))
             .expect("Failed to create dataset");
 
         let result = dataset.get_batch(&[0]);
         assert!(result.is_err(), "get_batch without labels must error");
-
-        let _ = fs::remove_file(&test_file);
     }
 
     #[test]
@@ -813,9 +968,9 @@ mod tests {
         let input_file = create_test_geotiff(128, 128, 1).expect("Failed to create input file");
         let label_file = create_test_geotiff(128, 128, 1).expect("Failed to create label file");
 
-        let dataset = GeoTiffDataset::new(vec![input_file.clone()], (32, 32))
+        let dataset = GeoTiffDataset::new(vec![input_file.to_path_buf()], (32, 32))
             .and_then(|d| d.with_channels(1))
-            .and_then(|d| d.with_labels(vec![label_file.clone()]))
+            .and_then(|d| d.with_labels(vec![label_file.to_path_buf()]))
             .expect("Failed to create dataset");
 
         let (in1, tg1) = dataset.get_batch(&[5]).expect("first get_batch failed");
@@ -827,9 +982,6 @@ mod tests {
         // Different indices should (generally) draw different offsets.
         let (in_other, _) = dataset.get_batch(&[7]).expect("get_batch failed");
         assert_eq!(in_other.len(), in1.len());
-
-        let _ = fs::remove_file(&input_file);
-        let _ = fs::remove_file(&label_file);
     }
 
     #[test]
@@ -839,10 +991,10 @@ mod tests {
         let input_file = create_test_geotiff(64, 64, 3).expect("Failed to create input file");
         let label_file = create_test_geotiff(64, 64, 1).expect("Failed to create label file");
 
-        let dataset = GeoTiffDataset::new(vec![input_file.clone()], (16, 16))
+        let dataset = GeoTiffDataset::new(vec![input_file.to_path_buf()], (16, 16))
             .and_then(|d| d.with_channels(3))
             .and_then(|d| d.with_classes(1))
-            .and_then(|d| d.with_labels(vec![label_file.clone()]))
+            .and_then(|d| d.with_labels(vec![label_file.to_path_buf()]))
             .expect("Failed to create dataset");
 
         let (inputs, targets) = dataset.get_batch(&[0, 1]).expect("get_batch failed");
@@ -858,9 +1010,6 @@ mod tests {
             2 * 1 * patch_pixels,
             "targets must cover 1 class"
         );
-
-        let _ = fs::remove_file(&input_file);
-        let _ = fs::remove_file(&label_file);
     }
 
     #[test]
@@ -871,9 +1020,9 @@ mod tests {
         let input_file = create_test_geotiff(64, 64, 1).expect("Failed to create input file");
         let label_file = create_test_geotiff(64, 64, 1).expect("Failed to create label file");
 
-        let dataset = GeoTiffDataset::new(vec![input_file.clone()], (16, 16))
+        let dataset = GeoTiffDataset::new(vec![input_file.to_path_buf()], (16, 16))
             .and_then(|d| d.with_channels(4))
-            .and_then(|d| d.with_labels(vec![label_file.clone()]))
+            .and_then(|d| d.with_labels(vec![label_file.to_path_buf()]))
             .expect("Failed to create dataset");
 
         let result = dataset.get_batch(&[0]);
@@ -881,9 +1030,6 @@ mod tests {
             result.is_err(),
             "requesting 4 channels from a 1-band file must error"
         );
-
-        let _ = fs::remove_file(&input_file);
-        let _ = fs::remove_file(&label_file);
     }
 
     #[test]
@@ -894,7 +1040,7 @@ mod tests {
 
         // Try to extract a patch larger than the image
         let patch_size = (128, 128);
-        let dataset = GeoTiffDataset::new(vec![test_file.clone()], patch_size)
+        let dataset = GeoTiffDataset::new(vec![test_file.to_path_buf()], patch_size)
             .expect("Failed to create dataset");
 
         let buffer = dataset
@@ -906,6 +1052,5 @@ mod tests {
         assert!(patch.is_err());
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
     }
 }

@@ -11,12 +11,55 @@ use oxigeo_shapefile::{
     ShapefileFeature, ShapefileReader, ShapefileSchemaBuilder, ShapefileWriter,
 };
 use std::collections::HashMap;
-use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-test scratch shapefile *stem* inside the system temp dir (house policy:
+/// no hardcoded absolute paths).
+///
+/// A shapefile fixture is a *set* of sidecar files sharing one stem, so this
+/// guard owns the stem and, on drop, removes every sidecar that could have been
+/// produced for it.  The leaf name embeds the process id and a monotonic
+/// counter, so no two test binaries — nor two concurrent runs of this one — can
+/// ever land on the same stem.  A panicking test therefore leaks nothing.
+struct TempPath(std::path::PathBuf);
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "oxigeo_shapefile_integ_{}_{seq}_{name}",
+            std::process::id()
+        )))
+    }
+}
+
+impl std::ops::Deref for TempPath {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        for ext in ["shp", "shx", "dbf", "prj", "cpg", "sbn", "sbx", "qix"] {
+            let _ = std::fs::remove_file(self.0.with_extension(ext));
+        }
+    }
+}
 
 #[test]
 fn test_point_shapefile_round_trip() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_points");
+    let base_path = TempPath::new("test_points");
 
     // Create schema
     let schema = ShapefileSchemaBuilder::new()
@@ -83,17 +126,11 @@ fn test_point_shapefile_round_trip() {
             Some(&FieldValue::String("Point 0".to_string()))
         );
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
 }
 
 #[test]
 fn test_empty_feature_error() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_empty");
+    let base_path = TempPath::new("test_empty");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 50)
@@ -306,8 +343,7 @@ fn test_schema_builder() {
 
 #[test]
 fn test_missing_files() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("nonexistent_shapefile");
+    let base_path = TempPath::new("nonexistent_shapefile");
 
     let result = ShapefileReader::open(&base_path);
     assert!(result.is_err());
@@ -338,8 +374,7 @@ fn test_shape_content_length() {
 
 #[test]
 fn test_large_dataset() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_large");
+    let base_path = TempPath::new("test_large");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("ID", 10)
@@ -380,11 +415,6 @@ fn test_large_dataset() {
             .expect("Failed to read features from large dataset");
         assert_eq!(read_features.len(), 200);
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
 }
 
 // ---------------------------------------------------------------------------
@@ -393,8 +423,7 @@ fn test_large_dataset() {
 
 #[test]
 fn test_prj_roundtrip() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_prj_roundtrip");
+    let base_path = TempPath::new("test_prj_roundtrip");
 
     let wkt = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
 
@@ -428,18 +457,11 @@ fn test_prj_roundtrip() {
         );
         assert_eq!(reader.crs(), Some(wkt));
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
-    let _ = std::fs::remove_file(base_path.with_extension("prj"));
 }
 
 #[test]
 fn test_shapefile_without_prj_still_opens() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_no_prj");
+    let base_path = TempPath::new("test_no_prj");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 50)
@@ -470,11 +492,6 @@ fn test_shapefile_without_prj_still_opens() {
     // Reader must open fine and return None for crs()
     let reader = ShapefileReader::open(&base_path).expect("Shapefile should open without .prj");
     assert_eq!(reader.crs(), None, "Expected no CRS when .prj is absent");
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
 }
 
 // ---------------------------------------------------------------------------
@@ -483,8 +500,7 @@ fn test_shapefile_without_prj_still_opens() {
 
 #[test]
 fn test_cpg_encoding_read() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_cpg_encoding");
+    let base_path = TempPath::new("test_cpg_encoding");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("NAME", 50)
@@ -521,12 +537,6 @@ fn test_cpg_encoding_read() {
         Some("UTF-8"),
         "Expected encoding to be 'UTF-8'"
     );
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
-    let _ = std::fs::remove_file(&cpg_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -535,8 +545,7 @@ fn test_cpg_encoding_read() {
 
 #[test]
 fn test_spatial_filter_bbox() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_spatial_bbox");
+    let base_path = TempPath::new("test_spatial_bbox");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("ID", 10)
@@ -589,17 +598,11 @@ fn test_spatial_filter_bbox() {
             }
         }
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
 }
 
 #[test]
 fn test_spatial_filter_no_matches() {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join("test_spatial_no_match");
+    let base_path = TempPath::new("test_spatial_no_match");
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("ID", 10)
@@ -639,11 +642,6 @@ fn test_spatial_filter_no_matches() {
             "Expected empty result when query bbox doesn't intersect any feature"
         );
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(base_path.with_extension("shp"));
-    let _ = std::fs::remove_file(base_path.with_extension("dbf"));
-    let _ = std::fs::remove_file(base_path.with_extension("shx"));
 }
 
 // ---------------------------------------------------------------------------
@@ -652,9 +650,8 @@ fn test_spatial_filter_no_matches() {
 
 /// Helper: write N point features and return the base path.
 #[allow(clippy::expect_used)]
-fn write_n_point_features(name: &str, n: usize) -> std::path::PathBuf {
-    let temp_dir = env::temp_dir();
-    let base_path = temp_dir.join(name);
+fn write_n_point_features(name: &str, n: usize) -> TempPath {
+    let base_path = TempPath::new(name);
 
     let schema = ShapefileSchemaBuilder::new()
         .add_character_field("ID", 10)
@@ -683,12 +680,6 @@ fn write_n_point_features(name: &str, n: usize) -> std::path::PathBuf {
     base_path
 }
 
-fn cleanup_base(base: &std::path::Path) {
-    let _ = std::fs::remove_file(base.with_extension("shp"));
-    let _ = std::fs::remove_file(base.with_extension("dbf"));
-    let _ = std::fs::remove_file(base.with_extension("shx"));
-}
-
 /// iter_features() visits every feature exactly once (count == 10)
 #[test]
 fn test_iter_features_count() {
@@ -698,8 +689,6 @@ fn test_iter_features_count() {
     let count = reader.iter_features().expect("create iter").count();
 
     assert_eq!(count, 10, "expected 10 features from iter_features");
-
-    cleanup_base(&base);
 }
 
 /// Collecting via iter_features() yields the same data as read_features()
@@ -746,8 +735,6 @@ fn test_iter_features_same_as_read_features() {
             bulk_feat.record_number
         );
     }
-
-    cleanup_base(&base);
 }
 
 /// .take(3) reads exactly 3 records, not all 10
@@ -769,8 +756,6 @@ fn test_iter_features_early_termination() {
     assert_eq!(taken[0].record_number, 1);
     assert_eq!(taken[1].record_number, 2);
     assert_eq!(taken[2].record_number, 3);
-
-    cleanup_base(&base);
 }
 
 /// Write 500 features and iterate without collecting — verifies that no
@@ -803,6 +788,4 @@ fn test_iter_large_dataset_low_memory() {
         (coord_sum - expected_sum).abs() < 1e-6,
         "coordinate sum mismatch: got {coord_sum}, expected {expected_sum}"
     );
-
-    cleanup_base(&base);
 }

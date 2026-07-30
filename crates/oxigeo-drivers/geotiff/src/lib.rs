@@ -12,6 +12,8 @@
 //! - `zstd` - ZSTD compression
 //! - `jpeg` - JPEG compression (planned)
 //! - `webp` - WebP compression (pure Rust via `image-webp`; encoder is lossless VP8L only)
+//! - `parallel` - Decode a band/window's tiles across rayon workers (off by
+//!   default: this crate targets `wasm32-unknown-unknown`, which has no threads)
 //!
 //! # Example
 //!
@@ -29,6 +31,65 @@
 //! // Read a tile
 //! let tile_data = reader.read_tile(0, 0, 0)?;
 //! ```
+//!
+//! # Byte order of decoded samples
+//!
+//! **Every entry point that yields decoded pixel samples returns them in the
+//! *host's* byte order**, whatever the file's `II`/`MM` header says. This is the
+//! contract GDAL's `RasterIO` has always had, and it is what the rest of the
+//! workspace assumes: [`oxigeo_core::buffer::RasterBuffer`] carries no byte-order
+//! field and all of its accessors (`get_pixel`, `get_u16`…`get_f64`, `as_slice`)
+//! and [`oxigeo_core::buffer::convert_raw_into`] are native-endian. Before
+//! cool-japan/oxigeo#14 the driver handed back samples in the *file's* order, so
+//! every numeric value read from a big-endian (`MM`) GeoTIFF anywhere in the
+//! workspace was silently byte-reversed.
+//!
+//! ## Which APIs normalise
+//!
+//! Normalising (samples come back native-endian):
+//!
+//! * [`GeoTiffReader::read_band`], [`GeoTiffReader::read_band_into`],
+//!   [`GeoTiffReader::read_band_into_typed`]
+//! * [`GeoTiffReader::read_window`], [`GeoTiffReader::read_window_into`],
+//!   [`GeoTiffReader::read_window_into_typed`]
+//! * [`GeoTiffReader::read_tile`], [`GeoTiffReader::read_tile_buffer`],
+//!   [`GeoTiffReader::read_tile_band_buffer`]
+//! * [`CogReader::read_tile`], [`CogReader::read_tile_into`]
+//!
+//! **Not** normalising, by design:
+//!
+//! * [`CogReader::read_tile_raw`] — returns the block's *compressed* bytes
+//!   exactly as stored; there are no samples to normalise.
+//! * [`compression`] and [`compression::apply_predictor_reverse`] — the predictor
+//!   is defined on file-order samples (TIFF 6.0 §14 / TN3) and therefore runs
+//!   *before* normalisation. Callers driving the codec layer by hand own the
+//!   conversion.
+//! * The [`writer`] module, which takes native-order samples and emits them in
+//!   the byte order its options declare.
+//!
+//! ## Scope and limits
+//!
+//! Normalisation swaps samples of 2, 4 and 8 bytes. Sub-byte `BitsPerSample`
+//! (which the reader reports as `bytes_per_sample == 0`), 1-byte samples and any
+//! other width (e.g. a 24-bit `BitsPerSample`, which rounds to 3) are passed
+//! through untouched — for widths under two bytes there is nothing to swap, and
+//! for exotic widths there is no defined sample order to swap *to*. `Lerc`
+//! blocks are also passed through: this crate's LERC decoder emits native-order
+//! samples already (`lerc_codec::serialize_native`), so swapping them would
+//! corrupt data rather than fix it.
+//!
+//! ## Codec/predictor combinations that are refused
+//!
+//! A `Lerc` block carrying a `Predictor` tag is rejected outright rather than
+//! decoded (see `reject_undefined_predictor`): no encoder defines that
+//! combination — libtiff's LERC codec ignores tag 317 entirely and GDAL refuses
+//! `PREDICTOR` for LERC — so a decoder cannot know whether a predictor was ever
+//! applied. Reversing one anyway, which is what the driver used to do, corrupts
+//! every sample of the block with no error raised.
+//!
+//! A file whose byte order already matches the host — every real-world
+//! little-endian GeoTIFF on every target this crate supports — pays a single
+//! predictable branch per decoded block and no per-sample work at all.
 
 #![warn(clippy::all)]
 // Pedantic disabled to reduce noise - default clippy::all is sufficient
@@ -50,6 +111,7 @@
 
 pub mod adaptive_tiling;
 pub mod band_algebra;
+pub mod band_read;
 pub mod cog;
 pub mod color_space;
 pub mod compression;
@@ -63,12 +125,15 @@ pub mod writer;
 // Re-export commonly used types
 pub use cog::CogReader;
 pub use geokeys::{GeoKey, GeoKeyDirectory, ModelType, RasterType};
-pub use tiff::{Compression, ImageInfo, PhotometricInterpretation, TiffFile, TiffHeader, TiffTag};
+pub use tiff::{
+    ByteOrderType, Compression, ImageInfo, PhotometricInterpretation, TiffFile, TiffHeader, TiffTag,
+};
 pub use writer::{
     CogWriter, CogWriterOptions, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling,
     WriterConfig,
 };
 
+use crate::tiff::Predictor;
 use oxigeo_core::buffer::RasterBuffer;
 use oxigeo_core::error::{FormatError, OxiGeoError, Result};
 use oxigeo_core::io::DataSource;
@@ -83,7 +148,19 @@ use oxigeo_core::types::{
 /// allocation (OOM / denial of service). 4 GiB comfortably accommodates any
 /// realistic single-band read while bounding a hostile request to a survivable
 /// size.
-const MAX_BAND_BYTES: usize = 4 * 1024 * 1024 * 1024;
+///
+/// 4 GiB does not fit in a 32-bit `usize` (`wasm32`, 32-bit ARM/x86), so on
+/// those targets the cap becomes a quarter of the address space (1 GiB) — still
+/// far past any realistic band, and the largest bound that could plausibly be
+/// allocated there anyway.
+const MAX_BAND_BYTES: usize = {
+    const FOUR_GIB: u64 = 4 * 1024 * 1024 * 1024;
+    if FOUR_GIB <= usize::MAX as u64 {
+        FOUR_GIB as usize
+    } else {
+        usize::MAX / 4
+    }
+};
 
 /// Computes the size of a full raster band buffer from untrusted dimensions,
 /// rejecting values that overflow `usize` or exceed [`MAX_BAND_BYTES`].
@@ -120,6 +197,136 @@ fn checked_band_bytes(
         }));
     }
     Ok(band_bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Byte-order normalisation (cool-japan/oxigeo#14)
+// ---------------------------------------------------------------------------
+
+/// Whether the samples a codec has just produced still need swapping to reach
+/// the host's byte order.
+///
+/// See the crate-level *Byte order of decoded samples* section for the contract
+/// this enforces. Three things make the answer `false`:
+///
+/// * the sample width is not 2, 4 or 8 bytes — sub-byte `BitsPerSample` (which
+///   the reader reports as `0`), single-byte samples, and exotic widths such as
+///   a 24-bit `BitsPerSample` have no swap to perform or no defined one;
+/// * the codec is `Lerc`, whose decoder in this crate already emits native-order
+///   samples (`lerc_codec::serialize_native`), so a swap would *introduce* the
+///   corruption it is meant to remove;
+/// * the file's byte order already matches the host's — the case for every
+///   real-world little-endian GeoTIFF on every target this crate supports, which
+///   is why this is one branch per block and no per-sample work.
+///
+/// The host side is `cfg!(target_endian = ..)`, so a big-endian host reading an
+/// `II` file is handled by the same rule, symmetrically.
+const fn decoded_needs_native_swap(
+    byte_order: ByteOrderType,
+    bytes_per_sample: usize,
+    compression: Compression,
+) -> bool {
+    if !matches!(bytes_per_sample, 2 | 4 | 8) {
+        return false;
+    }
+    if matches!(compression, Compression::Lerc) {
+        return false;
+    }
+    match byte_order {
+        ByteOrderType::LittleEndian => cfg!(target_endian = "big"),
+        ByteOrderType::BigEndian => cfg!(target_endian = "little"),
+    }
+}
+
+/// Rejects a `Compression`/`Predictor` pair whose decode is not defined, so a
+/// file carrying one fails loudly instead of decoding to wrong pixels.
+///
+/// Exactly one pair qualifies today: **`Lerc` with any predictor**.
+///
+/// * libtiff's LERC codec (`tif_lerc.c`) never calls `TIFFPredictorInit`, so it
+///   neither applies tag 317 when writing nor reverses it when reading — to
+///   libtiff the predictor does not exist for LERC.
+/// * GDAL gates its `PREDICTOR` creation option on `GTIFFSupportsPredictor()`,
+///   which covers LZW/DEFLATE/ZSTD and excludes LERC, so `COMPRESS=LERC` never
+///   writes a predictor tag.
+/// * This crate cannot write LERC at all ([`compression::compress`] returns a
+///   typed "not implemented" error) and neither [`cog::analyze_for_cog`] nor
+///   [`cog::CogConverter`] can select it.
+///
+/// No encoder therefore produces a predicted LERC block, and a decoder that
+/// meets both tags cannot tell whether a predictor was applied. The driver used
+/// to reverse one regardless, over samples the LERC decoder had already put in
+/// *host* order using the *file's* declared order — two independent errors, both
+/// silent. An explicit `Err` is the only honest answer: the block is real, its
+/// interpretation is not knowable.
+///
+/// One comparison per decoded block, short-circuited on the overwhelmingly
+/// common `Predictor::None`; nothing per sample.
+///
+/// # Errors
+/// Returns [`OxiGeoError::NotSupported`] for `Lerc` plus any predictor.
+fn reject_undefined_predictor(compression: Compression, predictor: Predictor) -> Result<()> {
+    if matches!(predictor, Predictor::None) || !matches!(compression, Compression::Lerc) {
+        return Ok(());
+    }
+    Err(
+        OxiGeoError::not_supported_builder("a TIFF Predictor combined with LERC compression")
+            .with_operation("decode block")
+            .with_parameter("compression", "LERC (34887)")
+            .with_parameter("predictor", format!("{predictor:?} ({})", predictor as u16))
+            .with_suggestion(
+                "No encoder defines this combination (libtiff's LERC codec ignores tag 317 and \
+                 GDAL refuses PREDICTOR for LERC), so the block's pixels cannot be reconstructed \
+                 unambiguously. Re-encode the file without the Predictor tag, or with a codec \
+                 that defines it (LZW, DEFLATE, ZSTD).",
+            )
+            .build(),
+    )
+}
+
+/// Reverses every `N`-byte sample of `data` in place.
+///
+/// A trailing partial sample (which only a malformed block can produce) is left
+/// alone rather than half-swapped.
+fn swap_sample_bytes<const N: usize>(data: &mut [u8]) {
+    for chunk in data.chunks_exact_mut(N) {
+        let mut sample = [0u8; N];
+        sample.copy_from_slice(chunk);
+        sample.reverse();
+        chunk.copy_from_slice(&sample);
+    }
+}
+
+/// Converts one decoded block from the file's byte order to the host's, in place.
+///
+/// **Ordering matters.** This must run *after*
+/// [`compression::apply_predictor_reverse`]: both TIFF predictors are defined on
+/// file-order data — horizontal differencing reads and writes whole samples with
+/// `byte_order`, and the floating-point predictor de-interleaves byte planes
+/// whose most-significant plane is first on disk — so a block is not even a
+/// sample array until the predictor has been reversed. Swapping first produces
+/// pixels that look plausible and are wrong, which is exactly the failure class
+/// #14 exists to eliminate.
+///
+/// A no-op unless [`decoded_needs_native_swap`] says otherwise, so the common
+/// little-endian-file/little-endian-host case costs one branch per block.
+fn normalize_samples_to_native(
+    data: &mut [u8],
+    bytes_per_sample: usize,
+    byte_order: ByteOrderType,
+    compression: Compression,
+) {
+    if !decoded_needs_native_swap(byte_order, bytes_per_sample, compression) {
+        return;
+    }
+    match bytes_per_sample {
+        2 => swap_sample_bytes::<2>(data),
+        4 => swap_sample_bytes::<4>(data),
+        8 => swap_sample_bytes::<8>(data),
+        // Unreachable: `decoded_needs_native_swap` already rejected every other
+        // width. Kept total rather than panicking.
+        _ => {}
+    }
 }
 
 /// Generates WKT string from GeoKeys
@@ -420,6 +627,17 @@ pub struct GeoTiffReader<S: DataSource> {
 impl<S: DataSource> GeoTiffReader<S> {
     /// Opens a GeoTIFF file
     ///
+    /// # Minimum size
+    ///
+    /// There is no fixed byte floor. The header parser needs
+    /// [`TiffHeader::MIN_HEADER_SIZE`] bytes for a classic TIFF and
+    /// [`TiffHeader::BIGTIFF_HEADER_SIZE`] for a BigTIFF, and a source with
+    /// fewer than that is reported as a too-short header rather than as an
+    /// unknown format or an I/O failure. Passing the header is not enough to
+    /// open a file, though: the first IFD still has to parse and still has to
+    /// carry the mandatory image tags, so a header-only stub is rejected — just
+    /// with an error naming what is actually missing.
+    ///
     /// # Errors
     /// Returns an error if the file cannot be opened or parsed
     pub fn open(source: S) -> Result<Self> {
@@ -498,6 +716,21 @@ impl<S: DataSource> GeoTiffReader<S> {
         self.cog_reader.primary_info().compression
     }
 
+    /// Returns the byte order declared by the file's header (`II` or `MM`).
+    ///
+    /// This is a property of the *file*, not of the data this reader hands out:
+    /// every read API that yields decoded samples normalises them to the host's
+    /// byte order (see the crate-level *Byte order of decoded samples* section),
+    /// so callers never need this to interpret pixels. It is exposed for
+    /// reporting, for round-tripping a file's on-disk layout through
+    /// [`writer::GeoTiffWriterOptions`], and so that nothing has to re-parse the
+    /// TIFF header out of the [`DataSource`] to find out — which is what a
+    /// downstream crate had to do before cool-japan/oxigeo#14.
+    #[must_use]
+    pub fn byte_order(&self) -> ByteOrderType {
+        self.cog_reader.tiff().byte_order()
+    }
+
     /// Returns the number of tiles in X and Y directions
     #[must_use]
     pub fn tile_count(&self) -> (u32, u32) {
@@ -506,29 +739,259 @@ impl<S: DataSource> GeoTiffReader<S> {
 
     /// Reads a tile
     ///
+    /// Samples come back in the **host's** byte order regardless of the file's
+    /// `II`/`MM` header; see [`CogReader::read_tile`] and the crate-level
+    /// *Byte order of decoded samples* section. On a planar
+    /// (`PlanarConfiguration = 2`) raster a block holds one band and `tile_y`
+    /// indexes the plane-major block grid — see [`CogReader::tile_decoded_size`].
+    ///
     /// # Errors
-    /// Returns an error if the tile cannot be read
+    /// Returns an error if the tile cannot be read, or if its codec/predictor
+    /// combination has no defined reversal (LERC plus a `Predictor` tag), which
+    /// is refused rather than decoded to wrong pixels.
     pub fn read_tile(&self, level: usize, tile_x: u32, tile_y: u32) -> Result<Vec<u8>> {
         self.cog_reader.read_tile(level, tile_x, tile_y)
     }
 
-    /// Reads a tile as a RasterBuffer
+    /// Returns the pixel dimensions `(width, height)` of one resolution level.
+    ///
+    /// `level` is `0` for full resolution and `1..=`[`Self::overview_count`] for
+    /// the overviews. The values are read from the level's **own** IFD
+    /// (`ImageWidth`/`ImageLength`), so they are the dimensions actually stored
+    /// rather than the `ceil(full / 2^level)` a caller would otherwise have to
+    /// infer — an inference that only holds for a strict power-of-two pyramid
+    /// and silently mis-describes every overview of a raster built with any
+    /// other decimation factor (cool-japan/oxigeo#14).
+    ///
+    /// Pair it with [`Self::band_byte_len`] / [`Self::band_pixel_count`], which
+    /// give only the product, when you need to clamp a window or shape a
+    /// [`RasterBuffer`] for `level > 0`.
     ///
     /// # Errors
-    /// Returns an error if the tile cannot be read
-    pub fn read_tile_buffer(&self, level: usize, tile_x: u32, tile_y: u32) -> Result<RasterBuffer> {
-        let data = self.read_tile(level, tile_x, tile_y)?;
-        let info = self.cog_reader.primary_info();
+    /// Returns [`OxiGeoError::OutOfBounds`] if `level` names no overview, or a
+    /// format error if the level's IFD declares no dimensions.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let (w, h) = reader.level_size(1)?; // the first overview's real size
+    /// ```
+    pub fn level_size(&self, level: usize) -> Result<(u64, u64)> {
+        let info = self.level_info(level)?;
+        Ok((info.width, info.height))
+    }
 
-        let tile_width = info.tile_width.unwrap_or(info.width as u32) as u64;
-        let tile_height = info.tile_height.unwrap_or(info.height as u32) as u64;
+    /// Resolves the [`ImageInfo`] describing `level`.
+    ///
+    /// Level 0 is the primary image. `CogReader` parses the overview IFDs but
+    /// does not expose them, so an overview's own tags are read straight from
+    /// its IFD here; they are all single-valued and therefore stored inline, so
+    /// no data source is needed. Tags absent from the overview IFD are inherited
+    /// from the full-resolution image, which is what overviews always share.
+    ///
+    /// This mirrors `band_read::LevelGeometry::resolve`, the read engine's
+    /// equivalent; the two must agree, and the buffer-length checks in
+    /// [`Self::read_window_into`] surface it as a typed error if they ever do
+    /// not.
+    fn level_info(&self, level: usize) -> Result<ImageInfo> {
+        let primary = self.cog_reader.primary_info();
+        if level == 0 {
+            return Ok(primary.clone());
+        }
+        let out_of_bounds = || OxiGeoError::OutOfBounds {
+            message: format!("Overview level {level} out of bounds"),
+        };
+        if level > self.cog_reader.overview_count() {
+            return Err(out_of_bounds());
+        }
+
+        let tiff = self.cog_reader.tiff();
+        let byte_order = tiff.byte_order();
+        let ifd = tiff.ifds.get(level).ok_or_else(out_of_bounds)?;
+        let scalar = |tag: TiffTag| ifd.get_entry(tag).and_then(|e| e.get_u64(byte_order).ok());
+
+        let mut info = primary.clone();
+        info.width =
+            scalar(TiffTag::ImageWidth).ok_or(OxiGeoError::Format(FormatError::MissingTag {
+                tag: "ImageWidth",
+            }))?;
+        info.height =
+            scalar(TiffTag::ImageLength).ok_or(OxiGeoError::Format(FormatError::MissingTag {
+                tag: "ImageLength",
+            }))?;
+        // Layout tags are per-level: an overview may be striped even when the
+        // full-resolution image is tiled, so these are never inherited.
+        info.tile_width = scalar(TiffTag::TileWidth).and_then(|v| u32::try_from(v).ok());
+        info.tile_height = scalar(TiffTag::TileLength).and_then(|v| u32::try_from(v).ok());
+        info.rows_per_strip = scalar(TiffTag::RowsPerStrip).and_then(|v| u32::try_from(v).ok());
+        if let Some(v) = scalar(TiffTag::SamplesPerPixel) {
+            info.samples_per_pixel = v as u16;
+        }
+        if let Some(v) = scalar(TiffTag::BitsPerSample) {
+            info.bits_per_sample = vec![v as u16];
+        }
+        Ok(info)
+    }
+
+    /// Reads band 0 of one tile (or strip) as a [`RasterBuffer`].
+    ///
+    /// Shorthand for [`Self::read_tile_band_buffer`] with `band = 0`; see there
+    /// for the buffer's exact geometry and for multi-band files, which a
+    /// single-band [`RasterBuffer`] cannot represent in one go.
+    ///
+    /// # Errors
+    /// Returns an error if `level` names no overview, if the block coordinates
+    /// are out of range, or if the block cannot be read or decoded.
+    pub fn read_tile_buffer(&self, level: usize, tile_x: u32, tile_y: u32) -> Result<RasterBuffer> {
+        self.read_tile_band_buffer(level, 0, tile_x, tile_y)
+    }
+
+    /// Reads one band of one tile (or strip) as a [`RasterBuffer`].
+    ///
+    /// The band selector matches the rest of the read API
+    /// ([`Self::read_band`], [`Self::read_window`]): `level` first, then a
+    /// zero-based `band`. Both arguments are honoured — the block geometry comes
+    /// from the requested **level's own IFD**, not from the full-resolution
+    /// image, and the requested band is de-interleaved (chunky) or
+    /// plane-selected (planar) exactly as [`Self::read_band`] does it.
+    ///
+    /// The returned buffer is one full block: `tile_width × tile_height` for a
+    /// tiled level, or `image_width × rows_in_this_strip` for a striped one. A
+    /// block that overhangs the raster edge is padded with zeros, so the buffer
+    /// is always the block's nominal size and a tile mosaic stays aligned.
+    ///
+    /// Its samples are in the **host's** byte order, which is what
+    /// [`RasterBuffer`]'s accessors assume; see the crate-level *Byte order of
+    /// decoded samples* section.
+    ///
+    /// Before cool-japan/oxigeo#14 this method handed `RasterBuffer::new` a
+    /// whole chunky block (`tw·th·bps·spp` bytes) while claiming `tw·th`
+    /// pixels, so it could not succeed at all on a `SamplesPerPixel > 1` file,
+    /// and it took the tile dimensions from the primary IFD whatever `level`
+    /// said.
+    ///
+    /// # Errors
+    /// Returns an error if `band` is out of range for the level, if `level`
+    /// names no overview, if `(tile_x, tile_y)` is out of range, if the level
+    /// declares zero-sized blocks or an unsupported sample type, or if a block
+    /// cannot be read or decoded.
+    pub fn read_tile_band_buffer(
+        &self,
+        level: usize,
+        band: usize,
+        tile_x: u32,
+        tile_y: u32,
+    ) -> Result<RasterBuffer> {
+        let info = self.level_info(level)?;
+
+        let band_count = info.samples_per_pixel as usize;
+        if band >= band_count {
+            return Err(OxiGeoError::invalid_parameter_builder(
+                "band",
+                "band index is out of range for this raster",
+            )
+            .with_operation("read_tile_band_buffer")
+            .with_parameter("band", band.to_string())
+            .with_parameter("band_count", band_count.to_string())
+            .with_parameter("level", level.to_string())
+            .with_suggestion("Band indices are zero-based; use GeoTiffReader::band_count()")
+            .build());
+        }
+
         let data_type =
             info.data_type()
                 .ok_or(OxiGeoError::Format(FormatError::InvalidDataType {
                     type_id: 0,
                 }))?;
+        let bytes_per_sample = data_type.size_bytes() as u64;
 
-        RasterBuffer::new(data, tile_width, tile_height, data_type, self.nodata)
+        // Block geometry, from this level's own tags. A striped level's "tile"
+        // is a strip: full image width, `RowsPerStrip` rows.
+        let (block_width, block_height) = if info.is_tiled() {
+            (
+                u64::from(info.tile_width.unwrap_or_default()),
+                u64::from(info.tile_height.unwrap_or_default()),
+            )
+        } else {
+            (
+                info.width,
+                u64::from(info.rows_per_strip.unwrap_or(info.height as u32)),
+            )
+        };
+        if block_width == 0 || block_height == 0 {
+            return Err(OxiGeoError::Format(FormatError::InvalidHeader {
+                message: format!(
+                    "level {level} declares zero-sized blocks ({block_width}x{block_height})"
+                ),
+            }));
+        }
+
+        // Safe now that both divisors are non-zero.
+        let (blocks_across, blocks_down) = (info.tiles_across(), info.tiles_down());
+        if tile_x >= blocks_across || tile_y >= blocks_down {
+            return Err(OxiGeoError::OutOfBounds {
+                message: format!(
+                    "Tile/strip ({tile_x}, {tile_y}) out of bounds at level {level} \
+                     ({blocks_across}x{blocks_down} blocks)"
+                ),
+            });
+        }
+
+        let x0 = u64::from(tile_x) * block_width;
+        let y0 = u64::from(tile_y) * block_height;
+        // Tiles keep their nominal height (the overhang is padding); the last
+        // strip of a striped level is genuinely shorter.
+        let rows = if info.is_tiled() {
+            block_height
+        } else {
+            block_height.min(info.height.saturating_sub(y0))
+        };
+        let valid_width = block_width.min(info.width.saturating_sub(x0));
+        let valid_height = rows.min(info.height.saturating_sub(y0));
+
+        let to_usize = |v: u64| {
+            usize::try_from(v).map_err(|_| {
+                OxiGeoError::Format(FormatError::InvalidHeader {
+                    message: format!("block size {v} does not fit in usize on this target"),
+                })
+            })
+        };
+        // Bounds the allocation against hostile IFD dimensions, exactly as the
+        // whole-band read does.
+        let buffer_len = checked_band_bytes(
+            to_usize(block_width)?,
+            to_usize(rows)?,
+            to_usize(bytes_per_sample)?,
+            1,
+        )?;
+        let mut data = vec![0u8; buffer_len];
+
+        if valid_width > 0 && valid_height > 0 {
+            let row_bytes = to_usize(valid_width * bytes_per_sample)?;
+            let dst_stride = to_usize(block_width * bytes_per_sample)?;
+            if valid_width == block_width {
+                // The valid region is a contiguous prefix of the block buffer.
+                let len = row_bytes * to_usize(valid_height)?;
+                self.read_window_into(
+                    level,
+                    band,
+                    x0,
+                    y0,
+                    valid_width,
+                    valid_height,
+                    &mut data[..len],
+                )?;
+            } else {
+                let mut window = vec![0u8; row_bytes * to_usize(valid_height)?];
+                self.read_window_into(level, band, x0, y0, valid_width, valid_height, &mut window)?;
+                for row in 0..to_usize(valid_height)? {
+                    let src = row * row_bytes;
+                    let dst = row * dst_stride;
+                    data[dst..dst + row_bytes].copy_from_slice(&window[src..src + row_bytes]);
+                }
+            }
+        }
+
+        RasterBuffer::new(data, block_width, rows, data_type, self.nodata)
     }
 
     /// Returns the raster metadata
@@ -559,83 +1022,6 @@ impl<S: DataSource> GeoTiffReader<S> {
             driver_metadata: Vec::new(),
             statistics: None,
         }
-    }
-
-    /// Reads a band's data
-    ///
-    /// # Errors
-    /// Returns an error if reading fails
-    pub fn read_band(&self, level: usize, _band: usize) -> Result<Vec<u8>> {
-        // Read all tiles/strips and combine them
-        let (tiles_x, tiles_y) = self.tile_count();
-        let info = self.cog_reader.primary_info();
-
-        let width = info.width as usize;
-        let height = info.height as usize;
-        let bytes_per_sample = (info.bits_per_sample.first().copied().unwrap_or(8) / 8) as usize;
-        let samples_per_pixel = info.samples_per_pixel as usize;
-
-        // `width`, `height`, `bytes_per_sample` and `samples_per_pixel` all come
-        // from untrusted IFD tags. Guard their product against `usize` overflow
-        // and an unreasonable size before allocating the full band buffer, so a
-        // tiny malformed file cannot trigger a wrapping or multi-gigabyte
-        // allocation (OOM / denial of service).
-        let band_bytes = checked_band_bytes(width, height, bytes_per_sample, samples_per_pixel)?;
-
-        let mut result = vec![0u8; band_bytes];
-
-        // Determine if this is tiled or striped layout
-        let is_tiled = info.tile_width.is_some() && info.tile_height.is_some();
-
-        let (tile_width, default_tile_height) = if is_tiled {
-            (
-                info.tile_width.unwrap_or(width as u32) as usize,
-                info.tile_height.unwrap_or(height as u32) as usize,
-            )
-        } else {
-            // Striped layout
-            (width, info.rows_per_strip.unwrap_or(height as u32) as usize)
-        };
-
-        for ty in 0..tiles_y {
-            for tx in 0..tiles_x {
-                let tile_data = self.read_tile(level, tx, ty)?;
-
-                // Copy tile/strip data to result
-                let x_start = tx as usize * tile_width;
-                let y_start = ty as usize * default_tile_height;
-
-                // Calculate actual height of this tile/strip (may be smaller for last one)
-                let actual_rows = (height - y_start).min(default_tile_height);
-
-                // For tiled layouts: tile_data always has full tile_width stride
-                // For striped layouts: tile_data has image width stride
-                let src_stride = if is_tiled { tile_width } else { width };
-
-                for row in 0..actual_rows {
-                    let dst_y = y_start + row;
-                    if dst_y >= height {
-                        break;
-                    }
-
-                    let src_offset = row * src_stride * bytes_per_sample * samples_per_pixel;
-                    let dst_offset = dst_y * width * bytes_per_sample * samples_per_pixel
-                        + x_start * bytes_per_sample * samples_per_pixel;
-
-                    let copy_width = tile_width.min(width - x_start);
-                    let copy_bytes = copy_width * bytes_per_sample * samples_per_pixel;
-
-                    if src_offset + copy_bytes <= tile_data.len()
-                        && dst_offset + copy_bytes <= result.len()
-                    {
-                        result[dst_offset..dst_offset + copy_bytes]
-                            .copy_from_slice(&tile_data[src_offset..src_offset + copy_bytes]);
-                    }
-                }
-            }
-        }
-
-        Ok(result)
     }
 
     /// Creates a new reader (alias for `open`)
@@ -688,6 +1074,100 @@ mod tests {
         assert!(!is_tiff(&[0x89, 0x50, 0x4E, 0x47])); // PNG
         assert!(!is_tiff(&[0xFF, 0xD8, 0xFF])); // JPEG
         assert!(!is_tiff(&[]));
+    }
+
+    /// The host's byte order, as the normalisation rule sees it.
+    const HOST: ByteOrderType = if cfg!(target_endian = "big") {
+        ByteOrderType::BigEndian
+    } else {
+        ByteOrderType::LittleEndian
+    };
+
+    /// The byte order that is *not* the host's.
+    const FOREIGN: ByteOrderType = if cfg!(target_endian = "big") {
+        ByteOrderType::LittleEndian
+    } else {
+        ByteOrderType::BigEndian
+    };
+
+    #[test]
+    fn native_swap_is_skipped_when_the_file_matches_the_host() {
+        // The common case, and the whole of the zero-cost claim: nothing to do.
+        for width in [0usize, 1, 2, 3, 4, 6, 8, 16] {
+            assert!(
+                !decoded_needs_native_swap(HOST, width, Compression::None),
+                "width {width} must not be swapped for a host-order file"
+            );
+        }
+    }
+
+    #[test]
+    fn native_swap_covers_exactly_the_two_four_and_eight_byte_widths() {
+        for width in [2usize, 4, 8] {
+            assert!(
+                decoded_needs_native_swap(FOREIGN, width, Compression::None),
+                "width {width} of a foreign-order file must be swapped"
+            );
+        }
+        // 0 = sub-byte BitsPerSample (bilevel/4-bit), 1 = byte samples, and 3/6
+        // stand in for exotic widths such as a 24-bit BitsPerSample: none has a
+        // swap to perform or a defined order to swap to.
+        for width in [0usize, 1, 3, 5, 6, 7, 9, 12] {
+            assert!(
+                !decoded_needs_native_swap(FOREIGN, width, Compression::None),
+                "width {width} must be passed through untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn native_swap_never_touches_lerc_blocks() {
+        // This crate's LERC decoder emits native-order samples already
+        // (`lerc_codec::serialize_native`), so a swap would introduce the
+        // corruption it exists to remove.
+        for width in [2usize, 4, 8] {
+            assert!(!decoded_needs_native_swap(
+                FOREIGN,
+                width,
+                Compression::Lerc
+            ));
+            assert!(!decoded_needs_native_swap(HOST, width, Compression::Lerc));
+        }
+    }
+
+    #[test]
+    fn native_swap_reverses_whole_samples_and_leaves_a_partial_tail_alone() {
+        let mut two = [1u8, 2, 3, 4, 9];
+        swap_sample_bytes::<2>(&mut two);
+        assert_eq!(two, [2, 1, 4, 3, 9], "trailing odd byte must be untouched");
+
+        let mut four = [1u8, 2, 3, 4, 5, 6, 7, 8, 0xaa, 0xbb];
+        swap_sample_bytes::<4>(&mut four);
+        assert_eq!(four, [4, 3, 2, 1, 8, 7, 6, 5, 0xaa, 0xbb]);
+
+        let mut eight = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        swap_sample_bytes::<8>(&mut eight);
+        assert_eq!(eight, [8, 7, 6, 5, 4, 3, 2, 1]);
+
+        // Swapping twice is the identity, which is what makes a double swap so
+        // hard to notice — and why the driver must do it in exactly one place.
+        let original = [0x12u8, 0x34, 0x56, 0x78];
+        let mut round_trip = original;
+        swap_sample_bytes::<4>(&mut round_trip);
+        swap_sample_bytes::<4>(&mut round_trip);
+        assert_eq!(round_trip, original);
+    }
+
+    #[test]
+    fn normalize_samples_to_native_is_a_no_op_for_a_host_order_file() {
+        let original: Vec<u8> = (0..32).collect();
+        let mut data = original.clone();
+        normalize_samples_to_native(&mut data, 4, HOST, Compression::None);
+        assert_eq!(data, original);
+
+        // ... and does reverse each sample for a foreign-order one.
+        normalize_samples_to_native(&mut data, 4, FOREIGN, Compression::None);
+        assert_eq!(&data[..4], &[3, 2, 1, 0]);
     }
 
     #[test]

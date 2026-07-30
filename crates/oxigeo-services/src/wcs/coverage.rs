@@ -332,20 +332,84 @@ struct BytesDataSource {
     data: Arc<Vec<u8>>,
 }
 
+impl BytesDataSource {
+    /// Borrows `range` out of the shared buffer, or reports the same
+    /// end-of-file error [`DataSource::read_range`] reports for it.
+    fn slice_for(&self, range: ByteRange) -> oxigeo_core::error::Result<&[u8]> {
+        let eof = || {
+            oxigeo_core::error::OxiGeoError::Io(oxigeo_core::error::IoError::UnexpectedEof {
+                offset: range.end,
+            })
+        };
+        let start = usize::try_from(range.start).map_err(|_| eof())?;
+        let end = usize::try_from(range.end).map_err(|_| eof())?;
+        // `get` rejects both an inverted range (`start > end`) and one running
+        // past the buffer, exactly like the explicit checks it replaces.
+        self.data.get(start..end).ok_or_else(eof)
+    }
+}
+
+/// Builds the error a `read_range_into` implementation returns when the
+/// caller's destination buffer cannot hold the whole range.
+///
+/// Mirrors the message `oxigeo_core::io`'s built-in sources produce (their
+/// helper is crate-private) so the diagnostic is identical whichever source a
+/// caller is holding.
+fn dst_too_small(needed: usize, available: usize) -> oxigeo_core::error::OxiGeoError {
+    oxigeo_core::error::OxiGeoError::invalid_parameter(
+        "dst",
+        format!(
+            "destination buffer is {available} bytes but the requested range needs {needed}; \
+             size it with ByteRange::len()"
+        ),
+    )
+}
+
+/// Computes the destination length `range` requires, or `None` when the range
+/// is itself malformed (inverted, or wider than `usize`).
+///
+/// A `None` result means "let the source's own range check report it", which
+/// keeps `read_range_into` erroring exactly like `read_range` instead of
+/// underflowing on `ByteRange::len`.
+fn needed_len(range: ByteRange) -> Option<usize> {
+    usize::try_from(range.end.checked_sub(range.start)?).ok()
+}
+
 impl DataSource for BytesDataSource {
     fn size(&self) -> oxigeo_core::error::Result<u64> {
         Ok(self.data.len() as u64)
     }
 
     fn read_range(&self, range: ByteRange) -> oxigeo_core::error::Result<Vec<u8>> {
-        let start = range.start as usize;
-        let end = range.end as usize;
-        if start > end || end > self.data.len() {
-            return Err(oxigeo_core::error::OxiGeoError::Io(
-                oxigeo_core::error::IoError::UnexpectedEof { offset: range.end },
-            ));
+        Ok(self.slice_for(range)?.to_vec())
+    }
+
+    /// Copies straight out of the shared buffer, skipping the intermediate
+    /// `Vec` the trait's default implementation would allocate per block
+    /// (cool-japan/oxigeo#14).
+    fn read_range_into(
+        &self,
+        range: ByteRange,
+        dst: &mut [u8],
+    ) -> oxigeo_core::error::Result<usize> {
+        if let Some(needed) = needed_len(range)
+            && dst.len() < needed
+        {
+            return Err(dst_too_small(needed, dst.len()));
         }
-        Ok(self.data[start..end].to_vec())
+        let src = self.slice_for(range)?;
+        let available = dst.len();
+        let out = dst
+            .get_mut(..src.len())
+            .ok_or_else(|| dst_too_small(src.len(), available))?;
+        out.copy_from_slice(src);
+        Ok(src.len())
+    }
+
+    /// Lends the requested bytes straight out of the resident coverage buffer:
+    /// decoding a tile costs neither an allocation nor a copy.
+    fn range_slice(&self, range: ByteRange) -> Option<&[u8]> {
+        self.slice_for(range).ok()
     }
 }
 
@@ -377,13 +441,56 @@ fn decode_geotiff<S: DataSource>(
 
     let width = reader.width() as usize;
     let height = reader.height() as usize;
-    let bands = reader.band_count() as usize;
+    let bands = (reader.band_count() as usize).max(1);
     let data_type = reader
         .data_type()
         .unwrap_or_else(|| parse_data_type(&coverage.data_type));
-    let data = reader
-        .read_band(0, 0)
-        .map_err(|e| ServiceError::Coverage(format!("Failed to read GeoTIFF raster: {e}")))?;
+
+    // `read_band(level, band)` returns ONE de-interleaved band plane
+    // (`width × height × bytes_per_sample`), but every consumer of
+    // `CoverageData::data` -- `write_geotiff_bytes` and
+    // `coverage_to_u8_samples` -- treats it as pixel-interleaved across
+    // `bands`. Read each plane and weave them back together, so a multi-band
+    // coverage is served in full instead of being zero-padded (GeoTIFF) or
+    // rejected as truncated (PNG/JPEG).
+    // See <https://github.com/cool-japan/oxigeo/issues/14>.
+    let bytes_per_sample = data_type.size_bytes();
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or_else(|| ServiceError::Coverage("Coverage dimensions overflow usize".to_string()))?;
+    let plane_len = pixel_count
+        .checked_mul(bytes_per_sample)
+        .ok_or_else(|| ServiceError::Coverage("Coverage band size overflows usize".to_string()))?;
+
+    let data = if bands == 1 {
+        reader
+            .read_band(0, 0)
+            .map_err(|e| ServiceError::Coverage(format!("Failed to read GeoTIFF raster: {e}")))?
+    } else {
+        let total = plane_len.checked_mul(bands).ok_or_else(|| {
+            ServiceError::Coverage("Coverage payload size overflows usize".to_string())
+        })?;
+        let mut interleaved = vec![0u8; total];
+        for band in 0..bands {
+            let plane = reader.read_band(0, band).map_err(|e| {
+                ServiceError::Coverage(format!("Failed to read GeoTIFF band {band}: {e}"))
+            })?;
+            if plane.len() != plane_len {
+                return Err(ServiceError::Coverage(format!(
+                    "GeoTIFF band {band} returned {} bytes, expected {plane_len} \
+                     ({width}x{height} x {bytes_per_sample} byte(s))",
+                    plane.len()
+                )));
+            }
+            for px in 0..pixel_count {
+                let src = px * bytes_per_sample;
+                let dst = (px * bands + band) * bytes_per_sample;
+                interleaved[dst..dst + bytes_per_sample]
+                    .copy_from_slice(&plane[src..src + bytes_per_sample]);
+            }
+        }
+        interleaved
+    };
 
     Ok(CoverageData {
         data,
@@ -584,8 +691,16 @@ fn encode_as_geotiff(
 }
 
 /// Decode a single raw sample (of the coverage's native `RasterDataType`)
-/// into an `f64`, reading it from a little-endian byte slice whose length
+/// into an `f64`, reading it from a **host-native** byte slice whose length
 /// matches [`RasterDataType::size_bytes`].
+///
+/// `CoverageData::data` is assembled from `GeoTiffReader::read_band`, which
+/// normalises decoded samples to host order regardless of the file's `II`/`MM`
+/// header (see `oxigeo_geotiff`'s *Byte order of decoded samples* crate docs).
+/// These reads are therefore `from_ne_bytes`, not `from_le_bytes`: the two are
+/// the same thing on a little-endian host, but the little-endian spelling
+/// claimed a contract the data does not have and would mis-decode every
+/// multi-byte coverage on a big-endian one (cool-japan/oxigeo#14).
 ///
 /// Complex sample types (`CFloat32`/`CFloat64`) have no sensible scalar
 /// interpretation for an 8-bit display encoding, so they are rejected.
@@ -596,35 +711,35 @@ fn decode_sample_f64(bytes: &[u8], data_type: RasterDataType) -> ServiceResult<f
         RasterDataType::Int8 => f64::from(*bytes.first().ok_or_else(invalid)? as i8),
         RasterDataType::UInt16 => {
             let arr: [u8; 2] = bytes.try_into().map_err(|_| invalid())?;
-            f64::from(u16::from_le_bytes(arr))
+            f64::from(u16::from_ne_bytes(arr))
         }
         RasterDataType::Int16 => {
             let arr: [u8; 2] = bytes.try_into().map_err(|_| invalid())?;
-            f64::from(i16::from_le_bytes(arr))
+            f64::from(i16::from_ne_bytes(arr))
         }
         RasterDataType::UInt32 => {
             let arr: [u8; 4] = bytes.try_into().map_err(|_| invalid())?;
-            f64::from(u32::from_le_bytes(arr))
+            f64::from(u32::from_ne_bytes(arr))
         }
         RasterDataType::Int32 => {
             let arr: [u8; 4] = bytes.try_into().map_err(|_| invalid())?;
-            f64::from(i32::from_le_bytes(arr))
+            f64::from(i32::from_ne_bytes(arr))
         }
         RasterDataType::Float32 => {
             let arr: [u8; 4] = bytes.try_into().map_err(|_| invalid())?;
-            f64::from(f32::from_le_bytes(arr))
+            f64::from(f32::from_ne_bytes(arr))
         }
         RasterDataType::UInt64 => {
             let arr: [u8; 8] = bytes.try_into().map_err(|_| invalid())?;
-            u64::from_le_bytes(arr) as f64
+            u64::from_ne_bytes(arr) as f64
         }
         RasterDataType::Int64 => {
             let arr: [u8; 8] = bytes.try_into().map_err(|_| invalid())?;
-            i64::from_le_bytes(arr) as f64
+            i64::from_ne_bytes(arr) as f64
         }
         RasterDataType::Float64 => {
             let arr: [u8; 8] = bytes.try_into().map_err(|_| invalid())?;
-            f64::from_le_bytes(arr)
+            f64::from_ne_bytes(arr)
         }
         RasterDataType::CFloat32 | RasterDataType::CFloat64 => {
             return Err(ServiceError::Coverage(
@@ -918,6 +1033,126 @@ mod tests {
         assert_eq!(fit_payload(&[1, 2, 3, 4, 5], 3), vec![1, 2, 3]);
     }
 
+    /// cool-japan/oxigeo#14: the zero-copy entry points must agree with
+    /// `read_range` byte for byte, and error for error.
+    #[test]
+    fn test_issue_14_bytes_source_read_range_into_matches_read_range() {
+        let source = BytesDataSource {
+            data: Arc::new((0u8..32).collect()),
+        };
+        for range in [
+            ByteRange::new(0, 32),  // whole buffer
+            ByteRange::new(8, 20),  // interior
+            ByteRange::new(0, 1),   // leading boundary
+            ByteRange::new(31, 32), // trailing boundary
+            ByteRange::new(5, 5),   // empty
+            ByteRange::new(32, 32), // empty at EOF
+        ] {
+            let expected = source.read_range(range).expect("read_range");
+            let mut dst = vec![0xAAu8; expected.len()];
+            let written = source.read_range_into(range, &mut dst).expect("read_into");
+            assert_eq!(written, expected.len(), "count mismatch for {range:?}");
+            assert_eq!(dst, expected, "bytes mismatch for {range:?}");
+        }
+
+        // Past EOF / inverted: both paths must fail, and `read_range_into` must
+        // not panic on the underflowing length.
+        for range in [
+            ByteRange::new(28, 40),
+            ByteRange::new(32, 33),
+            ByteRange::new(20, 8),
+        ] {
+            assert!(source.read_range(range).is_err(), "read_range {range:?}");
+            let mut dst = vec![0u8; 64];
+            let err = source
+                .read_range_into(range, &mut dst)
+                .expect_err("read_range_into should reject");
+            assert!(
+                matches!(
+                    err,
+                    oxigeo_core::error::OxiGeoError::Io(
+                        oxigeo_core::error::IoError::UnexpectedEof { .. }
+                    )
+                ),
+                "expected EOF for {range:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_issue_14_bytes_source_read_range_into_buffer_sizing() {
+        let source = BytesDataSource {
+            data: Arc::new((0u8..16).collect()),
+        };
+        let range = ByteRange::new(4, 12);
+
+        // Too long: only the first 8 bytes are written, the tail is preserved.
+        let mut dst = vec![0xEEu8; 12];
+        assert_eq!(
+            source.read_range_into(range, &mut dst).expect("read_into"),
+            8
+        );
+        assert_eq!(&dst[..8], &(4u8..12).collect::<Vec<u8>>()[..]);
+        assert_eq!(&dst[8..], &[0xEE; 4], "tail must be left alone");
+
+        // Too short: rejected before anything is written.
+        let mut dst = vec![0xEEu8; 7];
+        let err = source
+            .read_range_into(range, &mut dst)
+            .expect_err("short dst must be rejected");
+        assert!(
+            matches!(
+                err,
+                oxigeo_core::error::OxiGeoError::InvalidParameter { parameter, .. }
+                    if parameter == "dst"
+            ),
+            "expected an InvalidParameter(dst) error, got {err}"
+        );
+        assert_eq!(dst, vec![0xEE; 7], "dst must be untouched");
+
+        // An empty range writes nothing, even into an empty destination.
+        assert_eq!(
+            source
+                .read_range_into(ByteRange::new(3, 3), &mut [])
+                .expect("empty range"),
+            0
+        );
+    }
+
+    #[test]
+    fn test_issue_14_bytes_source_range_slice_borrows_backing_buffer() {
+        let payload: Arc<Vec<u8>> = Arc::new((0u8..64).collect());
+        let source = BytesDataSource {
+            data: Arc::clone(&payload),
+        };
+        let borrowed = source.range_slice(ByteRange::new(16, 48)).expect("borrow");
+        assert_eq!(borrowed, &payload[16..48]);
+        assert!(
+            std::ptr::eq(borrowed.as_ptr(), payload[16..48].as_ptr()),
+            "range_slice must borrow the shared buffer, not copy it"
+        );
+        assert!(
+            source
+                .range_slice(ByteRange::new(9, 9))
+                .expect("empty")
+                .is_empty()
+        );
+        assert!(
+            source.range_slice(ByteRange::new(60, 65)).is_none(),
+            "past EOF"
+        );
+        assert!(
+            source.range_slice(ByteRange::new(40, 8)).is_none(),
+            "inverted"
+        );
+        assert!(
+            source
+                .range_slice(ByteRange::new(u64::MAX - 1, u64::MAX))
+                .is_none(),
+            "unrepresentable offset"
+        );
+    }
+
     #[test]
     fn test_write_geotiff_bytes_is_valid_tiff() {
         let coverage = small_coverage(CoverageSource::Memory(Arc::new(Vec::new())));
@@ -968,6 +1203,176 @@ mod tests {
         assert_eq!(decoded.width, 4);
         assert_eq!(decoded.height, 4);
         assert_eq!(decoded.bands, 1);
+    }
+
+    // ---- cool-japan/oxigeo#14: multi-band coverages must decode in full ----
+
+    /// Distinguishable sample value for `band` at pixel index `pixel`:
+    /// band 0 = 10+i, band 1 = 100+i, band 2 = 200+i. A band mix-up or a
+    /// missing plane therefore shows up as a wildly different byte.
+    fn issue_14_sample(pixel: usize, band: usize) -> u8 {
+        let base: u8 = match band {
+            0 => 10,
+            1 => 100,
+            _ => 200,
+        };
+        base + pixel as u8
+    }
+
+    /// Writes a `width`x`height`, `bands`-band `UInt8` GeoTIFF fixture to a
+    /// fresh temp path, returning the path and the exact band-interleaved
+    /// payload that was written.
+    ///
+    /// Uncompressed and striped, mirroring [`write_geotiff_bytes`], so the
+    /// fixture depends on no optional codec.
+    fn write_issue_14_fixture(
+        width: usize,
+        height: usize,
+        bands: usize,
+    ) -> (std::path::PathBuf, Vec<u8>) {
+        use oxigeo_geotiff::{
+            Compression, GeoTiffWriter, GeoTiffWriterOptions, OverviewResampling, WriterConfig,
+        };
+
+        let pixel_count = width * height;
+        let mut payload = Vec::with_capacity(pixel_count * bands);
+        for pixel in 0..pixel_count {
+            for band in 0..bands {
+                payload.push(issue_14_sample(pixel, band));
+            }
+        }
+
+        let mut config = WriterConfig::new(
+            width as u64,
+            height as u64,
+            bands as u16,
+            RasterDataType::UInt8,
+        )
+        .with_compression(Compression::None)
+        .with_overviews(false, OverviewResampling::Nearest);
+        config.tile_width = None;
+        config.tile_height = None;
+
+        let path =
+            std::env::temp_dir().join(format!("oxigeo_wcs_issue14_{}.tif", uuid::Uuid::new_v4()));
+        let mut writer = GeoTiffWriter::create(&path, config, GeoTiffWriterOptions::default())
+            .expect("fixture writer should be creatable");
+        writer.write(&payload).expect("fixture should be writable");
+        drop(writer);
+
+        (path, payload)
+    }
+
+    /// Decodes a file-backed coverage through the real GetCoverage retrieval
+    /// path (`retrieve_coverage_data` -> `decode_geotiff`).
+    async fn retrieve_issue_14_fixture(
+        path: &std::path::Path,
+        width: usize,
+        height: usize,
+        bands: usize,
+    ) -> ServiceResult<CoverageData> {
+        let mut coverage = small_coverage(CoverageSource::File(path.to_path_buf()));
+        coverage.grid_size = (width, height);
+        coverage.band_count = bands;
+        coverage.band_names = (0..bands).map(|b| format!("Band{}", b + 1)).collect();
+
+        let subset = Subset {
+            x_range: None,
+            y_range: None,
+            time_range: None,
+        };
+        let params = GetCoverageParams {
+            coverage_id: "small".to_string(),
+            format: "image/tiff".to_string(),
+            subset: None,
+            scale_factor: None,
+            scale_axes: None,
+            scale_size: None,
+            range_subset: None,
+        };
+        retrieve_coverage_data(&coverage, &subset, &params).await
+    }
+
+    /// `decode_geotiff` used to store `read_band(0, 0)` -- ONE de-interleaved
+    /// band plane -- as `CoverageData::data` while reporting `bands: N`, so
+    /// every consumer saw a buffer `N` times too short: GeoTIFF output was
+    /// zero-padded and PNG/JPEG output failed as "truncated".
+    #[tokio::test]
+    async fn test_issue_14_decode_geotiff_multiband_interleaves_all_bands() {
+        let (width, height, bands) = (4usize, 3usize, 3usize);
+        let (path, expected) = write_issue_14_fixture(width, height, bands);
+
+        let decoded = retrieve_issue_14_fixture(&path, width, height, bands).await;
+        let _ = std::fs::remove_file(&path);
+        let decoded = decoded.expect("3-band coverage should decode");
+
+        assert_eq!(decoded.width, width, "decoded width");
+        assert_eq!(decoded.height, height, "decoded height");
+        assert_eq!(
+            decoded.bands, bands,
+            "decoded band count: expected {bands}, got {}",
+            decoded.bands
+        );
+        assert_eq!(
+            decoded.data_type,
+            RasterDataType::UInt8,
+            "decoded data type"
+        );
+        assert_eq!(
+            decoded.data.len(),
+            width * height * bands,
+            "decoded payload must hold every band: expected {} bytes for a {width}x{height} \
+             x {bands} band UInt8 coverage, got {} (a single plane is {} bytes)",
+            width * height * bands,
+            decoded.data.len(),
+            width * height
+        );
+
+        for pixel in 0..width * height {
+            for band in 0..bands {
+                let got = decoded.data[pixel * bands + band];
+                let want = issue_14_sample(pixel, band);
+                assert_eq!(
+                    got,
+                    want,
+                    "band {band}, pixel {pixel} (row {}, col {}): expected {want}, got {got}; \
+                     interleaved payload must match the {} bytes written",
+                    pixel / width,
+                    pixel % width,
+                    expected.len()
+                );
+            }
+        }
+        assert_eq!(
+            decoded.data, expected,
+            "payload must round-trip byte for byte"
+        );
+    }
+
+    /// The single-band path -- the common case, and the only one the older
+    /// tests covered -- must be left exactly as it was by the re-interleave.
+    #[tokio::test]
+    async fn test_issue_14_decode_geotiff_single_band_unchanged() {
+        let (width, height, bands) = (4usize, 3usize, 1usize);
+        let (path, expected) = write_issue_14_fixture(width, height, bands);
+
+        let decoded = retrieve_issue_14_fixture(&path, width, height, bands).await;
+        let _ = std::fs::remove_file(&path);
+        let decoded = decoded.expect("1-band coverage should decode");
+
+        assert_eq!(decoded.width, width, "decoded width");
+        assert_eq!(decoded.height, height, "decoded height");
+        assert_eq!(decoded.bands, 1, "decoded band count");
+        assert_eq!(
+            decoded.data.len(),
+            width * height,
+            "single-band payload must be exactly one plane: expected {} bytes, got {}",
+            width * height,
+            decoded.data.len()
+        );
+        for (pixel, (&got, &want)) in decoded.data.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(got, want, "pixel {pixel}: expected {want}, got {got}");
+        }
     }
 
     #[tokio::test]
@@ -1080,9 +1485,10 @@ mod tests {
     #[test]
     fn test_coverage_to_u8_samples_stretches_float32_per_band() {
         // Single-band 1x2 image with samples -10.0 and 30.0; expect a 0/255 stretch.
+        // `to_ne_bytes`: `CoverageData::data` holds host-native samples.
         let mut raw = Vec::new();
-        raw.extend_from_slice(&(-10.0f32).to_le_bytes());
-        raw.extend_from_slice(&(30.0f32).to_le_bytes());
+        raw.extend_from_slice(&(-10.0f32).to_ne_bytes());
+        raw.extend_from_slice(&(30.0f32).to_ne_bytes());
         let data = CoverageData {
             data: raw,
             width: 1,

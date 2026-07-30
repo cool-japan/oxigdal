@@ -78,7 +78,11 @@ pub enum NetCdfError {
     /// Feature not enabled
     FeatureNotEnabled { feature: String, message: String },
 
-    /// NetCDF-4 not available (requires feature flag)
+    /// NetCDF-4 not available from the legacy [`crate::netcdf4`] module.
+    ///
+    /// Emitted only by the dead hand-rolled `Nc4Reader`/`Nc4Writer`. The real
+    /// backend ([`crate::NetCdfReader`] / [`crate::NetCdfWriter`], Pure Rust
+    /// `oxinetcdf`) never returns this — NetCDF-4 needs no feature flag.
     NetCdf4NotAvailable,
 
     /// Compression not supported
@@ -154,9 +158,11 @@ impl fmt::Display for NetCdfError {
             Self::NetCdf4NotAvailable => {
                 write!(
                     f,
-                    "NetCDF-4/HDF5 reading is not yet implemented in this Pure Rust build; \
-                     only NetCDF-3 (classic and 64-bit offset) files are currently supported for reading. \
-                     The file was detected as HDF5-based NetCDF-4."
+                    "NetCDF-4/HDF5 support is unavailable from the legacy \
+                     `oxigeo_netcdf::netcdf4` module: its hand-rolled Nc4Reader/Nc4Writer \
+                     were never completed, so they only ever handled NetCDF-3 (classic and \
+                     64-bit offset) files. Use NetCdfReader/NetCdfWriter instead — they read \
+                     and write real NetCDF-4 files with the Pure Rust oxinetcdf backend."
                 )
             }
             Self::CompressionNotSupported { compression } => {
@@ -324,8 +330,9 @@ impl NetCdfError {
                 Some("Enable the required feature flag in Cargo.toml")
             }
             Self::NetCdf4NotAvailable => Some(
-                "NetCDF-4/HDF5 reading is not yet implemented; convert the file to NetCDF-3 \
-                 classic (e.g. `nccopy -k classic input.nc output.nc`) to read it with this Pure Rust driver",
+                "Use NetCdfReader/NetCdfWriter (Pure Rust oxinetcdf backend) for NetCDF-4 \
+                 files instead of the legacy netcdf4 module; that module only ever handled \
+                 NetCDF-3 classic and 64-bit offset files",
             ),
             Self::CompressionNotSupported { .. } => {
                 Some("Use a supported compression algorithm or disable compression")

@@ -37,7 +37,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 # Additional utilities
-ahash = { workspace = true }
+ahash = { workspace = true, features = ["std", "runtime-rng"] }
 parking_lot = { workspace = true }
 blake3 = { workspace = true }
 lru = { workspace = true }

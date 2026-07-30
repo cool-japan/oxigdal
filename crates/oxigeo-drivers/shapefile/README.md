@@ -26,14 +26,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-shapefile = "0.2.1"
+oxigeo-shapefile = "0.2.2"
 ```
 
 ### Optional Features
 
 ```toml
 [dependencies]
-oxigeo-shapefile = { version = "0.2.1", features = ["async", "arrow"] }
+oxigeo-shapefile = { version = "0.2.2", features = ["async", "arrow"] }
 ```
 
 - **`std`** (default) - Standard library support
@@ -502,7 +502,7 @@ Contributions are welcome! Please ensure:
 
 ## License
 
-Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0).
+Licensed under the Apache License, Version 2.0 ([LICENSE](../../../LICENSE) or http://www.apache.org/licenses/LICENSE-2.0).
 
 ## Related Projects
 

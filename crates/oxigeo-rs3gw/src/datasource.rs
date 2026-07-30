@@ -300,10 +300,15 @@ impl Rs3gwDataSource {
     }
 
     /// Attempts to read from cache, returns None if not cached
-    async fn read_from_cache(&self, range: ByteRange) -> Option<Vec<u8>> {
+    ///
+    /// Hands back the cached [`Bytes`] handle rather than a `Vec`: cloning it
+    /// is a refcount bump, so a cache hit that is written straight into a
+    /// caller's buffer ([`DataSource::read_range_into`]) costs no allocation
+    /// at all (cool-japan/oxigeo#14).
+    async fn read_from_cache(&self, range: ByteRange) -> Option<Bytes> {
         if let Some(cache) = &self.cache {
             let key = (range.start, range.end);
-            cache.get(&key).await.map(|bytes| bytes.to_vec())
+            cache.get(&key).await
         } else {
             None
         }
@@ -327,6 +332,27 @@ impl Rs3gwDataSource {
 
     /// Reads a range with retry logic and exponential backoff
     async fn read_range_with_retry(&self, range: ByteRange) -> Result<Vec<u8>> {
+        Ok(self.read_range_with_retry_bytes(range).await?.to_vec())
+    }
+
+    /// Reads a range with retry logic and exponential backoff, keeping the
+    /// result in its [`Bytes`] handle.
+    ///
+    /// This is the real implementation; [`Self::read_range_with_retry`] is a
+    /// `to_vec` wrapper over it. Callers that already own a destination buffer
+    /// go through here instead, so the bytes are copied once (into the
+    /// caller's buffer) rather than twice (into a fresh `Vec`, then into the
+    /// caller's buffer) -- see cool-japan/oxigeo#14.
+    async fn read_range_with_retry_bytes(&self, range: ByteRange) -> Result<Bytes> {
+        // An empty range is satisfied without touching the backend. rs3gw's
+        // byte ranges are *inclusive*, so `start..start` would otherwise be
+        // converted into a one-byte request and hand back a byte the caller
+        // never asked for. This also matches `oxigeo_core`'s built-in sources,
+        // which perform no I/O at all for an empty range.
+        if range.end <= range.start {
+            return Ok(Bytes::new());
+        }
+
         let mut attempt = 0;
         let max_retries = self.config.max_retries;
 
@@ -380,9 +406,9 @@ impl Rs3gwDataSource {
                 .await
             {
                 Ok((_metadata, data)) => {
-                    let vec_data = data.to_vec();
-                    // Cache the result
-                    self.write_to_cache(ByteRange::new(range.start, end), data)
+                    // Cache the result; `Bytes` is refcounted, so the caller's
+                    // copy and the cached copy share one allocation.
+                    self.write_to_cache(ByteRange::new(range.start, end), data.clone())
                         .await;
 
                     // Count this read and, once warmed up, kick off background
@@ -393,7 +419,7 @@ impl Rs3gwDataSource {
                         + 1;
                     self.maybe_spawn_prefetch(end, end - range.start, reads_so_far);
 
-                    return Ok(vec_data);
+                    return Ok(data);
                 }
                 Err(e) => {
                     if attempt >= max_retries {
@@ -506,6 +532,63 @@ impl Rs3gwDataSource {
         self.write_to_cache(range, data).await;
         Ok(())
     }
+
+    /// Shared body of the synchronous and asynchronous `read_range_into`
+    /// overrides (cool-japan/oxigeo#14).
+    ///
+    /// The trait default would allocate a `Vec` per block and copy it into
+    /// `dst`; going through [`Self::read_range_with_retry_bytes`] copies the
+    /// fetched (or cached) `Bytes` straight into the caller's buffer instead,
+    /// so a block-oriented reader walking thousands of tiles pays no
+    /// per-block allocation and one memcpy fewer.
+    async fn read_range_into_impl(
+        &self,
+        range: ByteRange,
+        dst: &mut [u8],
+    ) -> oxigeo_core::error::Result<usize> {
+        // Reject an undersized `dst` before any I/O, leaving it untouched.
+        // `checked_sub` keeps an inverted range out of the underflow
+        // `ByteRange::len` would hit; such a range is left to
+        // `read_range_with_retry_bytes`, which reports it exactly as
+        // `read_range` does.
+        if let Some(needed) = needed_len(range)
+            && dst.len() < needed
+        {
+            return Err(dst_too_small(needed, dst.len()));
+        }
+
+        let data = self.read_range_with_retry_bytes(range).await?;
+        // A read near end-of-file is clamped to the object size, so the
+        // backend may legitimately return fewer bytes than `range.len()`.
+        let available = dst.len();
+        let out = dst
+            .get_mut(..data.len())
+            .ok_or_else(|| dst_too_small(data.len(), available))?;
+        out.copy_from_slice(&data);
+        Ok(data.len())
+    }
+}
+
+/// Builds the error a `read_range_into` implementation returns when the
+/// caller's destination buffer cannot hold the whole range.
+///
+/// Mirrors the message `oxigeo_core::io`'s built-in sources produce (their
+/// helper is crate-private) so the diagnostic is identical whichever source a
+/// caller is holding.
+fn dst_too_small(needed: usize, available: usize) -> oxigeo_core::error::OxiGeoError {
+    oxigeo_core::error::OxiGeoError::invalid_parameter(
+        "dst",
+        format!(
+            "destination buffer is {available} bytes but the requested range needs {needed}; \
+             size it with ByteRange::len()"
+        ),
+    )
+}
+
+/// Computes the destination length `range` requires, or `None` when the range
+/// is itself malformed (inverted, or wider than `usize`).
+fn needed_len(range: ByteRange) -> Option<usize> {
+    usize::try_from(range.end.checked_sub(range.start)?).ok()
 }
 
 impl DataSource for Rs3gwDataSource {
@@ -551,6 +634,45 @@ impl DataSource for Rs3gwDataSource {
             }
         }
     }
+
+    /// Copies the fetched (or cached) bytes straight into `dst`, skipping the
+    /// intermediate `Vec` the trait's default implementation would allocate
+    /// per block (cool-japan/oxigeo#14).
+    ///
+    /// Same runtime-reentrancy handling as [`Self::read_range`] above: never
+    /// `block_on` directly on a handle that is already driving this task.
+    fn read_range_into(
+        &self,
+        range: ByteRange,
+        dst: &mut [u8],
+    ) -> oxigeo_core::error::Result<usize> {
+        let source = self.clone();
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(source.read_range_into_impl(range, dst))
+            }),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| {
+                        Rs3gwError::Io(std::io::Error::other(format!(
+                            "Failed to create tokio runtime: {e}"
+                        )))
+                    })
+                    .map_err(oxigeo_core::error::OxiGeoError::from)?;
+
+                rt.block_on(source.read_range_into_impl(range, dst))
+            }
+        }
+    }
+
+    // `range_slice` is deliberately left at its `None` default: this source is
+    // remote-backed, and its only local store is a `moka` cache whose `get` is
+    // async and yields an *owned* `Bytes` handle rather than a borrow tied to
+    // `&self` (entries can also be evicted concurrently). There is nothing
+    // here that can be lent out for the lifetime of `&self`, so callers must
+    // keep using the copying path -- which `read_range_into` above makes as
+    // cheap as it can be.
 
     fn read_ranges(&self, ranges: &[ByteRange]) -> oxigeo_core::error::Result<Vec<Vec<u8>>> {
         if ranges.is_empty() {
@@ -620,6 +742,17 @@ mod async_impl {
 
         async fn read_range(&self, range: ByteRange) -> oxigeo_core::error::Result<Vec<u8>> {
             self.read_range_with_retry(range).await.map_err(Into::into)
+        }
+
+        /// Copies the fetched (or cached) bytes straight into `dst`, skipping
+        /// the intermediate `Vec` the trait's default implementation would
+        /// allocate per block (cool-japan/oxigeo#14).
+        async fn read_range_into(
+            &self,
+            range: ByteRange,
+            dst: &mut [u8],
+        ) -> oxigeo_core::error::Result<usize> {
+            self.read_range_into_impl(range, dst).await
         }
 
         async fn read_ranges(
@@ -791,6 +924,177 @@ mod tests {
         let range = ByteRange::new(10, 16);
         let data = source.read_range(range).expect("Failed to read range");
         assert_eq!(data, b"ABCDEF");
+    }
+
+    /// Puts `payload` under `test-bucket/data.bin` on a throwaway local
+    /// backend and returns a data source over it.
+    async fn source_over(payload: &'static [u8]) -> (Rs3gwDataSource, TempDir) {
+        let (backend, temp_dir) = create_test_backend().await;
+        backend
+            .create_bucket("test-bucket")
+            .await
+            .expect("Failed to create bucket");
+        backend
+            .put_object(
+                "test-bucket",
+                "data.bin",
+                Bytes::from_static(payload),
+                std::collections::HashMap::new(),
+            )
+            .await
+            .expect("Failed to put object");
+        let source =
+            Rs3gwDataSource::new(backend, "test-bucket".to_string(), "data.bin".to_string())
+                .await
+                .expect("Failed to create data source");
+        (source, temp_dir)
+    }
+
+    const ISSUE_14_PAYLOAD: &[u8] = b"0123456789ABCDEF";
+
+    /// cool-japan/oxigeo#14: `read_range_into` must be byte-equivalent to
+    /// `read_range` -- including where this source *clamps* a read to the
+    /// object size instead of erroring, in which case it reports its own
+    /// shorter length.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_issue_14_read_range_into_matches_read_range() {
+        let (source, _temp_dir) = source_over(ISSUE_14_PAYLOAD).await;
+
+        for range in [
+            ByteRange::new(0, 16),  // whole object
+            ByteRange::new(5, 10),  // interior
+            ByteRange::new(0, 1),   // leading boundary
+            ByteRange::new(15, 16), // trailing boundary
+            ByteRange::new(4, 4),   // empty
+            ByteRange::new(10, 30), // past EOF -- clamped to 10..16 by this source
+        ] {
+            let expected = DataSource::read_range(&source, range).expect("read_range");
+            let mut dst = vec![0xAAu8; 32];
+            let written =
+                DataSource::read_range_into(&source, range, &mut dst).expect("read_range_into");
+            assert_eq!(written, expected.len(), "count mismatch for {range:?}");
+            assert_eq!(
+                &dst[..written],
+                &expected[..],
+                "bytes mismatch for {range:?}"
+            );
+            assert!(
+                dst[written..].iter().all(|b| *b == 0xAA),
+                "tail beyond {written} bytes must be left alone for {range:?}"
+            );
+        }
+
+        // A start at or past end-of-object errors identically on both paths.
+        for range in [ByteRange::new(16, 20), ByteRange::new(99, 100)] {
+            assert!(
+                DataSource::read_range(&source, range).is_err(),
+                "read_range {range:?}"
+            );
+            let mut dst = vec![0u8; 32];
+            assert!(
+                DataSource::read_range_into(&source, range, &mut dst).is_err(),
+                "read_range_into {range:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_issue_14_read_range_into_buffer_sizing() {
+        let (source, _temp_dir) = source_over(ISSUE_14_PAYLOAD).await;
+        let range = ByteRange::new(4, 12);
+
+        // Too short: rejected before any I/O, `dst` untouched.
+        let mut dst = vec![0xEEu8; 7];
+        let err = DataSource::read_range_into(&source, range, &mut dst)
+            .expect_err("short dst must be rejected");
+        assert!(
+            matches!(
+                err,
+                oxigeo_core::error::OxiGeoError::InvalidParameter { parameter, .. }
+                    if parameter == "dst"
+            ),
+            "expected an InvalidParameter(dst) error, got {err}"
+        );
+        assert_eq!(dst, vec![0xEE; 7], "dst must be untouched");
+
+        // Exactly-sized and over-sized destinations both work.
+        let mut dst = vec![0xEEu8; 8];
+        assert_eq!(
+            DataSource::read_range_into(&source, range, &mut dst).expect("exact dst"),
+            8
+        );
+        assert_eq!(&dst[..], b"456789AB");
+
+        // An empty range writes nothing, even into an empty destination.
+        assert_eq!(
+            DataSource::read_range_into(&source, ByteRange::new(3, 3), &mut [])
+                .expect("empty range"),
+            0
+        );
+    }
+
+    /// A remote-backed source has nothing it can lend for the lifetime of
+    /// `&self` (its `moka` cache yields owned, evictable `Bytes`), so it must
+    /// keep answering `None` and let callers use the copying path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_issue_14_range_slice_is_none_for_remote_source() {
+        let (source, _temp_dir) = source_over(ISSUE_14_PAYLOAD).await;
+
+        // Even after a read has warmed the cache, nothing can be borrowed.
+        let _ = DataSource::read_range(&source, ByteRange::new(0, 8)).expect("warm the cache");
+        assert!(source.is_cached(ByteRange::new(0, 8)).await);
+        assert!(DataSource::range_slice(&source, ByteRange::new(0, 8)).is_none());
+        assert!(DataSource::range_slice(&source, ByteRange::new(0, 16)).is_none());
+    }
+
+    /// The async sibling overrides `read_range_into` too, with the same
+    /// contract.
+    #[cfg(feature = "async")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_issue_14_async_read_range_into_matches_read_range() {
+        use oxigeo_core::io::AsyncDataSource;
+
+        let (source, _temp_dir) = source_over(ISSUE_14_PAYLOAD).await;
+
+        for range in [
+            ByteRange::new(0, 16),
+            ByteRange::new(5, 10),
+            ByteRange::new(15, 16),
+            ByteRange::new(4, 4),
+            ByteRange::new(10, 30),
+        ] {
+            let expected = AsyncDataSource::read_range(&source, range)
+                .await
+                .expect("async read_range");
+            let mut dst = vec![0xAAu8; 32];
+            let written = AsyncDataSource::read_range_into(&source, range, &mut dst)
+                .await
+                .expect("async read_range_into");
+            assert_eq!(written, expected.len(), "count mismatch for {range:?}");
+            assert_eq!(
+                &dst[..written],
+                &expected[..],
+                "bytes mismatch for {range:?}"
+            );
+            assert!(
+                dst[written..].iter().all(|b| *b == 0xAA),
+                "tail must be left alone for {range:?}"
+            );
+        }
+
+        let mut dst = vec![0xEEu8; 3];
+        let err = AsyncDataSource::read_range_into(&source, ByteRange::new(0, 8), &mut dst)
+            .await
+            .expect_err("short dst must be rejected");
+        assert!(
+            matches!(
+                err,
+                oxigeo_core::error::OxiGeoError::InvalidParameter { parameter, .. }
+                    if parameter == "dst"
+            ),
+            "expected an InvalidParameter(dst) error, got {err}"
+        );
+        assert_eq!(dst, vec![0xEE; 3], "dst must be untouched");
     }
 
     /// Regression test for the "Cannot start a runtime from within a

@@ -13,6 +13,15 @@
 // `expect` is the idiomatic failure mode for tests in this crate (see
 // `tests/integration_test.rs`); the workspace lint denies it by default.
 #![allow(clippy::expect_used)]
+// `CogConverter` writes DEFLATE unless told otherwise — both by explicit
+// `.with_compression(Compression::Deflate)` and as whatever `analyze_for_cog`
+// recommends on the auto-optimize path — so every test that actually performs a
+// conversion needs the `deflate` feature and is gated on it below. Without the
+// feature those tests failed with `Compression(UnknownMethod { method: 32946 })`
+// rather than being skipped. Only the fixture authors and the failure-path test
+// survive, so the imports and helpers they no longer reach are allowed to go
+// unused in that configuration.
+#![cfg_attr(not(feature = "deflate"), allow(unused_imports, dead_code))]
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -106,11 +115,192 @@ fn cleanup(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// Distinguishable sample value for band `band` at pixel index `pixel`.
+///
+/// Each band occupies its own, disjoint value range (`band * span`), so a band
+/// mix-up, a dropped plane or a zero-padded tail is unmistakable rather than
+/// merely off by a little.
+fn multiband_sample(pixel: usize, band: usize, span: u64) -> u64 {
+    band as u64 * span + (pixel as u64 % (span / 2)) + 1
+}
+
+/// Authors a small multi-band classic GeoTIFF fixture (striped, uncompressed)
+/// and returns the exact band-interleaved (chunky) payload written to it.
+///
+/// `bands` planes are given disjoint value ranges via [`multiband_sample`].
+fn write_multiband_fixture(
+    path: &std::path::Path,
+    width: u64,
+    height: u64,
+    bands: u16,
+    data_type: RasterDataType,
+) -> Vec<u8> {
+    assert!(
+        matches!(data_type, RasterDataType::UInt8 | RasterDataType::UInt16),
+        "multi-band fixtures cover UInt8 and UInt16 only, got {data_type:?}"
+    );
+    let span: u64 = match data_type {
+        RasterDataType::UInt8 => 60,
+        _ => 10_000,
+    };
+    let pixel_count = (width * height) as usize;
+    let mut data = Vec::with_capacity(pixel_count * bands as usize * data_type.size_bytes());
+    for pixel in 0..pixel_count {
+        for band in 0..bands as usize {
+            let value = multiband_sample(pixel, band, span);
+            match data_type {
+                RasterDataType::UInt8 => data.push(value as u8),
+                _ => data.extend_from_slice(&(value as u16).to_le_bytes()),
+            }
+        }
+    }
+
+    let mut config = WriterConfig::new(width, height, bands, data_type)
+        .with_compression(Compression::None)
+        .with_overviews(false, oxigeo_geotiff::writer::OverviewResampling::Nearest);
+    config.tile_width = None;
+    config.tile_height = None;
+    config.predictor = oxigeo_geotiff::tiff::Predictor::None;
+
+    let mut writer = GeoTiffWriter::create(path, config, GeoTiffWriterOptions::default())
+        .expect("multi-band fixture writer should be creatable");
+    writer
+        .write(&data)
+        .expect("multi-band fixture data should be writable");
+
+    data
+}
+
+/// Asserts that every band plane of the COG at `output` matches the
+/// corresponding plane of the interleaved `expected` input buffer.
+fn assert_bands_match(
+    output: &std::path::Path,
+    expected: &[u8],
+    width: u64,
+    height: u64,
+    bands: usize,
+    data_type: RasterDataType,
+) {
+    let reader = GeoTiffReader::open(FileDataSource::open(output).expect("output should open"))
+        .expect("output should be readable");
+    assert_eq!(
+        reader.band_count() as usize,
+        bands,
+        "converted COG must keep all {bands} bands, reports {}",
+        reader.band_count()
+    );
+    assert_eq!(
+        reader.data_type(),
+        Some(data_type),
+        "converted COG must preserve the input data type"
+    );
+
+    let sample_size = data_type.size_bytes();
+    let pixel_count = (width * height) as usize;
+    for band in 0..bands {
+        let plane = reader
+            .read_band(0, band)
+            .map_err(|e| format!("band {band} of the converted COG should be readable: {e}"))
+            .expect("per-band read");
+        assert_eq!(
+            plane.len(),
+            pixel_count * sample_size,
+            "band {band} plane length: expected {} bytes, got {}",
+            pixel_count * sample_size,
+            plane.len()
+        );
+        for pixel in 0..pixel_count {
+            let got = &plane[pixel * sample_size..(pixel + 1) * sample_size];
+            let src = (pixel * bands + band) * sample_size;
+            let want = &expected[src..src + sample_size];
+            assert_eq!(
+                got,
+                want,
+                "band {band}, pixel {pixel} (row {}, col {}): expected {want:?}, got {got:?}",
+                pixel as u64 / width,
+                pixel as u64 % width
+            );
+        }
+    }
+}
+
+/// 11. cool-japan/oxigeo#14: a multi-band input must survive conversion with
+///     every band intact.
+///
+/// `CogConverter::convert` used to feed `read_band(0, 0)` — ONE de-interleaved
+/// band plane — straight into `analyze_for_cog` and `CogWriter::write`, both of
+/// which want the chunky whole-image buffer. For an N-band input that buffer is
+/// N times too short, so the conversion failed outright ("Data too short" /
+/// "Data size mismatch"). Every other fixture in this file is single-band, which
+/// is precisely why the breakage was invisible.
+#[cfg(feature = "deflate")]
+#[test]
+fn test_issue_14_convert_multiband_preserves_all_bands() {
+    // (a) 3-band UInt8 through the auto-optimize path, so the multi-band buffer
+    // also reaches `analyze_for_cog`. Compression is pinned to Deflate so the
+    // read-back does not depend on whichever codec the optimizer prefers.
+    let input = temp_path("multiband_rgb_in", "tif");
+    let output = temp_path("multiband_rgb_out", "tif");
+    let (width, height, bands) = (640u64, 544u64, 3u16);
+    let expected = write_multiband_fixture(&input, width, height, bands, RasterDataType::UInt8);
+
+    let result = CogConverter::new(input.to_string_lossy().to_string())
+        .output(output.to_string_lossy().to_string())
+        .auto_optimize()
+        .with_compression(Compression::Deflate)
+        .convert()
+        .expect("3-band conversion should succeed");
+    assert!(
+        result.output_size > 0,
+        "3-band conversion must write a real file"
+    );
+
+    assert_bands_match(
+        &output,
+        &expected,
+        width,
+        height,
+        bands as usize,
+        RasterDataType::UInt8,
+    );
+
+    cleanup(&input);
+    cleanup(&output);
+
+    // (b) 4-band UInt16 with fully explicit settings: proves the fix is not
+    // specific to 8-bit samples or to three bands.
+    let input = temp_path("multiband_u16_in", "tif");
+    let output = temp_path("multiband_u16_out", "tif");
+    let (width, height, bands) = (128u64, 96u64, 4u16);
+    let expected = write_multiband_fixture(&input, width, height, bands, RasterDataType::UInt16);
+
+    let _result = CogConverter::new(input.to_string_lossy().to_string())
+        .output(output.to_string_lossy().to_string())
+        .with_tile_size(32, 32)
+        .with_compression(Compression::Deflate)
+        .with_overviews(&[2])
+        .convert()
+        .expect("4-band UInt16 conversion should succeed");
+
+    assert_bands_match(
+        &output,
+        &expected,
+        width,
+        height,
+        bands as usize,
+        RasterDataType::UInt16,
+    );
+
+    cleanup(&input);
+    cleanup(&output);
+}
+
 /// 1. End-to-end: a classic TIFF fixture converts to a COG and reports success.
 ///
 /// The fixture is intentionally larger than 512 px so the automatic
 /// `analyze_for_cog` analysis path (no explicit settings) can derive overview
 /// levels for it.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_classic_tiff_to_cog_roundtrip() {
     let input = temp_path("roundtrip_in", "tif");
@@ -140,6 +330,7 @@ fn test_cog_converter_classic_tiff_to_cog_roundtrip() {
 ///
 /// Uses a small fixture with fully explicit settings so the conversion does not
 /// depend on the size-sensitive auto-analysis path.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_output_file_exists_and_nonempty() {
     let input = temp_path("exists_in", "tif");
@@ -165,6 +356,7 @@ fn test_cog_converter_output_file_exists_and_nonempty() {
 }
 
 /// 3. `output_size` is the real measured file length — NOT `input * 0.8`.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_output_size_is_measured_not_fabricated() {
     let input = temp_path("measured_in", "tif");
@@ -197,6 +389,7 @@ fn test_cog_converter_output_size_is_measured_not_fabricated() {
 }
 
 /// 4. `compression_ratio` is derived from the real input/output sizes.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_compression_ratio_reflects_real_sizes() {
     let input = temp_path("ratio_in", "tif");
@@ -226,6 +419,7 @@ fn test_cog_converter_compression_ratio_reflects_real_sizes() {
 }
 
 /// 5. An explicitly requested 256x256 tile size is honoured in the result.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_explicit_tile_size_honoured() {
     let input = temp_path("tilesize_in", "tif");
@@ -264,6 +458,7 @@ fn test_cog_converter_explicit_tile_size_honoured() {
 ///
 /// With no explicit tile size / compression / overviews, the converter must
 /// fall back to settings derived from `analyze_for_cog` over the real pixels.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_auto_optimize_chooses_settings() {
     let input = temp_path("auto_in", "tif");
@@ -300,6 +495,7 @@ fn test_cog_converter_auto_optimize_chooses_settings() {
 }
 
 /// 7. Progress callbacks fire in the documented step order.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_progress_callbacks_fire_in_order() {
     let input = temp_path("progress_in", "tif");
@@ -357,6 +553,7 @@ fn test_cog_converter_progress_callbacks_fire_in_order() {
 }
 
 /// 8. The produced file passes the crate's `validate_cog` COG check.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_output_validates_as_cog() {
     let input = temp_path("valid_in", "tif");
@@ -397,6 +594,7 @@ fn test_cog_converter_output_validates_as_cog() {
 
 /// 9. The converter detects the input data type from the IFD, not a hard-coded
 ///    `UInt8`. A `Float32` input must round-trip as a `Float32` COG.
+#[cfg(feature = "deflate")]
 #[test]
 fn test_cog_converter_detects_input_data_type() {
     let input = temp_path("dtype_in", "tif");

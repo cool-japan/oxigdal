@@ -681,7 +681,48 @@ mod tests {
     use super::*;
     use crate::writer::{Hdf5Version, Hdf5Writer};
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::NamedTempFile;
+
+    /// Per-test scratch fixture inside the system temp dir (house policy: no
+    /// hardcoded absolute paths).
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two test
+    /// binaries — nor two concurrent runs of this one — can ever land on the same
+    /// file.  Dropping the guard removes the fixture, so a panicking test leaks
+    /// nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_hdf5_reader_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl std::ops::Deref for TempPath {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_hdf5_signature() {
@@ -743,8 +784,7 @@ mod tests {
     /// data, then read the genuine `.h5` back and assert the decoded values.
     #[test]
     fn test_real_roundtrip_i32_values() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_reader_roundtrip_i32.h5");
+        let path = TempPath::new("roundtrip_i32.h5");
 
         {
             let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
@@ -771,16 +811,13 @@ mod tests {
         }
         let values = reader.read_i32("/counts").expect("read i32");
         assert_eq!(values, vec![10, 20, 30, 40, 50]);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Read a genuine `.h5` produced directly by `oxih5::FileWriter`, asserting
     /// real dataset values and a real dataset attribute survive the round-trip.
     #[test]
     fn test_read_real_oxih5_fixture() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_reader_oxih5_fixture.h5");
+        let path = TempPath::new("oxih5_fixture.h5");
 
         {
             let mut w = oxih5::FileWriter::new();
@@ -810,8 +847,6 @@ mod tests {
             title.as_string().ok(),
             Some("Real HDF5 Fixture".to_string())
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A real HDF5 dataset whose Datatype message declares **big-endian**
@@ -830,8 +865,7 @@ mod tests {
     /// real object-header datatype parsing + byte-swap path end to end.
     #[test]
     fn test_read_f64_normalizes_big_endian_source_bytes() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_reader_big_endian.h5");
+        let path = TempPath::new("big_endian.h5");
 
         // The exact 24-byte F64 (little-endian) datatype-message body oxih5's
         // writer always emits (see `oxih5::write::messages::write_datatype_body`).
@@ -902,8 +936,6 @@ mod tests {
         let mut reader = Hdf5Reader::open(&path).expect("open big-endian file");
         let read_values = reader.read_f64("/x").expect("read_f64");
         assert_eq!(read_values, values.to_vec());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A dataset written with a real chunked layout must have its chunk
@@ -911,8 +943,7 @@ mod tests {
     /// `decode_chunk` usable rather than always erroring with `Layout`.
     #[test]
     fn test_chunked_dataset_populates_chunk_dims_on_read() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oxigeo_hdf5_reader_chunked_roundtrip.h5");
+        let path = TempPath::new("chunked_roundtrip.h5");
 
         {
             let mut writer = Hdf5Writer::create(&path, Hdf5Version::V10).expect("create writer");
@@ -952,7 +983,5 @@ mod tests {
         // Real values still read correctly through the normal path too.
         let values = reader.read_f64("/chunked").expect("read f64");
         assert_eq!(values, (0..8).map(|i| i as f64).collect::<Vec<_>>());
-
-        let _ = std::fs::remove_file(&path);
     }
 }

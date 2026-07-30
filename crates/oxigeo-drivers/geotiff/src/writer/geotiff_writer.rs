@@ -625,19 +625,58 @@ mod tests {
     use crate::tiff::Compression;
     use oxigeo_core::types::RasterDataType;
 
+    /// An RAII fixture path inside [`std::env::temp_dir`].
+    ///
+    /// The leaf name embeds the process id and a monotonic counter, so no two
+    /// test binaries — nor two concurrent runs of this one — can ever land on
+    /// the same file.  Dropping the guard removes the fixture, so a panicking
+    /// test leaks nothing.
+    struct TempPath(std::path::PathBuf);
+
+    impl TempPath {
+        fn new(name: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "oxigeo_geotiff_writer_unit_{}_{seq}_{name}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn test_writer_creation() {
         let config = WriterConfig::new(256, 256, 1, RasterDataType::UInt8)
             .with_compression(Compression::Lzw);
 
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("test_geotiff.tif");
+        let temp_file = TempPath::new("creation.tif");
 
-        let result = GeoTiffWriter::create(&temp_file, config, GeoTiffWriterOptions::default());
-
-        if result.is_ok() {
-            // Clean up
-            let _ = std::fs::remove_file(&temp_file);
-        }
+        // `create` must actually succeed — the old body only cleaned up when it
+        // happened to work, so a writer that could never be constructed still
+        // passed this test.
+        let writer = GeoTiffWriter::create(&temp_file, config, GeoTiffWriterOptions::default());
+        assert!(
+            writer.is_ok(),
+            "GeoTiffWriter::create must succeed for a valid 256x256 UInt8 config: {:?}",
+            writer.err()
+        );
+        drop(writer);
+        assert!(
+            temp_file.as_ref().exists(),
+            "create must have opened the output file on disk"
+        );
     }
 }

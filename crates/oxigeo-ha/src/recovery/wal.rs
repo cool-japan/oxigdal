@@ -301,10 +301,16 @@ mod tests {
     #[tokio::test]
     async fn test_wal_operations() {
         let config = RecoveryConfig::default();
-        let wal_dir = std::env::temp_dir().join("oxigeo-ha-test-wal");
+        // Unique per process so concurrent test binaries never share a WAL
+        // directory (a shared one makes segment numbering non-deterministic).
+        let wal_dir = std::env::temp_dir().join(format!(
+            "oxigeo-ha-test-wal-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
         tokio::fs::create_dir_all(&wal_dir).await.ok();
 
-        let manager = WalManager::new(config, wal_dir);
+        let manager = WalManager::new(config, wal_dir.clone());
         assert!(manager.initialize().await.is_ok());
 
         let entry = manager.write_entry(vec![1, 2, 3, 4, 5]).await.ok();
@@ -314,5 +320,7 @@ mod tests {
             assert_eq!(e.transaction_id, 1);
             assert!(e.verify_checksum().is_ok());
         }
+
+        let _ = tokio::fs::remove_dir_all(&wal_dir).await;
     }
 }

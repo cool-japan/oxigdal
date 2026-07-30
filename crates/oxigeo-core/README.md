@@ -23,7 +23,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-core = "0.2.1"
+oxigeo-core = "0.2.2"
 ```
 
 ### Feature Flags
@@ -37,7 +37,7 @@ Example with arrow support:
 
 ```toml
 [dependencies]
-oxigeo-core = { version = "0.2.1", features = ["arrow"] }
+oxigeo-core = { version = "0.2.2", features = ["arrow"] }
 ```
 
 ## Quick Start
@@ -85,6 +85,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Vector Types
 
 - **`GeometryType`** - Point, LineString, Polygon, and Multi-geometry types
+
+### Typed Conversion (`RasterElement`)
+
+- **`RasterElement`** - sealed trait for the ten scalar raster sample types
+  (`u8/i8/u16/i16/u32/i32/u64/i64/f32/f64`); defines each type's on-disk byte
+  width, `RasterDataType` tag, and native-endian byte conversion, plus exact
+  integer-to-integer conversion via an `i128` bridge (never lossy through `f64`)
+- **`convert_raw_into`/`convert_raw_bytes`/`elements_as_bytes`** - bulk,
+  allocation-free conversion between raw driver bytes and typed sample slices
+- **`RasterBuffer::from_element_slice`/`copy_to_slice`/`to_typed_vec`** - typed,
+  zero-copy construction and readout for `RasterBuffer`
+- **`DataSource::read_range_into`/`range_slice`** - fast-path trait methods for
+  reading into a caller-owned buffer; `FileDataSource` and `MmapDataSource`
+  override both for real positional/zero-copy reads
 
 ## Usage
 
@@ -293,7 +307,7 @@ cargo check --package oxigeo-core --no-default-features --features alloc
 
 ## License
 
-Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0).
+Licensed under the Apache License, Version 2.0 ([LICENSE](../../LICENSE) or http://www.apache.org/licenses/LICENSE-2.0).
 
 ## Authors
 
