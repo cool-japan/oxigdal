@@ -10,26 +10,28 @@
 
 > **Note:** **OxiGeo** is the new name of **OxiGDAL**. v0.1.7 was the final release under the OxiGDAL name; development continues as OxiGeo from v0.2.0 with an otherwise identical codebase. This project is an independent reimplementation and is not affiliated with the GDAL project.
 
-[![OxiGeo GeoSentinel — Sentinel-2 change detection running entirely in the browser in Pure-Rust WebAssembly: NDVI-drop polygons over the Lahaina wildfire burn scar](docs/media/geosentinel-hero.png)](https://cooljapan.tech/geosentinel/)
+[![OxiGeo GeoSentinel — Sentinel-2 before/after animation of the 28 July 2026 M7.1 Kumamoto earthquake, showing a new 52 ha bare-ground scar on the south-east flank of Mt Mayuyama above Shimabara](docs/media/kumamoto-mayuyama.gif)](https://cooljapan.tech/geosentinel/)
+
+<sub>**Mj7.1 Kumamoto earthquake, 28 July 2026, 16:27 JST.** Five consecutive Sentinel-2 L2A passes over Mt Mayuyama, above Shimabara, at 10 m: unbroken forest a year earlier, cloud over the site on every pass in the fortnight before the quake, then the slope reappearing the next morning already scarred, and clearing completely six days later. Change detection against the 2025 scene — same season, so vegetation phenology cancels — at NDVI drop ≥ 0.15 and a 0.5 ha minimum patch finds **168.8 ha across 85 patches** over the full preset area of interest, the largest being this **52 ha bare-ground scar**; the animation is a crop holding 114 ha of that. What the pictures can and cannot say: the scar is absent on 2025-07-29 and present ~19 hours after the earthquake, but every 2026 pre-event pass was overcast over the site (2.5%, 12.1% and 0.0% clear on 07-14, 07-21 and 07-24), so imagery alone dates the failure only to that 12-month interval. Note too where this method does *not* look — the epicentral damage in Kumamoto Prefecture itself, collapsed buildings, bridge failures, liquefaction and fires, leaves no NDVI signature at all. Every step, from the STAC search to the polygon areas, runs in the browser in Pure-Rust WebAssembly, and it is the first preset in the live demo. **[Run it yourself](https://cooljapan.tech/geosentinel/)**</sub>
 
 **GeoSentinel**: watch any place on Earth for change — and tell no one where you're looking. It searches the public Earth Search STAC API for a cloud-filtered Sentinel-2 scene pair, streams only the needed COG windows via HTTP range requests, and runs the whole change-detection pipeline — NDVI difference, thresholding, polygonization, geodesic areas, GeoJSON export — 100% client-side in Pure-Rust WebAssembly; your area of interest never leaves your machine. **[Try it live](https://cooljapan.tech/geosentinel/)** — one of **four** hosted [demos](#demos) below, alongside [GeoLab](#geolab--terrain-analysis-on-streamed-cogs), [GeoVault](#geovault--sovereign-clean-room-workstation), and [GeoParquet Live](#geoparquet-live--query-59-gb-with-no-database).
 
-OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. The current release is **v0.2.2**, a correctness campaign centered on [issue #14](https://github.com/cool-japan/oxigeo/issues/14) — `Dataset::read_band` silently returning the whole pixel-interleaved image instead of one band — root-caused and fixed at the GeoTIFF driver level, with the same defect pattern independently found and fixed across a dozen downstream crates. It builds on **v0.2.1**'s production-hardening pass (2026-07-28) and **v0.2.0**, published to crates.io on 2026-07-20 as the first release under the OxiGeo name — a rename-only release, functionally identical to v0.1.7, which was published the same day as the final release under the OxiGDAL name (v0.1.6 released 2026-06-15). The library delivers ~791K Rust SLoC across **75 workspace crates**, covering 16 geospatial format drivers exposed through `oxigeo::Dataset::open()` (plus separate KML/KMZ and TopoJSON format support in dedicated crates, see [Format Drivers](#architecture)), full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
+OxiGeo is a comprehensive, production-ready geospatial data abstraction library written in **100% Pure Rust** with zero C/C++/Fortran dependencies in default features. The current release is **v0.2.3**, which implements real Warped VRT support — reading and resampling `<GDALWarpOptions>` VRTs such as `gdalwarp -of VRT` output ([issue #15](https://github.com/cool-japan/oxigeo/issues/15)) — and a public vector-layer API, `Dataset::layers()`/`Layer::features()` for GeoPackage/Shapefile/GeoJSON ([issue #16](https://github.com/cool-japan/oxigeo/issues/16)). It builds on **v0.2.2**'s issue #14 correctness campaign (2026-07-30), **v0.2.1**'s production-hardening pass (2026-07-28), and **v0.2.0**, published to crates.io on 2026-07-20 as the first release under the OxiGeo name — a rename-only release, functionally identical to v0.1.7, which was published the same day as the final release under the OxiGDAL name (v0.1.6 released 2026-06-15). The library delivers ~797K Rust SLoC across **75 workspace crates**, covering 16 geospatial format drivers exposed through `oxigeo::Dataset::open()` (plus separate KML/KMZ and TopoJSON format support in dedicated crates, see [Format Drivers](#architecture)), full CRS transformations, raster/vector algorithms, cloud-native I/O, GPU acceleration, enterprise security, and cross-platform bindings (Python, Node.js, WASM, iOS, Android).
 
 ## Project Statistics
 
 | Metric | Value |
 |--------|-------|
-| **Version** | 0.2.2 (2026-07-30, issue #14 correctness campaign); v0.2.1 released 2026-07-28 (production-hardening); v0.2.0 published 2026-07-20 (first OxiGeo release, rename-only); v0.1.7 published 2026-07-20 (final OxiGDAL release); v0.1.6 released 2026-06-15 |
-| **Rust SLoC** | ~791K across 2,501 `.rs` files (via `tokei`) |
-| **Total SLoC** | ~819K (all languages, via `tokei`) |
+| **Version** | 0.2.3 (2026-08-05, Warped VRT + vector layers — issues #15/#16); v0.2.2 released 2026-07-30 (issue #14 correctness campaign); v0.2.1 released 2026-07-28 (production-hardening); v0.2.0 published 2026-07-20 (first OxiGeo release, rename-only); v0.1.7 published 2026-07-20 (final OxiGDAL release); v0.1.6 released 2026-06-15 |
+| **Rust SLoC** | ~797K across 2,519 `.rs` files (via `tokei`) |
+| **Total SLoC** | ~842K (all languages, via `tokei`) |
 | **Workspace crates** | 75 |
-| **Tests** | 18,133 passing (101 skipped), 0 failures (`--all-features`); 16,684 passing (80 skipped) on default features; 402 doc tests passing |
+| **Tests** | 18,184 passing (101 skipped), 0 failures (`--all-features`); 16,722 passing (80 skipped) on default features; 412 doc tests passing (86 ignored) |
 | **Format drivers** | 16, exposed through `oxigeo::Dataset::open()` (GeoTIFF/COG, GeoJSON, Shapefile, GeoParquet, NetCDF, HDF5, Zarr, GRIB, FlatGeobuf, JPEG2000, VRT, GeoPackage, PMTiles, MBTiles, COPC, LAS/LAZ) — plus KML/KMZ (`oxigeo-drivers-advanced`) and TopoJSON writer (`oxigeo-geojson`), which ship as separate, non-`Dataset`-registry format support |
 | **EPSG definitions** | 211+ embedded (all UTM zones, national grids), O(1) lookup |
 | **Map projections** | 20+ (UTM 1-60, Web Mercator, LCC, Albers, Polar Stereo, Japan Plane Rect, ...) |
 | **Supported platforms** | Linux, macOS, Windows, WASM, iOS, Android, embedded (no_std) |
-| **Estimated dev cost** | $31.68M equivalent (COCOMO) |
+| **Estimated dev cost** | $31.85M equivalent (COCOMO) |
 
 ## Why OxiGeo?
 
@@ -413,8 +415,8 @@ Tooling
 | GRIB1/GRIB2 | yes | — | — | — | Meteorological parameter tables |
 | FlatGeobuf | yes | yes | yes | yes | Spatial filter during decode |
 | JPEG2000 | yes | — | — | — | Wavelet DWT, tier-1 |
-| VRT | yes | yes | — | — | Band math, mosaic |
-| GeoPackage | yes | partial | — | — | SQLite-based, vector features + tiles (write: point feature tables only, single-page B-tree) |
+| VRT | yes | yes | — | — | Band math, mosaic; reads/executes Warped VRTs (`<GDALWarpOptions>`, e.g. `gdalwarp -of VRT` output) |
+| GeoPackage | yes | partial | — | — | SQLite-based, vector features + tiles; layers/features via `Dataset::layers()` (needs the non-default `gpkg` feature) — write: point feature tables only, single-page B-tree |
 | PMTiles v3 | yes | yes | — | — | Hilbert curve, single-file archive |
 | MBTiles | yes | yes | — | — | Tile storage, TMS/XYZ |
 | COPC | yes | — | — | — | Cloud Optimized Point Cloud, octree spatial index |
@@ -466,6 +468,28 @@ println!("Bands : {}", reader.band_count());
 
 // COG tile access (HTTP range requests supported transparently)
 let tile = reader.read_tile(0, 0, 0)?;
+```
+
+### Vector layers (Shapefile / GeoJSON / GeoPackage)
+
+```rust
+use oxigeo::Dataset;
+
+// GeoPackage needs the (non-default) `gpkg` feature; .shp and .geojson are on
+// by default.
+let dataset = Dataset::open("cities.gpkg")?;
+println!("layers  : {}", dataset.layer_count());
+
+let layer = dataset.layer(0)?;                  // or .layer_by_name("cities")
+println!("{} ({:?}), {:?} features, fields {:?}",
+         layer.name(), layer.geometry_type(), layer.feature_count(),
+         layer.field_names());
+
+for feature in layer.features()? {
+    // feature.geometry: Option<oxigeo::Geometry>
+    // feature.properties: HashMap<String, oxigeo::FieldValue>
+    println!("{:?} — {:?}", feature.geometry, feature.properties);
+}
 ```
 
 ### CRS Transformation
@@ -673,6 +697,7 @@ code. Workflow definitions can still describe Kafka endpoints via the pure-Rust
 | **v0.2.0** | 2026-07-20 (released) | Project renamed: OxiGDAL → OxiGeo. Rename-only release, functionally identical to v0.1.7; all 74 crates republished as `oxigeo`/`oxigeo-<name>` |
 | **v0.2.1** | 2026-07-28 (released) | Production-hardening campaign: 342 defects found workspace-wide, 314 fixed across 38 crate lanes (~520 files) — GeoTIFF/JPEG2000/GRIB/HDF5/NetCDF correctness fixes, WFS-T fail-closed security fix, header-driven allocation DoS hardening; new axum-backed `oxigeo-gateway` serving layer (GraphQL + WebSocket + load-balanced reverse proxy); `oxih5`/`oxinetcdf` bumped to 0.2.2, `scirs2` to 0.6.4; 75 crates, 17,723 tests |
 | **v0.2.2** | 2026-07-30 (released) | Issue #14 fix campaign: `Dataset::read_band` root-caused and fixed at the GeoTIFF driver level (new `band_read`/`band_read::multi` decode engine; also fixed a predictor cross-band-stride bug and an O(n)→O(1) tile-index lookup); the same interleaving/byte-order defect pattern independently found and fixed in a dozen downstream crates (QC, server, mobile, WASM, WCS, Node, CLI, ML, Jupyter, VRT); new `oxigeo-core` typed zero-copy `RasterElement` layer and zero-allocation `read_interleaved`/`read_band_into`/`read_window_into` readers; DEFLATE tile decode 1.45–1.79× faster (`oxiarc-*` 0.4.0); plus unrelated fixes (streaming `ChunkedReader` first-read failure, mbtiles spill-file leak, ML pruning concurrency corruption, wasm32 `oxigeo-compress` build); 75 crates, 18,133 tests |
+| **v0.2.3** | 2026-08-05 (release-ready) | Warped VRT support (issue #15): real `<GDALWarpOptions>` warp engine (new `warp`/`warped`/`srs`/`source_dataset` modules in `oxigeo-vrt`), depth-aware WKT `AUTHORITY` resolution (fixed a WKT naming EPSG:4326 silently resolving to the spheroid's EPSG:7030), `relativeToVRT` round-trip, quick-xml 0.41 entity-reference fix, facade `.vrt` support (`Dataset::open` previously returned zeroed metadata); Cubic/CubicSpline/Lanczos/Average/Mode parse but currently resample bilinearly (`WarpResampleAlg::is_kernel_exact()`). Vector layers (issue #16): new `Dataset::layers()`/`layer()`/`layer_by_name()`/`layer_names()` and `Layer::features()` API for GeoPackage/Shapefile/GeoJSON; GeoPackage `fid` rowid-alias fix and table-constraint-parsed-as-column fix; FlatGeobuf/GeoParquet remain streaming-only. 75 crates, 18,184 tests |
 | **v0.3.0** | Q3 2026 | Streaming v2, cloud-native tile server v2, extended STAC support |
 | **v1.0.0** | Q4 2026 | LTS commitment, enterprise compliance certifications |
 

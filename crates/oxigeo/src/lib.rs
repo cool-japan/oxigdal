@@ -118,6 +118,40 @@
 //! is what makes [`Dataset::read_band_into`] beat the decode-then-convert
 //! workaround outright rather than merely halving its memory.
 //!
+//! ## Reading vector features
+//!
+//! Vector datasets are read through **layers**, the same way GDAL's OGR side
+//! works: [`Dataset::layers`] enumerates them, and [`Layer::features`] yields
+//! [`Feature`]s carrying a [`Geometry`] and a map of attribute [`FieldValue`]s.
+//!
+//! ```rust,no_run
+//! use oxigeo::Dataset;
+//!
+//! # fn main() -> oxigeo::Result<()> {
+//! let ds = Dataset::open("cities.gpkg")?;   // or .shp, or .geojson
+//! println!("{} layer(s)", ds.layer_count());
+//!
+//! let layer = ds.layer(0)?;                 // also: ds.layer_by_name("cities")
+//! println!("{}: {:?}, {:?} features, fields {:?}",
+//!          layer.name(), layer.geometry_type(), layer.feature_count(),
+//!          layer.field_names());
+//!
+//! for feature in layer.features()? {
+//!     println!("{:?} — {:?}", feature.geometry, feature.properties);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Layer reading is implemented for **ESRI Shapefile** and **GeoJSON** (both
+//! default features) and for **GeoPackage** (feature `gpkg`, *not* on by
+//! default — `oxigeo = { version = "0.2", features = ["gpkg"] }`).  Any other
+//! format returns [`OxiGeoError::NotSupported`] naming the driver rather than
+//! silently reporting zero layers.  For the remaining vector formats
+//! (FlatGeobuf, GeoParquet, STAC) the streaming API
+//! ([`streaming::StreamingExt`]) yields features with WKB geometry and JSON
+//! properties.
+//!
 //! ## Feature Flags
 //!
 //! | Feature | Default | Description |
@@ -135,6 +169,11 @@
 //! | `vrt` | ❌ | Virtual Raster Tiles |
 //! | `flatgeobuf` | ❌ | FlatGeobuf vector format |
 //! | `jpeg2000` | ❌ | JPEG2000 raster format |
+//! | `gpkg` | ❌ | GeoPackage (SQLite) — vector layers and tiles |
+//! | `pmtiles` | ❌ | PMTiles v3 tile archive |
+//! | `mbtiles` | ❌ | MBTiles tile archive |
+//! | `copc` | ❌ | COPC / LAS / LAZ point clouds |
+//! | `index` | ❌ | Spatial indexing (R-tree, grid) |
 //! | `full` | ❌ | **All formats above** |
 //! | `parallel` | ❌ | Multi-threaded (rayon) block decoding for raster reads |
 //! | `cloud` | ❌ | Cloud storage (S3, GCS, Azure) |
@@ -155,6 +194,10 @@
 //! |---|---|
 //! | `GDALOpen()` | [`Dataset::open()`] |
 //! | `GDALGetRasterBand()` | `dataset.raster_band(n)` |
+//! | `GDALDatasetGetLayerCount()` | [`Dataset::layer_count()`] |
+//! | `GDALDatasetGetLayer()` | [`Dataset::layer()`] / [`Dataset::layer_by_name()`] |
+//! | `OGRLayer::GetNextFeature()` | [`Layer::features()`] |
+//! | `OGR_F_GetFieldAsString()` | `feature.properties.get(name)` |
 //! | `GDALGetGeoTransform()` | [`Dataset::geotransform()`] |
 //! | `GDALGetProjectionRef()` | [`Dataset::crs()`] |
 //! | `GDALAllRegister()` | [`drivers()`] |
@@ -212,6 +255,14 @@ pub use oxigeo_core::error::OxiGeoError;
 pub use oxigeo_core::error::Result;
 pub use oxigeo_core::types::{BoundingBox, GeoTransform, RasterDataType, RasterMetadata};
 
+/// Vector feature model — the currency of the layer API ([`Dataset::layers`],
+/// [`Layer::features`]).
+///
+/// A [`Feature`] pairs an optional [`Geometry`] with a map of attribute
+/// [`FieldValue`]s.  Re-exported here so that reading features never requires a
+/// direct dependency on `oxigeo-core`.
+pub use oxigeo_core::vector::{Feature, FeatureId, FieldValue, Geometry};
+
 /// Element types a raster can be read into — the bound on
 /// [`Dataset::read_band_into`] and [`Dataset::read_window_into`].
 ///
@@ -235,6 +286,15 @@ pub mod streaming;
 /// GeoPackage feature streaming helper (feature-gated: `gpkg`).
 #[cfg(feature = "gpkg")]
 pub(crate) mod streaming_geopackage;
+
+/// GeoPackage table-schema parsing shared by the layer and streaming readers
+/// (feature-gated: `gpkg`).
+#[cfg(feature = "gpkg")]
+pub(crate) mod gpkg_schema;
+
+/// Vector layer access: [`Dataset::layers`], [`Layer`] and its features.
+pub mod layer;
+pub use layer::{Layer, LayerFeatures};
 
 /// GeoParquet feature streaming helper (feature-gated: `geoparquet`).
 #[cfg(feature = "geoparquet")]
@@ -623,6 +683,8 @@ impl Dataset {
         // have no header probe yet and honestly report `None` everywhere.
         let mut info = match format {
             DatasetFormat::GeoTiff => crate::open::extract_tiff_info(p)?,
+            #[cfg(feature = "vrt")]
+            DatasetFormat::Vrt => crate::open::extract_vrt_info(p)?,
             _ => DatasetInfo {
                 format,
                 path: Some(path.to_string()),
@@ -671,6 +733,8 @@ impl Dataset {
             DatasetFormat::FlatGeobuf => crate::open::extract_flatgeobuf_info(p)?,
             #[cfg(feature = "geoparquet")]
             DatasetFormat::GeoParquet => crate::open::extract_geoparquet_info(p)?,
+            #[cfg(feature = "gpkg")]
+            DatasetFormat::GeoPackage => crate::open::extract_gpkg_info(p)?,
             _ => DatasetInfo {
                 format,
                 path: Some(path.to_string()),

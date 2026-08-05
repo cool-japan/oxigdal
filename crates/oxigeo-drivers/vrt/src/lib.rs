@@ -132,6 +132,10 @@ pub mod error;
 pub mod mosaic;
 pub mod reader;
 pub mod source;
+pub mod source_dataset;
+pub mod srs;
+pub mod warp;
+pub(crate) mod warped;
 pub mod xml;
 
 // Re-export commonly used types
@@ -140,8 +144,14 @@ pub use builder::{MosaicBuilder, VrtBuilder};
 pub use dataset::{VrtDataset, VrtMetadata, VrtSubclass};
 pub use error::{Result, VrtError};
 pub use mosaic::{BlendMode, CompositeParams, MosaicCompositor, MosaicPlanner};
-pub use reader::{SourceDataset, VrtReader};
+pub use reader::VrtReader;
 pub use source::{PixelRect, SourceFilename, SourceProperties, SourceWindow, VrtSource};
+pub use source_dataset::SourceDataset;
+pub use srs::resolve_crs;
+pub use warp::{
+    GenImgProjTransformer, InitDest, ReprojectionTransformer, WarpBandMapping, WarpKernel,
+    WarpOptions, WarpResampleAlg,
+};
 pub use xml::{VrtXmlParser, VrtXmlWriter};
 
 /// Checks if data looks like a VRT file

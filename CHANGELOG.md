@@ -5,6 +5,149 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-08-05
+
+**Issues #15 and #16.** [GitHub issue #15](https://github.com/cool-japan/oxigeo/issues/15)
+reported that `oxigeo-vrt` rejected every `gdalwarp -of VRT` product — a Warped
+VRT's `<GDALWarpOptions>` block — with "Band must have at least one source or
+a pixel function": the driver understood mosaics and pixel-function VRTs but
+had no concept of a warp at all. [Issue #16](https://github.com/cool-japan/oxigeo/issues/16)
+reported that vector-layer support was incomplete: `Dataset::open` on a
+GeoPackage reported `layer_count() == 0`, and there was no public API to read
+a layer's features regardless of format. Both are now implemented for real —
+4 new files in `oxigeo-vrt` (1,635 lines: `warp.rs`, `warped.rs`, `srs.rs`,
+`source_dataset.rs`) and 2 new files in `oxigeo` (1,405 lines: `layer.rs`,
+`gpkg_schema.rs`) — alongside [issue #14](https://github.com/cool-japan/oxigeo/issues/14)
+("how do I read a GeoTIFF into `ndarray::Array2`"), which needed no code
+change: the readers it asked for (`read_band_into`, `read_window_into`,
+`read_interleaved(_into)`, `read_window_interleaved(_into)`) already shipped
+in 0.2.2.
+
+### Added
+
+**Warped VRT support (`oxigeo-vrt`, cool-japan/oxigeo#15)**
+
+- New `warp` module: `WarpOptions` (the parsed `<GDALWarpOptions>` block),
+  `WarpResampleAlg` — `is_kernel_exact()` reports which resample algorithms the
+  engine implements exactly rather than approximates, see the known-limitation
+  note under Fixed below — `WarpKernel`, `WarpBandMapping`, `InitDest`,
+  `ReprojectionTransformer`, `GenImgProjTransformer`.
+- New `srs` module: `resolve_crs`, a WKT/PROJ4/`EPSG:n` CRS-string resolver.
+- New `source_dataset` module: `SourceDataset`, which dispatches a warp's
+  source to a GeoTIFF leaf reader or recurses into a nested VRT
+  (`MAX_VRT_NESTING = 16`, so a VRT that references itself fails cleanly
+  instead of exhausting the stack).
+- `VrtDataset::with_warp_options`/`is_warped`; a new `VrtError::EmptyWindow`
+  variant (`VrtError::empty_window`) that distinguishes "no source covers this
+  window" — legitimate on a warp over a sparse mosaic, GDAL's
+  `ERROR_OUT_IF_EMPTY_SOURCE_WINDOW=FALSE` behavior — from a real structural
+  error, so a routine mosaic gap can't also mask genuine failures.
+- `oxigeo-vrt` gained a new dependency on `oxigeo-proj` to perform the
+  reprojection. Pure Rust: `oxigeo-proj`'s default feature set excludes the
+  `oxiproj-db`/tokio EPSG-database path, so this does not pull SQLite into a
+  default `oxigeo-vrt` build.
+
+**Vector layers (`oxigeo`, cool-japan/oxigeo#16)**
+
+- `Dataset::layers() -> Result<Vec<Layer>>`, `Dataset::layer(index)`,
+  `Dataset::layer_by_name(name)`, `Dataset::layer_names()`; `Layer::features()
+  -> Result<LayerFeatures>` (eager). New `oxigeo::{Layer, LayerFeatures}`, and
+  `oxigeo::{Feature, FieldValue, Geometry}` re-exported from
+  `oxigeo-core::vector` so reading features needs no direct `oxigeo-core`
+  dependency.
+- New `crates/oxigeo/src/layer.rs` (the `layers()` dispatch plus the
+  Shapefile/GeoJSON/GeoPackage readers) and `crates/oxigeo/src/gpkg_schema.rs`
+  (a `CREATE TABLE` column/constraint parser shared by the new layer reader and
+  the existing streaming GeoPackage path, so a schema fix lands in both at
+  once).
+
+### Changed
+
+- Dependency bump: `scirs2-core` 0.6.4 → 0.6.5, `oxicode` 0.2.4 → 0.2.5 —
+  routine latest-crates-on-crates.io maintenance. `oxicode` 0.2.5 is a
+  hardening release (DoS/panic/overflow rejections added to its decode paths);
+  neither bump changes any OxiGeo-visible API or behavior.
+
+### Fixed
+
+**`oxigeo-vrt` (cool-japan/oxigeo#15)**
+
+- **Every Warped VRT was rejected at parse time.** A `VRTWarpedRasterBand`
+  legitimately carries no `<SimpleSource>`/`<ComplexSource>`/pixel function —
+  its pixels come entirely from the sibling `<GDALWarpOptions>` block — but
+  `VrtDataset::validate` applied the same "Band must have at least one source
+  or a pixel function" rule regular VRTs need, rejecting every warped VRT GDAL
+  has ever written. The rule is now relaxed exactly when a validated
+  `<GDALWarpOptions>` block is present (`VrtDataset::is_warped`); a
+  `VRTWarpedDataset` that carries the `subClass` marker but no warp block is
+  still rejected, since it then has no source for any pixel.
+- **Depth-aware `AUTHORITY`/`ID` resolution in WKT CRS strings.** The previous
+  scan returned the *first* `AUTHORITY[...]`/`ID[...]` node found anywhere in
+  a WKT tree. In a `GEOGCS`, that is the node nested inside `SPHEROID` (e.g.
+  `AUTHORITY["EPSG","7030"]`, the ellipsoid's own code), which precedes the
+  CRS's own root-level code (e.g. `AUTHORITY["EPSG","4326"]`) in the string. A
+  source WKT naming EPSG:4326 was silently resolved as EPSG:7030 — the wrong
+  CRS, and one close enough in practice to distort output rather than fail
+  loudly. `srs::resolve_crs` now tracks bracket depth and reads only the
+  direct-child `AUTHORITY`/`ID` of the root node.
+- **`relativeToVRT` was discarded on both read and write.** Parsing a
+  `<SourceFilename relativeToVRT="1">` silently dropped the attribute (every
+  path was treated as absolute), and writing one never emitted it either — so
+  OxiGeo could not read back a VRT written by its own `oxigeo buildvrt`
+  wherever that VRT used relative source paths. Both directions now round-trip
+  the attribute.
+- **quick-xml 0.41 entity-reference events were dropped, corrupting escaped
+  text.** quick-xml reports `&quot;`/`&amp;`/`&#34;` as their own
+  `Event::GeneralRef`, separate from the surrounding `Event::Text`; those
+  events fell through the XML parser's catch-all arm and vanished. A `<SRS>`
+  block written by this crate's own `VrtXmlWriter` (which escapes the quotes
+  in a WKT tree) read back with every `"` missing, and any path containing `&`
+  silently lost it.
+- `VrtReader::read_window`'s band-to-index conversion was an unchecked `band -
+  1`, an integer-underflow panic waiting for a caller that passed band `0`;
+  now `checked_sub` with a typed `VrtError::band_out_of_range` on failure.
+- **The `oxigeo` facade opened `.vrt` files with a zero-filled
+  `DatasetInfo`.** `Dataset::open` routed every VRT through the generic
+  fallback arm of `open_raster`: `width()`/`height()`/`band_count()` all read
+  back `0` and `geotransform()` read back `None`, for a file that states all
+  of them in its own header. `raster_read`'s `read_band`/`read_window`/
+  `read_interleaved` (and their `_into` forms) were also hardwired to the
+  GeoTIFF path only. `Dataset::open` now parses the VRT header for real
+  metadata via a new `extract_vrt_info`, and every raster read method
+  dispatches to the VRT reader — including through nested warps and mosaics —
+  whenever the opened dataset is a VRT.
+- **Known limitation, stated rather than hidden**:
+  `WarpResampleAlg::is_kernel_exact()` is `true` only for `NearestNeighbour`
+  and `Bilinear`. Cubic, CubicSpline, Lanczos, Average, and Mode all parse
+  correctly and select their named kernel, but the warp engine currently
+  resamples every one of them bilinearly rather than with the kernel it
+  selected.
+
+**`oxigeo` GeoPackage / vector layers (cool-japan/oxigeo#16)**
+
+- **`Dataset::open("x.gpkg")` always reported 0 layers.** The facade's
+  `open_vector` had no GeoPackage arm at all, so every `.gpkg` fell through to
+  an empty `DatasetInfo::default()`. `open_vector` now calls the new
+  `extract_gpkg_info` under the (non-default) `gpkg` feature.
+- **`fid` read back `NULL` on every GeoPackage feature.** SQLite stores an
+  `INTEGER PRIMARY KEY` column as `NULL` in the row's record payload and keeps
+  the real value only in the row's own 64-bit `rowid`; naively reading the
+  stored cell therefore always produced a null `fid`. `gpkg_schema` now
+  detects an `INTEGER PRIMARY KEY` column at schema-parse time
+  (`rowid_alias`) and substitutes the row's `rowid` for it whenever the stored
+  cell is `NULL`.
+- **Named table-level constraints were parsed as columns.** A `CREATE TABLE`
+  body item such as `CONSTRAINT pk_geom_cols PRIMARY KEY (table_name,
+  column_name)` was split on its top-level commas exactly like a real column
+  list, producing bogus extra "columns". `is_table_constraint` now recognizes
+  `PRIMARY KEY`/`UNIQUE`/`CHECK`/`FOREIGN KEY`/`CONSTRAINT`-led body items and
+  skips them.
+- **Known limitation, stated rather than hidden**: `layers()` covers
+  GeoPackage (feature `gpkg`, not on by default), Shapefile, and GeoJSON.
+  FlatGeobuf and GeoParquet return `OxiGeoError::NotSupported` naming the
+  unsupported driver; both remain reachable only through the streaming feature
+  API.
+
 ## [0.2.2] - 2026-07-30
 
 **Issue #14 fix campaign.** [GitHub issue #14](https://github.com/cool-japan/oxigeo/issues/14)
@@ -1345,6 +1488,7 @@ C/C++, Rasterio, GeoPandas, and PROJ.
 - **Documentation**: <https://docs.rs/oxigeo>
 - **Issue Tracker**: <https://github.com/cool-japan/oxigeo/issues>
 
+[0.2.3]: https://github.com/cool-japan/oxigeo/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/cool-japan/oxigeo/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/cool-japan/oxigeo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/cool-japan/oxigeo/compare/v0.1.7...v0.2.0

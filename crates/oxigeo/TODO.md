@@ -1,9 +1,9 @@
 # TODO: oxigeo (umbrella crate)
 
 > **Purpose:** Pure Rust geospatial data abstraction library — the Rust alternative to GDAL
-> **Status (2026-07-28):** 5,639 Rust LoC · 261 tests · 0 real-code stubs (all `stub/placeholder` mentions are benign doc/comment text)
-> **Recent fix (2026-07-28):** GitHub issue #12 — GeoTIFF georeferencing tag values (`ModelPixelScaleTag`, `ModelTiepointTag`, `GeoKeyDirectoryTag`) stored out-of-line beyond the initial header peek window were silently dropped; `open.rs` now falls back to a direct offset seek so metadata is no longer lost. Regression test: `test_issue_12_far_offset_georeferencing`.
-> **Roadmap:** v0.1.7 → v0.2.0 → v1.0.0
+> **Status (2026-08-05):** 12,710 Rust LoC · ~324 tests · 0 real-code stubs (all `stub/placeholder` mentions are benign doc/comment text)
+> **Recent fix (2026-08-05):** GitHub issues #15/#16 — `Dataset::open` gained a real `.vrt` header probe and per-read VRT dispatch (was a zero-filled `DatasetInfo` gated to GeoTIFF only), and a real GeoPackage metadata probe (`open_vector` had no GeoPackage arm, so `.gpkg` always reported 0 layers). New public API: `Dataset::layers()`/`layer()`/`layer_by_name()`/`layer_names()`, `Layer::features()`. See CHANGELOG.md `[0.2.3]`.
+> **Roadmap:** v0.1.7 → v0.2.3 → v1.0.0
 
 ## High Priority
 - [x] Implement actual raster band reading in Dataset (currently returns stub metadata) (planned 2026-04-17)

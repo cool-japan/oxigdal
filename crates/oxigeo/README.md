@@ -9,15 +9,18 @@
 
 Umbrella crate for OxiGeo — open any supported geospatial format with a single
 `Dataset::open()` call, just like `GDALOpen()`. Backed by **75 workspace crates**
-and ~791,000 SLoC of production Rust, it covers 16 format drivers, full CRS
+and ~797,000 SLoC of production Rust, it covers 16 format drivers, full CRS
 transformations, SIMD algorithms, cloud-native I/O, GPU acceleration, enterprise
 security, and bindings for Python, Node.js, WASM, iOS, and Android. First released
-as v0.1.0 on 2026-02-22; now at **v0.2.2**, a correctness campaign fixing
-[issue #14](https://github.com/cool-japan/oxigeo/issues/14) (`read_band` on
-multi-band rasters) at the driver level and adding zero-allocation typed/interleaved
-readers, on top of v0.2.1's production-hardening pass (v0.2.0 published 2026-07-20
-as the first OxiGeo release — rename-only, functionally identical to v0.1.7, the
-final release published the same day under the OxiGDAL name).
+as v0.1.0 on 2026-02-22; now at **v0.2.3**, which implements real Warped VRT
+support — reading and resampling `<GDALWarpOptions>` VRTs such as
+`gdalwarp -of VRT` output ([issue #15](https://github.com/cool-japan/oxigeo/issues/15)) —
+and a public vector-layer API, `Dataset::layers()`/`Layer::features()`
+([issue #16](https://github.com/cool-japan/oxigeo/issues/16)), on top of
+v0.2.2's issue #14 correctness campaign and v0.2.1's production-hardening pass
+(v0.2.0 published 2026-07-20 as the first OxiGeo release — rename-only,
+functionally identical to v0.1.7, the final release published the same day
+under the OxiGDAL name).
 
 ## Quick Start
 
@@ -47,6 +50,36 @@ fn main() -> oxigeo::Result<()> {
 }
 ```
 
+## Vector layers
+
+Vector datasets are read through layers, like GDAL's OGR side:
+
+```rust
+use oxigeo::Dataset;
+
+fn main() -> oxigeo::Result<()> {
+    // GeoPackage needs the (non-default) `gpkg` feature; .shp and .geojson
+    // work out of the box.
+    let dataset = Dataset::open("cities.gpkg")?;
+    println!("layers  : {}", dataset.layer_count());
+
+    let layer = dataset.layer(0)?;              // or .layer_by_name("cities")
+    println!("layer   : {} ({:?})", layer.name(), layer.geometry_type());
+    println!("features: {:?}", layer.feature_count());
+    println!("fields  : {:?}", layer.field_names());
+
+    for feature in layer.features()? {
+        println!("{:?} — {:?}", feature.geometry, feature.properties);
+    }
+    Ok(())
+}
+```
+
+`layers()` is implemented for ESRI Shapefile, GeoJSON and GeoPackage; other
+formats return `OxiGeoError::NotSupported` naming the driver. FlatGeobuf,
+GeoParquet and STAC features are reachable through the streaming API
+(`oxigeo::streaming::StreamingExt`).
+
 ## Feature Flags
 
 | Feature | Default | Description |
@@ -62,7 +95,12 @@ fn main() -> oxigeo::Result<()> {
 | `grib` | no | GRIB1/GRIB2 meteorological |
 | `jpeg2000` | no | JPEG2000 |
 | `vrt` | no | Virtual Raster Tables |
-| `full` | no | All 11 format drivers |
+| `gpkg` | no | GeoPackage (SQLite) — vector layers and tiles |
+| `pmtiles` | no | PMTiles v3 tile archive |
+| `mbtiles` | no | MBTiles tile archive |
+| `copc` | no | COPC / LAS / LAZ point clouds |
+| `index` | no | Spatial indexing (R-tree, grid) |
+| `full` | no | All 16 format drivers |
 | `proj` | no | CRS transformations (20+ projections, 1000+ EPSG) |
 | `algorithms` | no | SIMD raster/vector algorithms |
 | `cloud` | no | S3, GCS, Azure Blob storage |

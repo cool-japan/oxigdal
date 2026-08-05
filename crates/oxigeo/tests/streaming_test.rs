@@ -378,8 +378,12 @@ fn test_stream_geopackage_basic() {
     //  2. Calling features() on that dataset returns a FeatureStream (no panic).
     //
     // A real multi-row GPKG requires a valid SQLite B-tree; we use a minimal
-    // file that the gpkg reader will open (the file is valid SQLite even if
-    // gpkg_contents is empty), verifying the full dispatch path is wired.
+    // file that the gpkg reader will open — a valid *empty* SQLite database,
+    // i.e. one whose page 1 carries a well-formed (but cell-less) sqlite_master
+    // b-tree page — verifying the full dispatch path is wired.  The page-1
+    // b-tree header matters: since cool-japan/oxigeo#16, `open()` runs the real
+    // GeoPackage metadata probe and reports an unparseable container as an
+    // error instead of an all-zero descriptor.
     let path = TempPath::new("stream_gpkg_basic.gpkg");
 
     // Write a minimal SQLite file with the GeoPackage application_id so that
@@ -402,6 +406,16 @@ fn test_stream_geopackage_basic() {
     data[68..72].copy_from_slice(&0x4750_4B47u32.to_be_bytes());
     // db_size_pages at offset 28 (BE u32): 1
     data[28..32].copy_from_slice(&1u32.to_be_bytes());
+    // Page 1 doubles as the sqlite_master b-tree root, whose page header
+    // starts right after the 100-byte file header:
+    //   [100] page type      = 0x0D (leaf table b-tree)
+    //   [101..103] first freeblock = 0 (none)
+    //   [103..105] cell count      = 0 (no tables yet)
+    //   [105..107] cell content area start = page_size
+    //   [107] fragmented free bytes = 0
+    data[100] = 0x0D;
+    data[103..105].copy_from_slice(&0u16.to_be_bytes());
+    data[105..107].copy_from_slice(&(page_size as u16).to_be_bytes());
 
     std::fs::write(&path, &data).expect("write gpkg");
 

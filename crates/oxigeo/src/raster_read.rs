@@ -58,12 +58,17 @@
 use crate::{Dataset, OxiGeoError, Result};
 use oxigeo_core::buffer::{RasterBuffer, RasterElement};
 
-#[cfg(feature = "geotiff")]
+// Needed by both the GeoTIFF and the VRT read paths, which are independently
+// selectable features.
+#[cfg(any(feature = "geotiff", feature = "vrt"))]
 use crate::DatasetFormat;
+#[cfg(any(feature = "geotiff", feature = "vrt"))]
+use oxigeo_core::types::RasterDataType;
+
 #[cfg(feature = "geotiff")]
 use oxigeo_core::io::FileDataSource;
 #[cfg(feature = "geotiff")]
-use oxigeo_core::types::{NoDataValue, RasterDataType};
+use oxigeo_core::types::NoDataValue;
 #[cfg(feature = "geotiff")]
 use oxigeo_geotiff::GeoTiffReader;
 
@@ -228,6 +233,13 @@ impl Dataset {
             return self.read_buffer_with(&reader, band, window);
         }
 
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, None)?;
+            return self.read_vrt_buffer(&reader, band, window);
+        }
+
         Err(self.unsupported("read_band()"))
     }
 
@@ -302,6 +314,13 @@ impl Dataset {
             let reader = self.open_geotiff_reader()?;
             let window = self.resolve_source_window(&reader, None)?;
             return self.read_typed_with(&reader, band, window, dst);
+        }
+
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, None)?;
+            return self.read_vrt_interleaved(&reader, &[band], window, dst);
         }
 
         let _ = dst;
@@ -392,6 +411,13 @@ impl Dataset {
             return self.read_buffer_with(&reader, band, window);
         }
 
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, Some((col, row, width, height)))?;
+            return self.read_vrt_buffer(&reader, band, window);
+        }
+
         let _ = (col, row);
         Err(self.unsupported("read_window()"))
     }
@@ -448,6 +474,13 @@ impl Dataset {
             let reader = self.open_geotiff_reader()?;
             let window = self.resolve_source_window(&reader, Some((col, row, width, height)))?;
             return self.read_typed_with(&reader, band, window, dst);
+        }
+
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, Some((col, row, width, height)))?;
+            return self.read_vrt_interleaved(&reader, &[band], window, dst);
         }
 
         let _ = (col, row, dst);
@@ -556,6 +589,23 @@ impl Dataset {
             return self.alloc_interleaved(&reader, bands, window);
         }
 
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, None)?;
+            let selection = self.resolve_vrt_bands(bands)?;
+            let pixels =
+                usize::try_from(window.x_size.saturating_mul(window.y_size)).map_err(|_| {
+                    OxiGeoError::InvalidParameter {
+                        parameter: "window",
+                        message: "window is too large for this platform".to_string(),
+                    }
+                })?;
+            let mut out = vec![T::default(); pixels.saturating_mul(selection.len())];
+            self.read_vrt_interleaved(&reader, &selection, window, &mut out)?;
+            return Ok(out);
+        }
+
         let _ = bands;
         Err(self.unsupported("read_interleaved()"))
     }
@@ -629,6 +679,14 @@ impl Dataset {
             return self.read_interleaved_with(&reader, &selection, window, dst);
         }
 
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, None)?;
+            let selection = self.resolve_vrt_bands(bands)?;
+            return self.read_vrt_interleaved(&reader, &selection, window, dst);
+        }
+
         let _ = (bands, dst);
         Err(self.unsupported("read_interleaved_into()"))
     }
@@ -663,6 +721,23 @@ impl Dataset {
             let reader = self.open_geotiff_reader()?;
             let window = self.resolve_source_window(&reader, Some((col, row, width, height)))?;
             return self.alloc_interleaved(&reader, bands, window);
+        }
+
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, Some((col, row, width, height)))?;
+            let selection = self.resolve_vrt_bands(bands)?;
+            let pixels =
+                usize::try_from(window.x_size.saturating_mul(window.y_size)).map_err(|_| {
+                    OxiGeoError::InvalidParameter {
+                        parameter: "window",
+                        message: "window is too large for this platform".to_string(),
+                    }
+                })?;
+            let mut out = vec![T::default(); pixels.saturating_mul(selection.len())];
+            self.read_vrt_interleaved(&reader, &selection, window, &mut out)?;
+            return Ok(out);
         }
 
         let _ = (bands, col, row);
@@ -719,6 +794,14 @@ impl Dataset {
             return self.read_interleaved_with(&reader, &selection, window, dst);
         }
 
+        #[cfg(feature = "vrt")]
+        if matches!(self.info.format, DatasetFormat::Vrt) {
+            let reader = self.open_vrt_reader()?;
+            let window = self.resolve_vrt_window(&reader, Some((col, row, width, height)))?;
+            let selection = self.resolve_vrt_bands(bands)?;
+            return self.read_vrt_interleaved(&reader, &selection, window, dst);
+        }
+
         let _ = (bands, col, row, dst);
         Err(self.unsupported("read_window_interleaved_into()"))
     }
@@ -748,6 +831,169 @@ impl Dataset {
             });
         }
         Ok(())
+    }
+
+    // -- VRT plumbing --------------------------------------------------------
+
+    /// Open the dataset's file as a VRT reader.
+    ///
+    /// Every pixel-read entry point used to be gated on
+    /// `DatasetFormat::GeoTiff`, so a `.vrt` — including a warped VRT, the
+    /// subject of cool-japan/oxigeo#15 — answered every read with
+    /// `NotSupported` even though the driver behind [`oxigeo_vrt`] could serve
+    /// it.
+    #[cfg(feature = "vrt")]
+    fn open_vrt_reader(&self) -> Result<oxigeo_vrt::VrtReader> {
+        oxigeo_vrt::VrtReader::open(&self.path).map_err(|e| {
+            OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+                message: format!("failed to open VRT '{}': {e}", self.path),
+            })
+        })
+    }
+
+    /// Fold the clip window and the caller's request into one VRT pixel
+    /// rectangle.
+    #[cfg(feature = "vrt")]
+    fn resolve_vrt_window(
+        &self,
+        reader: &oxigeo_vrt::VrtReader,
+        request: Option<(u32, u32, u32, u32)>,
+    ) -> Result<oxigeo_vrt::PixelRect> {
+        let (file_w, file_h) = (reader.width(), reader.height());
+
+        let (view_x, view_y, view_w, view_h) = match self.clip_window {
+            Some(window) => (
+                u64::from(window.col),
+                u64::from(window.row),
+                u64::from(window.width),
+                u64::from(window.height),
+            ),
+            None => (0, 0, file_w, file_h),
+        };
+
+        if view_x.saturating_add(view_w) > file_w || view_y.saturating_add(view_h) > file_h {
+            return Err(OxiGeoError::Internal {
+                message: format!(
+                    "clip window [{view_x},{view_y} {view_w}×{view_h}] does not fit VRT raster {file_w}×{file_h}"
+                ),
+            });
+        }
+
+        let (x, y, width, height) = match request {
+            Some((col, row, width, height)) => {
+                let (col, row) = (u64::from(col), u64::from(row));
+                let (width, height) = (u64::from(width), u64::from(height));
+                if col.saturating_add(width) > view_w || row.saturating_add(height) > view_h {
+                    return Err(OxiGeoError::InvalidParameter {
+                        parameter: "window",
+                        message: format!(
+                            "window [{col},{row} {width}×{height}] extends past the dataset extent {view_w}×{view_h}"
+                        ),
+                    });
+                }
+                (view_x + col, view_y + row, width, height)
+            }
+            None => (view_x, view_y, view_w, view_h),
+        };
+
+        Ok(oxigeo_vrt::PixelRect::new(x, y, width, height))
+    }
+
+    /// Read one VRT band's window as a buffer in the band's own element type.
+    #[cfg(feature = "vrt")]
+    fn read_vrt_buffer(
+        &self,
+        reader: &oxigeo_vrt::VrtReader,
+        band: u32,
+        window: oxigeo_vrt::PixelRect,
+    ) -> Result<RasterBuffer> {
+        // The VRT driver numbers bands from 1; this API numbers them from 0.
+        let band_1based = usize::try_from(band)
+            .map_err(|_| OxiGeoError::InvalidParameter {
+                parameter: "band",
+                message: format!("band index {band} does not fit this platform's usize"),
+            })?
+            .saturating_add(1);
+
+        reader.read_window(band_1based, window).map_err(|e| {
+            OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+                message: format!("failed to read VRT '{}' band {band}: {e}", self.path),
+            })
+        })
+    }
+
+    /// Read several VRT bands pixel-interleaved into `dst`, converting to `T`.
+    #[cfg(feature = "vrt")]
+    fn read_vrt_interleaved<T: RasterElement>(
+        &self,
+        reader: &oxigeo_vrt::VrtReader,
+        bands: &[u32],
+        window: oxigeo_vrt::PixelRect,
+        dst: &mut [T],
+    ) -> Result<()> {
+        let pixels =
+            usize::try_from(window.x_size.saturating_mul(window.y_size)).map_err(|_| {
+                OxiGeoError::InvalidParameter {
+                    parameter: "window",
+                    message: "window is too large for this platform".to_string(),
+                }
+            })?;
+        let expected =
+            pixels
+                .checked_mul(bands.len())
+                .ok_or_else(|| OxiGeoError::InvalidParameter {
+                    parameter: "window",
+                    message: "window × band count overflows".to_string(),
+                })?;
+
+        if dst.len() != expected {
+            return Err(OxiGeoError::InvalidParameter {
+                parameter: "dst",
+                message: format!(
+                    "destination length {} does not match the {expected} samples this read produces",
+                    dst.len()
+                ),
+            });
+        }
+
+        let stride = bands.len();
+        for (slot, band) in bands.iter().enumerate() {
+            let buffer = self.read_vrt_buffer(reader, *band, window)?;
+            let samples = buffer.as_bytes();
+            let source_type = buffer.data_type();
+            let sample_size = source_type.size_bytes();
+
+            for index in 0..pixels {
+                let offset = index * sample_size;
+                let value = samples
+                    .get(offset..offset + sample_size)
+                    .and_then(|bytes| read_native_sample(bytes, source_type))
+                    .unwrap_or(0.0);
+                dst[index * stride + slot] = T::from_raster_f64(value);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Expand a band selection to a concrete list, defaulting to every band.
+    #[cfg(feature = "vrt")]
+    fn resolve_vrt_bands(&self, bands: Option<&[u32]>) -> Result<Vec<u32>> {
+        match bands {
+            Some(list) => {
+                if list.is_empty() {
+                    return Err(OxiGeoError::InvalidParameter {
+                        parameter: "bands",
+                        message: "band selection must name at least one band".to_string(),
+                    });
+                }
+                for band in list {
+                    self.validate_band(*band)?;
+                }
+                Ok(list.to_vec())
+            }
+            None => Ok((0..self.info.band_count).collect()),
+        }
     }
 
     /// The "this format cannot do pixel reads" error, worded per operation.
@@ -1187,6 +1433,26 @@ impl Iterator for BandIter<'_> {
 }
 
 impl core::iter::ExactSizeIterator for BandIter<'_> {}
+
+/// Decode one host-native sample of `data_type` from `bytes`.
+///
+/// VRT buffers carry samples in the host's byte order (the driver normalises
+/// them on decode), so this is a plain reinterpret, not a byte-order swap.
+#[cfg(feature = "vrt")]
+fn read_native_sample(bytes: &[u8], data_type: RasterDataType) -> Option<f64> {
+    let value = match data_type {
+        RasterDataType::UInt8 => f64::from(*bytes.first()?),
+        RasterDataType::Int8 => f64::from(*bytes.first()? as i8),
+        RasterDataType::UInt16 => f64::from(u16::from_ne_bytes(bytes.try_into().ok()?)),
+        RasterDataType::Int16 => f64::from(i16::from_ne_bytes(bytes.try_into().ok()?)),
+        RasterDataType::UInt32 => f64::from(u32::from_ne_bytes(bytes.try_into().ok()?)),
+        RasterDataType::Int32 => f64::from(i32::from_ne_bytes(bytes.try_into().ok()?)),
+        RasterDataType::Float32 => f64::from(f32::from_ne_bytes(bytes.try_into().ok()?)),
+        RasterDataType::Float64 => f64::from_ne_bytes(bytes.try_into().ok()?),
+        _ => return None,
+    };
+    Some(value)
+}
 
 // Every test below drives a real GeoTIFF through `Dataset`, so the whole module
 // — imports included — belongs to the `geotiff` feature; there is nothing left to

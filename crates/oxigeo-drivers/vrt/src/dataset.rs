@@ -3,6 +3,7 @@
 use crate::band::VrtBand;
 use crate::error::{Result, VrtError};
 use crate::source::PixelRect;
+use crate::warp::WarpOptions;
 use oxigeo_core::types::{GeoTransform, RasterDataType};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -24,6 +25,9 @@ pub struct VrtDataset {
     pub block_size: Option<(u32, u32)>,
     /// Subclass (for special VRT types)
     pub subclass: Option<VrtSubclass>,
+    /// Warp parameters, present exactly when this is a warped VRT carrying a
+    /// `<GDALWarpOptions>` block.
+    pub warp_options: Option<WarpOptions>,
     /// VRT file path (for resolving relative paths)
     pub vrt_path: Option<PathBuf>,
 }
@@ -39,6 +43,7 @@ impl VrtDataset {
             bands: Vec::new(),
             block_size: None,
             subclass: None,
+            warp_options: None,
             vrt_path: None,
         }
     }
@@ -65,6 +70,7 @@ impl VrtDataset {
             bands,
             block_size: None,
             subclass: None,
+            warp_options: None,
             vrt_path: None,
         })
     }
@@ -104,6 +110,23 @@ impl VrtDataset {
         self
     }
 
+    /// Sets the warp options and marks the dataset as a warped VRT.
+    pub fn with_warp_options(mut self, warp_options: WarpOptions) -> Self {
+        self.warp_options = Some(warp_options);
+        self.subclass = Some(VrtSubclass::Warped);
+        self
+    }
+
+    /// Whether this dataset's pixels come from a warp rather than from
+    /// per-band sources.
+    ///
+    /// True when the `subClass` says so *and* the `<GDALWarpOptions>` block
+    /// that describes the warp is present — a `VRTWarpedDataset` without it
+    /// carries no recipe for any pixel and is rejected by [`Self::validate`].
+    pub fn is_warped(&self) -> bool {
+        matches!(self.subclass, Some(VrtSubclass::Warped)) && self.warp_options.is_some()
+    }
+
     /// Validates the dataset
     ///
     /// # Errors
@@ -121,11 +144,34 @@ impl VrtDataset {
             ));
         }
 
+        // A warped VRT materialises every band from the single
+        // `<GDALWarpOptions>` source, so its `<VRTRasterBand
+        // subClass="VRTWarpedRasterBand">` elements legitimately carry no
+        // sources. Validating them with the standard "at least one source or a
+        // pixel function" rule rejected every warped VRT GDAL has ever written
+        // (cool-japan/oxigeo#15), so the rule is relaxed exactly when the warp
+        // block that supplies those pixels is present.
+        let warped = self.is_warped();
+        if warped {
+            let warp = self.warp_options.as_ref().ok_or_else(|| {
+                VrtError::invalid_structure(
+                    "VRTWarpedDataset has no <GDALWarpOptions> to supply its bands",
+                )
+            })?;
+            warp.validate()?;
+        }
+
         // Validate all bands
         for (idx, band) in self.bands.iter().enumerate() {
-            band.validate().map_err(|e| {
-                VrtError::invalid_structure(format!("Band {} validation failed: {}", idx + 1, e))
-            })?;
+            if !(warped && band.sources.is_empty() && band.pixel_function.is_none()) {
+                band.validate().map_err(|e| {
+                    VrtError::invalid_structure(format!(
+                        "Band {} validation failed: {}",
+                        idx + 1,
+                        e
+                    ))
+                })?;
+            }
 
             // Check that band numbers are sequential
             if band.band != idx + 1 {

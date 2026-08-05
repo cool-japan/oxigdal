@@ -17,6 +17,10 @@ VRT (Virtual Raster) is an XML-based format that references other raster files w
 - **Band Subsetting** - Extract specific bands from multi-band rasters
 - **On-the-fly Transformations** - Apply scaling, offset, and pixel functions
 - **Windowing** - Create virtual subsets of large rasters
+- **Warped VRT execution** - Reads and resamples `<GDALWarpOptions>` VRTs (the
+  kind `gdalwarp -of VRT` writes), including nested/mosaic sources and
+  depth-aware WKT CRS resolution (`VrtReader::is_warped`/`warp_options`); see
+  `warp`/`srs`/`source_dataset` in [API Overview](#api-overview) below
 - **XML-based** - Human-readable XML format for easy editing
 - **Zero-copy** - References source files without data duplication
 - **Async I/O** - Optional async support for non-blocking operations
@@ -28,7 +32,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxigeo-vrt = "0.2.2"
+oxigeo-vrt = "0.2.3"
 ```
 
 ### Feature Flags
@@ -40,7 +44,7 @@ Example with async support:
 
 ```toml
 [dependencies]
-oxigeo-vrt = { version = "0.2.2", features = ["async"] }
+oxigeo-vrt = { version = "0.2.3", features = ["async"] }
 ```
 
 ## Quick Start
@@ -173,6 +177,9 @@ let vrt = VrtBuilder::new()
 | `band` | Virtual band configuration |
 | `source` | Source raster references |
 | `mosaic` | Mosaic creation utilities |
+| `warp` | Parsed `<GDALWarpOptions>` model (`WarpOptions`, `WarpResampleAlg`, `WarpKernel`, …) |
+| `srs` | WKT/PROJ4/`EPSG:n` CRS-string resolution (`resolve_crs`) |
+| `source_dataset` | Opens a warp's source, recursing into nested VRTs |
 | `xml` | XML parsing and generation |
 | `error` | Error types |
 

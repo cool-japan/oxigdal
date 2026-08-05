@@ -387,7 +387,8 @@ pub fn open(path: impl AsRef<Path>) -> Result<OpenedDataset> {
 ///
 /// Propagates the probe error for [`DatasetFormat::GeoTiff`],
 /// [`DatasetFormat::GeoJson`], [`DatasetFormat::Shapefile`],
-/// [`DatasetFormat::FlatGeobuf`] and [`DatasetFormat::GeoParquet`].
+/// [`DatasetFormat::FlatGeobuf`], [`DatasetFormat::GeoParquet`] and
+/// [`DatasetFormat::GeoPackage`].
 fn build_dataset_info(path: &Path, format: DatasetFormat) -> Result<DatasetInfo> {
     let path_str = path.to_str().map(str::to_string);
 
@@ -401,6 +402,8 @@ fn build_dataset_info(path: &Path, format: DatasetFormat) -> Result<DatasetInfo>
         DatasetFormat::FlatGeobuf => extract_flatgeobuf_info(path)?,
         #[cfg(feature = "geoparquet")]
         DatasetFormat::GeoParquet => extract_geoparquet_info(path)?,
+        #[cfg(feature = "gpkg")]
+        DatasetFormat::GeoPackage => extract_gpkg_info(path)?,
         other => DatasetInfo {
             format: other,
             ..DatasetInfo::default()
@@ -550,6 +553,86 @@ pub(crate) fn extract_tiff_info(path: &Path) -> Result<DatasetInfo> {
              enable it to read GeoTIFF metadata",
             path.display()
         ),
+    })
+}
+
+// ─── VRT header probe ────────────────────────────────────────────────────────
+
+/// Parse a VRT's XML header into a [`DatasetInfo`].
+///
+/// Every `.vrt` used to route through the `_ =>` arm of `open_raster`, which
+/// produces a **zero-filled** descriptor: `width()`/`height()` returned `0`,
+/// `band_count()` returned `0` and `geotransform()` returned `None`, for a file
+/// whose whole point is to state exactly those things in plain XML
+/// (cool-japan/oxigeo#15).  A caller that asked a VRT for its geotransform got
+/// silence, not an error.
+///
+/// This is a header-only operation: [`oxigeo_vrt::VrtReader::open`] parses the
+/// XML and validates the structure without reading a pixel from any source
+/// file.
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Format`] when the XML cannot be parsed or describes a
+/// degenerate raster.  It never returns a zero-filled `DatasetInfo`.
+#[cfg(feature = "vrt")]
+pub(crate) fn extract_vrt_info(path: &Path) -> Result<DatasetInfo> {
+    let reader = oxigeo_vrt::VrtReader::open(path).map_err(|e| vrt_header_error(path, e))?;
+
+    let width_u64 = reader.width();
+    let height_u64 = reader.height();
+    let width = vrt_dimension(path, width_u64, "width")?;
+    let height = vrt_dimension(path, height_u64, "height")?;
+
+    let band_count = u32::try_from(reader.band_count())
+        .map_err(|_| vrt_header_error(path, "it declares more bands than u32 can hold"))?;
+    if band_count == 0 {
+        return Err(vrt_header_error(path, "it declares no raster bands"));
+    }
+
+    let geotransform = reader.geo_transform().copied();
+    let bounds = geotransform.map(|gt| gt.compute_bounds(width_u64, height_u64));
+
+    Ok(DatasetInfo {
+        format: DatasetFormat::Vrt,
+        path: None, // populated by callers that know the path
+        width: Some(width),
+        height: Some(height),
+        band_count,
+        layer_count: 0,
+        crs: reader.srs().map(str::to_string),
+        geotransform,
+        feature_count: None,
+        bounds,
+        data_type: reader.primary_data_type(),
+    })
+}
+
+/// Build the typed error a VRT header probe failure produces.
+#[cfg(feature = "vrt")]
+fn vrt_header_error(path: &Path, detail: impl core::fmt::Display) -> OxiGeoError {
+    OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+        message: format!(
+            "'{}' was detected as a VRT but its metadata could not be extracted: {detail}",
+            path.display()
+        ),
+    })
+}
+
+/// Validate one raster dimension declared by a VRT and narrow it to `u32`.
+#[cfg(feature = "vrt")]
+fn vrt_dimension(path: &Path, value: u64, what: &str) -> Result<u32> {
+    if value == 0 {
+        return Err(vrt_header_error(
+            path,
+            format!("it declares a raster {what} of 0 pixels"),
+        ));
+    }
+    u32::try_from(value).map_err(|_| {
+        vrt_header_error(
+            path,
+            format!("it declares a raster {what} of {value} pixels, which exceeds u32"),
+        )
     })
 }
 
@@ -834,6 +917,112 @@ pub(crate) fn extract_geoparquet_info(path: &Path) -> Result<DatasetInfo> {
         layer_count: 1,
         feature_count,
         bounds,
+        ..DatasetInfo::default()
+    })
+}
+
+// ─── GeoPackage metadata probe ───────────────────────────────────────────────
+
+/// Open and parse the SQLite container behind a `.gpkg` path.
+///
+/// Shared by the metadata probe below and by the layer readers in
+/// [`crate::layer`], so that both report identical errors for an unreadable or
+/// non-GeoPackage file.
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Io`] when the file cannot be read and
+/// [`OxiGeoError::Format`] when it is not a parseable SQLite/GeoPackage
+/// container.
+#[cfg(feature = "gpkg")]
+pub(crate) fn open_geopackage(path: &str) -> Result<oxigeo_gpkg::GeoPackage> {
+    let data = std::fs::read(path).map_err(|e| {
+        OxiGeoError::Io(IoError::Read {
+            message: format!("cannot read GeoPackage '{path}': {e}"),
+        })
+    })?;
+
+    oxigeo_gpkg::GeoPackage::from_bytes(data).map_err(|e| {
+        OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+            message: format!(
+                "'{path}' was detected as a GeoPackage but its SQLite container \
+                 could not be parsed: {e}"
+            ),
+        })
+    })
+}
+
+/// Read the GeoPackage system tables and describe the package.
+///
+/// `layer_count` is the number of `gpkg_contents` rows of type `features`, and
+/// `feature_count` / `bounds` / `crs` describe the **first** of those layers —
+/// the "primary layer" convention the rest of [`DatasetInfo`] uses.  Per-layer
+/// metadata is available from [`Dataset::layers`](crate::Dataset::layers).
+///
+/// Before this probe existed, a `.gpkg` opened through the facade produced an
+/// empty descriptor — `layer_count = 0` for a package that clearly had layers
+/// (cool-japan/oxigeo#16).
+///
+/// # Errors
+///
+/// Returns [`OxiGeoError::Format`] when the container or its `gpkg_contents`
+/// table cannot be read, rather than reporting an all-zero descriptor for a
+/// file that really is a GeoPackage.
+#[cfg(feature = "gpkg")]
+pub(crate) fn extract_gpkg_info(path: &Path) -> Result<DatasetInfo> {
+    use oxigeo_gpkg::GpkgDataType;
+
+    let path_str = path.to_string_lossy().to_string();
+    let mut gpkg = open_geopackage(&path_str)?;
+
+    gpkg.load_contents().map_err(|e| {
+        OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+            message: format!(
+                "'{}' was detected as a GeoPackage but its gpkg_contents table \
+                 could not be read: {e}",
+                path.display()
+            ),
+        })
+    })?;
+
+    let feature_layers: Vec<&oxigeo_gpkg::GpkgContents> = gpkg
+        .contents
+        .iter()
+        .filter(|entry| entry.data_type == GpkgDataType::Features)
+        .collect();
+
+    let primary = feature_layers.first();
+
+    let feature_count = match primary {
+        Some(entry) => gpkg.count_table_rows(&entry.table_name).map_err(|e| {
+            OxiGeoError::Format(oxigeo_core::error::FormatError::InvalidHeader {
+                message: format!(
+                    "cannot count rows of feature table '{}' in '{}': {e}",
+                    entry.table_name,
+                    path.display()
+                ),
+            })
+        })?,
+        None => None,
+    };
+
+    let bounds = primary.and_then(|entry| {
+        crate::BoundingBox::new(entry.min_x, entry.min_y, entry.max_x, entry.max_y).ok()
+    });
+
+    // srs_id 0 (undefined geographic) and -1 (undefined cartesian) are the
+    // OGC "no CRS" sentinels — reporting them as `EPSG:0` would be a lie.
+    let crs = primary
+        .filter(|entry| entry.srs_id > 0)
+        .map(|entry| format!("EPSG:{}", entry.srs_id));
+
+    Ok(DatasetInfo {
+        format: DatasetFormat::GeoPackage,
+        path: None,
+        layer_count: feature_layers.len() as u32,
+        feature_count,
+        bounds,
+        crs,
         ..DatasetInfo::default()
     })
 }

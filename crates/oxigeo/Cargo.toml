@@ -118,6 +118,11 @@ oxigeo-services = { workspace = true, optional = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["arrow"] }
+# The issue-15 warped-VRT regression test builds its fixture's destination
+# geotransform with a real EPSG:4326 -> EPSG:3857 transform. Used directly so
+# the test runs under `--features full` without requiring the facade's
+# optional `proj` re-export feature.
+oxigeo-proj = { path = "../oxigeo-proj" }
 
 [lints]
 workspace = true

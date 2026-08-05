@@ -76,6 +76,20 @@ pub enum VrtError {
         message: String,
     },
 
+    /// No source covers the requested window.
+    ///
+    /// Distinct from [`Self::InvalidWindow`] because it is the one window
+    /// failure a caller may legitimately treat as "all NoData here" rather than
+    /// as an error — a warp over a sparse mosaic routinely lands in a gap
+    /// (GDAL's `ERROR_OUT_IF_EMPTY_SOURCE_WINDOW=FALSE`).  Keeping it separate
+    /// stops that leniency from also swallowing real failures such as an
+    /// allocation-size overflow (cool-japan/oxigeo#15).
+    #[error("No source covers the requested window: {message}")]
+    EmptyWindow {
+        /// Error message
+        message: String,
+    },
+
     /// Invalid pixel function
     #[error("Invalid pixel function: {function}")]
     InvalidPixelFunction {
@@ -179,6 +193,13 @@ impl VrtError {
     /// Creates an invalid window error
     pub fn invalid_window<S: Into<String>>(message: S) -> Self {
         Self::InvalidWindow {
+            message: message.into(),
+        }
+    }
+
+    /// Creates an "no source covers this window" error
+    pub fn empty_window<S: Into<String>>(message: S) -> Self {
+        Self::EmptyWindow {
             message: message.into(),
         }
     }

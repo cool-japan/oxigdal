@@ -5,15 +5,17 @@ use crate::dataset::VrtDataset;
 use crate::error::{Result, VrtError};
 use crate::mosaic::MosaicCompositor;
 use crate::source::{PixelRect, VrtSource};
+use crate::warp::InitDest;
+use crate::warped::{WarpBandParams, WarpEngine};
 use crate::xml::VrtXmlParser;
 use lru::LruCache;
 use oxigeo_core::buffer::RasterBuffer;
-use oxigeo_core::io::FileDataSource;
 use oxigeo_core::types::{GeoTransform, NoDataValue, RasterDataType, RasterMetadata};
-use oxigeo_geotiff::GeoTiffReader;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+pub use crate::source_dataset::SourceDataset;
 
 /// VRT reader with lazy source loading
 pub struct VrtReader {
@@ -23,6 +25,9 @@ pub struct VrtReader {
     source_cache: Arc<Mutex<LruCache<PathBuf, Arc<SourceDataset>>>>,
     /// Mosaic compositor
     compositor: MosaicCompositor,
+    /// How many VRTs deep this reader sits, so a VRT that (directly or
+    /// indirectly) references itself is rejected rather than recursed forever.
+    nesting_depth: usize,
 }
 
 impl VrtReader {
@@ -31,8 +36,18 @@ impl VrtReader {
     /// # Errors
     /// Returns an error if the file cannot be opened or parsed
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::open_nested(path, 0)
+    }
+
+    /// Opens a VRT that is itself referenced `depth` levels below another VRT.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be opened or parsed
+    pub(crate) fn open_nested<P: AsRef<Path>>(path: P, depth: usize) -> Result<Self> {
         let dataset = VrtXmlParser::parse_file(&path)?;
-        Self::from_dataset(dataset)
+        let mut reader = Self::from_dataset(dataset)?;
+        reader.nesting_depth = depth;
+        Ok(reader)
     }
 
     /// Creates a reader from a VRT dataset
@@ -53,6 +68,7 @@ impl VrtReader {
             dataset,
             source_cache,
             compositor,
+            nesting_depth: 0,
         })
     }
 
@@ -92,6 +108,48 @@ impl VrtReader {
         self.dataset.effective_block_size()
     }
 
+    /// The element type of the first band, if the VRT declares any bands.
+    #[must_use]
+    pub fn primary_data_type(&self) -> Option<RasterDataType> {
+        self.dataset.primary_data_type()
+    }
+
+    /// The NoData value of a band (1-based), or [`NoDataValue::None`] when the
+    /// band does not exist or declares none.
+    #[must_use]
+    pub fn band_nodata(&self, band: usize) -> NoDataValue {
+        band.checked_sub(1)
+            .and_then(|idx| self.dataset.get_band(idx))
+            .map_or(NoDataValue::None, |b| b.nodata)
+    }
+
+    /// The element type of a band (1-based), if it exists.
+    #[must_use]
+    pub fn band_data_type(&self, band: usize) -> Option<RasterDataType> {
+        band.checked_sub(1)
+            .and_then(|idx| self.dataset.get_band(idx))
+            .map(|b| b.data_type)
+    }
+
+    /// Whether this VRT's pixels are produced by a warp
+    /// (`subClass="VRTWarpedDataset"` with a `<GDALWarpOptions>` block).
+    #[must_use]
+    pub fn is_warped(&self) -> bool {
+        self.dataset.is_warped()
+    }
+
+    /// The parsed `<GDALWarpOptions>` block, if this is a warped VRT.
+    #[must_use]
+    pub fn warp_options(&self) -> Option<&crate::warp::WarpOptions> {
+        self.dataset.warp_options.as_ref()
+    }
+
+    /// The underlying VRT dataset definition.
+    #[must_use]
+    pub fn dataset(&self) -> &VrtDataset {
+        &self.dataset
+    }
+
     /// Gets the metadata
     #[must_use]
     pub fn metadata(&self) -> RasterMetadata {
@@ -122,11 +180,17 @@ impl VrtReader {
     /// # Errors
     /// Returns an error if reading fails
     pub fn read_window(&self, band: usize, window: PixelRect) -> Result<RasterBuffer> {
-        let band_idx = band - 1;
+        let band_idx = band
+            .checked_sub(1)
+            .ok_or_else(|| VrtError::band_out_of_range(band, self.dataset.band_count()))?;
         let vrt_band = self
             .dataset
             .get_band(band_idx)
             .ok_or_else(|| VrtError::band_out_of_range(band, self.dataset.band_count()))?;
+
+        if self.dataset.is_warped() {
+            return self.read_warped_window(band, window);
+        }
 
         // Get sources that intersect with the window
         let contributing_sources: Vec<&VrtSource> = vrt_band
@@ -136,7 +200,7 @@ impl VrtReader {
             .collect();
 
         if contributing_sources.is_empty() {
-            return Err(VrtError::invalid_window(
+            return Err(VrtError::empty_window(
                 "No sources contribute to this window",
             ));
         }
@@ -191,6 +255,73 @@ impl VrtReader {
     pub fn read_band(&self, band: usize) -> Result<RasterBuffer> {
         let window = PixelRect::new(0, 0, self.width(), self.height());
         self.read_window(band, window)
+    }
+
+    /// Reads a window of a warped VRT by resampling its `<GDALWarpOptions>`
+    /// source.
+    fn read_warped_window(&self, band: usize, window: PixelRect) -> Result<RasterBuffer> {
+        let warp = self.dataset.warp_options.as_ref().ok_or_else(|| {
+            VrtError::invalid_structure("Warped VRT has no <GDALWarpOptions> block")
+        })?;
+        let filename = warp
+            .source_dataset
+            .as_ref()
+            .ok_or_else(|| VrtError::invalid_structure("GDALWarpOptions has no <SourceDataset>"))?;
+
+        let path = match self.dataset.vrt_path {
+            Some(ref vrt_path) => filename.resolve(vrt_path)?,
+            None => filename.path.clone(),
+        };
+        let source = self.open_source_path(path)?;
+
+        let engine = WarpEngine::new(warp, &source, self.dataset.geo_transform)?;
+
+        let band_idx = band
+            .checked_sub(1)
+            .ok_or_else(|| VrtError::band_out_of_range(band, self.dataset.band_count()))?;
+        let vrt_band = self
+            .dataset
+            .get_band(band_idx)
+            .ok_or_else(|| VrtError::band_out_of_range(band, self.dataset.band_count()))?;
+
+        let mapping = warp.mapping_for(band);
+        let src_nodata = mapping
+            .and_then(|m| m.src_nodata_real)
+            .or_else(|| nodata_as_f64(source.nodata()));
+        let dst_nodata = mapping
+            .and_then(|m| m.dst_nodata_real)
+            .or_else(|| nodata_as_f64(vrt_band.nodata));
+
+        // GDAL's default when a warped VRT names no INIT_DEST but does declare
+        // a destination NoData: the uncovered area must read as NoData, not as
+        // a zero that happens to be a real data value in some other band.
+        let init_dest = match (warp.init_dest(), dst_nodata) {
+            (InitDest::None, Some(_)) => InitDest::NoData,
+            (other, _) => other,
+        };
+
+        let params = WarpBandParams {
+            data_type: vrt_band.data_type,
+            src_nodata,
+            dst_nodata,
+            init_dest,
+        };
+
+        let src_band = warp.source_band_for(band);
+        if src_band == 0 || src_band > source.band_count() {
+            return Err(VrtError::band_out_of_range(src_band, source.band_count()));
+        }
+
+        let data = engine.warp_band(&source, src_band, &window, &params)?;
+
+        RasterBuffer::new(
+            data,
+            window.x_size,
+            window.y_size,
+            vrt_band.data_type,
+            vrt_band.nodata,
+        )
+        .map_err(Into::into)
     }
 
     /// Reads a source's contribution to a window
@@ -493,6 +624,11 @@ impl VrtReader {
             source.filename.path.clone()
         };
 
+        self.open_source_path(path)
+    }
+
+    /// Opens (and caches) a source dataset by resolved path.
+    fn open_source_path(&self, path: PathBuf) -> Result<Arc<SourceDataset>> {
         // Check cache first
         {
             let mut cache = self
@@ -506,7 +642,7 @@ impl VrtReader {
         }
 
         // Open new dataset
-        let dataset = SourceDataset::open(&path)?;
+        let dataset = SourceDataset::open_nested(&path, self.nesting_depth)?;
         let arc_dataset = Arc::new(dataset);
 
         // Add to cache
@@ -537,115 +673,12 @@ impl VrtReader {
     }
 }
 
-/// Wrapper for source datasets
-pub struct SourceDataset {
-    /// GeoTIFF reader (for now, only GeoTIFF sources are supported)
-    geotiff: Option<GeoTiffReader<FileDataSource>>,
-    /// Cache of already-decoded full bands, keyed by 1-based band index.
-    ///
-    /// Windowed reads extract a sub-rectangle from the full decoded band. Without
-    /// this cache every `read_window` call re-decoded the entire band from disk;
-    /// caching the decoded bytes (shared via `Arc`) means repeated windowed reads
-    /// of the same source band decode it at most once. The open file handle was
-    /// already cached by the reader's LRU `source_cache`; this caches the decoded
-    /// pixels too.
-    band_cache: std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Vec<u8>>>>,
-}
-
-impl SourceDataset {
-    /// Opens a source dataset
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be opened
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        // Try to open as GeoTIFF
-        match FileDataSource::open(path.as_ref()) {
-            Ok(source) => match GeoTiffReader::open(source) {
-                Ok(reader) => Ok(Self {
-                    geotiff: Some(reader),
-                    band_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-                }),
-                Err(e) => Err(VrtError::source_error(
-                    path.as_ref().display().to_string(),
-                    format!("Failed to open as GeoTIFF: {}", e),
-                )),
-            },
-            Err(e) => Err(VrtError::source_error(
-                path.as_ref().display().to_string(),
-                format!("Failed to open file: {}", e),
-            )),
-        }
-    }
-
-    /// Returns the fully-decoded band, decoding and caching it on first access.
-    fn decoded_band(
-        &self,
-        geotiff: &GeoTiffReader<FileDataSource>,
-        band: usize,
-    ) -> Result<std::sync::Arc<Vec<u8>>> {
-        if let Ok(cache) = self.band_cache.lock()
-            && let Some(cached) = cache.get(&band)
-        {
-            return Ok(cached.clone());
-        }
-
-        let decoded = geotiff
-            .read_band(0, band - 1)
-            .map_err(|e| VrtError::source_error("source", format!("Failed to read band: {}", e)))?;
-        let shared = std::sync::Arc::new(decoded);
-
-        if let Ok(mut cache) = self.band_cache.lock() {
-            cache.insert(band, shared.clone());
-        }
-        Ok(shared)
-    }
-
-    /// Reads a window from the source dataset
-    ///
-    /// # Errors
-    /// Returns an error if reading fails
-    pub fn read_window(&self, band: usize, window: PixelRect) -> Result<RasterBuffer> {
-        if let Some(ref geotiff) = self.geotiff {
-            // Decode the band once and reuse it for subsequent windowed reads.
-            let full_band = self.decoded_band(geotiff, band)?;
-
-            // Extract window
-            let width = geotiff.width() as usize;
-            let height = geotiff.height() as usize;
-            let data_type = geotiff.data_type().unwrap_or(RasterDataType::UInt8);
-            let bytes_per_pixel = data_type.size_bytes();
-
-            let mut window_data = Vec::new();
-
-            for y in 0..window.y_size {
-                let src_y = (window.y_off + y) as usize;
-                if src_y >= height {
-                    break;
-                }
-
-                let src_offset = (src_y * width + window.x_off as usize) * bytes_per_pixel;
-                let copy_width = window.x_size.min((width as u64) - window.x_off) as usize;
-                let copy_bytes = copy_width * bytes_per_pixel;
-
-                if src_offset + copy_bytes <= full_band.len() {
-                    window_data.extend_from_slice(&full_band[src_offset..src_offset + copy_bytes]);
-                }
-            }
-
-            RasterBuffer::new(
-                window_data,
-                window.x_size,
-                window.y_size,
-                data_type,
-                geotiff.nodata(),
-            )
-            .map_err(|e| e.into())
-        } else {
-            Err(VrtError::source_error(
-                "unknown",
-                "Unsupported source format",
-            ))
-        }
+/// Converts a [`NoDataValue`] into a plain `f64`, if it declares one.
+fn nodata_as_f64(nodata: NoDataValue) -> Option<f64> {
+    match nodata {
+        NoDataValue::None => None,
+        NoDataValue::Integer(v) => Some(v as f64),
+        NoDataValue::Float(v) => Some(v),
     }
 }
 

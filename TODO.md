@@ -1,8 +1,71 @@
 # OxiGeo TODO
 
-> Version: 0.2.2 (2026-07-30) | previous release: 0.2.1 (2026-07-28) | 75 crates | 18,133 tests passing (101 skipped), 0 failures (`--all-features`); 16,684 passing (80 skipped) on default features | 402 doc tests | ~791K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
+> Version: 0.2.3 (2026-08-05) | previous release: 0.2.2 (2026-07-30) | 75 crates | 18,184 tests passing (101 skipped), 0 failures (`--all-features`); 16,722 passing (80 skipped) on default features | 412 doc tests passing (86 ignored) | ~797K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
 
 ---
+
+## v0.2.3 — Warped VRT + Vector Layers Complete, Release-Ready 2026-08-05 (branch: 0.2.3)
+
+[GitHub issue #15](https://github.com/cool-japan/oxigeo/issues/15): `oxigeo-vrt` rejected
+every `gdalwarp -of VRT` product ("Band must have at least one source or a pixel
+function") because the driver had no concept of a Warped VRT's `<GDALWarpOptions>` block.
+Now implemented for real: new `warp.rs`/`warped.rs`/`srs.rs`/`source_dataset.rs` (1,635
+lines) give `oxigeo-vrt` a backward warp engine, depth-aware WKT `AUTHORITY` resolution
+(fixed a WKT naming EPSG:4326 that silently resolved to the spheroid's EPSG:7030),
+`relativeToVRT` round-tripping, and a quick-xml 0.41 entity-reference fix. [Issue
+#16](https://github.com/cool-japan/oxigeo/issues/16): vector-layer support was
+incomplete — `Dataset::open` on a GeoPackage always reported 0 layers, and there was no
+public API to read a layer's features. Now implemented: new `layer.rs`/`gpkg_schema.rs`
+(1,405 lines) give `oxigeo::Dataset` a `layers()`/`layer()`/`layer_by_name()`/
+`Layer::features()` API for GeoPackage/Shapefile/GeoJSON, plus a GeoPackage `fid`
+rowid-alias fix and a table-constraint-parsed-as-column fix. [Issue
+#14](https://github.com/cool-japan/oxigeo/issues/14) needed no code change — the readers
+it asked for shipped in 0.2.2. Gates green: `cargo fmt --check` clean, `cargo clippy
+--workspace --all-features --all-targets` 0 warnings, `cargo nextest run --all-features`
+18,184 passed / 0 failed / 101 skipped (16,722 / 0 / 80 skipped on default features), 412
+doc tests passing (86 ignored), `cargo deny check bans` passing, `cargo publish --dry-run` clean on the
+leaf crate (`oxigeo-core`; dependent crates cannot dry-run until 0.2.3 is actually
+published — registry resolution, not a defect). Full categorized list in CHANGELOG.md
+`[0.2.3]`.
+
+### Fixed in 0.2.3
+- [x] **`oxigeo-vrt`**: Warped VRTs no longer rejected at parse time
+  (`VrtDataset::is_warped` relaxes the source/pixel-function rule when a validated
+  `<GDALWarpOptions>` block is present); depth-aware `AUTHORITY`/`ID` WKT resolution
+  (`srs::resolve_crs`, bracket-depth tracked so the *root* CRS code is read, not the
+  first — usually the spheroid's — code in the string); `relativeToVRT` round-trip on
+  both parse and write; quick-xml 0.41 `Event::GeneralRef` entity events (`&quot;`/
+  `&amp;`/`&#34;`) no longer dropped, which had corrupted escaped WKT/paths;
+  `VrtReader::read_window`'s unchecked `band - 1` underflow replaced with `checked_sub`
+  + typed error
+- [x] **`oxigeo` facade**: `Dataset::open(".vrt")` no longer returns a zero-filled
+  `DatasetInfo` (new `extract_vrt_info` header probe), and every raster read method
+  (`read_band`/`read_window`/`read_interleaved`/`_into` forms) now dispatches to the VRT
+  reader — including through nested warps and mosaics — instead of being hardwired to
+  GeoTIFF only
+- [x] **`oxigeo` facade / GeoPackage**: `Dataset::open("x.gpkg")` always reported 0
+  layers (`open_vector` had no GeoPackage arm) — fixed via new `extract_gpkg_info`;
+  GeoPackage `fid` read back `NULL` on every feature (SQLite `INTEGER PRIMARY KEY`
+  rowid-alias not substituted) — fixed in `gpkg_schema`; named table-level constraints
+  (`CONSTRAINT ... PRIMARY KEY (...)`) were parsed as bogus extra columns — fixed via
+  `is_table_constraint`
+
+### Added in 0.2.3
+- [x] `oxigeo-vrt`: `warp` module (`WarpOptions`, `WarpResampleAlg`, `WarpKernel`,
+  `WarpBandMapping`, `InitDest`, `ReprojectionTransformer`, `GenImgProjTransformer`),
+  `srs::resolve_crs`, `source_dataset::SourceDataset` (nested-VRT recursion,
+  `MAX_VRT_NESTING = 16`), `VrtError::EmptyWindow`
+- [x] `oxigeo::Dataset::{layers, layer, layer_by_name, layer_names}`, `Layer::features()`;
+  new `oxigeo::{Layer, LayerFeatures}` and re-exported `oxigeo::{Feature, FieldValue,
+  Geometry}`
+
+### Known limitations carried into 0.3.0
+- [ ] `oxigeo-vrt` warp engine resamples Cubic/CubicSpline/Lanczos/Average/Mode
+  bilinearly rather than with their named kernel (`WarpResampleAlg::is_kernel_exact()`
+  reports which algorithms are exact today: `NearestNeighbour`/`Bilinear` only)
+- [ ] `Dataset::layers()` covers GeoPackage (feature `gpkg`)/Shapefile/GeoJSON only;
+  FlatGeobuf and GeoParquet return `OxiGeoError::NotSupported` and remain reachable only
+  through the streaming feature API
 
 ## v0.2.2 — Issue #14 Fix Campaign Complete, Release-Ready 2026-07-30 (branch: 0.2.2)
 

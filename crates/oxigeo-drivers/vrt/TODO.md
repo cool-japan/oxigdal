@@ -1,19 +1,17 @@
 # TODO: oxigeo-drivers/vrt
 
 > **Purpose:** VRT (Virtual Raster) driver for OxiGeo - Pure Rust GDAL reimplementation
-> **Status (2026-07-28):** 5,145 Rust LoC (incl. tests) - 72 tests - 0 source-code stubs (mature; lazy reading, pixel functions, mosaic compositing all wired)
-> **Roadmap:** v0.1.7 - v0.2.0 (current slice) - v1.0.0
+> **Status (2026-08-05):** 6,053 Rust LoC (incl. tests) - ~105 tests - 0 source-code stubs (mature; lazy reading, pixel functions, mosaic compositing, warped-VRT execution all wired)
+> **Roadmap:** v0.1.7 - v0.2.3 (current slice) - v1.0.0
 
 ## High Priority (next slice - verified gaps)
 
-- [ ] Implement warped VRT for on-the-fly reprojection
-  - **Verified gap:** `src/dataset.rs:266` declares enum variant `VrtSubclass::Warped`, but the reader path does not perform reprojection. `rg -n "warp.*read|reproject.*source|VrtSubclass::Warped" -g '*.rs' src/reader.rs` shows no warp logic in the read path. Warped VRTs are read but treated as plain VRTs.
-  - **Goal:** A `<VRTDataset subClass="VRTWarpedDataset">` file applies the warp matrix from source CRS to destination CRS during `read_window` / `read_band`.
-  - **Design:** Parse `<GDALWarpOptions>` from XML: `<Transformer>` (typically `<GenImgProjTransformer>` with `SrcGeoTransform`, `DstGeoTransform`, `SrcSRS`, `DstSRS`), `<ResampleAlg>` (`NearestNeighbour` / `Bilinear` / `Cubic` / `Lanczos`). For each destination pixel, inverse-transform to source pixel via `oxigeo-proj`, read source value with chosen resampler. Spec: GDAL VRT Warped subclass documentation.
-  - **Files:** (new) `src/warp.rs`, `src/reader.rs` (dispatch on `VrtSubclass`), `src/xml.rs` (parse `GDALWarpOptions`), `Cargo.toml` (add `oxigeo-proj.workspace = true` under a `warp` feature)
-  - **Tests:** (proposed) `test_warp_identity_transform`, `test_warp_wgs84_to_web_mercator_nearest`, `test_warp_bilinear_resampling`, `test_warp_round_trip_via_inverse`, `test_warp_xml_parse_genimgproj`
-  - **Risk:** Resampler accuracy at edges; reuse `oxigeo-warp` crate if it exists, otherwise inline.
-  - **Prerequisites:** `oxigeo-proj` and possibly `oxigeo-warp` if separate.
+- [x] Implement warped VRT for on-the-fly reprojection — **done in 0.2.3** (cool-japan/oxigeo#15)
+  - **Verified gap (was):** `src/dataset.rs:266` declared enum variant `VrtSubclass::Warped`, but the reader path did not perform reprojection; Warped VRTs were read but treated as plain VRTs, and were in fact rejected outright by `VrtDataset::validate`'s "at least one source or a pixel function" rule.
+  - **Shipped:** `VrtDataset::with_warp_options`/`is_warped` relax that rule for a validated `<GDALWarpOptions>` block; `VrtReader::read_warped_window` runs the backward warp (destination pixel → geo-coordinate → reprojected source coordinate → resample) via a new `WarpEngine` (`src/warped.rs`). `<Transformer>`/`<GenImgProjTransformer>`, `<ResampleAlg>` (all 8 GDAL kernels parse; `NearestNeighbour`/`Bilinear` resample exactly, `Cubic`/`CubicSpline`/`Lanczos`/`Average`/`Mode` currently resample bilinearly — see `WarpResampleAlg::is_kernel_exact()`), and depth-aware WKT `AUTHORITY`/`ID` CRS resolution (`src/srs.rs::resolve_crs`) are all real.
+  - **Files (as built):** `src/warp.rs` (warp-options model), `src/warped.rs` (the backward warp engine), `src/srs.rs` (CRS-string resolution), `src/source_dataset.rs` (nested-VRT/GeoTIFF source dispatch, `MAX_VRT_NESTING = 16`), `src/xml.rs` (`<GDALWarpOptions>` parse/write), `src/dataset.rs`, `src/reader.rs`. `oxigeo-proj` is now an unconditional dependency (not gated behind a separate `warp` feature — it was already Pure Rust by default, so no feature split was needed).
+  - **Tests:** `tests/issue_15_warped_vrt.rs` (identity/reprojected/bilinear/nested/mosaic-source warp scenarios, cross-checked against an independent `ReprojectionOracle`) plus unit tests in `warp.rs`/`srs.rs`/`warped.rs`.
+  - **Remaining gap:** non-exact resampling for Cubic/CubicSpline/Lanczos/Average/Mode (tracked as a known limitation in CHANGELOG.md `[0.2.3]`, not re-listed here as a separate item).
 
 - [ ] Implement multi-source compositing priority / overlap resolution
   - **Verified gap:** `src/mosaic.rs` (13.7K) exports `BlendMode`, `CompositeParams`, `MosaicCompositor`, `MosaicPlanner`. The blend modes are listed, but the question is which one is exercised when sources overlap in `read_window`. `src/reader.rs:159` comment `// Composite data from all contributing sources (no pixel function)` shows compositing happens, but the actual blend strategy (first-wins vs last-wins vs alpha vs max) is not clearly user-configurable. `rg -n "BlendMode::|blend_mode" -g '*.rs' src/reader.rs` returns no hits - the reader does not honour the `BlendMode` enum.

@@ -1,6 +1,21 @@
 {
   "examples": [
     {
+      "id": "kumamoto-earthquake",
+      "name": "Kumamoto earthquake — Mayuyama (Japan)",
+      "description": "Mj7.1, 28 Jul 2026 — slope failure above Shimabara, seen 6 days later",
+      "icon": "⛰️",
+      "bbox": [130.30, 32.73, 130.40, 32.81],
+      "dateA": "2025-07-29",
+      "dateB": "2026-08-03",
+      "windowDays": 5,
+      "maxCloud": 30,
+      "threshold": 0.15,
+      "minAreaHa": 0.5,
+      "_verified": "2026-08-04 live Earth Search: grid MGRS-52SFB (EPSG:32652); A=S2B_52SFB_20250729_0_L2A (cloud 1.5%), B=S2B_52SFB_20260803_0_L2A (cloud 15.9%); 2 usable A / 1 usable B scenes on the winning grid (A alternate S2C_52SFB_20250724_0_L2A). SCL clear-sky over this bbox: A 100.0%, B 100.0%, 100.0% jointly clear. Offline replay of the same pipeline at 10 m (threshold 0.15, min area 0.5 ha) yields 85 patches / 168.8 ha; largest 51.96 ha at 32.76516N 130.34420E = the new bare-ground scar on the south-east flank of Mt Mayuyama, continuous forest in A; second 34.96 ha at 32.75413N 130.33009E = the Mizunashi-gawa sabo works below Fugendake, where ongoing earthworks (not necessarily the earthquake) strip the recolonized 1991-95 pyroclastic deposit. Dating: the Mayuyama scar is already present on 2026-07-29, the first Sentinel-2 pass after the event (~19 h later, seen through thin cloud), but the site was overcast on every 2026 pre-event pass — clear fraction over the 1.1x1.1 km scar footprint was 2.5% on 07-14, 12.1% on 07-21 and 0.0% on 07-24 — so the last clean pre-event view is 2025-07-29 and the imagery alone brackets the failure to that 12-month interval.",
+      "_notes": "Dates are deliberate. (a) The +-5-day B window spans 2026-07-29..08-08, so it cannot reach back past the 2026-07-28 16:27 JST event; the pairer picks the *clearest* scene in the window, not the nearest, so a wider window risks silently selecting a pre-event scene as B. (b) A is the same season one year earlier (both late July), so vegetation phenology largely cancels. The Kumamoto-side epicentral damage (buildings, bridges, liquefaction, fires) is not detectable by 10 m NDVI; an epicentral AOI [130.58,32.52,130.78,32.72] was tested (97.6% jointly clear, so it is a usable alternative if you want the epicentre itself) and its largest patches were golf-course turf that browned and a new construction site — neither attributable to the earthquake from imagery alone. Mt Mayuyama, which the reports name as a genuine slope collapse, is the one satellite-visible surface failure of this event. Caveat: the pipeline has no per-pixel cloud/shadow mask (SCL is not read), and a year of construction and forestry sits in the baseline alongside the earthquake."
+    },
+    {
       "id": "lahaina-wildfire",
       "name": "Lahaina wildfire (Maui)",
       "description": "August 2023 wildfire scar — ~880 ha ground truth",
@@ -58,7 +73,7 @@
     }
   ],
   "metadata": {
-    "version": "1.0",
-    "note": "Sentinel-2 L2A via Earth Search v1 (Element 84). Dates are search centers; the pairer picks the clearest same-grid scenes within ±windowDays. All four presets live-verified by WP A6 (see per-example _verified fields)."
+    "version": "1.1",
+    "note": "Sentinel-2 L2A via Earth Search v1 (Element 84). Dates are search centers; the pairer picks the clearest same-grid scenes within ±windowDays. Every preset is live-verified against the catalog — see the per-example _verified fields for the winning grid, the scene pair and its cloud cover."
   }
 }

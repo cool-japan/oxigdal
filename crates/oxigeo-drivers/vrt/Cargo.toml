@@ -21,6 +21,10 @@ async = ["oxigeo-core/async", "dep:tokio"]
 [dependencies]
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-geotiff = { workspace = true }
+# Warped VRTs (`<GDALWarpOptions>`) reproject between the source and
+# destination CRS, which is oxigeo-proj's job. Pure Rust: oxigeo-proj's default
+# feature set deliberately excludes the oxiproj-db/tokio EPSG path.
+oxigeo-proj = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 quick-xml = { workspace = true }
