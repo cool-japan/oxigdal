@@ -205,9 +205,17 @@ impl VrtReader {
             ));
         }
 
-        // Create output buffer
+        // Create output buffer. GDAL initialises a mosaic's destination with
+        // the band's NoDataValue before applying any source, so a pixel no
+        // source covers — or that every source declares nodata for — reads back
+        // as nodata rather than as a zero that may be a legitimate data value
+        // (cool-japan/oxigeo#19). `read_warped_window` already does this via
+        // `InitDest::NoData`.
         let data_size = (window.x_size * window.y_size) as usize * vrt_band.data_type.size_bytes();
         let mut data = vec![0u8; data_size];
+        if let Some(band_nodata) = vrt_band.nodata.as_f64() {
+            crate::source_dataset::fill_with_value(&mut data, vrt_band.data_type, band_nodata);
+        }
 
         // If pixel function is present, read all sources separately and apply function
         if let Some(ref pixel_func) = vrt_band.pixel_function {
@@ -369,6 +377,13 @@ impl VrtReader {
         let dst_x_off = intersection.x_off - dst_window.x_off;
         let dst_y_off = intersection.y_off - dst_window.y_off;
 
+        // A source with no `<NODATA>` of its own falls back to the nodata the
+        // source dataset itself declares, which is what GDAL compares against.
+        let src_nodata = match source.nodata {
+            Some(value) if !value.is_none() => value,
+            _ => source_data.nodata(),
+        };
+
         let params = crate::mosaic::CompositeParams::new(
             dst_x_off,
             dst_y_off,
@@ -376,7 +391,8 @@ impl VrtReader {
             intersection.y_size,
             dst_window.x_size,
             data_type,
-        );
+        )
+        .with_source_nodata(src_nodata);
         self.compositor
             .composite(source_data.as_bytes(), output, coverage, &params)?;
 

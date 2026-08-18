@@ -52,25 +52,71 @@ pub(crate) const WGS84_A: f64 = 6_378_137.0;
 pub(crate) const WGS84_F: f64 = 1.0 / 298.257_223_563;
 /// WGS-84 first eccentricity squared.
 pub(crate) const WGS84_E2: f64 = 2.0 * WGS84_F - WGS84_F * WGS84_F;
-/// WGS-84 first eccentricity.
-pub(crate) const WGS84_E: f64 = 0.081_819_190_842_622; // sqrt(WGS84_E2)
 
 // ---------------------------------------------------------------------------
 // Meridional arc (shared helper)
 // ---------------------------------------------------------------------------
 
-/// Meridional arc for the WGS-84 ellipsoid from the equator to latitude `phi`
-/// (radians).  Series accurate to ~1 mm worldwide.
+/// Meridional arc from the equator to latitude `phi` (radians) on the ellipsoid
+/// with semi-major axis `a` and first eccentricity squared `e2`.
+///
+/// Uses the **third-flattening (Helmert) expansion** in
+/// `n = f / (2 − f) = (a − b) / (a + b)` rather than a series in `e²`.  For
+/// terrestrial ellipsoids `n ≈ 1.7e-3`, so the truncated `n⁴` form is accurate
+/// to **~5e-8 m** worldwide.
+///
+/// This matters: the classic Snyder `e²`-power series previously used here is
+/// truncated inconsistently (it carries an `e⁸·sin 8φ` term but omits the `e⁸`
+/// corrections to the `φ` and `sin 2φ` coefficients) and is only good to
+/// ~3.5e-4 m at 48° N — large enough to show up as a visible batch-vs-scalar
+/// disagreement against OxiProj's Poder/Engsager transverse Mercator.
+///
+/// Reference: Helmert (1880); see also Karney, "Transverse Mercator with an
+/// accuracy of a few nanometers" (2011), eq. 8.
 #[inline(always)]
 fn meridional_arc(phi: f64, a: f64, e2: f64) -> f64 {
-    let e4 = e2 * e2;
-    let e6 = e4 * e2;
-    let e8 = e4 * e4;
-    a * ((1.0 - e2 / 4.0 - 3.0 * e4 / 64.0 - 5.0 * e6 / 256.0) * phi
-        - (3.0 * e2 / 8.0 + 3.0 * e4 / 32.0 + 45.0 * e6 / 1024.0) * (2.0 * phi).sin()
-        + (15.0 * e4 / 256.0 + 45.0 * e6 / 1024.0) * (4.0 * phi).sin()
-        - (35.0 * e6 / 3072.0) * (6.0 * phi).sin()
-        + (315.0 * e8 / 131_072.0) * (8.0 * phi).sin())
+    // n = f/(2-f) expressed directly in terms of e²:
+    //   b/a = sqrt(1 - e²)  ⇒  n = (1 - b/a) / (1 + b/a)
+    let b_over_a = (1.0 - e2).sqrt();
+    let n = (1.0 - b_over_a) / (1.0 + b_over_a);
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let n4 = n2 * n2;
+
+    let a0 = 1.0 + n2 / 4.0 + n4 / 64.0;
+    let a2 = -1.5 * (n - n3 / 8.0);
+    let a4 = (15.0 / 16.0) * (n2 - n4 / 4.0);
+    let a6 = -(35.0 / 48.0) * n3;
+    let a8 = (315.0 / 512.0) * n4;
+
+    (a / (1.0 + n))
+        * (a0 * phi
+            + a2 * (2.0 * phi).sin()
+            + a4 * (4.0 * phi).sin()
+            + a6 * (6.0 * phi).sin()
+            + a8 * (8.0 * phi).sin())
+}
+
+// ---------------------------------------------------------------------------
+// Conformal-latitude helpers (shared by Mercator and LCC)
+// ---------------------------------------------------------------------------
+
+/// PROJ's `pj_tsfn`: `t = tan(π/4 − φ/2) / ((1 − e sin φ)/(1 + e sin φ))^(e/2)`.
+///
+/// `t` equals `exp(−ψ)` where `ψ` is the isometric latitude, so it is the
+/// natural building block for every conformal projection (Mercator, LCC).
+#[inline(always)]
+fn tsfn(phi: f64, e: f64) -> f64 {
+    let es = e * phi.sin();
+    (FRAC_PI_4 - phi / 2.0).tan() / ((1.0 - es) / (1.0 + es)).powf(0.5 * e)
+}
+
+/// PROJ's `pj_msfn`: `m = cos φ / sqrt(1 − e² sin² φ)` — the radius of the
+/// parallel at `φ` on the unit-`a` ellipsoid.
+#[inline(always)]
+fn msfn(phi: f64, e2: f64) -> f64 {
+    let sin_phi = phi.sin();
+    phi.cos() / (1.0 - e2 * sin_phi * sin_phi).sqrt()
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +124,11 @@ fn meridional_arc(phi: f64, a: f64, e2: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Single-point Transverse Mercator forward computation (Snyder §8).
+///
+/// `m0` is the meridional arc at the projection's latitude of origin
+/// (`+lat_0`).  It is a **per-transformer** constant, so the caller computes it
+/// once via [`meridional_arc`] and passes it in rather than recomputing it for
+/// every point.  Passing `m0 = 0.0` reproduces the UTM case (`lat_0 = 0`).
 ///
 /// Returns `(x_easting, y_northing)` in metres.
 #[inline(always)]
@@ -87,6 +138,7 @@ fn tmerc_point(
     lat_rad: f64,
     k0: f64,
     lon0_rad: f64,
+    m0: f64,
     false_easting: f64,
     false_northing: f64,
     a: f64,
@@ -101,9 +153,8 @@ fn tmerc_point(
     // Radius of curvature in prime vertical
     let n_val = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
 
-    // Meridional arc
+    // Meridional arc at the point; `m0` (arc at `lat_0`) supplied by the caller.
     let m = meridional_arc(lat_rad, a, e2);
-    let m0 = meridional_arc(0.0, a, e2); // lat_0 = 0 for UTM/TM
 
     let t = tan_lat;
     let t2 = t * t;
@@ -150,6 +201,8 @@ fn tmerc_point(
 /// * `lats` – latitude array (radians)
 /// * `k0` – scale factor at central meridian
 /// * `lon0_rad` – central meridian (radians)
+/// * `lat0_rad` – latitude of origin `+lat_0` (radians).  Non-zero for e.g. the
+///   Japan Plane Rectangular CS (`lat_0 = 33°/36°/…`); zero for UTM.
 /// * `false_easting`, `false_northing` – offsets in metres
 /// * `a` – semi-major axis (metres)
 /// * `e2` – first eccentricity squared
@@ -162,6 +215,7 @@ pub(crate) fn tmerc_forward_batch(
     lats: &[f64],
     k0: f64,
     lon0_rad: f64,
+    lat0_rad: f64,
     false_easting: f64,
     false_northing: f64,
     a: f64,
@@ -171,6 +225,10 @@ pub(crate) fn tmerc_forward_batch(
     let n = lons.len();
     let mut xs = vec![0.0f64; n];
     let mut ys = vec![0.0f64; n];
+
+    // Meridional arc at the latitude of origin: a per-transformer constant,
+    // hoisted out of the per-point loop.
+    let m0 = meridional_arc(lat0_rad, a, e2);
 
     if is_avx2() {
         // 4-lane unrolled path — lets the compiler use FMA and potentially
@@ -186,6 +244,7 @@ pub(crate) fn tmerc_forward_batch(
                 lats[base],
                 k0,
                 lon0_rad,
+                m0,
                 false_easting,
                 false_northing,
                 a,
@@ -196,6 +255,7 @@ pub(crate) fn tmerc_forward_batch(
                 lats[base + 1],
                 k0,
                 lon0_rad,
+                m0,
                 false_easting,
                 false_northing,
                 a,
@@ -206,6 +266,7 @@ pub(crate) fn tmerc_forward_batch(
                 lats[base + 2],
                 k0,
                 lon0_rad,
+                m0,
                 false_easting,
                 false_northing,
                 a,
@@ -216,6 +277,7 @@ pub(crate) fn tmerc_forward_batch(
                 lats[base + 3],
                 k0,
                 lon0_rad,
+                m0,
                 false_easting,
                 false_northing,
                 a,
@@ -239,6 +301,7 @@ pub(crate) fn tmerc_forward_batch(
                 lats[idx],
                 k0,
                 lon0_rad,
+                m0,
                 false_easting,
                 false_northing,
                 a,
@@ -255,6 +318,7 @@ pub(crate) fn tmerc_forward_batch(
                 lats[i],
                 k0,
                 lon0_rad,
+                m0,
                 false_easting,
                 false_northing,
                 a,
@@ -276,15 +340,22 @@ pub(crate) fn tmerc_forward_batch(
 ///
 /// Formula (Snyder eq. 7-7 / 15-1):
 /// ```text
-/// x = k0 * a * (lon − lon0)
-/// y = k0 * a * ln[ tan(π/4 + φ/2) · ((1 − e·sin φ) / (1 + e·sin φ))^(e/2) ]
+/// x = k0 * a * (lon − lon0)                                 + false_easting
+/// y = k0 * a * ln[ tan(π/4 + φ/2) · ((1 − e·sin φ)/(1 + e·sin φ))^(e/2) ]
+///                                                           + false_northing
 /// ```
+///
+/// `false_easting` / `false_northing` are in metres and are added *after* the
+/// `k0 · a` scaling, matching PROJ's `fwd_finalize`.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn merc_point_fwd(
     lon_rad: f64,
     lat_rad: f64,
     lon0_rad: f64,
     k0: f64,
+    false_easting: f64,
+    false_northing: f64,
     a: f64,
     e: f64,
 ) -> (f64, f64) {
@@ -294,7 +365,7 @@ fn merc_point_fwd(
     let psi = (FRAC_PI_4 + lat_rad / 2.0).tan().ln()
         + (e / 2.0) * ((1.0 - e * sin_lat) / (1.0 + e * sin_lat)).ln();
     let y = k0 * a * psi;
-    (x, y)
+    (x + false_easting, y + false_northing)
 }
 
 /// Batch ellipsoidal Mercator forward projection.
@@ -305,14 +376,19 @@ fn merc_point_fwd(
 /// * `lons` – longitude array (radians)
 /// * `lats` – latitude array (radians)
 /// * `lon0_rad` – central meridian (radians)
-/// * `k0` – scale factor
+/// * `k0` – scale factor (already derived from `+lat_ts` by the caller when
+///   that parameter is present — PROJ ignores `+k` in that case)
+/// * `false_easting`, `false_northing` – offsets in metres
 /// * `a` – semi-major axis (metres)
 /// * `e` – first eccentricity (not e²)
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn merc_forward_batch(
     lons: &[f64],
     lats: &[f64],
     lon0_rad: f64,
     k0: f64,
+    false_easting: f64,
+    false_northing: f64,
     a: f64,
     e: f64,
 ) -> (Vec<f64>, Vec<f64>) {
@@ -327,10 +403,46 @@ pub(crate) fn merc_forward_batch(
 
         for c in 0..chunks {
             let base = c * 4;
-            let (x0, y0) = merc_point_fwd(lons[base], lats[base], lon0_rad, k0, a, e);
-            let (x1, y1) = merc_point_fwd(lons[base + 1], lats[base + 1], lon0_rad, k0, a, e);
-            let (x2, y2) = merc_point_fwd(lons[base + 2], lats[base + 2], lon0_rad, k0, a, e);
-            let (x3, y3) = merc_point_fwd(lons[base + 3], lats[base + 3], lon0_rad, k0, a, e);
+            let (x0, y0) = merc_point_fwd(
+                lons[base],
+                lats[base],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
+            let (x1, y1) = merc_point_fwd(
+                lons[base + 1],
+                lats[base + 1],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
+            let (x2, y2) = merc_point_fwd(
+                lons[base + 2],
+                lats[base + 2],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
+            let (x3, y3) = merc_point_fwd(
+                lons[base + 3],
+                lats[base + 3],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
             xs[base] = x0;
             xs[base + 1] = x1;
             xs[base + 2] = x2;
@@ -343,13 +455,31 @@ pub(crate) fn merc_forward_batch(
 
         for i in 0..remainder {
             let idx = chunks * 4 + i;
-            let (x, y) = merc_point_fwd(lons[idx], lats[idx], lon0_rad, k0, a, e);
+            let (x, y) = merc_point_fwd(
+                lons[idx],
+                lats[idx],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
             xs[idx] = x;
             ys[idx] = y;
         }
     } else {
         for i in 0..n {
-            let (x, y) = merc_point_fwd(lons[i], lats[i], lon0_rad, k0, a, e);
+            let (x, y) = merc_point_fwd(
+                lons[i],
+                lats[i],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
             xs[i] = x;
             ys[i] = y;
         }
@@ -364,14 +494,26 @@ pub(crate) fn merc_forward_batch(
 
 /// Single-point ellipsoidal Mercator inverse computation.
 ///
-/// Recovers `(lon_rad, lat_rad)` from projected `(x, y)`.
+/// Recovers `(lon_rad, lat_rad)` from projected `(x, y)`.  The false easting /
+/// northing (metres) are removed **before** un-scaling by `k0 · a`, mirroring
+/// [`merc_point_fwd`].
 /// Uses iterative inversion of the isometric latitude (converges in ~5 iterations).
 #[inline(always)]
 #[allow(dead_code)]
-fn merc_point_inv(x: f64, y: f64, lon0_rad: f64, k0: f64, a: f64, e: f64) -> (f64, f64) {
-    let lon_rad = x / (k0 * a) + lon0_rad;
+#[allow(clippy::too_many_arguments)]
+fn merc_point_inv(
+    x: f64,
+    y: f64,
+    lon0_rad: f64,
+    k0: f64,
+    false_easting: f64,
+    false_northing: f64,
+    a: f64,
+    e: f64,
+) -> (f64, f64) {
+    let lon_rad = (x - false_easting) / (k0 * a) + lon0_rad;
     // Iterative inversion: start from spherical approximation
-    let t = (-y / (k0 * a)).exp();
+    let t = (-(y - false_northing) / (k0 * a)).exp();
     let mut lat_rad = FRAC_PI_2 - 2.0 * t.atan();
     for _ in 0..15 {
         let sin_lat = lat_rad.sin();
@@ -391,15 +533,20 @@ fn merc_point_inv(x: f64, y: f64, lon0_rad: f64, k0: f64, a: f64, e: f64) -> (f6
 /// # Parameters
 /// * `xs`, `ys` – projected coordinates (metres)
 /// * `lon0_rad` – central meridian (radians)
-/// * `k0` – scale factor
+/// * `k0` – scale factor (derived from `+lat_ts` when present, as in the
+///   forward direction)
+/// * `false_easting`, `false_northing` – offsets in metres, removed first
 /// * `a` – semi-major axis (metres)
 /// * `e` – first eccentricity
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn merc_inverse_batch(
     xs: &[f64],
     ys: &[f64],
     lon0_rad: f64,
     k0: f64,
+    false_easting: f64,
+    false_northing: f64,
     a: f64,
     e: f64,
 ) -> (Vec<f64>, Vec<f64>) {
@@ -414,10 +561,46 @@ pub(crate) fn merc_inverse_batch(
 
         for c in 0..chunks {
             let base = c * 4;
-            let (lon0, lat0) = merc_point_inv(xs[base], ys[base], lon0_rad, k0, a, e);
-            let (lon1, lat1) = merc_point_inv(xs[base + 1], ys[base + 1], lon0_rad, k0, a, e);
-            let (lon2, lat2) = merc_point_inv(xs[base + 2], ys[base + 2], lon0_rad, k0, a, e);
-            let (lon3, lat3) = merc_point_inv(xs[base + 3], ys[base + 3], lon0_rad, k0, a, e);
+            let (lon0, lat0) = merc_point_inv(
+                xs[base],
+                ys[base],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
+            let (lon1, lat1) = merc_point_inv(
+                xs[base + 1],
+                ys[base + 1],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
+            let (lon2, lat2) = merc_point_inv(
+                xs[base + 2],
+                ys[base + 2],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
+            let (lon3, lat3) = merc_point_inv(
+                xs[base + 3],
+                ys[base + 3],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
             lons[base] = lon0;
             lons[base + 1] = lon1;
             lons[base + 2] = lon2;
@@ -430,13 +613,31 @@ pub(crate) fn merc_inverse_batch(
 
         for i in 0..remainder {
             let idx = chunks * 4 + i;
-            let (lon, lat) = merc_point_inv(xs[idx], ys[idx], lon0_rad, k0, a, e);
+            let (lon, lat) = merc_point_inv(
+                xs[idx],
+                ys[idx],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
             lons[idx] = lon;
             lats[idx] = lat;
         }
     } else {
         for i in 0..n {
-            let (lon, lat) = merc_point_inv(xs[i], ys[i], lon0_rad, k0, a, e);
+            let (lon, lat) = merc_point_inv(
+                xs[i],
+                ys[i],
+                lon0_rad,
+                k0,
+                false_easting,
+                false_northing,
+                a,
+                e,
+            );
             lons[i] = lon;
             lats[i] = lat;
         }
@@ -449,66 +650,93 @@ pub(crate) fn merc_inverse_batch(
 // Lambert Conformal Conic forward batch kernel
 // ---------------------------------------------------------------------------
 
-/// Single-point spherical Lambert Conformal Conic forward computation.
+/// Per-transformer LCC cone constants, in **normalised (a = 1)** units.
 ///
-/// Formula (Snyder §15, sphere):
+/// Built once by [`lcc_cone_params`] and reused for every point in a batch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LccCone {
+    /// Cone constant `n` (= sin of the standard parallel for the tangent case).
+    pub(crate) n: f64,
+    /// `c = m1 · t1^(−n) / n` — PROJ's `P->c`.
+    pub(crate) c: f64,
+    /// Radius at the latitude of origin, `ρ0 = c · t(φ0)^n`.
+    pub(crate) rho0: f64,
+    /// `true` when the ellipsoidal branch is in use (`e² > 0`).
+    pub(crate) ellipsoidal: bool,
+}
+
+/// Single-point Lambert Conformal Conic forward computation.
+///
+/// Ellipsoidal form (Snyder §15, "Lambert Conformal Conic — ellipsoid"; matches
+/// PROJ's `src/projections/lcc.cpp`):
+///
 /// ```text
-/// ρ  = R · F / tan^n(π/4 + φ/2)   = R · F · exp(−n · ln tan(π/4+φ/2))
+/// t  = tan(π/4 − φ/2) / ((1 − e sin φ)/(1 + e sin φ))^(e/2)
+/// ρ  = a · k0 · c · t^n
 /// θ  = n · (λ − λ₀)
-/// x  = ρ · sin θ
-/// y  = ρ₀ − ρ · cos θ
+/// x  = ρ · sin θ            + false_easting
+/// y  = a · k0 · ρ₀ − ρ·cos θ + false_northing
 /// ```
+///
+/// The spherical branch (`e = 0`) reduces to `t = tan(π/4 − φ/2)`, so both
+/// branches share one code path via [`tsfn`].
+///
+/// `cone.c` / `cone.rho0` are normalised to `a = 1`; the caller's `a` (and the
+/// projection's `k0`) scale them here, matching PROJ's `fwd_finalize`.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn lcc_point_fwd(
     lon_rad: f64,
     lat_rad: f64,
-    n: f64,
-    big_f: f64,
-    rho0: f64,
+    cone: &LccCone,
     lon0_rad: f64,
     false_easting: f64,
     false_northing: f64,
     a: f64,
+    e: f64,
 ) -> (f64, f64) {
-    let t = (FRAC_PI_4 + lat_rad / 2.0).tan().ln();
-    let rho = a * big_f / (n * t).exp();
-    let theta = n * (lon_rad - lon0_rad);
+    // At the pole on the far side of the cone `t → 0` and `ρ → 0`; at the near
+    // pole `t → ∞`.  `powf` handles both, producing 0 or +inf, and the caller
+    // rejects non-finite results.
+    let t = tsfn(lat_rad, e);
+    let rho = a * cone.c * t.powf(cone.n);
+    let theta = cone.n * (lon_rad - lon0_rad);
     let (sin_theta, cos_theta) = theta.sin_cos();
     let x = rho * sin_theta + false_easting;
-    let y = rho0 - rho * cos_theta + false_northing;
+    let y = a * cone.rho0 - rho * cos_theta + false_northing;
     (x, y)
 }
 
-/// Batch spherical Lambert Conformal Conic forward projection.
+/// Batch Lambert Conformal Conic forward projection.
 ///
 /// All input angles must be in **radians**.
 ///
 /// # Parameters
 /// * `lons` – longitude array (radians)
 /// * `lats` – latitude array (radians)
-/// * `n` – cone constant (dimensionless)
-/// * `big_f` – F parameter (dimensionless)
-/// * `rho0` – origin radius (dimensionless; caller must pre-multiply by `a`)
+/// * `cone` – precomputed cone constants from [`lcc_cone_params`]
 /// * `lon0_rad` – central meridian (radians)
 /// * `false_easting`, `false_northing` – offsets (metres)
-/// * `a` – sphere radius (metres)
+/// * `a` – semi-major axis (metres)
+/// * `e2` – first eccentricity squared (0 for a sphere)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lcc_forward_batch(
     lons: &[f64],
     lats: &[f64],
-    n: f64,
-    big_f: f64,
-    rho0: f64,
+    cone: &LccCone,
     lon0_rad: f64,
     false_easting: f64,
     false_northing: f64,
     a: f64,
+    e2: f64,
 ) -> (Vec<f64>, Vec<f64>) {
     debug_assert_eq!(lons.len(), lats.len());
     let len = lons.len();
     let mut xs = vec![0.0f64; len];
     let mut ys = vec![0.0f64; len];
+
+    // Per-transformer constant, hoisted out of the per-point loop.
+    let e = if cone.ellipsoidal { e2.sqrt() } else { 0.0 };
 
     if is_avx2() {
         let chunks = len / 4;
@@ -519,46 +747,42 @@ pub(crate) fn lcc_forward_batch(
             let (x0, y0) = lcc_point_fwd(
                 lons[base],
                 lats[base],
-                n,
-                big_f,
-                rho0,
+                cone,
                 lon0_rad,
                 false_easting,
                 false_northing,
                 a,
+                e,
             );
             let (x1, y1) = lcc_point_fwd(
                 lons[base + 1],
                 lats[base + 1],
-                n,
-                big_f,
-                rho0,
+                cone,
                 lon0_rad,
                 false_easting,
                 false_northing,
                 a,
+                e,
             );
             let (x2, y2) = lcc_point_fwd(
                 lons[base + 2],
                 lats[base + 2],
-                n,
-                big_f,
-                rho0,
+                cone,
                 lon0_rad,
                 false_easting,
                 false_northing,
                 a,
+                e,
             );
             let (x3, y3) = lcc_point_fwd(
                 lons[base + 3],
                 lats[base + 3],
-                n,
-                big_f,
-                rho0,
+                cone,
                 lon0_rad,
                 false_easting,
                 false_northing,
                 a,
+                e,
             );
             xs[base] = x0;
             xs[base + 1] = x1;
@@ -575,13 +799,12 @@ pub(crate) fn lcc_forward_batch(
             let (x, y) = lcc_point_fwd(
                 lons[idx],
                 lats[idx],
-                n,
-                big_f,
-                rho0,
+                cone,
                 lon0_rad,
                 false_easting,
                 false_northing,
                 a,
+                e,
             );
             xs[idx] = x;
             ys[idx] = y;
@@ -591,13 +814,12 @@ pub(crate) fn lcc_forward_batch(
             let (x, y) = lcc_point_fwd(
                 lons[i],
                 lats[i],
-                n,
-                big_f,
-                rho0,
+                cone,
                 lon0_rad,
                 false_easting,
                 false_northing,
                 a,
+                e,
             );
             xs[i] = x;
             ys[i] = y;
@@ -611,43 +833,87 @@ pub(crate) fn lcc_forward_batch(
 // LCC cone-parameter precomputation
 // ---------------------------------------------------------------------------
 
-/// Precompute LCC cone parameters `(n, F, rho0)` from standard parallels.
+/// Precompute the LCC cone constants from the standard parallels.
 ///
-/// Uses the sphere-based formulae (Snyder §15).
+/// Uses the **ellipsoidal** formulae (Snyder §15) whenever `e2 > 0`, and the
+/// spherical ones otherwise.  A sphere-only kernel is not adequate here: for
+/// EPSG:2154 (RGF93 / Lambert-93, GRS80) the spherical approximation is off by
+/// ~214 m only 1.5° from the origin.
 ///
 /// # Parameters
 /// * `lat0_rad` – latitude of origin (radians)
 /// * `lat1_rad` – first standard parallel (radians)
 /// * `lat2_rad` – second standard parallel (radians)
+/// * `e2` – first eccentricity squared of the target ellipsoid (0 for a sphere)
+/// * `k0` – scale factor (`+k_0`, 1.0 for the usual LCC_2SP definitions).
+///   PROJ multiplies both `ρ` and `ρ₀` by `k0`, which is equivalent to scaling
+///   the constant `c` — so it is folded in here, once per transformer, instead
+///   of costing a multiply per point.
 ///
-/// Returns `None` if the standard parallels produce a degenerate cone (`n ≈ 0`).
+/// Returns `None` if the standard parallels produce a degenerate cone
+/// (`n ≈ 0`, i.e. `φ1 ≈ −φ2`) or a non-finite constant.
 pub(crate) fn lcc_cone_params(
     lat0_rad: f64,
     lat1_rad: f64,
     lat2_rad: f64,
-) -> Option<(f64, f64, f64)> {
-    let t0 = (FRAC_PI_4 + lat0_rad / 2.0).tan().ln();
-    let t1 = (FRAC_PI_4 + lat1_rad / 2.0).tan().ln();
-    let t2 = (FRAC_PI_4 + lat2_rad / 2.0).tan().ln();
+    e2: f64,
+    k0: f64,
+) -> Option<LccCone> {
+    /// PROJ's `EPS10` — the tolerance it uses for "parallels coincide" and
+    /// "origin is at a pole".
+    const EPS10: f64 = 1e-10;
 
-    let n = if (lat1_rad - lat2_rad).abs() < 1e-12 {
-        lat1_rad.sin()
+    let ellipsoidal = e2 > 0.0;
+    let e = if ellipsoidal { e2.sqrt() } else { 0.0 };
+
+    // Secant (two distinct parallels) vs tangent (one parallel).
+    let secant = (lat1_rad - lat2_rad).abs() >= EPS10;
+
+    let t1 = tsfn(lat1_rad, e);
+    let n = if secant {
+        let t2 = tsfn(lat2_rad, e);
+        let (m1, m2) = if ellipsoidal {
+            (msfn(lat1_rad, e2), msfn(lat2_rad, e2))
+        } else {
+            (lat1_rad.cos(), lat2_rad.cos())
+        };
+        let denom = (t1 / t2).ln();
+        if denom.abs() < EPS10 {
+            return None;
+        }
+        (m1 / m2).ln() / denom
     } else {
-        (lat1_rad.cos().ln() - lat2_rad.cos().ln()) / (t2 - t1)
+        lat1_rad.sin()
     };
 
-    if n.abs() < 1e-12 {
+    if !n.is_finite() || n.abs() < 1e-12 {
         return None;
     }
 
-    let big_f = lat1_rad.cos() * (n * t1).exp() / n;
-    let rho0 = if t0.is_finite() {
-        big_f / (n * t0).exp()
+    let m1 = if ellipsoidal {
+        msfn(lat1_rad, e2)
     } else {
+        lat1_rad.cos()
+    };
+    let c = k0 * m1 * t1.powf(-n) / n;
+
+    // At a polar origin ρ₀ is 0 (PROJ applies the same EPS10 test).
+    let rho0 = if (lat0_rad.abs() - FRAC_PI_2).abs() < EPS10 {
         0.0
+    } else {
+        c * tsfn(lat0_rad, e).powf(n)
     };
 
-    Some((n, big_f, rho0))
+    if !c.is_finite() || !rho0.is_finite() {
+        return None;
+    }
+
+    Some(LccCone {
+        n,
+        c,
+        rho0,
+        ellipsoidal,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -660,11 +926,20 @@ mod tests {
 
     const TOL: f64 = 1e-6;
 
+    /// WGS-84 first eccentricity, derived from `WGS84_E2` for the Mercator
+    /// kernels (which take `e`, not `e²`).
+    fn wgs84_e() -> f64 {
+        WGS84_E2.sqrt()
+    }
+
     // UTM zone 32N parameters
     const UTM32_LON0: f64 = 9.0_f64 * core::f64::consts::PI / 180.0;
     const UTM_K0: f64 = 0.9996;
     const UTM_FE: f64 = 500_000.0;
     const UTM_FN: f64 = 0.0;
+    /// UTM fixes `+lat_0 = 0`, so the meridional arc at the origin is zero.
+    const UTM_LAT0: f64 = 0.0;
+    const UTM_M0: f64 = 0.0;
 
     #[test]
     fn test_tmerc_batch_scalar_consistency() {
@@ -676,12 +951,12 @@ mod tests {
             .collect();
 
         let (xs, ys) = tmerc_forward_batch(
-            &lons, &lats, UTM_K0, UTM32_LON0, UTM_FE, UTM_FN, WGS84_A, WGS84_E2,
+            &lons, &lats, UTM_K0, UTM32_LON0, UTM_LAT0, UTM_FE, UTM_FN, WGS84_A, WGS84_E2,
         );
 
         for i in 0..8 {
             let (x_scalar, y_scalar) = tmerc_point(
-                lons[i], lats[i], UTM_K0, UTM32_LON0, UTM_FE, UTM_FN, WGS84_A, WGS84_E2,
+                lons[i], lats[i], UTM_K0, UTM32_LON0, UTM_M0, UTM_FE, UTM_FN, WGS84_A, WGS84_E2,
             );
             assert!((xs[i] - x_scalar).abs() < TOL, "x mismatch at i={i}");
             assert!((ys[i] - y_scalar).abs() < TOL, "y mismatch at i={i}");
@@ -697,10 +972,10 @@ mod tests {
             .map(|i| (0.0 + i as f64 * 5.0).to_radians())
             .collect();
 
-        let (xs, ys) = merc_forward_batch(&lons, &lats, 0.0, 1.0, WGS84_A, WGS84_E);
+        let (xs, ys) = merc_forward_batch(&lons, &lats, 0.0, 1.0, 0.0, 0.0, WGS84_A, wgs84_e());
 
         for i in 0..8 {
-            let (xr, yr) = merc_point_fwd(lons[i], lats[i], 0.0, 1.0, WGS84_A, WGS84_E);
+            let (xr, yr) = merc_point_fwd(lons[i], lats[i], 0.0, 1.0, 0.0, 0.0, WGS84_A, wgs84_e());
             assert!((xs[i] - xr).abs() < TOL, "x mismatch at i={i}");
             assert!((ys[i] - yr).abs() < TOL, "y mismatch at i={i}");
         }
@@ -711,8 +986,27 @@ mod tests {
         let lons: Vec<f64> = (0..8).map(|i| (i as f64 * 10.0).to_radians()).collect();
         let lats: Vec<f64> = (0..8).map(|i| (i as f64 * 5.0).to_radians()).collect();
 
-        let (xs, ys) = merc_forward_batch(&lons, &lats, 0.0, 1.0, WGS84_A, WGS84_E);
-        let (lons2, lats2) = merc_inverse_batch(&xs, &ys, 0.0, 1.0, WGS84_A, WGS84_E);
+        // Non-zero false easting/northing: the round trip must undo them.
+        let (xs, ys) = merc_forward_batch(
+            &lons,
+            &lats,
+            0.0,
+            1.0,
+            5_000_000.0,
+            10_000_000.0,
+            WGS84_A,
+            wgs84_e(),
+        );
+        let (lons2, lats2) = merc_inverse_batch(
+            &xs,
+            &ys,
+            0.0,
+            1.0,
+            5_000_000.0,
+            10_000_000.0,
+            WGS84_A,
+            wgs84_e(),
+        );
 
         for i in 0..8 {
             assert!(
@@ -733,7 +1027,7 @@ mod tests {
         let lat2 = 65.0_f64.to_radians();
         let lon0 = 10.0_f64.to_radians();
 
-        let (n, big_f, rho0) = lcc_cone_params(lat0, lat1, lat2).expect("valid params");
+        let cone = lcc_cone_params(lat0, lat1, lat2, WGS84_E2, 1.0).expect("valid params");
 
         let lons: Vec<f64> = (0..8)
             .map(|i| (5.0 + i as f64 * 2.0).to_radians())
@@ -742,29 +1036,18 @@ mod tests {
             .map(|i| (40.0 + i as f64 * 2.0).to_radians())
             .collect();
 
-        let (xs, ys) = lcc_forward_batch(
-            &lons,
-            &lats,
-            n,
-            big_f,
-            rho0 * WGS84_A,
-            lon0,
-            0.0,
-            0.0,
-            WGS84_A,
-        );
+        let (xs, ys) = lcc_forward_batch(&lons, &lats, &cone, lon0, 0.0, 0.0, WGS84_A, WGS84_E2);
 
         for i in 0..8 {
             let (xr, yr) = lcc_point_fwd(
                 lons[i],
                 lats[i],
-                n,
-                big_f,
-                rho0 * WGS84_A,
+                &cone,
                 lon0,
                 0.0,
                 0.0,
                 WGS84_A,
+                WGS84_E2.sqrt(),
             );
             assert!((xs[i] - xr).abs() < TOL, "x mismatch at i={i}");
             assert!((ys[i] - yr).abs() < TOL, "y mismatch at i={i}");
@@ -782,7 +1065,7 @@ mod tests {
             .collect();
 
         let (xs, ys) = tmerc_forward_batch(
-            &lons, &lats, UTM_K0, UTM32_LON0, UTM_FE, UTM_FN, WGS84_A, WGS84_E2,
+            &lons, &lats, UTM_K0, UTM32_LON0, UTM_LAT0, UTM_FE, UTM_FN, WGS84_A, WGS84_E2,
         );
 
         assert_eq!(xs.len(), 5);
@@ -800,6 +1083,7 @@ mod tests {
             &[],
             UTM_K0,
             UTM32_LON0,
+            UTM_LAT0,
             UTM_FE,
             UTM_FN,
             WGS84_A,
@@ -808,27 +1092,19 @@ mod tests {
         assert!(xs.is_empty());
         assert!(ys.is_empty());
 
-        let (xs2, ys2) = merc_forward_batch(&[], &[], 0.0, 1.0, WGS84_A, WGS84_E);
+        let (xs2, ys2) = merc_forward_batch(&[], &[], 0.0, 1.0, 0.0, 0.0, WGS84_A, wgs84_e());
         assert!(xs2.is_empty());
         assert!(ys2.is_empty());
 
-        let params = lcc_cone_params(
+        let cone = lcc_cone_params(
             52.0_f64.to_radians(),
             35.0_f64.to_radians(),
             65.0_f64.to_radians(),
+            WGS84_E2,
+            1.0,
         )
         .expect("valid");
-        let (xs3, ys3) = lcc_forward_batch(
-            &[],
-            &[],
-            params.0,
-            params.1,
-            params.2,
-            0.0,
-            0.0,
-            0.0,
-            WGS84_A,
-        );
+        let (xs3, ys3) = lcc_forward_batch(&[], &[], &cone, 0.0, 0.0, 0.0, WGS84_A, WGS84_E2);
         assert!(xs3.is_empty());
         assert!(ys3.is_empty());
     }

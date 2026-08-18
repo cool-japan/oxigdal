@@ -502,6 +502,7 @@ impl VrtXmlParser {
         let mut source_band = 1usize;
         let mut src_rect = None;
         let mut dst_rect = None;
+        let mut nodata = NoDataValue::None;
         let mut buf = Vec::new();
         let element_name = start.name().as_ref().to_vec();
 
@@ -529,6 +530,15 @@ impl VrtXmlParser {
                     }
                     b"DstRect" => {
                         dst_rect = Some(Self::parse_rect_from_start(reader, e)?);
+                    }
+                    // `<NODATA>` marks the source's own nodata value. GDAL
+                    // skips source pixels equal to it when compositing, so an
+                    // overlapping source can supply valid data where this one
+                    // has none (cool-japan/oxigeo#19). Discarding it here made
+                    // that impossible to honour downstream.
+                    b"NODATA" => {
+                        let text = Self::parse_text_element(reader, "NODATA")?;
+                        nodata = Self::parse_nodata(&text)?;
                     }
                     _ => {
                         Self::skip_element(reader)?;
@@ -562,29 +572,94 @@ impl VrtXmlParser {
         if let (Some(src), Some(dst)) = (src_rect, dst_rect) {
             source = source.with_window(SourceWindow::new(src, dst));
         }
+        if !nodata.is_none() {
+            source = source.with_nodata(nodata);
+        }
 
         Ok(source)
     }
 
     /// Parses PixelRect from attributes only (for self-closing tags like `<SrcRect ... />`)
+    ///
+    /// GDAL keeps source and destination windows as doubles and only rounds
+    /// them at rasterisation time, so `gdalbuildvrt` / `gdalwarp -of VRT`
+    /// routinely emit sub-pixel values such as `xOff="9783.50000000003"` or
+    /// `xSize="9889.75000000021"`. Parsing these with `str::parse::<u64>`
+    /// rejected the whole file with `Invalid u64: invalid digit found in
+    /// string`, which made every real-world GDAL mosaic unreadable
+    /// (cool-japan/oxigeo#18).
     fn parse_rect_from_empty(start: &BytesStart) -> Result<PixelRect> {
-        let mut x_off = 0u64;
-        let mut y_off = 0u64;
-        let mut x_size = 0u64;
-        let mut y_size = 0u64;
+        let mut x_off = 0.0f64;
+        let mut y_off = 0.0f64;
+        let mut x_size = 0.0f64;
+        let mut y_size = 0.0f64;
 
         for attr in start.attributes() {
             let attr = attr.map_err(|e| VrtError::xml_parse(format!("Attribute error: {}", e)))?;
             match attr.key.as_ref() {
-                b"xOff" => x_off = Self::parse_u64(&attr.value)?,
-                b"yOff" => y_off = Self::parse_u64(&attr.value)?,
-                b"xSize" => x_size = Self::parse_u64(&attr.value)?,
-                b"ySize" => y_size = Self::parse_u64(&attr.value)?,
+                b"xOff" => x_off = Self::parse_rect_f64(&attr.value, "xOff")?,
+                b"yOff" => y_off = Self::parse_rect_f64(&attr.value, "yOff")?,
+                b"xSize" => x_size = Self::parse_rect_f64(&attr.value, "xSize")?,
+                b"ySize" => y_size = Self::parse_rect_f64(&attr.value, "ySize")?,
                 _ => {}
             }
         }
 
+        let (x_off, x_size) = Self::round_span(x_off, x_size, 'x')?;
+        let (y_off, y_size) = Self::round_span(y_off, y_size, 'y')?;
+
         Ok(PixelRect::new(x_off, y_off, x_size, y_size))
+    }
+
+    /// Parses one `SrcRect`/`DstRect` attribute, accepting every numeric format
+    /// GDAL may write (integer, decimal, or scientific notation).
+    fn parse_rect_f64(bytes: &[u8], attr_name: &str) -> Result<f64> {
+        let s = Self::parse_string(bytes)?;
+        let value = s.trim().parse::<f64>().map_err(|e| {
+            VrtError::xml_parse(format!("Invalid {attr_name} rect value {s:?}: {e}"))
+        })?;
+        if !value.is_finite() {
+            return Err(VrtError::xml_parse(format!(
+                "Invalid {attr_name} rect value {s:?}: must be finite"
+            )));
+        }
+        Ok(value)
+    }
+
+    /// Rounds a sub-pixel `(offset, size)` span onto the whole-pixel grid.
+    ///
+    /// Rounding is **edge-consistent**: the near edge (`off`) and the far edge
+    /// (`off + size`) are each rounded to nearest and the size is derived as
+    /// their difference. Rounding `off` and `size` independently would let a
+    /// tile whose far edge is exactly its neighbour's near edge round to two
+    /// different integers and open a one-pixel seam between adjacent mosaic
+    /// sources; deriving the size from the rounded edges keeps neighbours flush
+    /// by construction.
+    fn round_span(off: f64, size: f64, axis: char) -> Result<(u64, u64)> {
+        if off < 0.0 {
+            return Err(VrtError::xml_parse(format!(
+                "Invalid {axis}Off rect value {off}: must not be negative"
+            )));
+        }
+        if size < 0.0 {
+            return Err(VrtError::xml_parse(format!(
+                "Invalid {axis}Size rect value {size}: must not be negative"
+            )));
+        }
+
+        let near = off.round();
+        let far = (off + size).round();
+        let rounded_off = near as u64;
+        let mut rounded_size = (far - near).max(0.0) as u64;
+
+        // A source covering a non-empty sub-pixel span must not collapse to an
+        // empty rect: `PixelRect::intersect` drops zero-sized rects, so the
+        // pixels this source carries would silently vanish from the mosaic.
+        if rounded_size == 0 && size > 0.0 {
+            rounded_size = 1;
+        }
+
+        Ok((rounded_off, rounded_size))
     }
 
     /// Parses PixelRect from a Start event (needs to consume End event)

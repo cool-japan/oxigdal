@@ -6,19 +6,30 @@
 //! Mercator, Lambert Conformal Conic), and that the scalar fallback works
 //! correctly for projections not in the supported set.
 //!
-//! Design note
-//! -----------
+//! Design note — scope of this file, and what it deliberately does NOT cover
+//! ------------------------------------------------------------------------
 //! `Transformer::transform_batch` routes through our pure-Rust SIMD kernels
-//! for TM/UTM, Mercator, and LCC.  `Transformer::transform` routes through
-//! proj4rs, which uses different (but equally correct) internal formulas.
-//! Comparing the two directly would test formula agreement, not batching
-//! correctness.
+//! for TM/UTM, Mercator, and LCC.  Every test below verifies that the batch
+//! result (n points together) matches the result of processing each point
+//! individually through `transform_batch` (1-point slice), which exercises the
+//! kernel's scalar tail.  That isolates **batching and lane handling**: both
+//! sides execute identical f64 arithmetic, so agreement is sub-nanometre.
 //!
-//! Instead, each test verifies that the batch result (n points together)
-//! matches the result of processing each point individually through
-//! `transform_batch` (1-point slice), which exercises the scalar tail of the
-//! same kernel.  This gives sub-nanometre agreement because both paths
-//! execute identical f64 arithmetic.
+//! An earlier version of this note argued that comparing `transform_batch`
+//! against `transform` "would test formula agreement, not batching
+//! correctness", and used that as a reason not to do it anywhere.  **That
+//! reasoning was wrong and it cost us a shipped bug.**  Comparing a kernel only
+//! against itself cannot detect a kernel that drops one of the projection's
+//! parameters — such a kernel is perfectly self-consistent while being
+//! arbitrarily wrong.  The Transverse Mercator kernel hardcoded `+lat_0=0`;
+//! UTM has `lat_0 = 0` so every test here passed, while the Japan Plane
+//! Rectangular CS came out 3 985 144 m too far north.
+//!
+//! Parameter fidelity is therefore covered separately, in
+//! `simd_batch_params_test.rs`, which compares the batch path against the
+//! scalar OxiProj pipeline (a genuinely independent implementation) and against
+//! absolute PROJ 9.5.1 coordinates.  Keep both: this file guards the lane
+//! logic, that one guards the parameters.
 
 #[allow(clippy::expect_used)]
 mod simd_batch {
@@ -146,9 +157,10 @@ mod simd_batch {
     // =========================================================================
     // Test 3 — LCC (EPSG:2154 RGF93/Lambert-93): relative tolerance 1e-9
     //
-    // Because EPSG:2154 is an ellipsoidal LCC and our kernel is sphere-based,
-    // we verify batch-vs-scalar-tail consistency (both use the same sphere kernel),
-    // with a relative tolerance that reflects double-precision arithmetic.
+    // Batch-vs-scalar-tail consistency with a relative tolerance that reflects
+    // double-precision arithmetic.  (The kernel used to be sphere-based, which
+    // put it ~2e2 m away from the true ellipsoidal LCC; it is ellipsoidal now,
+    // and `simd_batch_params_test.rs` is what pins that.)
     // =========================================================================
 
     #[test]
@@ -259,8 +271,8 @@ mod simd_batch {
     // Test 6 — Fallback: projection not in the SIMD set (EPSG:3413 — polar stere)
     //
     // When `try_simd_batch` returns `None`, `transform_batch` falls back to the
-    // scalar proj4rs loop.  The result must be identical to `transform` since
-    // both use proj4rs internally.
+    // scalar OxiProj loop.  The result must be identical to `transform` since
+    // both go through the same OxiProj pipeline.
     // =========================================================================
 
     #[test]
@@ -284,15 +296,15 @@ mod simd_batch {
                 .transform(coord)
                 .expect("scalar transform should succeed");
 
-            // Fallback path goes through proj4rs for both → results must be
+            // Fallback path goes through OxiProj for both → results must be
             // bit-identical.
             assert_eq!(
                 batch.x, scalar.x,
-                "x must be identical (both through proj4rs) at i={i}"
+                "x must be identical (both through OxiProj) at i={i}"
             );
             assert_eq!(
                 batch.y, scalar.y,
-                "y must be identical (both through proj4rs) at i={i}"
+                "y must be identical (both through OxiProj) at i={i}"
             );
         }
     }

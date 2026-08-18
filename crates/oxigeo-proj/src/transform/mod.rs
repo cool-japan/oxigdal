@@ -23,6 +23,11 @@ mod datum_shift;
 pub mod pseudocylindrical;
 #[cfg(feature = "std")]
 pub mod simd;
+/// Routes `transform_batch` onto the [`simd`] kernels, including the
+/// applicability gate that declines the fast path whenever the kernels cannot
+/// faithfully reproduce the scalar pipeline.
+#[cfg(feature = "std")]
+mod simd_dispatch;
 
 #[cfg(feature = "std")]
 use crate::area_of_use::area_of_use_for_epsg;
@@ -34,16 +39,16 @@ use core::fmt;
 #[cfg(feature = "std")]
 use std::sync::Mutex;
 
-#[cfg(feature = "std")]
-use crate::proj_string::ProjString;
-
 // Re-export projection types for easy access (std only — require transcendental float math)
 #[cfg(feature = "std")]
 pub use azimuthal::{AzimuthalEquidistant, Gnomonic, LambertAzimuthalEqualArea};
 #[cfg(feature = "std")]
 pub use conic::{EquidistantConic, LambertConformalConic};
 #[cfg(feature = "std")]
-pub use cylindrical::{CassineSoldner, GaussKruger, TransverseMercator};
+pub use cylindrical::{
+    CassineSoldner, EllipsoidalTransverseMercator, GaussKruger, SphericalTransverseMercator,
+    TransverseMercator,
+};
 #[cfg(feature = "std")]
 pub use pseudocylindrical::{EckertIV, EckertVI, Mollweide, Robinson, Sinusoidal};
 
@@ -1037,259 +1042,6 @@ impl Transformer {
         coords.iter().map(|c| self.transform(c)).collect()
     }
 
-    /// Attempts to run SIMD-accelerated batch projection.
-    ///
-    /// Returns `Some(Result<…>)` if the source→target pair maps to a supported
-    /// fast-path kernel (TM/UTM forward, Mercator forward, LCC forward).
-    /// Returns `None` to signal that the caller should use the scalar fallback.
-    fn try_simd_batch(&self, coords: &[Coordinate]) -> Option<Result<Vec<Coordinate>>> {
-        if coords.is_empty() {
-            return Some(Ok(Vec::new()));
-        }
-
-        // We only accelerate Geographic → Projected (forward) transforms.
-        // Projected → Geographic (inverse) falls back to OxiProj.
-        if !self.source_crs.is_geographic() || !self.target_crs.is_projected() {
-            return None;
-        }
-
-        // Obtain the PROJ string for the projected (target) CRS.
-        let proj_str = match self.target_crs.to_proj_string() {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
-
-        let parsed = match ProjString::parse(&proj_str) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-
-        let proj_type = parsed.proj()?;
-
-        match proj_type {
-            "tmerc" | "utm" => Some(self.simd_tmerc_forward(coords, &parsed)),
-            "merc" => Some(self.simd_merc_forward(coords, &parsed)),
-            "lcc" => Some(self.simd_lcc_forward(coords, &parsed)),
-            _ => None,
-        }
-    }
-
-    /// SIMD-accelerated Transverse Mercator / UTM forward batch.
-    fn simd_tmerc_forward(
-        &self,
-        coords: &[Coordinate],
-        parsed: &ProjString,
-    ) -> Result<Vec<Coordinate>> {
-        use simd::{WGS84_A, WGS84_E2, tmerc_forward_batch};
-
-        // Extract parameters from the PROJ string.
-        // `+proj=utm +zone=N` is a shorthand for tmerc with standard parameters.
-        let proj_type = parsed.proj().unwrap_or("tmerc");
-
-        let (lon0_rad, k0, false_easting, false_northing, a, e2) = if proj_type == "utm" {
-            // UTM shorthand: zone → central meridian, k0=0.9996, FE=500000, FN=0/10000000
-            let zone = parsed.zone().unwrap_or(32) as f64;
-            let lon0_deg = zone * 6.0 - 183.0;
-            let false_northing = if parsed.has("south") {
-                10_000_000.0
-            } else {
-                0.0
-            };
-            (
-                lon0_deg.to_radians(),
-                0.9996,
-                500_000.0,
-                false_northing,
-                WGS84_A,
-                WGS84_E2,
-            )
-        } else {
-            // Generic tmerc — read all parameters explicitly.
-            let lon0_deg = parsed
-                .get("lon_0")
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let k0 = parsed
-                .get("k")
-                .or_else(|| parsed.get("k_0"))
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(1.0);
-            let fe = parsed
-                .get("x_0")
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let fn_ = parsed
-                .get("y_0")
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0);
-
-            // Ellipsoid: prefer explicit +a/+b or +ellps; default to WGS84.
-            let (a, e2) = parse_ellipsoid(parsed);
-            (lon0_deg.to_radians(), k0, fe, fn_, a, e2)
-        };
-
-        // Decompose coordinates into separate lon/lat arrays (degrees → radians).
-        let lons: Vec<f64> = coords.iter().map(|c| c.x.to_radians()).collect();
-        let lats: Vec<f64> = coords.iter().map(|c| c.y.to_radians()).collect();
-
-        let (xs, ys) = tmerc_forward_batch(
-            &lons,
-            &lats,
-            k0,
-            lon0_rad,
-            false_easting,
-            false_northing,
-            a,
-            e2,
-        );
-
-        let result: Vec<Coordinate> = xs
-            .into_iter()
-            .zip(ys)
-            .map(|(x, y)| {
-                let c = Coordinate::new(x, y);
-                if c.is_valid() {
-                    Ok(c)
-                } else {
-                    Err(Error::transformation_error(
-                        "tmerc_batch: non-finite result",
-                    ))
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(result)
-    }
-
-    /// SIMD-accelerated Mercator forward batch.
-    fn simd_merc_forward(
-        &self,
-        coords: &[Coordinate],
-        parsed: &ProjString,
-    ) -> Result<Vec<Coordinate>> {
-        use simd::{WGS84_A, WGS84_E, merc_forward_batch};
-
-        let lon0_deg = parsed
-            .get("lon_0")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let k0 = parsed
-            .get("k")
-            .or_else(|| parsed.get("k_0"))
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(1.0);
-
-        let (a, e2) = parse_ellipsoid(parsed);
-        let e = e2.sqrt();
-
-        let lons: Vec<f64> = coords.iter().map(|c| c.x.to_radians()).collect();
-        let lats: Vec<f64> = coords.iter().map(|c| c.y.to_radians()).collect();
-
-        // Pseudo-Mercator (EPSG:3857) uses a sphere: a=b=6378137, so e=0.
-        // When the PROJ string contains `+a` and `+b` with equal values, treat as sphere.
-        let e_eff = if e < 1e-10 { 0.0 } else { e };
-        let _ = (WGS84_E, WGS84_A); // keep imports used
-
-        let (xs, ys) = merc_forward_batch(&lons, &lats, lon0_deg.to_radians(), k0, a, e_eff);
-
-        let result: Vec<Coordinate> = xs
-            .into_iter()
-            .zip(ys)
-            .map(|(x, y)| {
-                let c = Coordinate::new(x, y);
-                if c.is_valid() {
-                    Ok(c)
-                } else {
-                    Err(Error::transformation_error("merc_batch: non-finite result"))
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(result)
-    }
-
-    /// SIMD-accelerated Lambert Conformal Conic forward batch.
-    fn simd_lcc_forward(
-        &self,
-        coords: &[Coordinate],
-        parsed: &ProjString,
-    ) -> Result<Vec<Coordinate>> {
-        use simd::{WGS84_A, lcc_cone_params, lcc_forward_batch};
-
-        let lon0_deg = parsed
-            .get("lon_0")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let lat0_deg = parsed
-            .get("lat_0")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        // lat_1 / lat_2: standard parallels.  If only lat_1 is given, use it twice.
-        let lat1_deg = parsed
-            .get("lat_1")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(lat0_deg);
-        let lat2_deg = parsed
-            .get("lat_2")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(lat1_deg);
-        let fe = parsed
-            .get("x_0")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let fn_ = parsed
-            .get("y_0")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-
-        let (a, _e2) = parse_ellipsoid(parsed);
-        let _ = WGS84_A; // used via parse_ellipsoid default
-
-        let lat0_rad = lat0_deg.to_radians();
-        let lat1_rad = lat1_deg.to_radians();
-        let lat2_rad = lat2_deg.to_radians();
-
-        let (n, big_f, rho0_normalised) = match lcc_cone_params(lat0_rad, lat1_rad, lat2_rad) {
-            Some(p) => p,
-            None => {
-                return Err(Error::projection_init_error(
-                    "lcc_batch: degenerate cone constant",
-                ));
-            }
-        };
-        let rho0 = rho0_normalised * a;
-
-        let lons: Vec<f64> = coords.iter().map(|c| c.x.to_radians()).collect();
-        let lats: Vec<f64> = coords.iter().map(|c| c.y.to_radians()).collect();
-
-        let (xs, ys) = lcc_forward_batch(
-            &lons,
-            &lats,
-            n,
-            big_f,
-            rho0,
-            lon0_deg.to_radians(),
-            fe,
-            fn_,
-            a,
-        );
-
-        let result: Vec<Coordinate> = xs
-            .into_iter()
-            .zip(ys)
-            .map(|(x, y)| {
-                let c = Coordinate::new(x, y);
-                if c.is_valid() {
-                    Ok(c)
-                } else {
-                    Err(Error::transformation_error("lcc_batch: non-finite result"))
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(result)
-    }
-
     /// Transforms a bounding box.
     ///
     /// This transforms all four corners and creates a new bounding box from the results.
@@ -1355,107 +1107,68 @@ impl Transformer {
 
 /// Converts an [`oxigeo_proj::Crs`] to an [`oxiproj::Crs`] for use with the
 /// OxiProj transformation engine.
+///
+/// # Feature-invariant resolution
+///
+/// Every CRS is resolved through *this crate's* PROJ string
+/// ([`Crs::to_proj_string`] → the embedded, PROJ-verified EPSG registry) in
+/// **every** feature configuration, so a given `(source, target)` pair produces
+/// the same numbers with and without `proj-db`.
+///
+/// Until 0.2.4 the `proj-db` feature instead routed an EPSG-sourced CRS to
+/// `oxiproj::Crs::from_epsg` (oxiproj's bundled authority database). Because
+/// [`Crs::from_epsg`] itself goes through `lookup_epsg`, that branch could only
+/// ever fire for codes the embedded registry *already* carries — it added no
+/// coverage, only a second, divergent definition of the same code. Two failure
+/// modes followed:
+///
+/// * **Asymmetric pairs.** A PROJ-string CRS transformed against an
+///   EPSG-sourced one mixed a datum-bearing definition (`+towgs84` from the
+///   registry string) with a datum-less authority one, and the resulting
+///   pipeline applied a *one-sided* datum shift — e.g. a code's own geodetic
+///   base → the code came out 87 m off for `EPSG:2039` and 226 m off for
+///   `EPSG:2056`, where PROJ 9.7.0 returns the projection alone.
+/// * **Divergent definitions.** oxiproj 0.1.4's authority definitions disagree
+///   with PROJ for several codes even when both sides are EPSG-sourced
+///   (`EPSG:2314`/`EPSG:24382` emit the ellipsoid's semi-major axis in the
+///   CRS's own linear unit while still saying `+units=m`; `EPSG:6933` emits
+///   `+lat_1` instead of `+lat_ts`; `EPSG:2062`/`EPSG:5469`/`EPSG:24382` fail
+///   to build a transformer at all).
+///
+/// `oxiproj::Crs::from_epsg` is therefore kept only as a **fallback** for the
+/// one case the registry cannot serve: a [`CrsSource::Epsg`] holding a code
+/// that is absent from the embedded registry (reachable via `Deserialize`, and
+/// otherwise not constructible). That keeps `proj-db` strictly additive — it
+/// widens coverage, it never changes an answer the default build already gives.
 #[cfg(feature = "std")]
 fn crs_to_oxi(crs: &Crs) -> Result<oxiproj::Crs> {
-    match crs.source() {
-        // `oxiproj::Crs::from_epsg` only exists when `oxiproj/epsg` is enabled, which by
-        // design happens solely under the opt-in `proj-db` feature (it pulls `oxiproj-db`,
-        // i.e. tokio + std process/fs, and is not wasm-safe). Without `proj-db`, an
-        // EPSG-sourced CRS is resolved via the pure-Rust embedded registry
-        // (`to_proj_string` → `lookup_epsg`) and `oxiproj::Crs::from_proj`, keeping the
-        // default and wasm builds free of oxiproj-db.
-        #[cfg(feature = "proj-db")]
-        CrsSource::Epsg(code) => oxiproj::Crs::from_epsg(*code).map_err(crate::error::Error::from),
-        _ => {
-            let proj_str = crs.to_proj_string()?;
-            oxiproj::Crs::from_proj(&proj_str).map_err(crate::error::Error::from)
-        }
+    match crs.to_proj_string() {
+        Ok(proj_str) => oxiproj::Crs::from_proj(&proj_str).map_err(crate::error::Error::from),
+        Err(err) => crs_to_oxi_unregistered(crs, err),
     }
 }
 
-/// Parse ellipsoid parameters from a `ProjString`.
+/// Fallback for a [`Crs`] this crate's registry cannot turn into a PROJ string.
 ///
-/// Returns `(a, e2)` — semi-major axis in metres and first eccentricity squared.
+/// With `proj-db` (hence `oxiproj/epsg`) an EPSG-sourced code outside the
+/// embedded registry is looked up in oxiproj's bundled authority database;
+/// anything else propagates the original registry error. See [`crs_to_oxi`].
+#[cfg(all(feature = "std", feature = "proj-db"))]
+fn crs_to_oxi_unregistered(crs: &Crs, err: Error) -> Result<oxiproj::Crs> {
+    match crs.source() {
+        CrsSource::Epsg(code) => oxiproj::Crs::from_epsg(*code).map_err(crate::error::Error::from),
+        _ => Err(err),
+    }
+}
+
+/// Fallback for a [`Crs`] this crate's registry cannot turn into a PROJ string.
 ///
-/// Priority order:
-/// 1. Explicit `+a` and (`+b` or `+f` or `+rf`).
-/// 2. Named ellipsoid `+ellps` (only GRS80 and WGS84 are recognised here).
-/// 3. Named datum `+datum` (only WGS84 is recognised here).
-/// 4. Default: WGS84.
-#[cfg(feature = "std")]
-fn parse_ellipsoid(parsed: &ProjString) -> (f64, f64) {
-    use simd::{WGS84_A, WGS84_E2};
-
-    // 1. Explicit semi-major axis.
-    if let Some(a_val) = parsed.get("a").and_then(|s| s.parse::<f64>().ok()) {
-        // Try explicit semi-minor axis.
-        if let Some(b_val) = parsed.get("b").and_then(|s| s.parse::<f64>().ok()) {
-            let f = 1.0 - b_val / a_val;
-            let e2 = 2.0 * f - f * f;
-            return (a_val, e2);
-        }
-        // Try flattening.
-        if let Some(f_val) = parsed.get("f").and_then(|s| s.parse::<f64>().ok()) {
-            let e2 = 2.0 * f_val - f_val * f_val;
-            return (a_val, e2);
-        }
-        // Try reciprocal flattening.
-        if let Some(rf) = parsed.get("rf").and_then(|s| s.parse::<f64>().ok()) {
-            let f = 1.0 / rf;
-            let e2 = 2.0 * f - f * f;
-            return (a_val, e2);
-        }
-        // Semi-major only (treat as sphere).
-        return (a_val, 0.0);
-    }
-
-    // 2. Named ellipsoid.
-    if let Some(ellps) = parsed.get("ellps") {
-        match ellps {
-            "WGS84" | "wgs84" => return (WGS84_A, WGS84_E2),
-            "GRS80" | "grs80" => {
-                // GRS80: a=6378137, f=1/298.257222101
-                let a = 6_378_137.0_f64;
-                let f = 1.0_f64 / 298.257_222_101;
-                let e2 = 2.0 * f - f * f;
-                return (a, e2);
-            }
-            "bessel" => {
-                // Bessel 1841: a=6377397.155, f=1/299.1528128
-                let a = 6_377_397.155_f64;
-                let f = 1.0_f64 / 299.152_812_8;
-                let e2 = 2.0 * f - f * f;
-                return (a, e2);
-            }
-            "airy" => {
-                // Airy 1830: a=6377563.396, b=6356256.910
-                let a = 6_377_563.396_f64;
-                let b = 6_356_256.910_f64;
-                let f = 1.0 - b / a;
-                let e2 = 2.0 * f - f * f;
-                return (a, e2);
-            }
-            _ => {}
-        }
-    }
-
-    // 3. Named datum.
-    if let Some(datum) = parsed.get("datum") {
-        match datum {
-            "WGS84" | "wgs84" => return (WGS84_A, WGS84_E2),
-            "NAD83" | "nad83" => {
-                // NAD83 uses GRS80
-                let a = 6_378_137.0_f64;
-                let f = 1.0_f64 / 298.257_222_101;
-                let e2 = 2.0 * f - f * f;
-                return (a, e2);
-            }
-            _ => {}
-        }
-    }
-
-    // 4. Default: WGS84
-    (WGS84_A, WGS84_E2)
+/// Without `proj-db` there is no second CRS source to consult — `oxiproj/epsg`
+/// (and with it `oxiproj-db`, which is not wasm-safe) is deliberately not
+/// linked — so the registry error is final. See [`crs_to_oxi`].
+#[cfg(all(feature = "std", not(feature = "proj-db")))]
+fn crs_to_oxi_unregistered(_crs: &Crs, err: Error) -> Result<oxiproj::Crs> {
+    Err(err)
 }
 
 /// Transforms a coordinate from one CRS to another (convenience function).

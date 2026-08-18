@@ -113,6 +113,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
@@ -120,6 +121,7 @@ use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
 use oxigeo_core::error::{IoError, OxiGeoError, Result};
 use oxigeo_core::io::{ByteRange, DataSource};
 
+use crate::buffered_source::{AsyncRangeFetcher, RangeResponse};
 use crate::error::{FetchError, WasmError, WasmResult};
 use crate::memory_source::{dst_too_small, needed_len};
 
@@ -314,13 +316,18 @@ impl DataSource for FetchBackend {
         Ok(self.size)
     }
 
+    /// Always fails: this backend holds no bytes, and a browser cannot block on
+    /// `fetch()`.
+    ///
+    /// A synchronous parser (`oxigeo_geotiff::CogReader`) therefore cannot be
+    /// driven directly by this type — it would fail on its very first header
+    /// read. The crate-private `buffered_source` module solves this: its
+    /// `BufferedRangeSource` and `pull_until_ready` serve the parser from
+    /// a cache of ranges this backend has already fetched and pull in the ones
+    /// it turns out to need. The impl is kept because `FetchBackend` is public
+    /// and consumers may hold it as a `DataSource`; its async methods below are
+    /// the ones that do real work.
     fn read_range(&self, _range: ByteRange) -> Result<Vec<u8>> {
-        // In WASM, we need to use async, but DataSource trait is sync
-        // This is a blocking wrapper that uses wasm_bindgen_futures
-        // In practice, this should be called from async context
-
-        // Use a synchronous fallback: we cache fetched data
-        // For now, return an error indicating async should be used
         Err(OxiGeoError::NotSupported {
             operation: "Synchronous read in WASM - use async methods".to_string(),
         })
@@ -345,6 +352,177 @@ impl FetchBackend {
             results.push(self.fetch_range_async(*range).await?);
         }
         Ok(results)
+    }
+}
+
+/// Parses an HTTP `Content-Range` response header of the form
+/// `bytes <start>-<end>/<total>`, returning the start offset and the total
+/// object size (`None` when the server sent `/*`).
+///
+/// Split out as a free function so the parsing — the only part of the `206`
+/// path with logic in it — is covered by native tests; the surrounding
+/// `fetch()` call is browser-only.
+fn parse_content_range(header: &str) -> Option<(u64, Option<u64>)> {
+    let spec = header.trim().strip_prefix("bytes")?.trim_start();
+    let (range, total) = spec.split_once('/')?;
+    let start = range.split_once('-')?.0.trim().parse::<u64>().ok()?;
+    let total = total.trim();
+    let total = if total == "*" {
+        None
+    } else {
+        Some(total.parse::<u64>().ok()?)
+    };
+    Some((start, total))
+}
+
+impl FetchBackend {
+    /// The object size learned from the opening `HEAD`, or `None` when the
+    /// server did not send `Content-Length`.
+    ///
+    /// A missing `Content-Length` is stored as `0` by [`Self::new`]; handing
+    /// that to a buffering source as a real size would make every read look like
+    /// it started past end-of-file, so it is reported as "unknown" instead and
+    /// learned later from a `Content-Range`.
+    pub(crate) fn total_size_hint(&self) -> Option<u64> {
+        (self.size > 0).then_some(self.size)
+    }
+
+    /// Fetches `range` and reports what the *response* actually was.
+    ///
+    /// Unlike [`Self::read_range_async`], which returns bare bytes, this keeps
+    /// the three facts a buffering cache needs: where the bytes start
+    /// (`Content-Range`, not the request, so a server that shifts the range
+    /// cannot corrupt the cache), how large the whole object is, and whether the
+    /// server ignored `Range` altogether and sent the entire body (`200`), in
+    /// which case everything can be served from it from then on.
+    async fn fetch_range_response(&self, range: ByteRange) -> Result<RangeResponse> {
+        if range.end <= range.start {
+            return Ok(RangeResponse {
+                offset: range.start,
+                bytes: Vec::new(),
+                total_size: self.total_size_hint(),
+                whole_object: false,
+            });
+        }
+
+        let window = web_sys::window().ok_or_else(|| OxiGeoError::Internal {
+            message: "No window object available".to_string(),
+        })?;
+
+        let opts = RequestInit::new();
+        opts.set_method("GET");
+        opts.set_mode(RequestMode::Cors);
+
+        let headers = Headers::new().map_err(|e| OxiGeoError::Internal {
+            message: format!("Failed to create headers: {:?}", e),
+        })?;
+        headers
+            .set("Range", &format!("bytes={}-{}", range.start, range.end - 1))
+            .map_err(|e| OxiGeoError::Internal {
+                message: format!("Failed to set Range header: {:?}", e),
+            })?;
+        opts.set_headers(&headers);
+
+        let request = Request::new_with_str_and_init(&self.url, &opts).map_err(|e| {
+            OxiGeoError::Io(IoError::Network {
+                message: format!("Failed to create request: {:?}", e),
+            })
+        })?;
+
+        let response = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| {
+                OxiGeoError::Io(IoError::Network {
+                    message: format!("Fetch failed: {:?}", e),
+                })
+            })?;
+
+        let response: Response = response.dyn_into().map_err(|_| OxiGeoError::Internal {
+            message: "Response is not a Response object".to_string(),
+        })?;
+
+        if !response.ok() && response.status() != 206 {
+            return Err(OxiGeoError::Io(IoError::Http {
+                status: response.status(),
+                message: response.status_text(),
+            }));
+        }
+
+        let status = response.status();
+        let content_range = response.headers().get("content-range").ok().flatten();
+
+        let array_buffer =
+            JsFuture::from(response.array_buffer().map_err(|e| OxiGeoError::Internal {
+                message: format!("Failed to get array buffer: {:?}", e),
+            })?)
+            .await
+            .map_err(|e| {
+                OxiGeoError::Io(IoError::Read {
+                    message: format!("Failed to read response: {:?}", e),
+                })
+            })?;
+
+        let bytes = js_sys::Uint8Array::new(&array_buffer).to_vec();
+
+        Ok(build_range_response(
+            range,
+            status,
+            content_range.as_deref(),
+            bytes,
+            self.total_size_hint(),
+        ))
+    }
+}
+
+/// Turns one HTTP response into a [`RangeResponse`].
+///
+/// Kept separate from the `fetch()` plumbing so every branch — partial content
+/// with and without `Content-Range`, and the `200` full-body fallback a server
+/// that ignores `Range` produces — is testable natively.
+fn build_range_response(
+    requested: ByteRange,
+    status: u16,
+    content_range: Option<&str>,
+    bytes: Vec<u8>,
+    size_hint: Option<u64>,
+) -> RangeResponse {
+    if status == 206 {
+        let parsed = content_range.and_then(parse_content_range);
+        let (offset, total) = match parsed {
+            Some((offset, total)) => (offset, total.or(size_hint)),
+            // A `206` without a usable `Content-Range` is out of spec; the
+            // request's own start is the best available answer.
+            None => (requested.start, size_hint),
+        };
+        return RangeResponse {
+            offset,
+            bytes,
+            total_size: total,
+            whole_object: false,
+        };
+    }
+
+    // `200 OK` to a ranged request means the server ignored `Range` and sent the
+    // whole representation: the body length *is* the object size.
+    let total = bytes.len() as u64;
+    RangeResponse {
+        offset: 0,
+        bytes,
+        total_size: Some(total),
+        whole_object: true,
+    }
+}
+
+/// The browser half of the pull loop.
+///
+/// This impl is the one piece of the machinery that cannot run under `cargo
+/// test`: it needs `web_sys::window()`, which exists only in a browser. It is
+/// deliberately a thin adapter — all of the decision-making lives in
+/// [`build_range_response`] and [`parse_content_range`] above, and in
+/// [`crate::buffered_source`], all of which are covered natively.
+impl AsyncRangeFetcher for FetchBackend {
+    fn fetch_range(&self, range: ByteRange) -> impl Future<Output = Result<RangeResponse>> {
+        self.fetch_range_response(range)
     }
 }
 
@@ -1207,6 +1385,122 @@ mod tests {
                 .read_range_into(ByteRange::new(0, 16), &mut [0u8; 16])
                 .is_err()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Range-response decoding (the testable half of the browser fetcher)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn content_range_header_parses() {
+        assert_eq!(
+            parse_content_range("bytes 0-65535/1048576"),
+            Some((0, Some(1_048_576)))
+        );
+        assert_eq!(
+            parse_content_range("bytes 393216-400255/400256"),
+            Some((393_216, Some(400_256)))
+        );
+        // A server that will not disclose the total.
+        assert_eq!(parse_content_range("bytes 10-19/*"), Some((10, None)));
+        // Malformed or unsupported units yield nothing rather than a wrong offset.
+        assert_eq!(parse_content_range("items 0-9/10"), None);
+        assert_eq!(parse_content_range("bytes */1024"), None);
+        assert_eq!(parse_content_range("bytes 0-9"), None);
+        assert_eq!(parse_content_range(""), None);
+    }
+
+    #[test]
+    fn partial_content_response_is_placed_by_its_content_range() {
+        let response = build_range_response(
+            ByteRange::new(1024, 2048),
+            206,
+            Some("bytes 1024-2047/4096"),
+            vec![1u8; 1024],
+            None,
+        );
+        assert_eq!(response.offset, 1024);
+        assert_eq!(response.total_size, Some(4096));
+        assert!(!response.whole_object);
+        assert_eq!(response.bytes.len(), 1024);
+
+        // No `Content-Range`: fall back to the request's own start, and to the
+        // size the HEAD reported.
+        let response = build_range_response(
+            ByteRange::new(1024, 2048),
+            206,
+            None,
+            vec![1u8; 1024],
+            Some(4096),
+        );
+        assert_eq!(response.offset, 1024);
+        assert_eq!(response.total_size, Some(4096));
+        assert!(!response.whole_object);
+
+        // `Content-Range` without a total still pins the offset.
+        let response = build_range_response(
+            ByteRange::new(64, 128),
+            206,
+            Some("bytes 64-127/*"),
+            vec![2u8; 64],
+            None,
+        );
+        assert_eq!(response.offset, 64);
+        assert_eq!(response.total_size, None);
+    }
+
+    #[test]
+    fn ok_response_to_a_ranged_request_is_the_whole_object() {
+        let response = build_range_response(
+            ByteRange::new(1024, 2048),
+            200,
+            None,
+            vec![3u8; 5000],
+            Some(999_999),
+        );
+        assert!(
+            response.whole_object,
+            "a 200 means the server ignored Range"
+        );
+        assert_eq!(response.offset, 0);
+        assert_eq!(
+            response.total_size,
+            Some(5000),
+            "the body length overrides a stale HEAD size"
+        );
+    }
+
+    /// A zero-width fetch must not emit `bytes=N-(N-1)`; the driver never plans
+    /// one, but the guard keeps a malformed request off the wire regardless.
+    #[test]
+    fn empty_range_is_answered_without_a_request() {
+        let backend = FetchBackend {
+            url: "https://example.invalid/cog.tif".to_string(),
+            size: 4096,
+            supports_range: true,
+        };
+        let response =
+            futures::executor::block_on(backend.fetch_range_response(ByteRange::new(10, 10)))
+                .expect("an empty range needs no network");
+        assert!(response.bytes.is_empty());
+        assert_eq!(response.total_size, Some(4096));
+    }
+
+    #[test]
+    fn total_size_hint_treats_a_missing_content_length_as_unknown() {
+        let sized = FetchBackend {
+            url: "https://example.invalid/cog.tif".to_string(),
+            size: 4096,
+            supports_range: true,
+        };
+        assert_eq!(sized.total_size_hint(), Some(4096));
+
+        let unsized_backend = FetchBackend {
+            url: "https://example.invalid/cog.tif".to_string(),
+            size: 0,
+            supports_range: true,
+        };
+        assert_eq!(unsized_backend.total_size_hint(), None);
     }
 
     // WASM-specific tests would use wasm-bindgen-test

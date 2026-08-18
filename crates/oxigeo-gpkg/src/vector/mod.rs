@@ -5,11 +5,13 @@
 //! library is required — this module is a binary parser.
 
 pub mod feature;
+#[cfg(feature = "geojson-convert")]
 pub mod geojson_convert;
 pub mod types;
 pub mod wkb;
 
 pub use feature::{FeatureRow, FeatureTable, SrsInfo};
+#[cfg(feature = "geojson-convert")]
 pub use geojson_convert::{
     feature_table_from_geojson, feature_table_to_geojson, geojson_geom_to_gpkg,
     gpkg_geom_to_geojson,

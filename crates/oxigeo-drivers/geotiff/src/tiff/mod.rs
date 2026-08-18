@@ -7,13 +7,18 @@
 //! - [`IfdEntry`] - Individual tag entries
 //! - [`TiffTag`] - Tag definitions
 //! - [`Compression`] - Compression schemes
+//! - [`is_mask_ifd`] - GDAL internal-mask classification
 
 mod header;
 mod ifd;
+mod mask;
 mod tags;
 
 pub use header::{ByteOrderType, TIFF_MAGIC_BE, TIFF_MAGIC_LE, TiffHeader, TiffVariant};
 pub use ifd::{FieldType, Ifd, IfdEntry};
+pub use mask::{
+    PHOTOMETRIC_TRANSPARENCY_MASK, SUBFILE_TYPE_TRANSPARENCY_MASK, is_mask_ifd, is_mask_markers,
+};
 pub use tags::{
     Compression, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat, TiffTag,
 };

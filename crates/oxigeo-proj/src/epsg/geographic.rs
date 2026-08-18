@@ -168,7 +168,7 @@ pub(crate) fn register_geographic_crs(db: &mut EpsgDatabase) {
     db.add_definition(EpsgDefinition {
         code: 4314,
         name: "DHDN".to_string(),
-        proj_string: "+proj=longlat +ellps=bessel +towgs84=598.1,-73.7,-418.2,0.202,0.045,-2.455,6.7 +no_defs".to_string(),
+        proj_string: "+proj=longlat +ellps=bessel +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Geographic,
         area_of_use: "Germany".to_string(),
@@ -254,8 +254,9 @@ pub(crate) fn register_geographic_crs(db: &mut EpsgDatabase) {
     db.add_definition(EpsgDefinition {
         code: 4263,
         name: "Minna".to_string(),
-        proj_string: "+proj=longlat +ellps=clrk80ign +towgs84=-92,-93,122,0,0,0,0 +no_defs"
-            .to_string(),
+        proj_string:
+            "+proj=longlat +a=6378249.145 +rf=293.465 +towgs84=-92,-93,122,0,0,0,0 +no_defs"
+                .to_string(),
         wkt: None,
         crs_type: CrsType::Geographic,
         area_of_use: "Nigeria".to_string(),
@@ -290,7 +291,7 @@ pub(crate) fn register_geographic_crs(db: &mut EpsgDatabase) {
     // Korea — KGD2002 (EPSG:4737)
     db.add_definition(EpsgDefinition {
         code: 4737,
-        name: "GRS 1980(IUGG, 1980)".to_string(),
+        name: "KGD2002".to_string(),
         proj_string: "+proj=longlat +ellps=GRS80 +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Geographic,

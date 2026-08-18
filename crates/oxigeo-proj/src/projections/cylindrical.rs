@@ -163,8 +163,8 @@ fn meridional_arc_sphere(lat: f64, semi_major: f64) -> f64 {
 /// Identical to `+proj=tmerc` but with parameters matching official Gauss-Kruger
 /// strip definitions (k=1, origin at equator, false eastings per strip).
 ///
-/// Reference: Bowring (1983) "The Geodesic Line and the Normal Section" +
-/// EPSG guidance note 7-2, §1.3.5.
+/// Delegates to [`tmerc_forward`]; see it for the series actually evaluated
+/// (Snyder 1987 §8) and its accuracy envelope.
 ///
 /// # Parameters
 /// * `lon`, `lat` – geodetic coordinates in radians
@@ -176,7 +176,8 @@ fn meridional_arc_sphere(lat: f64, semi_major: f64) -> f64 {
 /// * `f` – flattening (e.g. `1/298.257222101` for GRS80)
 ///
 /// # Errors
-/// Returns an error if the latitude is beyond ±80° where the series diverges.
+/// Returns an error if `lon` or `lat` is non-finite. Note that the truncated series
+/// silently loses accuracy far from the central meridian rather than reporting it.
 #[allow(clippy::too_many_arguments)]
 pub fn gauss_kruger_forward(
     lon: f64,
@@ -217,11 +218,23 @@ pub fn gauss_kruger_inverse(
 
 /// Ellipsoidal Transverse Mercator forward projection.
 ///
-/// Uses the Karney (2011) power-series in `η` and `ξ` accurate to
-/// sub-millimetre for |lon - lon_0| < 10°.  For larger offsets the series
-/// still converges but accuracy degrades.
+/// This is the kernel behind [`gauss_kruger_forward`] and therefore behind UTM and the
+/// national grids: unlike [`crate::transform::cylindrical::TransverseMercator`] it
+/// models the Earth as an ellipsoid (`a`, `f`), which matters by tens of kilometres.
 ///
-/// Reference: Karney (2011) doi:10.1007/s00190-011-0445-3 — 6-term series.
+/// Uses the classic power series in the eccentricity `e²` / `e'²` from Snyder (1987)
+/// §8 — eq. 8-9 for the easting, eq. 8-12 for the auxiliary `C = e'²·cos²φ`, and the
+/// matching northing series — truncated at the 6th order in `A = cos(φ)·Δλ`. That is
+/// millimetre-class within about ±3° of the central meridian (the width of a UTM zone),
+/// the range these series were tabulated for, and it degrades quickly beyond it. It is
+/// *not* the Karney (2011) `η`/`ξ` expansion, which is what nanometre accuracy over a
+/// wide longitude range would require.
+///
+/// Angles (`lon`, `lat`, `lon_0`, `lat_0`) are in **radians**; `x_0`, `y_0` and the
+/// returned easting/northing are in the units of `a` (metres for the usual ellipsoids).
+///
+/// Reference: Snyder J.P. (1987) *Map Projections — A Working Manual*,
+/// USGS Professional Paper 1395, §8, pp. 48–65.
 #[allow(clippy::too_many_arguments)]
 pub fn tmerc_forward(
     lon: f64,
@@ -238,12 +251,10 @@ pub fn tmerc_forward(
         return Err(Error::invalid_coordinate("tmerc: non-finite input"));
     }
 
-    let b = a * (1.0 - f);
     let e2 = 2.0 * f - f * f; // eccentricity²
     let e_prime2 = e2 / (1.0 - e2);
-    let n = f / (2.0 - f); // third flattening
 
-    // Conformal latitude
+    // Trigonometric functions of the geodetic latitude φ
     let sin_lat = lat.sin();
     let cos_lat = lat.cos();
     let tan_lat = lat.tan();
@@ -280,13 +291,19 @@ pub fn tmerc_forward(
                     + (61.0 - 58.0 * t2 + t2 * t2 + 600.0 * c - 330.0 * e_prime2) * a4 * a2
                         / 720.0));
 
-    // Suppress unused-variable warning from `b`
-    let _ = (b, n);
-
     Ok((x_km + x_0, y_km + y_0))
 }
 
-/// Ellipsoidal Transverse Mercator inverse projection.
+/// Ellipsoidal Transverse Mercator inverse projection — the counterpart of
+/// [`tmerc_forward`], round-tripping to the accuracy of the truncated series.
+///
+/// Recovers the footprint latitude `φ₁` from the meridional arc, then applies the
+/// Snyder (1987) §8 inverse series in `D = x / (N₁·k₀)`. `x`, `y`, `x_0`, `y_0` are in
+/// the units of `a`; `lon_0` / `lat_0` and the returned coordinates are in **radians**.
+///
+/// # Errors
+/// Returns an error if `x` or `y` is non-finite, or if the footprint latitude fails to
+/// converge.
 #[allow(clippy::too_many_arguments)]
 pub fn tmerc_inverse(
     x: f64,

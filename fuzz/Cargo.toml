@@ -29,8 +29,8 @@ oxigeo-hdf5 = { path = "../crates/oxigeo-drivers/hdf5" }
 # `open_from_bytes` constructors, documented upstream as intended "for
 # testing and fuzzing") rather than through `oxigeo-netcdf`'s path-based
 # `NetCdfReader::open`, which has no in-memory entry point.
-oxinetcdf = "0.2.2"
-oxih5 = "0.2.2"
+oxinetcdf = "0.2.3"
+oxih5 = "0.2.3"
 
 # Prevent this crate from being included in normal workspace builds
 [workspace]

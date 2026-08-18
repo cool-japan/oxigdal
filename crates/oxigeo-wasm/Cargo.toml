@@ -43,6 +43,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 oxiarc-deflate = { workspace = true }
+oxiarc-lzw = { workspace = true }
 
 # Error handling
 console_error_panic_hook = { workspace = true, optional = true }

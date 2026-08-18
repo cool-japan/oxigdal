@@ -559,3 +559,216 @@ fn test_transformer_aou_check_skipped_when_crs_has_no_aou() {
         "should not return OutOfAreaOfUse when source CRS has no AoU"
     );
 }
+
+/// Regression: the Transverse Mercator aliases must be reachable through
+/// `oxigeo_proj::transform::*`, not only through `transform::cylindrical::*` and
+/// the crate root. Before this was fixed, `transform/mod.rs` re-exported
+/// `CassineSoldner`/`GaussKruger`/`TransverseMercator` but silently omitted the
+/// two aliases, so a glob import of `transform` did not surface them.
+#[test]
+fn test_transverse_mercator_aliases_reachable_via_transform_glob() {
+    mod glob_import {
+        pub use oxigeo_proj::transform::*;
+    }
+
+    // Both aliases resolve through the `transform` module...
+    let spherical = glob_import::SphericalTransverseMercator::new(
+        0.0,
+        0.0,
+        0.9996,
+        500_000.0,
+        0.0,
+        6_378_137.0,
+    );
+    let ellipsoidal =
+        glob_import::EllipsoidalTransverseMercator::new(0.0, 0.0, 0.9996, 500_000.0, 0.0);
+
+    // ...and denote the same types as the crate-root re-exports, so the two
+    // import paths stay interchangeable.
+    let root_spherical: oxigeo_proj::SphericalTransverseMercator = spherical;
+    let root_ellipsoidal: oxigeo_proj::EllipsoidalTransverseMercator = ellipsoidal;
+
+    let projected = root_spherical.forward(3.0, 0.0).expect("spherical forward");
+    assert!(projected.0 > 500_000.0, "east of the central meridian");
+
+    let projected = root_ellipsoidal
+        .forward(3.0, 0.0)
+        .expect("ellipsoidal forward");
+    assert!(projected.0 > 500_000.0, "east of the central meridian");
+}
+
+// ---------------------------------------------------------------------------
+// Feature-invariant CRS resolution (regression for the `proj-db` datum shift)
+// ---------------------------------------------------------------------------
+
+/// WGS 84 equatorial metres per degree (2 * pi * a / 360, a = 6378137).
+const M_PER_DEG: f64 = 111_319.490_793_273_57;
+
+/// Tolerance for the projection-only pivots, in metres. Matches the
+/// `epsg_verified_registry_extended_test` fixtures.
+const PIVOT_TOLERANCE_M: f64 = 1e-6;
+
+/// Projection-only pivots: a PROJ-string geodetic base carrying **the same
+/// datum tokens** as the registry entry, paired with the EPSG-sourced projected
+/// CRS. A transform between the two must apply the map projection and nothing
+/// else — no datum shift can survive, because both sides name the same datum.
+///
+/// Each row is `(code, geodetic base PROJ string, datum tokens that must still
+/// appear verbatim in the registry entry, lon, lat, easting, northing)`.
+/// The expected coordinates are PROJ ground truth (verified with PROJ 9.5.1 in
+/// `tests/data/verified_epsg_projection_5pt.json`, re-confirmed against PROJ
+/// 9.7.0 `cs2cs EPSG:4141 EPSG:2039` / `EPSG:4150 EPSG:2056`).
+#[allow(clippy::type_complexity)]
+const PROJECTION_ONLY_PIVOTS: &[(u32, &str, &[&str], f64, f64, f64, f64)] = &[
+    (
+        2039,
+        "+proj=longlat +ellps=GRS80 +towgs84=-48,55,52,0,0,0,0 +no_defs",
+        &["+ellps=GRS80", "+towgs84=-48,55,52,0,0,0,0"],
+        34.93,
+        31.365,
+        193_412.215_923_065_79,
+        585_981.701_027_398,
+    ),
+    (
+        2056,
+        "+proj=longlat +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +no_defs",
+        &["+ellps=bessel", "+towgs84=674.374,15.056,405.346,0,0,0,0"],
+        8.225,
+        46.815,
+        2_659_933.418_732_427_5,
+        1_185_026.714_081_787,
+    ),
+];
+
+/// Regression: an EPSG-sourced CRS must resolve to the *same* definition as its
+/// own registry PROJ string in every feature configuration.
+///
+/// Before 0.2.4 the `proj-db` feature routed `CrsSource::Epsg` through
+/// `oxiproj::Crs::from_epsg` (oxiproj's bundled authority database) while a
+/// `CrsSource::Proj` partner kept using the registry string. The pair became
+/// asymmetric — a datum-bearing definition against a datum-less one — and the
+/// pipeline applied a one-sided datum shift: 87 m for `EPSG:2039`, 226 m for
+/// `EPSG:2056`. This test pins the projection-only result unconditionally, so
+/// it fails under whichever feature set reintroduces the asymmetry.
+#[test]
+fn test_epsg_sourced_crs_matches_its_registry_proj_string_forward() {
+    for &(code, base_proj, datum_tokens, lon, lat, easting, northing) in PROJECTION_ONLY_PIVOTS {
+        let def = oxigeo_proj::lookup_epsg(code).expect("code must be in the embedded registry");
+        for token in datum_tokens {
+            assert!(
+                def.proj_string.contains(token),
+                "EPSG:{code} registry entry no longer carries {token}; \
+                 update the pivot base string in this test"
+            );
+        }
+
+        let base = Crs::from_proj(base_proj).expect("geodetic base CRS");
+        let projected = Crs::from_epsg(code).expect("projected CRS");
+        let transformer = Transformer::new(base, projected)
+            .expect("base -> code transformer")
+            .with_strict(false);
+
+        let out = transformer
+            .transform(&Coordinate::from_lon_lat(lon, lat))
+            .expect("base -> code transform");
+        let residual = (out.x - easting).hypot(out.y - northing);
+        assert!(
+            residual <= PIVOT_TOLERANCE_M,
+            "EPSG:{code} base -> code | got ({:.6}, {:.6}) | want ({easting:.6}, {northing:.6}) \
+             | {residual:.3e} m > {PIVOT_TOLERANCE_M:.0e} m — a datum shift leaked into a \
+             same-datum pair",
+            out.x,
+            out.y
+        );
+    }
+}
+
+/// Inverse direction of [`test_epsg_sourced_crs_matches_its_registry_proj_string_forward`].
+#[test]
+fn test_epsg_sourced_crs_matches_its_registry_proj_string_inverse() {
+    for &(code, base_proj, _, lon, lat, easting, northing) in PROJECTION_ONLY_PIVOTS {
+        let base = Crs::from_proj(base_proj).expect("geodetic base CRS");
+        let projected = Crs::from_epsg(code).expect("projected CRS");
+        let transformer = Transformer::new(projected, base)
+            .expect("code -> base transformer")
+            .with_strict(false);
+
+        let out = transformer
+            .transform(&Coordinate::new(easting, northing))
+            .expect("code -> base transform");
+        let coslat = lat.to_radians().cos().abs().max(1e-12);
+        let residual = ((out.x - lon) * M_PER_DEG * coslat).hypot((out.y - lat) * M_PER_DEG);
+        assert!(
+            residual <= PIVOT_TOLERANCE_M,
+            "EPSG:{code} code -> base | got ({:.9}, {:.9}) | want ({lon:.9}, {lat:.9}) \
+             | {residual:.3e} m > {PIVOT_TOLERANCE_M:.0e} m — a datum shift leaked into a \
+             same-datum pair",
+            out.x,
+            out.y
+        );
+    }
+}
+
+/// An EPSG code the embedded registry does not carry. `proj-db` must widen the
+/// resolvable set to include it; without `proj-db` it must stay unresolvable.
+const UNREGISTERED_EPSG_CODE: u32 = 2172;
+
+/// Builds a `Crs` holding `UNREGISTERED_EPSG_CODE`. `Crs::source` is private and
+/// `Crs::from_epsg` refuses unknown codes, so the only way such a value reaches
+/// `crs_to_oxi` in practice — and the only way to build one here — is
+/// deserialization.
+fn unregistered_epsg_crs() -> Crs {
+    assert!(
+        !oxigeo_proj::contains_epsg(UNREGISTERED_EPSG_CODE),
+        "EPSG:{UNREGISTERED_EPSG_CODE} joined the embedded registry; \
+         pick another absent code for this test"
+    );
+    let mut value =
+        serde_json::to_value(Crs::from_epsg(4326).expect("EPSG:4326")).expect("serialize Crs");
+    value["source"]["Epsg"] = serde_json::json!(UNREGISTERED_EPSG_CODE);
+    let crs: Crs = serde_json::from_value(value).expect("deserialize Crs");
+    assert_eq!(crs.epsg_code(), Some(UNREGISTERED_EPSG_CODE));
+    crs
+}
+
+/// `proj-db` is additive: it resolves EPSG codes the embedded registry lacks by
+/// falling back to oxiproj's authority database, without changing any answer the
+/// default build already produces (pinned by the two pivot tests above).
+#[cfg(feature = "proj-db")]
+#[test]
+fn test_proj_db_resolves_epsg_codes_outside_the_embedded_registry() {
+    let transformer = Transformer::new(
+        Crs::from_epsg(4326).expect("EPSG:4326"),
+        unregistered_epsg_crs(),
+    )
+    .expect("proj-db must resolve an EPSG code outside the embedded registry")
+    .with_strict(false);
+
+    let out = transformer
+        .transform(&Coordinate::from_lon_lat(21.0, 52.0))
+        .expect("transform into the fallback-resolved CRS");
+    // Poland zone II is a Gauss-Kruger grid with a ~4.5e6 m false easting and a
+    // ~5.7e6 m northing at 52 N; assert the magnitude only, since the datum
+    // handling of a fallback-resolved CRS is oxiproj's, not this crate's.
+    assert!(
+        (4.0e6..5.5e6).contains(&out.x) && (5.0e6..6.5e6).contains(&out.y),
+        "unexpected Poland zone II coordinate: ({}, {})",
+        out.x,
+        out.y
+    );
+}
+
+/// Without `proj-db` there is no second CRS source, so the registry error is
+/// final rather than silently producing a differently-defined CRS.
+#[cfg(not(feature = "proj-db"))]
+#[test]
+fn test_unregistered_epsg_code_is_an_error_without_proj_db() {
+    let built = Transformer::new(
+        Crs::from_epsg(4326).expect("EPSG:4326"),
+        unregistered_epsg_crs(),
+    );
+    assert!(
+        built.is_err(),
+        "an unregistered EPSG code must not resolve without proj-db"
+    );
+}

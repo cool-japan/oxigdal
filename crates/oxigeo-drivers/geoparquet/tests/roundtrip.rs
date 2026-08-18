@@ -1,9 +1,12 @@
 //! Integration tests for GeoParquet round-trip read/write
 #![allow(clippy::panic)]
 
+use arrow_array::{Array, ArrayRef, Int32Array, StringArray};
+use arrow_schema::{DataType, Field};
 use oxigeo_geoparquet::geometry::{Coordinate, Geometry, LineString, Point, Polygon};
 use oxigeo_geoparquet::metadata::{Crs, GeometryColumnMetadata};
 use oxigeo_geoparquet::{GeoParquetReader, GeoParquetWriter};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Per-test scratch fixture inside the system temp dir (house policy: no
@@ -268,4 +271,112 @@ fn test_batch_writing() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+// ── In-memory sources: `open()` vs `from_bytes()` ──────────────────────────────
+
+/// `GeoParquetReader::from_bytes` must be indistinguishable from
+/// `GeoParquetReader::open` on the very same file: identical metadata,
+/// identical geometries, identical attribute values.
+///
+/// Regression for the reader being path-only — it used to hold an
+/// `Arc<File>` and had no way to consume a Parquet image that never touched the
+/// filesystem.
+#[test]
+fn test_open_and_from_bytes_agree() -> Result<(), Box<dyn std::error::Error>> {
+    let path = TempPath::new("test_from_bytes.parquet");
+
+    let geometries = vec![
+        Geometry::Point(Point::new_2d(-122.4, 37.8)),
+        Geometry::Point(Point::new_2d(-118.2, 34.0)),
+        Geometry::Point(Point::new_2d(-87.6, 41.9)),
+    ];
+    let names = ["san francisco", "los angeles", "chicago"];
+    let populations = [873_965_i32, 3_898_747, 2_746_388];
+
+    // Write geometries plus two attribute columns.
+    {
+        let metadata = GeometryColumnMetadata::new_wkb().with_crs(Crs::wgs84());
+        let mut writer = GeoParquetWriter::new(&path, "geometry", metadata)?
+            .add_field(Field::new("name", DataType::Utf8, false))?
+            .add_field(Field::new("population", DataType::Int32, false))?;
+
+        for ((geom, name), pop) in geometries.iter().zip(names).zip(populations) {
+            writer.add_row(
+                geom,
+                &[
+                    Arc::new(StringArray::from(vec![name])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![pop])) as ArrayRef,
+                ],
+            )?;
+        }
+        writer.finish()?;
+    }
+
+    let from_path = GeoParquetReader::open(&path)?;
+    let raw = std::fs::read(&path)?;
+    let from_memory = GeoParquetReader::from_bytes(raw)?;
+
+    // Metadata parity.
+    assert_eq!(from_memory.num_rows(), from_path.num_rows());
+    assert_eq!(from_memory.num_row_groups(), from_path.num_row_groups());
+    assert_eq!(
+        from_memory.geometry_column_name(),
+        from_path.geometry_column_name()
+    );
+    assert_eq!(
+        from_memory.metadata().primary_column,
+        from_path.metadata().primary_column
+    );
+    assert_eq!(from_memory.schema(), from_path.schema());
+
+    // Geometry parity — and both must match what was written.
+    let path_geoms = from_path.read_geometries(0)?;
+    let memory_geoms = from_memory.read_geometries(0)?;
+    assert_eq!(path_geoms, geometries);
+    assert_eq!(memory_geoms, path_geoms);
+
+    // Property parity, column by column.
+    let path_batch = from_path.read_row_group(0)?;
+    let memory_batch = from_memory.read_row_group(0)?;
+    assert_eq!(memory_batch, path_batch);
+
+    let read_names = memory_batch
+        .column_by_name("name")
+        .ok_or("missing name column")?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or("name column is not a StringArray")?;
+    let read_pops = memory_batch
+        .column_by_name("population")
+        .ok_or("missing population column")?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or("population column is not an Int32Array")?;
+
+    assert_eq!(read_names.len(), names.len());
+    for (i, (name, pop)) in names.iter().zip(populations).enumerate() {
+        assert_eq!(read_names.value(i), *name);
+        assert_eq!(read_pops.value(i), pop);
+    }
+
+    // The in-memory reader must also support the pushdown path.
+    let filtered = GeoParquetReader::from_bytes(std::fs::read(&path)?)?
+        .with_bbox_filter((-123.0, 33.0, -117.0, 38.0))
+        .read_pushdown()?;
+    let total: usize = filtered.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total, 2,
+        "only the two west-coast points intersect the bbox"
+    );
+
+    Ok(())
+}
+
+/// `from_bytes` on a buffer that is not a Parquet image must fail cleanly
+/// rather than panic.
+#[test]
+fn test_from_bytes_rejects_garbage() {
+    let result = GeoParquetReader::from_bytes(b"not a parquet file at all".to_vec());
+    assert!(result.is_err(), "garbage input must be rejected");
 }

@@ -22,10 +22,10 @@
   {
     "code": 4647,
     "name": "ETRS89 / UTM zone 32N (zE-N)",
-    "proj_string": "+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs +type=crs",
+    "proj_string": "+proj=tmerc +lat_0=0 +lon_0=9 +k=0.9996 +x_0=32500000 +y_0=0 +ellps=GRS80 +units=m +no_defs",
     "wkt": null,
     "crs_type": "Projected",
-    "area_of_use": "Europe - 6°E to 12°E",
+    "area_of_use": "Europe - 6\u00b0E to 12\u00b0E",
     "unit": "metre",
     "datum": "European Terrestrial Reference System 1989"
   },
@@ -51,11 +51,11 @@
   },
   {
     "code": 6933,
-    "name": "WGS 84 / NSIDC EASE-Grid 2.0 North",
-    "proj_string": "+proj=laea +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+    "name": "WGS 84 / NSIDC EASE-Grid 2.0 Global",
+    "proj_string": "+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
     "wkt": null,
     "crs_type": "Projected",
-    "area_of_use": "Northern hemisphere - north of 0°N",
+    "area_of_use": "Northern hemisphere - north of 0\u00b0N",
     "unit": "metre",
     "datum": "World Geodetic System 1984"
   },
@@ -65,14 +65,14 @@
     "proj_string": "+proj=laea +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
     "wkt": null,
     "crs_type": "Projected",
-    "area_of_use": "Southern hemisphere - south of 0°N",
+    "area_of_use": "Southern hemisphere - south of 0\u00b0N",
     "unit": "metre",
     "datum": "World Geodetic System 1984"
   },
   {
     "code": 6931,
-    "name": "WGS 84 / NSIDC EASE-Grid 2.0 Global",
-    "proj_string": "+proj=cea +lon_0=0 +lat_ts=30 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+    "name": "WGS 84 / NSIDC EASE-Grid 2.0 North",
+    "proj_string": "+proj=laea +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
     "wkt": null,
     "crs_type": "Projected",
     "area_of_use": "World",
@@ -111,7 +111,7 @@
   },
   {
     "code": 7659,
-    "name": "WGS 84 (G1762) (3D geographic)",
+    "name": "WGS 84 (G873)",
     "proj_string": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
     "wkt": null,
     "crs_type": "Geographic",
@@ -121,17 +121,17 @@
   },
   {
     "code": 4559,
-    "name": "RRAF 1991",
-    "proj_string": "+proj=longlat +ellps=WGS84 +no_defs +type=crs",
+    "name": "RRAF 1991 / UTM zone 20N",
+    "proj_string": "+proj=utm +zone=20 +ellps=GRS80 +units=m +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "French Antilles",
-    "unit": "degree",
+    "unit": "metre",
     "datum": "Reseau de Reference des Antilles Francaises 1991"
   },
   {
     "code": 4694,
-    "name": "WGS 84 (G1150)",
+    "name": "POSGAR 94",
     "proj_string": "+proj=longlat +ellps=WGS84 +no_defs +type=crs",
     "wkt": null,
     "crs_type": "Geographic",
@@ -141,7 +141,7 @@
   },
   {
     "code": 4695,
-    "name": "WGS 84 (G1296)",
+    "name": "Katanga 1955",
     "proj_string": "+proj=longlat +ellps=WGS84 +no_defs +type=crs",
     "wkt": null,
     "crs_type": "Geographic",
@@ -171,12 +171,12 @@
   },
   {
     "code": 5469,
-    "name": "Panama-Colon 1911",
-    "proj_string": "+proj=longlat +ellps=clrk66 +no_defs +type=crs",
+    "name": "Panama-Colon 1911 / Panama Lambert",
+    "proj_string": "+proj=lcc +lat_0=8.41666666666667 +lat_1=8.41666666666667 +lon_0=-80 +k_0=0.99989909 +x_0=500000 +y_0=294865.303 +ellps=clrk66 +units=m +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Panama",
-    "unit": "degree",
+    "unit": "metre",
     "datum": "Panama-Colon 1911"
   },
   {
@@ -201,18 +201,18 @@
   },
   {
     "code": 5464,
-    "name": "Maupiti 83",
+    "name": "Sibun Gorge 1922",
     "proj_string": "+proj=longlat +ellps=intl +no_defs +type=crs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "French Polynesia - Maupiti island",
     "unit": "degree",
-    "datum": "Maupiti 83"
+    "datum": "Sibun Gorge 1922"
   },
   {
     "code": 3299,
-    "name": "ITRF2000 (geocentric)",
-    "proj_string": "+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs",
+    "name": "RGPF / UTM zone 8S",
+    "proj_string": "+proj=utm +zone=8 +south +ellps=GRS80 +units=m +no_defs",
     "wkt": null,
     "crs_type": "Geocentric",
     "area_of_use": "World",
@@ -232,7 +232,7 @@
   {
     "code": 4214,
     "name": "Beijing 1954",
-    "proj_string": "+proj=longlat +ellps=krass +towgs84=15.8,-154.4,-82.3,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +ellps=krass +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "China",
@@ -262,7 +262,7 @@
   {
     "code": 4220,
     "name": "Camacupa 1948",
-    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-50.9,-347.6,-231,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +a=6378249.145 +rf=293.465 +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Angola",
@@ -282,7 +282,7 @@
   {
     "code": 4222,
     "name": "Cape",
-    "proj_string": "+proj=longlat +ellps=clrk80 +towgs84=-136,-108,-292,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +a=6378249.145 +rf=293.4663077 +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "South Africa (historic)",
@@ -302,7 +302,7 @@
   {
     "code": 4224,
     "name": "Chua",
-    "proj_string": "+proj=longlat +ellps=intl +towgs84=-134,229,-29,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +ellps=intl +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Brazil / Paraguay",
@@ -332,7 +332,7 @@
   {
     "code": 4227,
     "name": "Deir ez Zor",
-    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-183.5,91.0,0.0,0.0,0.0,0.0,0.0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Syria / Lebanon",
@@ -341,8 +341,8 @@
   },
   {
     "code": 4228,
-    "name": "Douala 1948",
-    "proj_string": "+proj=longlat +ellps=intl +towgs84=-206.1,-174.7,-87.7,0,0,0,0 +no_defs +type=crs",
+    "name": "Douala",
+    "proj_string": "+proj=longlat +ellps=clrk80ign +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Cameroon",
@@ -352,7 +352,7 @@
   {
     "code": 4230,
     "name": "ED50",
-    "proj_string": "+proj=longlat +ellps=intl +towgs84=-87,-98,-121,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +ellps=intl +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Europe",
@@ -382,7 +382,7 @@
   {
     "code": 4233,
     "name": "Gandajika 1970",
-    "proj_string": "+proj=longlat +ellps=intl +towgs84=-133,-321,50,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +ellps=intl +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Democratic Republic of Congo",
@@ -422,7 +422,7 @@
   {
     "code": 4238,
     "name": "ID74",
-    "proj_string": "+proj=longlat +ellps=bessel +towgs84=-376,156,544,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +a=6378160 +rf=298.247 +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Indonesia",
@@ -502,7 +502,7 @@
   {
     "code": 4246,
     "name": "KOC",
-    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-294.7,-200.1,525.5,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +a=6378249.145 +rf=293.465 +towgs84=-294.7,-200.1,525.5,0,0,0,0 +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Kuwait",
@@ -521,8 +521,8 @@
   },
   {
     "code": 4249,
-    "name": "Leigon",
-    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-130,29,364,0,0,0,0 +no_defs +type=crs",
+    "name": "Lake",
+    "proj_string": "+proj=longlat +ellps=intl +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Ghana",
@@ -531,18 +531,18 @@
   },
   {
     "code": 4250,
-    "name": "Liberia 1964",
+    "name": "Leigon",
     "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-90,40,88,0,0,0,0 +no_defs +type=crs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Liberia",
     "unit": "degree",
-    "datum": "Liberia 1964"
+    "datum": "Leigon"
   },
   {
     "code": 4251,
-    "name": "Libyan Arab Jamahiriya",
-    "proj_string": "+proj=longlat +ellps=clrk80ign +towgs84=-208.406,-109.878,-2.5764,0,0,0,0 +no_defs +type=crs",
+    "name": "Liberia 1964",
+    "proj_string": "+proj=longlat +a=6378249.145 +rf=293.465 +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Libya",
@@ -572,7 +572,7 @@
   {
     "code": 4254,
     "name": "Hito XVIII 1963",
-    "proj_string": "+proj=longlat +ellps=intl +towgs84=16,196,93,0,0,0,0 +no_defs +type=crs",
+    "proj_string": "+proj=longlat +ellps=intl +no_defs",
     "wkt": null,
     "crs_type": "Geographic",
     "area_of_use": "Chile - Tierra del Fuego",

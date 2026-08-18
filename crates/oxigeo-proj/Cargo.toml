@@ -13,7 +13,9 @@ readme = "README.md"
 keywords = ["gdal", "projection", "crs", "coordinate", "transform"]
 categories = ["science", "algorithms"]
 
-# Architecture: OxiProj (pure Rust, always active) is the default engine.
+# Architecture: OxiProj (pure Rust) is the default engine, pulled in by the `std`
+# feature (which `default` enables). `--no-default-features` builds are no_std +
+# alloc and link no OxiProj at all.
 # proj4rs is retained as an optional fallback via the `proj4rs-compat` feature for backward-compat error conversion.
 [features]
 default = ["std"]
@@ -24,19 +26,59 @@ default = ["std"]
 # (`src/epsg/`, `lookup_epsg`) for `Crs::from_epsg`, and transforms route through the
 # pure-Rust `oxiproj::Crs::from_proj` + `oxiproj::Transformer::new` (no authority DB).
 # The oxiproj-native EPSG/DB path is available opt-in via the `proj-db` feature below.
-std = ["thiserror/std", "serde/std", "dep:serde_json", "dep:once_cell", "oxiproj/projjson"]
+std = [
+    "thiserror/std",
+    "serde/std",
+    "dep:serde_json",
+    "dep:once_cell",
+    "dep:oxiproj",
+    "oxiproj/projjson",
+]
 # `proj-db` enables oxigeo-proj's own pure-Rust oxisql PROJ.db reader (~7500 EPSG codes)
 # and, since it is a native-only opt-in, also the oxiproj-native EPSG registry
 # (`oxiproj/epsg` → oxiproj-db). Keep `oxiproj/epsg` here (not in `std`) so the default
 # and wasm builds stay free of oxiproj-db/oxisql/tokio.
-proj-db = ["dep:oxisql-sqlite-compat", "dep:oxisql-core", "oxiproj/epsg"]  # PROJ.db SQLite reader for ~7500 EPSG codes
-# Retained for backward-compatible error conversion; remove in next major version
+#
+# `proj-db` is **strictly additive**: it widens coverage, it never changes an answer
+# the default build already gives. Transforms always resolve a CRS through this
+# crate's own PROJ-verified registry (`Crs::to_proj_string` → `oxiproj::Crs::from_proj`);
+# `oxiproj::Crs::from_epsg` is consulted only as a fallback for an EPSG code the
+# embedded registry does not carry. See `transform::crs_to_oxi` for why routing
+# registry-known codes through the authority DB produced one-sided datum shifts.
+#
+# `proj-db` **implies `std`**: it is not expressible on a `no_std` + alloc build.
+# `src/epsg/proj_db.rs` opens a file-system database (`std::path::{Path, PathBuf}`,
+# `std::env::var` for `PROJ_DATA`/`PROJ_LIB`), and `oxisql-sqlite-compat/blocking`
+# drives its async engine on a `current_thread` tokio runtime — none of which alloc
+# can provide. Before this, the `--no-default-features --features proj-db`
+# combination simply did not compile.
+#
+# `oxiproj?/epsg` keeps the `?`: the only consumer of that feature,
+# `transform::crs_to_oxi_unregistered` → `oxiproj::Crs::from_epsg`, is itself
+# `#[cfg(feature = "std")]`, and `std` already activates `dep:oxiproj` — so the sigil-less form
+# would only force-enable a dependency that is enabled anyway. With the `?`,
+# `oxiproj` is activated by exactly one feature (`std`); should anyone ever drop
+# `"std"` from this list, the build fails loudly on the missing `from_epsg`
+# instead of silently re-linking OxiProj into a `no_std` build.
+proj-db = ["std", "dep:oxisql-sqlite-compat", "dep:oxisql-core", "oxiproj?/epsg"]  # PROJ.db SQLite reader for ~7500 EPSG codes
+# Retained for backward-compatible error conversion; remove in next major version.
+# Deliberately does NOT imply `std`: the only code it unlocks is the
+# `From<proj4rs::errors::Error> for Error` conversion, which needs nothing beyond
+# `alloc` (a `String` payload and `format!`), so `--no-default-features
+# --features proj4rs-compat` stays a genuine no_std + alloc build of this crate.
 proj4rs-compat = ["dep:proj4rs"]
 
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
 byteorder = { workspace = true }
+
+# Pure-Rust libm. `core` provides no `sin`/`cos`/`sqrt`/`atan2`/`powf`/…, so
+# `no_std` builds route those through `crate::math::FloatExt`, which is backed by
+# this crate. Deliberately NOT optional: Cargo cannot express "enable this
+# dependency when feature `std` is *off*", and `libm` is a tiny, dependency-free
+# `no_std` crate whose (unused) code is dropped by the linker in `std` builds.
+libm = { workspace = true }
 
 # std-only dependencies
 serde_json = { workspace = true, optional = true }
@@ -45,8 +87,11 @@ once_cell = { workspace = true, optional = true }
 # Pure Rust projection implementation (std only — proj4rs requires std)
 proj4rs = { workspace = true, optional = true }
 
-# OxiProj — Pure-Rust cartographic library (COOLJAPAN)
-oxiproj = { workspace = true }
+# OxiProj — Pure-Rust cartographic library (COOLJAPAN).
+# Optional, enabled by `std`: every OxiProj call site in this crate lives inside a
+# `#[cfg(feature = "std")]` module (`transform`, `pipeline`, `projections`, …) or
+# behind an explicit `std` gate, so `--no-default-features` links no OxiProj at all.
+oxiproj = { workspace = true, optional = true }
 
 # Optional SQLite reader for system PROJ.db
 oxisql-sqlite-compat = { workspace = true, optional = true }
@@ -55,6 +100,7 @@ oxisql-core = { workspace = true, optional = true }
 [dev-dependencies]
 approx = { workspace = true }
 proptest = { workspace = true }
+serde_json = { workspace = true }
 oxisql-core = { workspace = true }
 oxisql-sqlite-compat = { workspace = true }
 
@@ -80,6 +126,14 @@ required-features = ["std"]
 
 [[test]]
 name = "engcrs_test"
+required-features = ["std"]
+
+[[test]]
+name = "epsg_verified_registry_test"
+required-features = ["std"]
+
+[[test]]
+name = "epsg_verified_registry_extended_test"
 required-features = ["std"]
 
 [[test]]
@@ -124,6 +178,10 @@ required-features = ["std"]
 
 [[test]]
 name = "simd_batch_test"
+required-features = ["std"]
+
+[[test]]
+name = "simd_batch_params_test"
 required-features = ["std"]
 
 [[test]]

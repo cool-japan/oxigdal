@@ -47,6 +47,41 @@ pub enum CrsType {
     Engineering,
 }
 
+/// Derives the EPSG unit name from a PROJ string's `+units=` token.
+///
+/// The registry used to hardcode `"metre"` at every projected registration
+/// site, which silently mislabelled the 79 US-survey-foot and international-
+/// foot CRSs (the whole NAD83 State Plane `(ft)`/`(ftUS)` family). Deriving
+/// the unit from the string that actually defines it keeps the two from
+/// drifting apart again.
+///
+/// The returned names match both `Crs::parse_proj_string` and the EPSG unit
+/// names PROJ reports. `+units=` tokens with no EPSG-standard name (and PROJ
+/// strings that scale via `+to_meter=`) fall back to `"metre"`, matching the
+/// previous behaviour rather than inventing a vocabulary.
+pub(crate) fn epsg_unit_for(proj_string: &str) -> &'static str {
+    if proj_string.contains("+proj=longlat") || proj_string.contains("+proj=latlong") {
+        return "degree";
+    }
+    for (token, name) in [
+        ("+units=us-ft", "US survey foot"),
+        ("+units=ft", "foot"),
+        ("+units=km", "kilometre"),
+        ("+units=link", "link"),
+        // Units PROJ expresses only as a `+to_meter=` scale factor. The two
+        // below are the ones the registry actually uses; both were previously
+        // mislabelled ("metre" for the Indian yard CRS, "link" for the
+        // Clarke's foot one).
+        ("+to_meter=0.914398530744441", "Indian yard"),
+        ("+to_meter=0.3047972654", "Clarke's foot"),
+    ] {
+        if proj_string.contains(token) {
+            return name;
+        }
+    }
+    "metre"
+}
+
 // Include build-generated EPSG registrations. `build.rs` always emits this file
 // (an empty `register_generated_epsg` when the snapshot is absent), and the
 // generated body only needs `String` plus `Map::entry`, both of which `alloc`

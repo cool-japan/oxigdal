@@ -262,11 +262,14 @@ impl LevelGeometry {
             });
         }
 
-        let tiff = reader.tiff();
-        let byte_order = tiff.byte_order();
-        let ifd = tiff
-            .ifds
-            .get(level)
+        let byte_order = reader.tiff().byte_order();
+        // Resolved through the reader's level → IFD map, never by indexing the
+        // chain: levels skip GDAL internal masks (and any IFD whose `ImageInfo`
+        // will not parse), so on a masked file `ifds[level]` names a different
+        // image than `level` does — the geometry taken here would describe one
+        // resolution while the tile offsets came from another.
+        let ifd = reader
+            .level_ifd(level)
             .ok_or_else(|| OxiGeoError::OutOfBounds {
                 message: format!("Overview level {} out of bounds", level),
             })?;

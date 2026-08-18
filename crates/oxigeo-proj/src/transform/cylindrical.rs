@@ -3,16 +3,22 @@
 //! This module implements cylindrical projections that are not already provided by
 //! `proj4rs`:
 //!
-//! - **Transverse Mercator** (`+proj=tmerc`): Conformal cylindrical; used as the basis
-//!   for UTM and national grids world-wide.
-//! - **Cassini–Soldner** (`+proj=cass`): Transverse cylindrical — equidistant along
-//!   the central meridian and along lines perpendicular to it.
-//! - **Gauss–Krüger** (`+proj=gauss`): The Gauss–Krüger form of Transverse Mercator
-//!   used in Germany and Russia. For a sphere it is identical to Transverse Mercator;
-//!   for an ellipsoid it uses the Gauss–Schreiber series (6-term expansion here).
+//! - **Transverse Mercator** ([`TransverseMercator`], `+proj=tmerc`): Conformal
+//!   cylindrical on a **sphere**. Despite the name this is *not* the projection UTM and
+//!   the national grids are defined on — read the warning on [`TransverseMercator`]
+//!   before using it for anything georeferenced.
+//! - **Cassini–Soldner** ([`CassineSoldner`], `+proj=cass`): Transverse cylindrical —
+//!   equidistant along the central meridian and along lines perpendicular to it
+//!   (sphere-based).
+//! - **Gauss–Krüger** ([`GaussKruger`], `+proj=gauss`): The **ellipsoidal** Transverse
+//!   Mercator. Named after its historical German (DHDN) and Russian (Pulkovo) use, but
+//!   mathematically it *is* the standard ellipsoidal `tmerc`, so this is the type to use
+//!   for UTM and for national grids.
 //!
-//! All implementations are sphere-based unless noted. The ellipsoidal Transverse Mercator
-//! equations are taken from Snyder (1987) §8.
+//! All implementations are sphere-based unless noted; [`GaussKruger`] is the one
+//! ellipsoidal member. Its forward and inverse series are those of Snyder (1987) §8 —
+//! not a Gauss–Schreiber, Krüger `n`-series or Karney expansion — and so they lose
+//! accuracy as the offset from the central meridian grows beyond a few degrees.
 
 use crate::error::{Error, Result};
 
@@ -30,15 +36,32 @@ const WGS84_E2: f64 = 2.0 * WGS84_F - WGS84_F * WGS84_F; // first eccentricity s
 // Transverse Mercator (sphere-based)
 // ---------------------------------------------------------------------------
 
-/// Transverse Mercator conformal cylindrical projection (`+proj=tmerc`).
+/// Transverse Mercator conformal cylindrical projection on a **sphere** (`+proj=tmerc`).
 ///
-/// Wraps the sphere around a cylinder tangent to the central meridian.
-/// Preserves angles; used for UTM and most national grids.
+/// Wraps the sphere around a cylinder tangent to the central meridian. Preserves angles.
+///
+/// # Warning: this is **not** the projection UTM or national grids use
+///
+/// UTM, the German Gauss–Krüger strips, the British National Grid, the Japanese Plane
+/// Rectangular CS and effectively every other national grid are defined on an
+/// **ellipsoid**, not a sphere. Feeding ellipsoidal (WGS-84 / GRS-80) latitudes into
+/// these spherical equations yields northings that are wrong by *tens of kilometres* —
+/// about 24.9 km at 48° N — because the spherical meridian arc `R · φ` is not the
+/// ellipsoidal meridional arc `M(φ)`. The error is systematic, not noise: it will not
+/// show up as a failed round-trip, only as coordinates in the wrong place.
+///
+/// **For UTM, Gauss–Krüger and any other grid, use [`GaussKruger`]** (also exported as
+/// [`EllipsoidalTransverseMercator`]), which implements the ellipsoidal Transverse
+/// Mercator series of Snyder (1987) §8.
+///
+/// Use `TransverseMercator` (also exported as [`SphericalTransverseMercator`]) only when
+/// a spherical Earth model is what you actually want: small-scale thematic maps, quick
+/// visualisations, or sphere-based test fixtures.
 ///
 /// **Forward (sphere):**
 /// ```text
 /// B  = cos(φ) · sin(λ − λ₀)
-/// x  = k₀ · R · atanh(B) / 2
+/// x  = k₀ · R · atanh(B)
 /// y  = k₀ · R · [atan(tan(φ) / cos(λ − λ₀)) − φ₀]
 /// ```
 ///
@@ -145,6 +168,14 @@ impl TransverseMercator {
         Ok((lam, phi.to_degrees()))
     }
 }
+
+/// Explicit, self-documenting name for the **spherical** Transverse Mercator.
+///
+/// Exactly [`TransverseMercator`] — the alias exists so call sites can state which of
+/// the two Transverse Mercator models they mean. Pair it with
+/// [`EllipsoidalTransverseMercator`]. See the warning on [`TransverseMercator`]: this
+/// model is not suitable for UTM or national grids.
+pub type SphericalTransverseMercator = TransverseMercator;
 
 // ---------------------------------------------------------------------------
 // Cassini–Soldner (sphere-based)
@@ -254,17 +285,25 @@ impl CassineSoldner {
 // Gauss–Krüger (ellipsoidal Transverse Mercator, 6-term series)
 // ---------------------------------------------------------------------------
 
-/// Gauss–Krüger ellipsoidal Transverse Mercator (`+proj=gauss`).
+/// Gauss–Krüger **ellipsoidal** Transverse Mercator (`+proj=gauss`).
 ///
 /// This is the form of Transverse Mercator used in Germany (DHDN) and Russia
-/// (Pulkovo). It is mathematically equivalent to standard Transverse Mercator
-/// on an ellipsoid, computed here via the Krüger power series (n-based,
-/// Helmert 1880, 6-term expansion) for accuracy to ~0.1 mm world-wide.
+/// (Pulkovo), and it is mathematically the standard ellipsoidal Transverse Mercator.
+/// **This — not [`TransverseMercator`] — is the type to use for UTM and national
+/// grids**; it is also exported as [`EllipsoidalTransverseMercator`].
 ///
-/// **Reference:** Karney C.F.F. (2011) "Transverse Mercator with an accuracy of
-/// a few nanometers", J. Geodesy 85(8):475–485.
+/// **Method:** the classic power series in the eccentricity `e²` / `e'²` from
+/// Snyder (1987) §8 (forward: eqs. 8-9 and 8-12 with the `A`, `C`, `T` auxiliaries;
+/// inverse: footprint latitude `φ₁` plus eqs. 8-17 … 8-25). It is *not* a Krüger/
+/// Helmert `n`-series and *not* the Karney (2011) expansion.
 ///
-/// Here we implement the classic Helmert series (adequate for 1 mm accuracy).
+/// **Accuracy:** millimetre-class within roughly ±3° of the central meridian — the range
+/// UTM zones and Gauss–Krüger strips occupy — degrading quickly beyond it because the
+/// series is truncated at the 6th order in `A = cos(φ)·Δλ`. Nanometre accuracy over wide
+/// longitude ranges would need an exact or Karney formulation instead.
+///
+/// **Reference:** Snyder J.P. (1987) *Map Projections — A Working Manual*,
+/// USGS Professional Paper 1395, §8 "Transverse Mercator", pp. 48–65.
 #[derive(Debug, Clone)]
 pub struct GaussKruger {
     /// Central meridian λ₀ (degrees).
@@ -467,6 +506,14 @@ impl GaussKruger {
     }
 }
 
+/// Explicit, self-documenting name for the **ellipsoidal** Transverse Mercator.
+///
+/// Exactly [`GaussKruger`] — the alias exists so that code projecting UTM or national
+/// grid coordinates can say so without knowing the German historical name. Pair it with
+/// [`SphericalTransverseMercator`]; prefer this one whenever the data is georeferenced
+/// on an ellipsoid (WGS-84, GRS-80, Bessel, …), which is essentially always.
+pub type EllipsoidalTransverseMercator = GaussKruger;
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -589,5 +636,46 @@ mod tests {
         let (x, _y) = proj.forward(8.68, 50.11).expect("forward ok");
         // Easting should be slightly west of central meridian strip (3500000)
         assert!(x > 3_400_000.0 && x < 3_500_000.0, "x={}", x);
+    }
+
+    /// Pins the sphere-vs-ellipsoid distinction that the type names invite people to
+    /// ignore: `TransverseMercator` is spherical and must NOT be used for UTM, while
+    /// `GaussKruger` is the ellipsoidal kernel that must.
+    ///
+    /// Both are configured with identical UTM zone 33N parameters (λ₀ = 15°E,
+    /// k₀ = 0.9996, FE = 500 000 m, FN = 0) and the same semi-major axis, so the only
+    /// difference is the Earth model. At Vienna (16.3738°E, 48.2082°N) the spherical
+    /// northing overshoots by ~24.9 km — three orders of magnitude past the 100 m floor
+    /// asserted here — because `R · φ` is not the ellipsoidal meridional arc `M(φ)`.
+    #[test]
+    fn test_spherical_and_ellipsoidal_tmerc_disagree_at_utm_reference_point() {
+        // Vienna, UTM zone 33N — published eastings/northings for the city centre sit
+        // near E ≈ 602 000 m, N ≈ 5 340 000 m. The ±500 m window below is not a
+        // precision check; it only has to show that the ellipsoidal kernel lands on the
+        // real grid while the spherical one misses it by ~24.9 km.
+        let (lon, lat) = (16.373_8, 48.208_2);
+        let (lon_0, k0, fe, fn_) = (15.0, 0.9996, 500_000.0, 0.0);
+
+        let spherical = SphericalTransverseMercator::new(lon_0, 0.0, k0, fe, fn_, WGS84_A);
+        let ellipsoidal = EllipsoidalTransverseMercator::new(lon_0, 0.0, k0, fe, fn_);
+
+        let (xs, ys) = spherical.forward(lon, lat).expect("spherical forward ok");
+        let (xe, ye) = ellipsoidal
+            .forward(lon, lat)
+            .expect("ellipsoidal forward ok");
+
+        // The ellipsoidal kernel is the one that lands on the real UTM 33N coordinate.
+        assert!(
+            (xe - 601_971.0).abs() < 500.0 && (ye - 5_340_254.0).abs() < 500.0,
+            "GaussKruger is not tracking UTM 33N: E={xe}, N={ye}"
+        );
+
+        // ... and the spherical one is far away from it.
+        let delta = ((xs - xe).powi(2) + (ys - ye).powi(2)).sqrt();
+        assert!(
+            delta > 100.0,
+            "spherical and ellipsoidal TM must not be interchangeable, but they \
+             agreed to within {delta} m (sph: {xs}, {ys}; ell: {xe}, {ye})"
+        );
     }
 }

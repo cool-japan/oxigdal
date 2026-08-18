@@ -14,7 +14,7 @@ keywords = ["geopackage", "gpkg", "sqlite", "gis", "geospatial"]
 categories = ["science", "parser-implementations", "encoding"]
 
 [features]
-default = ["std"]
+default = ["std", "geojson-convert"]
 std = ["thiserror/std"]
 reproject = ["dep:oxigeo-proj"]
 flatgeobuf-export = ["dep:oxigeo-flatgeobuf", "dep:oxigeo-core"]
@@ -22,12 +22,17 @@ flatgeobuf-export = ["dep:oxigeo-flatgeobuf", "dep:oxigeo-core"]
 mbtiles-export = ["dep:oxisql-core", "dep:oxisql-sqlite-compat", "dep:tokio"]
 change-tracking = ["dep:oxisql-sqlite-compat", "dep:oxisql-core", "dep:tokio"]
 file-locking = ["dep:libc"]
+# GeoPackage <-> GeoJSON conversion (vector::geojson_convert). Pulls in
+# oxigeo-geojson-stream (and transitively the regex family) plus serde_json;
+# enabled by default, disable via `default-features = false` for wasm /
+# size-constrained builds that don't need GeoJSON conversion.
+geojson-convert = ["dep:oxigeo-geojson-stream", "dep:serde_json"]
 
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
-oxigeo-geojson-stream = { workspace = true }
-serde_json = { workspace = true }
+oxigeo-geojson-stream = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 oxigeo-proj = { workspace = true, optional = true }
 oxigeo-flatgeobuf = { workspace = true, optional = true }
 oxigeo-core = { workspace = true, optional = true, default-features = true }
@@ -43,6 +48,10 @@ tempfile = { workspace = true }
 oxisql-core = { workspace = true }
 oxisql-sqlite-compat = { workspace = true, features = ["blocking"] }
 tokio = { workspace = true, features = ["rt"] }
+
+[[test]]
+name = "geojson_convert_test"
+required-features = ["geojson-convert"]
 
 [lints]
 workspace = true

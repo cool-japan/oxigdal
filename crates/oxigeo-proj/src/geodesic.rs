@@ -27,6 +27,18 @@ use alloc::string::{String, ToString};
 
 use core::fmt;
 
+// On `no_std` the inherent `f64` transcendental methods do not exist; this
+// brings in the `libm`-backed stand-ins with identical signatures. Under `std`
+// the inherent methods are used and the trait is not compiled at all.
+// `allow(unused_imports)`: rustc gathers the inherent impls of primitive types
+// from every crate *loaded into the compilation*, so whenever something drags
+// `std` back in — an optional dependency (`proj4rs-compat` → `proj4rs`), or a
+// dev-dependency under `--all-targets` — the inherent `f64::sin`/`cos`/… come
+// back and win over the trait, leaving this import redundant there.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::math::FloatExt;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WGS84 constants
 // ─────────────────────────────────────────────────────────────────────────────

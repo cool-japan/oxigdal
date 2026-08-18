@@ -8,6 +8,7 @@ use crate::error::GpkgError;
 use crate::filter;
 use crate::metadata::{GpkgMetadata, GpkgMetadataReference, MetadataScope, ReferenceScope};
 use crate::sqlite_reader::SqliteReader;
+use crate::vector::types::FieldType;
 
 /// A full-table scan result: one `(rowid, column_values)` tuple per row.
 pub type TableScanRows = Vec<(i64, Vec<CellValue>)>;
@@ -209,6 +210,66 @@ impl GeoPackage {
             }
         }
         Ok(None)
+    }
+
+    /// Look up a user table's root page number by name, scan it, and restore
+    /// SQLite's [REAL type affinity](https://www.sqlite.org/datatype3.html#type_affinity)
+    /// for columns declared with a REAL-affinity SQL type (`REAL`, `DOUBLE`,
+    /// `DOUBLE PRECISION`, `FLOAT`, `NUMERIC`, or `DECIMAL` — the exact set
+    /// [`FieldType::from_sql_type`] maps to [`FieldType::Real`]; NUMERIC and
+    /// DECIMAL are included here because that classification is shared with
+    /// every other affinity-aware consumer in this crate, even though
+    /// strict SQLite NUMERIC-affinity semantics would otherwise preserve an
+    /// inserted integer as an integer).
+    ///
+    /// As a storage optimisation, real SQLite writes an integral value
+    /// destined for a REAL column using a smaller INTEGER *serial type*
+    /// rather than always using the 8-byte float serial type. A raw B-tree
+    /// scan therefore returns a column that mixes [`CellValue::Integer`] and
+    /// [`CellValue::Float`] cells for what is, semantically, a single REAL
+    /// column (e.g. `40` alongside `40.5`, both written to the same column).
+    /// [`Self::scan_table_by_name`] returns that mixed, serial-type-literal
+    /// result; this method additionally parses the table's declaration from
+    /// `sqlite_master.sql` and promotes every `Integer` cell in a
+    /// REAL-affinity column to the equivalent `Float`, so both `40` and
+    /// `40.5` come back as [`CellValue::Float`].
+    ///
+    /// The `CREATE TABLE` text is parsed with a best-effort, quote-aware
+    /// scanner (quoted/backtick/bracket identifiers, multi-word types,
+    /// table-level constraint clauses). If a row's decoded value count does
+    /// not match the number of columns parsed from the SQL text — e.g. the
+    /// DDL uses a construct the scanner cannot follow — that row's values are
+    /// left completely untouched rather than restored against a
+    /// misaligned guess.
+    ///
+    /// This method never changes the behavior of [`Self::scan_table_by_name`]:
+    /// the two are independent, and calling this one is purely additive.
+    ///
+    /// Returns `Ok(None)` when no `sqlite_master` entry matches `table_name`.
+    ///
+    /// # Errors
+    /// Returns an error if the `sqlite_master` scan or the subsequent table
+    /// scan fails.
+    pub fn scan_table_by_name_typed(
+        &self,
+        table_name: &str,
+    ) -> Result<Option<TableScanRows>, GpkgError> {
+        let master = self.scan_sqlite_master()?;
+        let Some(entry) = master
+            .iter()
+            .find(|e| e.entry_type == "table" && e.name == table_name)
+        else {
+            return Ok(None);
+        };
+
+        if entry.rootpage == 0 {
+            return Ok(Some(Vec::new()));
+        }
+
+        let mut rows = self.scan_table(entry.rootpage)?;
+        let declared_types = btree::declared_column_types(&entry.sql);
+        restore_real_affinity(&mut rows, &declared_types);
+        Ok(Some(rows))
     }
 
     /// Scan a named table with offset/limit pagination.
@@ -747,5 +808,30 @@ pub(crate) fn cell_to_optional_i64(v: &CellValue) -> Option<i64> {
         CellValue::Integer(i) => Some(*i),
         CellValue::Float(f) => Some(*f as i64),
         _ => None,
+    }
+}
+
+/// Promote `Integer` cells to `Float` in columns whose declared SQL type has
+/// REAL affinity (see [`GeoPackage::scan_table_by_name_typed`]), leaving
+/// every other cell untouched.
+///
+/// A row whose value count does not match `declared_types` is left entirely
+/// unmodified: a length mismatch means the declared-type positions cannot be
+/// trusted to line up with this row's values (e.g. the `CREATE TABLE` text
+/// used a construct the best-effort DDL scanner did not follow), and
+/// restoring against a misaligned guess would silently corrupt an unrelated
+/// column rather than simply missing the restoration.
+fn restore_real_affinity(rows: &mut TableScanRows, declared_types: &[FieldType]) {
+    for (_, values) in rows.iter_mut() {
+        if values.len() != declared_types.len() {
+            continue;
+        }
+        for (value, field_type) in values.iter_mut().zip(declared_types.iter()) {
+            if *field_type == FieldType::Real
+                && let CellValue::Integer(n) = *value
+            {
+                *value = CellValue::Float(n as f64);
+            }
+        }
     }
 }

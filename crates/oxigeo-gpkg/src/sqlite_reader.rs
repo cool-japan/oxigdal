@@ -40,12 +40,43 @@ pub struct SqliteHeader {
     /// Application ID written by `PRAGMA application_id` (offset 68).
     /// Value `0x47504B47` ("GPKG") identifies a GeoPackage file.
     pub application_id: u32,
+    /// Bytes reserved at the end of every page (offset 20), used by extensions
+    /// such as page-level encryption. Zero for ordinary files.
+    pub reserved_bytes: u8,
 }
 
 impl SqliteHeader {
     /// Returns `true` if the application_id marks this as a GeoPackage.
     pub fn is_geopackage(&self) -> bool {
         self.application_id == 0x4750_4B47
+    }
+
+    /// Usable bytes per page: `page_size - reserved_bytes`.
+    ///
+    /// Every B-tree payload-spill computation in the SQLite file format is
+    /// expressed in terms of the *usable* size, not the page size, so a file
+    /// with reserved bytes needs this rather than [`Self::page_size`].
+    pub fn usable_size(&self) -> u32 {
+        self.page_size.saturating_sub(self.reserved_bytes as u32)
+    }
+}
+
+/// Reads the usable page size directly from a raw SQLite file image.
+///
+/// `file_data` must start at the 100-byte file header. Byte 20 of that header
+/// holds the count of bytes reserved at the end of every page; the usable size
+/// is `page_size` minus that reservation. The SQLite format requires a usable
+/// size of at least 480 bytes, so an out-of-range reservation is ignored rather
+/// than propagated into the B-tree spill arithmetic.
+pub fn usable_page_size(file_data: &[u8], page_size: usize) -> usize {
+    const MIN_USABLE_SIZE: usize = 480;
+
+    let reserved = file_data.get(20).copied().unwrap_or(0) as usize;
+    let usable = page_size.saturating_sub(reserved);
+    if usable < MIN_USABLE_SIZE {
+        page_size
+    } else {
+        usable
     }
 }
 
@@ -110,6 +141,8 @@ impl SqliteReader {
             // Offset 68: application id (SQLite ≥ 3.8.6).
             // The header is 100 bytes so offset 68+3=71 is always in range.
             application_id: u32::from_be_bytes([data[68], data[69], data[70], data[71]]),
+            // Offset 20: bytes reserved at the end of every page.
+            reserved_bytes: data[20],
         };
 
         Ok(Self { data, header })

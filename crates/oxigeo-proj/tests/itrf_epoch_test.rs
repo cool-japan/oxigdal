@@ -214,9 +214,10 @@ fn test_transformer_with_epoch_requires_itrf_crs() {
 
 #[test]
 fn test_itrf_epoch_transform_3d_applies_epoch_correction() {
-    // Use EPSG:7789 (ITRF2014) → EPSG:7930 (ITRF2008) — both are registered.
+    // Use EPSG:7789 (ITRF2014) → EPSG:7911 (ITRF2008) — both are registered.
+    // (EPSG:7930 is ETRF2000, not ITRF2008; the registry used to mislabel it.)
     let itrf2014 = Crs::from_epsg(7789).expect("ITRF2014 EPSG:7789 should be registered");
-    let itrf2008 = Crs::from_epsg(7930).expect("ITRF2008 EPSG:7930 should be registered");
+    let itrf2008 = Crs::from_epsg(7911).expect("ITRF2008 EPSG:7911 should be registered");
 
     // Confirm itrf_name is detected.
     assert_eq!(
@@ -227,7 +228,7 @@ fn test_itrf_epoch_transform_3d_applies_epoch_correction() {
     assert_eq!(
         itrf2008.itrf_name().as_deref(),
         Some("ITRF2008"),
-        "EPSG:7930 itrf_name"
+        "EPSG:7911 itrf_name"
     );
 
     let transformer = Transformer::new(itrf2014, itrf2008)
@@ -349,7 +350,7 @@ fn test_transformer_with_epoch_same_epoch_is_identity() {
     // When source_epoch == target_epoch the net Bursa-Wolf correction is zero,
     // so the output coordinates must equal the input.
     let itrf2014 = Crs::from_epsg(7789).expect("ITRF2014");
-    let itrf2008 = Crs::from_epsg(7930).expect("ITRF2008");
+    let itrf2008 = Crs::from_epsg(7911).expect("ITRF2008");
 
     let transformer = Transformer::new(itrf2014, itrf2008)
         .expect("build transformer")

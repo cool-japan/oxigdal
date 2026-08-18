@@ -1,8 +1,24 @@
 # OxiGeo TODO
 
-> Version: 0.2.3 (2026-08-05) | previous release: 0.2.2 (2026-07-30) | 75 crates | 18,184 tests passing (101 skipped), 0 failures (`--all-features`); 16,722 passing (80 skipped) on default features | 412 doc tests passing (86 ignored) | ~797K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
+> Version: 0.2.4 (2026-08-18) | previous release: 0.2.3 (2026-08-05) | 75 crates | 18,327 tests passing (101 skipped), 0 failures (`--all-features`); 16,862 passing (80 skipped) on default features | 414 doc tests passing (86 ignored) | ~814K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
 
 ---
+
+## v0.2.4 — Correctness Release, Release-Ready 2026-08-18 (branch: 0.2.4)
+
+[GitHub issue #17](https://github.com/cool-japan/oxigeo/issues/17): `GeoPackage::from_bytes`/`load_contents()` rejected any `sqlite_master` row wide enough to spill onto SQLite overflow pages (e.g. a ~5000-character QGIS layer name) — the local-payload split used the wrong formula and the overflow-page chain was never followed. [Issue #18](https://github.com/cool-japan/oxigeo/issues/18): `oxigeo-vrt` rejected every GDAL-written `SrcRect`/`DstRect` carrying the sub-pixel values `gdalbuildvrt`/`gdalwarp -of VRT` actually write (`str::parse::<u64>` on a value like `9783.50000000003`) — now parsed as `f64`. [Issue #19](https://github.com/cool-japan/oxigeo/issues/19): VRT mosaic compositing let the first source to cover a pixel win even when all it had there was nodata, punching holes along overlap bands — compositing now honours each source's `<NODATA>` in document order like GDAL. Beyond the three issues: the browser COG URL path (`AdvancedCogViewer`) works end to end for the first time (new `buffered_source` sync-over-fetch driver), GDAL internal-mask IFDs are now excluded from overview-level counting consistently across `oxigeo-geotiff`/`oxigeo-wasm`, `oxigeo-proj` gained a verified `no_std`/`proj-db`/`proj4rs-compat` feature matrix and no longer changes transform results depending on the `proj-db` feature, the SIMD batch fast path is now gated to configurations it can reproduce faithfully (previously silently mis-projected some CRS pairs), and the embedded EPSG registry gained two large correctness passes (US State Plane native units, JGD2011 Japan Plane Rectangular zones I–XIX). Gates green: `cargo fmt --check` clean, `cargo clippy --workspace --all-features --all-targets` 0 warnings, `cargo nextest run --all-features` 18,327 passed / 0 failed / 101 skipped (16,862 / 0 / 80 skipped on default features), 414 doc tests passing (86 ignored), `cargo deny check bans` passing, `cargo publish --dry-run` clean on the leaf crate (`oxigeo-core`). Full categorized list in CHANGELOG.md `[0.2.4]`.
+
+### Fixed in 0.2.4
+- [x] **`oxigeo-gpkg`**: overflow-page B-tree cells read correctly (issue #17) — local-payload size computed against the true usable page size, overflow chain followed
+- [x] **`oxigeo-vrt`**: `SrcRect`/`DstRect` parse GDAL's fractional numeric formats (issue #18); mosaic compositing honours per-source `<NODATA>` in document order (issue #19)
+- [x] **`oxigeo-proj`**: embedded EPSG registry corrected — NAD83/State Plane native units (US survey/international feet, ~79 entries) and JGD2011 Japan Plane Rectangular zones I–XIX (previously misregistered as UTM or absent); SIMD batch fast path gated against datum/ellipsoid/unit mismatches it can't reproduce; `proj-db` feature no longer changes transform results; `no_std`/`proj4rs-compat` builds compile for the first time
+- [x] **`oxigeo-wasm`/`oxigeo-geotiff`**: GDAL internal-mask IFDs excluded from overview-level counting/indexing everywhere; browser `AdvancedCogViewer.open()` works for the first time (synchronous-over-`fetch` buffered range source)
+- [x] **`oxigeo-geoparquet`**: encoding-aware geometry decode (GeoArrow no longer misread as WKB); null geometries stay index-aligned with property rows
+
+### Added in 0.2.4
+- [x] `oxigeo-geoparquet`: `GeoParquetReader::from_bytes`, `read_geometries_optional`/`extract_geometries_optional`, `geometry_encoding()`
+- [x] `oxigeo-geotiff`: `tiff::is_mask_ifd`, `CogReader::{ifd_count, level_ifd, level_ifd_index, tile_pixel_size}`
+- [x] `oxigeo-gpkg`: `GeoPackage::scan_table_by_name_typed` (SQLite REAL-affinity-aware scan)
 
 ## v0.2.3 — Warped VRT + Vector Layers Complete, Release-Ready 2026-08-05 (branch: 0.2.3)
 

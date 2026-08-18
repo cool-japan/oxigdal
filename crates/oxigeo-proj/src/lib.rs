@@ -13,7 +13,12 @@
 //! # Features
 //!
 //! - `std` (default): Enable standard library support and OxiProj EPSG/ProjJSON features
-//! - `proj-db`: Enable SQLite PROJ.db reader for ~7500 EPSG codes
+//! - `proj-db`: Enable SQLite PROJ.db reader for ~7500 EPSG codes. Implies `std`:
+//!   the reader opens a file-system database (`std::path`, `std::env`) through
+//!   `oxisql-sqlite-compat`'s blocking API, which drives a tokio runtime.
+//! - `proj4rs-compat`: Add `From<proj4rs::errors::Error> for Error` for
+//!   backward compatibility. Does *not* imply `std` — the conversion needs only
+//!   `alloc`, so it is usable from `no_std` builds of this crate.
 //!
 //! # Examples
 //!
@@ -119,6 +124,14 @@ println!("Transformed: {:?}", transformed_bbox);
 //!
 //! For higher-fidelity CRS coverage, enable the `proj-db` feature: it adds the pure-Rust
 //! oxisql PROJ.db reader (~7500 EPSG codes) on top of the embedded registry.
+//!
+//! `proj-db` is *additive only*. The process-wide registry behind
+//! `lookup_epsg` / `Crs::from_epsg` is unchanged by it — population from a
+//! system PROJ.db is explicit, via
+//! `EpsgDatabase::populate_from_system_proj_db` on a database you own — and
+//! coordinate transforms resolve every CRS through this crate's own PROJ
+//! strings in all feature configurations, so enabling `proj-db` never changes
+//! a number the default build already produces.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
@@ -154,6 +167,9 @@ pub mod geoid;
 pub mod geoid_formats;
 #[cfg(feature = "std")]
 pub mod grid_shift;
+// Internal: `libm`-backed stand-ins for the `f64` methods that live in `std`
+// and are therefore absent from `no_std` builds (see the module docs).
+mod math;
 pub mod operation_selection;
 #[cfg(feature = "std")]
 pub mod pipeline;
@@ -227,6 +243,11 @@ pub use transform::{
     Mollweide, Robinson, Sinusoidal, Transformer, TransverseMercator, VerticalDatumWarning,
     transform_coordinate, transform_epsg,
 };
+// Unambiguous aliases for the two Transverse Mercator models, re-exported at the crate
+// root next to the types they alias. `TransverseMercator` is sphere-based and must not
+// be used for UTM or national grids; `GaussKruger` is the ellipsoidal one that must.
+#[cfg(feature = "std")]
+pub use transform::cylindrical::{EllipsoidalTransverseMercator, SphericalTransverseMercator};
 pub use transform::{BoundingBox, Coordinate, Coordinate3D};
 pub use ups_projection::{
     PolarStereographicParams, UpsCoordinate, UpsHemisphere, polar_stereo_w,
@@ -359,7 +380,9 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// OxiProj is an optional dependency activated by the `std` feature, so this
+// linkage check only applies to `std` builds.
+#[cfg(all(test, feature = "std"))]
 mod oxiproj_linkage_tests {
     #[test]
     fn test_oxiproj_linkage() {

@@ -8,7 +8,7 @@ use super::types::{CrsType, EpsgDatabase, EpsgDefinition};
 /// Register all UTM zone definitions into the database.
 pub(crate) fn register_utm_zones(db: &mut EpsgDatabase) {
     register_wgs84_utm(db);
-    register_jgd2011_utm(db);
+    register_jgd2011_plane_rect(db);
     register_gda2020_utm(db);
     register_etrs89_utm(db);
     register_nad83_utm(db);
@@ -67,19 +67,77 @@ fn register_wgs84_utm(db: &mut EpsgDatabase) {
     }
 }
 
-fn register_jgd2011_utm(db: &mut EpsgDatabase) {
-    // JGD2011 UTM zones EPSG:6669–6687 (zones 51N–60N with JGD2011 datum)
-    for zone in 51u32..=60 {
-        let code = 6618 + zone;
-        let central_meridian = (zone as i32 - 1) * 6 - 177;
+/// The 19 Japan Plane Rectangular CS zones: `(numeral, lat_0, lon_0)`.
+///
+/// Japan Plane Rectangular CS uses a **per-zone** origin latitude between 26°N
+/// and 44°N (never 0°) together with a full-precision central meridian. Both
+/// the JGD2000 (EPSG:2443–2461) and JGD2011 (EPSG:6669–6687) realizations of
+/// the system share this same zone geometry — only the datum differs — so a
+/// single table drives both families. Keeping them on one table is deliberate:
+/// the historical registry carried two independent copies, and they drifted
+/// (JGD2000 hardcoded `+lat_0=0` for 16 of 19 zones, which inverted Tokyo
+/// 4,007 km into the Pacific).
+///
+/// Five-point-verified against PROJ 9.5.1 for every zone of both families; see
+/// `tests/epsg_verified_registry_extended_test.rs`.
+const JAPAN_PLANE_RECT_ZONES: &[(&str, &str, &str)] = &[
+    ("I", "33", "129.5"),
+    ("II", "33", "131"),
+    ("III", "36", "132.166666666667"),
+    ("IV", "33", "133.5"),
+    ("V", "36", "134.333333333333"),
+    ("VI", "36", "136"),
+    ("VII", "36", "137.166666666667"),
+    ("VIII", "36", "138.5"),
+    ("IX", "36", "139.833333333333"),
+    ("X", "40", "140.833333333333"),
+    ("XI", "44", "140.25"),
+    ("XII", "44", "142.25"),
+    ("XIII", "44", "144.25"),
+    ("XIV", "26", "142"),
+    ("XV", "26", "127.5"),
+    ("XVI", "26", "124"),
+    ("XVII", "26", "131"),
+    ("XVIII", "20", "136"),
+    ("XIX", "26", "154"),
+];
+
+fn register_jgd2011_plane_rect(db: &mut EpsgDatabase) {
+    // JGD2011 / Japan Plane Rectangular CS I–XIX (EPSG:6669–6687).
+    //
+    // Zones I–X were previously misregistered as "JGD2011 / UTM zone 51N–60N"
+    // — a whole-family misassignment (the JGD2011 UTM zones actually live at
+    // EPSG:6688–6692, registered below) that placed Japan Plane Rectangular
+    // data ~4,000 km east into the Pacific. Zones XI–XIX were absent
+    // entirely; they are now registered from the shared verified zone table.
+    for (index, (numeral, lat_0, lon_0)) in JAPAN_PLANE_RECT_ZONES.iter().enumerate() {
         db.add_definition(EpsgDefinition {
-            code,
+            code: 6669 + index as u32,
+            name: format!("JGD2011 / Japan Plane Rectangular CS {}", numeral),
+            proj_string: format!(
+                "+proj=tmerc +lat_0={} +lon_0={} +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs",
+                lat_0, lon_0
+            ),
+            wkt: None,
+            crs_type: CrsType::Projected,
+            area_of_use: format!("Japan — zone {}", numeral),
+            unit: "metre".to_string(),
+            datum: "JGD2011".to_string(),
+        });
+    }
+
+    // JGD2011 / UTM zones 51N–55N (EPSG:6688–6692) — the codes the Plane
+    // Rectangular zones above used to squat on. Japan spans UTM zones 51–55.
+    for zone in 51u32..=55 {
+        let central_meridian = zone as i32 * 6 - 183;
+        db.add_definition(EpsgDefinition {
+            code: 6637 + zone,
             name: format!("JGD2011 / UTM zone {}N", zone),
             proj_string: format!("+proj=utm +zone={} +ellps=GRS80 +units=m +no_defs", zone),
             wkt: None,
             crs_type: CrsType::Projected,
             area_of_use: format!(
-                "Japan — {}°E to {}°E",
+                "Japan — {}°E to {}°E, northern hemisphere",
                 central_meridian - 3,
                 central_meridian + 3
             ),
@@ -90,12 +148,21 @@ fn register_jgd2011_utm(db: &mut EpsgDatabase) {
 }
 
 fn register_gda2020_utm(db: &mut EpsgDatabase) {
-    // GDA2020 UTM zones EPSG:7845–7858 (zones 48S–60S)
-    for zone in 48u32..=60 {
-        let code = 7797 + zone;
-        let central_meridian = (zone as i32 - 1) * 6 - 177;
+    // GDA2020 / MGA zones 46–59 (EPSG:7846–7859).
+    //
+    // Two historical loops got this block wrong. The first mapped zone n to
+    // `7797 + n`, which is off by three (EPSG:7846 is MGA zone 46, not 49)
+    // and additionally overwrote EPSG:7845, which is "GDA2020 / GA LCC" — a
+    // Lambert conic, not a UTM zone. The second loop mapped zone n to
+    // `7844 + n`, registering MGA zones on EPSG:7893–7904: six codes that do
+    // not exist in EPSG at all (7893–7898) plus "GDA2020 / Vicgrid" (7899)
+    // and ITRF88–ITRF92 (7900–7904). Those five ITRF geographic CRSs were
+    // consequently served as Australian UTM grids, a 3,352,000 km error —
+    // the worst single defect found in the registry.
+    for zone in 46u32..=59 {
+        let central_meridian = zone as i32 * 6 - 183;
         db.add_definition(EpsgDefinition {
-            code,
+            code: 7800 + zone,
             name: format!("GDA2020 / MGA zone {}", zone),
             proj_string: format!(
                 "+proj=utm +zone={} +south +ellps=GRS80 +units=m +no_defs",
@@ -113,24 +180,19 @@ fn register_gda2020_utm(db: &mut EpsgDatabase) {
         });
     }
 
-    // GDA2020 / MGA zones (EPSG:7844 + 20 zones)
-    for zone in 49u32..=60 {
-        let code = 7844 + zone;
-        let lon_0 = (zone as i32 - 1) * 6 - 177;
-        db.add_definition(EpsgDefinition {
-            code,
-            name: format!("GDA2020 / MGA zone {}", zone),
-            proj_string: format!(
-                "+proj=utm +zone={} +south +ellps=GRS80 +units=m +no_defs",
-                zone
-            ),
-            wkt: None,
-            crs_type: CrsType::Projected,
-            area_of_use: format!("Australia — {}°E to {}°E", lon_0 - 3, lon_0 + 3),
-            unit: "metre".to_string(),
-            datum: "GDA2020".to_string(),
-        });
-    }
+    // GDA2020 / Vicgrid (EPSG:7899) — the Victoria-wide Lambert conic that
+    // the removed loop had claimed as "MGA zone 55".
+    db.add_definition(EpsgDefinition {
+        code: 7899,
+        name: "GDA2020 / Vicgrid".to_string(),
+        proj_string: "+proj=lcc +lat_0=-37 +lat_1=-36 +lat_2=-38 +lon_0=145 +x_0=2500000 +y_0=2500000 +ellps=GRS80 +units=m +no_defs"
+                .to_string(),
+        wkt: None,
+        crs_type: CrsType::Projected,
+        area_of_use: "Australia — Victoria".to_string(),
+        unit: "metre".to_string(),
+        datum: "GDA2020".to_string(),
+    });
 }
 
 fn register_etrs89_utm(db: &mut EpsgDatabase) {
@@ -482,72 +544,133 @@ fn register_wgs72_utm(db: &mut EpsgDatabase) {
     }
 }
 
+/// Normalises a longitude in whole degrees into `(-180, 180]`.
+///
+/// Gauss-Kruger zones past 30 wrap the antimeridian, and PROJ states their
+/// central meridians on the negative side — zone 31 is 177°W, not 183°E.
+fn normalise_longitude_degrees(degrees: i32) -> i32 {
+    ((degrees + 180) % 360) - 180
+}
+
+/// Central meridian of a **6°** Gauss-Kruger zone, in degrees east.
+///
+/// 6° zones are numbered from the prime meridian — zone 1 spans 0°–6°E, so
+/// its central meridian is 3°E — giving `CM = 6 * zone - 3`. This is **not**
+/// the UTM rule. The historical registry used the UTM formula
+/// (`6 * zone - 183`) here, putting every Pulkovo 1942 and CGCS2000 6° zone
+/// exactly 180° from its true meridian.
+fn gauss_kruger_cm_6_degree(zone: u32) -> i32 {
+    normalise_longitude_degrees(zone as i32 * 6 - 3)
+}
+
+/// Central meridian of a **3°** Gauss-Kruger zone, in degrees east.
+///
+/// 3° zones use a different convention from the 6° ones: they are numbered by
+/// their own central meridian, so zone 25 is CM 75°E and `CM = 3 * zone`.
+/// There is no half-zone offset — applying the 6° rule here shifts every zone
+/// by 1.5°, about 95 km at Chinese latitudes.
+fn gauss_kruger_cm_3_degree(zone: u32) -> i32 {
+    normalise_longitude_degrees(zone as i32 * 3)
+}
+
 fn register_cgcs2000_utm(db: &mut EpsgDatabase) {
-    // CGCS2000 / 3-degree Gauss-Kruger zones
-    for zone in 25u32..=45 {
-        let code = 4466 + zone;
-        let lon_0 = zone as f64 * 3.0;
-        db.add_definition(EpsgDefinition {
-            code,
-            name: format!("CGCS2000 / 3-degree Gauss-Kruger zone {}", zone),
-            proj_string: format!(
-                "+proj=tmerc +lat_0=0 +lon_0={} +k=1 +x_0={} +y_0=0 +ellps=GRS80 +units=m +no_defs",
-                lon_0,
-                zone as u64 * 1_000_000 + 500_000
-            ),
-            wkt: None,
-            crs_type: CrsType::Projected,
-            area_of_use: format!("China — {}°E to {}°E", lon_0 as i32 - 2, lon_0 as i32 + 2),
-            unit: "metre".to_string(),
-            datum: "CGCS2000".to_string(),
-        });
+    // CGCS2000 Gauss-Kruger families (EPSG:4491–4554).
+    //
+    // The historical registry had this whole block shifted: EPSG:4491–4501
+    // (6° zones 13–23) carried 3° zone parameters, EPSG:4513–4523 (3° zones
+    // 25–35) carried 6° ones, and EPSG:4535–4545 (3° CM 78E–108E) were
+    // registered as "CGCS2000 / UTM zone 43N–53N", a CRS family that does not
+    // exist at those codes. Worst observed error was 32,614 km (EPSG:4526).
+    //
+    // EPSG lays the block out as four consecutive runs, each verified against
+    // PROJ 9.5.1:
+    //   4491–4501  6° zone 13–23   x_0 = zone * 1e6 + 500000  (zone-prefixed)
+    //   4502–4512  6° CM 75E–135E  x_0 = 500000               (no prefix)
+    //   4513–4533  3° zone 25–45   x_0 = zone * 1e6 + 500000
+    //   4534–4554  3° CM 75E–135E  x_0 = 500000
+    for (index, zone) in (13u32..=23).enumerate() {
+        let lon_0 = gauss_kruger_cm_6_degree(zone);
+        register_gauss_kruger_zone(
+            db,
+            4491 + index as u32,
+            &format!("CGCS2000 / Gauss-Kruger zone {}", zone),
+            lon_0,
+            zone as u64 * 1_000_000 + 500_000,
+            3,
+        );
+        register_gauss_kruger_zone(
+            db,
+            4502 + index as u32,
+            &format!("CGCS2000 / Gauss-Kruger CM {}E", lon_0),
+            lon_0,
+            500_000,
+            3,
+        );
     }
 
-    // CGCS2000 / 6-degree Gauss-Kruger zones
-    for zone in 13u32..=23 {
-        let code = 4513 + zone;
-        let lon_0 = (zone as f64 - 1.0) * 6.0 - 177.0 + 6.0;
-        let lon_0_precise = zone as f64 * 6.0 - 183.0;
-        db.add_definition(EpsgDefinition {
-            code,
-            name: format!("CGCS2000 / 6-degree Gauss-Kruger zone {}", zone),
-            proj_string: format!(
-                "+proj=tmerc +lat_0=0 +lon_0={} +k=1 +x_0={} +y_0=0 +ellps=GRS80 +units=m +no_defs",
-                lon_0_precise,
-                zone as u64 * 1_000_000 + 500_000
-            ),
-            wkt: None,
-            crs_type: CrsType::Projected,
-            area_of_use: format!("China — {}°E to {}°E", lon_0 as i32 - 3, lon_0 as i32 + 3),
-            unit: "metre".to_string(),
-            datum: "CGCS2000".to_string(),
-        });
-    }
-
-    // CGCS2000 / UTM zones 43N–53N
-    for zone in 43u32..=53 {
-        let code = 4535 + (zone - 43);
-        let lon_0 = (zone as f64 - 1.0) * 6.0 - 177.0;
-        db.add_definition(EpsgDefinition {
-            code,
-            name: format!("CGCS2000 / UTM zone {}N", zone),
-            proj_string: format!("+proj=utm +zone={} +ellps=GRS80 +units=m +no_defs", zone),
-            wkt: None,
-            crs_type: CrsType::Projected,
-            area_of_use: format!("China — {}°E to {}°E", lon_0 as i32 - 3, lon_0 as i32 + 3),
-            unit: "metre".to_string(),
-            datum: "CGCS2000".to_string(),
-        });
+    for (index, zone) in (25u32..=45).enumerate() {
+        let lon_0 = gauss_kruger_cm_3_degree(zone);
+        register_gauss_kruger_zone(
+            db,
+            4513 + index as u32,
+            &format!("CGCS2000 / 3-degree Gauss-Kruger zone {}", zone),
+            lon_0,
+            zone as u64 * 1_000_000 + 500_000,
+            2,
+        );
+        register_gauss_kruger_zone(
+            db,
+            4534 + index as u32,
+            &format!("CGCS2000 / 3-degree Gauss-Kruger CM {}E", lon_0),
+            lon_0,
+            500_000,
+            2,
+        );
     }
 }
 
+/// Registers one CGCS2000 Gauss-Kruger CRS (`+proj=tmerc`, GRS80, unscaled).
+fn register_gauss_kruger_zone(
+    db: &mut EpsgDatabase,
+    code: u32,
+    name: &str,
+    lon_0: i32,
+    x_0: u64,
+    half_width: i32,
+) {
+    db.add_definition(EpsgDefinition {
+        code,
+        name: name.to_string(),
+        proj_string: format!(
+            "+proj=tmerc +lat_0=0 +lon_0={} +k=1 +x_0={} +y_0=0 +ellps=GRS80 +units=m +no_defs",
+            lon_0, x_0
+        ),
+        wkt: None,
+        crs_type: CrsType::Projected,
+        area_of_use: format!(
+            "China — {}°E to {}°E",
+            lon_0 - half_width,
+            lon_0 + half_width
+        ),
+        unit: "metre".to_string(),
+        datum: "CGCS2000".to_string(),
+    });
+}
+
 fn register_pulkovo_gk(db: &mut EpsgDatabase) {
-    // Gauss-Kruger zones for Russia (6° strips, Pulkovo 1942)
+    // Pulkovo 1942 / Gauss-Kruger zones 4–32 (EPSG:28404–28432).
+    //
+    // The central meridian previously used the UTM formula, placing every
+    // zone 180° from its true position (zone 4 sat at 153°W instead of 21°E)
+    // — up to 14,880 km of error. Note that these codes retain a residual
+    // datum-shift error against PROJ: PROJ selects a Pulkovo 1942 → WGS 84
+    // transformation from its own database rather than from the `+towgs84`
+    // in the PROJ string, which `transform::datum_shift` does not implement.
+    // The projection itself is five-point-verified.
     for zone in 4u32..=32 {
-        let code = 28400 + zone;
-        let lon_0 = (zone as f64 - 1.0) * 6.0 - 177.0 + 6.0;
+        let lon_0 = gauss_kruger_cm_6_degree(zone);
         db.add_definition(EpsgDefinition {
-            code,
+            code: 28400 + zone,
             name: format!("Pulkovo 1942 / Gauss-Kruger zone {}", zone),
             proj_string: format!(
                 "+proj=tmerc +lat_0=0 +lon_0={} +k=1 +x_0={} +y_0=0 +ellps=krass +towgs84=23.57,-140.95,-79.8,0,0.35,0.79,-0.22 +units=m +no_defs",
@@ -563,21 +686,23 @@ fn register_pulkovo_gk(db: &mut EpsgDatabase) {
 }
 
 fn register_jgd2000_plane_rect(db: &mut EpsgDatabase) {
-    // JGD2000 / Japan Plane Rectangular CS zones I–XIX (EPSG:2443–2461)
-    let jp_lon_cm = [
-        129.5_f64, 131.0, 132.1667, 133.5, 134.3333, 136.0, 137.1667, 138.5, 139.8333, 140.8333,
-        140.25, 142.25, 144.25, 142.0, 127.5, 124.0, 131.0, 136.0, 154.0,
-    ];
-    for (i, lon_cm) in jp_lon_cm.iter().enumerate() {
-        let zone_num = i + 1;
-        let code = 2442 + zone_num as u32;
+    // JGD2000 / Japan Plane Rectangular CS I–XIX (EPSG:2443–2461).
+    //
+    // Every zone now comes from the shared `JAPAN_PLANE_RECT_ZONES` table.
+    // The historical registration hardcoded `+lat_0=0` for 16 of the 19 zones
+    // (only VIII–X had been corrected), which put zone IX (Tokyo) 4,007 km
+    // into the Pacific on inversion; the worst zone was XI at 4,899 km.
+    for (index, (numeral, lat_0, lon_0)) in JAPAN_PLANE_RECT_ZONES.iter().enumerate() {
         db.add_definition(EpsgDefinition {
-            code,
-            name: format!("JGD2000 / Japan Plane Rectangular CS zone {}", zone_num),
-            proj_string: format!("+proj=tmerc +lat_0=0 +lon_0={} +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs", lon_cm),
+            code: 2443 + index as u32,
+            name: format!("JGD2000 / Japan Plane Rectangular CS {}", numeral),
+            proj_string: format!(
+                "+proj=tmerc +lat_0={} +lon_0={} +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs",
+                lat_0, lon_0
+            ),
             wkt: None,
             crs_type: CrsType::Projected,
-            area_of_use: format!("Japan — zone {}", zone_num),
+            area_of_use: format!("Japan — zone {}", numeral),
             unit: "metre".to_string(),
             datum: "JGD2000".to_string(),
         });

@@ -630,23 +630,43 @@ impl Crs {
     ///
     /// # Recognised EPSG codes
     ///
-    /// | Code  | Frame     |
-    /// |-------|-----------|
-    /// | 7900  | ITRF97    |
-    /// | 7901  | ITRF2000  |
-    /// | 7902  | ITRF2005  |
-    /// | 7930  | ITRF2008  |
-    /// | 7789  | ITRF2014  |
-    /// | 9000  | ITRF2020  |
+    /// ITRF realizations occupy EPSG:7900–7912 in chronological order. This
+    /// table previously started that run at ITRF97, shifting every frame by
+    /// four realizations, and treated EPSG:7930 as ITRF2008 when it is in
+    /// fact ETRF2000 — a European frame, deliberately **not** listed here.
+    /// Verified against PROJ 9.5.1.
+    ///
+    /// | Code               | Frame     |
+    /// |--------------------|-----------|
+    /// | 7900               | ITRF88    |
+    /// | 7901               | ITRF89    |
+    /// | 7902               | ITRF90    |
+    /// | 7903               | ITRF91    |
+    /// | 7904               | ITRF92    |
+    /// | 7905               | ITRF93    |
+    /// | 7906               | ITRF94    |
+    /// | 7907               | ITRF96    |
+    /// | 7908               | ITRF97    |
+    /// | 7909               | ITRF2000  |
+    /// | 7910               | ITRF2005  |
+    /// | 7911               | ITRF2008  |
+    /// | 7912, 7789, 9000   | ITRF2014  |
     pub fn itrf_name(&self) -> Option<String> {
         match &self.source {
             CrsSource::Epsg(code) => match code {
-                7900 => Some("ITRF97".to_string()),
-                7901 => Some("ITRF2000".to_string()),
-                7902 => Some("ITRF2005".to_string()),
-                7930 => Some("ITRF2008".to_string()),
-                7789 => Some("ITRF2014".to_string()),
-                9000 => Some("ITRF2020".to_string()),
+                7900 => Some("ITRF88".to_string()),
+                7901 => Some("ITRF89".to_string()),
+                7902 => Some("ITRF90".to_string()),
+                7903 => Some("ITRF91".to_string()),
+                7904 => Some("ITRF92".to_string()),
+                7905 => Some("ITRF93".to_string()),
+                7906 => Some("ITRF94".to_string()),
+                7907 => Some("ITRF96".to_string()),
+                7908 => Some("ITRF97".to_string()),
+                7909 => Some("ITRF2000".to_string()),
+                7910 => Some("ITRF2005".to_string()),
+                7911 => Some("ITRF2008".to_string()),
+                7912 | 7789 | 9000 => Some("ITRF2014".to_string()),
                 _ => None,
             },
             // For PROJ/WKT/Custom CRS: check datum name or CRS name.

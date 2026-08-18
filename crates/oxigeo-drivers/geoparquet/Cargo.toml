@@ -26,6 +26,7 @@ std = [
     "dep:arrow-buffer",
     "dep:arrow-schema",
     "dep:parquet",
+    "dep:bytes",
 ]
 async = ["oxigeo-core/async", "dep:tokio", "dep:async-trait"]
 # Compression features.
@@ -64,6 +65,9 @@ arrow-array = { workspace = true, optional = true }
 arrow-buffer = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 parquet = { workspace = true, default-features = false, features = ["arrow"], optional = true }
+# In-memory Parquet sources (`GeoParquetReader::from_bytes`); this is the same
+# `bytes` crate `parquet` itself uses for its `ChunkReader for Bytes` impl.
+bytes = { workspace = true, optional = true }
 
 # Async support
 tokio = { workspace = true, optional = true, features = ["io-util", "fs"] }
@@ -72,6 +76,13 @@ async-trait = { workspace = true, optional = true }
 [dev-dependencies]
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Enables the pure-Rust `snap` codec (see the `snappy` feature note above) for
+# the test-only fixtures that write SNAPPY-compressed Parquet files. Cargo's
+# feature unification means this also lights up `snap` for the library build
+# under `cargo test`/`cargo nextest`, but it does not affect the published
+# dependency graph or default feature set consumers see: `parquet/snap` is
+# still gated behind this crate's own `snappy` feature for any non-test build.
+parquet = { workspace = true, features = ["snap"] }
 
 [lints]
 workspace = true

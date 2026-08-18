@@ -282,7 +282,14 @@ pub fn get_cog_info(path: impl AsRef<str>) -> Result<CogInfo> {
 
     let compression = Compression::from_u16(compression_val).unwrap_or(Compression::None);
 
-    let overview_count = tiff.ifds.len().saturating_sub(1);
+    // Overviews are resolutions, so GDAL internal masks — which share the IFD
+    // chain with them — do not count, exactly as in `CogReader::overview_count`.
+    let overview_count = tiff
+        .ifds
+        .iter()
+        .skip(1)
+        .filter(|ifd| !crate::tiff::is_mask_ifd(ifd, tiff.byte_order()))
+        .count();
 
     let validation = validate_cog_detailed(&tiff, &source)?;
 

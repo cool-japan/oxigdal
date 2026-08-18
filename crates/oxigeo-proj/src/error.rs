@@ -3,7 +3,17 @@
 //! This module provides comprehensive error handling for all projection-related operations,
 //! following the no-unwrap policy.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
+// `ToString` is only exercised by the OxiProj error conversions below, which are
+// `std`-only because OxiProj itself is an optional, `std`-gated dependency.
+#[cfg(feature = "std")]
+use alloc::string::ToString;
+// `format!` is only exercised by the `From<proj4rs::errors::Error>` conversion at
+// the bottom of this file. That impl is gated on `proj4rs-compat` alone — a
+// feature that deliberately does *not* imply `std` — so the macro has to come
+// from `alloc`, not from the `std` prelude.
+#[cfg(feature = "proj4rs-compat")]
+use alloc::format;
 
 /// Result type for projection operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -161,7 +171,11 @@ pub enum Error {
     Utf8Error(#[from] std::str::Utf8Error),
 
     /// Error from proj4rs library
-    #[cfg(feature = "std")]
+    ///
+    /// Present in `std` builds (where it has always been) and, additionally, in
+    /// any build with `proj4rs-compat` — the `From<proj4rs::errors::Error>` impl
+    /// below constructs it and that impl is not `std`-gated.
+    #[cfg(any(feature = "std", feature = "proj4rs-compat"))]
     #[error("Proj4rs error: {0}")]
     Proj4rsError(String),
 
@@ -382,7 +396,10 @@ impl Error {
     }
 
     /// Creates an error from proj4rs library.
-    #[cfg(feature = "std")]
+    ///
+    /// Gated exactly like the [`Error::Proj4rsError`] variant it builds, so the
+    /// `proj4rs-compat`-only (no-`std`) configuration can reach it.
+    #[cfg(any(feature = "std", feature = "proj4rs-compat"))]
     pub fn from_proj4rs<S: Into<String>>(message: S) -> Self {
         Self::Proj4rsError(message.into())
     }
@@ -434,7 +451,10 @@ impl From<proj4rs::errors::Error> for Error {
     }
 }
 
-// Implement conversion from oxiproj errors
+// Implement conversion from oxiproj errors.
+// `oxiproj` is an optional dependency activated by the `std` feature, so these
+// conversions only exist in `std` builds (which includes the default feature set).
+#[cfg(feature = "std")]
 impl From<oxiproj::TransformError> for Error {
     fn from(e: oxiproj::TransformError) -> Self {
         Self::TransformationError {
@@ -443,6 +463,7 @@ impl From<oxiproj::TransformError> for Error {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<oxiproj::ProjError> for Error {
     fn from(e: oxiproj::ProjError) -> Self {
         match e {

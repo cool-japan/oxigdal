@@ -8,8 +8,8 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         // Scandinavian grids
         (
             2391,
-            "KKJ / Finland Uniform Coordinate System",
-            "+proj=tmerc +lat_0=0 +lon_0=27 +k=1 +x_0=3500000 +y_0=0 +ellps=intl +units=m +no_defs",
+            "KKJ / Finland zone 1",
+            "+proj=tmerc +lat_0=0 +lon_0=21 +k=1 +x_0=1500000 +y_0=0 +ellps=intl +units=m +no_defs",
             "Finland",
             "International 1924",
         ),
@@ -156,21 +156,21 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         ),
         (
             6707,
-            "RDN2008 / UTM zone 32N",
+            "RDN2008 / UTM zone 32N (N-E)",
             "+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs",
             "Italy (6°E to 12°E)",
             "RDN2008",
         ),
         (
             6708,
-            "RDN2008 / UTM zone 33N",
+            "RDN2008 / UTM zone 33N (N-E)",
             "+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs",
             "Italy (12°E to 18°E)",
             "RDN2008",
         ),
         (
             6709,
-            "RDN2008 / UTM zone 34N",
+            "RDN2008 / UTM zone 34N (N-E)",
             "+proj=utm +zone=34 +ellps=GRS80 +units=m +no_defs",
             "Italy (18°E to 24°E)",
             "RDN2008",
@@ -179,7 +179,7 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         (
             2062,
             "Madrid 1870 (Madrid) / Spain LCC",
-            "+proj=lcc +lat_1=40 +lat_0=40 +lon_0=0 +k_0=0.9988085293 +x_0=600000 +y_0=600000 +a=6378298.3 +b=6356657.142669561 +pm=madrid +units=m +no_defs",
+            "+proj=lcc +lat_0=40 +lat_1=40 +lon_0=0 +k_0=0.9988085293 +x_0=600000 +y_0=600000 +a=6378298.3 +rf=294.73 +pm=-3.687375 +units=m +no_defs",
             "Spain",
             "Madrid 1870",
         ),
@@ -200,7 +200,7 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         (
             3763,
             "ETRS89 / Portugal TM06",
-            "+proj=tmerc +lat_0=39.6682583 +lon_0=-8.1331083 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs",
+            "+proj=tmerc +lat_0=39.6682583333333 +lon_0=-8.13310833333333 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs",
             "Portugal",
             "ETRS89",
         ),
@@ -215,7 +215,7 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         // Belgian grid
         (
             31370,
-            "Belge 1972 / Belgian Lambert 72",
+            "BD72 / Belgian Lambert 72",
             "+proj=lcc +lat_1=51.1666672333333 +lat_2=49.8333339 +lat_0=90 +lon_0=4.36748666666667 +x_0=150000.013 +y_0=5400088.438 +ellps=intl +units=m +no_defs",
             "Belgium",
             "Belge 1972",
@@ -223,7 +223,7 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         (
             3812,
             "ETRS89 / Belgian Lambert 2008",
-            "+proj=lcc +lat_1=49.8333333 +lat_2=51.1666667 +lat_0=50.7978 +lon_0=4.3592 +x_0=649328 +y_0=665262 +ellps=GRS80 +units=m +no_defs",
+            "+proj=lcc +lat_0=50.797815 +lat_1=49.8333333333333 +lat_2=51.1666666666667 +lon_0=4.35921583333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +units=m +no_defs",
             "Belgium",
             "ETRS89",
         ),
@@ -231,28 +231,28 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         (
             31287,
             "MGI / Austria Lambert",
-            "+proj=lcc +lat_1=49 +lat_2=46 +lat_0=47.5 +lon_0=13.3333333 +x_0=400000 +y_0=400000 +ellps=bessel +units=m +no_defs",
+            "+proj=lcc +lat_0=47.5 +lat_1=49 +lat_2=46 +lon_0=13.3333333333333 +x_0=400000 +y_0=400000 +ellps=bessel +units=m +no_defs",
             "Austria",
             "MGI",
         ),
         (
             31254,
             "MGI / Austria GK West",
-            "+proj=tmerc +lat_0=0 +lon_0=10.3333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +units=m +no_defs",
+            "+proj=tmerc +lat_0=0 +lon_0=10.3333333333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +units=m +no_defs",
             "Austria West",
             "MGI",
         ),
         (
             31255,
             "MGI / Austria GK Central",
-            "+proj=tmerc +lat_0=0 +lon_0=13.3333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +units=m +no_defs",
+            "+proj=tmerc +lat_0=0 +lon_0=13.3333333333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +units=m +no_defs",
             "Austria Central",
             "MGI",
         ),
         (
             31256,
             "MGI / Austria GK East",
-            "+proj=tmerc +lat_0=0 +lon_0=16.3333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +units=m +no_defs",
+            "+proj=tmerc +lat_0=0 +lon_0=16.3333333333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +units=m +no_defs",
             "Austria East",
             "MGI",
         ),
@@ -260,7 +260,7 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
         (
             5514,
             "S-JTSK / Krovak East North",
-            "+proj=krovak +lat_0=49.5 +lon_0=24.8333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +units=m +no_defs",
+            "+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +units=m +no_defs",
             "Czech Republic / Slovakia",
             "S-JTSK",
         ),
@@ -302,38 +302,38 @@ pub(super) fn register_european_national_grids(db: &mut EpsgDatabase) {
             "Norway (6°E to 12°E)",
             "WGS84",
         ),
-        // Polish grids
-        (
-            2180,
-            "ETRS89 / Poland CS2000 zone 5",
-            "+proj=tmerc +lat_0=0 +lon_0=15 +k=0.999923 +x_0=5500000 +y_0=0 +ellps=GRS80 +units=m +no_defs",
-            "Poland",
-            "ETRS89",
-        ),
+        // Polish grids.
+        //
+        // EPSG:2180 ("ETRF2000-PL / CS92") used to be registered here as a
+        // second copy of 2176's CS2000/15 definition. Because this module is
+        // registered after `projected.rs`, that duplicate silently overwrote
+        // the correct CS92 entry and left EPSG:2180 7,506 km out. CS92 is a
+        // single-zone national grid, not a CS2000 strip; it is defined in
+        // `projected.rs` and must not be re-registered here.
         (
             2176,
-            "ETRS89 / Poland CS2000 zone 5",
+            "ETRF2000-PL / CS2000/15",
             "+proj=tmerc +lat_0=0 +lon_0=15 +k=0.999923 +x_0=5500000 +y_0=0 +ellps=GRS80 +units=m +no_defs",
             "Poland zone 5",
             "ETRS89",
         ),
         (
             2177,
-            "ETRS89 / Poland CS2000 zone 6",
+            "ETRF2000-PL / CS2000/18",
             "+proj=tmerc +lat_0=0 +lon_0=18 +k=0.999923 +x_0=6500000 +y_0=0 +ellps=GRS80 +units=m +no_defs",
             "Poland zone 6",
             "ETRS89",
         ),
         (
             2178,
-            "ETRS89 / Poland CS2000 zone 7",
+            "ETRF2000-PL / CS2000/21",
             "+proj=tmerc +lat_0=0 +lon_0=21 +k=0.999923 +x_0=7500000 +y_0=0 +ellps=GRS80 +units=m +no_defs",
             "Poland zone 7",
             "ETRS89",
         ),
         (
             2179,
-            "ETRS89 / Poland CS2000 zone 8",
+            "ETRF2000-PL / CS2000/24",
             "+proj=tmerc +lat_0=0 +lon_0=24 +k=0.999923 +x_0=8500000 +y_0=0 +ellps=GRS80 +units=m +no_defs",
             "Poland zone 8",
             "ETRS89",

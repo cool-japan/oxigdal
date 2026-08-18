@@ -3,7 +3,7 @@
 use alloc::format;
 use alloc::string::ToString;
 
-use super::types::{CrsType, EpsgDatabase, EpsgDefinition};
+use super::types::{CrsType, EpsgDatabase, EpsgDefinition, epsg_unit_for};
 
 /// Register all non-UTM projected CRS definitions into the database.
 pub(crate) fn register_projected_crs(db: &mut EpsgDatabase) {
@@ -59,7 +59,7 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     // OSGB 1936 / British National Grid
     db.add_definition(EpsgDefinition {
         code: 27700,
-        name: "OSGB 1936 / British National Grid".to_string(),
+        name: "OSGB36 / British National Grid".to_string(),
         proj_string: "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +datum=OSGB36 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
@@ -74,19 +74,48 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     // `x_0 = zone × 1_000_000 + 500_000` (the zone number is prepended to the
     // 500 km-offset ordinate), i.e. 1.5M (z1), 2.5M (z2), 3.5M (z3), 4.5M (z4),
     // 5.5M (z5) — matching the EPSG registry.
+    // EPSG:31465 is *not* zone 1: it is a second registration of zone 5
+    // ("DHDN / 3-degree Gauss zone 5"), so it shares zone 5's central
+    // meridian and false easting. Treating it as zone 1 put it 3,122 km west.
+    // Verified against PROJ 9.5.1.
     let dhdn_zones = [
-        (31465u32, 1u32, "Germany — 2°E to 4°E (west)"),
-        (31466, 2, "Germany — 6°E to 8°E"),
-        (31467, 3, "Germany — 8°E to 10°E"),
-        (31468, 4, "Germany — 10°E to 12°E"),
-        (31469, 5, "Germany — 12°E to 14°E"),
+        (
+            31465u32,
+            5u32,
+            "Germany — 13.5°E to 16.5°E",
+            "DHDN / 3-degree Gauss zone 5",
+        ),
+        (
+            31466,
+            2,
+            "Germany — 6°E to 8°E",
+            "DHDN / 3-degree Gauss-Kruger zone 2",
+        ),
+        (
+            31467,
+            3,
+            "Germany — 8°E to 10°E",
+            "DHDN / 3-degree Gauss-Kruger zone 3",
+        ),
+        (
+            31468,
+            4,
+            "Germany — 10°E to 12°E",
+            "DHDN / 3-degree Gauss-Kruger zone 4",
+        ),
+        (
+            31469,
+            5,
+            "Germany — 12°E to 14°E",
+            "DHDN / 3-degree Gauss-Kruger zone 5",
+        ),
     ];
-    for (code, zone, aou) in dhdn_zones {
+    for (code, zone, aou, name) in dhdn_zones {
         let lon_0 = zone as f64 * 3.0;
         let fe = zone as u64 * 1_000_000 + 500_000;
         db.add_definition(EpsgDefinition {
             code,
-            name: format!("DHDN / 3-degree Gauss-Kruger zone {}", zone),
+            name: name.to_string(),
             proj_string: format!(
                 "+proj=tmerc +lat_0=0 +lon_0={} +k=1 +x_0={} +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,2.455,6.7 +units=m +no_defs",
                 lon_0, fe
@@ -148,13 +177,13 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     let canadian_zones: &[(u32, &str, &str)] = &[
         (
             2294,
-            "NAD83 / Prince Edward I.",
-            "+proj=tmerc +lat_0=0 +lon_0=-63 +k=0.9999 +x_0=300000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "ATS77 / MTM Nova Scotia zone 4",
+            "+proj=tmerc +lat_0=0 +lon_0=-61.5 +k=0.9999 +x_0=4500000 +y_0=0 +a=6378135 +rf=298.257 +units=m +no_defs",
         ),
         (
             2295,
-            "NAD83 / Nova Scotia 2010",
-            "+proj=tmerc +lat_0=0 +lon_0=-61.5 +k=0.9999 +x_0=300000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "ATS77 / MTM Nova Scotia zone 5",
+            "+proj=tmerc +lat_0=0 +lon_0=-64.5 +k=0.9999 +x_0=5500000 +y_0=0 +a=6378135 +rf=298.257 +units=m +no_defs",
         ),
         (
             2296,
@@ -163,13 +192,13 @@ fn register_national_grids(db: &mut EpsgDatabase) {
         ),
         (
             3157,
-            "NAD83(CSRS) / UTM zone 9N",
-            "+proj=utm +zone=9 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs",
+            "NAD83(CSRS) / UTM zone 10N",
+            "+proj=utm +zone=10 +ellps=GRS80 +units=m +no_defs",
         ),
         (
             3158,
-            "NAD83(CSRS) / UTM zone 10N",
-            "+proj=utm +zone=10 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs",
+            "NAD83(CSRS) / UTM zone 14N",
+            "+proj=utm +zone=14 +ellps=GRS80 +units=m +no_defs",
         ),
     ];
     for (code, name, proj) in canadian_zones {
@@ -180,16 +209,41 @@ fn register_national_grids(db: &mut EpsgDatabase) {
             wkt: None,
             crs_type: CrsType::Projected,
             area_of_use: "Canada".to_string(),
-            unit: "metre".to_string(),
+            unit: epsg_unit_for(proj).to_string(),
             datum: "NAD83".to_string(),
         });
     }
 
+    // NAD83 Albers equal-area systems — BC Albers (EPSG:3005) and Conus
+    // Albers (EPSG:5070). Parameters five-point-verified against PROJ 9.5.1
+    // (see `tests/epsg_verified_registry_test.rs`).
+    db.add_definition(EpsgDefinition {
+        code: 3005,
+        name: "NAD83 / BC Albers".to_string(),
+        proj_string: "+proj=aea +lat_0=45 +lon_0=-126 +lat_1=50 +lat_2=58.5 +x_0=1000000 +y_0=0 +datum=NAD83 +units=m +no_defs".to_string(),
+        wkt: None,
+        crs_type: CrsType::Projected,
+        area_of_use: "Canada — British Columbia".to_string(),
+        unit: "metre".to_string(),
+        datum: "NAD83".to_string(),
+    });
+
+    db.add_definition(EpsgDefinition {
+        code: 5070,
+        name: "NAD83 / Conus Albers".to_string(),
+        proj_string: "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs".to_string(),
+        wkt: None,
+        crs_type: CrsType::Projected,
+        area_of_use: "United States — conterminous (CONUS)".to_string(),
+        unit: "metre".to_string(),
+        datum: "NAD83".to_string(),
+    });
+
     // MGI / Transverse Mercator (Austria)
     db.add_definition(EpsgDefinition {
         code: 31257,
-        name: "MGI / Austria GK West".to_string(),
-        proj_string: "+proj=tmerc +lat_0=0 +lon_0=10.33333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +towgs84=577.326,90.129,463.919,5.137,1.474,5.297,2.4232 +units=m +no_defs".to_string(),
+        name: "MGI / Austria GK M28".to_string(),
+        proj_string: "+proj=tmerc +lat_0=0 +lon_0=10.3333333333333 +k=1 +x_0=150000 +y_0=-5000000 +ellps=bessel +towgs84=577.326,90.129,463.919,5.137,1.474,5.297,2.4232 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Austria West".to_string(),
@@ -201,7 +255,7 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     db.add_definition(EpsgDefinition {
         code: 2056,
         name: "CH1903+ / LV95".to_string(),
-        proj_string: "+proj=somerc +lat_0=46.9524056 +lon_0=7.4395833 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs".to_string(),
+        proj_string: "+proj=somerc +lat_0=46.9524055555556 +lon_0=7.43958333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Switzerland".to_string(),
@@ -237,7 +291,7 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     db.add_definition(EpsgDefinition {
         code: 3812,
         name: "ETRS89 / Belgian Lambert 2008".to_string(),
-        proj_string: "+proj=lcc +lat_0=50.797815 +lon_0=4.35921583 +lat_1=49.8333333 +lat_2=51.1666667 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs".to_string(),
+        proj_string: "+proj=lcc +lat_0=50.797815 +lat_1=49.8333333333333 +lat_2=51.1666666666667 +lon_0=4.35921583333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Belgium".to_string(),
@@ -261,8 +315,8 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     // Poland — ETRS89 / Poland CS92 (EPSG:2180)
     db.add_definition(EpsgDefinition {
         code: 2180,
-        name: "ETRS89 / Poland CS92".to_string(),
-        proj_string: "+proj=tmerc +lat_0=0 +lon_0=19 +k=0.9993 +x_0=500000 +y_0=-5300000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs".to_string(),
+        name: "ETRF2000-PL / CS92".to_string(),
+        proj_string: "+proj=tmerc +lat_0=0 +lon_0=19 +k=0.9993 +x_0=500000 +y_0=-5300000 +ellps=GRS80 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Poland".to_string(),
@@ -273,8 +327,8 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     // Czech / Slovak — S-JTSK (EPSG:5514)
     db.add_definition(EpsgDefinition {
         code: 5514,
-        name: "S-JTSK/05 (Ferro) / Krovak East North".to_string(),
-        proj_string: "+proj=krovak +lat_0=49.5 +lon_0=24.8333333 +alpha=30.2881397 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +pm=ferro +units=m +no_defs".to_string(),
+        name: "S-JTSK / Krovak East North".to_string(),
+        proj_string: "+proj=krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397527778 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Czech Republic and Slovakia".to_string(),
@@ -286,7 +340,7 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     db.add_definition(EpsgDefinition {
         code: 2039,
         name: "Israel 1993 / Israeli TM Grid".to_string(),
-        proj_string: "+proj=tmerc +lat_0=31.7343936 +lon_0=35.2045169 +k=1.0000067 +x_0=219529.584 +y_0=626907.39 +ellps=GRS80 +towgs84=-48,55,52,0,0,0,0 +units=m +no_defs".to_string(),
+        proj_string: "+proj=tmerc +lat_0=31.7343936111111 +lon_0=35.2045169444444 +k=1.0000067 +x_0=219529.584 +y_0=626907.39 +ellps=GRS80 +towgs84=-48,55,52,0,0,0,0 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Israel".to_string(),
@@ -307,17 +361,28 @@ fn register_national_grids(db: &mut EpsgDatabase) {
         datum: "ETRS89".to_string(),
     });
 
-    // Denmark — DKTM1 to DKTM4
-    for (zone, lon_0, code) in [
-        (1u32, 9.0_f64, 4093u32),
-        (2, 10.0, 4094),
-        (3, 11.0, 4095),
-        (4, 12.0, 4096),
-    ] {
+    // Denmark — DKTM1 to DKTM4 (EPSG:4093–4096).
+    //
+    // These are *not* a regular zone series and cannot be derived from the
+    // zone number: each zone carries its own scale factor and false easting,
+    // and the central meridians are irregular (9°, 10°, 11.75°, 15°). The
+    // historical loop assumed `lon_0 = 8 + zone`, a shared `k = 0.9999` and a
+    // shared `x_0 = 200000`, which put DKTM4 410 km out. Verified against
+    // PROJ 9.5.1.
+    let dktm_zones: &[(u32, u32, &str, &str, u32)] = &[
+        (4093, 1, "9", "0.99998", 200_000),
+        (4094, 2, "10", "0.99998", 400_000),
+        (4095, 3, "11.75", "0.99998", 600_000),
+        (4096, 4, "15", "1", 800_000),
+    ];
+    for (code, zone, lon_0, k, x_0) in dktm_zones {
         db.add_definition(EpsgDefinition {
-            code,
+            code: *code,
             name: format!("ETRS89 / DKTM{}", zone),
-            proj_string: format!("+proj=tmerc +lat_0=0 +lon_0={} +k=0.9999 +x_0=200000 +y_0=-5000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs", lon_0),
+            proj_string: format!(
+                "+proj=tmerc +lat_0=0 +lon_0={} +k={} +x_0={} +y_0=-5000000 +ellps=GRS80 +units=m +no_defs",
+                lon_0, k, x_0
+            ),
             wkt: None,
             crs_type: CrsType::Projected,
             area_of_use: format!("Denmark — DKTM{}", zone),
@@ -329,7 +394,7 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     // Korea — Korea 2000 / Unified CS (EPSG:5179)
     db.add_definition(EpsgDefinition {
         code: 5179,
-        name: "Korea 2000 / Unified CS".to_string(),
+        name: "KGD2002 / Unified CS".to_string(),
         proj_string: "+proj=tmerc +lat_0=38 +lon_0=127.5 +k=0.9996 +x_0=1000000 +y_0=2000000 +ellps=GRS80 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
@@ -353,8 +418,8 @@ fn register_national_grids(db: &mut EpsgDatabase) {
     // GDM2000 / Peninsula RSO (EPSG:3376)
     db.add_definition(EpsgDefinition {
         code: 3376,
-        name: "GDM2000 / Peninsula RSO".to_string(),
-        proj_string: "+proj=omerc +lat_0=4 +lonc=102.25 +alpha=323.1301023611 +k=0.99984 +x_0=804671 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs".to_string(),
+        name: "GDM2000 / East Malaysia BRSO".to_string(),
+        proj_string: "+proj=omerc +lat_0=4 +lonc=115 +alpha=53.31580995 +gamma=53.1301023611111 +k=0.99984 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +no_uoff".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Malaysia".to_string(),
@@ -364,10 +429,10 @@ fn register_national_grids(db: &mut EpsgDatabase) {
 }
 
 fn register_world_projections(db: &mut EpsgDatabase) {
-    // ETRS89 / LCC Europe (EPSG:3034)
+    // ETRS89-extended / LCC Europe (EPSG:3034)
     db.add_definition(EpsgDefinition {
         code: 3034,
-        name: "ETRS89 / LCC Europe".to_string(),
+        name: "ETRS89-extended / LCC Europe".to_string(),
         proj_string: "+proj=lcc +lat_1=35 +lat_2=65 +lat_0=52 +lon_0=10 +x_0=4000000 +y_0=2800000 +ellps=GRS80 +units=m +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
@@ -588,92 +653,92 @@ fn register_us_state_planes(db: &mut EpsgDatabase) {
         (
             32104,
             "NAD83 / Nebraska",
-            "+proj=lcc +lat_0=39.83333 +lon_0=-100 +lat_1=40 +lat_2=43 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=lcc +lat_0=39.8333333333333 +lat_1=43 +lat_2=40 +lon_0=-100 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32107,
-            "NAD83 / New Jersey",
-            "+proj=tmerc +lat_0=38.83333 +lon_0=-74.5 +k=0.9999 +x_0=150000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / Nevada East",
+            "+proj=tmerc +lat_0=34.75 +lon_0=-115.583333333333 +k=0.9999 +x_0=200000 +y_0=8000000 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32110,
-            "NAD83 / New York East",
-            "+proj=tmerc +lat_0=38.83333 +lon_0=-74.5 +k=0.9999 +x_0=150000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / New Hampshire",
+            "+proj=tmerc +lat_0=42.5 +lon_0=-71.6666666666667 +k=0.999966667 +x_0=300000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32111,
-            "NAD83 / New York Central",
-            "+proj=tmerc +lat_0=40 +lon_0=-76.58333 +k=0.9999375 +x_0=250000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / New Jersey",
+            "+proj=tmerc +lat_0=38.8333333333333 +lon_0=-74.5 +k=0.9999 +x_0=150000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32112,
-            "NAD83 / New York West",
-            "+proj=tmerc +lat_0=40 +lon_0=-78.58333 +k=0.9999375 +x_0=350000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / New Mexico East",
+            "+proj=tmerc +lat_0=31 +lon_0=-104.333333333333 +k=0.999909091 +x_0=165000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32113,
-            "NAD83 / New York Long Island",
-            "+proj=lcc +lat_0=40.16667 +lon_0=-74 +lat_1=40.66667 +lat_2=41.03333 +x_0=300000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / New Mexico Central",
+            "+proj=tmerc +lat_0=31 +lon_0=-106.25 +k=0.9999 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32118,
-            "NAD83 / Ohio North",
-            "+proj=lcc +lat_0=39.66667 +lon_0=-82.5 +lat_1=40.43333 +lat_2=41.7 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / New York Long Island",
+            "+proj=lcc +lat_0=40.1666666666667 +lat_1=41.0333333333333 +lat_2=40.6666666666667 +lon_0=-74 +x_0=300000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32119,
             "NAD83 / North Carolina",
-            "+proj=lcc +lat_0=33.75 +lon_0=-79 +lat_1=34.33333 +lat_2=36.16667 +x_0=609601.22 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=lcc +lat_0=33.75 +lat_1=36.1666666666667 +lat_2=34.3333333333333 +lon_0=-79 +x_0=609601.22 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32120,
             "NAD83 / North Dakota North",
-            "+proj=lcc +lat_0=47 +lon_0=-100.5 +lat_1=47.43333 +lat_2=48.73333 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=lcc +lat_0=47 +lat_1=48.7333333333333 +lat_2=47.4333333333333 +lon_0=-100.5 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32128,
-            "NAD83 / Oregon North",
-            "+proj=lcc +lat_0=43.66667 +lon_0=-120.5 +lat_1=44.33333 +lat_2=46 +x_0=2500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / Pennsylvania North",
+            "+proj=lcc +lat_0=40.1666666666667 +lat_1=41.95 +lat_2=40.8833333333333 +lon_0=-77.75 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32133,
-            "NAD83 / Pennsylvania South",
-            "+proj=lcc +lat_0=39.33333 +lon_0=-77.75 +lat_1=39.93333 +lat_2=40.96667 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / South Carolina",
+            "+proj=lcc +lat_0=31.8333333333333 +lat_1=34.8333333333333 +lat_2=32.5 +lon_0=-81 +x_0=609600 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32140,
-            "NAD83 / Texas Central",
-            "+proj=lcc +lat_0=29.66667 +lon_0=-100.33333 +lat_1=30.11667 +lat_2=31.88333 +x_0=700000 +y_0=3000000 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / Texas South Central",
+            "+proj=lcc +lat_0=27.8333333333333 +lat_1=30.2833333333333 +lat_2=28.3833333333333 +lon_0=-99 +x_0=600000 +y_0=4000000 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32145,
             "NAD83 / Vermont",
-            "+proj=tmerc +lat_0=42.5 +lon_0=-72.5 +k=0.9999643 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=tmerc +lat_0=42.5 +lon_0=-72.5 +k=0.999964286 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32148,
             "NAD83 / Washington North",
-            "+proj=lcc +lat_0=47 +lon_0=-120.83333 +lat_1=47.5 +lat_2=48.73333 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=lcc +lat_0=47 +lat_1=48.7333333333333 +lat_2=47.5 +lon_0=-120.833333333333 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32149,
             "NAD83 / Washington South",
-            "+proj=lcc +lat_0=45.33333 +lon_0=-120.5 +lat_1=45.83333 +lat_2=47.33333 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=lcc +lat_0=45.3333333333333 +lat_1=47.3333333333333 +lat_2=45.8333333333333 +lon_0=-120.5 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32150,
-            "NAD83 / Wisconsin Central",
-            "+proj=lcc +lat_0=43.83333 +lon_0=-90 +lat_1=44.25 +lat_2=45.5 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / West Virginia North",
+            "+proj=lcc +lat_0=38.5 +lat_1=40.25 +lat_2=39 +lon_0=-79.5 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32154,
-            "NAD83 / Wyoming East",
-            "+proj=tmerc +lat_0=40.5 +lon_0=-105.16667 +k=0.9999375 +x_0=200000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD83 / Wisconsin South",
+            "+proj=lcc +lat_0=42 +lat_1=44.0666666666667 +lat_2=42.7333333333333 +lon_0=-90 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs",
         ),
         (
             32158,
             "NAD83 / Wyoming West",
-            "+proj=tmerc +lat_0=40.5 +lon_0=-110.08333 +k=0.9999375 +x_0=800000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "+proj=tmerc +lat_0=40.5 +lon_0=-110.083333333333 +k=0.9999375 +x_0=800000 +y_0=100000 +datum=NAD83 +units=m +no_defs",
         ),
     ];
     for (code, name, proj) in us_state_planes {
@@ -684,7 +749,7 @@ fn register_us_state_planes(db: &mut EpsgDatabase) {
             wkt: None,
             crs_type: CrsType::Projected,
             area_of_use: "United States".to_string(),
-            unit: "metre".to_string(),
+            unit: epsg_unit_for(proj).to_string(),
             datum: "NAD83".to_string(),
         });
     }
@@ -693,28 +758,28 @@ fn register_us_state_planes(db: &mut EpsgDatabase) {
     let more_state_planes: &[(u32, &str, &str)] = &[
         (
             32061,
-            "NAD83 / Alaska zone 1",
-            "+proj=omerc +lat_0=57 +lonc=-133.6666667 +alpha=323.1301 +k=0.9999 +x_0=5000000 +y_0=-5000000 +datum=NAD83 +units=m +no_defs",
+            "NAD27 / Guatemala Norte",
+            "+proj=lcc +lat_0=16.8166666666667 +lat_1=16.8166666666667 +lon_0=-90.3333333333333 +k_0=0.99992226 +x_0=500000 +y_0=292209.579 +datum=NAD27 +units=m +no_defs",
         ),
         (
             32064,
-            "NAD83 / Alaska zone 4",
-            "+proj=tmerc +lat_0=54 +lon_0=-150 +k=0.9999 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD27 / BLM 14N (ftUS)",
+            "+proj=tmerc +lat_0=0 +lon_0=-99 +k=0.9996 +x_0=500000.001016002 +y_0=0 +datum=NAD27 +units=us-ft +no_defs",
         ),
         (
             32065,
-            "NAD83 / Alaska zone 5",
-            "+proj=tmerc +lat_0=54 +lon_0=-156 +k=0.9999 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD27 / BLM 15N (ftUS)",
+            "+proj=tmerc +lat_0=0 +lon_0=-93 +k=0.9996 +x_0=500000.001016002 +y_0=0 +datum=NAD27 +units=us-ft +no_defs",
         ),
         (
             32066,
-            "NAD83 / Alaska zone 6",
-            "+proj=tmerc +lat_0=54 +lon_0=-162 +k=0.9999 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD27 / BLM 16N (ftUS)",
+            "+proj=tmerc +lat_0=0 +lon_0=-87 +k=0.9996 +x_0=500000.001016002 +y_0=0 +datum=NAD27 +units=us-ft +no_defs",
         ),
         (
             32067,
-            "NAD83 / Alaska zone 7",
-            "+proj=tmerc +lat_0=54 +lon_0=-168 +k=0.9999 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs",
+            "NAD27 / BLM 17N (ftUS)",
+            "+proj=tmerc +lat_0=0 +lon_0=-81 +k=0.9996 +x_0=500000.001016002 +y_0=0 +datum=NAD27 +units=us-ft +no_defs",
         ),
         (
             32068,
@@ -735,7 +800,7 @@ fn register_us_state_planes(db: &mut EpsgDatabase) {
             wkt: None,
             crs_type: CrsType::Projected,
             area_of_use: "United States — Alaska".to_string(),
-            unit: "metre".to_string(),
+            unit: epsg_unit_for(proj).to_string(),
             datum: "NAD83".to_string(),
         });
     }
@@ -760,14 +825,19 @@ fn register_regional_systems(db: &mut EpsgDatabase) {
         });
     }
 
-    // India zone systems (EPSG:24378–24385)
+    // India zone systems — Kalianpur 1937 remnants (EPSG:24384–24385).
+    //
+    // This block used to span EPSG:24378–24385 on the Kalianpur 1937 datum.
+    // EPSG:24378–24383 are in fact Kalianpur 1975 (24382 is Kalianpur 1880)
+    // and are registered from the verified table in
+    // `extended::asian_pacific`; the entries here were dead for 24378–24382
+    // (overwritten later in registration order) and simply wrong for 24383,
+    // which sat 1,636 km off.
+    //
+    // EPSG:24384 and 24385 are retained as-is: PROJ 9.5.1 cannot resolve
+    // either code (both are deprecated), so there is no ground truth to
+    // verify them against and they are left untouched rather than guessed.
     let india_zones: &[(u32, f64, &str)] = &[
-        (24378, 68.0, "India zone I"),
-        (24379, 74.0, "India zone IIa"),
-        (24380, 80.0, "India zone IIb"),
-        (24381, 80.0, "India zone IIIa"),
-        (24382, 86.0, "India zone IIIb"),
-        (24383, 86.0, "India zone IVa"),
         (24384, 90.0, "India zone IVb"),
         (24385, 90.0, "India zone 0"),
     ];
@@ -792,12 +862,13 @@ fn register_additional_projected(db: &mut EpsgDatabase) {
     // Trinidad 1903 / Trinidad Grid (EPSG:2314)
     db.add_definition(EpsgDefinition {
         code: 2314,
-        name: "Trinidad 1903 / Trinidad Grid".to_string(),
-        proj_string: "+proj=cass +lat_0=10.44166 +lon_0=-61.33333 +x_0=86501.46 +y_0=65379.013 +a=6378293.645 +b=6356617.987 +towgs84=-61.702,284.488,472.052,0,0,0,0 +units=lk +no_defs".to_string(),
+        name: "Trinidad 1903 / Trinidad Grid (ftCla)".to_string(),
+        proj_string: "+proj=cass +lat_0=10.4416666666667 +lon_0=-61.3333333333333 +x_0=86501.46392052 +y_0=65379.0134283 +a=6378293.64520876 +b=6356617.98767984 +towgs84=-61.702,284.488,472.052,0,0,0,0 +to_meter=0.3047972654 +no_defs".to_string(),
         wkt: None,
         crs_type: CrsType::Projected,
         area_of_use: "Trinidad and Tobago".to_string(),
-        unit: "link".to_string(),
+        // EPSG:2314 is in Clarke's feet (`+to_meter=0.3047972654`), not links.
+        unit: "Clarke's foot".to_string(),
         datum: "Trinidad1903".to_string(),
     });
 }

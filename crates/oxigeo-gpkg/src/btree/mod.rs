@@ -6,6 +6,8 @@
 //! Reference: <https://www.sqlite.org/fileformat.html#b_tree_pages>
 
 use crate::error::GpkgError;
+use crate::sqlite_reader::usable_page_size;
+use std::collections::HashSet;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SQLite varint decoding
@@ -333,16 +335,148 @@ fn check_bounds(data: &[u8], pos: usize, size: usize) -> Result<(), GpkgError> {
 // Leaf table B-tree page (type 13)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Local payload size for a table B-tree leaf cell, per the SQLite file format.
+///
+/// A cell stores at most `X = U - 35` payload bytes on its own page. When the
+/// payload `P` exceeds `X` the spill point is **not** `X`: SQLite picks the
+/// smallest of two candidates so that overflow pages stay reasonably full,
+///
+/// ```text
+/// M = ((U - 12) * 32 / 255) - 23
+/// K = M + ((P - M) % (U - 4))
+/// local = if K <= X { K } else { M }
+/// ```
+///
+/// Treating the local size as `min(P, X)` — as this parser previously did —
+/// overstates it by up to `X - M` bytes (3572 bytes at the usual 4096-byte page
+/// size) and made every overflowing cell fail the "does the inline payload fit
+/// in the cell?" check. That is what produced the
+/// `overflow cell needs 4061 bytes inline + 4-byte pointer, but only N
+/// available` error on any table whose `sqlite_master` row exceeded ~4 KB
+/// (cool-japan/oxigeo#17).
+fn table_leaf_local_payload(payload_len: usize, usable_size: usize) -> usize {
+    let max_local = usable_size.saturating_sub(35);
+    if payload_len <= max_local {
+        return payload_len;
+    }
+
+    let min_local = ((usable_size.saturating_sub(12)) * 32 / 255).saturating_sub(23);
+    // `usable_size` is at least 480 in any valid file, so `usable_size - 4` is
+    // non-zero; guard anyway so a corrupt header cannot divide by zero.
+    let spill_unit = usable_size.saturating_sub(4).max(1);
+    let k = min_local + (payload_len.saturating_sub(min_local) % spill_unit);
+
+    if k <= max_local { k } else { min_local }
+}
+
+/// Follows a payload's overflow-page chain and returns the spilled bytes.
+///
+/// Each overflow page starts with a 4-byte big-endian pointer to the next page
+/// (0 terminates the chain) followed by up to `usable_size - 4` payload bytes.
+/// Collection stops as soon as `needed` bytes have been gathered rather than
+/// when the chain terminates, and every page number is checked against a
+/// visited set: `GeoPackage::from_bytes` accepts caller-supplied data, and an
+/// unguarded walk over a corrupt or hostile chain would loop forever.
+fn read_overflow_chain(
+    file_data: &[u8],
+    first_page: u32,
+    needed: usize,
+    page_size: usize,
+    usable_size: usize,
+) -> Result<Vec<u8>, GpkgError> {
+    let mut collected = Vec::with_capacity(needed);
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut next = first_page;
+    let per_page = usable_size.saturating_sub(4);
+
+    if per_page == 0 {
+        return Err(GpkgError::InvalidFormat(
+            "Overflow page has no payload capacity (corrupt page size)".into(),
+        ));
+    }
+
+    while collected.len() < needed {
+        if next == 0 {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Overflow chain ended after {} bytes but {needed} were expected",
+                collected.len()
+            )));
+        }
+        if !visited.insert(next) {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Overflow chain revisits page {next} (cycle)"
+            )));
+        }
+
+        let page = get_page_slice(file_data, next, page_size)?;
+        if page.len() < 4 {
+            return Err(GpkgError::InsufficientData {
+                needed: 4,
+                available: page.len(),
+            });
+        }
+
+        next = u32::from_be_bytes([page[0], page[1], page[2], page[3]]);
+
+        let remaining = needed - collected.len();
+        let take = remaining.min(per_page).min(page.len() - 4);
+        collected.extend_from_slice(&page[4..4 + take]);
+    }
+
+    Ok(collected)
+}
+
 /// Parse a leaf table B-tree page (type 13).
 ///
 /// `page_data` is the raw page bytes (exactly `page_size` bytes).
 /// `header_offset` is 100 for page 1 (after the SQLite file header), 0 for all
 /// other pages.
 ///
+/// Cells whose payload spills onto overflow pages cannot be completed from a
+/// single page slice, so this entry point reports them as an error. Callers
+/// holding the whole file image should use
+/// [`parse_leaf_table_page_with_overflow`], which reassembles them.
+///
 /// Returns a vector of `(rowid, column_values)` tuples, one per cell.
 pub fn parse_leaf_table_page(
     page_data: &[u8],
     page_size: usize,
+    header_offset: usize,
+) -> Result<Vec<(i64, Vec<CellValue>)>, GpkgError> {
+    parse_leaf_table_page_inner(None, page_data, page_size, page_size, header_offset)
+}
+
+/// Parse a leaf table B-tree page (type 13), following overflow-page chains.
+///
+/// Identical to [`parse_leaf_table_page`] except that `file_data` — the whole
+/// SQLite file image — lets a cell whose payload spilled onto overflow pages be
+/// reassembled and parsed in full. Rows wider than roughly a page (a long
+/// `CREATE TABLE` statement in `sqlite_master`, a large geometry or BLOB) are
+/// only readable through this entry point.
+///
+/// The usable page size is taken from the file header, so files that reserve
+/// trailing bytes per page are handled correctly.
+pub fn parse_leaf_table_page_with_overflow(
+    file_data: &[u8],
+    page_data: &[u8],
+    page_size: usize,
+    header_offset: usize,
+) -> Result<Vec<(i64, Vec<CellValue>)>, GpkgError> {
+    let usable_size = usable_page_size(file_data, page_size);
+    parse_leaf_table_page_inner(
+        Some(file_data),
+        page_data,
+        page_size,
+        usable_size,
+        header_offset,
+    )
+}
+
+fn parse_leaf_table_page_inner(
+    file_data: Option<&[u8]>,
+    page_data: &[u8],
+    page_size: usize,
+    usable_size: usize,
     header_offset: usize,
 ) -> Result<Vec<(i64, Vec<CellValue>)>, GpkgError> {
     if page_data.len() < page_size {
@@ -415,51 +549,61 @@ pub fn parse_leaf_table_page(
 
         let payload_start = pl_size + rid_size;
 
-        // Check for overflow: payload that exceeds available inline space
-        // Overflow threshold for leaf table cells: usable_size - 35
-        let usable_size = page_size; // assumes 0 reserved bytes (typical)
-        let overflow_threshold = usable_size.saturating_sub(35);
-        let inline_len = if payload_len > overflow_threshold {
-            // Compute M = min(P, U-35) for the inline portion
-            // The remaining data spills to overflow pages — we don't follow them
-            let m = overflow_threshold.min(payload_len);
-            // Check if the inline data + 4-byte overflow pointer fits
-            if payload_start + m + 4 > cell_data.len() {
-                return Err(GpkgError::InvalidFormat(format!(
-                    "Cell {i}: overflow cell needs {} bytes inline + 4-byte pointer, \
-                     but only {} available from cell start",
-                    m,
-                    cell_data.len().saturating_sub(payload_start)
-                )));
-            }
-            m
-        } else {
-            payload_len
-        };
+        // How much of the payload lives on this page. Anything beyond that
+        // spills onto overflow pages, addressed by a 4-byte page number stored
+        // immediately after the local portion.
+        let inline_len = table_leaf_local_payload(payload_len, usable_size);
+        let spilled_len = payload_len.saturating_sub(inline_len);
 
-        if payload_start + inline_len > cell_data.len() {
-            return Err(GpkgError::InsufficientData {
-                needed: payload_start + inline_len,
-                available: cell_data.len(),
-            });
+        let trailer = if spilled_len > 0 { 4 } else { 0 };
+        if payload_start + inline_len + trailer > cell_data.len() {
+            return Err(GpkgError::InvalidFormat(format!(
+                "Cell {i}: needs {inline_len} bytes inline{}, \
+                 but only {} available from cell start",
+                if trailer > 0 {
+                    " + 4-byte overflow pointer"
+                } else {
+                    ""
+                },
+                cell_data.len().saturating_sub(payload_start)
+            )));
         }
 
-        let payload = &cell_data[payload_start..payload_start + inline_len];
+        let inline = &cell_data[payload_start..payload_start + inline_len];
 
-        // If the payload was truncated due to overflow, try to parse what we have.
-        // If the record header is fully inline, we might get partial results.
-        let values = if inline_len < payload_len {
-            // Overflow: attempt to parse what is available; report error if header
-            // itself is incomplete.
-            parse_record(payload).map_err(|_| {
+        let values = if spilled_len == 0 {
+            parse_record(inline)?
+        } else {
+            // Reassemble the full payload from the overflow chain. Without the
+            // whole file image the spilled bytes are unreachable, and a partial
+            // record cannot be parsed correctly.
+            let file_data = file_data.ok_or_else(|| {
                 GpkgError::InvalidFormat(format!(
                     "Cell {i}: payload overflows to another page \
                      (total {payload_len} bytes, inline {inline_len} bytes); \
-                     overflow pages are not yet supported"
+                     use `parse_leaf_table_page_with_overflow` to follow the chain"
                 ))
-            })?
-        } else {
-            parse_record(payload)?
+            })?;
+
+            let ptr_at = payload_start + inline_len;
+            let first_overflow = u32::from_be_bytes([
+                cell_data[ptr_at],
+                cell_data[ptr_at + 1],
+                cell_data[ptr_at + 2],
+                cell_data[ptr_at + 3],
+            ]);
+
+            let mut payload = Vec::with_capacity(payload_len);
+            payload.extend_from_slice(inline);
+            payload.extend_from_slice(&read_overflow_chain(
+                file_data,
+                first_overflow,
+                spilled_len,
+                page_size,
+                usable_size,
+            )?);
+
+            parse_record(&payload)?
         };
 
         rows.push((rowid, values));
@@ -602,7 +746,12 @@ pub fn scan_table(
         match page_type {
             13 => {
                 // Leaf table page
-                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                let rows = parse_leaf_table_page_with_overflow(
+                    file_data,
+                    page_data,
+                    page_size,
+                    header_offset,
+                )?;
                 results.extend(rows);
             }
             5 => {
@@ -693,7 +842,12 @@ pub fn scan_table_paginated(
         match page_type {
             13 => {
                 // Leaf table page — parse all rows, then apply offset/limit logic.
-                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                let rows = parse_leaf_table_page_with_overflow(
+                    file_data,
+                    page_data,
+                    page_size,
+                    header_offset,
+                )?;
                 for (rowid, cols) in rows {
                     if skipped < offset {
                         skipped += 1;
@@ -776,7 +930,12 @@ pub fn scan_table_filtered(
         match page_type {
             13 => {
                 // Leaf table page — decode all rows, push only those that match.
-                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                let rows = parse_leaf_table_page_with_overflow(
+                    file_data,
+                    page_data,
+                    page_size,
+                    header_offset,
+                )?;
                 for (rowid, cols) in rows {
                     if crate::filter::evaluate(expr, &cols) {
                         results.push((rowid, cols));
@@ -856,7 +1015,12 @@ pub fn scan_table_filtered_paginated(
         match page_type {
             13 => {
                 // Leaf table page — filter rows, then apply post-filter offset/limit.
-                let rows = parse_leaf_table_page(page_data, page_size, header_offset)?;
+                let rows = parse_leaf_table_page_with_overflow(
+                    file_data,
+                    page_data,
+                    page_size,
+                    header_offset,
+                )?;
                 for (rowid, cols) in rows {
                     if !crate::filter::evaluate(expr, &cols) {
                         continue;
@@ -1010,6 +1174,9 @@ fn cell_value_to_u32(val: &CellValue) -> u32 {
         _ => 0,
     }
 }
+
+mod affinity;
+pub(crate) use affinity::declared_column_types;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests

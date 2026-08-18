@@ -4,7 +4,9 @@ use crate::arrow_ext::extract_geoparquet_metadata;
 use crate::error::{GeoParquetError, Result};
 use crate::filter::{AttributePredicates, filter_batch_by_mask};
 use crate::geometry::native::native_bbox_mask;
-use crate::geometry::{Geometry, WkbReader, decode_native_array, wkb_bbox};
+use crate::geometry::{
+    Geometry, WkbReader, decode_native_array, decode_native_array_optional, wkb_bbox,
+};
 use crate::metadata::{EncodingType, GeoParquetMetadata};
 use crate::plan::prune_row_groups;
 use crate::predicate::AttributeFilter;
@@ -15,19 +17,87 @@ use crate::statistics::{
 };
 use arrow_array::{Array, BinaryArray, RecordBatch};
 use arrow_schema::SchemaRef;
+use bytes::Bytes;
 use oxigeo_core::types::BoundingBox;
 use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder,
 };
 use parquet::file::metadata::ParquetMetaData;
+use parquet::file::reader::{ChunkReader, Length};
 use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+/// Backing store for a [`GeoParquetReader`].
+///
+/// Both variants implement [`ChunkReader`], so every read path in this module
+/// is written exactly once and behaves identically whether the Parquet image
+/// lives on disk or in memory.  Cloning is cheap in both cases: the file handle
+/// is refcounted behind an [`Arc`] and [`Bytes`] is refcounted internally.
+///
+/// This is deliberately an enum rather than a type parameter on
+/// [`GeoParquetReader`]: adding a generic to the public reader type would be a
+/// breaking change for every downstream `GeoParquetReader` mention.
+#[derive(Clone)]
+enum Source {
+    /// A Parquet file opened from the local filesystem.
+    File(Arc<File>),
+    /// An in-memory Parquet image.
+    Bytes(Bytes),
+}
+
+/// [`Read`] handle produced by [`Source`]'s [`ChunkReader`] implementation.
+///
+/// Mirrors the reader types that `parquet` uses for its own `File` / `Bytes`
+/// implementations, so neither variant pays for an extra buffering layer.
+enum SourceRead {
+    /// Handle over a local file (matches `<File as ChunkReader>::T`).
+    File(BufReader<File>),
+    /// Handle over an in-memory buffer (matches `<Bytes as ChunkReader>::T`).
+    Bytes(<Bytes as ChunkReader>::T),
+}
+
+impl Read for SourceRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(r) => r.read(buf),
+            Self::Bytes(r) => r.read(buf),
+        }
+    }
+}
+
+impl Length for Source {
+    fn len(&self) -> u64 {
+        match self {
+            Self::File(f) => Length::len(f.as_ref()),
+            Self::Bytes(b) => Length::len(b),
+        }
+    }
+}
+
+impl ChunkReader for Source {
+    type T = SourceRead;
+
+    fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+        match self {
+            Self::File(f) => Ok(SourceRead::File(ChunkReader::get_read(f.as_ref(), start)?)),
+            Self::Bytes(b) => Ok(SourceRead::Bytes(ChunkReader::get_read(b, start)?)),
+        }
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
+        match self {
+            Self::File(f) => ChunkReader::get_bytes(f.as_ref(), start, length),
+            Self::Bytes(b) => ChunkReader::get_bytes(b, start, length),
+        }
+    }
+}
+
 /// GeoParquet file reader
 pub struct GeoParquetReader {
-    /// The underlying file
-    file: Arc<File>,
+    /// The underlying Parquet source (local file or in-memory buffer)
+    source: Source,
     /// Arrow schema
     schema: SchemaRef,
     /// GeoParquet metadata
@@ -55,6 +125,75 @@ fn detect_encoding(metadata: &GeoParquetMetadata, geometry_column: &str) -> Enco
         .unwrap_or(EncodingType::Wkb)
 }
 
+/// Decodes a whole geometry column into one [`Geometry`] per **non-null** row,
+/// dispatching on the column's declared `encoding`.
+///
+/// Null rows produce no entry — this is the historical behaviour of
+/// [`GeoParquetReader::read_geometries`] and
+/// [`GeoParquetBatchReader::extract_geometries`].  Callers that need to keep
+/// geometries aligned with their property rows must use the `_optional`
+/// variants instead.
+fn decode_geometry_column(
+    geom_column: &dyn Array,
+    encoding: EncodingType,
+) -> Result<Vec<Geometry>> {
+    match encoding {
+        EncodingType::Wkb => {
+            let binary_array = downcast_wkb_column(geom_column)?;
+            let mut geometries = Vec::with_capacity(binary_array.len());
+            for i in 0..binary_array.len() {
+                if !binary_array.is_null(i) {
+                    let wkb = binary_array.value(i);
+                    let mut wkb_reader = WkbReader::new(wkb);
+                    let geom = wkb_reader.read_geometry()?;
+                    geometries.push(geom);
+                }
+            }
+            Ok(geometries)
+        }
+        native => decode_native_array(geom_column, native),
+    }
+}
+
+/// Decodes a whole geometry column into exactly one entry per row, preserving
+/// null rows as `None` **at their original index**.
+///
+/// This is the index-preserving counterpart of [`decode_geometry_column`]: the
+/// returned vector is always `geom_column.len()` long, so element `i` always
+/// belongs to row `i` of the same [`RecordBatch`].
+fn decode_geometry_column_optional(
+    geom_column: &dyn Array,
+    encoding: EncodingType,
+) -> Result<Vec<Option<Geometry>>> {
+    match encoding {
+        EncodingType::Wkb => {
+            let binary_array = downcast_wkb_column(geom_column)?;
+            let mut geometries = Vec::with_capacity(binary_array.len());
+            for i in 0..binary_array.len() {
+                if binary_array.is_null(i) {
+                    geometries.push(None);
+                    continue;
+                }
+                let wkb = binary_array.value(i);
+                let mut wkb_reader = WkbReader::new(wkb);
+                geometries.push(Some(wkb_reader.read_geometry()?));
+            }
+            Ok(geometries)
+        }
+        native => decode_native_array_optional(geom_column, native),
+    }
+}
+
+/// Downcasts a WKB-encoded geometry column to its concrete [`BinaryArray`].
+fn downcast_wkb_column(geom_column: &dyn Array) -> Result<&BinaryArray> {
+    geom_column
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| {
+            GeoParquetError::type_mismatch("BinaryArray", format!("{:?}", geom_column.data_type()))
+        })
+}
+
 impl GeoParquetReader {
     /// Opens a GeoParquet file for reading
     ///
@@ -62,9 +201,45 @@ impl GeoParquetReader {
     /// Returns an error if the file cannot be opened or is not a valid GeoParquet file
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path.as_ref())?;
+        Self::from_source(Source::File(Arc::new(file)))
+    }
 
+    /// Opens a GeoParquet image held entirely in memory.
+    ///
+    /// This is the in-memory twin of [`open`](Self::open) and supports every
+    /// read path the file-backed reader does — including
+    /// [`read_pushdown`](Self::read_pushdown) — because both are driven through
+    /// the same [`ChunkReader`] abstraction.  Useful when the bytes arrive from
+    /// a network fetch, an archive member, or a test fixture rather than the
+    /// local filesystem.
+    ///
+    /// The buffer is adopted, not copied, whenever the argument can be
+    /// converted into [`Bytes`] without reallocating (`Vec<u8>`, `Bytes`,
+    /// `&'static [u8]`, …).
+    ///
+    /// ```rust,no_run
+    /// # use oxigeo_geoparquet::{GeoParquetReader, error::Result};
+    /// # fn example() -> Result<()> {
+    /// let raw = std::fs::read("input.parquet")?;
+    /// let reader = GeoParquetReader::from_bytes(raw)?;
+    /// let geoms = reader.read_geometries(0)?;
+    /// # let _ = geoms;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns an error if the buffer is not a valid GeoParquet image, or if it
+    /// carries no `geo` metadata key.
+    pub fn from_bytes(data: impl Into<Bytes>) -> Result<Self> {
+        Self::from_source(Source::Bytes(data.into()))
+    }
+
+    /// Builds a reader over any [`Source`], decoding the Parquet footer and the
+    /// embedded GeoParquet `geo` metadata once.
+    fn from_source(source: Source) -> Result<Self> {
         // Build reader to extract metadata
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(source.clone())?;
         let schema = builder.schema().clone();
         let parquet_metadata = builder.metadata().clone();
 
@@ -75,11 +250,8 @@ impl GeoParquetReader {
         let metadata = GeoParquetMetadata::from_json(&metadata_json)?;
         let geometry_column = metadata.primary_column.clone();
 
-        // Reopen file for actual reading
-        let file = File::open(path.as_ref())?;
-
         Ok(Self {
-            file: Arc::new(file),
+            source,
             schema,
             metadata,
             parquet_metadata,
@@ -184,7 +356,7 @@ impl GeoParquetReader {
     ///
     /// Propagates Parquet, Arrow, and I/O errors.
     pub fn read_pushdown(&self) -> Result<Vec<RecordBatch>> {
-        let file = self.file.try_clone()?;
+        let input = self.source.clone();
         let arrow_meta =
             ArrowReaderMetadata::try_new(self.parquet_metadata.clone(), Default::default())?;
 
@@ -199,7 +371,7 @@ impl GeoParquetReader {
             prune_row_groups(&self.parquet_metadata, bbox_cols.as_ref(), self.bbox_filter);
 
         execute_pushdown(
-            file,
+            input,
             arrow_meta,
             &self.metadata,
             &self.geometry_column,
@@ -229,9 +401,10 @@ impl GeoParquetReader {
         };
 
         GeoParquetBatchReader::new(
-            self.file.clone(),
+            self.source.clone(),
             self.schema.clone(),
             self.geometry_column.clone(),
+            detect_encoding(&self.metadata, &self.geometry_column),
             row_groups,
         )
     }
@@ -245,8 +418,7 @@ impl GeoParquetReader {
             ));
         }
 
-        let file = self.file.try_clone()?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(self.source.clone())?;
         let mut reader = builder.with_row_groups(vec![row_group]).build()?;
 
         reader
@@ -262,6 +434,12 @@ impl GeoParquetReader {
     /// * Native GeoArrow encodings → eagerly materialises the typed Arrow
     ///   array into a `Vec<Geometry>` via
     ///   [`crate::geometry::decode_native_array`].
+    ///
+    /// Null geometry rows are **skipped**, so the returned vector may be
+    /// shorter than the row group and its indices no longer line up with the
+    /// row group's property columns.  Use
+    /// [`read_geometries_optional`](Self::read_geometries_optional) when that
+    /// alignment matters.
     pub fn read_geometries(&self, row_group: usize) -> Result<Vec<Geometry>> {
         let batch = self.read_row_group(row_group)?;
         let geom_column = batch
@@ -269,31 +447,34 @@ impl GeoParquetReader {
             .ok_or_else(|| GeoParquetError::missing_field(&self.geometry_column))?;
 
         let encoding = detect_encoding(&self.metadata, &self.geometry_column);
-        match encoding {
-            EncodingType::Wkb => {
-                let binary_array = geom_column
-                    .as_any()
-                    .downcast_ref::<arrow_array::BinaryArray>()
-                    .ok_or_else(|| {
-                        GeoParquetError::type_mismatch(
-                            "BinaryArray",
-                            format!("{:?}", geom_column.data_type()),
-                        )
-                    })?;
+        decode_geometry_column(geom_column.as_ref(), encoding)
+    }
 
-                let mut geometries = Vec::with_capacity(binary_array.len());
-                for i in 0..binary_array.len() {
-                    if !binary_array.is_null(i) {
-                        let wkb = binary_array.value(i);
-                        let mut wkb_reader = WkbReader::new(wkb);
-                        let geom = wkb_reader.read_geometry()?;
-                        geometries.push(geom);
-                    }
-                }
-                Ok(geometries)
-            }
-            native => decode_native_array(geom_column.as_ref(), native),
-        }
+    /// Reads geometries from a specific row group, preserving null rows as
+    /// `None` **at their original index**.
+    ///
+    /// Identical to [`read_geometries`](Self::read_geometries) in every respect
+    /// except null handling: the returned vector always has exactly one entry
+    /// per row of the row group, so element `i` can be paired with row `i` of
+    /// the batch returned by [`read_row_group`](Self::read_row_group).
+    ///
+    /// Prefer this method whenever geometries are consumed alongside attribute
+    /// columns — `read_geometries` silently drops nulls, which shifts every
+    /// subsequent geometry one slot out of step with its properties.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`read_geometries`](Self::read_geometries): propagates Parquet,
+    /// Arrow, and geometry-decode errors, plus a
+    /// [`GeoParquetError::MissingField`] when the geometry column is absent.
+    pub fn read_geometries_optional(&self, row_group: usize) -> Result<Vec<Option<Geometry>>> {
+        let batch = self.read_row_group(row_group)?;
+        let geom_column = batch
+            .column_by_name(&self.geometry_column)
+            .ok_or_else(|| GeoParquetError::missing_field(&self.geometry_column))?;
+
+        let encoding = detect_encoding(&self.metadata, &self.geometry_column);
+        decode_geometry_column_optional(geom_column.as_ref(), encoding)
     }
 
     /// Computes the bounding box for a row group
@@ -574,23 +755,28 @@ impl GeoParquetReader {
 pub struct GeoParquetBatchReader {
     reader: ParquetRecordBatchReader,
     geometry_column: String,
+    /// Declared encoding of the geometry column, threaded down from the parent
+    /// [`GeoParquetReader`] so batch-level geometry extraction can dispatch the
+    /// same way `GeoParquetReader::read_geometries` does.
+    encoding: EncodingType,
 }
 
 impl GeoParquetBatchReader {
     /// Creates a new batch reader
     fn new(
-        file: Arc<File>,
+        source: Source,
         _schema: SchemaRef,
         geometry_column: String,
+        encoding: EncodingType,
         row_groups: Vec<usize>,
     ) -> Result<Self> {
-        let file_clone = file.try_clone()?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file_clone)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(source)?;
         let reader = builder.with_row_groups(row_groups).build()?;
 
         Ok(Self {
             reader,
             geometry_column,
+            encoding,
         })
     }
 
@@ -603,38 +789,54 @@ impl GeoParquetBatchReader {
         }
     }
 
-    /// Extracts geometries from a record batch
+    /// Extracts geometries from a record batch, dispatching on the geometry
+    /// column's declared encoding.
+    ///
+    /// * WKB → decodes each binary blob with [`WkbReader`].
+    /// * Native GeoArrow encodings → decodes the typed Arrow array via
+    ///   [`crate::geometry::decode_native_array`].
+    ///
+    /// Null geometry rows are **skipped**, so the returned vector may be
+    /// shorter than `batch.num_rows()`.  Use
+    /// [`extract_geometries_optional`](Self::extract_geometries_optional) when
+    /// the geometries must stay aligned with the batch's property columns.
     pub fn extract_geometries(&self, batch: &RecordBatch) -> Result<Vec<Geometry>> {
         let geom_column = batch
             .column_by_name(&self.geometry_column)
             .ok_or_else(|| GeoParquetError::missing_field(&self.geometry_column))?;
 
-        let binary_array = geom_column
-            .as_any()
-            .downcast_ref::<arrow_array::BinaryArray>()
-            .ok_or_else(|| {
-                GeoParquetError::type_mismatch(
-                    "BinaryArray",
-                    format!("{:?}", geom_column.data_type()),
-                )
-            })?;
+        decode_geometry_column(geom_column.as_ref(), self.encoding)
+    }
 
-        let mut geometries = Vec::with_capacity(binary_array.len());
-        for i in 0..binary_array.len() {
-            if !binary_array.is_null(i) {
-                let wkb = binary_array.value(i);
-                let mut wkb_reader = WkbReader::new(wkb);
-                let geom = wkb_reader.read_geometry()?;
-                geometries.push(geom);
-            }
-        }
+    /// Extracts geometries from a record batch, preserving null rows as `None`
+    /// **at their original index**.
+    ///
+    /// The returned vector always has exactly `batch.num_rows()` entries, so
+    /// element `i` always belongs to row `i` of `batch` and can be paired with
+    /// that row's attribute values.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`extract_geometries`](Self::extract_geometries).
+    pub fn extract_geometries_optional(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Vec<Option<Geometry>>> {
+        let geom_column = batch
+            .column_by_name(&self.geometry_column)
+            .ok_or_else(|| GeoParquetError::missing_field(&self.geometry_column))?;
 
-        Ok(geometries)
+        decode_geometry_column_optional(geom_column.as_ref(), self.encoding)
     }
 
     /// Returns the geometry column name
     pub fn geometry_column_name(&self) -> &str {
         &self.geometry_column
+    }
+
+    /// Returns the declared encoding of the geometry column.
+    pub fn geometry_encoding(&self) -> EncodingType {
+        self.encoding
     }
 }
 

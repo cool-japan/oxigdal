@@ -17,8 +17,9 @@ categories = ["command-line-utilities", "science"]
 # Internal dependencies
 oxigeo-core = { workspace = true, default-features = true }
 oxigeo-algorithms = { workspace = true, default-features = true }
-# Workspace declares oxigeo-proj with default-features = false; oxigeo-proj is
-# not no_std-clean, so std must be re-enabled here (mirrors oxigeo-geojson).
+# The workspace sets no `default-features` key for oxigeo-proj, so defaults (= std)
+# already apply; `features = ["std"]` states this crate's std requirement explicitly
+# and keeps it independent of the workspace default (mirrors oxigeo-geojson).
 oxigeo-proj = { workspace = true, features = ["std"] }
 # oxigeo-dev-tools.workspace = true  # Temporarily disabled due to build errors
 oxigeo-geotiff.workspace = true

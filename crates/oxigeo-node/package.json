@@ -1,6 +1,6 @@
 {
   "name": "@cooljapan/oxigeo-node",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Node.js bindings for OxiGeo - Pure Rust geospatial data abstraction library",
   "main": "index.js",
   "types": "index.d.ts",

@@ -135,6 +135,19 @@ deny = [
     { name = "rusqlite" },
     { name = "libsqlite3-sys" },
 
+    # Use oxixml-quickxml-compat instead of quick-xml directly. As of the
+    # 0.2.4 migration, every direct workspace consumer (oxigeo-drivers-
+    # advanced, oxigeo-vrt, oxigeo-services, oxigeo-server, oxigeo-metadata,
+    # oxigeo-qc) has been renamed to the compat shim; `cargo tree -i
+    # quick-xml -e normal --workspace` is empty. Unlike `cargo tree -e
+    # normal`, this bans check's graph DOES traverse dev-dependencies, so
+    # the one remaining path -- quick-xml 0.26.0 <- inferno <- pprof <-
+    # oxigeo-algorithms's *dev*-dependency on pprof (see the CDDL-1.0
+    # license-allow-list note above and the RUSTSEC-2026-0194/0195 ignores
+    # below) -- must stay scoped via `wrappers`, confirmed empirically: a
+    # bare ban here fails `cargo deny check bans` on that exact edge.
+    { name = "quick-xml", wrappers = ["inferno"] },
+
     # --- Pure Rust Policy: C-bound compression, replaced by oxiarc-* ---
     # None of these currently appear anywhere in the resolved graph (direct
     # or transitive) as of this file's authoring; listed with no `wrappers`

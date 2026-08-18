@@ -20,6 +20,18 @@ use core::f64::consts::PI;
 
 use alloc::vec::Vec;
 
+// On `no_std` the inherent `f64` transcendental methods do not exist; this
+// brings in the `libm`-backed stand-ins with identical signatures. Under `std`
+// the inherent methods are used and the trait is not compiled at all.
+// `allow(unused_imports)`: rustc gathers the inherent impls of primitive types
+// from every crate *loaded into the compilation*, so whenever something drags
+// `std` back in — an optional dependency (`proj4rs-compat` → `proj4rs`), or a
+// dev-dependency under `--all-targets` — the inherent `f64::sin`/`cos`/… come
+// back and win over the trait, leaving this import redundant there.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use crate::math::FloatExt;
+
 // Arc-second to radian conversion constant
 const ARCSEC_TO_RAD: f64 = PI / (180.0 * 3600.0);
 

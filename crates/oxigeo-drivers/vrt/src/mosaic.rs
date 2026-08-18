@@ -1,7 +1,7 @@
 //! VRT mosaicking logic for combining multiple sources
 
 use crate::error::{Result, VrtError};
-use oxigeo_core::types::RasterDataType;
+use oxigeo_core::types::{NoDataValue, RasterDataType};
 use std::str::FromStr;
 
 /// Mosaic compositor for combining data from multiple sources
@@ -57,8 +57,10 @@ impl MosaicCompositor {
             height,
             dest_width,
             data_type,
+            src_nodata,
         } = *params;
         let bytes_per_pixel = data_type.size_bytes().max(1);
+        let src_nodata = src_nodata.as_f64();
 
         // Number of columns that actually fit in the destination row.
         let copy_width = width.min(dest_width.saturating_sub(dest_x)) as usize;
@@ -77,6 +79,20 @@ impl MosaicCompositor {
                 if s + bytes_per_pixel > source.len()
                     || d + bytes_per_pixel > dest.len()
                     || cov_idx >= coverage.len()
+                {
+                    continue;
+                }
+
+                // GDAL applies sources in document order and skips any source
+                // pixel equal to that source's `<NODATA>`: the pixel does not
+                // overwrite what is already there, and it does not claim
+                // coverage, so a later overlapping source can still supply
+                // valid data. Without this, the first source to cover a pixel
+                // won even when all it had there was nodata, which punched
+                // holes along the overlap bands of every `gdalbuildvrt` mosaic
+                // (cool-japan/oxigeo#19).
+                if let Some(nodata) = src_nodata
+                    && Self::sample_is_nodata(&source[s..s + bytes_per_pixel], nodata, data_type)
                 {
                     continue;
                 }
@@ -115,6 +131,23 @@ impl MosaicCompositor {
         }
 
         Ok(())
+    }
+
+    /// Whether one source sample equals the source's nodata value.
+    ///
+    /// The comparison is done on the decoded value, not on the raw bytes: a
+    /// bytewise test would miss `-0.0` matching a `0.0` nodata, and would call
+    /// two distinct NaN bit patterns different when GDAL treats any NaN as
+    /// nodata for a NaN nodata value.
+    fn sample_is_nodata(sample: &[u8], nodata: f64, data_type: RasterDataType) -> bool {
+        match crate::warped::read_sample(sample, 0, data_type) {
+            Some(value) if nodata.is_nan() => value.is_nan(),
+            Some(value) => value == nodata,
+            // Types `read_sample` cannot decode (the complex pair types) have
+            // no meaningful scalar nodata comparison; treat every sample as
+            // valid rather than silently dropping data.
+            None => false,
+        }
     }
 
     /// Blends a single already-written pixel with a new source sample according
@@ -248,6 +281,10 @@ pub struct CompositeParams {
     pub dest_width: u64,
     /// Data type
     pub data_type: RasterDataType,
+    /// The contributing source's own nodata value (`<NODATA>` of its
+    /// `<ComplexSource>`). Samples equal to it are skipped rather than
+    /// composited, matching GDAL's VRT semantics.
+    pub src_nodata: NoDataValue,
 }
 
 impl CompositeParams {
@@ -267,7 +304,18 @@ impl CompositeParams {
             height,
             dest_width,
             data_type,
+            src_nodata: NoDataValue::None,
         }
+    }
+
+    /// Sets the contributing source's nodata value.
+    ///
+    /// Samples equal to it are skipped: they neither overwrite the destination
+    /// nor claim coverage, so a later overlapping source can still fill the
+    /// pixel (cool-japan/oxigeo#19).
+    pub fn with_source_nodata(mut self, nodata: NoDataValue) -> Self {
+        self.src_nodata = nodata;
+        self
     }
 }
 

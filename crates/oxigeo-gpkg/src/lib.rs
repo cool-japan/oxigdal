@@ -44,7 +44,8 @@ pub mod wal;
 pub mod writer;
 
 pub use btree::{
-    CellValue, MasterEntry, count_table_rows, scan_sqlite_master, scan_table, scan_table_paginated,
+    CellValue, MasterEntry, count_table_rows, parse_leaf_table_page,
+    parse_leaf_table_page_with_overflow, scan_sqlite_master, scan_table, scan_table_paginated,
 };
 #[cfg(feature = "change-tracking")]
 pub use change_tracking::{ChangeLogEntry, ChangeOperation, ChangeTracker};
@@ -90,6 +91,7 @@ pub use vector::{
     GpkgGeometry, Point4D, SrsInfo, WKB_EWKB_M_HIGHBIT, WKB_EWKB_ZM_HIGHBIT, WKB_POINT_M,
     WKB_POINT_ZM,
 };
+#[cfg(feature = "geojson-convert")]
 pub use vector::{
     feature_table_from_geojson, feature_table_to_geojson, geojson_geom_to_gpkg,
     gpkg_geom_to_geojson,

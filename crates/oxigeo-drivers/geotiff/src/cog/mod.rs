@@ -218,6 +218,25 @@ pub struct CogReader<S: DataSource> {
     primary_info: ImageInfo,
     overview_infos: Vec<ImageInfo>,
     geo_keys: Option<GeoKeyDirectory>,
+    /// Index into [`TiffFile::ifds`] of each public level, `level_ifds[0]` being
+    /// the full-resolution image.
+    ///
+    /// A COG's level indices are *not* IFD indices. Two kinds of IFD share the
+    /// chain with the overviews but are not resolutions:
+    ///
+    /// * **GDAL internal masks** ([`crate::tiff::is_mask_ifd`]) — single-bit
+    ///   alpha planes for the image that precedes them. Counting one as a level
+    ///   inflates [`Self::overview_count`] and shifts every later level onto the
+    ///   wrong resolution.
+    /// * **IFDs whose [`ImageInfo`] will not parse** — skipped since the reader
+    ///   was written, but the block-index cache and the `tile_byte_range`
+    ///   fallback both used to index the raw chain by level regardless, so a
+    ///   skipped IFD silently desynchronised the tile offsets from the geometry.
+    ///
+    /// Every level → IFD resolution goes through this map, so those two views can
+    /// no longer disagree. The raw chain stays reachable through [`Self::tiff`]
+    /// and [`Self::ifd_count`] for consumers that want the masks.
+    level_ifds: Vec<usize>,
     /// Pre-parsed tile/strip offsets and byte counts, one entry per level
     /// (index 0 = full resolution, index `n` = overview `n`).
     ///
@@ -278,11 +297,23 @@ impl<S: DataSource> CogReader<S> {
         // Parse primary image info
         let primary_info = ImageInfo::from_ifd(&tiff.ifds[0], &source, byte_order, variant)?;
 
-        // Parse overview infos (best-effort: skip overviews that fail to parse)
+        // Parse overview infos, recording which IFD each level came from.
+        //
+        // Two IFDs in the chain are not overviews and must not become levels:
+        // a GDAL internal mask (see `crate::tiff::is_mask_ifd`), which is an
+        // alpha plane for the image before it, and one whose `ImageInfo` will
+        // not parse (best-effort skip, as before). The primary IFD is level 0
+        // whatever its own tags claim — a standalone `.msk` opened directly is
+        // still that file's image.
         let mut overview_infos = Vec::new();
-        for ifd in tiff.ifds.iter().skip(1) {
+        let mut level_ifds = vec![0usize];
+        for (index, ifd) in tiff.ifds.iter().enumerate().skip(1) {
+            if crate::tiff::is_mask_ifd(ifd, byte_order) {
+                continue;
+            }
             if let Ok(info) = ImageInfo::from_ifd(ifd, &source, byte_order, variant) {
                 overview_infos.push(info);
+                level_ifds.push(index);
             }
         }
 
@@ -302,15 +333,20 @@ impl<S: DataSource> CogReader<S> {
             } else {
                 &overview_infos[level - 1]
             };
-            block_indices.push(tiff.ifds.get(level).and_then(|ifd| {
-                block_index::BlockIndex::try_parse(
-                    ifd,
-                    &source,
-                    byte_order,
-                    variant,
-                    info.is_tiled(),
-                )
-            }));
+            block_indices.push(
+                level_ifds
+                    .get(level)
+                    .and_then(|&index| tiff.ifds.get(index))
+                    .and_then(|ifd| {
+                        block_index::BlockIndex::try_parse(
+                            ifd,
+                            &source,
+                            byte_order,
+                            variant,
+                            info.is_tiled(),
+                        )
+                    }),
+            );
         }
 
         Ok(Self {
@@ -319,6 +355,7 @@ impl<S: DataSource> CogReader<S> {
             primary_info,
             overview_infos,
             geo_keys,
+            level_ifds,
             block_indices,
             block_scratch: Mutex::new(Vec::new()),
         })
@@ -346,9 +383,52 @@ impl<S: DataSource> CogReader<S> {
     }
 
     /// Returns the number of overview levels
+    ///
+    /// Levels are *resolutions*: IFDs that are GDAL internal masks
+    /// ([`crate::tiff::is_mask_ifd`]) or that fail to parse are not counted, so
+    /// this is generally smaller than `tiff().image_count() - 1`. Use
+    /// [`Self::ifd_count`] for the raw chain length.
     #[must_use]
     pub fn overview_count(&self) -> usize {
         self.overview_infos.len()
+    }
+
+    /// Returns the number of IFDs in the file's directory chain, *including*
+    /// GDAL internal masks and any IFD this reader could not parse.
+    ///
+    /// This is the raw structural count — the counterpart of
+    /// [`Self::overview_count`], which counts resolutions only. It is the same
+    /// value as `self.tiff().image_count()`, exposed here so a caller reasoning
+    /// about levels never has to reach for the [`TiffFile`] to learn how many
+    /// non-level IFDs the file carries.
+    #[must_use]
+    pub fn ifd_count(&self) -> usize {
+        self.tiff.ifds.len()
+    }
+
+    /// Returns the IFD backing `level` (0 = full resolution), or `None` if
+    /// `level` names no level.
+    ///
+    /// The returned IFD is never a mask and never one whose [`ImageInfo`] failed
+    /// to parse: this is the level → IFD map every read path uses, so anything
+    /// derived from it (dimensions, tile geometry, tile offsets) describes the
+    /// same image the tile reads at that level return.
+    #[must_use]
+    pub fn level_ifd(&self, level: usize) -> Option<&crate::tiff::Ifd> {
+        self.level_ifds
+            .get(level)
+            .and_then(|&index| self.tiff.ifds.get(index))
+    }
+
+    /// Returns the index in the raw IFD chain of `level`'s directory, or `None`
+    /// if `level` names no level.
+    ///
+    /// `level_ifd_index(0)` is always `Some(0)`. The mapping is strictly
+    /// increasing and skips masks, so a gap between consecutive results is the
+    /// count of non-level IFDs between the two resolutions.
+    #[must_use]
+    pub fn level_ifd_index(&self, level: usize) -> Option<usize> {
+        self.level_ifds.get(level).copied()
     }
 
     /// Returns the primary image info
@@ -463,11 +543,12 @@ impl<S: DataSource> CogReader<S> {
 
         // Fallback for levels that could not be pre-parsed (missing tags, short or
         // malformed arrays, implausible declared counts): re-read on demand so the
-        // original error surfaces verbatim.
+        // original error surfaces verbatim. Resolved through the level → IFD map,
+        // not by indexing the chain directly: a mask or an unparseable IFD earlier
+        // in the chain would otherwise make this read a different image's offsets
+        // than `info_for_level` above described.
         let ifd = self
-            .tiff
-            .ifds
-            .get(level)
+            .level_ifd(level)
             .ok_or_else(|| OxiGeoError::OutOfBounds {
                 message: format!("Overview level {} out of bounds", level),
             })?;
@@ -665,6 +746,32 @@ impl<S: DataSource> CogReader<S> {
     /// declared by the IFD overflow `usize`.
     pub fn tile_decoded_size(&self, level: usize, tile_y: u32) -> Result<usize> {
         Ok(self.tile_geometry(level, tile_y)?.decoded_size)
+    }
+
+    /// Returns the decoded pixel dimensions `(width, height)` of one tile or
+    /// strip at `level`.
+    ///
+    /// This is the pixel geometry of exactly the block [`Self::read_tile`]
+    /// returns — it comes from the same computation, so a caller sizing an image
+    /// buffer from it can never disagree with the bytes it gets:
+    ///
+    /// * on a **tiled** level it is that level's own `TileWidth`/`TileLength`,
+    ///   which an overview may declare differently from the full-resolution
+    ///   image (a level-0 tile size is not a property of the file);
+    /// * on a **striped** level it is `ImageWidth × RowsPerStrip`, narrowed to
+    ///   the real row count for the short final strip of the plane;
+    /// * on a **planar** level `tile_y` indexes the plane-major block grid
+    ///   (`band × tiles_down + row`), as everywhere else in this API.
+    ///
+    /// Multiplying the two by `bytes_per_sample` and the block's samples per
+    /// pixel gives [`Self::tile_decoded_size`].
+    ///
+    /// # Errors
+    /// Returns an error if `level` names no overview, or if the tile dimensions
+    /// declared by the IFD overflow `usize`.
+    pub fn tile_pixel_size(&self, level: usize, tile_y: u32) -> Result<(u32, u32)> {
+        let geometry = self.tile_geometry(level, tile_y)?;
+        Ok((geometry.tile_width, geometry.tile_height))
     }
 
     /// Reads and decompresses a tile or strip

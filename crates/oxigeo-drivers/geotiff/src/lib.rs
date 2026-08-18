@@ -804,9 +804,12 @@ impl<S: DataSource> GeoTiffReader<S> {
             return Err(out_of_bounds());
         }
 
-        let tiff = self.cog_reader.tiff();
-        let byte_order = tiff.byte_order();
-        let ifd = tiff.ifds.get(level).ok_or_else(out_of_bounds)?;
+        let byte_order = self.cog_reader.tiff().byte_order();
+        // Through the reader's level → IFD map, not `ifds[level]`: levels skip
+        // GDAL internal masks, so on a masked file the raw chain index names a
+        // different image and `level_size` would report the mask's dimensions
+        // for a level whose tiles come from the real overview.
+        let ifd = self.cog_reader.level_ifd(level).ok_or_else(out_of_bounds)?;
         let scalar = |tag: TiffTag| ifd.get_entry(tag).and_then(|e| e.get_u64(byte_order).ok());
 
         let mut info = primary.clone();
