@@ -1,6 +1,6 @@
 # OxiGeo TODO
 
-> Version: 0.2.4 (2026-08-18) | previous release: 0.2.3 (2026-08-05) | 75 crates | 18,327 tests passing (101 skipped), 0 failures (`--all-features`); 16,862 passing (80 skipped) on default features | 414 doc tests passing (86 ignored) | ~814K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
+> Version: 0.2.5 (Unreleased) | previous release: 0.2.4 (2026-08-18) | 75 crates | 18,327 tests passing (101 skipped), 0 failures (`--all-features`); 16,862 passing (80 skipped) on default features | 414 doc tests passing (86 ignored) | ~814K Rust SLoC | clippy clean (`--all-features --all-targets`) | `cargo deny check` passing
 
 ---
 

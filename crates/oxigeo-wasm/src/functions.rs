@@ -87,7 +87,7 @@ pub(super) fn tile_to_rgba(
 /// treating each byte as a `u8`.
 ///
 /// `raw` is in the **host's** byte order — both readers behind
-/// [`WasmCogViewer::read_tile`] normalise before returning — so every read here
+/// [`crate::WasmCogViewer::read_tile`] normalise before returning — so every read here
 /// is `from_ne_bytes` and there is no byte-order parameter to get wrong. This
 /// function used to take a `little_endian` flag sourced from the file header;
 /// once the readers normalised, that flag byte-swapped `MM` data a second time

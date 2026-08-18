@@ -170,7 +170,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 rust-version = "1.95"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -369,91 +369,91 @@ serde-wasm-bindgen = "0.6"
 # Internal crates - core
 # The unified facade, so workspace members (examples, integration harnesses) can
 # demonstrate the same `oxigeo::Dataset` API end users see.
-oxigeo = { path = "crates/oxigeo", version = "0.2.4" }
+oxigeo = { path = "crates/oxigeo", version = "0.2.5" }
 # default-features = false so no_std/alloc-only consumers (oxigeo-embedded) can select
 # the lean `alloc`-only surface (Cargo hard-errors on member-level `default-features = false`
 # otherwise). Other consumers re-enable defaults with `default-features = true` in their manifests.
-oxigeo-core = { path = "crates/oxigeo-core", version = "0.2.4", default-features = false }
+oxigeo-core = { path = "crates/oxigeo-core", version = "0.2.5", default-features = false }
 # default-features = false so wasm consumers can select the lean `std`-only surface
 # (Cargo hard-errors on member-level `default-features = false` otherwise).
 # Native consumers re-enable defaults with `default-features = true` in their manifests.
-oxigeo-algorithms = { path = "crates/oxigeo-algorithms", version = "0.2.4", default-features = false }
-oxigeo-proj = { path = "crates/oxigeo-proj", version = "0.2.4" }
-oxigeo-qc = { path = "crates/oxigeo-qc", version = "0.2.4" }
+oxigeo-algorithms = { path = "crates/oxigeo-algorithms", version = "0.2.5", default-features = false }
+oxigeo-proj = { path = "crates/oxigeo-proj", version = "0.2.5" }
+oxigeo-qc = { path = "crates/oxigeo-qc", version = "0.2.5" }
 
 # Driver crates
-oxigeo-geotiff = { path = "crates/oxigeo-drivers/geotiff", version = "0.2.4" }
-oxigeo-geojson = { path = "crates/oxigeo-drivers/geojson", version = "0.2.4" }
-oxigeo-geojson-stream = { path = "crates/oxigeo-geojson", version = "0.2.4" }
-oxigeo-zarr = { path = "crates/oxigeo-drivers/zarr", version = "0.2.4" }
-oxigeo-flatgeobuf = { path = "crates/oxigeo-drivers/flatgeobuf", version = "0.2.4" }
-oxigeo-shapefile = { path = "crates/oxigeo-drivers/shapefile", version = "0.2.4" }
-oxigeo-netcdf = { path = "crates/oxigeo-drivers/netcdf", version = "0.2.4" }
-oxigeo-geoparquet = { path = "crates/oxigeo-drivers/geoparquet", version = "0.2.4" }
-oxigeo-hdf5 = { path = "crates/oxigeo-drivers/hdf5", version = "0.2.4" }
-oxigeo-vrt = { path = "crates/oxigeo-drivers/vrt", version = "0.2.4" }
-oxigeo-grib = { path = "crates/oxigeo-drivers/grib", version = "0.2.4" }
-oxigeo-jpeg2000 = { path = "crates/oxigeo-drivers/jpeg2000", version = "0.2.4" }
+oxigeo-geotiff = { path = "crates/oxigeo-drivers/geotiff", version = "0.2.5" }
+oxigeo-geojson = { path = "crates/oxigeo-drivers/geojson", version = "0.2.5" }
+oxigeo-geojson-stream = { path = "crates/oxigeo-geojson", version = "0.2.5" }
+oxigeo-zarr = { path = "crates/oxigeo-drivers/zarr", version = "0.2.5" }
+oxigeo-flatgeobuf = { path = "crates/oxigeo-drivers/flatgeobuf", version = "0.2.5" }
+oxigeo-shapefile = { path = "crates/oxigeo-drivers/shapefile", version = "0.2.5" }
+oxigeo-netcdf = { path = "crates/oxigeo-drivers/netcdf", version = "0.2.5" }
+oxigeo-geoparquet = { path = "crates/oxigeo-drivers/geoparquet", version = "0.2.5" }
+oxigeo-hdf5 = { path = "crates/oxigeo-drivers/hdf5", version = "0.2.5" }
+oxigeo-vrt = { path = "crates/oxigeo-drivers/vrt", version = "0.2.5" }
+oxigeo-grib = { path = "crates/oxigeo-drivers/grib", version = "0.2.5" }
+oxigeo-jpeg2000 = { path = "crates/oxigeo-drivers/jpeg2000", version = "0.2.5" }
 
 # Feature-specific crates
-oxigeo-wasm = { path = "crates/oxigeo-wasm", version = "0.2.4" }
-oxigeo-wasm-geoparquet = { path = "crates/oxigeo-wasm-geoparquet", version = "0.2.4" }
-oxigeo-mobile = { path = "crates/oxigeo-mobile", version = "0.2.4" }
-oxigeo-cloud = { path = "crates/oxigeo-cloud", version = "0.2.4" }
-oxigeo-3d = { path = "crates/oxigeo-3d", version = "0.2.4" }
-oxigeo-server = { path = "crates/oxigeo-server", version = "0.2.4" }
-oxigeo-postgis = { path = "crates/oxigeo-postgis", version = "0.2.4" }
-oxigeo-analytics = { path = "crates/oxigeo-analytics", version = "0.2.4" }
-oxigeo-temporal = { path = "crates/oxigeo-temporal", version = "0.2.4" }
-oxigeo-terrain = { path = "crates/oxigeo-terrain", version = "0.2.4" }
-oxigeo-rs3gw = { path = "crates/oxigeo-rs3gw", version = "0.2.4" }
-oxigeo-distributed = { path = "crates/oxigeo-distributed", version = "0.2.4" }
-oxigeo-python = { path = "crates/oxigeo-python", version = "0.2.4" }
-oxigeo-stac = { path = "crates/oxigeo-stac", version = "0.2.4" }
-oxigeo-ml = { path = "crates/oxigeo-ml", version = "0.2.4" }
-oxigeo-ml-foundation = { path = "crates/oxigeo-ml-foundation", version = "0.2.4" }
-oxigeo-metadata = { path = "crates/oxigeo-metadata", version = "0.2.4" }
-oxigeo-sensors = { path = "crates/oxigeo-sensors", version = "0.2.4" }
-oxigeo-gpu = { path = "crates/oxigeo-gpu", version = "0.2.4" }
-oxigeo-gpu-advanced = { path = "crates/oxigeo-gpu-advanced", version = "0.2.4" }
-oxigeo-bench = { path = "crates/oxigeo-bench", version = "0.2.4" }
-oxigeo-ws = { path = "crates/oxigeo-ws", version = "0.2.4" }
-oxigeo-websocket = { path = "crates/oxigeo-websocket", version = "0.2.4" }
-oxigeo-etl = { path = "crates/oxigeo-etl", version = "0.2.4" }
-oxigeo-services = { path = "crates/oxigeo-services", version = "0.2.4" }
-oxigeo-cache-advanced = { path = "crates/oxigeo-cache-advanced", version = "0.2.4" }
-oxigeo-cluster = { path = "crates/oxigeo-cluster", version = "0.2.4" }
-oxigeo-query = { path = "crates/oxigeo-query", version = "0.2.4" }
-oxigeo-compress = { path = "crates/oxigeo-compress", version = "0.2.4" }
-oxigeo-observability = { path = "crates/oxigeo-observability", version = "0.2.4" }
+oxigeo-wasm = { path = "crates/oxigeo-wasm", version = "0.2.5" }
+oxigeo-wasm-geoparquet = { path = "crates/oxigeo-wasm-geoparquet", version = "0.2.5" }
+oxigeo-mobile = { path = "crates/oxigeo-mobile", version = "0.2.5" }
+oxigeo-cloud = { path = "crates/oxigeo-cloud", version = "0.2.5" }
+oxigeo-3d = { path = "crates/oxigeo-3d", version = "0.2.5" }
+oxigeo-server = { path = "crates/oxigeo-server", version = "0.2.5" }
+oxigeo-postgis = { path = "crates/oxigeo-postgis", version = "0.2.5" }
+oxigeo-analytics = { path = "crates/oxigeo-analytics", version = "0.2.5" }
+oxigeo-temporal = { path = "crates/oxigeo-temporal", version = "0.2.5" }
+oxigeo-terrain = { path = "crates/oxigeo-terrain", version = "0.2.5" }
+oxigeo-rs3gw = { path = "crates/oxigeo-rs3gw", version = "0.2.5" }
+oxigeo-distributed = { path = "crates/oxigeo-distributed", version = "0.2.5" }
+oxigeo-python = { path = "crates/oxigeo-python", version = "0.2.5" }
+oxigeo-stac = { path = "crates/oxigeo-stac", version = "0.2.5" }
+oxigeo-ml = { path = "crates/oxigeo-ml", version = "0.2.5" }
+oxigeo-ml-foundation = { path = "crates/oxigeo-ml-foundation", version = "0.2.5" }
+oxigeo-metadata = { path = "crates/oxigeo-metadata", version = "0.2.5" }
+oxigeo-sensors = { path = "crates/oxigeo-sensors", version = "0.2.5" }
+oxigeo-gpu = { path = "crates/oxigeo-gpu", version = "0.2.5" }
+oxigeo-gpu-advanced = { path = "crates/oxigeo-gpu-advanced", version = "0.2.5" }
+oxigeo-bench = { path = "crates/oxigeo-bench", version = "0.2.5" }
+oxigeo-ws = { path = "crates/oxigeo-ws", version = "0.2.5" }
+oxigeo-websocket = { path = "crates/oxigeo-websocket", version = "0.2.5" }
+oxigeo-etl = { path = "crates/oxigeo-etl", version = "0.2.5" }
+oxigeo-services = { path = "crates/oxigeo-services", version = "0.2.5" }
+oxigeo-cache-advanced = { path = "crates/oxigeo-cache-advanced", version = "0.2.5" }
+oxigeo-cluster = { path = "crates/oxigeo-cluster", version = "0.2.5" }
+oxigeo-query = { path = "crates/oxigeo-query", version = "0.2.5" }
+oxigeo-compress = { path = "crates/oxigeo-compress", version = "0.2.5" }
+oxigeo-observability = { path = "crates/oxigeo-observability", version = "0.2.5" }
 # default-features = false so the wasm crate can consume the lean `attestation`-only
 # surface (default enterprise/tls pull tokio & friends, which are wasm-RED).
-oxigeo-security = { path = "crates/oxigeo-security", version = "0.2.4", default-features = false }
-oxigeo-ha = { path = "crates/oxigeo-ha", version = "0.2.4" }
-oxigeo-gateway = { path = "crates/oxigeo-gateway", version = "0.2.4" }
-oxigeo-workflow = { path = "crates/oxigeo-workflow", version = "0.2.4" }
-oxigeo-cloud-enhanced = { path = "crates/oxigeo-cloud-enhanced", version = "0.2.4" }
-oxigeo-db-connectors = { path = "crates/oxigeo-db-connectors", version = "0.2.4" }
-oxigeo-drivers-advanced = { path = "crates/oxigeo-drivers-advanced", version = "0.2.4" }
-oxigeo-jupyter = { path = "crates/oxigeo-jupyter", version = "0.2.4" }
-oxigeo-dev-tools = { path = "crates/oxigeo-dev-tools", version = "0.2.4" }
-oxigeo-kinesis = { path = "crates/oxigeo-kinesis", version = "0.2.4" }
-oxigeo-mqtt = { path = "crates/oxigeo-mqtt", version = "0.2.4" }
-oxigeo-pubsub = { path = "crates/oxigeo-pubsub", version = "0.2.4" }
-oxigeo-streaming = { path = "crates/oxigeo-streaming", version = "0.2.4" }
-oxigeo-mobile-enhanced = { path = "crates/oxigeo-mobile-enhanced", version = "0.2.4" }
-oxigeo-pwa = { path = "crates/oxigeo-pwa", version = "0.2.4" }
-oxigeo-sync = { path = "crates/oxigeo-sync", version = "0.2.4" }
-oxigeo-edge = { path = "crates/oxigeo-edge", version = "0.2.4" }
-oxigeo-offline = { path = "crates/oxigeo-offline", version = "0.2.4" }
-oxigeo-embedded = { path = "crates/oxigeo-embedded", version = "0.2.4" }
-oxigeo-node = { path = "crates/oxigeo-node", version = "0.2.4" }
-oxigeo-gpkg = { path = "crates/oxigeo-gpkg", version = "0.2.4" }
-oxigeo-mbtiles = { path = "crates/oxigeo-mbtiles", version = "0.2.4" }
-oxigeo-copc = { path = "crates/oxigeo-copc", version = "0.2.4" }
-oxigeo-pmtiles = { path = "crates/oxigeo-pmtiles", version = "0.2.4" }
-oxigeo-noalloc = { path = "crates/oxigeo-noalloc", version = "0.2.4" }
-oxigeo-index = { path = "crates/oxigeo-index", version = "0.2.4" }
+oxigeo-security = { path = "crates/oxigeo-security", version = "0.2.5", default-features = false }
+oxigeo-ha = { path = "crates/oxigeo-ha", version = "0.2.5" }
+oxigeo-gateway = { path = "crates/oxigeo-gateway", version = "0.2.5" }
+oxigeo-workflow = { path = "crates/oxigeo-workflow", version = "0.2.5" }
+oxigeo-cloud-enhanced = { path = "crates/oxigeo-cloud-enhanced", version = "0.2.5" }
+oxigeo-db-connectors = { path = "crates/oxigeo-db-connectors", version = "0.2.5" }
+oxigeo-drivers-advanced = { path = "crates/oxigeo-drivers-advanced", version = "0.2.5" }
+oxigeo-jupyter = { path = "crates/oxigeo-jupyter", version = "0.2.5" }
+oxigeo-dev-tools = { path = "crates/oxigeo-dev-tools", version = "0.2.5" }
+oxigeo-kinesis = { path = "crates/oxigeo-kinesis", version = "0.2.5" }
+oxigeo-mqtt = { path = "crates/oxigeo-mqtt", version = "0.2.5" }
+oxigeo-pubsub = { path = "crates/oxigeo-pubsub", version = "0.2.5" }
+oxigeo-streaming = { path = "crates/oxigeo-streaming", version = "0.2.5" }
+oxigeo-mobile-enhanced = { path = "crates/oxigeo-mobile-enhanced", version = "0.2.5" }
+oxigeo-pwa = { path = "crates/oxigeo-pwa", version = "0.2.5" }
+oxigeo-sync = { path = "crates/oxigeo-sync", version = "0.2.5" }
+oxigeo-edge = { path = "crates/oxigeo-edge", version = "0.2.5" }
+oxigeo-offline = { path = "crates/oxigeo-offline", version = "0.2.5" }
+oxigeo-embedded = { path = "crates/oxigeo-embedded", version = "0.2.5" }
+oxigeo-node = { path = "crates/oxigeo-node", version = "0.2.5" }
+oxigeo-gpkg = { path = "crates/oxigeo-gpkg", version = "0.2.5" }
+oxigeo-mbtiles = { path = "crates/oxigeo-mbtiles", version = "0.2.5" }
+oxigeo-copc = { path = "crates/oxigeo-copc", version = "0.2.5" }
+oxigeo-pmtiles = { path = "crates/oxigeo-pmtiles", version = "0.2.5" }
+oxigeo-noalloc = { path = "crates/oxigeo-noalloc", version = "0.2.5" }
+oxigeo-index = { path = "crates/oxigeo-index", version = "0.2.5" }
 
 # Node.js bindings dependencies
 napi = "3"
